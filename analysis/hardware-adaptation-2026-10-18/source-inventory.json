@@ -1,0 +1,1332 @@
+{
+  "scope": "UTF-8 text hashes normalize newlines. Static call sites include helpers and inactive paths. Counts are coverage inventory, not proof of runtime cadence or an optimized module.",
+  "module_source_files": 87,
+  "module_classes": 84,
+  "gui_source_files": 53,
+  "modules": [
+    {
+      "source": "src/angerona/modules/__init__.py",
+      "sha256": "581f0f22c6e5c07f08c3cfdc346fe4f9adb614a2486f017b5093fa5a0691f0ed",
+      "module_classes": [],
+      "declared_self_tests": 0,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 0
+    },
+    {
+      "source": "src/angerona/modules/adversary_combat.py",
+      "sha256": "cb7494ee34b3a08930bdcb576046000a65c55bbf1aeef40c4d5454b879fc84ab",
+      "module_classes": [
+        "AdversaryCombat"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/ai_model_integrity.py",
+      "sha256": "db7bd4a3fcc49a9bef1fa0b22416fea2102af9d5ad54a5a86d652078b4c0d7f1",
+      "module_classes": [
+        "AIModelIntegrityGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/ai_triage.py",
+      "sha256": "dc462c9aa0fac95207f9a79b1c5fa7dee28dba74c9d1159cc05c2302879540f9",
+      "module_classes": [
+        "AITriageModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/amsi_bridge.py",
+      "sha256": "a3fb59c40ccfa8c4c4f68f1b1d25223cffab19c0cf0f8a8918e2b4bb9175ce90",
+      "module_classes": [
+        "AMSIBridgeModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/api_patch_detector.py",
+      "sha256": "87980ba25e403ff26d7a14402b76c825d8778c764956daea4cfda2edaf14eb9f",
+      "module_classes": [
+        "ApiPatchDetectorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/app_control_monitor.py",
+      "sha256": "435e649b2436e9014eb9e50174c4b44b0c5e7b28125d344d30cdf08309f4146e",
+      "module_classes": [
+        "AppControlDecisionSensor"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/arp_watchdog.py",
+      "sha256": "941769a87739320894465701da8f18e15aca3752fbddf641eafb8c25e4cbe963",
+      "module_classes": [
+        "ARPWatchdogModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/audit_log_guard.py",
+      "sha256": "a8ffda90e578956bd89332838b413240779cd5fdaa565be8e70c454e9a7da98d",
+      "module_classes": [
+        "AuditLogIntegrityGuard"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/authentication_extension_guard.py",
+      "sha256": "d5a0b7ac4873e6e7a18b35b3dec1eebeadffa0635f89fca5783b820eb0a31fe8",
+      "module_classes": [
+        "AuthenticationExtensionIntegrityGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/av_telemetry_bridge.py",
+      "sha256": "b0232a2fb35a91c70825cb0d6d7bf9f1dfdf56796a8637f28994640f41baaff1",
+      "module_classes": [
+        "AVTelemetryBridgeModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/beacon_detector.py",
+      "sha256": "51870167e036735bddf683c031abd295d55b9b5b6db6b412171741f8b472b3ae",
+      "module_classes": [
+        "BeaconDetectorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/behavioral_tuner.py",
+      "sha256": "2e7f92d03b0944fe32c6c41c744c1c9353bc75d6e5591b3594ae8e97384fc182",
+      "module_classes": [
+        "BehavioralTuner"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/canary_drill.py",
+      "sha256": "37c483a0c6c948a54f319c2462eb58ea9b6bced7bc33d32909f7bf29e7b53fd5",
+      "module_classes": [
+        "CanaryDrillModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/chaos_harness.py",
+      "sha256": "afe72f0abebc2da2348f9e34956041db94e170bc09ff01033576a9ad20703a2f",
+      "module_classes": [
+        "ChaosHarness"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/cloud_escalation.py",
+      "sha256": "d5266a11d2514ef255b39548aa3f7cc97b2544685d93c22fb70767c0bf26aedc",
+      "module_classes": [
+        "CloudEscalationModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/compliance_mapper.py",
+      "sha256": "ec2cddfe17d6678ef5c81ca8c03473e2fc087be48d29c069a92041bdb9cd19e8",
+      "module_classes": [
+        "ComplianceMapperModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/counter_agentic.py",
+      "sha256": "613f9d38a6215fec52e44c677863dc133cfb7df654e6489cf523833ba9a97b7b",
+      "module_classes": [
+        "CounterAgenticModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/daily_briefing.py",
+      "sha256": "c81771678df54216b464b6bea10ea0ffdd8a32f487c75a9fa5965f05bf845a8b",
+      "module_classes": [
+        "DailyBriefingModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/deception.py",
+      "sha256": "89d5cc2f087b23589798f87de6ae8999228ad9e263e52e1724d0c3bac8322645",
+      "module_classes": [
+        "DeceptionModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/detection_runtime.py",
+      "sha256": "b63e1d914f1344a55a587e776948155ac28e111e37c8361067e32ed008eb90df",
+      "module_classes": [
+        "DetectionRuntimeModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/driver_provenance_guard.py",
+      "sha256": "e63cc832807a1d24c0ae58e8796ee13c7cae32927ce158d91ae338e0997719e0",
+      "module_classes": [
+        "DriverProvenanceGuard"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/dynamic_resource.py",
+      "sha256": "58005e849440ef5211cc11a5faf831fe31a661ca81d86016d8486bc1fd4ed6ec",
+      "module_classes": [
+        "DynamicResourceModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/ebpf_sensor.py",
+      "sha256": "9a8a63fe52bbf28b2bf50a51d567a61753d15b377e0b285592c0d67b80ebe2f5",
+      "module_classes": [
+        "EbpfSensorNode"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 5
+    },
+    {
+      "source": "src/angerona/modules/etw_listener.py",
+      "sha256": "8bcf3e4a148d6128f07fdaae0396e32e35fd1e28dec55f507c6192cffdf71697",
+      "module_classes": [
+        "EtwListenerModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/etw_realtime_sensor.py",
+      "sha256": "c32653afa693ce1adff390c8a131c9e21b7df5867459cf51e5d4c3e5b8d6acf2",
+      "module_classes": [
+        "EtwRealtimeSensorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/evidence_lattice.py",
+      "sha256": "573052ec0dba5e4ad5ac77f7f40ebb2ff94069b9aff7583b6018a551c3a97802",
+      "module_classes": [
+        "EvidenceLatticeModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/evolution_engine.py",
+      "sha256": "8d1a72ac881dfc7c0db998b50165728564b324e51a3bc9916070161854da2cdd",
+      "module_classes": [
+        "EvolutionEngine"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/exposure_graph_guard.py",
+      "sha256": "598cd795ddce637cd07634f6567ecbe280faa12e3acb5976ec981a48953d82cf",
+      "module_classes": [
+        "ExposureGraphGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/fast_path.py",
+      "sha256": "74b5fccc4ec30c9a552dd60d52e1f0d5c8380bd123b481ec084c6ea8704680ef",
+      "module_classes": [
+        "FastPathModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/file_integrity.py",
+      "sha256": "b29ed10caf1c17c874ef2c2acc565edd471b199c56b2fa27f9a82ecca3415863",
+      "module_classes": [
+        "FileIntegrityModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 2,
+      "routine_interval_calls": 1,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/fleet_health_monitor.py",
+      "sha256": "9267339a1691a1fdf939aa02785b9d1d7d5d41770559f93639977c643c72553a",
+      "module_classes": [
+        "FleetHealthMonitorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/flight_cache.py",
+      "sha256": "9d6045f2b43911f1f430dc2211c926f8199cd61c9e9288219ec8fb13bb8497c1",
+      "module_classes": [
+        "FlightCacheModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/forensics.py",
+      "sha256": "b576277dee682dd7a37bd4a0514ea0613d005c704031bf35e04c45234d1b9aea",
+      "module_classes": [
+        "ForensicsModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/frz_heartbeat.py",
+      "sha256": "d786ecddff666177814412de8370a50be9311ba8937d131a8225c7b3f2f9af91",
+      "module_classes": [
+        "FrzHeartbeatModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/hardware_crypto.py",
+      "sha256": "b7e3ef108feeecf6f7fdf8d4020edce2967350baf48b2373fe703094238a1d7e",
+      "module_classes": [
+        "HardwareCrypto"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/hermetic_packager.py",
+      "sha256": "74e9969d3cfa4b5600da8e36ff0613970d224987db5eab658616b495b661daae",
+      "module_classes": [
+        "HermeticPackagerModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/identity_session_guard.py",
+      "sha256": "9ac4cb5085ae82b7dcfa387eda002bfb2301b490629dd1cdde94a83b45471c16",
+      "module_classes": [
+        "IdentitySessionGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/immutable_recovery_guard.py",
+      "sha256": "af72e963cb7fad13ba8d78fd5f699cc5c568f8d5dd6e18a2f1f744183b6d53f2",
+      "module_classes": [
+        "ImmutableRecoveryGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/intel_sync.py",
+      "sha256": "ecc659268f9bef9b58c18be13eca68a85bc83faf7a52bec55399c1aac1230098",
+      "module_classes": [
+        "IntelSyncModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/ipc_guard.py",
+      "sha256": "b8f599804d6bfcdc2ff8aad05c6282abfdee52060377c0fe99242c885d578577",
+      "module_classes": [
+        "IpcGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/kernel_bridge.py",
+      "sha256": "48d0b2d82cf70ced758605e6ad39eddf0960e1e64022128ca4b83794e94efaf9",
+      "module_classes": [
+        "KernelBridgeModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 4
+    },
+    {
+      "source": "src/angerona/modules/kernel_posture_ledger.py",
+      "sha256": "3392e4426a3373afa6a8677b5b8de53c18f9a2f86842a47269386e92f6df6a1a",
+      "module_classes": [
+        "KernelBoundaryPostureLedger"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/linux_observe.py",
+      "sha256": "178a4e7e3c8c87b4f11f035a1943c49d44a6ef9b13e038b06212f8637788e703",
+      "module_classes": [
+        "LinuxObserveModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/lsass_guard.py",
+      "sha256": "c955307d2305b8955aabf02e5d6a5fdd999fa16abe4bcb255ef8e84a49d92576",
+      "module_classes": [
+        "LsassGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/macos_observe.py",
+      "sha256": "d099f5d73ce05d55a2f6b6c35de63065a4abfffaad6faa762d83c37be804eb13",
+      "module_classes": [
+        "MacOSObserveModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/mem_inject_scanner.py",
+      "sha256": "5099776c11dec1fffcbf437290dc511410800e86798c329e327a784a6a249c3b",
+      "module_classes": [
+        "MemInjectScannerModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 2,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/memory_timemachine.py",
+      "sha256": "6f31055fdde54f0229a4a128b70bcc9463535b1852fb4a2ec4800a8914854399",
+      "module_classes": [
+        "MemoryTimeMachineModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 1,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/mobile_bridge.py",
+      "sha256": "f79042bd40a7b543d1dcf153ab2ca725ace385c5340cbb0a39e6419d972493f4",
+      "module_classes": [
+        "MobileResponseBridge"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 4
+    },
+    {
+      "source": "src/angerona/modules/network_monitor.py",
+      "sha256": "e804f3be669c361ab0d4b6457f18f8d676446df0739942f31371e6b35295404c",
+      "module_classes": [
+        "NetworkMonitorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/network_protocol_decoder.py",
+      "sha256": "89c2eadebafc4c0b7967827b04ce2bd7d0552fc21a0fbdb577f4562f9624bf9c",
+      "module_classes": [
+        "NetworkProtocolDecoderModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/network_trust_monitor.py",
+      "sha256": "e32540787ae9faef6fed8a1f6c5ee07fed77d5fca9c4786568ee3aa358fb0727",
+      "module_classes": [
+        "NetworkTrustMonitorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/packet_sniffer.py",
+      "sha256": "65d0b64e893c8b0c1224b33d302f8587a28b2cdf3bd66c6925571fe76538965f",
+      "module_classes": [
+        "PacketSnifferModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/packet_sniffer_worker.py",
+      "sha256": "c024e6a574dd67f5c43cb3b0273db21a268c03a5605cb070f4e64f04fcc073de",
+      "module_classes": [],
+      "declared_self_tests": 0,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 0
+    },
+    {
+      "source": "src/angerona/modules/peripheral_dma_guard.py",
+      "sha256": "69c0e4925fd849850f394b1a26de96e41e768a2186a9e93fc1cba37d65880ce4",
+      "module_classes": [
+        "PeripheralDMAGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/persistence_sweep.py",
+      "sha256": "41d750cfbc658490582b09ec7410ac63e0309ee2777512b69ed822c2fe587a6c",
+      "module_classes": [
+        "PersistenceSweepModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/platform_attestation_guard.py",
+      "sha256": "8b9281971b5e9a196ed436cb9482683583f68a4dd70fb97a53b0994f184db7dc",
+      "module_classes": [
+        "PlatformAttestationGuard"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/posture_hardening.py",
+      "sha256": "43a8364ec10d48b1302677d4441e5fae6c62a1aaf955910e2b34104494b2284f",
+      "module_classes": [
+        "PostureHardening"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/process_egress_guard.py",
+      "sha256": "78ad0344f46f58e931907ce29e12ef35969c05104917a404a845a573f3ece771",
+      "module_classes": [
+        "ProcessEgressGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/process_monitor.py",
+      "sha256": "15e66280c6d6b7bdd1333277c0893f469f68473098365e72c3fc2047030656f1",
+      "module_classes": [
+        "ProcessMonitorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/provenance_graph.py",
+      "sha256": "b15d4c127912213abe4ace9983ad406b0eec759319dcb78035ddceb6029a132f",
+      "module_classes": [
+        "ProvenanceGraphModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/purple_guard.py",
+      "sha256": "f6ded88b3cf2fedc8305f0daea9371c679892f29572c4664f55079e4922cdaa9",
+      "module_classes": [
+        "PurpleGuard"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/rag_provenance_guard.py",
+      "sha256": "84ef51c2d92df0539c32af7a64a3520a3304c89f55a0a138acbc112e29b20769",
+      "module_classes": [
+        "RAGProvenanceGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/ransomware_heuristics.py",
+      "sha256": "2f989462454d48b3ecc1721c6c0ae767e5188b6df99421c6fe6de319f470397d",
+      "module_classes": [
+        "RansomwareHeuristicsModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/release_transparency_guard.py",
+      "sha256": "63a8302315b10032381e034a1482108b81562ca10d6e0a36b48434be353a20c9",
+      "module_classes": [
+        "ReleaseTransparencyGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/remediation_actions.py",
+      "sha256": "116c33da9f1b00be04977dba8843a96bfbd3151d3f5478cf29414cee308973c8",
+      "module_classes": [],
+      "declared_self_tests": 0,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 0
+    },
+    {
+      "source": "src/angerona/modules/remote_bridge.py",
+      "sha256": "8387f47dbbd5e2203b45fd42542037a2147da47ef891546768fb5f0d89bc79b1",
+      "module_classes": [
+        "RemoteBridge"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 10
+    },
+    {
+      "source": "src/angerona/modules/resource_governor.py",
+      "sha256": "14ee0244a7a21665494276ec6276ddd88d597821a3c98dc4412f02b6163cbb38",
+      "module_classes": [
+        "ResourceGovernor"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/self_healer.py",
+      "sha256": "066c26b4aeef80257d331f8c59fd572bbfb09abbc734902df70993d7362043e7",
+      "module_classes": [
+        "SelfHealer"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/self_integrity.py",
+      "sha256": "7ab2da236502c648f90a6ecc805fb1290a1c69e1c94d6a3d0dae2eece5d205a4",
+      "module_classes": [
+        "SelfIntegrityMonitor"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/shadow_shield.py",
+      "sha256": "b70df099b65864a42674c5183ec4d1b78cd4994b10a39422e033cb70d2f823af",
+      "module_classes": [
+        "ShadowShield"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/shadowcopy_guard.py",
+      "sha256": "94437e31d75390b655e02e67f8b5d053ed71ffe9126d59dc685c1a3ae3122613",
+      "module_classes": [
+        "ShadowCopyGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/siem_forwarder.py",
+      "sha256": "27d7b5bd847beb7a8b9160955303ecc0f59fad38e73cfdf1621ca95f45364da5",
+      "module_classes": [
+        "SIEMForwarderModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/smart_deception.py",
+      "sha256": "c7bad19e6e567acdde641058714348e672ecf48cfebaab8a90cc62f1d40ec982",
+      "module_classes": [
+        "SmartDeception"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/soar.py",
+      "sha256": "c7070e905db8545b8deef22213f2a7b3616bae933f7515f11b244e93b3e89458",
+      "module_classes": [
+        "SOARModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/soar_engine.py",
+      "sha256": "c85af5de2cf1e2805fcba98a98c6aaff7ac53f02f6e9a9dd1f611b70f33bb594",
+      "module_classes": [
+        "ActiveResponseSOAR"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/speculative_triage.py",
+      "sha256": "10ae9ca427dccac76775a2ee0c9cd0a68ae424ce911001d494fc48d89a07bd66",
+      "module_classes": [
+        "SpeculativeTriageModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/ssh_surface_guard.py",
+      "sha256": "58d0567217e6957b445b0a217665b97698dd6ad6c344bbdfa2ab6936885c8bdd",
+      "module_classes": [
+        "SSHSurfaceGuardModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/storage_hygiene.py",
+      "sha256": "4c779c12542c5fca284fe198ab694c6a43e8b6dd434eef27873eaede1ccb5392",
+      "module_classes": [
+        "StorageHygieneModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/sys_bridge.py",
+      "sha256": "f5f5dee0908eec59792c60ce1833a7a140816e59dd38d48051bccd8de58bba8c",
+      "module_classes": [
+        "SysBridgeModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/sysmon_listener.py",
+      "sha256": "74e3e1181750dbdbb0e616f282e1a5c6ac25b0b176e27a9972403a634c615870",
+      "module_classes": [
+        "SysmonListenerModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 1,
+      "sleep_calls": 3
+    },
+    {
+      "source": "src/angerona/modules/temporal_tradecraft_correlator.py",
+      "sha256": "160661429654fcf5160ca975e38954b6a95fc4019ca3f272d720dee5e805be26",
+      "module_classes": [
+        "TemporalTradecraftCorrelatorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/usb_monitor.py",
+      "sha256": "7d3c9dc666d1d33905a32453745a008aa78dcf616aaca43b76c343a2ed5834be",
+      "module_classes": [
+        "USBMonitorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/watchdog_monitor.py",
+      "sha256": "83e6517a551886e07328e3e2e72d2342d7da2875a5028e1abd117fae8280b19a",
+      "module_classes": [
+        "WatchdogMonitor"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    },
+    {
+      "source": "src/angerona/modules/wfp_controller.py",
+      "sha256": "e63e0ae304ca38200cee781a16cdf45480d927735f6f2fd061b4cfc2b1617fc2",
+      "module_classes": [
+        "WFPControllerModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/wlan_monitor.py",
+      "sha256": "0a4085d207136e06bf1339e2e29d2b6a9c0683d84e6aeac8ecdd2b4b9051d1ad",
+      "module_classes": [
+        "WLANMonitorModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 0,
+      "routine_interval_calls": 0,
+      "sleep_calls": 1
+    },
+    {
+      "source": "src/angerona/modules/yara_scanner.py",
+      "sha256": "c718c0393096bb259b4bb2a02223029eac7e49f83518d1a4ab7713069029142a",
+      "module_classes": [
+        "YaraScannerModule"
+      ],
+      "declared_self_tests": 1,
+      "cooperative_checkpoints": 3,
+      "routine_interval_calls": 0,
+      "sleep_calls": 2
+    }
+  ],
+  "gui": [
+    {
+      "source": "src/angerona/gui/__init__.py",
+      "sha256": "e62eca6ef923289cc3d6434a7bcf8940e2494410b3d0805b25b85032c54ad1c9",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/aar_history.py",
+      "sha256": "7eabd7626ddaa4f20d742eb52879b90aa191e7c05cd11b974831cc4b6d947a2a",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/adaptation_workbench.py",
+      "sha256": "a111e9b5317e9231938aeb4f5f12a2d58aa70ee991e041893815da90be740a54",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 1
+    },
+    {
+      "source": "src/angerona/gui/aegis_path.py",
+      "sha256": "50dc3bc05a697645d8c41957976edc90fb0cda9de40603cb555ad224d7cc5c0f",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/ai_consult_dialog.py",
+      "sha256": "9d5cc9d2d562c67a6030cedbc2924a21764eb039a5d37bb2741263d62295ac49",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/alert_preview.py",
+      "sha256": "776a9e8370e6b243b458d6a9ba1f9842b7e2df94181168b8036b3b9683de5755",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/analysis_lab.py",
+      "sha256": "c72fd7801ae361eccf6cba6856fe18a57d0a60216488dec2f1df03f679d42d9c",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/analysis_qemu_setup.py",
+      "sha256": "31ba3c8698e286b6987ee7281436829aadd8bed0e981958c9d24e3f478699e01",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/analysis_vmware_setup.py",
+      "sha256": "383ea8f46f9083286fd04e8bf3f6be14ca5f03afd164b3d07461b5cfbca18f83",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/animations.py",
+      "sha256": "b349e0515dd47b0f69dac94302366c49dcc2e521d798f931b014779f402d73c2",
+      "presentation_timers": 5,
+      "qt_timers": 4,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/aria_hud.py",
+      "sha256": "b525f6181bc437688543f1854977c0de2ff87f33309373c2215f3a8b93e9afda",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 1
+    },
+    {
+      "source": "src/angerona/gui/async_snapshot.py",
+      "sha256": "7aed59426370877e3b20d1eff955507133e297e5d275ca5caeb057a8b1f9b649",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/attack_heatmap.py",
+      "sha256": "a3e12fcc6245024fd4907ba7f803eb76ea29d2b966e37f483ece5a2696695902",
+      "presentation_timers": 1,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/context_info.py",
+      "sha256": "456d57998a0f556136410473114c1e7748b58636867afa6c713251239202e3f1",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/cve_analysis_window.py",
+      "sha256": "ba45df4a781f25707ab4db4b6918ca5839f48e3b07292391fa804c44b239e9ff",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/dashboard_details.py",
+      "sha256": "ca13bf643bb6f5a5a9746f0c0f186bdba42ad1c50c74fe44c1fbdf9eed52f543",
+      "presentation_timers": 5,
+      "qt_timers": 0,
+      "single_shot_calls": 1
+    },
+    {
+      "source": "src/angerona/gui/dashboard_footer.py",
+      "sha256": "b703dc0913e9a1ae79982441a7739b9fd982157b0dedd450ac03f2985546c604",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/detection_forge.py",
+      "sha256": "1250371c723a2f3083d1b0b9d097ddef2064a1117e99168b69954faa92d440c1",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/engine_console.py",
+      "sha256": "fc23d2aa8d29db913b95cde47f2a2094b945af1a80d54aac33466f736c8e7f24",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/fleet_center.py",
+      "sha256": "c3d98d8feefd3c675410a7de1ea62e1ec12a2a25f63d545e2827abe78c950cdb",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/flow_window.py",
+      "sha256": "1c438fe7414a6bbda0a207e24ee05bd3a6df6b6a0542a97e2596fdb1acfc5a1d",
+      "presentation_timers": 3,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/github_tools.py",
+      "sha256": "7e51ec00dd61fcc454b498bf88740deb29b524e948d2025ed612cf5b1ca42673",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/header_controls.py",
+      "sha256": "a28859c54b93c9e4ce8818d353669addc61b24ae6d8dddad78f6424b3c9634ba",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 3
+    },
+    {
+      "source": "src/angerona/gui/help_content.py",
+      "sha256": "da88e24e19803804102da8711534b24e0d9827b73b985787a39bdfa3f886efa0",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/holographic_orb.py",
+      "sha256": "5d71180e1164c3cae409fb360abd8235283223ac0389282b92415d111e688d34",
+      "presentation_timers": 0,
+      "qt_timers": 2,
+      "single_shot_calls": 2
+    },
+    {
+      "source": "src/angerona/gui/incident_timeline_page.py",
+      "sha256": "8eea3de1189fe5d1f90b9cb3ca33ac46d886d72d2848bbcf0ca58949d93e3b7d",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/live_defense_activity.py",
+      "sha256": "c1e67948be5c9c50b3482f79370df09e006304ee9297fcede6ddfbe3e42d7a1c",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/main_window.py",
+      "sha256": "a8e7be5119a367f6ed5373116a032155a9f2070de4488d40065879ff0eef6ded",
+      "presentation_timers": 0,
+      "qt_timers": 10,
+      "single_shot_calls": 12
+    },
+    {
+      "source": "src/angerona/gui/ollama_status.py",
+      "sha256": "6bdc1ae3372e89f0fe884aa56ccd8eb3865ceaf9a17759ea9098d7256331a6c1",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/operations_center.py",
+      "sha256": "8e256b12ca7a76bc08d32bf4c7696141d383ea32734823851453432a36e18ec3",
+      "presentation_timers": 1,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/orbital_dashboard.py",
+      "sha256": "437d9ba7872f648af4d816dacb471c3c4f185251400d0bf94276aee13c54cd4d",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/pages.py",
+      "sha256": "509ed3c1742316a37fd333b00ef0bad0ad69d91df046ebabe9bc1a86881e175c",
+      "presentation_timers": 0,
+      "qt_timers": 5,
+      "single_shot_calls": 7
+    },
+    {
+      "source": "src/angerona/gui/presentation_timer.py",
+      "sha256": "812f5fac8626395c500654cf66e2c6475834445686e4da36eddbc721b9268364",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/red_team_console.py",
+      "sha256": "27d838ef3d49143379c6f638da343e9ef6d64259c2f2a1b035d52133e8d31706",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/resolve_center.py",
+      "sha256": "ebcaeeda768d57e2116b8b7d831add86cc2a5cb1b81ef17b5434c394171c61d3",
+      "presentation_timers": 1,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/response_status.py",
+      "sha256": "ae242df9aeae86f40a550fa21636f75501b4a3eb2c9a1be1182d7ed3f8dc5e60",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/responsiveness_monitor.py",
+      "sha256": "6074aa4863b4c2bd43035f6491c7a9f25a4a749ce0053bb8ad8df976561c79d0",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/sandbox_editor.py",
+      "sha256": "5d8df447b6e024810a4e25372f1334e02b351f3d2676e5ffbb59d0d052462ff3",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/scan_center.py",
+      "sha256": "ee4f04f5b43df5ab69fbfe916ab7de974c87f2be19e4a86e6e5f7e8af7273446",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/selftest_results.py",
+      "sha256": "284a445a732de8ba0b0b66561961b8bf9f0ca833c559110ff43eb05cd30e2c82",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/sentinel_lens.py",
+      "sha256": "2e26ce1482230ba86d07233ac2d7f34e36ee226a497d7d8e961615977287b7a5",
+      "presentation_timers": 0,
+      "qt_timers": 2,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/setup_wizard.py",
+      "sha256": "07c2a731ba09afc75351606f1b3605c276cb5b0a8040f8023ee4636b0ade1aed",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/simulation_launch.py",
+      "sha256": "8f492779fb1ec971ed705f6e41e523575e8f9eaea3360e8c1b22adb2195fdf92",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/system_pulse.py",
+      "sha256": "77f469052dd40dd8cf26f874439bf45875015c9a01c99d03fcca6ea750e1deee",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 1
+    },
+    {
+      "source": "src/angerona/gui/telemetry_worker.py",
+      "sha256": "e7d8a910a1c9d765fcf336e559b8cea6e3f2e9f75ddc0f8325bae0be3b0080a4",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/theme.py",
+      "sha256": "28d43fe927aa181ff69c60df3b42de04cfa1df5371aa35a1f0a2d6f8b9159d51",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/thread_lifecycle.py",
+      "sha256": "6b0f6ef3e1a21859cf24a9c4a3f1596087643741500731aebf54a2fa658da162",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 3
+    },
+    {
+      "source": "src/angerona/gui/threat_intel_page.py",
+      "sha256": "4107c5f724a6a2e611836dab71618dc83dfea7fb5ac4263e6b67dd9faf59c46f",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/top_talkers.py",
+      "sha256": "412911cef162af88d750e14b960ce69a8e0757a7326233286e8396b444a1a97f",
+      "presentation_timers": 1,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/tour.py",
+      "sha256": "d7a347d60d00c9dfe540fbd6f084c9f8d035fc08a6bcbaff3ebe5d6c6ffd9250",
+      "presentation_timers": 0,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/upgrade_console.py",
+      "sha256": "f060343e527df08737a5b45e6f67130f24665593b8b62b595f046f114a3608c4",
+      "presentation_timers": 0,
+      "qt_timers": 3,
+      "single_shot_calls": 0
+    },
+    {
+      "source": "src/angerona/gui/usb_approval_dialog.py",
+      "sha256": "fca0deddfde248d8c44376749a8389ad10d790c86fe9132d8aae5bdb816a97e9",
+      "presentation_timers": 0,
+      "qt_timers": 1,
+      "single_shot_calls": 1
+    },
+    {
+      "source": "src/angerona/gui/worldview_page.py",
+      "sha256": "03a2c92202f6d89280cd38ac0828a5559736b91eeeb6338a86904e217b93027a",
+      "presentation_timers": 3,
+      "qt_timers": 0,
+      "single_shot_calls": 0
+    }
+  ]
+}

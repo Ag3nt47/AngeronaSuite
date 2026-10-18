@@ -24,6 +24,7 @@ SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
 
 import time
 import threading
+import math
 from typing import Optional
 
 try:
@@ -123,9 +124,29 @@ class ResourceGovernor(BaseModule):
             return None
         try:
             raw = self._proc.cpu_percent(None)   # since last call, across all cores
+            value = float(raw) / max(1, self._ncpu)
         except Exception:
             return None
-        return raw / max(1, self._ncpu)
+        return value if math.isfinite(value) and value >= 0 else None
+
+    @staticmethod
+    def _report_background_pressure(memory) -> None:
+        """Reuse this sampler for routine pacing, including headless engines.
+
+        Optional collector failures retain the controller's last valid bounded
+        lease. They never synthesize an idle/healthy sample.
+        """
+        from angerona.core.background_pacing import get_pacing_controller
+
+        controller = get_pacing_controller()
+        if memory is not None:
+            controller.report_memory(
+                memory.percent, available_bytes=getattr(memory, "available", None),
+            )
+        try:
+            controller.report_host(psutil.cpu_percent(interval=None))
+        except Exception:
+            pass
 
     # ── Loop ──────────────────────────────────────────────────────────────────
     def run(self) -> None:
@@ -137,22 +158,37 @@ class ResourceGovernor(BaseModule):
         self._proc = psutil.Process()
         self._ncpu = psutil.cpu_count() or 1
         self._proc.cpu_percent(None)   # prime the delta baseline
+        try:
+            psutil.cpu_percent(interval=None)  # same worker's host-load baseline
+        except Exception:
+            pass
         self.emit("Adaptive Resource Governor online — will throttle heavy "
                   "non-critical modules under load.", Severity.INFO)
 
         try:
             while not self.stopping:
                 self.sleep(_SAMPLE_S)
+                if self.stopping:
+                    break
                 load = self._load_pct()
+                memory_available = True
+                try:
+                    memory = psutil.virtual_memory()
+                    mem = float(memory.percent)
+                    available = getattr(memory, "available", None)
+                    if (not math.isfinite(mem) or not 0 <= mem <= 100
+                            or (available is not None and (
+                                not math.isfinite(float(available)) or float(available) < 0
+                            ))):
+                        raise ValueError("invalid RAM pressure sample")
+                except Exception:
+                    memory = None
+                    mem = 0.0
+                    memory_available = False
+                self._report_background_pressure(memory)
                 if load is None:
                     self.set_health(60, "CPU load collector unavailable")
                     continue
-                memory_available = True
-                try:
-                    mem = float(psutil.virtual_memory().percent)
-                except Exception:
-                    mem = 0.0
-                    memory_available = False
 
                 # The level and all affected module multipliers form one cadence
                 # policy transaction. Mobile ECO takes this same lock first and
@@ -171,7 +207,7 @@ class ResourceGovernor(BaseModule):
                     ):
                         self._level = min(_MAX_LEVEL, self._level + 1.0)
                     elif load < _LOW_LOAD and (
-                        not memory_available or mem < (_HIGH_MEM - 10)
+                        memory_available and mem < (_HIGH_MEM - 10)
                     ):
                         self._level = max(1.0, self._level - 1.0)
                     # else: hold steady in the comfortable band
@@ -235,9 +271,40 @@ class ResourceGovernor(BaseModule):
     def self_test(self) -> tuple[bool, str]:
         if psutil is None:
             return False, "psutil not installed — governor cannot sample CPU"
-        with self._level_lock:
-            level = self._level
-        return True, f"governor active; current throttle {level:.0f}x"
+        from types import SimpleNamespace
+        from angerona.core.background_pacing import BackgroundPacingController
+
+        class AnalyticalFixture(BaseModule):
+            adaptive_throttle_allowed = True
+            adaptive_throttle_max = 2.0
+
+        # Inert siblings prove the real lease-application primitive, including
+        # its security exclusion and restoration, without touching live modules.
+        analytical, critical = AnalyticalFixture(), BaseModule()
+        analytical.status = critical.status = "running"
+        probe = ResourceGovernor()
+        probe.bind_manager(SimpleNamespace(
+            modules={"analytical": analytical, "critical": critical},
+            module_trust={},
+        ))
+        applied, failures = probe._apply(8.0)
+        bounded = applied == 1 and not failures and analytical._throttle == 2.0
+        protected = critical._throttle == 1.0
+        restored, errors = probe._apply(1.0)
+        clock = [100.0]
+        pacing = BackgroundPacingController(clock=lambda: clock[0])
+        for _ in range(3):
+            pacing.report_memory(60.0, 128 * 1024 ** 2)
+            clock[0] += 2.0
+        ok = bool(
+            bounded and protected and restored == 1 and not errors
+            and analytical._throttle == 1.0 and pacing.multiplier() == 8
+            and pacing.batch_delay() <= 0.05
+        )
+        return ok, (
+            "offline bounded leases, protection exclusion, restoration and low-RAM pacing passed"
+            if ok else "resource governor contract fixture failed"
+        )
 
 
 def register() -> BaseModule:

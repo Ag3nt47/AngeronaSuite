@@ -14,10 +14,15 @@ Run it with the venv Python:  run-selfcheck.bat  (writes selfcheck_report.txt)
 from __future__ import annotations
 
 import os
+import json
 import sys
 import time
 import traceback
+import uuid
 from pathlib import Path
+
+if not __debug__:
+    raise RuntimeError("Self-check requires assertions; run Python without -O or -OO")
 
 # Windows redirected consoles commonly default to CP1252, while Angerona's
 # reports intentionally contain Unicode arrows/status glyphs. Never let report
@@ -74,6 +79,9 @@ _offline_ollama_lifecycle._spawn_ollama_service = _forbid_native_ollama_spawn
 
 PASS, FAIL = "PASS", "FAIL"
 rows: list[tuple[str, str, str]] = []
+phase_evidence: list[dict] = []
+selfcheck_run_id = uuid.uuid4().hex
+module_runner = None
 
 
 def rec(status: str, name: str, detail: str = "") -> None:
@@ -88,11 +96,15 @@ def rec(status: str, name: str, detail: str = "") -> None:
 def phase(name: str):
     """Decorator: run the wrapped zero-arg fn now, record PASS/FAIL + traceback."""
     def deco(fn):
+        started = time.perf_counter()
         try:
             d = fn()
             rec(PASS, name, "" if d is None else str(d))
         except Exception:
             rec(FAIL, name, traceback.format_exc())
+        phase_evidence.append({"phase": name, "status": rows[-1][0],
+                               "detail": rows[-1][2],
+                               "duration_ms": (time.perf_counter() - started) * 1000})
         return fn
     return deco
 
@@ -149,6 +161,7 @@ bus.publish(Event("Defense Monitor", "exploit attempt blocked", Severity.CRITICA
 
 @phase("SelfTestRunner over all modules")
 def _():
+    global module_runner
     from angerona.core.selftest import SelfTestRunner
     from selfcheck_policy import is_expected_unstarted_failure, no_tcp_listener_on_port
 
@@ -198,7 +211,7 @@ def _():
             return None
         return f"not started by headless harness / optional prerequisite: {detail}"
 
-    runner = SelfTestRunner(manager, bus)
+    runner = module_runner = SelfTestRunner(manager, bus)
     report = runner.run(timeout=12.0, expected_failure_cb=_expected_reason)
     print(report)
     if runner.last_failures:
@@ -207,6 +220,62 @@ def _():
             f"{runner.last_failures}"
         )
     return report.splitlines()[-1] + " (unstarted/optional states classified as skips)"
+
+
+@phase("Self-test verification — canaries, inventory coverage and saved report readback")
+def _():
+    from angerona.core.selftest import _failure_log_path
+    assert module_runner is not None, "module runner did not execute"
+    saved = json.loads(_failure_log_path().read_text(encoding="utf-8"))
+    assert saved["run_id"] == module_runner.run_id, "stale or substituted self-test report"
+    assert saved["results"] == module_runner.last_results, "saved module evidence differs from results"
+    assert saved["verification"] == module_runner.last_verification, "saved verification differs"
+    assert saved["verification"]["status"] == PASS, "controlled defect canaries or report reconciliation failed"
+    modules = [r for r in saved["results"] if r["kind"] == "module"]
+    assert {r["module"] for r in modules} == set(manager.modules), "module evidence missing"
+    assert len(modules) == len(manager.modules), "duplicate module evidence"
+    assert all(len(r["checks"]) >= 3 for r in modules), "additional per-module checks absent"
+    assert saved["failed"] == len(saved["failures"]), "failure count differs from saved evidence"
+    assert saved["skipped"] == len(saved["skips"]), "skip count differs from saved evidence"
+    return f"{len(modules)} modules reconciled; {len(saved['verification']['checks'])} verifier checks; saved JSON exact"
+
+
+@phase("Self-test performance — constrained hardware worker budget and completion")
+def _():
+    import threading
+    from types import SimpleNamespace
+    from angerona.core.selftest import SelfTestRunner
+    active = peak = completed = 0
+    counter_lock = threading.Lock()
+
+    def inert_check():
+        nonlocal active, peak, completed
+        with counter_lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            time.sleep(0.002)
+            return True, "inert offline workload complete"
+        finally:
+            with counter_lock:
+                active -= 1
+                completed += 1
+
+    modules = [SimpleNamespace(name=f"Budget fixture {i:02}", self_test=inert_check,
+                               supported_platforms=("windows", "linux", "macos"))
+               for i in range(32)]
+    fixture_manager = SimpleNamespace(modules={m.name: m for m in modules},
+                                      platform=manager.platform, is_enabled=lambda _name: True)
+    fixture = SelfTestRunner(fixture_manager, EventBus())
+    fixture._worker_budget = lambda: (2, "controlled two-worker low-resource fixture")
+    fixture._write_failure_log = lambda *_args: None
+    report = fixture.run(timeout=2.0)
+    assert not fixture.last_failures, report
+    assert 0 < peak <= 2 and active == 0 and completed == len(modules), (peak, active, completed)
+    assert fixture.last_metrics["module_workers"] == 2, "worker budget was ignored"
+    assert len([r for r in fixture.last_results if r["kind"] == "module"]) == len(modules)
+    assert fixture.last_verification["status"] == PASS, "budget fixture verifier failed"
+    return f"32 inert modules, peak {peak}/2 workers, zero unfinished calls; {fixture.last_metrics['elapsed_ms']:.1f} ms measured"
 
 
 @phase("build MainWindow")
@@ -802,6 +871,21 @@ except Exception:
 
 passed = sum(1 for s, _, _ in rows if s == PASS)
 failed = sum(1 for s, _, _ in rows if s == FAIL)
+try:
+    evidence_path = Path(config.data_dir) / "diagnostics" / "selfcheck_report.json"
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_document = {"schema": 1, "run_id": selfcheck_run_id,
+                         "passed": passed, "failed": failed,
+                         "phases": phase_evidence,
+                         "modules": module_runner.last_results if module_runner is not None else [],
+                         "verification": module_runner.last_verification if module_runner is not None else {},
+                         "module_metrics": module_runner.last_metrics if module_runner is not None else {}}
+    evidence_path.write_text(json.dumps(evidence_document, indent=2, allow_nan=False), encoding="utf-8")
+    assert json.loads(evidence_path.read_text(encoding="utf-8")) == evidence_document, "self-check evidence readback differs"
+    print(f" Evidence: {evidence_path}")
+except Exception:
+    rec(FAIL, "self-check evidence persistence", traceback.format_exc())
+    failed += 1
 print("=" * 72)
 print(f" RESULT: {passed} passed, {failed} failed")
 if failed:

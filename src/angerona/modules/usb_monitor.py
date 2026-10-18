@@ -360,7 +360,7 @@ class USBMonitorModule(BaseModule):
     )
     category = "Detection"
     version = "1.13.0"
-    supported_platforms = frozenset({"windows", "darwin", "linux"})
+    supported_platforms = frozenset({"windows", "macos", "linux"})
 
     _POLL = 4.0
     _POLICY_VERIFY_S = 900.0

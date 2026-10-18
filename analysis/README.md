@@ -1,5 +1,8 @@
 # 🛡️ Angerona — Cyber Security Suite
 
+Latest maintenance: [hardware adaptation and verified self-check, 2026-10-18](hardware-adaptation-2026-10-18/README.md).
+Operator instructions: [hardware and self-check guide](../docs/hardware-and-selfcheck.md).
+
 > **Archived historical analysis snapshot.** This long-form record preserves
 > earlier Cycle 5–23 design notes and counts. For the current v1.13.0 product,
 > 84-capability inventory, current maintenance status, screenshots, and safety boundary,

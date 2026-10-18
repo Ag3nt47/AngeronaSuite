@@ -6,6 +6,8 @@ can run a different colour/glyph for other events (e.g. a scan sweep).
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import itertools
 import threading
 from contextlib import contextmanager
@@ -43,7 +45,7 @@ class _SpinRing(QWidget):
         self.setFixedSize(d, d)
         self._angle = 0.0
         self._color = QColor(*_C_RED)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._tick)
 
     def start(self) -> None:
@@ -439,7 +441,7 @@ class MicMeter(QWidget):
         lay.setSpacing(6)
         lay.addWidget(self._icon)
         lay.addWidget(self._bar, 1)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._bar.tick)
         self.setToolTip("Microphone input level — if this moves when you speak, ARIA can hear you.")
         self.hide()
@@ -539,7 +541,7 @@ class SharkSwimIndicator(QWidget):
         self._x = self._BODY_LEN
         self._dir = 1
         self._phase = 0.0
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._tick)
         self.hide()
 
@@ -665,7 +667,7 @@ class SharkSwimBanner(QWidget):
         self._x = 60.0
         self._dir = 1
         self._phase = 0.0
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._tick)
         self.hide()
 
@@ -787,12 +789,17 @@ class ClashingSwords(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._active = False
         self._phase = 0.0
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(40)
+        self._timer.setInterval(40)
 
     def set_active(self, on: bool) -> None:
         self._active = bool(on)
+        if self._active:
+            self._timer.start()
+        else:
+            self._timer.stop()
+        self.update()
 
     def _tick(self) -> None:
         # Only repaint while clashing (active); idle icon is static → no CPU cost.

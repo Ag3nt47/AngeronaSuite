@@ -10,7 +10,9 @@ the HTTP timeout from causing a "Not Responding" freeze.
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from angerona.gui.presentation_timer import PresentationTimer
+
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QVBoxLayout, QWidget)
 
@@ -75,20 +77,24 @@ class WorldViewDialog(QDialog):
 
         # Fast metrics (psutil only) refresh at 1 Hz on the GUI thread.
         # Ollama diagnostics use a background thread and poll every 8 s.
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh_fast)
         self._timer.start(1000)
 
-        self._ollama_timer = QTimer(self)
+        self._ollama_timer = PresentationTimer(self)
         self._ollama_timer.timeout.connect(self._kick_ollama)
         self._ollama_timer.start(8000)
 
         self._refresh_fast()
-        QTimer.singleShot(300, self._kick_ollama)  # first Ollama fetch shortly after open
+        self._initial_ollama_timer = PresentationTimer(self, pressure_sensitive=False)
+        self._initial_ollama_timer.setSingleShot(True)
+        self._initial_ollama_timer.timeout.connect(self._kick_ollama)
+        self._initial_ollama_timer.start(300)
 
     def closeEvent(self, event) -> None:
         self._timer.stop()
         self._ollama_timer.stop()
+        self._initial_ollama_timer.stop()
         from angerona.gui.thread_lifecycle import defer_close_until_threads
 
         if defer_close_until_threads(self, event, (self._ollama_worker,)):

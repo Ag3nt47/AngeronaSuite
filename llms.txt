@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-14
+Date: 2026-10-18
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,30 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Hardware responsiveness and unnecessary work, 2026-10-14)
+## LATEST (v1.13.0 — Hardware adaptation and verified self-check, 2026-10-18)
+
+- Record: analysis/hardware-adaptation-2026-10-18/README.md. Operator guide:
+  docs/hardware-and-selfcheck.md. Maintenance version remains 1.13.0.
+- The shared routine pacer accepts RAM use and available-byte observations
+  from Adaptive Resource Governor's existing sampler, including headless engines.
+  Invalid samples do not replace a valid lease. Only opted-in routine work is paced;
+  streaming delivery, response actions and watchdogs retain their cadence.
+- PresentationTimer suspends selected view/animation timers while hidden or
+  minimized and adapts visible intervals under pressure. Explicitly stopped timers
+  stay stopped. AsyncSnapshot backs blocked-read polling off to 250ms, separately
+  from view visibility and job completion. No extra sampling thread is created.
+- EntropyWorker blocks for its first input instead of idle 20ms polling. NumPy
+  entropy uses a fixed byte histogram; the optional dependency is not required.
+  PerfGovernor retains the Process object needed for real CPU delta samples.
+- Self-test adds per-module contract checks, strict result validation, timings,
+  bounded resource-aware workers, structured evidence with readback, controlled
+  failure canaries and inventory/count reconciliation. Skips do not prove readiness;
+  absent optional kernel protection is a skip, arbitrary kernel errors are failures.
+- The source inventory covers every module and GUI source file. Static call sites
+  are not runtime coverage. Virtual CPU/RAM profiles and measured components do
+  not prove whole-host speed, native detection efficacy or prolonged stability.
+
+## Hardware responsiveness and unnecessary work (2026-10-14)
 
 - Record: analysis/hardware-responsiveness-2026-10-14.md. Black Box thread,
   memory-map and config/resource detail readers sleep until their tab is visible;

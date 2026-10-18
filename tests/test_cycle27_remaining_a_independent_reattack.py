@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -231,7 +232,19 @@ def test_a13_same_timestamp_object_replacement_is_detected_or_claim_is_narrowed(
     replacement = tmp_path / "replacement.tmp"
     replacement.write_bytes(b"inert hostile same-timestamp replacement\n")
     os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
-    os.replace(replacement, target)
+    # Windows can briefly deny replacement while another process holds this
+    # newly written fixture. Retain the exact mutation and assertions; a
+    # persistent denial or any unrelated error must still fail the test.
+    replace_deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            os.replace(replacement, target)
+            break
+        except OSError as exc:
+            remaining = replace_deadline - time.monotonic()
+            if os.name != "nt" or getattr(exc, "winerror", None) not in {5, 32, 33} or remaining <= 0:
+                raise
+            time.sleep(min(0.025, remaining))
     assert target.stat().st_mtime == baseline
 
     module._check_canaries()

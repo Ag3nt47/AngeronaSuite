@@ -1,0 +1,133 @@
+{
+  "method": "Virtual clock and injected resource observations; no physical-host speed or detector efficacy estimate.",
+  "profiles": {
+    "healthy": [
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 1,
+          "pace_percent": 100.0,
+          "level": "normal",
+          "reason": "Normal responsiveness"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 0.5,
+        "pause_count": 0,
+        "requested_rest_ms": 0.0,
+        "longest_work_burst_ms": 32.0,
+        "recovered_multiplier": 1
+      },
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 1,
+          "pace_percent": 100.0,
+          "level": "normal",
+          "reason": "Normal responsiveness"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 20.0,
+        "pause_count": 0,
+        "requested_rest_ms": 0.0,
+        "longest_work_burst_ms": 1280.0,
+        "recovered_multiplier": 1
+      }
+    ],
+    "low_available_ram": [
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 4,
+          "pace_percent": 25.0,
+          "level": "strained",
+          "reason": "Host memory pressure"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 0.5,
+        "pause_count": 8,
+        "requested_rest_ms": 171.429,
+        "longest_work_burst_ms": 4.0,
+        "recovered_multiplier": 1
+      },
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 4,
+          "pace_percent": 25.0,
+          "level": "strained",
+          "reason": "Host memory pressure"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 20.0,
+        "pause_count": 64,
+        "requested_rest_ms": 3200.0,
+        "longest_work_burst_ms": 20.0,
+        "recovered_multiplier": 1
+      }
+    ],
+    "severe_ram_pressure": [
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 8,
+          "pace_percent": 12.5,
+          "level": "strained",
+          "reason": "Host memory pressure"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 0.5,
+        "pause_count": 8,
+        "requested_rest_ms": 400.0,
+        "longest_work_burst_ms": 4.0,
+        "recovered_multiplier": 1
+      },
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 8,
+          "pace_percent": 12.5,
+          "level": "strained",
+          "reason": "Host memory pressure"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 20.0,
+        "pause_count": 64,
+        "requested_rest_ms": 3200.0,
+        "longest_work_burst_ms": 20.0,
+        "recovered_multiplier": 1
+      }
+    ],
+    "severe_cpu_pressure": [
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 8,
+          "pace_percent": 12.5,
+          "level": "strained",
+          "reason": "Host CPU pressure"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 0.5,
+        "pause_count": 8,
+        "requested_rest_ms": 400.0,
+        "longest_work_burst_ms": 4.0,
+        "recovered_multiplier": 1
+      },
+      {
+        "pressure": {
+          "enabled": true,
+          "multiplier": 8,
+          "pace_percent": 12.5,
+          "level": "strained",
+          "reason": "Host CPU pressure"
+        },
+        "items_completed": 64,
+        "item_cost_ms": 20.0,
+        "pause_count": 64,
+        "requested_rest_ms": 3200.0,
+        "longest_work_burst_ms": 20.0,
+        "recovered_multiplier": 1
+      }
+    ]
+  }
+}

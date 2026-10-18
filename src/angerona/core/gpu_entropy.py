@@ -152,24 +152,33 @@ def _entropy_numpy(strings: list[str]) -> list[float]:
         if len(b) == 0:
             results.append(0.0)
             continue
-        _, counts = np.unique(b, return_counts=True)
+        # Byte values have a fixed 256-bin domain. Counting avoids sorting each
+        # string and its temporary unique/index arrays on CPU-only hosts.
+        counts = np.bincount(b, minlength=256)
+        counts = counts[counts > 0]
         p = counts / counts.sum()
         results.append(float(-np.sum(p * np.log2(p + 1e-12))))
     return results
 
 
 def _entropy_python(strings: list[str]) -> list[float]:
-    """Pure-Python fallback — no dependencies."""
+    """Pure-Python fallback, reusing duplicate results within this batch only."""
     from math import log2
     from collections import Counter
     out = []
+    computed: dict[str, float] = {}
     for s in strings:
+        cached = computed.get(s)
+        if cached is not None:
+            out.append(cached)
+            continue
         b = s.encode("utf-8", errors="replace")
         n = len(b)
         if n == 0:
             out.append(0.0)
             continue
         h = -sum((c / n) * log2(c / n) for c in Counter(b).values())
+        computed[s] = h
         out.append(h)
     return out
 
@@ -219,23 +228,24 @@ class EntropyWorker(threading.Thread):
         except queue.Full:
             self._dropped += 1
 
+    def _collect_batch(self) -> list[str]:
+        # An empty queue needs no periodic work. Wake on the first arrival and
+        # retain the same maximum flush latency for every non-empty batch.
+        batch = [self._queue.get()]
+        deadline = time.monotonic() + FLUSH_MS / 1000.0
+        while len(batch) < MAX_BATCH:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                batch.append(self._queue.get(timeout=remaining))
+            except queue.Empty:
+                break
+        return batch
+
     def run(self) -> None:
         while True:
-            # Collect up to MAX_BATCH strings or flush after FLUSH_MS
-            batch: list[str] = []
-            deadline = time.monotonic() + FLUSH_MS / 1000.0
-            while len(batch) < MAX_BATCH:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                try:
-                    s = self._queue.get(timeout=remaining)
-                    batch.append(s)
-                except queue.Empty:
-                    break
-
-            if not batch:
-                continue
+            batch = self._collect_batch()
 
             t0 = time.perf_counter()
             try:
@@ -260,11 +270,12 @@ class EntropyWorker(threading.Thread):
                 elapsed_ms=elapsed_ms,
             )
             with self._cb_lock:
-                for cb in self._callbacks:
-                    try:
-                        cb(result)
-                    except Exception:
-                        pass
+                callbacks = tuple(self._callbacks)
+            for cb in callbacks:
+                try:
+                    cb(result)
+                except Exception:
+                    pass
 
 
 # ── singleton ─────────────────────────────────────────────────────────────────

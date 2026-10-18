@@ -14,6 +14,13 @@ security-engineering portfolios. It brings telemetry, detection, correlation,
 investigation, governed response, recovery, local AI, and non-destructive
 validation into one PySide6 desktop application.
 
+The [October 18 maintenance](analysis/hardware-adaptation-2026-10-18/README.md)
+extends routine pacing to RAM pressure, pauses selected unattended presentation
+timers, reduces idle processing, and adds per-module contract checks with
+independent self-check challenges and recorded timing evidence. The
+[operator guide](docs/hardware-and-selfcheck.md) explains the settings and
+limits. Capability counts and platform support remain unchanged.
+
 The current security model separates four kinds of claims:
 
 - **Integrated:** a production path is connected to the application and covered

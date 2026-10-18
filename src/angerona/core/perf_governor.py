@@ -167,6 +167,9 @@ class PerfGovernor:
         self.anomalies: list[str] = []
         self._transitions: int = 0
         self._last_change_ts: float = 0.0
+        # cpu_percent(None) stores its delta baseline on this Process object.
+        # Reconstructing it for every sample reports a first-sample zero forever.
+        self._process = None
 
     # ── Public read surface ───────────────────────────────────────────────────
     def profile(self) -> TuningProfile:
@@ -220,13 +223,16 @@ class PerfGovernor:
         if not _HAVE_PSUTIL:
             return Vitals()
         try:
-            p = psutil.Process()
+            if self._process is None:
+                self._process = psutil.Process()
+            p = self._process
             cpu = p.cpu_percent(interval=None) / 100.0
             rss = p.memory_info().rss
             rss_norm = min(1.0, rss / (1024 * 1024 * 1024))  # soft ceiling 1 GiB
             return Vitals(cpu_pct=min(1.0, cpu), rss_norm=rss_norm,
                           raw={"cpu_pct": cpu, "rss_bytes": rss})
         except Exception:
+            self._process = None
             return Vitals()
 
     @staticmethod

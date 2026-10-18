@@ -13,6 +13,8 @@ Pan by dragging, zoom with the mouse wheel.
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import math
 
 from PySide6.QtCore import Qt, QTimer, QPointF, Signal, QThread
@@ -246,7 +248,7 @@ class FlowWindow(QDialog):
         row.addWidget(tele_toggle); row.addWidget(sentinel); row.addWidget(fit); row.addWidget(close)
         root.addLayout(row)
 
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(2000)
         self._refresh()
@@ -545,10 +547,10 @@ class FlowWindow(QDialog):
         if _WorldViewEngine is not None:
             self._wv_engine = _WorldViewEngine()
             self._ollama_worker: _OllamaWorker | None = None
-            self._ollama_timer = QTimer(self)
+            self._ollama_timer = PresentationTimer(self)
             self._ollama_timer.timeout.connect(self._kick_ollama)
             self._ollama_timer.start(8000)          # poll every 8 s
-            self._ollama_initial_timer = QTimer(self)
+            self._ollama_initial_timer = PresentationTimer(self, pressure_sensitive=False)
             self._ollama_initial_timer.setSingleShot(True)
             self._ollama_initial_timer.timeout.connect(self._kick_ollama)
             self._ollama_initial_timer.start(500)

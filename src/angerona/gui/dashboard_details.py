@@ -5,6 +5,8 @@ to the security hot path and never perform response actions automatically.
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import hashlib
 import json
 import time
@@ -115,7 +117,7 @@ class FuturisticHeader(QFrame):
         subtitle_label.setStyleSheet("color:#94a3b8; font-size:11px;")
         layout.addWidget(subtitle_label)
 
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.setInterval(45)
         self._timer.timeout.connect(self._tick)
 
@@ -348,7 +350,7 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
             self.table.setItem(row, 1, value)
             self._pulse_rows[name] = value
         self.table.setSortingEnabled(True)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(900)
         self._refresh()
@@ -421,7 +423,7 @@ class ConsoleDetailDialog(FuturisticDetailDialog):
         help_text.setWordWrap(True)
         help_text.setStyleSheet("color:#94a3b8;")
         self.content.addWidget(help_text)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._console_revision: int | None = None
         self._timer.start(650)
@@ -503,7 +505,7 @@ class AriaDetailDialog(FuturisticDetailDialog):
         prompt_row.addWidget(ask)
         prompt_row.addWidget(voice)
         self.content.addLayout(prompt_row)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(1000)
         self._refresh()
@@ -569,7 +571,7 @@ class ModuleResourceDialog(FuturisticDetailDialog):
         self.table.setSortingEnabled(True)
         self.table.cellDoubleClicked.connect(self._open_event_detail)
         self.content.addWidget(self.table, 1)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._events_fingerprint: tuple | None = None
         self._timer.start(1300)

@@ -44,6 +44,9 @@ def runner_factory(monkeypatch, tmp_path):
         runner = selftest.SelfTestRunner(_Manager(modules), bus or EventBus())
         runner._PIPELINE_TIMEOUT = 0.1
         runner._REPORT_TIMEOUT = 0.1
+        # Deadline regressions exercise the six-slot process cap independently
+        # of the test host's hardware/pressure-dependent worker recommendation.
+        runner._worker_budget = lambda: (6, "six-slot deadline fixture")
         return runner
 
     return create, path
@@ -215,9 +218,9 @@ def test_public_inspector_helper_preserves_raw_kernel_failure():
     assert selftest.run_module_selftest(module, timeout=0.1) == (
         False, "driver unavailable",
     )
-    # The existing all-module drill's optional-driver policy remains unchanged.
+    # An arbitrary kernel error can never be promoted to a success.
     assert selftest.SelfTestRunner._test_module(module, timeout=0.1) == (
-        True, "Kernel Driver Not installed (driver unavailable)",
+        False, "driver unavailable",
     )
 
 

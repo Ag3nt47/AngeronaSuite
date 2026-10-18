@@ -7,6 +7,8 @@ short-lived worker threads and return to the Qt thread through a signal.
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import json
 import platform
 import threading
@@ -21,7 +23,6 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QRectF,
     QSignalBlocker,
-    QTimer,
     Qt,
     Signal,
 )
@@ -226,7 +227,7 @@ class FlowMetricDeck(QWidget):
             layout.addWidget(card, 1)
             self.cards[key] = card
         self._phase = 0.0
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.setInterval(90)
         self._timer.timeout.connect(self._advance)
         if motion_allowed(self._config):

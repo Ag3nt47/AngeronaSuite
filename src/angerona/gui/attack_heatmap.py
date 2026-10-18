@@ -17,6 +17,8 @@ and attack_coverage; the only optional network call is loopback Ollama.
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import json
 import math
 import threading
@@ -24,7 +26,7 @@ import time
 import webbrowser
 from typing import Callable
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QBrush, QColor, QFont, QPen, QPolygonF,
 )
@@ -384,7 +386,7 @@ class AttackHeatmapWindow(QDialog):
         self._build_scene()
         self._posture_ready.connect(self._show_posture)
 
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(self._REFRESH_MS)
         self._refresh()

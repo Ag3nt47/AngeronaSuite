@@ -9,6 +9,8 @@ psutil only for the connection walk; enrichment reuses core.net_interfaces.
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import ipaddress
 import os
 import socket
@@ -16,7 +18,7 @@ import weakref
 from collections import defaultdict
 from typing import Callable, Optional
 
-from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QDialog, QHBoxLayout, QHeaderView, QLabel, QMessageBox, QPushButton, QTableWidget,
@@ -270,7 +272,7 @@ class TopTalkersDialog(QDialog):
         self._render_key: tuple | None = None
         self.finished.connect(self._stop_refreshes)
 
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self.refresh)
         self._timer.start(4000)
         self.refresh()

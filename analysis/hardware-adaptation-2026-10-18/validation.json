@@ -1,0 +1,99 @@
+{
+  "date": "2026-10-18",
+  "version": "1.13.0",
+  "interpreter": "CPython 3.12.10 x64",
+  "qt_binding": "PySide6 6.11.1",
+  "source_manifest": {
+    "path": "validation-sources.json",
+    "file_count": 986,
+    "sha256": "82607c4c999058c08be531e05051a9f8ab2fe2ec5b48614501141b4e8f6395dd"
+  },
+  "initial_full_suite": {
+    "tests": 5012,
+    "failures": 1,
+    "errors": 0,
+    "skipped": 24,
+    "passed": 4987,
+    "junit_seconds": 792.639,
+    "reported_seconds": 792.83,
+    "scope": "Intermediate run before final review fixes; one Windows replacement failure before test assertions.",
+    "failed_test": "tests/test_cycle27_remaining_a_independent_reattack.py::test_a13_same_timestamp_object_replacement_is_detected_or_claim_is_narrowed"
+  },
+  "final_full_suite": {
+    "tests": 5016,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 25,
+    "passed": 4991,
+    "junit_seconds": 1476.137,
+    "reported_seconds": 1476.27,
+    "exit_code": 0,
+    "source_sha256_before_and_after": "0f3ce11d5eb18d3a3f062448d15af6732609fe7c8a199dec0651da0627a25e3d",
+    "sources_unchanged_during_run": true,
+    "command": "venv/Scripts/python.exe -m pytest -q -p tools.pytest_execution_trace --basetemp=.tmp/pytest-hardware-final-20261018 --junitxml=.tmp/hardware-verified.xml"
+  },
+  "post_suite_test_only_correction": {
+    "path": "tests/test_runtime_capacity_efficiency.py",
+    "tested_sha256": "7e8cf975d5ddb25b2817ed527b20a41120890d241c2f74682af7bef558cd92bd",
+    "reviewed_sha256": "c6b077fd38cff833e5ca226e795e4e912211dadb16c4f6fb7c6a8b73045f1357",
+    "reason": "Use the existing 1e-9 numerical tolerance for the NumPy result range; test data and production code remain unchanged.",
+    "production_sources_unchanged": true
+  },
+  "isolated_numpy_validation": {
+    "tests": 29,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "passed": 29,
+    "junit_seconds": 0.943,
+    "reported_seconds": 1.81,
+    "numpy_version": "2.5.4",
+    "dependency_scope": "isolated optional test target",
+    "wheel_sha256": "a7b1b6353e36a7e50de2973a38d705c88ee93adcf120673cee7f45a4a3fa223a",
+    "actual_nul_and_unpaired_surrogate_cases": true,
+    "case_count": 7,
+    "baseline_numpy_outputs_exactly_equal": true,
+    "python_comparison_abs_tolerance": 1e-09,
+    "constant_input_entropy": -1.4428232973175175e-12,
+    "all_outputs_finite_within_tolerance": true,
+    "initial_new_test_error": "Strict zero lower bound rejected existing approximately -1.44e-12 epsilon bias.",
+    "scope": "Separate optional dependency target; final corrected test file run without skips."
+  },
+  "execution_trace": {
+    "session_end_seen": true,
+    "test_starts": 5016,
+    "test_reports": 15042,
+    "failed_reports": 0,
+    "qt_fatal_messages": 0
+  },
+  "static_gates": {
+    "compile_files": 986,
+    "compile_failures": 0,
+    "ruff": "PASS",
+    "documentation_drift": "PASS"
+  },
+  "selfcheck": {
+    "phases_passed": 28,
+    "phases_failed": 0,
+    "module_passed": 66,
+    "module_skipped": 18,
+    "module_failed": 0,
+    "verification_checks": 9,
+    "module_subchecks": 559
+  },
+  "final_focused_selftests": {
+    "passed": 76,
+    "seconds": 12.97
+  },
+  "deception_fixture_and_adjacent_tests": {
+    "passed": 61,
+    "seconds": 41.16
+  },
+  "limitations": [
+    "Offline and inert fixtures do not establish native attack detection or containment efficacy.",
+    "Skips do not prove operational readiness.",
+    "Virtual resource profiles do not emulate physical older hardware.",
+    "Component wall times vary under concurrent load; no whole-host throughput guarantee.",
+    "No prolonged elevated all-sensor soak was performed."
+  ]
+}

@@ -7,6 +7,10 @@ import threading
 from PySide6.QtCore import QTimer
 
 
+_INITIAL_POLL_MS = 40
+_MAX_POLL_MS = 250
+
+
 def _snapshot_loop(jobs, results, stopped) -> None:
     """Reuse one sleeping worker without retaining the owner between reads."""
     while not stopped.is_set():
@@ -48,7 +52,7 @@ class AsyncSnapshot:
         self.busy = False
         self.thread: threading.Thread | None = None
         self._timer = QTimer(owner)
-        self._timer.setInterval(40)
+        self._timer.setInterval(_INITIAL_POLL_MS)
         self._timer.timeout.connect(self._poll)
         owner.destroyed.connect(self.close)
 
@@ -81,6 +85,7 @@ class AsyncSnapshot:
             return
         self.busy = True
         self._set_status("updating")
+        self._timer.setInterval(_INITIAL_POLL_MS)
         self._timer.start()
 
     def _poll(self) -> None:
@@ -89,6 +94,10 @@ class AsyncSnapshot:
         try:
             generation, success, value = self._results.get_nowait()
         except queue.Empty:
+            # Native/DB reads may take seconds on older disks. Poll briskly for
+            # quick work, then sleep longer while a bounded reader is blocked.
+            # Cap scheduled polling at 250ms; Qt dispatch may run later.
+            self._timer.setInterval(min(_MAX_POLL_MS, self._timer.interval() * 2))
             return
         self._timer.stop()
         self.busy = False

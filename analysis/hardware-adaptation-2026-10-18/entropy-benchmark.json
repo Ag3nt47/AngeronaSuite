@@ -1,0 +1,63 @@
+{
+  "method": "Actual Git/worktree implementations; inert stdlib-only work; local medians, not host throughput guarantees",
+  "baseline_ref": "a5cb7a3",
+  "baseline_commit": "a5cb7a3b8a2e87d5383ed4319fc5aa450b3c4da0",
+  "current_source_sha256": "ec470f35def4fe183b36437de46a9f7b0fb937b0473c17f3d69107d04e1324ab",
+  "idle_child_timeout_seconds": 15,
+  "idle": {
+    "before": [
+      {
+        "idle_get_calls": 10,
+        "observed_seconds": 0.3005,
+        "first_arrival_delivered": true
+      },
+      {
+        "idle_get_calls": 10,
+        "observed_seconds": 0.3005,
+        "first_arrival_delivered": true
+      },
+      {
+        "idle_get_calls": 10,
+        "observed_seconds": 0.3006,
+        "first_arrival_delivered": true
+      }
+    ],
+    "after": [
+      {
+        "idle_get_calls": 1,
+        "observed_seconds": 0.3008,
+        "first_arrival_delivered": true
+      },
+      {
+        "idle_get_calls": 1,
+        "observed_seconds": 0.3004,
+        "first_arrival_delivered": true
+      },
+      {
+        "idle_get_calls": 1,
+        "observed_seconds": 0.3004,
+        "first_arrival_delivered": true
+      }
+    ]
+  },
+  "cpu": {
+    "duplicate_batch_64_unique": {
+      "items": 4096,
+      "unique": 64,
+      "samples": 9,
+      "before_median_ms": 61.34,
+      "after_median_ms": 0.944,
+      "speedup": 64.979,
+      "outputs_equal": true
+    },
+    "all_unique_batch": {
+      "items": 4096,
+      "unique": 4096,
+      "samples": 9,
+      "before_median_ms": 66.934,
+      "after_median_ms": 63.092,
+      "speedup": 1.061,
+      "outputs_equal": true
+    }
+  }
+}

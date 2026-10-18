@@ -17,6 +17,8 @@ shared_logs/alert_acks.json via core.alert_ack.
 """
 from __future__ import annotations
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 import hashlib
 import json
 import queue
@@ -240,7 +242,7 @@ class ResolveCenter(QDialog):
         root.addLayout(bar)
         self._sync_action_state()
 
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(4000)
         self._result_timer = QTimer(self)

@@ -20,7 +20,8 @@ configured policy and works without an AI model.
 ![License](https://img.shields.io/badge/License-MIT-green)
 
 Current version: **v1.13.0** · [Capabilities](ANGERONA_CAPABILITIES.md) ·
-[Master Manual](Angerona_Master_Manual.docx) · [Security](SECURITY.md)
+[Master Manual](Angerona_Master_Manual.docx) ·
+[Hardware and self-check guide](docs/hardware-and-selfcheck.md) · [Security](SECURITY.md)
 
 ## Dashboard and major features
 
@@ -36,6 +37,16 @@ These are reproducible public demonstrations. All displayed telemetry,
 identifiers, timestamps, and counts are synthetic.
 
 ## What's new
+
+The [October 18 hardware and self-check update](analysis/hardware-adaptation-2026-10-18/README.md)
+adds RAM-pressure feedback for routine pacing, suspends refresh and animation
+timers in hidden or minimized views, reduces blocked snapshot polling, and removes
+idle entropy-worker polling. Self-check now includes shared module contract
+checks, resource-aware concurrency, timings, structured evidence and controlled
+failure challenges that verify the checker itself. Missing prerequisites remain
+explicit skips. See the [operator guide](docs/hardware-and-selfcheck.md) for
+settings, interpretation and reproducible checks. Component fixtures and virtual
+resource profiles do not establish performance on every older computer.
 
 The [October 14 performance review](analysis/hardware-responsiveness-2026-10-14.md)
 removes unattended Black Box detail inspections, moves periodic module lifecycle

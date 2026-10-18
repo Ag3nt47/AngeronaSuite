@@ -30,6 +30,7 @@ class BackgroundPacingController:
         self._healthy_since: float | None = None
         self._ui: tuple[float, int] | None = None
         self._host: tuple[float, int] | None = None
+        self._memory: tuple[float, int] | None = None
         self._reason = "No recent pressure"
 
     @staticmethod
@@ -46,6 +47,7 @@ class BackgroundPacingController:
             if not self._enabled:
                 self._reset_locked()
                 self._ui = self._host = None
+                self._memory = None
 
     def _reset_locked(self) -> None:
         self._step = 0
@@ -93,13 +95,36 @@ class BackgroundPacingController:
             self._host = (now, 2 if value >= 95 else int(value >= 85))
             self._evaluate_locked(now)
 
+    def report_memory(self, percent: float, available_bytes: int | None = None) -> None:
+        """Use existing RAM observations, including small hosts' absolute headroom.
+
+        Invalid/unavailable observations do not overwrite a recent valid lease.
+        This affects only opted-in routine work; it never drops evidence or
+        changes event/response delivery. No sampler is started here.
+        """
+        used = self._number(percent)
+        available = self._number(available_bytes) if available_bytes is not None else None
+        if (used is None or not 0 <= used <= 100
+                or (available_bytes is not None and (available is None or available < 0))):
+            return
+        severe = used >= 92 or (available is not None and available <= 256 * 1024 ** 2)
+        busy = used >= 85 or (available is not None and available <= 512 * 1024 ** 2)
+        now = self._clock()
+        with self._lock:
+            if not self._enabled:
+                return
+            self._memory = (now, 2 if severe else int(busy))
+            self._evaluate_locked(now)
+
     def _evaluate_locked(self, now: float, *, reset_absent: bool = False) -> None:
         if not self._enabled:
             self._reset_locked()
             return
         ui = self._ui if self._ui and now >= self._ui[0] else None
         host = self._host if self._host and 0 <= now - self._host[0] <= self.SIGNAL_TTL else None
-        if ui is None and host is None:
+        memory = (self._memory if self._memory
+                  and 0 <= now - self._memory[0] <= self.SIGNAL_TTL else None)
+        if ui is None and host is None and memory is None:
             self._reset_locked()
             return
         # A visible heartbeat that cannot report is itself pressure. Hidden and
@@ -110,19 +135,20 @@ class BackgroundPacingController:
         stale_ui = bool(ui and now - ui[0] > self.UI_STALE_SECONDS)
         if stale_ui:
             ui_pressure = 1
-        pressure = max(ui_pressure, host[1] if host else 0)
+        pressure = max(ui_pressure, host[1] if host else 0, memory[1] if memory else 0)
         if pressure:
             self._healthy_since = None
-            self._reason = "UI responsiveness" if ui_pressure else "Host CPU pressure"
+            self._reason = ("UI responsiveness" if ui_pressure else
+                            "Host CPU pressure" if host and host[1] else "Host memory pressure")
             ceiling = 3 if pressure >= 2 else 2
-            if stale_ui and not (host and host[1]):
+            if stale_ui and not ((host and host[1]) or (memory and memory[1])):
                 ceiling = 1
                 self._step = min(self._step, ceiling)
                 self._reason = "UI feedback unavailable"
             if self._step < ceiling and now - self._changed_at >= self.STEP_SECONDS:
                 self._step += 1
                 self._changed_at = now
-        elif reset_absent and ui is None:
+        elif reset_absent and ui is None and memory is None:
             self._reset_locked()
         else:
             if self._healthy_since is None:
