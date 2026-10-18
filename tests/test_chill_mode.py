@@ -149,8 +149,8 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     preparations = []
     module._ensure_ollama = lambda **kwargs: preparations.append(kwargs) or True
     ok, detail = module.self_test()
-    assert ok and "service ready (100%)" in detail and "model remains asleep" in detail
-    assert preparations == [{"for_selftest": True}]
+    assert not ok and detail.startswith("SKIP:") and "local AI is off" in detail
+    assert preparations == []
 
     monkeypatch.delenv("ANGERONA_CHILL_ACTIVE")
     monkeypatch.delenv("ANGERONA_MODEL")
@@ -174,9 +174,10 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     assert fresh_module._model == "deployment-model:latest"
 
 
-def test_reentering_chill_reclaims_stopped_and_restarting_wake_queue() -> None:
+def test_reentering_chill_reclaims_stopped_and_restarting_wake_queue(monkeypatch) -> None:
     """A rapid Full -> Chill click must not strand not-yet-started sensors."""
     from angerona.gui.main_window import MainWindow
+    monkeypatch.setenv("ANGERONA_CHILL_AI_BLOCKED", "0")
 
     class Module:
         def __init__(self, status: str) -> None:
@@ -214,7 +215,11 @@ def test_reentering_chill_reclaims_stopped_and_restarting_wake_queue() -> None:
         def setStyleSheet(self, _style: str) -> None:
             pass
 
+        def setToolTip(self, _text: str) -> None:
+            pass
+
     harness = SimpleNamespace(
+        config=SimpleNamespace(),
         _eco_worker=None,
         _eco_wake_epoch=0,
         _pending_chill_wake=None,

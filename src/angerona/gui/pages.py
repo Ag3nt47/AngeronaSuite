@@ -4269,10 +4269,11 @@ class ModuleInspector(QDialog):
             # the service's separately bounded startup plus model validation.
             timeout = 60.0 if type(self.module) is AITriageModule else 15.0
             ok, detail = run_module_selftest(self.module, timeout=timeout)
+            label = "SKIP" if str(detail).startswith("SKIP:") else "PASS" if ok else "FAIL"
             _emit_if_accepting(
                 self,
                 "_test_done",
-                f"{'PASS' if ok else 'FAIL'} — {str(detail)[:4000]}",
+                f"{label} — {str(detail)[:4000]}",
             )
         except Exception as exc:
             _emit_if_accepting(
@@ -6750,7 +6751,8 @@ class StatusStrip(_ModuleStrip):
         self._pause.toggled.connect(self._pause_changed)
         self._caption.layout().addWidget(self._pause)
         self.interacted.connect(self.pause_for_interaction)
-        self._pan_timer = QTimer(self)
+        from angerona.gui.presentation_timer import PresentationTimer
+        self._pan_timer = PresentationTimer(self, pressure_sensitive=False, cosmetic=True)
         self._pan_timer.setInterval(80)
         self._pan_timer.timeout.connect(self._advance_pan)
         self._scroll.horizontalScrollBar().rangeChanged.connect(lambda _low, _high: self._update_motion())
@@ -6778,7 +6780,9 @@ class StatusStrip(_ModuleStrip):
 
     def _update_motion(self) -> None:
         from angerona.gui.header_controls import motion_allowed
-        self._motion_enabled = motion_allowed(self._config)
+        from angerona.core.background_pacing import get_pacing_controller
+        self._motion_enabled = (motion_allowed(self._config)
+                                and not get_pacing_controller().chill_active())
         active = (self._motion_enabled and self.isVisible() and not self.window().isMinimized()
                   and not self._pause.isChecked()
                   and self._scroll.horizontalScrollBar().maximum() > 0)

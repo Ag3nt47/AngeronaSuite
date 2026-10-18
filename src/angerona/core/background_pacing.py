@@ -19,12 +19,15 @@ class BackgroundPacingController:
     STEP_SECONDS = 2.0
     RECOVERY_SECONDS = 8.0
     MAX_ADDED_INTERVAL = 30.0
+    CHILL_MULTIPLIER = 8
+    CHILL_MAX_ADDED_INTERVAL = 300.0
     _FACTORS = (1, 2, 4, 8)
 
     def __init__(self, *, clock: Callable[[], float] = time.monotonic) -> None:
         self._clock = clock
         self._lock = threading.Lock()
         self._enabled = True
+        self._chill_active = False
         self._step = 0
         self._changed_at = float("-inf")
         self._healthy_since: float | None = None
@@ -48,6 +51,15 @@ class BackgroundPacingController:
                 self._reset_locked()
                 self._ui = self._host = None
                 self._memory = None
+
+    def set_chill_active(self, active: bool) -> None:
+        """Publish quiet-mode policy independently from adaptive CPU feedback."""
+        with self._lock:
+            self._chill_active = bool(active)
+
+    def chill_active(self) -> bool:
+        with self._lock:
+            return self._chill_active
 
     def _reset_locked(self) -> None:
         self._step = 0
@@ -171,13 +183,27 @@ class BackgroundPacingController:
 
     def batch_delay(self) -> float:
         """At most 50ms per cooperative batch; zero at normal load."""
-        return (self.multiplier() - 1) * (0.05 / 7.0)
+        return (max(self.multiplier(), self.CHILL_MULTIPLIER if self.chill_active() else 1) - 1) * (0.05 / 7.0)
+
+    def optional_interval(self, seconds: float) -> float:
+        """Slow explicitly optional maintenance, preserving live inventory cadence.
+
+        Full retains the existing resource-feedback interval. Quiet Chill uses
+        at least 8x, adding at most five minutes. Do not use for live event or
+        response workers, watchdogs or threat-wake monitoring.
+        """
+        base = max(0.0, float(seconds))
+        if self.chill_active():
+            return max(self.interval(base), min(base * self.CHILL_MULTIPLIER,
+                                               base + self.CHILL_MAX_ADDED_INTERVAL))
+        return self.interval(base)
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             self._evaluate_locked(self._clock())
             return {
                 "enabled": self._enabled,
+                "chill_active": self._chill_active,
                 "multiplier": self._FACTORS[self._step],
                 # Requested pacing level, not measured CPU/scan throughput.
                 "pace_percent": 100.0 / self._FACTORS[self._step],

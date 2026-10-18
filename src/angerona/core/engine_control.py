@@ -54,6 +54,7 @@ class EngineControl:
         self.retention = None
         self.runtime_metrics = None
         self._last_operation_seconds = 0.0
+        self._pending_chill_entries = 0
 
     def attach(self, manager, bus, config, chill) -> None:
         self.manager, self.bus, self.config, self.chill = manager, bus, config, chill
@@ -187,6 +188,9 @@ class EngineControl:
                 raise EngineError("Enabled must be a boolean")
             if operation != "module_enable" and not self.manager.is_enabled(request["name"]):
                 raise EngineError("Disabled modules cannot be restarted or self-tested")
+        elif operation == "enter_chill":
+            if set(request) != {"operation"}:
+                raise EngineError("Invalid Chill runtime request schema")
         elif operation == "settings_patch":
             if set(request) != {"operation", "settings"} or not isinstance(request["settings"], dict):
                 raise EngineError("Invalid settings request schema")
@@ -216,11 +220,34 @@ class EngineControl:
                     raise EngineError("Engine operation receipt limit reached")
                 del self._operations[removable]
             self._operations[identity] = {"id": identity, "operation": operation, "state": "queued"}
+            if operation == "enter_chill":
+                # Once accepted, new local AI work is forbidden immediately,
+                # including while earlier bounded control operations complete.
+                from .chill_mode import set_chill_ai_blocked
+                self._pending_chill_entries += 1
+                set_chill_ai_blocked(self.config, True)
             self._queue.put_nowait((identity, dict(request)))
         return {"id": identity, "state": "queued"}
 
     def _set_chill(self, enabled: bool) -> None:
+        from .chill_mode import set_chill_ai_blocked
+
+        def clear_full_intent():
+            # Admission uses this same lock: a newly accepted Chill request
+            # cannot be cleared between the pending check and the latch write.
+            with getattr(self, "_lock", threading.RLock()):
+                if not getattr(self, "_pending_chill_entries", 0):
+                    set_chill_ai_blocked(self.config, False)
+
         if enabled == (self.chill is not None):
+            if not enabled:
+                # An explicit Full selection also recovers a latch retained
+                # after an interrupted/failed Chill controller transition.
+                from .background_pacing import get_pacing_controller
+                clear_full_intent()
+                setattr(self.config, "runtime_chill_active", False)
+                os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
+                get_pacing_controller().set_chill_active(False)
             return
         from .chill_runtime import ChillRuntimeController
         if enabled:
@@ -241,6 +268,7 @@ class EngineControl:
             controller.stop()
             controller._apply_throttles(False)
             controller._set_runtime_quiet(False)
+            clear_full_intent()
             self.chill = None
             for name in paused:
                 module = self.manager.modules.get(name)
@@ -250,6 +278,14 @@ class EngineControl:
 
     def _execute(self, request: dict) -> dict:
         operation = request["operation"]
+        if operation == "enter_chill":
+            try:
+                self.config.eco_mode = True
+                self._set_chill(True)
+                return {"chill": True}
+            finally:
+                with self._lock:
+                    self._pending_chill_entries = max(0, self._pending_chill_entries - 1)
         if operation == "stop_engine":
             self.stop.set()
             return {"message": "Protection engine stop requested"}
@@ -281,7 +317,8 @@ class EngineControl:
             return {"restarted": bool(result)}
         from .selftest import run_module_selftest
         passed, reason = run_module_selftest(module, timeout=15.0)
-        return {"passed": bool(passed), "reason": _text(reason)}
+        return {"passed": bool(passed), "skipped": str(reason).startswith("SKIP:"),
+                "reason": _text(reason)}
 
     def _work(self) -> None:
         while not self.stop.is_set():

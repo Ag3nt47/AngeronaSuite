@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
 from shiboken6 import isValid
 
 from angerona.gui.header_controls import motion_allowed
+from angerona.gui.presentation_timer import PresentationTimer
 
 
 _CYAN = QColor("#38bdf8")
@@ -296,7 +297,7 @@ class HolographicOrb(QWidget):
         self._press_local = QPoint()
         self._drag_anchor_start = QPoint()
         self._dragging = False
-        self._tick = QTimer(self)
+        self._tick = PresentationTimer(self, cosmetic=True)
         self._tick.setInterval(50)  # 20 FPS: smooth enough, negligible idle work.
         self._tick.timeout.connect(self._advance)
         self._menu_animation = QPropertyAnimation(self, b"menuProgress", self)

@@ -68,6 +68,10 @@ def run_module_selftest(mod, timeout: float = 15.0) -> tuple[bool, str]:
     timeout = float(timeout)
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("self-test timeout must be positive and finite")
+    if getattr(mod, "name", "") == "AI Triage (Ollama)":
+        from angerona.core.ollama_lifecycle import ollama_blocked
+        if ollama_blocked():
+            return False, "SKIP: local AI is off in Chill Mode; switch Chill off manually for an active check"
     return SelfTestRunner._test_module(mod, timeout, optional_kernel_policy=False)
 
 
@@ -577,6 +581,11 @@ class SelfTestRunner:
         availability = availability_for(mod, platform)
         if not availability.available:
             return availability.reason
+
+        if mod.name == "AI Triage (Ollama)":
+            from angerona.core.ollama_lifecycle import ollama_blocked
+            if ollama_blocked():
+                return "local AI is off in Chill Mode; switch Chill off manually for an active check"
 
         if respect_runtime_state:
             try:

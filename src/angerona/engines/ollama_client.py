@@ -26,7 +26,7 @@ from angerona.core.url_policy import (
     safe_urlopen,
 )
 from angerona.engines import ai_guardrail as g
-from angerona.core.ollama_lifecycle import effective_keep_alive
+from angerona.core.ollama_lifecycle import CHILL_AI_MESSAGE, effective_keep_alive, ollama_blocked
 
 
 _GENERATION_PATHS = frozenset({"/api/generate", "/api/chat"})
@@ -134,9 +134,8 @@ def call(
     forwards with the session token, and redacts the response. Best-effort; returns
     an {'error': ...} dict rather than raising."""
     t0 = time.time()
-    # Chill keeps ARIA available on demand but never leaves the model pinned
-    # after the response. Apply this at the shared transport choke point so
-    # callers cannot accidentally defeat the all-day low-resource profile.
+    if ollama_blocked():
+        return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
     payload = dict(payload)
     payload["keep_alive"] = effective_keep_alive(payload.get("keep_alive", "30m"))
     plen = g._prompt_len_of(payload)
@@ -183,7 +182,11 @@ def call(
             policy=OLLAMA_SERVICE_POLICY,
         )
     except Exception as exc:
+        if ollama_blocked():
+            return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
         return _upstream_error(exc, path=str(path), started=t0, plen=plen)
+    if ollama_blocked():
+        return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
     applied = []
     if "response" in raw:
         raw["response"], applied = g.redact_output(str(raw.get("response", "")))
@@ -203,6 +206,8 @@ def call_stream(payload: dict, on_token, path: str = "/api/generate",
     split across network chunks from flashing in the UI. Best-effort; returns an
     error object on failure."""
     t0 = time.time()
+    if ollama_blocked():
+        return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
     payload = dict(payload)
     payload["keep_alive"] = effective_keep_alive(payload.get("keep_alive", "30m"))
     plen = g._prompt_len_of(payload)
@@ -243,6 +248,8 @@ def call_stream(payload: dict, on_token, path: str = "/api/generate",
             timeout=float(timeout),
         ) as response:
             while True:
+                if ollama_blocked():
+                    return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
                 line = response.readline(_MAX_STREAM_LINE + 1)
                 if not line:
                     break
@@ -266,7 +273,11 @@ def call_stream(payload: dict, on_token, path: str = "/api/generate",
                 if obj.get("done"):
                     break
     except Exception as exc:
+        if ollama_blocked():
+            return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
         return _upstream_error(exc, path=str(path), started=t0, plen=plen)
+    if ollama_blocked():
+        return {"error": CHILL_AI_MESSAGE, "error_type": "ChillMode"}
     clean_text, applied = g.redact_output("".join(parts))
     for offset in range(0, len(clean_text), 32):
         try:

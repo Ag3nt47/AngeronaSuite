@@ -84,7 +84,7 @@ def main() -> int:
             if engine_mode != "--engine-service" and is_admin():
                 print("[Angerona] Open the engine console in an ordinary-user session.", flush=True)
                 return 2
-            return _run_engine_mode(engine_mode)
+            return _run_engine_mode(engine_mode, **({"force_chill": True} if chill_requested else {}))
         elevation = ensure_admin()
         authority_after_elevation = verify_current_msix_authority()
         effective_administrator = is_admin()
@@ -119,7 +119,7 @@ def main() -> int:
         return 2
 
     if engine_mode:
-        return _run_engine_mode(engine_mode)
+        return _run_engine_mode(engine_mode, **({"force_chill": True} if chill_requested else {}))
 
     # Keep sys.argv intact for the UAC handoff above. The helper's loopback
     # readiness option belongs to Angerona and must not reach Qt's parser.
@@ -175,7 +175,7 @@ def main() -> int:
             return 0
         from angerona.core.headless import run_headless
         try:
-            return run_headless()
+            return run_headless(**({"force_chill": True} if chill_requested else {}))
         finally:
             try:
                 lock.close()
@@ -223,7 +223,7 @@ def main() -> int:
     return qt.exec()
 
 
-def _run_engine_mode(mode: str) -> int:
+def _run_engine_mode(mode: str, *, force_chill: bool = False) -> int:
     """Route before the embedded GUI singleton so only the engine owns sensors."""
     if mode == "--engine-service":
         from angerona.core.engine_windows_service import run_dispatcher
@@ -250,7 +250,7 @@ def _run_engine_mode(mode: str) -> int:
     icon = icon_path()
     if icon:
         qt.setWindowIcon(QIcon(icon))
-    window = EngineConsole()
+    window = EngineConsole(**({"force_chill": True} if force_chill else {}))
     window.show()
     return qt.exec()
 

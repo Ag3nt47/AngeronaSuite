@@ -1,8 +1,11 @@
 # Project Angerona (AngeronaSuite) — llms.txt
 
-Latest maintenance (2026-10-18): hardware-adaptation-2026-10-18/README.md and
-../docs/hardware-and-selfcheck.md cover RAM-aware routine pacing, unattended
-presentation timers, idle worker efficiency and verified per-module self-check.
+Latest maintenance (2026-10-18): chill-efficiency-2026-10-18/README.md and
+../docs/hardware-and-selfcheck.md#chill-mode cover optional-work reduction,
+15/30/60s dashboard periods, suspended cosmetics, queue arrival wakeups and
+Ollama/Llama lockout through CHILL: ALERT until the operator selects Full.
+The earlier hardware-adaptation-2026-10-18 record covers RAM-pressure feedback
+and independently verified per-module self-check.
 Root ../llms.txt carries the current status; dated sections below are historical.
 
 > ⚠️ THIS IS THE CANONICAL APP. Angerona is a **PySide6 desktop GUI and shared security core**, package `angerona` under `AngeronaSuite/src/angerona/`. Windows Protect launches through `start-angerona.bat` → `pythonw -m angerona`; macOS Observe is a source/developer preview launched with `python -m angerona`. It is not any separate legacy terminal prototype outside this repository. Read this file first.

@@ -1102,6 +1102,9 @@ class AsyncRecorderMetrics:
     running: bool
 
 
+_RECORDER_WAKE = object()
+
+
 class _BoundedSimpleQueue:
     """C-backed queue with an exact non-blocking capacity gate.
 
@@ -1357,6 +1360,11 @@ class AsyncFlightRecorder:
             self._stop.set()
             if thread is None and dlq_thread is None:
                 return True
+        # An idle wait can be long in Chill, but teardown must not wait for
+        # that timeout. Sentinels use existing queue wakeups and capacity;
+        # a full lane already has real work to wake and drain its consumer.
+        self._wake_idle(self._queue)
+        self._wake_idle(self._overflow_queue)
         deadline = time.monotonic() + timeout
         current = threading.current_thread()
         for candidate in (thread, dlq_thread):
@@ -1421,6 +1429,23 @@ class AsyncFlightRecorder:
                 running=running,
             )
 
+    @staticmethod
+    def _wake_idle(pending) -> None:
+        try:
+            pending.put_nowait(_RECORDER_WAKE)
+        except queue.Full:
+            pass
+
+    @staticmethod
+    def _quiet_idle_policy() -> bool:
+        from angerona.core.background_pacing import get_pacing_controller
+        return get_pacing_controller().chill_active()
+
+    def _idle_wait_seconds(self) -> float:
+        # Queue arrival wakes immediately. Only an empty queue gets the longer
+        # wait; the first real event still starts the original flush deadline.
+        return 5.0 if self._quiet_idle_policy() else 1.0
+
     def _run(self) -> None:
         while (
             not self._stop.is_set()
@@ -1429,8 +1454,16 @@ class AsyncFlightRecorder:
         ):
             batch: list[Event] = []
             try:
-                batch.append(self._queue.get(timeout=self._flush_interval))
+                event = self._queue.get(timeout=self._idle_wait_seconds())
                 self._primary_saturated.clear()
+                if event is _RECORDER_WAKE:
+                    if self._stop.is_set():
+                        # stop() owns the bounded join. Retain this worker's
+                        # draining lifetime until its peer has finished, with
+                        # no periodic polling and no abandoned delivery.
+                        self._dlq_done.wait()
+                    continue
+                batch.append(event)
             except queue.Empty:
                 self._maybe_replay()
                 continue
@@ -1440,7 +1473,10 @@ class AsyncFlightRecorder:
                 if remaining <= 0:
                     break
                 try:
-                    batch.append(self._queue.get(timeout=remaining))
+                    event = self._queue.get(timeout=remaining)
+                    if event is _RECORDER_WAKE:
+                        break
+                    batch.append(event)
                 except queue.Empty:
                     break
             result = self._recorder.record_batch_bus(batch)
@@ -1461,7 +1497,8 @@ class AsyncFlightRecorder:
         if not callable(replay):
             return
         now = time.monotonic()
-        if not force and now - self._last_replay_at < 2.0:
+        replay_interval = 30.0 if self._quiet_idle_policy() else 2.0
+        if not force and now - self._last_replay_at < replay_interval:
             return
         if not force and (
             not self._queue.empty()
@@ -1488,15 +1525,18 @@ class AsyncFlightRecorder:
             while not self._stop.is_set() or not self._overflow_queue.empty():
                 batch: list[Event] = []
                 try:
-                    batch.append(
-                        self._overflow_queue.get(timeout=self._flush_interval)
-                    )
+                    event = self._overflow_queue.get(timeout=self._idle_wait_seconds())
+                    if event is _RECORDER_WAKE:
+                        continue
+                    batch.append(event)
                 except queue.Empty:
                     continue
                 self._dlq_busy.set()
                 while len(batch) < self._dlq_batch_size:
                     try:
-                        batch.append(self._overflow_queue.get_nowait())
+                        event = self._overflow_queue.get_nowait()
+                        if event is not _RECORDER_WAKE:
+                            batch.append(event)
                     except queue.Empty:
                         break
                 batch_writer = getattr(self._recorder, "_route_batch_to_dlq", None)
@@ -1514,4 +1554,7 @@ class AsyncFlightRecorder:
                 self._dlq_busy.clear()
         finally:
             self._dlq_busy.clear()
+            # The primary may be waiting for this lane's final drain rather
+            # than for an event. Wake it so an empty shutdown finishes now.
+            self._wake_idle(self._queue)
             self._dlq_done.set()

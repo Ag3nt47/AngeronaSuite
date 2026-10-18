@@ -380,8 +380,15 @@ def test_smart_deception_path_swap_cannot_move_replacement(
 
 @pytest.mark.skipif(os.name != "nt", reason="held-object retention is Windows-only")
 def test_smart_deception_restage_bounds_evidence_and_logical_slot_alerts(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This tests one logical attack epoch, while real custody I/O can cross a
+    # five-minute wall-clock boundary on a busy host. Keep only this module's
+    # wall clock inside that epoch; independent expiry tests advance their own.
+    epoch_midpoint = (int(time.time() // smart_deception._TRIP_DEDUP_S) + 0.5) * (
+        smart_deception._TRIP_DEDUP_S
+    )
+    monkeypatch.setattr(smart_deception, "time", SimpleNamespace(time=lambda: epoch_midpoint))
     module = _smart_module(tmp_path)
     target = module._targets[0] / "token.txt"
     assert module._write_decoy(str(target)) is True

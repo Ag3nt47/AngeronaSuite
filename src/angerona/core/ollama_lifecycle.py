@@ -16,6 +16,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import ExitStack
+from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path, PureWindowsPath
@@ -23,6 +24,7 @@ from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 
+from angerona.core.chill_mode import chill_ai_blocked
 from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
     local_json_request,
@@ -413,6 +415,104 @@ _startup_lock = threading.RLock()
 _startup_attempts: OrderedDict[str, _StartupAttempt] = OrderedDict()
 _startup_launch_lock = threading.Lock()
 _STARTUP_LIMIT = 16
+_owned_services: dict[tuple[str, int], Any] = {}
+_chill_release = ContextVar("angerona_chill_model_release", default=False)
+
+CHILL_AI_MESSAGE = (
+    "Local AI is off while Chill is enabled. Switch Chill off manually to enable Ollama."
+)
+
+
+class OllamaChillBlockedError(RuntimeError):
+    """The operator's Chill selection forbids local AI work."""
+
+
+def ollama_blocked() -> bool:
+    """Incident escalation cannot override the operator's local AI lock."""
+    return chill_ai_blocked() or chill_active()
+
+
+def _require_ollama_allowed() -> None:
+    if ollama_blocked():
+        raise OllamaChillBlockedError(CHILL_AI_MESSAGE)
+
+
+def chill_cleanup_request_allowed(path: str, method: str, body: bytes | None) -> bool:
+    """Permit only resident-model release traffic from the release helper."""
+    if not _chill_release.get():
+        return False
+    if path == "/api/ps":
+        return method == "GET" and body is None
+    if path != "/api/generate" or method != "POST" or not isinstance(body, bytes):
+        return False
+    if len(body) > 4096:
+        return False
+    import json
+    try:
+        payload = json.loads(body)
+        return (
+            isinstance(payload, dict)
+            and set(payload) == {"model", "prompt", "stream", "keep_alive"}
+            and isinstance(payload["model"], str)
+            and validate_model_ref(payload["model"]) == payload["model"]
+            and payload["prompt"] == ""
+            and payload["stream"] is False
+            and type(payload["keep_alive"]) is int and payload["keep_alive"] == 0
+        )
+    except (ValueError, TypeError, UnicodeError):
+        return False
+
+
+def _blocked_startup_status(progress=None) -> OllamaStartupStatus:
+    status = OllamaStartupStatus("blocked", "Chill Mode", 0, CHILL_AI_MESSAGE)
+    if progress is not None:
+        try:
+            progress(status)
+        except Exception:
+            pass
+    return status
+
+
+def _stop_owned_service(key: tuple[str, int], child) -> None:
+    """Use the retained launch handle; never discover/kill an unrelated daemon."""
+    try:
+        if child.poll() is None:
+            child.terminate()
+            wait = getattr(child, "wait", None)
+            if wait is not None:
+                try:
+                    wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    child.kill()
+                    wait(timeout=1.0)
+            else:
+                # Native medium-token launch handles expose poll/terminate.
+                # TerminateProcess is asynchronous: retain custody until exit.
+                deadline = time.monotonic() + 1.0
+                while child.poll() is None and time.monotonic() < deadline:
+                    threading.Event().wait(0.02)
+        if child.poll() is None:
+            return
+    except (OSError, AttributeError, subprocess.TimeoutExpired):
+        # Keep custody on failure so a later Chill release can retry.
+        return
+    with _startup_lock:
+        if _owned_services.get(key) is child:
+            _owned_services.pop(key, None)
+            attempt = _startup_attempts.get(key[0])
+            if attempt is not None and attempt.status.daemon_ready:
+                attempt.status = OllamaStartupStatus(
+                    "idle", "Service stopped", 0,
+                    "The Angerona-owned Ollama service was stopped; start it again from Full Mode.",
+                )
+
+
+def stop_owned_ollama_services() -> None:
+    """Stop only services this process started, from a release worker."""
+    with _startup_lock:
+        owned = list(_owned_services.items())
+    for key, child in owned:
+        _stop_owned_service(key, child)
 
 
 def _startup_key(host: str) -> str:
@@ -437,6 +537,8 @@ def _startup_key(host: str) -> str:
 
 def startup_snapshot(host: str = "http://localhost:11434") -> OllamaStartupStatus:
     """Return cached progress only; safe for GUI refreshes and diagnostic views."""
+    if ollama_blocked():
+        return _blocked_startup_status()
     try:
         key = _startup_key(host)
     except ValueError:
@@ -520,6 +622,7 @@ def _startup_environment(host: str) -> dict[str, str]:
 
 def _spawn_ollama_service(host: str, deadline: float, *, verified=None):
     """Launch a sealed known image with fixed arguments and no elevation."""
+    _require_ollama_allowed()
     from angerona.core.executable_trust import _open_sealed
     from angerona.core.privilege import is_admin
     from angerona.core.source_sandbox import _hold_plain_directories
@@ -556,6 +659,7 @@ def _spawn_ollama_service(host: str, deadline: float, *, verified=None):
                 raise TimeoutError
             if verified is not None:
                 verified()
+            _require_ollama_allowed()
             if time.monotonic() >= deadline:
                 raise TimeoutError
             if elevated:
@@ -586,11 +690,13 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
 
     def verified():
         update("Installation verified", 45, "Known Ollama executable passed its platform trust checks.")
+        _require_ollama_allowed()
         if stop.is_set():
             raise InterruptedError
 
     try:
         while not acquired:
+            _require_ollama_allowed()
             if stop.is_set():
                 raise InterruptedError
             remaining = deadline - time.monotonic()
@@ -598,16 +704,34 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
                 raise TimeoutError
             acquired = _startup_launch_lock.acquire(timeout=min(0.1, remaining))
         update("Address verified", 10, "Configured service is restricted to loopback.")
+        _require_ollama_allowed()
         occupied = _startup_port_present(key)
         update("Listener checked", 25, "Checking service ownership and availability.")
         if not occupied:
             if stop.is_set():
                 raise InterruptedError
+            # A failed stop must not turn repeated readiness checks into more
+            # native daemons. Custody is retained until the prior child exits.
+            with _startup_lock:
+                previous = [(owned_key, owned) for owned_key, owned in _owned_services.items()
+                            if owned_key[0] == key]
+            for owned_key, owned in previous:
+                try:
+                    exited = owned.poll() is not None
+                except Exception:
+                    exited = False
+                if not exited:
+                    raise ValueError("A previous owned Ollama service has not exited; retry after it stops.")
+                _stop_owned_service(owned_key, owned)
             child = _spawn_ollama_service(
                 key, deadline, verified=verified,
             )
+            with _startup_lock:
+                _owned_services[(key, id(child))] = child
+            _require_ollama_allowed()
             update("Service launched", 60, "Trusted local Ollama service was started; waiting for its listener.")
         while True:
+            _require_ollama_allowed()
             if stop.is_set():
                 raise InterruptedError
             remaining = deadline - time.monotonic()
@@ -615,6 +739,7 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
                 raise TimeoutError
             if occupied or _startup_port_present(key):
                 attest_ollama_service(key)
+                _require_ollama_allowed()
                 if stop.is_set():
                     raise InterruptedError
                 remaining = deadline - time.monotonic()
@@ -629,6 +754,7 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
                     # An authenticated daemon may still be starting its API.
                     pass
                 else:
+                    _require_ollama_allowed()
                     if stop.is_set():
                         raise InterruptedError
                     if time.monotonic() >= deadline:
@@ -641,6 +767,9 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
             if child is not None and child.poll() is not None:
                 raise ValueError("Ollama exited before its local API became ready.")
             stop.wait(min(0.2, max(0.0, deadline - time.monotonic())))
+    except OllamaChillBlockedError:
+        return _notify_startup(attempt, "blocked", "Chill Mode", 0,
+                               CHILL_AI_MESSAGE, progress)
     except InterruptedError:
         return _notify_startup(attempt, "cancelled", "Cancelled", attempt.status.percent,
                                "Local AI startup check was cancelled.", progress)
@@ -658,12 +787,15 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
             "Start Ollama from a normal user session; its linked medium user token is unavailable.",
             "No trusted Ollama installation was found. Install Ollama using its official installer.",
             "Ollama exited before its local API became ready.",
+            "A previous owned Ollama service has not exited; retry after it stops.",
         } else "Local AI startup validation failed."
         return _notify_startup(attempt, "failed", "Startup unavailable", attempt.status.percent, detail, progress)
     except Exception:
         return _notify_startup(attempt, "failed", "Startup unavailable", attempt.status.percent,
                                "Local AI startup could not complete. Check the Ollama installation and service.", progress)
     finally:
+        if child is not None and (ollama_blocked() or not attempt.status.daemon_ready):
+            _stop_owned_service((key, id(child)), child)
         if acquired:
             _startup_launch_lock.release()
         attempt.done.set()
@@ -685,6 +817,8 @@ def ensure_ollama_service(
     Run on a worker, never the GUI thread. This does not install Ollama, pull
     models, load models, change startup registration, or take response actions.
     """
+    if ollama_blocked():
+        return _blocked_startup_status(progress)
     try:
         timeout = _startup_timeout(timeout)
         key = _startup_key(host)
@@ -696,6 +830,8 @@ def ensure_ollama_service(
         return _run_startup(key, attempt, stop_event=stop_event, progress=progress, timeout=timeout)
     deadline = time.monotonic() + timeout
     while not attempt.done.wait(0.1):
+        if ollama_blocked():
+            return _blocked_startup_status(progress)
         if stop_event is not None and stop_event.is_set():
             return OllamaStartupStatus("cancelled", "Cancelled", attempt.status.percent,
                                        "Local AI startup wait was cancelled.")
@@ -713,6 +849,8 @@ def request_ollama_start(
     host: str = "http://localhost:11434", *, stop_event=None, timeout: float = 30.0,
 ) -> OllamaStartupStatus:
     """Schedule one bounded startup worker, with no continuing idle polling."""
+    if ollama_blocked():
+        return _blocked_startup_status()
     try:
         timeout = _startup_timeout(timeout)
         key = _startup_key(host)
@@ -879,12 +1017,8 @@ def chill_active() -> bool:
 
 
 def effective_keep_alive(configured: str | int | float = "30m") -> str | int | float:
-    """Do not pin a local model in memory while quiet Chill is active.
-
-    Ollama accepts ``0`` as an immediate-unload lease. Interactive ARIA calls
-    still work normally; the model is simply released after the answer.
-    """
-    return 0 if chill_active() else configured
+    """Defensive zero lease; transport also rejects inference throughout Chill."""
+    return 0 if ollama_blocked() else configured
 
 
 def _json_request(url: str, payload: dict | None, timeout: float) -> dict:
@@ -904,12 +1038,23 @@ def unload_angerona_models(
     configured_model: str = "llama3",
     timeout: float = 1.5,
 ) -> list[str]:
-    """Immediately unload resident llama3/configured models from local Ollama.
+    """Release resident models and stop only Angerona-owned services in Chill.
 
     Only models reported by ``/api/ps`` are touched, so shutdown never loads a
-    missing model merely to unload it.  Ollama itself stays available for other
-    local applications; the CPU/GPU-heavy model runner is released.
+    missing model merely to unload it. Unowned/shared daemons are not killed.
     """
+    token = _chill_release.set(True)
+    try:
+        return _unload_resident_models(host, configured_model, timeout)
+    finally:
+        _chill_release.reset(token)
+        # Ask a reachable daemon to release its runner before stopping its
+        # owned service handle. Cleanup still stops the service if HTTP fails.
+        if ollama_blocked():
+            stop_owned_ollama_services()
+
+
+def _unload_resident_models(host: str, configured_model: str, timeout: float) -> list[str]:
     base = host.rstrip("/")
     wanted = (configured_model or "llama3").split(":", 1)[0].casefold()
     try:

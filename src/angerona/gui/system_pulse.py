@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from angerona.gui.presentation_timer import PresentationTimer
+
 
 def _rate(value: float) -> str:
     value = max(0.0, float(value))
@@ -175,8 +177,11 @@ class SystemPulseCard(QFrame):
         self._sample_worker.start()
         self.sample_ready.connect(self._apply_sample)
         self._normal_interval_ms = max(1000, int(interval_ms))
-        self._chill_interval_ms = max(10_000, self._normal_interval_ms)
-        self._timer = QTimer(self)
+        self._chill_interval_ms = max(30_000, self._normal_interval_ms)
+        self._timer = PresentationTimer(
+            self, pressure_sensitive=False, chill_sensitive=False,
+            visible_when=lambda: self.isVisible() or self._external_view_active,
+        )
         self._timer.timeout.connect(self.request_sample)
         self._timer.start(self._normal_interval_ms)
         QTimer.singleShot(120, self.request_sample)
@@ -196,14 +201,18 @@ class SystemPulseCard(QFrame):
     def set_external_view_active(self, enabled: bool) -> None:
         """Share the existing sampler with a visible footer/overview tab."""
         self._external_view_active = bool(enabled)
+        self._timer.refresh()
 
-    def set_chill_mode(self, enabled: bool) -> None:
+    def set_chill_mode(self, enabled: bool, *, active: bool | None = None) -> None:
         """Reduce cosmetic host sampling while quiet Chill is active."""
         if self._closed.is_set():
             return
-        interval = self._chill_interval_ms if enabled else self._normal_interval_ms
+        foreground = self.window().isActiveWindow() if active is None else bool(active)
+        interval = (self._chill_interval_ms * (1 if foreground else 2)
+                    if enabled else self._normal_interval_ms)
         if self._timer.interval() != interval:
-            self._timer.start(interval)
+            self._timer.setInterval(interval)
+        self._timer.refresh()
 
     def _sample_loop(self) -> None:
         """Service coalesced sample requests without per-pulse thread churn."""

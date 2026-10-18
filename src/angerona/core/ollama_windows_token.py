@@ -203,6 +203,11 @@ class _MediumOllamaProcess:
     def poll(self):
         return self._native.poll(self._handle)
 
+    def terminate(self):
+        """Cancel this exact launched process without a PID lookup."""
+        if self.poll() is None:
+            self._native.terminate(self._handle)
+
     def __del__(self):
         try:
             self._native.close(self._handle)

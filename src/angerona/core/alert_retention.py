@@ -236,10 +236,13 @@ class _File:
             encoded = str(self.directory.path / target).encode("utf-16-le")
             class Rename(ctypes.Structure):
                 _fields_ = [("replace", wintypes.BOOLEAN), ("root", wintypes.HANDLE),
-                            ("length", wintypes.DWORD), ("name", ctypes.c_byte * len(encoded))]
+                            ("length", wintypes.DWORD), ("name", ctypes.c_byte * (len(encoded) + 2))]
             value = Rename()
             value.length = len(encoded)
-            value.name[:] = encoded
+            # The Win32 path normalizer also consumes a terminating WCHAR.
+            # Reserve it explicitly rather than relying on structure padding;
+            # FileNameLength still describes only the actual UTF-16 name.
+            value.name[:len(encoded)] = encoded
             self._set_information(3, value)  # exact held inode; ReplaceIfExists remains false
         else:
             current = self.directory.stat(self.name)

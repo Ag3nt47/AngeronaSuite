@@ -1,0 +1,350 @@
+{
+  "schema": "angerona.entrypoint-followup.v1",
+  "scope": "Entrypoint follow-up applied after the earlier frozen-source full Python run, then validated against production sources with focused Python and native gates.",
+  "production_applied": true,
+  "real_repository_focused_gate": {
+    "status": "passed",
+    "tests": 90,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "elapsed_seconds": 16.047,
+    "elapsed_measurement": "JUnit testsuite time",
+    "pytest_terminal_elapsed_seconds": 18.39,
+    "exit_code": 0,
+    "source_unchanged_during_gate": true,
+    "junit_artifact": ".tmp/chill-entrypoint-followup.xml",
+    "test_paths": [
+      "tests/test_chill_resilience_restart.py",
+      "tests/test_engine_console.py",
+      "tests/test_persistent_engine.py",
+      "tests/test_headless_chill_runtime.py",
+      "tests/test_v12_headless_delivery.py",
+      "tests/test_chill_optional_runtime.py"
+    ],
+    "test_sha256": {
+      "tests/test_chill_resilience_restart.py": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5",
+      "tests/test_engine_console.py": "50aef9c3e9b4e1d0852072cdd603eeb718b1b5997b464c8fbd5fa8cf1c64c45c",
+      "tests/test_persistent_engine.py": "de5b6085f8f86b07d280d39b96f378ed0bdbdd67338e648cfd50ef7ba5246c53",
+      "tests/test_headless_chill_runtime.py": "b7b65f451695fbf05fff53e69f0b9b86f0504cd2b0742478710a7983ee6cd87d",
+      "tests/test_v12_headless_delivery.py": "92af3fcb3c769e467c046cea1ee90224281cdaa3e65f0394d35fcaffcc171da9",
+      "tests/test_chill_optional_runtime.py": "6803a85eb86e01b97dbc3a3d5969d3d8a5796c52d666d4476842f0e1f8f11eda"
+    },
+    "imported_modules": {
+      "angerona.__main__": {
+        "path": "src/angerona/__main__.py",
+        "sha256": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75"
+      },
+      "angerona.core.headless": {
+        "path": "src/angerona/core/headless.py",
+        "sha256": "d3f149a3e03ab618b893c449fafb6a80018093c269b8cdb72d42a695952a483f"
+      },
+      "angerona.core.persistent_engine": {
+        "path": "src/angerona/core/persistent_engine.py",
+        "sha256": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7"
+      },
+      "angerona.core.engine_windows_service": {
+        "path": "src/angerona/core/engine_windows_service.py",
+        "sha256": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3"
+      },
+      "angerona.core.engine_control": {
+        "path": "src/angerona/core/engine_control.py",
+        "sha256": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9"
+      },
+      "angerona.gui.engine_console": {
+        "path": "src/angerona/gui/engine_console.py",
+        "sha256": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f"
+      }
+    },
+    "verified_source_sha256": {
+      "src/angerona/__main__.py": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75",
+      "src/angerona/core/headless.py": "d3f149a3e03ab618b893c449fafb6a80018093c269b8cdb72d42a695952a483f",
+      "src/angerona/core/persistent_engine.py": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7",
+      "src/angerona/core/engine_windows_service.py": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3",
+      "src/angerona/core/engine_control.py": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9",
+      "src/angerona/gui/engine_console.py": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f",
+      "tests/test_chill_resilience_restart.py": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5",
+      "frz/angerona_watchdog.go": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+      "frz/angerona_watchdog_test.go": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+      "frz/hypervisor/main.go": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+      "frz/hypervisor/main_test.go": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727"
+    }
+  },
+  "python": {
+    "source": "isolated staged copy; imported module paths verified beneath staged src",
+    "source_sha256_method": "Existing base_sha256/staged_sha256/applied_sha256 and module provenance are SHA256 of raw bytes. normalized_* fields hash UTF-8 text after universal-newline conversion to LF. Applied bytes exactly match staged bytes: headless.py uses CRLF; the other six changed Python files use LF.",
+    "patch_sha256": "49699e123af7885d3d0e33f5c260215595c53bc166881dd84fdb41fe6ba97f0a",
+    "paths": [
+      {
+        "path": "src/angerona/__main__.py",
+        "base_sha256": "aee4877641ef342a3043558b376934832a963b2a520b562c35ddda4545301dad",
+        "staged_sha256": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75",
+        "normalized_base_sha256": "aee4877641ef342a3043558b376934832a963b2a520b562c35ddda4545301dad",
+        "normalized_staged_sha256": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75",
+        "applied_sha256": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75",
+        "normalized_applied_sha256": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75"
+      },
+      {
+        "path": "src/angerona/core/headless.py",
+        "base_sha256": "f9fad7a233c929d2975f77f018d314b6f320f077e59d89fc9307ff41509720d2",
+        "staged_sha256": "d3f149a3e03ab618b893c449fafb6a80018093c269b8cdb72d42a695952a483f",
+        "normalized_base_sha256": "867bf277bd7477c4ef2f4bb0efeb102056a1afb5c3ec1413390150151207e4d5",
+        "normalized_staged_sha256": "cffac27229e4bb51ebba0087163d4797ac2948904f6b060e72d9f0645c17825b",
+        "applied_sha256": "d3f149a3e03ab618b893c449fafb6a80018093c269b8cdb72d42a695952a483f",
+        "normalized_applied_sha256": "cffac27229e4bb51ebba0087163d4797ac2948904f6b060e72d9f0645c17825b"
+      },
+      {
+        "path": "src/angerona/core/persistent_engine.py",
+        "base_sha256": "e4c59214c29ab456a2142ac2951f671aa036ee18819cd248c55f642366b5b69d",
+        "staged_sha256": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7",
+        "normalized_base_sha256": "e4c59214c29ab456a2142ac2951f671aa036ee18819cd248c55f642366b5b69d",
+        "normalized_staged_sha256": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7",
+        "applied_sha256": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7",
+        "normalized_applied_sha256": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7"
+      },
+      {
+        "path": "src/angerona/core/engine_windows_service.py",
+        "base_sha256": "91e87bd1278ee3b6d03b1343762abf2664d2917279a0ebaa4ae36d7e46f49a41",
+        "staged_sha256": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3",
+        "normalized_base_sha256": "91e87bd1278ee3b6d03b1343762abf2664d2917279a0ebaa4ae36d7e46f49a41",
+        "normalized_staged_sha256": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3",
+        "applied_sha256": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3",
+        "normalized_applied_sha256": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3"
+      },
+      {
+        "path": "src/angerona/core/engine_control.py",
+        "base_sha256": "938fa90115eccf92551654dcda2632b645cf5d4c3173671b7f4f0f52bf8d71bc",
+        "staged_sha256": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9",
+        "normalized_base_sha256": "938fa90115eccf92551654dcda2632b645cf5d4c3173671b7f4f0f52bf8d71bc",
+        "normalized_staged_sha256": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9",
+        "applied_sha256": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9",
+        "normalized_applied_sha256": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9"
+      },
+      {
+        "path": "src/angerona/gui/engine_console.py",
+        "base_sha256": "fc23d2aa8d29db913b95cde47f2a2094b945af1a80d54aac33466f736c8e7f24",
+        "staged_sha256": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f",
+        "normalized_base_sha256": "fc23d2aa8d29db913b95cde47f2a2094b945af1a80d54aac33466f736c8e7f24",
+        "normalized_staged_sha256": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f",
+        "applied_sha256": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f",
+        "normalized_applied_sha256": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f"
+      },
+      {
+        "path": "tests/test_chill_resilience_restart.py",
+        "base_sha256": "fbdd9726f80dff226e6b0f2720b2f080ba7bfe488229dffd6458aa8b297b05c6",
+        "staged_sha256": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5",
+        "normalized_base_sha256": "fbdd9726f80dff226e6b0f2720b2f080ba7bfe488229dffd6458aa8b297b05c6",
+        "normalized_staged_sha256": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5",
+        "applied_sha256": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5",
+        "normalized_applied_sha256": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5"
+      }
+    ],
+    "imported_modules": {
+      "angerona.__main__": {
+        "path": "src/angerona/__main__.py",
+        "sha256": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75"
+      },
+      "angerona.core.headless": {
+        "path": "src/angerona/core/headless.py",
+        "sha256": "d3f149a3e03ab618b893c449fafb6a80018093c269b8cdb72d42a695952a483f"
+      },
+      "angerona.core.persistent_engine": {
+        "path": "src/angerona/core/persistent_engine.py",
+        "sha256": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7"
+      },
+      "angerona.core.engine_windows_service": {
+        "path": "src/angerona/core/engine_windows_service.py",
+        "sha256": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3"
+      },
+      "angerona.core.engine_control": {
+        "path": "src/angerona/core/engine_control.py",
+        "sha256": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9"
+      },
+      "angerona.gui.engine_console": {
+        "path": "src/angerona/gui/engine_console.py",
+        "sha256": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f"
+      }
+    },
+    "gate": {
+      "status": "passed",
+      "tests": 90,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "elapsed_seconds": 25.598,
+      "exit_code": 0,
+      "source_unchanged_during_gate": true,
+      "test_paths": [
+        "tests/test_chill_resilience_restart.py",
+        "tests/test_engine_console.py",
+        "tests/test_persistent_engine.py",
+        "tests/test_headless_chill_runtime.py",
+        "tests/test_v12_headless_delivery.py",
+        "tests/test_chill_optional_runtime.py"
+      ],
+      "test_sha256": {
+        "tests/test_chill_resilience_restart.py": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5",
+        "tests/test_engine_console.py": "50aef9c3e9b4e1d0852072cdd603eeb718b1b5997b464c8fbd5fa8cf1c64c45c",
+        "tests/test_persistent_engine.py": "de5b6085f8f86b07d280d39b96f378ed0bdbdd67338e648cfd50ef7ba5246c53",
+        "tests/test_headless_chill_runtime.py": "b7b65f451695fbf05fff53e69f0b9b86f0504cd2b0742478710a7983ee6cd87d",
+        "tests/test_v12_headless_delivery.py": "92af3fcb3c769e467c046cea1ee90224281cdaa3e65f0394d35fcaffcc171da9",
+        "tests/test_chill_optional_runtime.py": "6803a85eb86e01b97dbc3a3d5969d3d8a5796c52d666d4476842f0e1f8f11eda"
+      },
+      "ruff": "passed",
+      "context": "Staged-copy gate before production application; retained as separate historical evidence.",
+      "elapsed_measurement": "JUnit testsuite time",
+      "pytest_terminal_elapsed_seconds": 27.42
+    },
+    "covered_behavior": [
+      "Flagged CLI headless and engine-console dispatch propagates runtime Chill.",
+      "New detached engine service and Windows SCM service starts select runtime Chill even without a flag.",
+      "Existing engine attachment changes mode only when explicitly flagged, through authenticated exact-schema queued control.",
+      "Accepted Chill latches AI before queued work; an earlier Full action cannot clear pending Chill, and later manual Full remains allowed.",
+      "Runtime mode entry does not save startup preferences; failed existing-engine application does not spawn a duplicate."
+    ]
+  },
+  "go": {
+    "source": "isolated staged copies; production source and module manifests verified unchanged",
+    "source_sha256_method": "SHA256 of raw file bytes. All staged Go files use LF, so these hashes also equal SHA256 of UTF-8 text read with universal-newline normalization.",
+    "patch_sha256": "94d02c330fa89658cb545859661fbe9edcb9cff5f1eed450c11063f32a05dd4b",
+    "paths": [
+      {
+        "path": "frz/angerona_watchdog.go",
+        "base_sha256": "64e97ea82115c56bb76d8b268614b047409b6b73efc49eee5cf24c7394fd7e5c",
+        "staged_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+        "applied_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+        "normalized_applied_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+        "normalized_staged_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+        "normalized_base_sha256": "64e97ea82115c56bb76d8b268614b047409b6b73efc49eee5cf24c7394fd7e5c"
+      },
+      {
+        "path": "frz/angerona_watchdog_test.go",
+        "base_sha256": null,
+        "staged_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+        "applied_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+        "normalized_applied_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+        "normalized_staged_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+        "normalized_base_sha256": null
+      },
+      {
+        "path": "frz/hypervisor/main.go",
+        "base_sha256": "f9a94b54fa3fc7634d93635908d35bf91dd05e5553ba53f850697b529c97deb6",
+        "staged_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+        "applied_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+        "normalized_applied_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+        "normalized_staged_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+        "normalized_base_sha256": "f9a94b54fa3fc7634d93635908d35bf91dd05e5553ba53f850697b529c97deb6"
+      },
+      {
+        "path": "frz/hypervisor/main_test.go",
+        "base_sha256": null,
+        "staged_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+        "applied_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+        "normalized_applied_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+        "normalized_staged_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+        "normalized_base_sha256": null
+      }
+    ],
+    "toolchain": {
+      "MetadataURL": "https://go.dev/dl/?mode=json",
+      "ArchiveURL": "https://go.dev/dl/go1.27.2.windows-amd64.zip",
+      "ExpectedSHA256": "1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f",
+      "Filename": "go1.27.2.windows-amd64.zip",
+      "Size": 79008081,
+      "Version": "go1.27.2",
+      "ActualSHA256": "1314008898bd40df77af4b014f777f08873dbdfbcd3d92308728ee03304fe04f",
+      "ChecksumVerified": true
+    },
+    "gate": {
+      "status": "passed",
+      "top_level_tests": 5,
+      "subtests": 17,
+      "actual_harmless_watchdog_child_launches": 3,
+      "commands": [
+        "go test -mod=readonly -count=1 -v angerona_watchdog.go angerona_watchdog_test.go",
+        "go test -mod=readonly -count=1 -v .",
+        "go build -mod=readonly -o <architecture-output> angerona_watchdog.go",
+        "go build -mod=readonly -o <architecture-output> .",
+        "go mod verify (both modules)"
+      ],
+      "build_targets": [
+        "windows/amd64",
+        "windows/386"
+      ],
+      "pe_machine_verification": [
+        {
+          "file": "angerona_hypervisor-386.exe",
+          "machine": "0x14c"
+        },
+        {
+          "file": "angerona_hypervisor-amd64.exe",
+          "machine": "0x8664"
+        },
+        {
+          "file": "angerona_watchdog-386.exe",
+          "machine": "0x14c"
+        },
+        {
+          "file": "angerona_watchdog-amd64.exe",
+          "machine": "0x8664"
+        }
+      ],
+      "module_manifests_unchanged": true,
+      "readonly_modules_and_local_toolchain": true,
+      "context": "Staged-copy tests and architecture builds before production application; all four applied source/test files exactly match these compiled staged bytes."
+    },
+    "covered_behavior": [
+      "Each native automatic core launch receives exactly one exact --chill flag while preserving executable, other arguments, original argument slice, and retained child process custody.",
+      "Existing hypervisor strings.Fields parsing remains unchanged."
+    ],
+    "real_repository_gate": {
+      "status": "passed",
+      "tests": {
+        "top_level": 5,
+        "subtests": 17,
+        "actual_harmless_child_launches": 3
+      },
+      "go_version": "go version go1.27.2 windows/amd64",
+      "source_unchanged_during_gate": true,
+      "source_and_module_sha256": {
+        "frz/hypervisor/go.sum": "0c4155df83aa8c5b6c4cc18d77c3762d93ac85c7370cde6ed96dd6949dc568dc",
+        "frz/angerona_watchdog_test.go": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+        "frz/hypervisor/main.go": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+        "frz/go.sum": "59ff7906e3b7738fa8361e647f98c13c78417293ddb48f7c4f7ca8ead4531c63",
+        "frz/hypervisor/go.mod": "0720883b6dd8a52a624b94bad43e50bd5089467d0658216d9bbb4faf189e3ffd",
+        "frz/hypervisor/main_test.go": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+        "frz/angerona_watchdog.go": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+        "frz/go.mod": "d8532c71e449499918607b8fc9d65823a7c1423d5205a69d13fe99ded3797512"
+      },
+      "gofmt": "passed",
+      "module_verification": "passed for both modules",
+      "architecture_rebuild": "not repeated; applied raw source bytes exactly match the previously tested amd64/386 staged builds"
+    }
+  },
+  "limits": [
+    "The earlier full Python suite used frozen sources before these eleven follow-up paths changed. The later real-repository 90-case Python gate and native tests validate this bounded follow-up; no additional full-suite run is claimed.",
+    "Native builds are validation artifacts, not signed or installed replacements. Existing deployed native parents need rebuilding and redeployment to receive these changes.",
+    "No live watchdog supervision/recovery loop, Windows SCM installation, GPU model release, or older-hardware performance claim is established by this gate.",
+    "No raw environment, machine-specific executable path, or child environment is included in this public summary."
+  ],
+  "application": {
+    "reviewed_patch_hashes_verified": true,
+    "base_hashes_verified_before_application": true,
+    "all_applied_raw_and_normalized_hashes_equal_staged": true,
+    "python_paths": 7,
+    "go_paths": 4,
+    "newline_representation_adjustments_after_git_apply": [
+      "src/angerona/__main__.py",
+      "src/angerona/core/persistent_engine.py",
+      "src/angerona/core/engine_windows_service.py",
+      "src/angerona/core/engine_control.py",
+      "src/angerona/gui/engine_console.py",
+      "tests/test_chill_resilience_restart.py",
+      "frz/angerona_watchdog.go",
+      "frz/angerona_watchdog_test.go",
+      "frz/hypervisor/main.go",
+      "frz/hypervisor/main_test.go"
+    ],
+    "newline_adjustment_reason": "git apply followed the local Git CRLF conversion; after proving identical normalized text, file newlines were restored to exact reviewed staged representations."
+  }
+}

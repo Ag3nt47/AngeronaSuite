@@ -18,12 +18,12 @@
 // and a restart storm makes it give up. A watchdog that fought its own owner
 // would be indistinguishable from a rootkit — that boundary is the point.
 //
-//   Build:  cd AngeronaSuite\frz && go build -ldflags="-s -w" -o ..\angerona_watchdog.exe angerona_watchdog.go
-//   Run:    angerona_watchdog.exe <agent_exe> [agent args...]
-//           env ANGERONA_WD_DATADIR   = dir for heartbeats + log (default: agent dir)
-//           env ANGERONA_AGENT_SHA256 = expected lowercase-hex hash of <agent_exe>
-//                                       (else a <agent_exe>.sha256 sidecar; else
-//                                        first-run "learn" mode writes the sidecar)
+//	Build:  cd AngeronaSuite\frz && go build -ldflags="-s -w" -o ..\angerona_watchdog.exe angerona_watchdog.go
+//	Run:    angerona_watchdog.exe <agent_exe> [agent args...]
+//	        env ANGERONA_WD_DATADIR   = dir for heartbeats + log (default: agent dir)
+//	        env ANGERONA_AGENT_SHA256 = expected lowercase-hex hash of <agent_exe>
+//	                                    (else a <agent_exe>.sha256 sidecar; else
+//	                                     first-run "learn" mode writes the sidecar)
 package main
 
 import (
@@ -240,8 +240,19 @@ func jitter(base time.Duration, spread float64) time.Duration {
 }
 
 // ── launch the agent, detached, holding its process handle (anti-spoof) ─────
+// Every automatic launch starts in Chill; manual Full approval is session-local.
+func chillAgentArgs(args []string) []string {
+	chilled := make([]string, 0, len(args)+1)
+	for _, arg := range args {
+		if arg != "--chill" {
+			chilled = append(chilled, arg)
+		}
+	}
+	return append(chilled, "--chill")
+}
+
 func launchAgent(cfg config, token, wdMmapPath string) (*exec.Cmd, error) {
-	cmd := exec.Command(cfg.agentExe, cfg.agentArgs...)
+	cmd := exec.Command(cfg.agentExe, chillAgentArgs(cfg.agentArgs)...)
 	cmd.Env = append(os.Environ(),
 		"ANGERONA_WATCHDOG_TOKEN="+token,
 		"ANGERONA_WATCHDOG_MMAP="+wdMmapPath,

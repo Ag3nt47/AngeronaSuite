@@ -13,6 +13,11 @@ independent, read-only observer.
 
 ## What it repairs
 
+The separate HEAL module's automatic local-AI diagnosis stays deferred whenever
+the Chill toggle is on, including `CHILL: ALERT`. Pending crash snapshots remain
+available until the operator manually switches Chill off. Runtime service
+recovery described below continues independently of local AI.
+
 | Fault | Automatic behavior |
 | --- | --- |
 | Status reporter thread exits | Starts one replacement reporter worker. |
@@ -23,7 +28,7 @@ independent, read-only observer.
 | Core or sidecar process exits | The existing process supervisors retain their authenticated recovery policy. |
 
 The runtime healer samples its two application-owned services every 15 seconds,
-or 60 seconds in Chill mode. It requires two consecutive unhealthy observations
+or 60 seconds in quiet Chill. It requires two consecutive unhealthy observations
 before attempting repair. Attempts are charged before execution and separated
 by monotonic backoff. There are at most three attempts per incident. Five
 minutes of observed health are required before the attempt budget resets.

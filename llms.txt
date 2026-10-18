@@ -22,7 +22,28 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Hardware adaptation and verified self-check, 2026-10-18)
+## LATEST (v1.13.0 — Chill efficiency and local AI lock, 2026-10-18)
+
+- Record: analysis/chill-efficiency-2026-10-18/README.md; instructions:
+  docs/hardware-and-selfcheck.md#chill-mode. Version remains 1.13.0.
+- Quiet Chill dashboard ticks are 15/30/60s foreground/background/hidden.
+  Optional views have 15/30s floors; cosmetic timers and the FPS sampler stop.
+  Optional batches receive bounded 50ms cooperative pauses even without pressure.
+  Live streaming, event admission, threat wake and watchdog cadence are retained.
+- Ollama/Llama startup, inference, streaming, embedding and model-management
+  requests stay blocked until manual Full, INCLUDING CHILL: ALERT. Automatic
+  escalation never clears the operator AI lock. Only narrow resident-release
+  traffic is allowed; retained Angerona-owned daemon handles are stopped after
+  model release. Unowned/shared daemons are not killed or globally controlled.
+- Automatic core recovery forces Chill, including stale Full commands held by
+  an already-running watchdog. Local AI after recovery requires manual Full.
+- HEAL retains pending AI diagnosis; TUNE optional learning polls every 64s.
+  Recorder empty waits are 5s and replay checks 30s in quiet Chill; arrivals
+  immediately wake queues and preserve the original 100ms first-item batch flush.
+- Offline policy, GUI callback, recorder and model-lock fixtures do not prove
+  physical CPU/RAM savings, native GPU runner exit or long-session stability.
+
+## Hardware adaptation and verified self-check (2026-10-18)
 
 - Record: analysis/hardware-adaptation-2026-10-18/README.md. Operator guide:
   docs/hardware-and-selfcheck.md. Maintenance version remains 1.13.0.

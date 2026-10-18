@@ -45,7 +45,7 @@ class _SpinRing(QWidget):
         self.setFixedSize(d, d)
         self._angle = 0.0
         self._color = QColor(*_C_RED)
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.timeout.connect(self._tick)
 
     def start(self) -> None:
@@ -441,7 +441,7 @@ class MicMeter(QWidget):
         lay.setSpacing(6)
         lay.addWidget(self._icon)
         lay.addWidget(self._bar, 1)
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.timeout.connect(self._bar.tick)
         self.setToolTip("Microphone input level — if this moves when you speak, ARIA can hear you.")
         self.hide()
@@ -541,7 +541,7 @@ class SharkSwimIndicator(QWidget):
         self._x = self._BODY_LEN
         self._dir = 1
         self._phase = 0.0
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.timeout.connect(self._tick)
         self.hide()
 
@@ -667,7 +667,7 @@ class SharkSwimBanner(QWidget):
         self._x = 60.0
         self._dir = 1
         self._phase = 0.0
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.timeout.connect(self._tick)
         self.hide()
 
@@ -789,7 +789,7 @@ class ClashingSwords(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._active = False
         self._phase = 0.0
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.timeout.connect(self._tick)
         self._timer.setInterval(40)
 

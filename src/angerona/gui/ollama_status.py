@@ -1,8 +1,10 @@
 """Presentation of cached Ollama startup stages; never probes from Qt."""
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton
+
+from angerona.gui.presentation_timer import PresentationTimer
 
 
 class OllamaStatusPanel(QFrame):
@@ -32,7 +34,7 @@ class OllamaStatusPanel(QFrame):
             "Model approval and byte verification remain separate. Automatic "
             "containment works independently of Ollama."
         )
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self)
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self.refresh)
         self.refresh()
@@ -53,7 +55,7 @@ class OllamaStatusPanel(QFrame):
             color = "#4ade80"
         self.label.setStyleSheet(f"color:{color};")
         if self.retry_button is not None:
-            self.retry_button.setEnabled(status.state != "starting")
+            self.retry_button.setEnabled(status.state not in {"starting", "blocked"})
 
     def start_service(self):
         from angerona.core.ollama_lifecycle import request_ollama_start

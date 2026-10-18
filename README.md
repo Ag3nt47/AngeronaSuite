@@ -38,6 +38,15 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [October 18 Chill update](analysis/chill-efficiency-2026-10-18/README.md)
+slows optional background work and dashboard refreshes substantially, stops idle
+animations and FPS sampling, and reduces empty recorder wakeups. **Ollama and
+Llama stay blocked while the Chill toggle is on, including `CHILL: ALERT`.**
+Only manually switching Chill off permits local AI startup and inference again;
+threat escalation wakes security modules without enabling AI. See the
+[Chill instructions](docs/hardware-and-selfcheck.md#chill-mode) for refresh
+periods and the scope of service cleanup.
+
 The [October 18 hardware and self-check update](analysis/hardware-adaptation-2026-10-18/README.md)
 adds RAM-pressure feedback for routine pacing, suspends refresh and animation
 timers in hidden or minimized views, reduces blocked snapshot polling, and removes
@@ -307,7 +316,9 @@ configured modules remain visible; quiet telemetry does not prove irrelevance.
 USB and WLAN guards keep watching for future device or link arrivals.
 
 Chill Mode limits optional analytical and presentation work while retaining its
-configured protection paths. The catalog is not a recommendation to activate
+configured protection paths. Local AI requests, service startup and model loading
+remain blocked throughout Chill, including alert escalation and self-check.
+The catalog is not a recommendation to activate
 all modules, and a running count is not a protection score. Module details expose
 availability, health and the reason for an inactive state.
 

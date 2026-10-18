@@ -1,0 +1,188 @@
+{
+  "date": "2026-10-18",
+  "version": "1.13.0",
+  "baseline_commit": "706a819247af882fcc953f26290b0507ea854ca8",
+  "interrupted_native_probe": {
+    "status": "Interrupted after two alert-retention failures identified a pre-existing Windows filename terminator defect.",
+    "failed_tests": [
+      "test_append_rotates_legacy_oversize_without_loading_or_truncating_it",
+      "test_rotation_preserves_oversize_when_metadata_size_is_stale"
+    ],
+    "resolution": "Explicit trailing UTF-16 NUL; deterministic baseline/current canary in rename-proof.json; final full regression below."
+  },
+  "full_regression": {
+    "command": "venv/Scripts/python.exe -m pytest -q -p tools.pytest_execution_trace --basetemp=.tmp/pytest-chill-publish-full --junitxml=.tmp/chill-publish-full.xml",
+    "passed": 5050,
+    "skipped": 25,
+    "failures": 3,
+    "errors": 0,
+    "seconds": 2652.949,
+    "execution_trace": {
+      "session-start": 1,
+      "test-start": 5078,
+      "test-report": 15228,
+      "session-end": 1
+    },
+    "exit_code": 1,
+    "failed_tests": [
+      "tests/test_cycle27_round1_high_c.py::test_smart_deception_restage_bounds_evidence_and_logical_slot_alerts",
+      "tests/test_redteam_live_scoring_regression.py::test_live_redteam_marker_custody_allows_verified_containment[comprehensive]",
+      "tests/test_sandbox_resource_bounds.py::test_success_also_retires_disposable_descendants"
+    ],
+    "failure_scope": "One existing wall-clock fixture crossed a five-minute alert identity epoch; corrected in the test-only followup. Comprehensive containment and disposable self-test child hit their original deadlines; the same unchanged tests/sources passed in a fresh 13-case process. Exact cause of the transient backlog/startup latency is unproven."
+  },
+  "source_freeze": {
+    "scope": "All Python source under src, tests and tools, UTF-8 text with normalized newlines. Identical before and after the complete run, before the documented clock-fixture and entrypoint followups.",
+    "files": 993,
+    "sha256": "1504b66bc1105d5f52a5ab71367b0daadb5b9be59e7deb25c9e66faa95613c8f",
+    "unchanged": true,
+    "reviewed_final_sha256": "02b2b816e23258cc2d676dfaaf0b633bd7b9209fcbdc3e6b6eca3c50cf0e5c15",
+    "post_run_delta": [
+      {
+        "source": "src/angerona/__main__.py",
+        "before": "aee4877641ef342a3043558b376934832a963b2a520b562c35ddda4545301dad",
+        "after": "1c329db6a61e4c9fb514489ca8ebcab999bffc4651aa9f2937595b5e2200ca75"
+      },
+      {
+        "source": "src/angerona/core/engine_control.py",
+        "before": "938fa90115eccf92551654dcda2632b645cf5d4c3173671b7f4f0f52bf8d71bc",
+        "after": "0caeef759b24e87a4364c4c1d3756c2d485e8bc962e9d3e3f66918af2b23f1b9"
+      },
+      {
+        "source": "src/angerona/core/engine_windows_service.py",
+        "before": "91e87bd1278ee3b6d03b1343762abf2664d2917279a0ebaa4ae36d7e46f49a41",
+        "after": "cf7010ffebc1065e209a56d5104ec3927f5b8f01b8db04f72b4770fbdd036fd3"
+      },
+      {
+        "source": "src/angerona/core/headless.py",
+        "before": "867bf277bd7477c4ef2f4bb0efeb102056a1afb5c3ec1413390150151207e4d5",
+        "after": "cffac27229e4bb51ebba0087163d4797ac2948904f6b060e72d9f0645c17825b"
+      },
+      {
+        "source": "src/angerona/core/persistent_engine.py",
+        "before": "e4c59214c29ab456a2142ac2951f671aa036ee18819cd248c55f642366b5b69d",
+        "after": "a3ccc84a5140e269c30eb1f6ac3ade90bab7e13826271a355322d31538c8d4c7"
+      },
+      {
+        "source": "src/angerona/gui/engine_console.py",
+        "before": "fc23d2aa8d29db913b95cde47f2a2094b945af1a80d54aac33466f736c8e7f24",
+        "after": "c459bbbb740c4f54ca3dd9a2712daaebc0285b08b3ee8be3ecf8b9ad66c24d3f"
+      },
+      {
+        "source": "tests/test_chill_resilience_restart.py",
+        "before": "fbdd9726f80dff226e6b0f2720b2f080ba7bfe488229dffd6458aa8b297b05c6",
+        "after": "f99813d72c58c4d69dc19bc463674e413e086c5bdabe9d9a6cb0d82d4b9f55b5"
+      },
+      {
+        "source": "tests/test_cycle27_round1_high_c.py",
+        "before": "462cc29545342751d06a17a645f9b350b8dd91130ddb70883ccdf35d192182b2",
+        "after": "3dd49732e35a1a1a8bb6450a0619c2fe94ae0623c919edd086189fa0d07051b5"
+      }
+    ],
+    "application_and_tools_unchanged_after_full_run": false,
+    "post_run_application_scope": "Six Python entrypoint/control files and one existing test file; exact paths/hashes and real-repository focused gate in entrypoint-followup.json. Two native Go launchers and two Go test files have separate compile/execution proof there.",
+    "scheduling_recorder_and_archive_sources_unchanged_after_full_run": true
+  },
+  "test_only_followup": {
+    "command": "venv/Scripts/python.exe -X pycache_prefix=.tmp/chill-dedup-followup-pycache -m pytest tests/test_cycle27_round1_high_c.py --junitxml=.tmp/chill-dedup-followup.xml --basetemp=.tmp/pytest-chill-dedup-followup -q",
+    "scope": "Module-local fixed wall clock in the retention/dedup budget fixture; real file custody and all budget assertions preserved. Independent epoch/TTL behavior remains tested.",
+    "passed": 24,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 39.456,
+    "evidence": "dedup-clock-proof.json"
+  },
+  "offline_selfcheck": {
+    "passed": 28,
+    "failed": 0,
+    "module_status": {
+      "PASS": 66,
+      "SKIP": 18
+    },
+    "verification_checks": 9
+  },
+  "unchanged_source_timeout_followup": {
+    "command": "venv/Scripts/python.exe .tmp/run_chill_contention_followup.py --repo <repository> --output .tmp/chill-backlog-current.json --junit .tmp/chill-contention-followup.xml",
+    "scope": "Comprehensive inert containment plus all 12 sandbox resource cases, in one fresh process before any source correction. Original 100-second response and 10-second sandbox deadlines retained.",
+    "passed": 13,
+    "skipped": 0,
+    "failures": 0,
+    "errors": 0,
+    "seconds": 69.74,
+    "evidence": "timeout-followup.json",
+    "causal_limit": "A passing repeat does not establish the physical cause of the earlier backlog or child startup delay."
+  },
+  "entrypoint_followup": {
+    "evidence": "entrypoint-followup.json",
+    "status": "passed"
+  },
+  "static_checks": {
+    "compiled_files": 993,
+    "compile_failures": 0,
+    "ruff": "PASS",
+    "documentation_drift": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "focused_selections": [
+    {
+      "scope": "AI lock, startup, transport, readiness, self-test and status",
+      "passed": 210,
+      "seconds": 35.76
+    },
+    {
+      "scope": "Final custody/inspector changes, Chill, engine and inspector UI",
+      "passed": 100,
+      "seconds": 20.47
+    },
+    {
+      "scope": "GUI presentation/lifecycle/status",
+      "passed": 133,
+      "seconds": 19.21
+    },
+    {
+      "scope": "Final floating orb and adjacent presentation",
+      "passed": 36,
+      "seconds": 14.76
+    },
+    {
+      "scope": "Independent policy, USB, semantic threat wake, engine, self-test and recorder",
+      "passed": 200,
+      "seconds": 43.61
+    },
+    {
+      "scope": "Recorder, overflow, recovery and healer",
+      "passed": 44,
+      "seconds": 15.71
+    },
+    {
+      "scope": "Automatic Chill recovery, watchdog restart and performance lifecycle",
+      "passed": 28,
+      "seconds": 23.42
+    },
+    {
+      "scope": "Final owned-service retry bounds, AI lock and startup",
+      "passed": 63,
+      "seconds": 4.95
+    },
+    {
+      "scope": "Final owned-service status, AI lock, startup and status UI",
+      "passed": 68,
+      "seconds": 4.5
+    },
+    {
+      "scope": "Native rename/retention, archive safety, data custody and source sandbox",
+      "passed": 79,
+      "skipped": 2,
+      "seconds": 29.86
+    }
+  ],
+  "focused_scope_note": "These selections overlap and precede the frozen full suite; do not sum them into another suite total.",
+  "limits": [
+    "No physical CPU/RAM saving or old-machine throughput estimate.",
+    "No native GPU runner/service shutdown or live security efficacy proof.",
+    "No prolonged all-sensor soak or clean-machine/platform acceptance claim.",
+    "A separately launched/shared Ollama daemon is not terminated; another application remains outside the lock.",
+    "An already admitted native call cannot be retroactively prevented by a toggle."
+  ]
+}

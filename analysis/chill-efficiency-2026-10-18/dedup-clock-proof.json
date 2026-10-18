@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "test": "tests/test_cycle27_round1_high_c.py::test_smart_deception_restage_bounds_evidence_and_logical_slot_alerts",
+  "baseline_commit": "706a819",
+  "scope": "Read-only timestamps from disposable failed-test evidence filenames; no operator files, paths or secrets included. Product and fixture sources remain unchanged during the full run.",
+  "dedup_epoch_seconds": 300.0,
+  "failed_test_duration_seconds": 9.47707569999875,
+  "retained_evidence_creation_times": [
+    {
+      "created_wall_seconds": 1792364096.735,
+      "logical_attack_epoch": 5974546,
+      "seconds_into_epoch": 296.7349998950958
+    },
+    {
+      "created_wall_seconds": 1792364097.56,
+      "logical_attack_epoch": 5974546,
+      "seconds_into_epoch": 297.55999994277954
+    },
+    {
+      "created_wall_seconds": 1792364098.502,
+      "logical_attack_epoch": 5974546,
+      "seconds_into_epoch": 298.5020000934601
+    },
+    {
+      "created_wall_seconds": 1792364099.236,
+      "logical_attack_epoch": 5974546,
+      "seconds_into_epoch": 299.23600006103516
+    },
+    {
+      "created_wall_seconds": 1792364100.035,
+      "logical_attack_epoch": 5974547,
+      "seconds_into_epoch": 0.03500008583068848
+    },
+    {
+      "created_wall_seconds": 1792364100.894,
+      "logical_attack_epoch": 5974547,
+      "seconds_into_epoch": 0.8940000534057617
+    },
+    {
+      "created_wall_seconds": 1792364101.769,
+      "logical_attack_epoch": 5974547,
+      "seconds_into_epoch": 1.7690000534057617
+    },
+    {
+      "created_wall_seconds": 1792364102.836,
+      "logical_attack_epoch": 5974547,
+      "seconds_into_epoch": 2.8359999656677246
+    }
+  ],
+  "distinct_attack_epochs": [
+    5974546,
+    5974547
+  ],
+  "explanation": "Logical incident identity includes floor(now / 300). This fixture crossed the five-minute epoch boundary; two alerts are expected even though the loop ran about nine seconds. Its one-alert assertion must pin one epoch.",
+  "sources_at_failed_full_run": {
+    "src/angerona/modules/smart_deception.py": {
+      "baseline_sha256": "c7bad19e6e567acdde641058714348e672ecf48cfebaab8a90cc62f1d40ec982",
+      "failed_full_run_sha256": "c7bad19e6e567acdde641058714348e672ecf48cfebaab8a90cc62f1d40ec982",
+      "unchanged_from_baseline": true
+    },
+    "tests/test_cycle27_round1_high_c.py": {
+      "baseline_sha256": "462cc29545342751d06a17a645f9b350b8dd91130ddb70883ccdf35d192182b2",
+      "failed_full_run_sha256": "462cc29545342751d06a17a645f9b350b8dd91130ddb70883ccdf35d192182b2",
+      "unchanged_from_baseline": true
+    }
+  },
+  "followup": {
+    "command": ".\\venv\\Scripts\\python.exe -X pycache_prefix=.tmp/chill-dedup-followup-pycache -m pytest tests/test_cycle27_round1_high_c.py --junitxml=.tmp/chill-dedup-followup.xml --basetemp=.tmp/pytest-chill-dedup-followup -q",
+    "junit": ".tmp/chill-dedup-followup.xml",
+    "junit_counts": {
+      "tests": 25,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "reported_passed": 24,
+    "reported_skipped": 1,
+    "reported_duration_seconds": 43.74,
+    "changed_test_file": "tests/test_cycle27_round1_high_c.py",
+    "test_raw_sha256_before": "462cc29545342751d06a17a645f9b350b8dd91130ddb70883ccdf35d192182b2",
+    "test_raw_sha256_after": "3dd49732e35a1a1a8bb6450a0619c2fe94ae0623c919edd086189fa0d07051b5",
+    "product_raw_sha256_before": "c7bad19e6e567acdde641058714348e672ecf48cfebaab8a90cc62f1d40ec982",
+    "product_raw_sha256_after": "c7bad19e6e567acdde641058714348e672ecf48cfebaab8a90cc62f1d40ec982",
+    "scope": "Only fixture module-local wall clock is fixed within one logical epoch; real custody I/O, limits and all assertions retained. Whole-file gate includes independent 5000-epoch expiry and hard-cap test."
+  }
+}

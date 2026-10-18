@@ -1,0 +1,208 @@
+{
+  "schema": "angerona.chill-timeout-followup/v1",
+  "date": "2026-10-18",
+  "purpose": "Investigate two preceding full-suite deadline failures using a fresh sequential process, unchanged product/test sources and original deadlines.",
+  "frozen_python_sources": {
+    "count": 993,
+    "sha256": "1504b66bc1105d5f52a5ab71367b0daadb5b9be59e7deb25c9e66faa95613c8f",
+    "full_run_source_proof_matched": true,
+    "fingerprint_method": "SHA-256 over sorted compact JSON mapping repository-relative Python paths to SHA-256 of UTF-8 text with universal-newline normalization; src, tests and tools only."
+  },
+  "comparison_baseline_commit": "706a819247af882fcc953f26290b0507ea854ca8",
+  "unchanged_relevant_sources": {
+    "tests/test_redteam_live_scoring_regression.py": {
+      "frozen_sha256": "df409dff6f419269656ca63b5e1f50c5fb6c997f685d2f712331662a2dcf3cb7",
+      "observed_followup_sha256": "df409dff6f419269656ca63b5e1f50c5fb6c997f685d2f712331662a2dcf3cb7",
+      "baseline_sha256": "df409dff6f419269656ca63b5e1f50c5fb6c997f685d2f712331662a2dcf3cb7",
+      "unchanged_from_baseline": true
+    },
+    "src/angerona/modules/adversary_combat.py": {
+      "frozen_sha256": "cb7494ee34b3a08930bdcb576046000a65c55bbf1aeef40c4d5454b879fc84ab",
+      "observed_followup_sha256": "cb7494ee34b3a08930bdcb576046000a65c55bbf1aeef40c4d5454b879fc84ab",
+      "baseline_sha256": "cb7494ee34b3a08930bdcb576046000a65c55bbf1aeef40c4d5454b879fc84ab",
+      "unchanged_from_baseline": true
+    },
+    "src/angerona/modules/purple_guard.py": {
+      "frozen_sha256": "f6ded88b3cf2fedc8305f0daea9371c679892f29572c4664f55079e4922cdaa9",
+      "observed_followup_sha256": "f6ded88b3cf2fedc8305f0daea9371c679892f29572c4664f55079e4922cdaa9",
+      "baseline_sha256": "f6ded88b3cf2fedc8305f0daea9371c679892f29572c4664f55079e4922cdaa9",
+      "unchanged_from_baseline": true
+    },
+    "src/angerona/core/sandbox_runner.py": {
+      "frozen_sha256": "34abd38d70825495702ae0f7d1c4a5933d4c5ff109d597e55134a1873ce09586",
+      "observed_followup_sha256": "34abd38d70825495702ae0f7d1c4a5933d4c5ff109d597e55134a1873ce09586",
+      "baseline_sha256": "34abd38d70825495702ae0f7d1c4a5933d4c5ff109d597e55134a1873ce09586",
+      "unchanged_from_baseline": true
+    },
+    "src/angerona/resilience/_selftest_environment.py": {
+      "frozen_sha256": "d4a5c23eea7780d1745349e7e370df60c6b08a4704c95adeb237df5e7646dee1",
+      "observed_followup_sha256": "d4a5c23eea7780d1745349e7e370df60c6b08a4704c95adeb237df5e7646dee1",
+      "baseline_sha256": "d4a5c23eea7780d1745349e7e370df60c6b08a4704c95adeb237df5e7646dee1",
+      "unchanged_from_baseline": true
+    },
+    "tests/test_sandbox_resource_bounds.py": {
+      "frozen_sha256": "2bd809f56e2438e221604605041c5e0dcbc780692844e69b133e292c77085748",
+      "observed_followup_sha256": "2bd809f56e2438e221604605041c5e0dcbc780692844e69b133e292c77085748",
+      "baseline_sha256": "2bd809f56e2438e221604605041c5e0dcbc780692844e69b133e292c77085748",
+      "unchanged_from_baseline": true
+    }
+  },
+  "preceding_full_suite": {
+    "passed": 5050,
+    "skipped": 25,
+    "failed": 3,
+    "relevant_failures": [
+      {
+        "test": "tests/test_redteam_live_scoring_regression.py::test_live_redteam_marker_custody_allows_verified_containment[comprehensive]",
+        "call_duration_seconds": 120.7919095,
+        "verification_deadline_seconds": 100,
+        "failure": "Expected quarantine receipt set was incomplete at assertion; response worker remained ARMED with queue_depth 16.",
+        "complete_missing_set_retained": false,
+        "missing_set_limitation": "Archived assertion representation was truncated; the original fixture data was deleted at teardown."
+      },
+      {
+        "test": "tests/test_sandbox_resource_bounds.py::test_success_also_retires_disposable_descendants",
+        "call_duration_seconds": 12.2071543,
+        "child_output_deadline_seconds": 10,
+        "failure": "Isolated self_test exceeded the original child output deadline and was terminated."
+      }
+    ],
+    "concurrency_context": "Staged build/test work ran during part of this full suite. This is context, not evidence that concurrency caused either failure."
+  },
+  "followup": {
+    "exit_code": 0,
+    "passed": 13,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "console_duration_seconds": 69.8,
+    "junit_duration_seconds": 69.74,
+    "test_order": "One comprehensive live case followed by the entire 12-case sandbox resource-bounds file in one fresh process.",
+    "junit_source_basename": "chill-contention-followup.xml",
+    "cases": [
+      {
+        "test": "tests.test_redteam_live_scoring_regression::test_live_redteam_marker_custody_allows_verified_containment[comprehensive]",
+        "junit_duration_seconds": 65.429,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_oversized_installed_source_is_refused_without_copy",
+        "junit_duration_seconds": 0.022,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_oversized_candidate_is_refused_before_ast_or_overwrite",
+        "junit_duration_seconds": 0.146,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_hardlinked_working_copy_is_not_read_as_sandbox_content",
+        "junit_duration_seconds": 0.091,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_working_copy_mutation_during_bounded_read_is_refused",
+        "junit_duration_seconds": 0.213,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_child_python_and_native_output_are_bounded[print('X' * 4000)]",
+        "junit_duration_seconds": 0.589,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_child_python_and_native_output_are_bounded[import os; os.write(1, b'X' * 65536)]",
+        "junit_duration_seconds": 0.525,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_relative_probe_root_is_resolved_before_disposable_child_cwd",
+        "junit_duration_seconds": 0.513,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_success_also_retires_disposable_descendants",
+        "junit_duration_seconds": 0.662,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_failed_job_assignment_never_imports_target",
+        "junit_duration_seconds": 0.029,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_unbounded_deadline_is_refused[inf]",
+        "junit_duration_seconds": 0.003,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_unbounded_deadline_is_refused[nan]",
+        "junit_duration_seconds": 0.005,
+        "outcome": "passed"
+      },
+      {
+        "test": "tests.test_sandbox_resource_bounds::test_unbounded_deadline_is_refused[61]",
+        "junit_duration_seconds": 0.005,
+        "outcome": "passed"
+      }
+    ],
+    "method": "Ignored diagnostic plugin called original methods unchanged, retained the original deadlines and graded no assertions itself. It observed in-memory response/controller state at 500 ms intervals and timed original sandbox custody stages; generated fixture evidence was retained after the call.",
+    "diagnostic_plugin_sha256": "1dba67c7bbd9938f64ea990c2d0f28e643ec48f5f33e3b06f067ddeabf33c79e",
+    "concurrency_context": "Other agents held build/test work until this single-process followup finished."
+  },
+  "live_case": {
+    "call_duration_seconds": 64.96756490000007,
+    "verification_deadline_seconds": 100,
+    "expected_positive_steps": 37,
+    "simulation_contract_validations": 37,
+    "simulation_only": true,
+    "aar_outcome": "verified",
+    "successful_response_steps": 37,
+    "handlers_started": 39,
+    "handlers_completed": 39,
+    "distinct_quarantine_receipts_observed": 36,
+    "distinct_process_receipts_observed": 3,
+    "receipt_observer_limitation": "Passive receipt counters are supplementary; the original test assertions and generated AAR establish the accepted fixture result.",
+    "queue_drops": 0,
+    "peak_queue_depth": 31,
+    "peak_queue_pending": 32,
+    "first_receipt_elapsed_seconds": 11.198788,
+    "last_receipt_elapsed_seconds": 61.347246,
+    "last_handler_completed_elapsed_seconds": 61.347433,
+    "first_sample_after_final_backlog_cleared_elapsed_seconds": 61.850177,
+    "final_queue_depth": 0,
+    "final_queue_pending": 0,
+    "missing_quarantine_receipts_at_success": 0,
+    "missing_process_receipts_at_success": 0
+  },
+  "controller_policy_observations": {
+    "count": 144,
+    "quiet_chill_or_runtime_ai_latch_observed": false,
+    "resource_pressure_step_values": [
+      0
+    ],
+    "ui_host_memory_signal_inputs_present": false,
+    "limitation": "These are controller policy observations only. The fixture need not run a physical host resource observer; absent signals do not establish an idle host or any CPU/RAM condition."
+  },
+  "sandbox_descendant_case": {
+    "original_child_output_deadline_seconds": 10,
+    "call_duration_seconds": 0.655129400000078,
+    "isolated_runner_duration_seconds": 0.6445574000008492,
+    "child_output_state": "complete",
+    "stage_durations_seconds": {
+      "_assign_windows_kill_job": 0.0003299000018159859,
+      "_resume_windows_process": 0.08841100000063307,
+      "_bounded_process_output": 0.5427849000006972,
+      "_stop_process_custody": 7.74000000092201e-05,
+      "_remove_owned_temp": 0.0003312999997433508
+    },
+    "disposable_descendant_postcondition": "The original test verified its exact child identity retired within its unchanged 3-second postcondition deadline."
+  },
+  "conclusion": {
+    "same_frozen_source_followup_passed": true,
+    "baseline_tests_rerun": false,
+    "baseline_not_rerun_reason": "Agreed comparison criterion was to run the baseline only if the isolated current-source failure repeated; all current cases passed.",
+    "cause_status": "Unresolved transient failures in the preceding full-suite run. No specific physical load, concurrency, Chill policy or code-change cause has been proven.",
+    "scope": "These results establish completion of these inert fixtures within their existing deadlines in this fresh process; they do not prove general timing guarantees or production detection efficacy."
+  }
+}

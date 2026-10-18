@@ -1,0 +1,3051 @@
+{
+  "scope": "Offline installation fixture; no live sensor, containment or native model readiness proof.",
+  "passed_phases": 28,
+  "failed_phases": 0,
+  "phase_timings": [
+    {
+      "phase": "discover modules",
+      "status": "PASS",
+      "duration_ms": 5163.567800000237
+    },
+    {
+      "phase": "SelfTestRunner over all modules",
+      "status": "PASS",
+      "duration_ms": 4089.9147000000085
+    },
+    {
+      "phase": "Self-test verification — canaries, inventory coverage and saved report readback",
+      "status": "PASS",
+      "duration_ms": 2.428099998724065
+    },
+    {
+      "phase": "Self-test performance — constrained hardware worker budget and completion",
+      "status": "PASS",
+      "duration_ms": 75.6333999997878
+    },
+    {
+      "phase": "build MainWindow",
+      "status": "PASS",
+      "duration_ms": 2279.5110999995813
+    },
+    {
+      "phase": "DashboardCards.refresh",
+      "status": "PASS",
+      "duration_ms": 11.45120000001043
+    },
+    {
+      "phase": "EventsWindow — Alerts (LOW+)",
+      "status": "PASS",
+      "duration_ms": 181.8215000002965
+    },
+    {
+      "phase": "EventsWindow — Critical",
+      "status": "PASS",
+      "duration_ms": 76.3729999998759
+    },
+    {
+      "phase": "ModulesStatusWindow",
+      "status": "PASS",
+      "duration_ms": 110.08399999991525
+    },
+    {
+      "phase": "ThreatWindow — refresh + select + posture lookup",
+      "status": "PASS",
+      "duration_ms": 39.66279999986
+    },
+    {
+      "phase": "ModuleInspector — build for first module",
+      "status": "PASS",
+      "duration_ms": 291.11209999973653
+    },
+    {
+      "phase": "process-mitigation self-hardening",
+      "status": "PASS",
+      "duration_ms": 0.4000000008090865
+    },
+    {
+      "phase": "Judgment Gate — stamp / verify / tamper-detect",
+      "status": "PASS",
+      "duration_ms": 1293.8569000016287
+    },
+    {
+      "phase": "Ring 1 Driver-Intel Shield (INTL + FIM + shark)",
+      "status": "PASS",
+      "duration_ms": 0.16209999921557028
+    },
+    {
+      "phase": "Timing jitter (os.urandom, anti-TOCTOU)",
+      "status": "PASS",
+      "duration_ms": 0.4242000013618963
+    },
+    {
+      "phase": "Blast-radius tree + Shark-vs-Shield collision view",
+      "status": "PASS",
+      "duration_ms": 13.283800000863266
+    },
+    {
+      "phase": "Unified Red Team Simulation (dialog + engine params)",
+      "status": "PASS",
+      "duration_ms": 14.495400000669179
+    },
+    {
+      "phase": "Red Team drill — LIVE run (complexity + custom + target)",
+      "status": "PASS",
+      "duration_ms": 12331.589700001132
+    },
+    {
+      "phase": "Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)",
+      "status": "PASS",
+      "duration_ms": 1624.2418000001635
+    },
+    {
+      "phase": "Console cmds + custom library CRUD + two-pane monitor",
+      "status": "PASS",
+      "duration_ms": 71.84430000052089
+    },
+    {
+      "phase": "AI guardrail proxy + hardware-patching layer",
+      "status": "PASS",
+      "duration_ms": 113.34610000085377
+    },
+    {
+      "phase": "Sprint-1 remediations (guardrail token/neutralize + gate TOCTOU)",
+      "status": "PASS",
+      "duration_ms": 1054.0352999996685
+    },
+    {
+      "phase": "Vetted remediation (inert path proposals + gated host actions)",
+      "status": "PASS",
+      "duration_ms": 793.7899999997171
+    },
+    {
+      "phase": "Persistence Sweep (autorun classifier + discovery)",
+      "status": "PASS",
+      "duration_ms": 0.16429999959655106
+    },
+    {
+      "phase": "ATT&CK coverage heatmap (honest, cross-checked vs ACTIONS)",
+      "status": "PASS",
+      "duration_ms": 50.747499999488355
+    },
+    {
+      "phase": "Incident correlation (grouping + scoring + window split)",
+      "status": "PASS",
+      "duration_ms": 34.984699999768054
+    },
+    {
+      "phase": "World View → native Qt flow window (live)",
+      "status": "PASS",
+      "duration_ms": 257.59950000065146
+    },
+    {
+      "phase": "Speed pass (WAL + ledger cap + audit-count cache)",
+      "status": "PASS",
+      "duration_ms": 3428.370800000266
+    }
+  ],
+  "worker_fixture": [
+    {
+      "phase": "Self-test performance — constrained hardware worker budget and completion",
+      "status": "PASS",
+      "detail": "32 inert modules, peak 2/2 workers, zero unfinished calls; 78.0 ms measured",
+      "duration_ms": 75.6333999997878
+    }
+  ],
+  "module_count": 84,
+  "module_status": {
+    "PASS": 66,
+    "SKIP": 18
+  },
+  "module_subchecks": 559,
+  "module_results": [
+    {
+      "module": "AI Model Integrity Guard",
+      "status": "PASS",
+      "duration_ms": 93.0000000007567,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "AI Triage (Ollama)",
+      "status": "SKIP",
+      "duration_ms": 3889.999999999418,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "AMSI Bridge",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "API Patch / Anti-Blinding Detector",
+      "status": "PASS",
+      "duration_ms": 78.00000000133878,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "ARP Watchdog",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "AV Telemetry Bridge",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Active Deception",
+      "status": "PASS",
+      "duration_ms": 31.000000000858563,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Active Response SOAR",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Adaptive Resource Governor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Adversary Combat",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "AegisPath Exposure Graph Guard",
+      "status": "PASS",
+      "duration_ms": 15.99999999962165,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Anti-Suspension Heartbeat",
+      "status": "PASS",
+      "duration_ms": 109.00000000037835,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "App Control Decision Evidence",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Audit Log Integrity Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Authentication Extension Integrity Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "C2 Beacon Detector",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "CHAOS",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Cloud CTI Escalation",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Compliance Mapper",
+      "status": "PASS",
+      "duration_ms": 63.00000000010186,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Counter-Agentic Detection",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Data Provenance Graph",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Detection Runtime",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Deterministic Fast-Path Interceptor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Driver Provenance Guard",
+      "status": "PASS",
+      "duration_ms": 15.99999999962165,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Dynamic Resource Governor",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "ETW Core Listener",
+      "status": "PASS",
+      "duration_ms": 140.99999999962165,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "ETW Real-Time Process Sensor",
+      "status": "PASS",
+      "duration_ms": 108.99999999855936,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Evidence Lattice Fusion",
+      "status": "PASS",
+      "duration_ms": 93.99999999914144,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Evolution Engine",
+      "status": "PASS",
+      "duration_ms": 14.999999999417923,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "File Integrity Monitor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Fleet Health Monitor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Forensics Capture",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "HEAL",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Hardware-Rooted Integrity",
+      "status": "PASS",
+      "duration_ms": 16.00000000144064,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Identity Session Guard",
+      "status": "PASS",
+      "duration_ms": 16.00000000144064,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Immutable Recovery Assurance Guard",
+      "status": "PASS",
+      "duration_ms": 16.00000000144064,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "In-Memory Flight Cache",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Indirect Syscall Bridge",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Kernel Sensor Bridge",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Kernel-Boundary Posture Ledger",
+      "status": "PASS",
+      "duration_ms": 125.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "LSASS Credential-Access Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Linux Observe Sensor",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Linux eBPF Sensor",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Memory Injection Scanner",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Memory Time-Machine",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Mobile Response Bridge",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Monolithic Packaging",
+      "status": "PASS",
+      "duration_ms": 1375.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Network Monitor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Network Protocol Deep Decoder",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Packet Sniffer",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Peripheral and DMA Posture Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Persistence Sweep",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Platform Attestation Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Posture Hardening",
+      "status": "PASS",
+      "duration_ms": 2281.9999999992433,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Process Egress Lease Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Process Monitor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Purple Remediation Guard",
+      "status": "PASS",
+      "duration_ms": 30.999999999039574,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "RAG Provenance Guard",
+      "status": "PASS",
+      "duration_ms": 63.00000000010186,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Ransomware Heuristics",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Release Transparency / Anti-Rollback Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Remote Bridge",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Removable-Media / USB Monitor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "SIEM Forwarder",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "SOAR Automation",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "SSH Surface / Key / Tunnel Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Scheduled AI Security Briefing",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Self-Integrity Monitor",
+      "status": "PASS",
+      "duration_ms": 14.999999999417923,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Shadow Shield",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Shadow-Copy / Recovery Tamper Guard",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Smart Deception",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Speculative Triage Pre-Warm",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Storage Hygiene Enforcer",
+      "status": "PASS",
+      "duration_ms": 63.00000000010186,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Sysmon Event Bridge",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "TUNE",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "Telemetry Canary Drills",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Temporal Tradecraft Correlator",
+      "status": "PASS",
+      "duration_ms": 531.0000000008586,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Upstream Threat Intel Sync",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "WFP Controller",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    },
+    {
+      "module": "WLAN Monitor",
+      "status": "PASS",
+      "duration_ms": 311.99999999989814,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Watchdog Monitor",
+      "status": "PASS",
+      "duration_ms": 15.99999999962165,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "YARA Scanner",
+      "status": "PASS",
+      "duration_ms": 281.00000000085856,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Zero-Trust Local IPC Guard",
+      "status": "PASS",
+      "duration_ms": 61.99999999989814,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "Zero-Trust Network Path Monitor",
+      "status": "PASS",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "result_contract",
+          "status": "PASS"
+        },
+        {
+          "check": "active_test",
+          "status": "PASS"
+        },
+        {
+          "check": "health_result_consistency",
+          "status": "PASS"
+        }
+      ]
+    },
+    {
+      "module": "macOS Observe Sensor",
+      "status": "SKIP",
+      "duration_ms": 0.0,
+      "checks": [
+        {
+          "check": "identity",
+          "status": "PASS"
+        },
+        {
+          "check": "self_test_callable",
+          "status": "PASS"
+        },
+        {
+          "check": "capability_metadata",
+          "status": "PASS"
+        },
+        {
+          "check": "health_contract",
+          "status": "SKIP"
+        },
+        {
+          "check": "active_test",
+          "status": "SKIP"
+        }
+      ]
+    }
+  ],
+  "module_detail_scope": "Check names/status retained; raw diagnostic details omitted because they can contain operator paths.",
+  "worker_metrics": {
+    "module_workers": 4,
+    "worker_budget": "8 logical CPUs; 3100 MiB available RAM; pacing 1x",
+    "elapsed_ms": 3921.0000000002765,
+    "timing_scope": "checks and verification; excludes report I/O and notifications",
+    "module_count": 84
+  },
+  "verification": {
+    "status": "PASS",
+    "detail": "8/8 controlled verification checks passed; 84/84 modules accounted for; totals and subchecks reconcile",
+    "duration_ms": 31.000000000858563,
+    "checks": [
+      {
+        "check": "success canary",
+        "status": "PASS",
+        "detail": "canary ready",
+        "duration_ms": 0.0
+      },
+      {
+        "check": "failure canary",
+        "status": "PASS",
+        "detail": "canary defect",
+        "duration_ms": 0.0
+      },
+      {
+        "check": "exception canary",
+        "status": "PASS",
+        "detail": "error: RuntimeError: canary exception",
+        "duration_ms": 0.0
+      },
+      {
+        "check": "malformed-result canary",
+        "status": "PASS",
+        "detail": "error: invalid self_test result; expected (bool, nonempty bounded str)",
+        "duration_ms": 0.0
+      },
+      {
+        "check": "timeout canary",
+        "status": "PASS",
+        "detail": "test timed out after 0.02s; the call is still running"
+      },
+      {
+        "check": "disabled skip canary",
+        "status": "PASS",
+        "detail": "disabled by operator configuration"
+      },
+      {
+        "check": "platform skip canary",
+        "status": "PASS",
+        "detail": "Unavailable on windows; this capability supports linux."
+      },
+      {
+        "check": "corrupt-accounting canary",
+        "status": "PASS",
+        "detail": "deliberately incorrect totals must be rejected"
+      },
+      {
+        "check": "report reconciliation",
+        "status": "PASS",
+        "detail": "84/84 modules accounted for; totals and subchecks reconcile"
+      }
+    ]
+  }
+}

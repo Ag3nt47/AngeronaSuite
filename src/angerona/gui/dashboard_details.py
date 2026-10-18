@@ -117,7 +117,7 @@ class FuturisticHeader(QFrame):
         subtitle_label.setStyleSheet("color:#94a3b8; font-size:11px;")
         layout.addWidget(subtitle_label)
 
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.setInterval(45)
         self._timer.timeout.connect(self._tick)
 

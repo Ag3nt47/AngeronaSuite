@@ -7,6 +7,74 @@ changes ship as maintenance to v1.13.0.
 
 ## Running on a smaller computer
 
+### Chill mode
+
+Keep the **CHILL** toggle on for the lowest optional activity. The saved start
+preference is in **Settings → Start in Chill Mode**. The following intervals
+apply while Chill is quiet; a threat can wake security modules independently.
+
+| Work | Foreground Chill | Background Chill | Hidden/minimized Chill |
+| --- | --- | --- | --- |
+| Dashboard presentation tick | 15 seconds | 30 seconds | 60 seconds |
+| Dashboard panels | 30 seconds | 60 seconds | 120 seconds |
+| Posture display | 60 seconds | 60 seconds | 120 seconds |
+| Optional flow-canvas file | 5 minutes | 5 minutes | 5 minutes |
+| System Pulse sample | 30 seconds | 60 seconds | Suspended |
+| Shared investigation-view refresh | At least 15 seconds | At least 30 seconds | Suspended |
+
+If the System Pulse card itself is hidden while the dashboard stays visible,
+its sampler can still serve the visible footer. Hiding or minimizing the whole
+window suspends that sampling timer.
+
+Slower views retain their previous data between updates. Manual initial reads
+and buttons keep their own response path. Cosmetics, ribbon motion and the
+30 Hz FPS sampler stop in quiet Chill. Other visible optional timers request an
+eightfold interval, capped at five minutes added; background windows
+may double that display interval further. This is scheduled work reduction,
+not a measured CPU percentage.
+
+**Local AI stays off for the entire time the Chill toggle is on.** This
+includes `CHILL: ALERT`: escalation enables security sensors while keeping
+Ollama startup, inference, streaming, embeddings and model-management requests
+blocked. ARIA reports that Chill must be switched off manually. Self-check
+records an explicit AI skip and cannot override this selection. Automatic
+cooldown, threat events and drills cannot unlock AI.
+
+Automatic core recovery also starts in Chill, including updated Python and
+native Go watchdogs launched earlier in Full. Engine services always start in runtime
+Chill, including restarts from older service definitions without a `--chill`
+argument. Select Full manually afterward if local AI is wanted. Normal manual
+desktop/headless launch still follows the saved start preference; an explicit
+`--chill` overrides it for that run without saving a new preference. Attaching
+the engine console with `--chill` also selects runtime Chill in an existing
+engine.
+
+Native Go supervisors must be rebuilt and redeployed to receive this policy;
+an older running supervisor keeps its existing executable until replaced.
+
+Entering Chill requests release of resident Llama/configured models, then stops
+Ollama services launched and retained by this Angerona process. It retains a
+service handle if exit cannot be proved. It does not kill a separately launched
+or shared Ollama daemon; another application can still use that daemon. Native
+runner/GPU release is dependent on the local service and is not established by
+the offline fixtures. No new Angerona request can start or load a model while
+the lock remains set.
+
+Routine batches voluntarily yield with bounded pauses of up to 50 ms even on a
+healthy host; disabling adaptive pressure feedback does not disable explicit
+Chill policy. All selected work is retained. A native call cannot be preempted,
+so this does not enforce a process CPU quota. HEAL keeps pending AI diagnoses
+until Chill is manually switched off. TUNE's optional learning cadence becomes
+64 seconds instead of 8 seconds.
+
+The event recorder waits up to five seconds on an empty queue, with an arrival
+waking it immediately. The first event still starts its original 100 ms batch
+flush deadline. Empty dead-letter replay checks occur at most every 30 seconds;
+forced replay and shutdown drain remain available. These delays affect queued
+replay and presentation freshness, not signed event admission or threat wake.
+
+### Adaptive pressure feedback
+
 Leave **Settings → Appearance → Adaptive routine scan pacing** enabled. The
 existing controller now receives RAM and host CPU observations from Adaptive
 Resource Governor as well as dashboard responsiveness feedback. It reuses the
@@ -24,7 +92,8 @@ Interval additions remain capped at 30 seconds. Active routine batches keep
 their cooperative elapsed-work checkpoints and bounded, interruptible pauses.
 An individual native operation can still take longer than a work slice.
 
-The footer's **Angerona pace** describes the requested routine work budget.
+The footer's **Angerona pace** describes the adaptive pressure-feedback budget;
+Chill adds a separate optional-work budget and display policy.
 It does not measure CPU use, completed scans, or protection coverage. Slower
 routine inventory can discover changes later. Streaming event delivery,
 response actions and watchdogs retain their own cadence.
@@ -98,7 +167,8 @@ include helpers and inactive paths; they are an inventory, not runtime
 coverage or proof that every source file needed an optimization.
 
 Measured component results and validation outcomes are recorded in the
-[October 18 engineering review](../analysis/hardware-adaptation-2026-10-18/README.md).
+[hardware review](../analysis/hardware-adaptation-2026-10-18/README.md) and the
+[Chill follow-up](../analysis/chill-efficiency-2026-10-18/README.md).
 Virtual profiles are distinct from actual performance measurements. Physical
 low-memory machines, extended all-sensor sessions and native response efficacy
 require their own validation.

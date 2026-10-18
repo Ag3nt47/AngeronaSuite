@@ -29,6 +29,7 @@ from angerona.core.chill_mode import (
     CHILL_PAUSED_MODULES,
     CHILL_THROTTLE_FLOORS,
     ChillPolicy,
+    set_chill_ai_blocked,
 )
 from angerona.core.eco_wakeup import EcoWakeupWorker
 from angerona.core.eventbus import Severity
@@ -137,16 +138,18 @@ def _dashboard_refresh_plan(
 
     The tuple is ``(timer_ms, status_ticks, panel_ticks, posture_ticks,
     flow_ticks)``.  Security events have their own event-driven wake path, so
-    these periods govern presentation work only.  Expressing the old cadences
-    in elapsed time (rather than assuming every tick is one second) avoids the
-    accidental five-minute flow delay that a naively slowed Qt timer creates.
+    these periods govern presentation work only. Each period uses the current
+    timer's ticks so optional work retains its intended wall-clock cadence
+    when the base timer changes.
     """
+    if quiet_chill and not visible:
+        return (60_000, 1, 2, 2, 5)      # 60 / 120 / 120 / 300 seconds
     if not visible:
         return (15_000, 2, 4, 4, 4)       # 30 / 60 / 60 / 60 seconds
     if quiet_chill and not active:
-        return (10_000, 1, 1, 2, 6)       # 10 / 10 / 20 / 60 seconds
+        return (30_000, 1, 2, 2, 10)      # 30 / 60 / 60 / 300 seconds
     if quiet_chill:
-        return (5_000, 2, 2, 4, 12)       # 10 / 10 / 20 / 60 seconds
+        return (15_000, 1, 2, 4, 20)      # 15 / 30 / 60 / 300 seconds
     if not active:
         return (2_000, 1, 1, 2, 6)        # defer paint while another app is active
     return (1_000, 1, 2, 4, 12)           # original full-mode cadence
@@ -1063,6 +1066,7 @@ class MainWindow(QMainWindow):
 
     def _open_system_pulse_details(self) -> None:
         def _show():
+            self.system_pulse.request_sample()
             dialog = SystemPulseDetailDialog(self.system_pulse, self)
             self._system_pulse_detail = dialog
             dialog.show()
@@ -1151,9 +1155,18 @@ class MainWindow(QMainWindow):
 
     def _sync_idle_presentation(self) -> None:
         """Gate cosmetic UI work without weakening the incident wake path."""
+        quiet = self._quiet_chill_active()
         monitor = getattr(self, "_responsiveness_monitor", None)
         if monitor is not None:
-            monitor.set_active(self.isVisible() and not self.isMinimized())
+            # FPS measurement itself requested 30 paints/s in all-day Chill.
+            # Resource Governor retains independent host-pressure observations.
+            monitor.set_active(not quiet and self.isVisible() and not self.isMinimized())
+        pulse = getattr(self, "system_pulse", None)
+        if pulse is not None:
+            pulse.set_chill_mode(quiet, active=self.isActiveWindow())
+        strip = getattr(self, "status_strip", None)
+        if strip is not None and hasattr(strip, "_update_motion"):
+            strip._update_motion()
         timer = getattr(self, "timer", None)
         plan = self._current_refresh_plan()
         if timer is not None and timer.interval() != plan[0]:
@@ -1218,6 +1231,13 @@ class MainWindow(QMainWindow):
         """Gate Qt dispatch across both queued callbacks and blocked reads."""
         try:
             serious = event.severity >= Severity.HIGH
+            details = getattr(event, "details", None)
+            # PIN prompts and removal notices must not wait for sparse paints.
+            # The receiver still checks live module state before opening a gate.
+            serious = serious or (isinstance(details, dict) and details.get("event_type") in {
+                "usb_approval_required", "usb_approval_decision", "usb_approval_rejected",
+                "usb_media_removed",
+            })
         except Exception:
             serious = False
         if not serious:
@@ -1312,8 +1332,7 @@ class MainWindow(QMainWindow):
             self._refresh_posture()
 
         if self._tick_count % panel_period == 0:
-            # Heavier panels: every 2 s in Full, every 10 s in quiet Chill, and
-            # once per minute while minimized.
+            # Heavier panels: every 2 s in Full; 30-120 s in quiet Chill.
             # skip the others (or blow up the whole tick).
             module_refresh = getattr(
                 self.modules_panel, "refresh_incremental", self.modules_panel.refresh,
@@ -1334,13 +1353,13 @@ class MainWindow(QMainWindow):
                     _fn()
                 except Exception:
                     pass
-            # The external canvas feed is a diagnostic heartbeat, not a reason
-            # to dirty the disk continuously while the suite sits idle.
-            if self._tick_count % flow_period == 0:
-                try:
-                    self._write_flow_metrics_async()
-                except Exception:
-                    pass
+        # Keep this cadence independent of panel ticks: hidden Chill's five-tick
+        # flow period must not accidentally become ten ticks through nesting.
+        if self._tick_count % flow_period == 0:
+            try:
+                self._write_flow_metrics_async()
+            except Exception:
+                pass
 
     def _init_usage_reconciler(self) -> None:
         self._usage_reconciler = AsyncSnapshot(
@@ -1684,6 +1703,7 @@ class MainWindow(QMainWindow):
     # Compatibility alias retained for the startup loader and older tests.
     _ECO_HEAVY_MODULES = CHILL_PAUSED_MODULES
     _CHILL_USER_ONLY_MODULES = {
+        "AI Triage (Ollama)",
         "Speculative Triage Pre-Warm",
         "Scheduled AI Security Briefing",
         "Smart Deception",
@@ -1714,6 +1734,11 @@ class MainWindow(QMainWindow):
             os.environ["ANGERONA_CHILL_ACTIVE"] = "1"
         else:
             os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
+        from angerona.gui.presentation_timer import set_chill_presentation
+        set_chill_presentation(quiet)
+        ollama_status = getattr(self, "ollama_status", None)
+        if ollama_status is not None:
+            ollama_status.refresh()
         try:
             self.system_pulse.set_chill_mode(quiet)
         except Exception:
@@ -1806,6 +1831,7 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _enter_eco(self, startup: bool = False, auto_return: bool = False) -> None:
+        set_chill_ai_blocked(self.config, True)
         # Pause each running heavy module, remembering which we touched so resume
         # restores exactly that set.
         # If a sequential wake is still in flight, cancel it first. The worker's
@@ -1856,6 +1882,10 @@ class MainWindow(QMainWindow):
         self._chill_auto_wake = False
         self._set_chill_runtime(True)
         self.eco_btn.set_full_label("CHILL: ON")
+        self.eco_btn.setToolTip(
+            "Chill keeps local AI and Ollama off until you manually switch Chill off. "
+            "Live protection and threat escalation remain enabled."
+        )
         self.eco_btn.setStyleSheet(
             "background:#166534; color:#dcfce7; font-weight:800; border:none;"
             "border-radius:6px; padding:7px 16px;")
@@ -1872,6 +1902,7 @@ class MainWindow(QMainWindow):
         if not self._eco_on:
             self._enter_eco(startup=False)
         else:
+            set_chill_ai_blocked(self.config, False)
             self._chill_policy.disable()
             self._wake_chill_modules(auto=False)
 
@@ -1882,6 +1913,10 @@ class MainWindow(QMainWindow):
         self._chill_auto_wake = bool(auto)
         if auto:
             self.eco_btn.set_full_label("CHILL: ALERT")
+            self.eco_btn.setToolTip(
+                "Deep verification is awake for a threat. Local AI and Ollama stay off "
+                "until you manually switch Chill off."
+            )
             self.eco_btn.setStyleSheet(
                 "background:#9a3412; color:#fff7ed; font-weight:800; border:none;"
                 "border-radius:6px; padding:7px 16px;"
@@ -1889,6 +1924,7 @@ class MainWindow(QMainWindow):
         else:
             self._eco_on = False
             self.eco_btn.set_full_label("CHILL MODE")
+            self.eco_btn.setToolTip("Enable Chill to park deep scanners and keep local AI off.")
             self.eco_btn.setStyleSheet("")
 
         worker = getattr(self, "_eco_worker", None)
@@ -4249,6 +4285,7 @@ class MainWindow(QMainWindow):
             if isinstance(res, dict) and res.get("response"):
                 return str(res["response"]).strip()
             err = res.get("error") if isinstance(res, dict) else "no response"
+            chill_blocked = isinstance(res, dict) and res.get("error_type") == "ChillMode"
             # Local model down → optionally consult an ONLINE AI. This only does
             # anything if the operator configured a provider key (Settings ▸ API
             # Keys); consult_ai self-gates and returns an error otherwise, so no
@@ -4265,7 +4302,8 @@ class MainWindow(QMainWindow):
                         reference=cloud_reference,
                     ))
                     if isinstance(online, dict) and online.get("text"):
-                        return (f"[ARIA · online:{online.get('provider', '?')}]\n"
+                        note = f"{err}\n\n" if chill_blocked else ""
+                        return (note + f"[ARIA · online:{online.get('provider', '?')}]\n"
                                 + str(online["text"]).strip())
                 except Exception:
                     pass
@@ -4278,7 +4316,11 @@ class MainWindow(QMainWindow):
                 except Exception:
                     fb = ""
             if fb and "No " not in fb[:4]:
+                if chill_blocked:
+                    return str(err) + " Here's a relevant runbook:\n\n" + fb
                 return "Local AI is offline, but here's a relevant runbook:\n\n" + fb
+            if chill_blocked:
+                return str(err)
             return (f"Local AI unavailable ({err}). Is Ollama running with the "
                     f"'{model}' model?  (ollama serve · ollama pull {model})  "
                     "Or set an online provider key in Settings ▸ API Keys for a cloud fallback.")

@@ -20,7 +20,7 @@ from angerona.core.persistent_engine import EngineClient, ensure_engine
 class ConsoleWorker:
     """One network worker; bounded queues and no blocking calls on the GUI."""
 
-    def __init__(self):
+    def __init__(self, *, force_chill: bool = False):
         self.commands: queue.Queue = queue.Queue(maxsize=8)
         self.frames: queue.Queue = queue.Queue(maxsize=4)
         self.stop = threading.Event()
@@ -30,6 +30,7 @@ class ConsoleWorker:
         self.instance = ""
         self.pending: deque[str] = deque(maxlen=16)
         self.dropped_frames = 0
+        self.force_chill = bool(force_chill)
 
     def start(self):
         self.commands.put_nowait(("connect", None))
@@ -54,7 +55,7 @@ class ConsoleWorker:
 
     def _command(self, operation, value):
         if operation == "connect":
-            self.client = ensure_engine()
+            self.client = ensure_engine(**({"force_chill": True} if self.force_chill else {}))
             return None
         if self.client is None:
             raise EngineError("Protection engine is disconnected")
@@ -116,11 +117,11 @@ class ConsoleWorker:
 
 
 class EngineConsole(QMainWindow):
-    def __init__(self, *, start_worker: bool = True):
+    def __init__(self, *, start_worker: bool = True, force_chill: bool = False):
         super().__init__()
         self.setWindowTitle("Angerona — Protection Console")
         self.resize(1160, 820)
-        self.worker = ConsoleWorker()
+        self.worker = ConsoleWorker(force_chill=force_chill)
         self._rows = {}
         self._ready = False
         self._settings_instance = ""

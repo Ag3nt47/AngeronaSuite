@@ -83,6 +83,8 @@ class AngeronaApp:
         # Publish Chill before any module can issue a background local-model
         # request. The GUI controller later owns transitions and sequential wake.
         import os
+        from angerona.core.chill_mode import set_chill_ai_blocked
+        set_chill_ai_blocked(self.config, bool(getattr(self.config, "eco_mode", True)))
         if getattr(self.config, "eco_mode", True):
             os.environ["ANGERONA_CHILL_ACTIVE"] = "1"
             setattr(self.config, "runtime_chill_active", True)

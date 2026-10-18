@@ -308,6 +308,21 @@ func detachedRun(argv []string) error {
 	return cmd.Start()
 }
 
+// Preserve the command and its parser while requiring Chill for core recovery.
+func chillCoreCommand(argv []string) []string {
+	if len(argv) == 0 {
+		return nil
+	}
+	chilled := make([]string, 0, len(argv)+1)
+	chilled = append(chilled, argv[0])
+	for _, arg := range argv[1:] {
+		if arg != "--chill" {
+			chilled = append(chilled, arg)
+		}
+	}
+	return append(chilled, "--chill")
+}
+
 func logLine(f *os.File, format string, a ...interface{}) {
 	line := fmt.Sprintf("[%s] ", time.Now().Format("2006-01-02T15:04:05")) + fmt.Sprintf(format, a...) + "\n"
 	if f != nil {
@@ -327,7 +342,7 @@ func main() {
 
 	var coreRelaunch func() error
 	if cc := os.Getenv("ANGERONA_CORE_CMD"); cc != "" {
-		coreRelaunch = func() error { return detachedRun(strings.Fields(cc)) }
+		coreRelaunch = func() error { return detachedRun(chillCoreCommand(strings.Fields(cc))) }
 	}
 
 	_ = os.MkdirAll(filepath.Join(dataDir(), "heartbeats"), 0o755)

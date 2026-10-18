@@ -12,6 +12,7 @@ from angerona.core.chill_mode import (
     CHILL_PAUSED_MODULES,
     CHILL_THROTTLE_FLOORS,
     ChillPolicy,
+    set_chill_ai_blocked,
 )
 from angerona.core.ollama_lifecycle import unload_angerona_models
 from angerona.core.threat import active_threat_events
@@ -21,6 +22,7 @@ CHILL_USER_ONLY_MODULES = frozenset({
     "Speculative Triage Pre-Warm",
     "Scheduled AI Security Briefing",
     "Smart Deception",
+    "AI Triage (Ollama)",
 })
 
 # Keep parity with MainWindow's sparse maintenance allowlist. These modules have
@@ -120,6 +122,8 @@ class ChillRuntimeController:
         return self._overflow_count
 
     def _set_runtime_quiet(self, quiet: bool) -> None:
+        from angerona.core.background_pacing import get_pacing_controller
+        get_pacing_controller().set_chill_active(quiet)
         setattr(self.config, "runtime_chill_active", bool(quiet))
         if quiet:
             os.environ["ANGERONA_CHILL_ACTIVE"] = "1"
@@ -161,6 +165,7 @@ class ChillRuntimeController:
     def prepare_runtime(self) -> None:
         """Publish quiet runtime state before any module starts."""
         self.policy.enable()
+        set_chill_ai_blocked(self.config, True)
         self._set_runtime_quiet(True)
         self._next_maintenance_at = self._clock() + self.maintenance_interval
         self._release_models_async()

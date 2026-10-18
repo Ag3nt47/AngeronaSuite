@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
@@ -34,8 +35,8 @@ CHILL_PAUSED_MODULES: tuple[str, ...] = (
     "Hardware-Rooted Integrity",
     "Kernel-Boundary Posture Ledger",
     "Compliance Mapper",
-    # Synthetic/AI background work is demand-driven in Chill. ARIA remains
-    # available and loads the configured model only when the user asks it.
+    # Synthetic background work sleeps in Chill. Local AI stays locked even
+    # during sensor escalation, until the operator manually selects Full.
     "Telemetry Canary Drills",
     "CHAOS",
     "AI Triage (Ollama)",
@@ -55,6 +56,7 @@ CHILL_THROTTLE_FLOORS: dict[str, float] = {
     # much less often during an unattended all-day session.
     "Posture Hardening": 8.0,
     "HEAL": 6.0,
+    "TUNE": 8.0,
     "In-Memory Flight Cache": 8.0,
     "Evidence Lattice Fusion": 8.0,
     "Storage Hygiene Enforcer": 8.0,
@@ -68,6 +70,26 @@ CHILL_THROTTLE_FLOORS: dict[str, float] = {
     "Network Protocol Deep Decoder": 2.0,
     "Self-Integrity Monitor": 4.0,
 }
+
+
+def set_chill_ai_blocked(config, blocked: bool) -> None:
+    """Latch operator Chill intent separately from temporary sensor escalation.
+
+    Callers clear this only when the operator selects Full. An incident wake
+    changes quiet pacing and sensor coverage, never model authorization.
+    """
+    setattr(config, "runtime_chill_ai_blocked", bool(blocked))
+    if blocked:
+        os.environ["ANGERONA_CHILL_AI_BLOCKED"] = "1"
+    else:
+        os.environ.pop("ANGERONA_CHILL_AI_BLOCKED", None)
+
+
+def chill_ai_blocked(config=None) -> bool:
+    return bool(getattr(config, "runtime_chill_ai_blocked", False)) or (
+        os.environ.get("ANGERONA_CHILL_AI_BLOCKED", "0").strip().casefold()
+        in {"1", "true", "yes", "on"}
+    )
 
 
 @dataclass(frozen=True)

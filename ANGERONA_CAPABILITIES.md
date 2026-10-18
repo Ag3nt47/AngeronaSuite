@@ -21,6 +21,13 @@ independent self-check challenges and recorded timing evidence. The
 [operator guide](docs/hardware-and-selfcheck.md) explains the settings and
 limits. Capability counts and platform support remain unchanged.
 
+The [Chill follow-up](analysis/chill-efficiency-2026-10-18/README.md) adds an
+explicit optional-work budget, slower presentation, suspended idle cosmetics,
+and longer empty recorder waits with immediate arrival wakeups. Local Ollama
+startup and model requests remain blocked in every Chill state, including alert
+escalation, until the operator manually switches Chill off. Self-check records
+the blocked AI capability as a skip, without starting the service.
+
 The current security model separates four kinds of claims:
 
 - **Integrated:** a production path is connected to the application and covered

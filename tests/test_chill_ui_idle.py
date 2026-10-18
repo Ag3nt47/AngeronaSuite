@@ -25,19 +25,20 @@ def _app() -> QApplication:
     return _APP_ANCHOR
 
 
-def test_dashboard_chill_plan_reduces_idle_wakes_but_preserves_elapsed_cadence() -> None:
+def test_dashboard_chill_plan_uses_sparse_optional_refreshes_and_preserves_full_mode() -> None:
     full = _dashboard_refresh_plan(False, visible=True, active=True)
     chill = _dashboard_refresh_plan(True, visible=True, active=True)
     background = _dashboard_refresh_plan(True, visible=False, active=False)
 
     assert full == (1_000, 1, 2, 4, 12)
-    assert chill == (5_000, 2, 2, 4, 12)
-    assert background == (15_000, 2, 4, 4, 4)
-    # Panel/posture/flow work retains its intended wall-clock cadence even
-    # though the presentation timer itself wakes five times less in Chill.
-    assert chill[0] * chill[2] == 10_000
-    assert chill[0] * chill[3] == 20_000
-    assert chill[0] * chill[4] == 60_000
+    assert chill == (15_000, 1, 2, 4, 20)
+    assert background == (60_000, 1, 2, 2, 5)
+    assert _dashboard_refresh_plan(True, visible=True, active=False) == (30_000, 1, 2, 2, 10)
+    assert _dashboard_refresh_plan(False, visible=False, active=False) == (15_000, 2, 4, 4, 4)
+    assert _dashboard_refresh_plan(False, visible=True, active=False) == (2_000, 1, 1, 2, 6)
+    assert chill[0] * chill[2] == 30_000
+    assert chill[0] * chill[3] == 60_000
+    assert chill[0] * chill[4] == 300_000
 
 
 def test_high_priority_wake_is_coalesced_and_info_does_not_wake() -> None:
@@ -77,6 +78,39 @@ def test_high_priority_wake_is_coalesced_and_info_does_not_wake() -> None:
     harness._security_wake_again = False  # the simulated read captured the burst
     MainWindow._security_snapshot_status(harness, "current")
     assert not harness._security_wake_pending.is_set()
+
+
+def test_medium_usb_gate_events_wake_even_when_chill_periodic_work_is_sparse() -> None:
+    emissions = []
+    harness = SimpleNamespace(
+        _security_wake_pending=threading.Event(),
+        _security_wake_closed=threading.Event(),
+        _security_wake_lock=threading.Lock(),
+        _security_wake_again=False,
+        _security_event_wake=SimpleNamespace(emit=lambda: emissions.append(1)),
+    )
+    for severity, event_type in ((Severity.MEDIUM, "usb_approval_required"),
+                                 (Severity.INFO, "usb_media_removed")):
+        MainWindow._queue_security_event_wake(harness, Event(
+            "USB", "live gate update", severity, details={"event_type": event_type},
+        ))
+    assert emissions == [1]
+    assert harness._security_wake_again  # the bounded classifier retains the follow-up
+
+
+def test_chill_suspends_fps_measurement_and_restores_it_in_full_mode():
+    calls = []
+    quiet = [True]
+    harness = SimpleNamespace(
+        _quiet_chill_active=lambda: quiet[0], isVisible=lambda: True,
+        isMinimized=lambda: False, isActiveWindow=lambda: True,
+        _responsiveness_monitor=SimpleNamespace(set_active=lambda active: calls.append(active)),
+        _current_refresh_plan=lambda: (15000, 1, 2, 4, 20),
+    )
+    MainWindow._sync_idle_presentation(harness)
+    quiet[0] = False
+    MainWindow._sync_idle_presentation(harness)
+    assert calls == [False, True]
 
 
 def test_aria_orb_stops_all_animation_callbacks_in_idle_mode() -> None:

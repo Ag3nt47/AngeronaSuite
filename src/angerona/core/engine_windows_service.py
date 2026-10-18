@@ -52,7 +52,9 @@ def run_dispatcher() -> int:
             if lease is None:
                 raise RuntimeError("Another Angerona protection graph already owns this data root")
             try:
-                run_headless(stop_event=self.stop_event)
+                # SCM may replay an older unflagged service definition after a
+                # crash. Every service launch requires a fresh manual Full.
+                run_headless(stop_event=self.stop_event, force_chill=True)
             finally:
                 lease.close()
 

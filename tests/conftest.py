@@ -70,6 +70,16 @@ def keep_qt_application_alive():
 
 
 @pytest.fixture(autouse=True)
+def isolate_runtime_chill_profile(monkeypatch):
+    """Each test owns quiet pacing and the persistent operator AI lock."""
+    from angerona.core import background_pacing
+
+    monkeypatch.setattr(background_pacing, "_CONTROLLER", background_pacing.BackgroundPacingController())
+    monkeypatch.delenv("ANGERONA_CHILL_ACTIVE", raising=False)
+    monkeypatch.delenv("ANGERONA_CHILL_AI_BLOCKED", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def isolate_automatic_ollama_startup(request: pytest.FixtureRequest, monkeypatch):
     """Legacy app/self-test fixtures must never start the operator's daemon.
 
@@ -77,9 +87,10 @@ def isolate_automatic_ollama_startup(request: pytest.FixtureRequest, monkeypatch
     its own listener, process-launch and trust mocks. Other tests may replace
     these inert helpers explicitly when proving an integration decision.
     """
-    if request.node.path.name == "test_ollama_startup.py":
-        return
     from angerona.core import ollama_lifecycle
+    monkeypatch.setattr(ollama_lifecycle, "_owned_services", {})
+    if request.node.path.name in {"test_ollama_startup.py", "test_chill_ai_lock.py"}:
+        return
 
     unavailable = ollama_lifecycle.OllamaStartupStatus(
         "failed", "Offline test", 0,

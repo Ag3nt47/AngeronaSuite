@@ -1,6 +1,7 @@
 # 🛡️ Angerona — Cyber Security Suite
 
-Latest maintenance: [hardware adaptation and verified self-check, 2026-10-18](hardware-adaptation-2026-10-18/README.md).
+Latest maintenance: [Chill efficiency and local AI lock, 2026-10-18](chill-efficiency-2026-10-18/README.md).
+Previous maintenance: [hardware adaptation and verified self-check](hardware-adaptation-2026-10-18/README.md).
 Operator instructions: [hardware and self-check guide](../docs/hardware-and-selfcheck.md).
 
 > **Archived historical analysis snapshot.** This long-form record preserves

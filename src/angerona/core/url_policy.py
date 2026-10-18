@@ -246,6 +246,25 @@ def safe_urlopen(
     )
     if policy is OLLAMA_SERVICE_POLICY and not ollama_route:
         raise UrlPolicyError("unsupported attested Ollama API path")
+    def enforce_chill_lock():
+        if not (policy.loopback_only and ollama_route):
+            return
+        from angerona.core.ollama_lifecycle import (
+            CHILL_AI_MESSAGE, chill_cleanup_request_allowed, ollama_blocked,
+        )
+        method = (request_or_url.get_method()
+                  if isinstance(request_or_url, urllib.request.Request) else "GET")
+        body = (request_or_url.data
+                if isinstance(request_or_url, urllib.request.Request) else None)
+        if ollama_blocked() and (
+            parsed.query or parsed.fragment
+            or not chill_cleanup_request_allowed(parsed.path, method, body)
+        ):
+            raise UrlPolicyError(CHILL_AI_MESSAGE)
+
+    # Deny before DNS/attestation/opener construction, including callers that
+    # accidentally use the generic local-service policy for an Ollama route.
+    enforce_chill_lock()
     # Pin once before ownership verification. Attestation and HTTP must refer
     # to the same address/family even if a hostname's DNS answers change.
     pinned_url = _pin_loopback_url(url) if policy.loopback_only else None
@@ -279,6 +298,7 @@ def safe_urlopen(
         handlers.append(urllib.request.ProxyHandler({}))
     handlers.append(_PolicyRedirectHandler(policy))
     opener = urllib.request.build_opener(*handlers)
+    enforce_chill_lock()  # Mode may have changed during ownership verification.
     return opener.open(request_or_url, timeout=timeout)
 
 

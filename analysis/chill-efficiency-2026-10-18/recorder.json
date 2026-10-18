@@ -1,0 +1,129 @@
+{
+  "schema": 1,
+  "baseline": "706a819",
+  "samples": 3,
+  "idle_seconds_requested": 0.35,
+  "scope": "Actual isolated async recorder + bounded queues, inert memory sink. No SQL, sensors, Ollama, CPU/RAM percentages or whole-app efficiency claims.",
+  "results": [
+    {
+      "sample": 1,
+      "version": "baseline",
+      "idle_seconds_measured": 0.36345590000019,
+      "queue_get_calls_including_initial_wait": {
+        "primary": 4,
+        "overflow": 4
+      },
+      "additional_empty_waits": {
+        "primary": 3,
+        "overflow": 3
+      },
+      "first_delivery_ms": 123.60850000004575,
+      "stop_and_drain_ms": 110.74860000007902,
+      "ordered_events": 14,
+      "order_verified": true,
+      "hmac_verified": true,
+      "unfinished_workers": 0,
+      "source_sha256": "e8164f483917c2509846d7ae268f2ac89d2aab4246ea76ad1d70c09e790ab271"
+    },
+    {
+      "sample": 1,
+      "version": "current_chill",
+      "idle_seconds_measured": 0.359718900000189,
+      "queue_get_calls_including_initial_wait": {
+        "primary": 1,
+        "overflow": 1
+      },
+      "additional_empty_waits": {
+        "primary": 0,
+        "overflow": 0
+      },
+      "first_delivery_ms": 119.42290000024514,
+      "stop_and_drain_ms": 0.5438999996840721,
+      "ordered_events": 14,
+      "order_verified": true,
+      "hmac_verified": true,
+      "unfinished_workers": 0,
+      "source_sha256": "995e3c8e5c4179d72937469099ce3592045f932f38c708c51f67bee594b02ad6"
+    },
+    {
+      "sample": 2,
+      "version": "baseline",
+      "idle_seconds_measured": 0.3526124999998501,
+      "queue_get_calls_including_initial_wait": {
+        "primary": 4,
+        "overflow": 4
+      },
+      "additional_empty_waits": {
+        "primary": 3,
+        "overflow": 3
+      },
+      "first_delivery_ms": 102.47880000042642,
+      "stop_and_drain_ms": 164.01519999999437,
+      "ordered_events": 14,
+      "order_verified": true,
+      "hmac_verified": true,
+      "unfinished_workers": 0,
+      "source_sha256": "e8164f483917c2509846d7ae268f2ac89d2aab4246ea76ad1d70c09e790ab271"
+    },
+    {
+      "sample": 2,
+      "version": "current_chill",
+      "idle_seconds_measured": 0.35687180000059016,
+      "queue_get_calls_including_initial_wait": {
+        "primary": 1,
+        "overflow": 1
+      },
+      "additional_empty_waits": {
+        "primary": 0,
+        "overflow": 0
+      },
+      "first_delivery_ms": 118.54419999963284,
+      "stop_and_drain_ms": 1.5338000002884655,
+      "ordered_events": 14,
+      "order_verified": true,
+      "hmac_verified": true,
+      "unfinished_workers": 0,
+      "source_sha256": "995e3c8e5c4179d72937469099ce3592045f932f38c708c51f67bee594b02ad6"
+    },
+    {
+      "sample": 3,
+      "version": "baseline",
+      "idle_seconds_measured": 0.3580833000005441,
+      "queue_get_calls_including_initial_wait": {
+        "primary": 4,
+        "overflow": 4
+      },
+      "additional_empty_waits": {
+        "primary": 3,
+        "overflow": 3
+      },
+      "first_delivery_ms": 111.71089999970718,
+      "stop_and_drain_ms": 102.59489999953075,
+      "ordered_events": 14,
+      "order_verified": true,
+      "hmac_verified": true,
+      "unfinished_workers": 0,
+      "source_sha256": "e8164f483917c2509846d7ae268f2ac89d2aab4246ea76ad1d70c09e790ab271"
+    },
+    {
+      "sample": 3,
+      "version": "current_chill",
+      "idle_seconds_measured": 0.3611455999998725,
+      "queue_get_calls_including_initial_wait": {
+        "primary": 1,
+        "overflow": 1
+      },
+      "additional_empty_waits": {
+        "primary": 0,
+        "overflow": 0
+      },
+      "first_delivery_ms": 105.43469999993249,
+      "stop_and_drain_ms": 0.3811000005953247,
+      "ordered_events": 14,
+      "order_verified": true,
+      "hmac_verified": true,
+      "unfinished_workers": 0,
+      "source_sha256": "995e3c8e5c4179d72937469099ce3592045f932f38c708c51f67bee594b02ad6"
+    }
+  ]
+}

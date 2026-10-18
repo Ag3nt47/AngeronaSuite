@@ -43,6 +43,10 @@ class EngineClient:
     def set_chill(self, enabled: bool) -> dict:
         return self.patch_settings({"eco_mode": enabled})
 
+    def enter_chill(self) -> dict:
+        """Request quiet runtime policy without rewriting startup preferences."""
+        return exchange(self.directory, {"operation": "enter_chill"})
+
     def set_module(self, name: str, enabled: bool) -> dict:
         return exchange(self.directory, {"operation": "module_enable", "name": name, "enabled": enabled})
 
@@ -66,9 +70,9 @@ def _require_user() -> None:
                           "Use the separately verified package service for privileged protection.")
 
 
-def engine_command() -> list[str]:
+def engine_command(*, force_chill: bool = False) -> list[str]:
     if getattr(sys, "frozen", False):
-        return [sys.executable, "--engine-serve"]
+        return [sys.executable, "--engine-serve"] + (["--chill"] if force_chill else [])
     # Isolated Python avoids ambient PYTHONPATH and user-site imports. Source
     # developer installs deliberately import their exact current source tree.
     root = Path(__file__).resolve().parents[2]
@@ -76,7 +80,7 @@ def engine_command() -> list[str]:
     bootstrap = (f"import os,sys;os.environ['ANGERONA_DATA']={str(data_dir())!r};"
                  f"sys.path.insert(0,{str(root)!r});"
                  "from angerona.core.persistent_engine import main;raise SystemExit(main())")
-    return [sys.executable, "-I", "-c", bootstrap, "serve"]
+    return [sys.executable, "-I", "-c", bootstrap, "serve"] + (["--chill"] if force_chill else [])
 
 
 def _child_environment() -> dict[str, str]:
@@ -94,7 +98,7 @@ def _child_environment() -> dict[str, str]:
     return environment
 
 
-def ensure_engine(*, timeout: float = 15.0) -> EngineClient:
+def ensure_engine(*, timeout: float = 15.0, force_chill: bool = False) -> EngineClient:
     """Reconnect or launch one ordinary-user engine, never duplicate sensors.
 
     A successful return may still report ``starting``. The desktop polls state
@@ -103,13 +107,37 @@ def ensure_engine(*, timeout: float = 15.0) -> EngineClient:
     """
     _require_user()
     client = EngineClient()
+    deadline = time.monotonic() + max(1.0, min(60.0, timeout))
+
+    def connected():
+        if not force_chill:
+            return client
+        # A console's process environment cannot change an existing engine.
+        # Use its authenticated, bounded one-way runtime operation instead.
+        while time.monotonic() < deadline:
+            if client.status().get("state") == "ready":
+                receipt = client.enter_chill()
+                break
+            time.sleep(0.05)
+        else:
+            raise EngineError("Engine did not become ready to apply the requested Chill profile")
+        while time.monotonic() < deadline:
+            progress = client.operation_status(receipt["id"])
+            if progress.get("state") == "completed":
+                return client
+            if progress.get("state") == "failed":
+                raise EngineError("Engine could not apply the requested Chill profile")
+            time.sleep(0.05)
+        raise EngineError("Requested Chill profile did not complete before the connection deadline")
+
     try:
         client.status()
-        return client
     except (OSError, EngineError):
         pass
+    else:
+        return connected()
     private_directory(client.directory)
-    command = engine_command()
+    command = engine_command(**({"force_chill": True} if force_chill else {}))
     options = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                "stderr": subprocess.DEVNULL, "close_fds": True,
                "cwd": str(Path(sys.executable).resolve().parent), "env": _child_environment()}
@@ -118,11 +146,9 @@ def ensure_engine(*, timeout: float = 15.0) -> EngineClient:
     else:
         options["start_new_session"] = True
     child = subprocess.Popen(command, **options)
-    deadline = time.monotonic() + max(1.0, min(60.0, timeout))
     while time.monotonic() < deadline:
         try:
             client.status()
-            return client
         except (OSError, EngineError):
             if child.poll() is not None:
                 # Another concurrent launch may have won the single-instance
@@ -130,10 +156,13 @@ def ensure_engine(*, timeout: float = 15.0) -> EngineClient:
                 time.sleep(0.15)
                 try:
                     client.status()
-                    return client
                 except (OSError, EngineError) as exc:
                     raise EngineError("Engine did not start. Close an existing embedded Angerona "
                                       "window before enabling detached protection; inspect crash logs.") from exc
+                else:
+                    return connected()
+        else:
+            return connected()
         time.sleep(0.1)
     raise EngineError("Engine startup status unavailable; do not assume protection is running")
 
@@ -159,7 +188,9 @@ def serve(*, stop_event: threading.Event | None = None) -> int:
         control.instance = server.instance
         server.start()
         from .headless import run_headless
-        return run_headless(stop_event=stop, runtime_control=control)
+        # OS service managers can replay existing unflagged commands. Recovery
+        # never authorizes local AI without a fresh manual Full selection.
+        return run_headless(stop_event=stop, runtime_control=control, force_chill=True)
     except Exception as exc:
         control.fail(type(exc).__name__)
         raise
@@ -174,11 +205,13 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Angerona persistent ordinary-user protection engine")
     parser.add_argument("command", choices=("serve", "status", "start", "stop"))
     parser.add_argument("--confirm-stop-protection", action="store_true")
+    parser.add_argument("--chill", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "serve":
             return serve()
-        client = ensure_engine() if args.command == "start" else EngineClient()
+        client = (ensure_engine(**({"force_chill": True} if args.chill else {}))
+                  if args.command == "start" else EngineClient())
         if args.command == "stop":
             if not args.confirm_stop_protection:
                 parser.error("stop requires --confirm-stop-protection")

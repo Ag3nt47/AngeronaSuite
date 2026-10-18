@@ -145,6 +145,61 @@ def test_rotation_preserves_oversize_when_metadata_size_is_stale(tmp_path, monke
     assert b"new tail" in active.read_bytes() and active.stat().st_size < 100
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows FILE_RENAME_INFO ABI")
+@pytest.mark.parametrize("utf16_units_mod4", range(4))
+def test_handle_rotation_never_reads_following_memory_as_filename(
+    tmp_path, monkeypatch, utf16_units_mod4,
+):
+    """Poison owned trailing memory; filename length/padding cannot hide a read."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    # Include a surrogate pair so byte count is checked as UTF-16 units, not
+    # Python characters. Four alignments cover zero and nonzero ABI padding.
+    root = tmp_path / "utf16-\U0001f6a8"
+    root.mkdir()
+    payload = b"held alert evidence remains byte-identical"
+    observed = []
+
+    def poisoned_information(file, kind, value):
+        assert kind == 3
+        actual_name = str(file.directory.path / target).encode("utf-16-le")
+        assert value.length == len(actual_name)
+        original_size = ctypes.sizeof(value)
+        raw = ctypes.string_at(ctypes.byref(value), original_size)
+        # The backing allocation owns every byte the native path parser can
+        # inspect. Preserve the original declared buffer size and name length,
+        # making a missing NUL deterministic without any out-of-allocation read.
+        backing = ctypes.create_string_buffer(raw + "CANARY".encode("utf-16-le") + b"\0\0")
+        setter = ctypes.WinDLL("kernel32", use_last_error=True).SetFileInformationByHandle
+        setter.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD)
+        setter.restype = wintypes.BOOL
+        observed.append(original_size)
+        if not setter(msvcrt.get_osfhandle(file.descriptor), kind,
+                      ctypes.byref(backing), original_size):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    monkeypatch.setattr(retention._File, "_set_information", poisoned_information)
+    with retention._transaction(root, create=True) as directory:
+        target = next(
+            f"runtime_alerts.{'1' * digits}.{'a' * 32}.log"
+            for digits in range(1, 5)
+            if len(str(directory.path / f"runtime_alerts.{'1' * digits}.{'a' * 32}.log").encode(
+                "utf-16-le")) // 2 % 4 == utf16_units_mod4
+        )
+        with directory.open(retention.ACTIVE_NAME, create=True) as file:
+            os.write(file.descriptor, payload)
+            before = os.fstat(file.descriptor)
+            file.rename(target)
+        files = [path for path in directory.path.iterdir() if path.name != retention._LOCK_NAME]
+        assert [path.name for path in files] == [target]
+        after = files[0].stat()
+        assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino)
+        assert files[0].read_bytes() == payload
+    assert len(observed) == 1
+
+
 def test_rotation_appends_to_replacement_created_between_handles(tmp_path, monkeypatch):
     retention.append_runtime_alert(tmp_path, "first")
     active = tmp_path / "diagnostics" / retention.ACTIVE_NAME

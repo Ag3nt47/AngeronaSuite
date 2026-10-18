@@ -35,9 +35,15 @@ def run_headless(
     *, high_water_provider: IndependentHighWater | None = None,
     stop_event: threading.Event | None = None,
     runtime_control=None,
+    force_chill: bool = False,
 ) -> int:
     """Build core services (no Qt), start modules, and block until signalled."""
     config = Config.load()
+    if force_chill:
+        # Runtime launch intent does not rewrite the saved startup preference.
+        config.eco_mode = True
+        from angerona.core.chill_mode import set_chill_ai_blocked
+        set_chill_ai_blocked(config, True)
     storage = FlightRecorder(config.db_path)
     bus = EventBus()
     bus.arm(storage.authority)
@@ -99,6 +105,10 @@ def run_headless(
         # observes the correct runtime profile from its first instruction.
         chill.prepare_runtime()
     else:
+        from angerona.core.background_pacing import get_pacing_controller
+        from angerona.core.chill_mode import set_chill_ai_blocked
+        get_pacing_controller().set_chill_active(False)
+        set_chill_ai_blocked(config, False)
         setattr(config, "runtime_chill_active", False)
         os.environ.pop("ANGERONA_CHILL_ACTIVE", None)
 

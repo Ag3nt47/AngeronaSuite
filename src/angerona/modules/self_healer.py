@@ -594,7 +594,9 @@ class SelfHealer(BaseModule):
         snap_dir = _snapshot_dir()
         while not self.stopping:
             try:
-                self.process_snapshots_once(snap_dir, respect_backoff=True)
+                from angerona.core.chill_mode import chill_ai_blocked
+                if not chill_ai_blocked():
+                    self.process_snapshots_once(snap_dir, respect_backoff=True)
             except Exception as exc:
                 self.set_health(70, f"poll error: {exc}")
             self.sleep(self.POLL_S)

@@ -30,6 +30,7 @@ from angerona.core.url_policy import (
 from angerona.core.ollama_lifecycle import (
     OllamaAttestationError,
     chill_active,
+    ollama_blocked,
     effective_keep_alive,
 )
 
@@ -537,15 +538,10 @@ class AITriageModule(BaseModule):
                 self.emit(f"AI triage ready ({self._model}); attestation runs before inference.", Severity.INFO)
 
     def self_test(self) -> tuple[bool, str]:
-        # A health check must never load a multi-gigabyte model. In Chill the
-        # worker is intentionally dormant. An explicit self-test now prepares
-        # the daemon as requested, while leaving the model unloaded. Idle
-        # health checks continue to use _check_health and never start services.
+        # Testing cannot override the operator's Chill lock or start services.
         self._sync_config()
-        if chill_active() or bool(getattr(self, "_chill_paused", False)):
-            if not self._ensure_ollama(for_selftest=True):
-                return False, "Ollama service startup incomplete; see local AI startup status"
-            return True, "Ollama service ready (100%); model remains asleep in Chill Mode"
+        if ollama_blocked() or bool(getattr(self, "_chill_paused", False)):
+            return False, "SKIP: local AI is off in Chill Mode; switch Chill off manually for an active check"
         if not self._ping_ollama():
             if self._ensure_ollama(for_selftest=True) and self._ping_ollama():
                 return self._selftest_attested_model()

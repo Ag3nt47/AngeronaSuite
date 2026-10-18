@@ -205,9 +205,10 @@ class ResilienceManager:
         pyw = _pythonw()
         # The watchdog (Go or Python) inherits how to relaunch Angerona.
         os.environ.setdefault("ANGERONA_PY", pyw)
-        core_args = "-m angerona --chill" if os.environ.get(
-            "ANGERONA_CHILL_ACTIVE"
-        ) == "1" else "-m angerona"
+        # Recovery always starts quiet. A peer watchdog may retain this command
+        # across later Full/Chill changes; only a fresh manual Full selection
+        # may authorize local AI after an automatic restart.
+        core_args = "-m angerona --chill"
         # Rebuild this from the trusted current interpreter every generation.
         # An older watchdog may legitimately hand us a stale pre-Chill command;
         # carrying it forward would make the next crash restart in Full mode.

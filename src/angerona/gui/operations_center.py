@@ -227,7 +227,7 @@ class FlowMetricDeck(QWidget):
             layout.addWidget(card, 1)
             self.cards[key] = card
         self._phase = 0.0
-        self._timer = PresentationTimer(self)
+        self._timer = PresentationTimer(self, cosmetic=True)
         self._timer.setInterval(90)
         self._timer.timeout.connect(self._advance)
         if motion_allowed(self._config):

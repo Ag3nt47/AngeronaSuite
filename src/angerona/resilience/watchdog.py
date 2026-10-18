@@ -139,6 +139,11 @@ def main(argv: list[str] | None = None) -> int:
         # interpreter so the core is still supervised instead of never spawning.
         if not core_argv or (os.sep in core_argv[0] and not os.path.exists(core_argv[0])):
             core_argv = [pyw, "-m", "angerona"]
+        # Child processes do not observe later changes to the parent's mode
+        # environment. Even a pre-captured Full command must recover in Chill;
+        # local AI requires a fresh manual Full selection in the new core.
+        if "--chill" not in core_argv:
+            core_argv.append("--chill")
         # Core can briefly hold Python's GIL during boot-time sensor work. Three
         # seconds produced false "suspended" decisions, duplicate launch
         # attempts, and SAFE_MODE while the original Core was healthy. A real

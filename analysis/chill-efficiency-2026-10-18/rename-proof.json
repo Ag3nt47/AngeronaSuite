@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "baseline_commit": "706a819",
+  "baseline_sha256": "650424053130303e3a082a9cabdde3547435f4e500bb68de175841b2a505bdab",
+  "current_sha256": "9677592fb02493d3b1be2b51753e6abad5c18ddf05bf68e71e75ff6b10072070",
+  "scope": "Disposable Windows handle-only rename. Existing reviewed baseline source vs actual fixed source; owned CANARY backing bytes beyond unchanged declared buffer size; no production diagnostics modified. Basenames only; no user paths or secrets.",
+  "results": [
+    {
+      "variant": "baseline",
+      "utf16_units_mod4": 0,
+      "expected_name": "runtime_alerts.1111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.1111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 392,
+        "name_offset": 20,
+        "declared_name_bytes": 368,
+        "tail_bytes": "00000000"
+      }
+    },
+    {
+      "variant": "baseline",
+      "utf16_units_mod4": 1,
+      "expected_name": "runtime_alerts.1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 384,
+        "name_offset": 20,
+        "declared_name_bytes": 362,
+        "tail_bytes": "0000"
+      }
+    },
+    {
+      "variant": "baseline",
+      "utf16_units_mod4": 2,
+      "expected_name": "runtime_alerts.11.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.11.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.logCANARY"
+      ],
+      "exact_name": false,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 384,
+        "name_offset": 20,
+        "declared_name_bytes": 364,
+        "tail_bytes": ""
+      }
+    },
+    {
+      "variant": "baseline",
+      "utf16_units_mod4": 3,
+      "expected_name": "runtime_alerts.111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 392,
+        "name_offset": 20,
+        "declared_name_bytes": 366,
+        "tail_bytes": "000000000000"
+      }
+    },
+    {
+      "variant": "current",
+      "utf16_units_mod4": 0,
+      "expected_name": "runtime_alerts.1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.1.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 384,
+        "name_offset": 20,
+        "declared_name_bytes": 360,
+        "tail_bytes": "00000000"
+      }
+    },
+    {
+      "variant": "current",
+      "utf16_units_mod4": 1,
+      "expected_name": "runtime_alerts.11.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.11.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 384,
+        "name_offset": 20,
+        "declared_name_bytes": 362,
+        "tail_bytes": "0000"
+      }
+    },
+    {
+      "variant": "current",
+      "utf16_units_mod4": 2,
+      "expected_name": "runtime_alerts.111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 392,
+        "name_offset": 20,
+        "declared_name_bytes": 364,
+        "tail_bytes": "0000000000000000"
+      }
+    },
+    {
+      "variant": "current",
+      "utf16_units_mod4": 3,
+      "expected_name": "runtime_alerts.1111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log",
+      "actual_names": [
+        "runtime_alerts.1111.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.log"
+      ],
+      "exact_name": true,
+      "bytes_preserved": true,
+      "identity_preserved": true,
+      "abi": {
+        "declared_buffer_bytes": 392,
+        "name_offset": 20,
+        "declared_name_bytes": 366,
+        "tail_bytes": "000000000000"
+      }
+    }
+  ]
+}

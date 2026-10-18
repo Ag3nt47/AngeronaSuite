@@ -102,7 +102,7 @@ def test_hidden_ui_host_pressure_expiry_and_disabled_reset():
     controller.report_ui(0, worst_lag_ms=1000)
     controller.report_host(100)
     assert controller.snapshot() == {
-        "enabled": False, "multiplier": 1, "pace_percent": 100.0,
+        "enabled": False, "chill_active": False, "multiplier": 1, "pace_percent": 100.0,
         "level": "normal", "reason": "Disabled",
     }
     controller.set_enabled(True)
