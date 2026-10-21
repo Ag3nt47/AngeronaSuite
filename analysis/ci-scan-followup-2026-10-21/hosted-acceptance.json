@@ -1,0 +1,308 @@
+{
+  "schema": "angerona.hosted-ci-acceptance/v1",
+  "date": "2026-10-21",
+  "accepted_code_commit": "5919c670922016985dc69fd6de0b4259d0fe75b7",
+  "accepted": true,
+  "evidence_source": "Completed GitHub workflow metadata and decoded per-job logs for the exact published code commit; critical Python jobs independently checked.",
+  "workflows": [
+    {
+      "id": 39681727269,
+      "name": "Security assurance",
+      "status": "completed",
+      "conclusion": "success",
+      "sha": "5919c670922016985dc69fd6de0b4259d0fe75b7",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727269",
+      "run_attempt": 1
+    },
+    {
+      "id": 39681727025,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "success",
+      "sha": "5919c670922016985dc69fd6de0b4259d0fe75b7",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025",
+      "run_attempt": 1
+    }
+  ],
+  "ci_jobs": [
+    {
+      "id": 119505611697,
+      "name": "dependency-audit",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611815,
+      "name": "Python 3.10",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611829,
+      "name": "Native installer (macos-15-intel)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611850,
+      "name": "Python 3.11",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611866,
+      "name": "Native installer (ubuntu-24.04)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611906,
+      "name": "Native installer (macos-15)",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611931,
+      "name": "macos-arm64 platform contract",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611962,
+      "name": "windows platform contract",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505611994,
+      "name": "linux platform contract",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505612012,
+      "name": "Python 3.13",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505612030,
+      "name": "Public README integrity",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505612144,
+      "name": "Python 3.12",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "security_jobs": [
+    {
+      "id": 119505612325,
+      "name": "codeql",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505612726,
+      "name": "scorecard",
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "id": 119505612732,
+      "name": "secret-scan",
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "python_results": [
+    {
+      "job_id": 119505611815,
+      "job_name": "Python 3.10",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025/job/119505611815",
+      "status": "completed",
+      "conclusion": "success",
+      "passed": 5150,
+      "skipped": 12,
+      "elapsed_seconds": 589.43,
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 795.437,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 795.671,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 795.843,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "fatal_exception_lines": 0,
+      "complete_clean_native_shutdown": true
+    },
+    {
+      "job_id": 119505611850,
+      "job_name": "Python 3.11",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025/job/119505611850",
+      "status": "completed",
+      "conclusion": "success",
+      "passed": 5150,
+      "skipped": 12,
+      "elapsed_seconds": 627.27,
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 1405.859,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 1406.109,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 1406.296,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "fatal_exception_lines": 0,
+      "complete_clean_native_shutdown": true
+    },
+    {
+      "job_id": 119505612144,
+      "job_name": "Python 3.12",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025/job/119505612144",
+      "status": "completed",
+      "conclusion": "success",
+      "passed": 5150,
+      "skipped": 12,
+      "elapsed_seconds": 410.01,
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 566,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 566.343,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 566.531,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "warnings": 0,
+      "warning_scope": null,
+      "complete_clean_native_shutdown": true
+    },
+    {
+      "job_id": 119505612012,
+      "job_name": "Python 3.13",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025/job/119505612012",
+      "status": "completed",
+      "conclusion": "success",
+      "passed": 5150,
+      "skipped": 12,
+      "elapsed_seconds": 525.16,
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 750.6180242,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 750.8092965,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 750.9436192,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "warnings": 29,
+      "warning_scope": "Existing PureWindowsPath.is_reserved DeprecationWarning",
+      "complete_clean_native_shutdown": true
+    }
+  ],
+  "critical_python_evidence_sha256": "45b5b1bede644d4a7b35a51665e75cc3ea09b507960cbde743ff2a74fa29a9ae",
+  "publication": {
+    "command": "venv/Scripts/python.exe tools/publish_github_update.py",
+    "canonical_origin": "https://github.com/Ag3nt47/AngeronaSuite.git",
+    "branch": "codex/enterprise-cycle7",
+    "default_branch": "main",
+    "both_public_refs_equal_code_commit": true,
+    "fast_forward_only": true,
+    "clean_worktree": true,
+    "public_readme_images_byte_identical": 6
+  },
+  "scope": [
+    "All four Python versions independently completed the 5162-case suite with 5150 passes and 12 skips.",
+    "Session status, actual SystemExit and native exit were zero; unconfigure and both atexit markers completed.",
+    "All eight non-Python CI jobs and all three security jobs passed.",
+    "The subsequent documentation-only publication preserves the tested product/test/tool sources; this record names the immutable code run rather than predicting later workflow outcomes.",
+    "Hosted elapsed times vary by runner and are not a performance comparison.",
+    "Python 3.13 reported 29 existing path-API deprecation warnings; no native shutdown failure occurred."
+  ]
+}

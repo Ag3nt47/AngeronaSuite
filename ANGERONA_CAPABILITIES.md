@@ -399,6 +399,9 @@ not grounds to disable a sensor or conceal a coverage gap.
   windows and history-worker signal ownership, and narrowly accounts for
   secret-scan false positives. The historical regression record is preserved;
   subsequent local and hosted results have their own source boundary.
+  Code commit `5919c67` passed all four hosted Python versions (5,150 passed /
+  12 skipped each), all eight other CI jobs and all three security jobs, with
+  clean native interpreter exits.
 - Historical September upgrade serial regression suite after code freeze:
   **4,303 passed / 20 skipped / 0 failed**, 478.73 seconds. See the linked
   upgrade validation record below for that scope and separate native acceptance.

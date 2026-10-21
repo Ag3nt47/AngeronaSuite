@@ -49,6 +49,10 @@ also explicitly releases its own Qt application. Original deadlines and security
 checks remain. Local and hosted validation are recorded separately.
 The complete local rerun passed **5,138 tests / 24 skipped**, with successful
 native process shutdown and an unchanged 999-file Python source snapshot.
+The [hosted rerun](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025)
+passed on Python **3.10–3.13: 5,150 passed / 12 skipped per version**, with
+clean native exits. [Security checks](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727269)
+also passed.
 
 The [October 21 timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md)
 corrects sandbox child priority under CPU contention and reduces repeated

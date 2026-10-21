@@ -307,6 +307,36 @@ passed. The harness took 35.734 seconds. Its established direct-exit policy
 reports the harness result; normal interpreter shutdown is established by
 the independent lifecycle gates and full regression above.
 
+## Hosted acceptance at `5919c67`
+
+The [completed CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025)
+and [Security assurance run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727269)
+both passed for the exact code commit
+`5919c670922016985dc69fd6de0b4259d0fe75b7`.
+
+| Python | Passed | Skipped | Native exit | Pytest seconds |
+| --- | ---: | ---: | ---: | ---: |
+| 3.10 | 5,150 | 12 | 0 | 589.43 |
+| 3.11 | 5,150 | 12 | 0 | 627.27 |
+| 3.12 | 5,150 | 12 | 0 | 410.01 |
+| 3.13 | 5,150 | 12 | 0 | 525.16 |
+
+Each interpreter collected all **5,162 cases**, reported no test failures,
+completed unconfigure, raised the real pytest SystemExit zero and emitted
+both Python atexit markers before native exit zero. The two formerly crashing
+interpreters, Python 3.10 and 3.11, received an independent completed-log check.
+All eight remaining CI jobs passed: dependency audit, three platform contracts,
+three native installer checks and public README integrity. Secret scan,
+CodeQL and Scorecard also passed. The
+[acceptance snapshot](hosted-acceptance.json) preserves per-job links and
+structured exit evidence for this immutable code commit.
+
+Python 3.13 emitted 29 existing `PureWindowsPath.is_reserved` deprecation
+warnings. These were path-API notices; no native shutdown failure occurred.
+Runner timings describe these tests and are not comparative performance
+benchmarks. The documentation follow-up preserves the tested product, test
+and tool sources; later workflow outcomes are checked separately.
+
 ## Secret-scanner validation
 
 The same Gitleaks 8.24.3 version used by GitHub reproduced all 21 findings
@@ -323,6 +353,6 @@ the latest fixture tree. No canary credential values are republished here.
 [Scanner evidence](gitleaks.json) retains tool provenance, commands, report
 hashes, narrow exception scope and the historical snapshot boundary.
 
-Hosted acceptance is separate: the published correction's Python matrix and
-security jobs must pass. The current commit's checks are available in
+The accepted code run and its exit diagnostics are linked above. Subsequent
+commits receive their own checks in
 [GitHub Actions](https://github.com/Ag3nt47/AngeronaSuite/actions).
