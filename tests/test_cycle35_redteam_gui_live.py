@@ -497,10 +497,29 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
         process.start()
         deadline = time.monotonic() + 10.0
-        while not process.operational_snapshot()["first_cycle_complete"] and time.monotonic() < deadline:
+        process_ready = {}
+        while time.monotonic() < deadline:
+            process_ready = process.operational_snapshot()
+            # The startup PID boundary is cycle 1 with enrichment pending.
+            # Observe a real completed poll before asking the unchanged launch
+            # authority to prove its own later fresh, loss-free cycle.
+            if (
+                process_ready["status"] == "running"
+                and process_ready["thread_alive"] is True
+                and process_ready["first_cycle_complete"] is True
+                and process_ready["cycle_count"] > 1
+                and process_ready["health"] >= 50
+                and process_ready["event_overflow_count"] == 0
+            ):
+                break
             app.processEvents()
             time.sleep(0.05)
         assert process.operational_snapshot()["first_cycle_complete"]
+        assert process_ready.get("cycle_count", 0) > 1, process_ready
+        assert process_ready.get("status") == "running", process_ready
+        assert process_ready.get("thread_alive") is True, process_ready
+        assert process_ready.get("health", 0) >= 50, process_ready
+        assert process_ready.get("event_overflow_count", -1) == 0, process_ready
         assert assess_drill_response(manager, require_process=True)["ready"]
         trace("readiness_passed", process=process.operational_snapshot())
 

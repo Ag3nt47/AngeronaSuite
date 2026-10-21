@@ -27,7 +27,7 @@ import time
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -125,19 +125,34 @@ class _HistoryWorker(QRunnable):
         self.operation = operation
         self.root = root
         self.name = name
-        self.signals = _HistorySignals()
+        # Auto-delete runnables are released on the pool thread. Keep this
+        # GUI-affinity QObject application-owned until GUI deferred deletion.
+        self.signals = _HistorySignals(QCoreApplication.instance())
+
+    def _retire_signals(self) -> None:
+        try:
+            self.signals.deleteLater()
+        except RuntimeError:
+            # Application teardown may already have destroyed the bridge.
+            pass
 
     @Slot()
     def run(self) -> None:
         try:
-            result = (
-                list_history(self.root)
-                if self.operation == "list"
-                else load_verified_history_text(self.root, self.name)
-            )
-        except Exception as exc:
-            result = {"error": str(exc)}
-        self.signals.finished.emit(self.operation, self.name, result)
+            try:
+                result = (
+                    list_history(self.root)
+                    if self.operation == "list"
+                    else load_verified_history_text(self.root, self.name)
+                )
+            except Exception as exc:
+                result = {"error": str(exc)}
+            try:
+                self.signals.finished.emit(self.operation, self.name, result)
+            except RuntimeError:
+                pass  # No UI remains if application shutdown removed the bridge.
+        finally:
+            self._retire_signals()
 
 
 class _StageChip(QLabel):
@@ -766,6 +781,7 @@ class RedTeamConsole(QDialog):
         try:
             self._history_pool.start(worker)
         except Exception as exc:
+            worker._retire_signals()
             self._hist_listing = False
             self._hist_view.setPlainText(f"Could not load report history: {exc}")
 
@@ -855,6 +871,7 @@ class RedTeamConsole(QDialog):
         try:
             self._history_pool.start(worker)
         except Exception as exc:
+            worker._retire_signals()
             self._hist_reading = False
             self._hist_view.setPlainText(f"Could not verify report history: {exc}")
 

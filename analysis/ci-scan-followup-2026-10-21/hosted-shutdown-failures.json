@@ -1,0 +1,296 @@
+{
+  "schema": "angerona.hosted-shutdown-failure-snapshot/v1",
+  "date": "2026-10-21",
+  "commit": "0934ec07eb392a1af2de6c150f7aa83444d56cc9",
+  "scope": "Historical hosted result of the coordinator/exit-observer correction. All test assertions passed, but the complete Python matrix was not accepted because two interpreters crashed during shutdown.",
+  "ci": {
+    "id": 39672005464,
+    "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464",
+    "conclusion": "failure",
+    "non_python_jobs": [
+      {
+        "id": 119472019614,
+        "name": "dependency-audit",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472019799,
+        "name": "Native installer (macos-15-intel)",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472019942,
+        "name": "Native installer (macos-15)",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472019974,
+        "name": "linux platform contract",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472020060,
+        "name": "macos-arm64 platform contract",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472020069,
+        "name": "windows platform contract",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472020106,
+        "name": "Public README integrity",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472020409,
+        "name": "Native installer (ubuntu-24.04)",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "security": {
+    "id": 39672005598,
+    "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005598",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "id": 119472028833,
+        "name": "scorecard",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472029166,
+        "name": "secret-scan",
+        "conclusion": "success"
+      },
+      {
+        "id": 119472029322,
+        "name": "codeql",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "python_matrix": {
+    "schema": "angerona.hosted-python-results/v1",
+    "head_sha": "0934ec07eb392a1af2de6c150f7aa83444d56cc9",
+    "repository": "Ag3nt47/AngeronaSuite",
+    "run_id": 39672005464,
+    "run_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464",
+    "complete": true,
+    "accepted": false,
+    "jobs": [
+      {
+        "name": "Python 3.10",
+        "python": "3.10",
+        "job_id": 119472019868,
+        "job_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464/job/119472019868",
+        "status": "completed",
+        "conclusion": "failure",
+        "counts": {
+          "passed": 5132,
+          "skipped": 12,
+          "failed": 0,
+          "errors": 0,
+          "total": 5144
+        },
+        "summary_found": true,
+        "summary_seconds": 423,
+        "native_process_exit_code": -1073741819,
+        "session_finish": {
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5144
+        },
+        "pytest_system_exit": {
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        },
+        "unconfigure_completed": true,
+        "trace_session_end": true,
+        "pytest_entrypoint_finished": true,
+        "python_atexit_begin": true,
+        "python_atexit_end": false,
+        "failed_steps": [
+          "Test"
+        ],
+        "failure_lines": [],
+        "accepted": false,
+        "github_shell_step_exit_code": 1,
+        "github_shell_step_exit_scope": "Explicit GitHub process-error log marker",
+        "native_exception": "Windows access violation",
+        "last_python_atexit_marker": "python-atexit-begin",
+        "current_native_thread_has_no_python_frame": true,
+        "sanitized_repository_frames": [
+          {
+            "file": "src/angerona/gui/async_snapshot.py",
+            "line": 17,
+            "function": "_snapshot_loop"
+          },
+          {
+            "file": "src/angerona/gui/main_window.py",
+            "line": 2688,
+            "function": "_fi_worker_loop"
+          },
+          {
+            "file": "src/angerona/gui/system_pulse.py",
+            "line": 220,
+            "function": "_sample_loop"
+          }
+        ],
+        "native_status_hex": "0xC0000005",
+        "native_trace_scope": "The native crash is on the current thread with no Python frame. Repository frames name surviving blocked worker threads; they do not identify the access-violation cause."
+      },
+      {
+        "name": "Python 3.11",
+        "python": "3.11",
+        "job_id": 119472019994,
+        "job_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464/job/119472019994",
+        "status": "completed",
+        "conclusion": "failure",
+        "counts": {
+          "passed": 5132,
+          "skipped": 12,
+          "failed": 0,
+          "errors": 0,
+          "total": 5144
+        },
+        "summary_found": true,
+        "summary_seconds": 401.01,
+        "native_process_exit_code": -1073741819,
+        "session_finish": {
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5144
+        },
+        "pytest_system_exit": {
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        },
+        "unconfigure_completed": true,
+        "trace_session_end": true,
+        "pytest_entrypoint_finished": true,
+        "python_atexit_begin": true,
+        "python_atexit_end": false,
+        "failed_steps": [
+          "Test"
+        ],
+        "failure_lines": [],
+        "accepted": false,
+        "github_shell_step_exit_code": 1,
+        "github_shell_step_exit_scope": "Explicit GitHub process-error log marker",
+        "native_exception": "Windows access violation",
+        "last_python_atexit_marker": "python-atexit-begin",
+        "current_native_thread_has_no_python_frame": true,
+        "sanitized_repository_frames": [
+          {
+            "file": "src/angerona/gui/async_snapshot.py",
+            "line": 17,
+            "function": "_snapshot_loop"
+          },
+          {
+            "file": "src/angerona/gui/main_window.py",
+            "line": 2688,
+            "function": "_fi_worker_loop"
+          },
+          {
+            "file": "src/angerona/gui/system_pulse.py",
+            "line": 220,
+            "function": "_sample_loop"
+          }
+        ],
+        "native_status_hex": "0xC0000005",
+        "native_trace_scope": "The native crash is on the current thread with no Python frame. Repository frames name surviving blocked worker threads; they do not identify the access-violation cause."
+      },
+      {
+        "name": "Python 3.12",
+        "python": "3.12",
+        "job_id": 119472020097,
+        "job_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464/job/119472020097",
+        "status": "completed",
+        "conclusion": "success",
+        "counts": {
+          "passed": 5132,
+          "skipped": 12,
+          "failed": 0,
+          "errors": 0,
+          "total": 5144
+        },
+        "summary_found": true,
+        "summary_seconds": 535.13,
+        "native_process_exit_code": 0,
+        "session_finish": {
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5144
+        },
+        "pytest_system_exit": {
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        },
+        "unconfigure_completed": true,
+        "trace_session_end": true,
+        "pytest_entrypoint_finished": true,
+        "python_atexit_begin": true,
+        "python_atexit_end": true,
+        "failed_steps": [],
+        "failure_lines": [],
+        "accepted": true,
+        "github_shell_step_exit_code": 0,
+        "github_shell_step_exit_scope": "Successful completed job conclusion; no error marker",
+        "native_exception": null,
+        "last_python_atexit_marker": "python-atexit-end",
+        "current_native_thread_has_no_python_frame": false,
+        "sanitized_repository_frames": [],
+        "native_status_hex": "0x00000000",
+        "native_trace_scope": "No native crash marker observed."
+      },
+      {
+        "name": "Python 3.13",
+        "python": "3.13",
+        "job_id": 119472020138,
+        "job_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464/job/119472020138",
+        "status": "completed",
+        "conclusion": "success",
+        "counts": {
+          "passed": 5132,
+          "skipped": 12,
+          "failed": 0,
+          "errors": 0,
+          "total": 5144
+        },
+        "summary_found": true,
+        "summary_seconds": 467.35,
+        "native_process_exit_code": 0,
+        "session_finish": {
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5144
+        },
+        "pytest_system_exit": {
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        },
+        "unconfigure_completed": true,
+        "trace_session_end": true,
+        "pytest_entrypoint_finished": true,
+        "python_atexit_begin": true,
+        "python_atexit_end": true,
+        "failed_steps": [],
+        "failure_lines": [],
+        "accepted": true,
+        "github_shell_step_exit_code": 0,
+        "github_shell_step_exit_scope": "Successful completed job conclusion; no error marker",
+        "native_exception": null,
+        "last_python_atexit_marker": "python-atexit-end",
+        "current_native_thread_has_no_python_frame": false,
+        "sanitized_repository_frames": [],
+        "native_status_hex": "0x00000000",
+        "native_trace_scope": "No native crash marker observed."
+      }
+    ],
+    "scope": "Exact-head completed GitHub Actions Python matrix job logs and conclusions. No reruns or source edits. Sanitized counters and terminal diagnostic markers only; suite totals are per job, not combined independent coverage."
+  },
+  "inference_limit": "The crash phase and status are directly observed. The logs do not identify a native DLL/function or prove the cause of faadba6's older unexplained process exit1. Surviving blocked worker frames are not fault attribution."
+}

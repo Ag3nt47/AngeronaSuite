@@ -61,12 +61,21 @@ def keep_qt_application_alive():
         yield
         return
 
-    app = QApplication.instance() or QApplication([])
+    app = QApplication.instance()
+    owns_application = app is None
+    if owns_application:
+        app = QApplication([])
     app.setQuitOnLastWindowClosed(False)
-    yield
-    # Drain deferred deletes while the Python wrapper and native application
-    # are both still alive.  Process teardown owns final QApplication cleanup.
-    app.processEvents()
+    try:
+        yield
+    finally:
+        # Complete requested deletions without dispatching unrelated timers or
+        # callbacks from completed tests. The fixture that creates Qt also owns
+        # its final cleanup, while Python and native wrappers are still intact.
+        _drain_qt_deferred_deletes()
+        if owns_application:
+            app.shutdown()
+            assert QApplication.instance() is None
 
 
 @pytest.fixture(autouse=True)

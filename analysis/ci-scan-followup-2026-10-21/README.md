@@ -2,11 +2,13 @@
 
 Date: 2026-10-21. Maintenance version remains 1.13.0. Investigated commits:
 `306911a931dab28d3ba0234711676f8653cf242f` and
-`faadba63a3d6046aeec79233b020a908793e67bd`.
+`faadba63a3d6046aeec79233b020a908793e67bd`, followed by
+`0934ec07eb392a1af2de6c150f7aa83444d56cc9`.
 
 The [local complete-suite record](../timeout-rootcause-2026-10-21/README.md)
 passed 5,107 tests with 25 skips. The subsequent hosted runs exposed two
-separate issues. Local validation does not substitute for hosted acceptance.
+fixture/scanner issues and a later native shutdown fault. Local validation
+does not substitute for hosted acceptance.
 
 ## Hosted failures
 
@@ -146,6 +148,164 @@ the process result. [Diagnostic evidence](ci-diagnostics.json) retains the
 commands, hashes, limits and the earlier local collection-probe failure
 whose original cause could not be recovered. CI diagnostic tails print
 curated status fields and omit raw failure/Qt text and parameter values.
+
+## Third hosted attempt: native shutdown
+
+The coordinator correction and exit observer exposed a separate failure in
+the [third CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005464).
+All four Python versions completed **5,132 passed / 12 skipped**, including
+the scheduling check. Python 3.12 and 3.13 also completed process shutdown
+with native exit zero and both atexit markers. Python 3.10 and 3.11 completed
+pytest with SystemExit zero and successful unconfigure, but then crashed
+with native status **0xC0000005** between the atexit markers. Their GitHub
+steps failed. The full matrix was not accepted.
+
+The [shutdown snapshot](hosted-shutdown-failures.json) preserves these per-job
+results and distinguishes the native access-violation code from PowerShell's
+step exit 1. Faulthandler reported no Python frame for the crashing current
+thread. The other frames identify blocked surviving workers, not a causal
+fault in those workers. These logs do not identify a native DLL/function or
+prove the cause of the older uninstrumented `faadba6` exit 1.
+
+All eight non-Python CI jobs passed. The same commit's
+[Security assurance run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39672005598)
+passed secret scan, CodeQL and Scorecard. Those successes do not erase the
+two failed interpreter shutdowns.
+
+The pinned PySide 6.11.1 source registers
+[`QtCore.__moduleShutdown` with Python atexit](https://github.com/qtproject/pyside-pyside-setup/blob/v6.11.1/sources/pyside6/PySide6/glue/qtcore.cpp#L1219-L1240).
+Its [`shutdown` implementation](https://github.com/qtproject/pyside-pyside-setup/blob/v6.11.1/sources/pyside6/PySide6/glue/qtcore.cpp#L338-L340)
+drains the same cleanup path explicitly. This establishes the relationship
+between the cleanup boundaries; it does not identify the hosted faulting
+destructor.
+
+The old session fixture kept its application alive through the tests but left
+native cleanup to interpreter shutdown. A candidate tracks whether the
+fixture created that application, drains requested DeferredDelete events and
+explicitly shuts down its owned application in a finally block. A borrowed
+application remains with its creator. It avoids dispatching unrelated timers
+from completed tests during final cleanup.
+
+Three disposable-process challenges verify owned application/widget/timer
+destruction before SystemExit, borrowed ownership and propagation of an
+original test exception through cleanup. All three passed with native exit
+zero. A 52-case GUI lifecycle selection also passed through the exact CI
+launcher on Python 3.12 with completed unconfigure, SystemExit zero, both
+atexit markers and native exit zero. These checks establish the intended
+cleanup boundary on Python 3.12. They do not establish a fix for the access
+violation: the matching Python 3.10.11 runtime reproduced the original crash,
+and explicit application shutdown moved the same crash into fixture teardown.
+A retained-wrapper baseline on Python 3.12 exited normally and does not
+reproduce the native access violation.
+
+The Python 3.10 reproduction also crashes with the execution-trace plugin
+absent. Passive sentinels around the unchanged registered callback locate
+the failure inside `PySide6.QtCore.__moduleShutdown`. The single MainWindow
+integration case is sufficient to reproduce it. Creating the loading signal
+bus lazily under application ownership still produced the native access
+violation after that case passed its assertions. Neither candidate is
+accepted as a shutdown fix. Constructor-only, settings-only and inert local
+history-dialog probes exited normally; those reduced probes do not replace
+the original integration assertions or the hosted full suite.
+
+## Confirmed dialog teardown fault
+
+A native dump of the unchanged Python 3.10 case recovered a saved Python
+traceback: `PresentationTimer.eventFilter` → `refresh` → `_sync` →
+`_watch_window`, at baseline line 107. The timer called `removeEventFilter`
+on its cached `RedTeamConsole` after Qt had already invalidated that native
+dialog. The child timer and widget could still receive destruction-related
+events. The resulting `RuntimeError` entered Shiboken's override-error path
+during Qt application cleanup.
+
+The pinned binding's [older Python error-fetch path](https://github.com/qtproject/pyside-pyside-setup/blob/v6.11.1/sources/shiboken6/libshiboken/sbkerrors.cpp#L108-L139)
+retained an unnormalized string value. Its
+[context-prefix path](https://github.com/qtproject/pyside-pyside-setup/blob/v6.11.1/sources/shiboken6/libshiboken/sbkerrors.cpp#L183-L201)
+passed that value to the
+[compatibility exception-argument accessor](https://github.com/qtproject/pyside-pyside-setup/blob/v6.11.1/sources/shiboken6/libshiboken/pep384impl.cpp#L367-L391).
+The dump identifies the invalid access there. This explains the captured
+Python 3.10 native crash; the hosted matrix separately verifies supported
+interpreter versions. The original application lifetime error is corrected
+at the timer rather than hiding the callback failure or changing dependencies.
+
+An inert dialog/child/timer probe reproduces the same path without simulation
+actions. With Python 3.10.11 and PySide 6.11.1 held constant, the original timer
+crashed with **0xC0000005**. Changing only the timer source made that unchanged
+probe exit **0**, invalidate all three retained wrappers, finish shutdown,
+produce both atexit markers and leave stderr empty. On Python 3.12, the
+baseline exposed the exact callback traceback and the correction exited
+cleanly. Cold probe timings are not performance benchmarks.
+
+The fix validates the owner, current window and cached window before native
+queries; Hide directly stops wakeups while preserving start intent. Owner
+destruction retires the timer. Chill interval calculation shares the guarded
+lookup. Four disposable-process regressions cover Full/Chill parent destruction
+and reparenting after a cached window is destroyed. They reject printed Qt
+override errors even when a process returns zero. All four passed on Python
+3.12; the existing 79-case presentation/Chill/AI-lock/history/observer gate also
+passed with native exit zero. The
+[sanitized root-cause record](qt-shutdown-rootcause.json) includes the inert
+probe source, hashes, recovered call chain and separate validation scopes.
+Raw memory dumps remain private.
+
+The same actual-source launcher on Python 3.10.11 then passed all **16 new
+lifecycle cases**, with session/SystemExit/native status zero, completed
+unconfigure, both atexit markers, no Qt callback errors and empty stderr.
+Source hashes remained identical before and after. This focused gate ran
+alongside the complete Python 3.12 regression and is not a timing comparison.
+
+That first complete-regression attempt exposed a further omission in the
+candidate guard: Qt can reenter a timer filter after Python clears the
+wrapper's attributes. Reading `_retired` before checking the native object
+then raised `AttributeError`, with a call failure and a teardown error in
+the minimum-window footer test. The run had observed 3,282 passing calls,
+11 skipped calls and one failed call when it was stopped; it is incomplete
+and unaccepted. Its supervisor termination status 15 is not a pytest verdict.
+The original MainWindow integration case had passed in 127.52 seconds.
+
+The corrected entry guard checks native validity first and treats absent
+Python state as retired before reading the event or owner. Two further
+Full/Chill canaries clear wrapper state deliberately and dispatch real Qt
+events through the installed filter. They distinguish this controlled
+fault injection from an assertion that cyclic GC always runs in that order.
+
+The final focused Python 3.12 gate passed **46 cases**, including the complete
+affected GUI polish suite, all six timer lifecycle cases and the existing
+timer-efficiency/Chill checks. A fresh actual-source Python 3.10 gate passed
+all **18 lifecycle cases** with native/session/SystemExit zero, completed
+unconfigure, both atexit markers and empty stderr. These gates validate the
+completed guard; the earlier 16-case record validates only the first candidate.
+
+A separate history-worker defect released GUI-affinity signal carriers on pool
+threads. Application ownership and GUI deferred deletion now cover completion
+and refused starts; nine inert tests verify delivery, errors and destruction
+thread. This is not attributed as the captured crash's cause. The live GUI
+integration setup also waits for a completed process-monitor poll within its
+original ten-second bound; launch still requires its own later fresh,
+loss-free cycle. No authority threshold or deadline was relaxed.
+
+## Completed local regression
+
+The fresh complete Python 3.12 run passed **5,138 tests / 24 skipped / zero
+failures or errors** in 800.25 console seconds (804.875 seconds including
+the launcher and source checks). Pytest session, SystemExit and native
+process status were all zero; unconfigure completed, both interpreter atexit
+markers were present and stderr was empty. All **999 Python source files**
+were identical before and after. The full 5,162-case inventory includes the
+original MainWindow case, the affected footer case and all 18 new lifecycle
+cases. The 30 Chill/Ollama-lock and nine Chill presentation-budget checks
+passed. Local skips reflect available capabilities and remain distinct from
+the hosted matrix's dependency and platform coverage.
+
+The subsequent isolated offline self-check passed **28/28 phases** and
+reconciled all **84 modules**: 66 passed, 18 expected capability skips, plus
+a passing event-pipeline result. It recorded **559 module subchecks**
+(530 passed, 29 skipped) and **9/9 verification checks**, including controlled
+failure, exception, malformed-result, timeout, skip and corrupt-accounting
+canaries. Saved-report readback and constrained-hardware worker-budget checks
+passed. The harness took 35.734 seconds. Its established direct-exit policy
+reports the harness result; normal interpreter shutdown is established by
+the independent lifecycle gates and full regression above.
 
 ## Secret-scanner validation
 

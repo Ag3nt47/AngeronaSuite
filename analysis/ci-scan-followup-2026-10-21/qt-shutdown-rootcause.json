@@ -1,0 +1,708 @@
+{
+  "schema": "angerona.qt-shutdown-root-cause/v1",
+  "date": "2026-10-21",
+  "baseline_commit": "0934ec07eb392a1af2de6c150f7aa83444d56cc9",
+  "runtime": {
+    "python": "3.10.11 Windows x64",
+    "PySide6": "6.11.1",
+    "shiboken6": "6.11.1",
+    "archive_origin": "https://www.python.org/ftp/python/3.10.11/python-3.10.11-embed-amd64.zip",
+    "archive_sha256": "608619f8619075629c9c69f361352a0da6ed7e62f83a0e19c63e0ea32eb7629d",
+    "executable_authenticode": "Valid; Python Software Foundation; verified before execution",
+    "installation_scope": "Private ignored diagnostic runtime; no global installation"
+  },
+  "native_capture": {
+    "case": "tests/test_cycle35_redteam_gui_live.py::test_mainwindow_arm_launch_and_deliver_signed_aar_twice",
+    "original_source_selected": true,
+    "execution_trace_plugin_enabled": false,
+    "target_native_exit_hex": "0xC0000005",
+    "target_native_exit_signed": -1073741819,
+    "procdump_observer_exit": 1,
+    "observer_exit_is_target_verdict": false,
+    "pytest_verdict": "This capture had a real readiness assertion failure; it was not an all-assertions-passed run.",
+    "separate_all_assertions_passed_reproduction": "The earlier loading-bus-only diagnostic variant passed the single original case, then crashed during the same Qt module callback. That variant did not fix the fault.",
+    "callback": "PySide6.QtCore.__moduleShutdown",
+    "native_chain": [
+      "Py_FinalizeEx",
+      "PySide::runCleanupFunctions",
+      "PySide::destroyQCoreApplication / visitAllPyObjects",
+      "QWidget / QDialog destruction",
+      "QApplication::notify",
+      "QCoreApplicationPrivate::sendThroughObjectEventFilters",
+      "QTimer::eventFilter Python override error handling",
+      "Shiboken::Errors::storePythonOverrideErrorOrPrint",
+      "PepException_GetArgs"
+    ],
+    "declared_exception_type": "RuntimeError",
+    "error_value_python_type": "str",
+    "error_value": "libshiboken: Internal C++ object (RedTeamConsole) already deleted.",
+    "python_traceback": [
+      {
+        "path": "src/angerona/gui/presentation_timer.py",
+        "function": "eventFilter",
+        "baseline_line": 138
+      },
+      {
+        "path": "src/angerona/gui/presentation_timer.py",
+        "function": "refresh",
+        "baseline_line": 73
+      },
+      {
+        "path": "src/angerona/gui/presentation_timer.py",
+        "function": "_sync",
+        "baseline_line": 114
+      },
+      {
+        "path": "src/angerona/gui/presentation_timer.py",
+        "function": "_watch_window",
+        "baseline_line": 107
+      }
+    ],
+    "decode_method": "Validated CPython 3.10.11 traceback/frame/code/str layouts and followed saved traceback links from the minidump. No frame locals were read.",
+    "raw_dump_publication": "Raw memory dumps and address-bearing debug logs remain private and ignored."
+  },
+  "matched_inert_reproduction": {
+    "purpose": "Same unchanged inert dialog/widget/timer deletion fixture; only selected timer source differs",
+    "probe_raw_sha256": "d42b4f803f855f8b661b374cb6395698107bbf892cd7bdcec61da8ed2ce55ea9",
+    "probe_unchanged": true,
+    "tracked_timer_unchanged_during_pair": true,
+    "sdk_private_pth_restored": true,
+    "ignored_tree_timer_restored": true,
+    "results": [
+      {
+        "variant": "baseline",
+        "native_exit_code": 3221225477,
+        "native_exit_hex": "0xC0000005",
+        "wall_seconds": 3.704,
+        "timer_normalized_utf8_lf_sha256": "528b19faa1d4849b7ccd2f1cd29410a23d17eb0e5151823b15fb767ec9d482ee",
+        "stdout": "before-delete True True True\n",
+        "stderr_bytes": 440
+      },
+      {
+        "variant": "fixed",
+        "native_exit_code": 0,
+        "native_exit_hex": "0x00000000",
+        "wall_seconds": 0.453,
+        "timer_normalized_utf8_lf_sha256": "09047d9f2a43466e1bca280e08b54c7e7b7092c083329ace12b1d76e3491c481",
+        "stdout": "before-delete True True True\nafter-delete False False False\nshutdown-complete\natexit-begin\natexit-end\n",
+        "stderr_bytes": 0
+      }
+    ],
+    "source_boundary": "Initial timer repair before the additional cleared-state entry guard; the final actual-source gate validates the completed correction."
+  },
+  "inert_probe_source_utf8": "import sys\nimport atexit\nfrom PySide6.QtCore import QCoreApplication, QEvent\nfrom PySide6.QtWidgets import QApplication, QDialog, QWidget\nfrom angerona.gui.presentation_timer import PresentationTimer\nfrom shiboken6 import isValid\n\natexit.register(print, 'atexit-end', flush=True)\napp = QApplication([])\napp.setQuitOnLastWindowClosed(False)\ndialog = QDialog()\nowner = QWidget(dialog)\ntimer = PresentationTimer(owner)\ntimer.start(1000)\ndialog.show()\napp.processEvents()\nprint('before-delete', isValid(dialog), isValid(owner), isValid(timer), flush=True)\ndialog.deleteLater()\nQCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)\nprint('after-delete', isValid(dialog), isValid(owner), isValid(timer), flush=True)\napp.shutdown()\nprint('shutdown-complete', flush=True)\natexit.register(print, 'atexit-begin', flush=True)\nraise SystemExit(0)\n",
+  "fix": [
+    "Check owner and current enclosing-window native validity before querying visibility or activity.",
+    "Remove an old window event filter only while that cached native window is valid.",
+    "Hide stops native wakeups directly while preserving requested start intent.",
+    "Owner destruction retires presentation bookkeeping without querying the destroying widget.",
+    "Chill interval calculation uses the same checked enclosing-window lookup.",
+    "Native validity and absent Python state are checked before event or owner field access during reentrant destruction."
+  ],
+  "regression_challenges": [
+    "Four native child-process cases: Full and Chill, direct parent destruction and reparenting after the cached old dialog is destroyed.",
+    "Two further Full/Chill canaries require actual installed-filter Qt dispatch to remain harmless after deliberate Python-state clearing.",
+    "Retained Python wrappers must all become natively invalid; callback errors are rejected even if the process exits zero.",
+    "Native zero, explicit shutdown completion and both atexit markers are required.",
+    "Three application fixture probes establish owned versus borrowed cleanup and original exception propagation.",
+    "Nine history-worker cases independently establish GUI-affinity carrier lifetime, real result delivery, error delivery, deleted receivers and rejected pool-start cleanup."
+  ],
+  "initial_focused_python312_gate": {
+    "tests": 79,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 31.924,
+    "junit_sha256": "ec90ef4acfd77730b680db226b55770fbdc3ef1b3f63bc93b6a05d6cdfe89c25",
+    "console_seconds": 32.61,
+    "native_exit": 0,
+    "scope": "79 cases; excludes the separately run four new timer lifecycle cases"
+  },
+  "initial_four_timer_python312_gate": {
+    "tests": 4,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 3.239,
+    "junit_sha256": "064b49e7bcb5923e17b104b1ceb84b8aa154d30dada154cc69ea607e57168973",
+    "console_seconds": 4.26,
+    "native_exit": 0
+  },
+  "source_records": [
+    {
+      "path": "src/angerona/gui/presentation_timer.py",
+      "normalized_sha256": "ed6ed2ef4dd61580d5ea397a14233a14b4175852a38fcf80592bd124fa7c60d7"
+    },
+    {
+      "path": "src/angerona/gui/red_team_console.py",
+      "normalized_sha256": "5dbe831e0c583cd0d5627bd427b420333fa3745a8e2bcec51126dae103c979f3"
+    },
+    {
+      "path": "tests/conftest.py",
+      "normalized_sha256": "6337bc540982ec8bb74cf99f63c5127eb1f37b36e29d451539825ce9e464cca2"
+    },
+    {
+      "path": "tests/test_cycle35_redteam_gui_live.py",
+      "normalized_sha256": "f3a427ad3093e680dac442f2fcdcf916688d799701a03a965031ca66ce0f1826"
+    },
+    {
+      "path": "tests/test_presentation_timer_lifecycle.py",
+      "normalized_sha256": "054cca5804cfd1bcfd94427deebd096d219fa41e852b579a3152f4955212a566"
+    },
+    {
+      "path": "tests/test_pytest_qt_lifecycle.py",
+      "normalized_sha256": "5c3b15ec7c4f5a518e3877afb249a5b14d7ed565801d3c40e53def12a85af887"
+    },
+    {
+      "path": "tests/test_history_worker_lifecycle.py",
+      "normalized_sha256": "b9bf6ed74144b8b9d0f8730fb9bc5613249cc2cdaa3aabda9a3ed699c09f5c13"
+    }
+  ],
+  "limits": [
+    "The matched inert pair establishes the timer lifetime fault; cold timings are not comparative performance evidence.",
+    "The original uninstrumented faadba6 exit 1 has no recovered cause and is not retrospectively attributed.",
+    "History carrier ownership is a separate observed wrong-thread destruction defect, not the captured native fault.",
+    "Full local and hosted acceptance results are recorded separately; test summaries alone do not establish successful native shutdown."
+  ],
+  "initial_incomplete_full_regression": {
+    "native_exit": 15,
+    "wall_seconds": 651.7350000000442,
+    "source_count": 999,
+    "sources_unchanged": true,
+    "complete_suite": false,
+    "accepted": false,
+    "native_exit_reason": "Supervisor terminated the failed test process; status 15 is not a naturally completed pytest verdict.",
+    "observed_call_outcomes": {
+      "passed": 3282,
+      "skipped": 11,
+      "failed": 1
+    },
+    "failing_phases": [
+      {
+        "nodeid": "tests/test_dashboard_ui_polish.py::test_red_team_run_footer_stays_reachable_at_minimum_window_size",
+        "phase": "call"
+      },
+      {
+        "nodeid": "tests/test_dashboard_ui_polish.py::test_red_team_run_footer_stays_reachable_at_minimum_window_size",
+        "phase": "teardown"
+      }
+    ],
+    "fault": "The initial timer correction read _retired before checking native validity. Qt reentered the event filter after wrapper Python attributes were cleared, raising AttributeError.",
+    "additional_fix": "Check native self validity and default absent _retired to True before event or owner access; defensively retrieve owner.",
+    "regression": "Real installed-filter event dispatch after controlled clearing of Python wrapper state in both Full and Chill. This is explicit fault injection, not a claim of deterministic cyclic-GC scheduling."
+  },
+  "final_focused_python312_gate": {
+    "tests": 46,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 15.647,
+    "junit_sha256": "b4b3cbb6bd20aa12127f1c1353bc74541e4aff526d2a1c2524c30f18f975d2ef",
+    "console_seconds": 21.63,
+    "native_exit": 0,
+    "scope": "Six timer lifecycle cases plus the complete affected GUI polish, timer efficiency and Chill presentation suites"
+  },
+  "initial_matching_python310_gate": {
+    "native_exit_code": 0,
+    "wall_seconds": 10.172,
+    "test_paths": [
+      "tests/test_presentation_timer_lifecycle.py",
+      "tests/test_pytest_qt_lifecycle.py",
+      "tests/test_history_worker_lifecycle.py"
+    ],
+    "tests": 16,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "session_finish": [
+      {
+        "kind": "session-finish",
+        "monotonic": 263192.078,
+        "exitstatus": 0,
+        "testsfailed": 0,
+        "testscollected": 16
+      }
+    ],
+    "unconfigure_end": [
+      {
+        "kind": "unconfigure-end",
+        "monotonic": 263192.093,
+        "completed": true
+      }
+    ],
+    "pytest_system_exit": [
+      {
+        "kind": "pytest-system-exit",
+        "monotonic": 263192.125,
+        "exit_code_type": "ExitCode",
+        "exit_code": 0
+      }
+    ],
+    "atexit_begin": true,
+    "atexit_end": true,
+    "qt_critical_or_fatal_rows": 0,
+    "qt_callback_error_in_stderr": false,
+    "stderr_bytes": 0,
+    "sdk_pth_unchanged": true,
+    "concurrent_full_312_suite": true,
+    "performance_comparison": false,
+    "sources_unchanged": true,
+    "source_records": [
+      {
+        "path": "src/angerona/gui/presentation_timer.py",
+        "normalized_sha256": "09047d9f2a43466e1bca280e08b54c7e7b7092c083329ace12b1d76e3491c481"
+      },
+      {
+        "path": "tests/conftest.py",
+        "normalized_sha256": "6337bc540982ec8bb74cf99f63c5127eb1f37b36e29d451539825ce9e464cca2"
+      },
+      {
+        "path": "src/angerona/gui/red_team_console.py",
+        "normalized_sha256": "5dbe831e0c583cd0d5627bd427b420333fa3745a8e2bcec51126dae103c979f3"
+      },
+      {
+        "path": "tests/test_presentation_timer_lifecycle.py",
+        "normalized_sha256": "f3f049f539e5cd5f2c53c6cf436e47149e662187cf15323e913c190cf377ab10"
+      },
+      {
+        "path": "tests/test_pytest_qt_lifecycle.py",
+        "normalized_sha256": "5c3b15ec7c4f5a518e3877afb249a5b14d7ed565801d3c40e53def12a85af887"
+      },
+      {
+        "path": "tests/test_history_worker_lifecycle.py",
+        "normalized_sha256": "b9bf6ed74144b8b9d0f8730fb9bc5613249cc2cdaa3aabda9a3ed699c09f5c13"
+      },
+      {
+        "path": "tools/ci_pytest.py",
+        "normalized_sha256": "4a525160bf05673bb563a675ee1734f0ec5d7d916fbcd39f81d6b7ad15c51725"
+      },
+      {
+        "path": "tools/pytest_execution_trace.py",
+        "normalized_sha256": "24a919afc4b3317aa91c03fc87415d0ed866cf7795a1c5937d1225e1878b6f3a"
+      }
+    ],
+    "skipped": 0,
+    "junit_seconds": 7.931,
+    "junit_sha256": "b242766813518114a022ed48bb56de90ed3a2d905a72b9ec15ce7f57d7aa860f"
+  },
+  "final_matching_python310_gate": {
+    "native_exit_code": 0,
+    "wall_seconds": 39.625,
+    "test_paths": [
+      "tests/test_presentation_timer_lifecycle.py",
+      "tests/test_pytest_qt_lifecycle.py",
+      "tests/test_history_worker_lifecycle.py"
+    ],
+    "tests": 18,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "session_finish": [
+      {
+        "kind": "session-finish",
+        "monotonic": 263913.906,
+        "exitstatus": 0,
+        "testsfailed": 0,
+        "testscollected": 18
+      }
+    ],
+    "unconfigure_end": [
+      {
+        "kind": "unconfigure-end",
+        "monotonic": 263913.921,
+        "completed": true
+      }
+    ],
+    "pytest_system_exit": [
+      {
+        "kind": "pytest-system-exit",
+        "monotonic": 263913.953,
+        "exit_code_type": "ExitCode",
+        "exit_code": 0
+      }
+    ],
+    "atexit_begin": true,
+    "atexit_end": true,
+    "qt_critical_or_fatal_rows": 0,
+    "qt_callback_error_in_stderr": false,
+    "stderr_bytes": 0,
+    "sdk_pth_unchanged": true,
+    "concurrent_full_312_suite": null,
+    "performance_comparison": false,
+    "concurrent_312_gui_validation_observed_at_start": true,
+    "metadata_correction": "The copied harness initially emitted a true full-3.12-suite concurrency flag without observing that process. Current full-suite concurrency is unknown to this harness; GUI-owned normal-3.12 validation was active at gate start. Original metadata and printed output are retained. No test verdict, journal, timing, source hash, or raw artifact was changed.",
+    "sources_unchanged": true,
+    "source_records": [
+      {
+        "path": "src/angerona/gui/presentation_timer.py",
+        "normalized_sha256": "ed6ed2ef4dd61580d5ea397a14233a14b4175852a38fcf80592bd124fa7c60d7"
+      },
+      {
+        "path": "tests/conftest.py",
+        "normalized_sha256": "6337bc540982ec8bb74cf99f63c5127eb1f37b36e29d451539825ce9e464cca2"
+      },
+      {
+        "path": "src/angerona/gui/red_team_console.py",
+        "normalized_sha256": "5dbe831e0c583cd0d5627bd427b420333fa3745a8e2bcec51126dae103c979f3"
+      },
+      {
+        "path": "tests/test_presentation_timer_lifecycle.py",
+        "normalized_sha256": "054cca5804cfd1bcfd94427deebd096d219fa41e852b579a3152f4955212a566"
+      },
+      {
+        "path": "tests/test_pytest_qt_lifecycle.py",
+        "normalized_sha256": "5c3b15ec7c4f5a518e3877afb249a5b14d7ed565801d3c40e53def12a85af887"
+      },
+      {
+        "path": "tests/test_history_worker_lifecycle.py",
+        "normalized_sha256": "b9bf6ed74144b8b9d0f8730fb9bc5613249cc2cdaa3aabda9a3ed699c09f5c13"
+      },
+      {
+        "path": "tools/ci_pytest.py",
+        "normalized_sha256": "4a525160bf05673bb563a675ee1734f0ec5d7d916fbcd39f81d6b7ad15c51725"
+      },
+      {
+        "path": "tools/pytest_execution_trace.py",
+        "normalized_sha256": "24a919afc4b3317aa91c03fc87415d0ed866cf7795a1c5937d1225e1878b6f3a"
+      }
+    ],
+    "skipped": 0,
+    "junit_seconds": 26.544,
+    "junit_sha256": "99ba543fc824af55bac15c426f7d5cb043dd38ad74a4ea190179ebbda24d6516"
+  },
+  "complete_python312_regression": {
+    "command": [
+      "venv/Scripts/python.exe",
+      "-X",
+      "faulthandler",
+      "-m",
+      "tools.ci_pytest",
+      "-q",
+      "-p",
+      "tools.pytest_execution_trace",
+      "--junitxml=.tmp/ci-shutdown-full-final.xml"
+    ],
+    "native_exit": 0,
+    "wall_seconds": 804.875,
+    "source_count": 999,
+    "sources_unchanged": true,
+    "tests": 5162,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 24,
+    "junit_seconds": 799.967,
+    "junit_sha256": "f52de9bda6279baaa332c5bdf13a09770969093c6f9124f0dcbdd0ba42b52fa5",
+    "phase_observations": [
+      {
+        "kind": "session-finish",
+        "monotonic": 264686.968,
+        "exitstatus": 0,
+        "testsfailed": 0,
+        "testscollected": 5162
+      },
+      {
+        "kind": "unconfigure-begin",
+        "monotonic": 264686.968
+      },
+      {
+        "kind": "unconfigure-end",
+        "monotonic": 264687.265,
+        "completed": true
+      },
+      {
+        "kind": "session-end",
+        "monotonic": 264687.265
+      }
+    ],
+    "entrypoint_and_atexit_observations": [
+      {
+        "kind": "process-start",
+        "monotonic": 263884.703,
+        "python": "3.12.10",
+        "argument_count": 4
+      },
+      {
+        "kind": "pytest-system-exit",
+        "monotonic": 264687.437,
+        "exit_code_type": "ExitCode",
+        "exit_code": 0
+      },
+      {
+        "kind": "pytest-entrypoint-finished",
+        "monotonic": 264687.437
+      },
+      {
+        "kind": "python-atexit-begin",
+        "monotonic": 264687.437
+      },
+      {
+        "kind": "python-atexit-end",
+        "monotonic": 264687.453
+      }
+    ],
+    "console_seconds": 800.25,
+    "frozen_source_records_before_sha256": "87a314be7bdfa45419d9d40ea93e1a9125654c9f2fe33be2b71ec1d6d176d679",
+    "frozen_source_records_after_sha256": "87a314be7bdfa45419d9d40ea93e1a9125654c9f2fe33be2b71ec1d6d176d679",
+    "stderr_bytes": 0
+  },
+  "offline_selfcheck_after_complete_regression": {
+    "status": "passed",
+    "native_exit": 0,
+    "native_exit_scope": "Existing self-check harness uses its established os._exit policy; native zero is its harness verdict, not evidence of normal interpreter shutdown. Independent lifecycle gates establish normal shutdown.",
+    "wall_seconds": 35.73399999999674,
+    "report_sha256": "46b0fc725a2c78c069993f49d329d6d53e19803f57aec7d36560add43696812f",
+    "phases": {
+      "count": 28,
+      "statuses": {
+        "PASS": 28
+      },
+      "rows": [
+        {
+          "phase": "discover modules",
+          "status": "PASS",
+          "duration_ms": 4518.17039999878
+        },
+        {
+          "phase": "SelfTestRunner over all modules",
+          "status": "PASS",
+          "duration_ms": 4335.186799988151
+        },
+        {
+          "phase": "Self-test verification \u2014 canaries, inventory coverage and saved report readback",
+          "status": "PASS",
+          "duration_ms": 3.463400003965944
+        },
+        {
+          "phase": "Self-test performance \u2014 constrained hardware worker budget and completion",
+          "status": "PASS",
+          "duration_ms": 87.73679996374995
+        },
+        {
+          "phase": "build MainWindow",
+          "status": "PASS",
+          "duration_ms": 2278.3574999775738
+        },
+        {
+          "phase": "DashboardCards.refresh",
+          "status": "PASS",
+          "duration_ms": 65.70879998616874
+        },
+        {
+          "phase": "EventsWindow \u2014 Alerts (LOW+)",
+          "status": "PASS",
+          "duration_ms": 345.4898999771103
+        },
+        {
+          "phase": "EventsWindow \u2014 Critical",
+          "status": "PASS",
+          "duration_ms": 80.59850003337488
+        },
+        {
+          "phase": "ModulesStatusWindow",
+          "status": "PASS",
+          "duration_ms": 114.84529997687787
+        },
+        {
+          "phase": "ThreatWindow \u2014 refresh + select + posture lookup",
+          "status": "PASS",
+          "duration_ms": 38.96179998992011
+        },
+        {
+          "phase": "ModuleInspector \u2014 build for first module",
+          "status": "PASS",
+          "duration_ms": 252.39089998649433
+        },
+        {
+          "phase": "process-mitigation self-hardening",
+          "status": "PASS",
+          "duration_ms": 0.645000021904707
+        },
+        {
+          "phase": "Judgment Gate \u2014 stamp / verify / tamper-detect",
+          "status": "PASS",
+          "duration_ms": 948.0852999840863
+        },
+        {
+          "phase": "Ring 1 Driver-Intel Shield (INTL + FIM + shark)",
+          "status": "PASS",
+          "duration_ms": 0.3063000040128827
+        },
+        {
+          "phase": "Timing jitter (os.urandom, anti-TOCTOU)",
+          "status": "PASS",
+          "duration_ms": 0.775399967096746
+        },
+        {
+          "phase": "Blast-radius tree + Shark-vs-Shield collision view",
+          "status": "PASS",
+          "duration_ms": 16.375300008803606
+        },
+        {
+          "phase": "Unified Red Team Simulation (dialog + engine params)",
+          "status": "PASS",
+          "duration_ms": 14.15679999627173
+        },
+        {
+          "phase": "Red Team drill \u2014 LIVE run (complexity + custom + target)",
+          "status": "PASS",
+          "duration_ms": 12647.470400028396
+        },
+        {
+          "phase": "Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)",
+          "status": "PASS",
+          "duration_ms": 1062.4183000181802
+        },
+        {
+          "phase": "Console cmds + custom library CRUD + two-pane monitor",
+          "status": "PASS",
+          "duration_ms": 69.99930000165477
+        },
+        {
+          "phase": "AI guardrail proxy + hardware-patching layer",
+          "status": "PASS",
+          "duration_ms": 34.32469995459542
+        },
+        {
+          "phase": "Sprint-1 remediations (guardrail token/neutralize + gate TOCTOU)",
+          "status": "PASS",
+          "duration_ms": 839.801499969326
+        },
+        {
+          "phase": "Vetted remediation (inert path proposals + gated host actions)",
+          "status": "PASS",
+          "duration_ms": 631.4141000038944
+        },
+        {
+          "phase": "Persistence Sweep (autorun classifier + discovery)",
+          "status": "PASS",
+          "duration_ms": 0.1632000203244388
+        },
+        {
+          "phase": "ATT&CK coverage heatmap (honest, cross-checked vs ACTIONS)",
+          "status": "PASS",
+          "duration_ms": 6.411099981050938
+        },
+        {
+          "phase": "Incident correlation (grouping + scoring + window split)",
+          "status": "PASS",
+          "duration_ms": 7.665099983569235
+        },
+        {
+          "phase": "World View \u2192 native Qt flow window (live)",
+          "status": "PASS",
+          "duration_ms": 227.29399998206645
+        },
+        {
+          "phase": "Speed pass (WAL + ledger cap + audit-count cache)",
+          "status": "PASS",
+          "duration_ms": 3305.086600012146
+        }
+      ]
+    },
+    "modules": {
+      "count": 84,
+      "statuses": {
+        "PASS": 66,
+        "SKIP": 18
+      }
+    },
+    "nonmodule_results": {
+      "count": 1,
+      "statuses": {
+        "PASS": 1
+      }
+    },
+    "module_subchecks": {
+      "count": 559,
+      "statuses": {
+        "PASS": 530,
+        "SKIP": 29
+      },
+      "check_names": {
+        "identity": 84,
+        "self_test_callable": 84,
+        "capability_metadata": 84,
+        "health_contract": 84,
+        "result_contract": 73,
+        "active_test": 84,
+        "health_result_consistency": 66
+      },
+      "minimum_per_module": 5,
+      "maximum_per_module": 7
+    },
+    "verification": {
+      "status": "PASS",
+      "count": 9,
+      "statuses": {
+        "PASS": 9
+      },
+      "duration_ms": 32.00000000651926,
+      "checks": [
+        {
+          "check": "success canary",
+          "status": "PASS",
+          "duration_ms": 16.00000000325963
+        },
+        {
+          "check": "failure canary",
+          "status": "PASS",
+          "duration_ms": 0.0
+        },
+        {
+          "check": "exception canary",
+          "status": "PASS",
+          "duration_ms": 0.0
+        },
+        {
+          "check": "malformed-result canary",
+          "status": "PASS",
+          "duration_ms": 0.0
+        },
+        {
+          "check": "timeout canary",
+          "status": "PASS",
+          "duration_ms": null
+        },
+        {
+          "check": "disabled skip canary",
+          "status": "PASS",
+          "duration_ms": null
+        },
+        {
+          "check": "platform skip canary",
+          "status": "PASS",
+          "duration_ms": null
+        },
+        {
+          "check": "corrupt-accounting canary",
+          "status": "PASS",
+          "duration_ms": null
+        },
+        {
+          "check": "report reconciliation",
+          "status": "PASS",
+          "duration_ms": null
+        }
+      ]
+    },
+    "reconciliation": {
+      "phase_pass_count": true,
+      "phase_failure_count": true,
+      "module_count": true,
+      "unique_module_names": true,
+      "modules_have_checks": true,
+      "no_phase_failures": true,
+      "valid_module_statuses": true,
+      "valid_subcheck_statuses": true,
+      "verifier_passes": true,
+      "all_required_verifiers_present": true
+    },
+    "reconciled": true,
+    "module_metrics": {
+      "elapsed_ms": 4266.00000000326,
+      "timing_scope": "checks and verification; excludes report I/O and notifications",
+      "module_workers": 4,
+      "module_count": 84
+    }
+  }
+}

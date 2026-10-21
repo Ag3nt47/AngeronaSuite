@@ -6,6 +6,7 @@ import weakref
 
 from PySide6.QtCore import QEvent, QTimer
 from PySide6.QtWidgets import QWidget
+from shiboken6 import isValid
 
 from angerona.core.background_pacing import get_pacing_controller
 
@@ -41,6 +42,7 @@ class PresentationTimer(QTimer):
         self._owner = owner
         self._window: QWidget | None = None
         self._requested = False
+        self._retired = False
         self._base_interval_ms = 0
         self._pressure_sensitive = pressure_sensitive
         self._chill_sensitive = chill_sensitive
@@ -94,16 +96,26 @@ class PresentationTimer(QTimer):
                     round(controller.optional_interval(base / 1000.0) * 1000),
                     15_000,
                 )
-                if not self._owner.window().isActiveWindow():
+                window = self._live_window()
+                if window is None or not window.isActiveWindow():
                     self._paced_interval_ms = max(30_000, self._paced_interval_ms * 2)
             # Animation frames need no separate pressure poll on every repaint.
             self._next_pressure_sample = now + 1.0
         return self._paced_interval_ms
 
-    def _watch_window(self) -> QWidget:
+    def _live_window(self) -> QWidget | None:
+        if self._retired or not isValid(self._owner):
+            return None
         window = self._owner.window()
+        return window if isValid(window) else None
+
+    def _watch_window(self) -> QWidget | None:
+        window = self._live_window()
+        if window is None:
+            return None
         if window is not self._window:
-            if self._window is not None and self._window is not self._owner:
+            if (self._window is not None and self._window is not self._owner
+                    and isValid(self._window)):
                 self._window.removeEventFilter(self)
             self._window = window
             if window is not self._owner:
@@ -111,7 +123,13 @@ class PresentationTimer(QTimer):
         return window
 
     def _sync(self) -> None:
+        if self._retired or not self._requested:
+            super().stop()
+            return
         window = self._watch_window()
+        if window is None:
+            super().stop()
+            return
         visible = (self._visible_when() if self._visible_when is not None
                    else self._owner.isVisible())
         if (not self._requested or not visible or not window.isVisible() or window.isMinimized()
@@ -129,10 +147,29 @@ class PresentationTimer(QTimer):
             self._sync()
 
     def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt signature
+        # Native destruction can reenter this override after Python's cyclic
+        # collector clears the wrapper's attributes. Treat absent state as
+        # retired before reading the event or any owner fields.
+        if not isValid(self) or getattr(self, "_retired", True):
+            return False
+        owner = getattr(self, "_owner", None)
+        if owner is None:
+            return False
         kind = event.type()
-        if kind == QEvent.Type.Hide:
+        if kind == QEvent.Type.Destroy and watched is owner:
+            self._retired = True
+            self._requested = False
+            self._window = None
+            _TIMERS.discard(self)
+            if isValid(self):
+                super().stop()
+        elif not isValid(owner):
+            return False
+        elif kind == QEvent.Type.Hide:
             # Keep intent while suspending native wakeups, including tab changes.
-            self._sync()
+            # Parent destruction can invalidate its wrapper before child Hide
+            # events arrive. Hiding never needs to query that enclosing window.
+            super().stop()
         elif kind in (QEvent.Type.Show, QEvent.Type.WindowStateChange,
                       QEvent.Type.ParentChange, QEvent.Type.ActivationChange):
             self.refresh()

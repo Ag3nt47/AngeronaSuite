@@ -395,8 +395,10 @@ not grounds to disable a sensor or conceal a coverage gap.
   cases passed. [Verified record](analysis/timeout-rootcause-2026-10-21/README.md).
 - The later [hosted CI follow-up](analysis/ci-scan-followup-2026-10-21/README.md)
   corrects the test observation phase and inherited coordinator priority,
-  adds CI exit diagnostics and narrowly accounts for secret-scan false positives.
-  Production code and the historical local regression record remain unchanged.
+  adds CI exit diagnostics, fixes presentation-timer access to destroyed native
+  windows and history-worker signal ownership, and narrowly accounts for
+  secret-scan false positives. The historical regression record is preserved;
+  subsequent local and hosted results have their own source boundary.
 - Historical September upgrade serial regression suite after code freeze:
   **4,303 passed / 20 skipped / 0 failed**, 478.73 seconds. See the linked
   upgrade validation record below for that scope and separate native acceptance.

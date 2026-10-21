@@ -42,8 +42,13 @@ The [hosted CI follow-up](analysis/ci-scan-followup-2026-10-21/README.md)
 corrects the scheduling fixture's observation phase and inherited coordinator
 priority, and records narrow historical exceptions for public source hashes
 flagged by secret scan. CI records pytest and interpreter exit status separately
-to diagnose failures after a passing summary. Original deadlines and security
+to diagnose failures after a passing summary. Native crash analysis identified
+a presentation timer querying a deleted dialog during teardown; its window
+checks and destruction handling now prevent that callback error. The test session
+also explicitly releases its own Qt application. Original deadlines and security
 checks remain. Local and hosted validation are recorded separately.
+The complete local rerun passed **5,138 tests / 24 skipped**, with successful
+native process shutdown and an unchanged 999-file Python source snapshot.
 
 The [October 21 timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md)
 corrects sandbox child priority under CPU contention and reduces repeated
