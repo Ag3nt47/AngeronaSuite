@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.13.0
-Date: 2026-10-18
+Date: 2026-10-21
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -22,7 +22,24 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Chill efficiency and local AI lock, 2026-10-18)
+## LATEST (v1.13.0 — Timeout investigation, 2026-10-21)
+
+- Record: analysis/timeout-rootcause-2026-10-21/README.md. Version remains 1.13.0.
+- Complete regression: 5,107 passed / 25 skipped / zero failures or errors;
+  all 994 Python source files identical before/after by normalized fingerprint.
+  Both historical deadline cases passed without deadline changes. Fresh offline
+  self-check: 28/28 phases, 84 module rows (66 PASS/18 SKIP), nine verifier checks.
+- A deadline-bound sandbox child explicitly receives NORMAL Windows priority,
+  including when its parent is below normal. Suspended creation, Job assignment,
+  output/token custody, process-tree retirement and original resource caps remain.
+- Windows credential-file ACL hardening uses native handle-based permission
+  operations and fresh verification when the Windows extra is available.
+  Both hardening boundaries and all journal/anchor/witness flushes are retained.
+- The record separates reproduced mechanisms from the unrecorded physical
+  trigger of the historical failed run. Component checks are not host-wide
+  performance, live detector or every-platform acceptance evidence.
+
+## Chill efficiency and local AI lock (2026-10-18)
 
 - Record: analysis/chill-efficiency-2026-10-18/README.md; instructions:
   docs/hardware-and-selfcheck.md#chill-mode. Version remains 1.13.0.

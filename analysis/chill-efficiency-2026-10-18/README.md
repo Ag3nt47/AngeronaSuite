@@ -174,6 +174,11 @@ descendant postcondition. Neither failure's physical cause is established;
 staged builds/tests ran during part of the earlier full suite, which supplies
 context without proving causality.
 
+The [October 21 investigation](../timeout-rootcause-2026-10-21/README.md)
+continues this work with controlled scheduling reproduction, measured
+containment checkpoint stages and a fresh complete-suite record. The counts
+above remain the historical October 18 outcome.
+
 The later [entrypoint follow-up](entrypoint-followup.json) closes ignored
 `--chill` flags in headless/console dispatch and stale Full-mode service/native
 recovery commands. Its six Python production files, existing Python test file,

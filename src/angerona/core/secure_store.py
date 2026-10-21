@@ -129,15 +129,136 @@ def _unprotect_bytes(blob: bytes) -> bytes | None:
     return unprotect(blob, _ENTROPY)
 
 
+def _private_acl_matches(descriptor, owner: str, trustees: frozenset[str], security) -> bool:
+    """Prove the entire current DACL, rather than caching an earlier decision."""
+    try:
+        if security.ConvertSidToStringSid(descriptor.GetSecurityDescriptorOwner()) != owner:
+            return False
+        if not descriptor.GetSecurityDescriptorControl()[0] & security.SE_DACL_PROTECTED:
+            return False
+        acl = descriptor.GetSecurityDescriptorDacl()
+        if acl is None or acl.GetAceCount() != len(trustees):
+            return False
+        seen = set()
+        for index in range(acl.GetAceCount()):
+            ace = acl.GetAce(index)
+            if (len(ace) != 3 or ace[0] != (security.ACCESS_ALLOWED_ACE_TYPE, 0)
+                    or ace[1] != 0x001F01FF):  # FILE_ALL_ACCESS, no inheritance flags.
+                return False
+            principal = security.ConvertSidToStringSid(ace[2])
+            if principal not in trustees or principal in seen:
+                return False
+            seen.add(principal)
+        return seen == trustees
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+
+
+class _NativeACLUnavailable(ImportError):
+    """Only import-time absence can select the legacy Windows fallback."""
+
+
+def _native_private_acl(path: Path) -> None:
+    """Apply and freshly verify private Windows custody on one retained inode.
+
+    Only a missing optional Windows API dependency permits the legacy fallback.
+    Available native APIs rejecting an unsafe path or failed proof must never
+    fall through to a less constrained path-based mutation.
+    """
+    try:
+        import win32api
+        import win32con
+        import win32file
+        import win32security
+    except ImportError as exc:
+        raise _NativeACLUnavailable("Optional native Windows ACL APIs are unavailable") from exc
+
+    if _path_traverses_reparse(path):
+        raise PermissionError("Private credential ACL path traverses a reparse point")
+    handle = win32file.CreateFile(
+        str(path), win32con.READ_CONTROL | win32con.WRITE_DAC,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE, None,
+        win32con.OPEN_EXISTING,
+        0x00200000, None,  # FILE_FLAG_OPEN_REPARSE_POINT (absent in some pywin32 builds).
+    )
+    try:
+        before = win32file.GetFileInformationByHandle(handle)
+        if before[0] & (0x10 | 0x400) or before[7] != 1:
+            raise PermissionError("Private credential ACL needs an ordinary single-link file")
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        try:
+            user = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        finally:
+            token.Close()
+        trustees = frozenset({win32security.ConvertSidToStringSid(user),
+                              "S-1-5-18", "S-1-5-32-544"})
+        fields = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+        descriptor = win32security.GetSecurityInfo(handle, win32security.SE_FILE_OBJECT, fields)
+        owner = win32security.ConvertSidToStringSid(descriptor.GetSecurityDescriptorOwner())
+        if owner not in trustees:
+            raise PermissionError("Private credential owner is outside the current trust boundary")
+        if not _private_acl_matches(descriptor, owner, trustees, win32security):
+            acl = win32security.ACL()
+            for principal in sorted(trustees):
+                acl.AddAccessAllowedAce(
+                    win32security.ACL_REVISION, 0x001F01FF,
+                    win32security.ConvertStringSidToSid(principal),
+                )
+            win32security.SetSecurityInfo(
+                handle, win32security.SE_FILE_OBJECT,
+                win32security.DACL_SECURITY_INFORMATION
+                | win32security.PROTECTED_DACL_SECURITY_INFORMATION,
+                None, None, acl, None,
+            )
+            descriptor = win32security.GetSecurityInfo(handle, win32security.SE_FILE_OBJECT, fields)
+        after = win32file.GetFileInformationByHandle(handle)
+        if (after[0] & (0x10 | 0x400) or after[7] != 1
+                or (before[4], before[8], before[9]) != (after[4], after[8], after[9])
+                or _path_traverses_reparse(path)
+                or not _private_acl_matches(descriptor, owner, trustees, win32security)):
+            raise PermissionError("Private credential ACL readback or identity verification failed")
+        # Reopen only for final leaf identity proof. Ancestor checks above are
+        # snapshots, not atomic custody of the complete parent directory tree.
+        current = win32file.CreateFile(
+            str(path), win32con.READ_CONTROL,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE, None,
+            win32con.OPEN_EXISTING, 0x00200000, None,
+        )
+        try:
+            observed = win32file.GetFileInformationByHandle(current)
+            if (observed[0] & (0x10 | 0x400) or observed[7] != 1
+                    or (before[4], before[8], before[9])
+                    != (observed[4], observed[8], observed[9])):
+                raise PermissionError("Private credential path changed during ACL verification")
+        finally:
+            current.Close()
+    finally:
+        handle.Close()
+
+
 def _private_acl(path: Path) -> None:
     """Best-effort owner/SYSTEM/admin-only ACL; DPAPI remains the hard boundary."""
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
     if not sys.platform.startswith("win"):
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         return
     try:
+        _native_private_acl(Path(path))
+        return
+    except _NativeACLUnavailable:
+        # The optional Windows extra may be absent in a source checkout.
+        pass
+    except Exception:
+        # Preserve the best-effort API, without retrying a failed security proof
+        # through the old path-based command. DPAPI remains mandatory upstream.
+        return
+    try:
+        info = Path(path).lstat()
+        if (_path_traverses_reparse(path) or not stat.S_ISREG(info.st_mode)
+                or getattr(info, "st_nlink", 1) != 1):
+            return
         user = os.environ.get("USERNAME", "").strip()
         domain = os.environ.get("USERDOMAIN", "").strip()
         principal = f"{domain}\\{user}" if domain and user else user

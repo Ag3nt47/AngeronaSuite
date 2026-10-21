@@ -389,15 +389,21 @@ not grounds to disable a sensor or conceal a coverage gap.
 
 ## Validation snapshot
 
-- Final upgrade serial regression suite after code freeze: **4,303 passed /
-  20 skipped / 0 failed**, 478.73 seconds. See the linked validation record
-  below for the exact scope and separate native acceptance.
+- Latest complete regression (October 21): **5,107 passed / 25 skipped /
+  0 failures or errors**, 2,639.339 seconds in JUnit. All 994 Python source
+  files matched before and after; original containment and sandbox deadline
+  cases passed. [Verified record](analysis/timeout-rootcause-2026-10-21/README.md).
+- Historical September upgrade serial regression suite after code freeze:
+  **4,303 passed / 20 skipped / 0 failed**, 478.73 seconds. See the linked
+  upgrade validation record below for that scope and separate native acceptance.
 - Current read-only inventory: **84 capabilities**, **9 native contracts** and
   **75 compatibility adapters**, without duplicate identity; all implementation
   versions report 1.13.0. The exporter starts no module workers.
-- Current isolated selfcheck: **26 phases passed / 0 failed**. SelfTestRunner:
-  **67 passed / 18 prerequisite skips**, including its separate event-pipeline
-  check. Skips are not live sensor passes.
+- Current isolated selfcheck (October 21): **28 phases passed / 0 failed**.
+  Its 84 module rows reconcile to **66 PASS / 18 prerequisite SKIP** results;
+  the separate event-pipeline check also passed, as did all nine independent
+  verifier checks. Skips are not live sensor passes.
+  [Timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md).
 - Native scan-to-containment, detached-engine lifetime, encrypted recovery and
   the regression-run results are recorded with their scopes in the
   [upgrade validation record](analysis/upgrade-20260923/validation.md).

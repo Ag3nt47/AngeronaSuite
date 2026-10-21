@@ -1,6 +1,12 @@
 # Project Angerona (AngeronaSuite) — llms.txt
 
-Latest maintenance (2026-10-18): chill-efficiency-2026-10-18/README.md and
+Latest maintenance (2026-10-21): timeout-rootcause-2026-10-21/README.md records
+the sandbox scheduling reproduction, native Windows ACL optimization and
+complete-suite verification. Original deadlines and durability checks remain.
+Historical physical load was not captured; controlled reproductions cannot
+reconstruct it.
+
+Previous maintenance (2026-10-18): chill-efficiency-2026-10-18/README.md and
 ../docs/hardware-and-selfcheck.md#chill-mode cover optional-work reduction,
 15/30/60s dashboard periods, suspended cosmetics, queue arrival wakeups and
 Ollama/Llama lockout through CHILL: ALERT until the operator selects Full.
@@ -11,7 +17,7 @@ Root ../llms.txt carries the current status; dated sections below are historical
 > ⚠️ THIS IS THE CANONICAL APP. Angerona is a **PySide6 desktop GUI and shared security core**, package `angerona` under `AngeronaSuite/src/angerona/`. Windows Protect launches through `start-angerona.bat` → `pythonw -m angerona`; macOS Observe is a source/developer preview launched with `python -m angerona`. It is not any separate legacy terminal prototype outside this repository. Read this file first.
 
 ## AGENT DIRECTIVES
-- CONTEXT FIRST: read this file + `ANGERONA_CAPABILITIES.md` + `ANGERONA_ARCHITECTURE.md` (repo root) before changing anything. The real app = `AngeronaSuite/src/angerona/`.
+- CONTEXT FIRST: read this file + `ANGERONA_CAPABILITIES.md` (repo root) + `docs/architecture.md` before changing anything. The architecture document is a historical sketch; the capabilities inventory and dated maintenance records carry current boundaries. The real app = `AngeronaSuite/src/angerona/`.
 - Edits = diffs only; never rewrite whole files; no pleasantries. Local-first (no cloud egress without consent); user-mode only (no unsigned drivers); stdlib + PySide6.
 - To stop the app: STOP button (`_full_shutdown`) or `kill-all-angerona.bat`. Shutdown unloads resident Angerona llama3 models; kill-all stops only Angerona-owned Python entry points and performs model-specific llama3 unload. It contains no image-wide Python or Ollama runner kill. Closing the window only hides to tray (single-instance guard on loopback :47921).
 

@@ -1,0 +1,305 @@
+{
+  "schema": "angerona.containment-timeout-rootcause/v1",
+  "date": "2026-10-21",
+  "baseline_commit": "a3188df2841608bc7b58690d3808c70bc9b538e7",
+  "finding": "Containment drains a serial durable journal/anchor/witness path. Profiling located substantial repeated ACL utility-process overhead inside protected-anchor updates. Native held-handle DACL application and fresh proof remove that measured overhead while retaining separate stores and every durability boundary.",
+  "historical_limit": "The exact physical trigger of the earlier full-suite timeout cannot be reconstructed from the archived data. The measurements below establish a code-level bottleneck and its removal; they do not identify that historical host condition.",
+  "source_hash_method": "Raw hashes cover checked-out bytes observed by the selected phase probe; normalized text hashes decode UTF-8 and convert CRLF to LF. Baseline text comes directly from Git.",
+  "selected_sources": {
+    "src/angerona/core/secure_store.py": {
+      "baseline_normalized_text_sha256": "60e07ec280e1da7f7bbdd4489e3b6e70bce3075529de21a09ed5bd233aa5351d",
+      "current_normalized_text_sha256": "5d68d71bc34f43798f9901fe5fa1e9207b929bca0a3c17770b51f9a27b67f63b",
+      "current_observed_raw_sha256": "5d68d71bc34f43798f9901fe5fa1e9207b929bca0a3c17770b51f9a27b67f63b",
+      "baseline_text_unchanged": false
+    },
+    "src/angerona/modules/adversary_combat.py": {
+      "baseline_normalized_text_sha256": "cb7494ee34b3a08930bdcb576046000a65c55bbf1aeef40c4d5454b879fc84ab",
+      "current_normalized_text_sha256": "cb7494ee34b3a08930bdcb576046000a65c55bbf1aeef40c4d5454b879fc84ab",
+      "current_observed_raw_sha256": "2de5d25dfe71cf25090b96bc631cabadd7cdf1af7f4925b9b806d679f8544162",
+      "baseline_text_unchanged": true
+    },
+    "src/angerona/modules/purple_guard.py": {
+      "baseline_normalized_text_sha256": "f6ded88b3cf2fedc8305f0daea9371c679892f29572c4664f55079e4922cdaa9",
+      "current_normalized_text_sha256": "f6ded88b3cf2fedc8305f0daea9371c679892f29572c4664f55079e4922cdaa9",
+      "current_observed_raw_sha256": "ac5c41c658602ec28fb1affd722536a6ba347191e1a227dad9059f40d8192a61",
+      "baseline_text_unchanged": true
+    },
+    "tests/test_redteam_live_scoring_regression.py": {
+      "baseline_normalized_text_sha256": "df409dff6f419269656ca63b5e1f50c5fb6c997f685d2f712331662a2dcf3cb7",
+      "current_normalized_text_sha256": "df409dff6f419269656ca63b5e1f50c5fb6c997f685d2f712331662a2dcf3cb7",
+      "current_observed_raw_sha256": "484b2fa98ae1447379ab8c3b18a00203eff525bd1b0b067220bac13d1a457e15",
+      "baseline_text_unchanged": true
+    }
+  },
+  "baseline_stage_profile": {
+    "method": "Pass-through perf_counter wrappers around original calls, with per-thread nesting subtraction. No tracing hook, deadline, policy or assertion changes.",
+    "test": "tests/test_redteam_live_scoring_regression.py::test_live_redteam_marker_custody_allows_verified_containment[comprehensive]",
+    "original_verification_deadline_seconds": 100,
+    "case": {
+      "outcome": "passed",
+      "call_duration_seconds": 124.39780219999375,
+      "last_handler_elapsed_seconds": 116.96287220000522,
+      "handler_count": 39,
+      "final_response_counts": {
+        "below_threshold": 118,
+        "queued": 39,
+        "executed": 39
+      },
+      "final_queue_depth": 0,
+      "final_queue_pending": 0,
+      "final_queue_drops": 0,
+      "controller_quiet_chill": false,
+      "controller_requested_resource_multiplier": 1,
+      "recorder_subscriber": {
+        "deliveries": 197,
+        "total_seconds": 1.2291738998319488,
+        "max_seconds": 0.3451496999769006
+      }
+    },
+    "stages": {
+      "Combat._append_pinned_journal_bytes": {
+        "calls": 78,
+        "inclusive_seconds": 20.143170400027884,
+        "exclusive_seconds": 20.143170400027884,
+        "max_seconds": 0.6410306000034325
+      },
+      "Secrets.write_secret_map": {
+        "calls": 79,
+        "inclusive_seconds": 33.93877520028036,
+        "exclusive_seconds": 22.556606700032717,
+        "max_seconds": 1.4401429000135977
+      },
+      "Combat._write_recovery_witness": {
+        "calls": 79,
+        "inclusive_seconds": 33.229870699869934,
+        "exclusive_seconds": 31.029136800090782,
+        "max_seconds": 1.6354370999906678
+      },
+      "Secrets._private_acl": {
+        "calls": 158,
+        "inclusive_seconds": 11.306178300263127,
+        "exclusive_seconds": 11.306178300263127,
+        "max_seconds": 0.598538299993379
+      }
+    },
+    "interpretation": "These three persistence stages were serial and non-overlapping on the response thread. The ACL total is nested inside Secrets.write_secret_map and must not be added again. _append_pinned_journal_bytes measures write/fsync/topology work together, not fsync alone. Other stage totals are parent-inclusive as labeled."
+  },
+  "matched_native_acl_experiment": {
+    "method": "Matched inert files in baseline/native three-sample blocks, repeated twice (baseline3, native3, baseline3, native3); verbatim Git-baseline ACL helper and applied helper; original temp/replace/destination boundaries retained; each final DACL freshly checked.",
+    "baseline_helper_source": "Verbatim _private_acl function extracted from the baseline Git source, with the same runtime dependencies.",
+    "samples_per_mode": 6,
+    "mode_summary": {
+      "baseline": {
+        "median_two_boundaries_seconds": 0.09243270001024939,
+        "total_child_launches": 12,
+        "every_final_exact_dacl_and_same_object_verified": true
+      },
+      "current": {
+        "median_two_boundaries_seconds": 0.00393654998333659,
+        "total_child_launches": 0,
+        "every_final_exact_dacl_and_same_object_verified": true
+      }
+    },
+    "samples": [
+      {
+        "mode": "baseline",
+        "two_acl_boundaries_seconds": 0.0981647000007797,
+        "child_launches": 2,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "baseline",
+        "two_acl_boundaries_seconds": 0.11315239997929893,
+        "child_launches": 2,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "baseline",
+        "two_acl_boundaries_seconds": 0.1075204000226222,
+        "child_launches": 2,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "current",
+        "two_acl_boundaries_seconds": 0.08534530000179075,
+        "child_launches": 0,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "current",
+        "two_acl_boundaries_seconds": 0.003331499989144504,
+        "child_launches": 0,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "current",
+        "two_acl_boundaries_seconds": 0.00334840000141412,
+        "child_launches": 0,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "baseline",
+        "two_acl_boundaries_seconds": 0.08583419999922626,
+        "child_launches": 2,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "baseline",
+        "two_acl_boundaries_seconds": 0.08669530000770465,
+        "child_launches": 2,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "baseline",
+        "two_acl_boundaries_seconds": 0.08670070001971908,
+        "child_launches": 2,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "current",
+        "two_acl_boundaries_seconds": 0.004163399979006499,
+        "child_launches": 0,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "current",
+        "two_acl_boundaries_seconds": 0.004869399999734014,
+        "child_launches": 0,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      },
+      {
+        "mode": "current",
+        "two_acl_boundaries_seconds": 0.0037096999876666814,
+        "child_launches": 0,
+        "same_object_after_replace": true,
+        "fresh_protected_full_access_dacl_verified": true
+      }
+    ],
+    "cold_start_policy": "All samples retained, including the first native invocation; no cold sample was discarded.",
+    "scope": "Measured ACL boundaries on inert files, with actual native Windows operations. This is not whole-module throughput or a CPU/RAM-saving claim."
+  },
+  "applied_integration": {
+    "method": "Same original comprehensive case and selected stage wrappers after the native ACL change; one fresh process, no concurrent agent test/build jobs.",
+    "original_verification_deadline_seconds": 100,
+    "exit_code": 0,
+    "junit": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "time": 87.791
+    },
+    "case": {
+      "outcome": "passed",
+      "call_duration_seconds": 86.0499946999771,
+      "last_handler_elapsed_seconds": 81.3791624000005,
+      "handler_count": 39,
+      "final_response_counts": {
+        "below_threshold": 79,
+        "queued": 39,
+        "executed": 39
+      },
+      "final_queue_depth": 0,
+      "final_queue_pending": 0,
+      "final_queue_drops": 0,
+      "controller_quiet_chill": false,
+      "controller_requested_resource_multiplier": 1,
+      "recorder_subscriber": {
+        "deliveries": 160,
+        "total_seconds": 1.3182787001132965,
+        "max_seconds": 0.48464519999106415
+      }
+    },
+    "selected_sources_unchanged_during_call": true,
+    "stages": {
+      "Combat._append_pinned_journal_bytes": {
+        "calls": 78,
+        "inclusive_seconds": 17.908973500016145,
+        "exclusive_seconds": 17.908973500016145,
+        "max_seconds": 0.5524776999955066
+      },
+      "Secrets.write_secret_map": {
+        "calls": 79,
+        "inclusive_seconds": 17.375167399906786,
+        "exclusive_seconds": 15.11519189979299,
+        "max_seconds": 0.9016693999874406
+      },
+      "Combat._write_recovery_witness": {
+        "calls": 79,
+        "inclusive_seconds": 26.540389699919615,
+        "exclusive_seconds": 24.623585099732736,
+        "max_seconds": 1.7407883999985643
+      },
+      "Secrets._private_acl": {
+        "calls": 158,
+        "inclusive_seconds": 2.0324918000842445,
+        "exclusive_seconds": 2.0324918000842445,
+        "max_seconds": 0.3466916000179481
+      }
+    },
+    "aar": {
+      "outcome": "verified",
+      "coverage_score_eligible": true,
+      "positive_steps": 37,
+      "simulation_contract_validations": 37,
+      "simulation_only": true,
+      "successful_response_steps": 37
+    },
+    "receipt_assertion_scope": "Original assertions required every expected quarantine/process identity; the fixture retained 36 file markers and all expected process identities. The selected probe observed all 39 response handlers; no synthetic success receipt was substituted.",
+    "durability_scope": "The original 78 journal append phases, 79 protected-anchor updates and 79 independent witness updates remain. Both ACL callsites, DPAPI verification, atomic replacement, fsyncs, HMAC/rollback checks and exact target custody are unchanged.",
+    "timing_limit": "This before/after integration is a small single-run observation. Other native-I/O stages varied too; the total case-time difference is not attributed solely to ACLs and is not a general latency guarantee."
+  },
+  "native_security_gate": {
+    "tests": 38,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 3.916,
+    "scope": [
+      "Exact protected DACL/full masks/trustees/owner proof and fresh no-mutation verification",
+      "Unsafe paths, hardlink/reparse cases, handle/descriptor faults and dependency-only fallback",
+      "Real Windows temp/rename ACL proof and actual DPAPI update retaining both ACL calls and fsync"
+    ],
+    "test_sources": [
+      "tests/test_secure_store_native_acl.py",
+      "tests/test_privacy_storage_hardening.py"
+    ]
+  },
+  "rejected_checkpoint_overlap_experiment": {
+    "status": "Rejected and all experimental Actor/live-test changes removed before the applied native ACL gate.",
+    "reason": "Concurrent independent checkpoint flushes did not improve matched native append latency on this volume.",
+    "method": "Inert journal intents only; identical current persistence methods with actual Git-baseline advancement ordering versus joined current ordering. No host mutation.",
+    "mode_summary": {
+      "serial-baseline": {
+        "samples": 6,
+        "median_append_seconds": 0.9914325999998255,
+        "total_fsync_calls": 18
+      },
+      "parallel-current": {
+        "samples": 6,
+        "median_append_seconds": 1.099401850005961,
+        "total_fsync_calls": 18
+      }
+    },
+    "every_trial_verified_journal_anchor_witness": true,
+    "conclusion": "No checkpoint-concurrency change ships and no improvement is claimed from this experiment."
+  },
+  "excluded_exploratory_probe": "An initial simultaneous-worker cProfile attempt failed the existing readiness gate before containment admission and produced unusable cross-worker attribution. None of its timings are used in this proof.",
+  "limits": [
+    "Controller snapshots describe requested policy only, not physical host load.",
+    "Native cleanup and durable storage remain OS/device dependent; the original deadline is not increased.",
+    "The proven target is unnecessary ACL process/permission-update overhead; exact historical physical causes remain unknown.",
+    "These are inert simulation fixtures, not a general production detection-efficacy or old-hardware performance guarantee."
+  ]
+}

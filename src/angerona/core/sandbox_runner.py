@@ -144,7 +144,11 @@ def run_isolated_self_test(
         if os.name == "nt":
             kwargs["creationflags"] = (
                 getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+                # A hard-deadline check needs CPU alongside normal-priority
+                # work. BELOW_NORMAL can receive no CPU on a busy allowed
+                # core; omitting the flag can also inherit a low parent class.
+                # The job still bounds CPU, memory and descendant processes.
+                | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0x00000020)
                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
                 | getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
             )

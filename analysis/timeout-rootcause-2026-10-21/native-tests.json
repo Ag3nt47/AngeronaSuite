@@ -1,0 +1,309 @@
+{
+  "schema": "angerona.native-tests/v1",
+  "date": "2026-10-21",
+  "scope": "Sequential execution of the two unchanged Windows native test groups using the existing local Go SDK and cached dependencies.",
+  "status": "passed",
+  "toolchain": "go version go1.27.2 windows/amd64",
+  "offline_policy": {
+    "GOPROXY": "off",
+    "GOTOOLCHAIN": "local",
+    "GOSUMDB": "off",
+    "GOVCS": "*:off",
+    "GOENV": "off",
+    "GOFLAGS": "empty",
+    "GOOS": "windows",
+    "GOARCH": "amd64",
+    "sdk": "Existing ignored portable Go SDK",
+    "module_cache": "Existing ignored local module cache",
+    "build_cache": "Existing ignored local build cache",
+    "downloads_attempted": false
+  },
+  "hash_method": "raw_sha256 hashes checked-out bytes; normalized_text_sha256 decodes UTF-8 and normalizes CRLF/CR to LF before hashing.",
+  "source_before": {
+    "frz/angerona_watchdog.go": {
+      "raw_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+      "normalized_text_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2"
+    },
+    "frz/angerona_watchdog_test.go": {
+      "raw_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+      "normalized_text_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b"
+    },
+    "frz/go.mod": {
+      "raw_sha256": "d8532c71e449499918607b8fc9d65823a7c1423d5205a69d13fe99ded3797512",
+      "normalized_text_sha256": "d8532c71e449499918607b8fc9d65823a7c1423d5205a69d13fe99ded3797512"
+    },
+    "frz/go.sum": {
+      "raw_sha256": "59ff7906e3b7738fa8361e647f98c13c78417293ddb48f7c4f7ca8ead4531c63",
+      "normalized_text_sha256": "59ff7906e3b7738fa8361e647f98c13c78417293ddb48f7c4f7ca8ead4531c63"
+    },
+    "frz/hypervisor/main.go": {
+      "raw_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+      "normalized_text_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7"
+    },
+    "frz/hypervisor/main_test.go": {
+      "raw_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+      "normalized_text_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727"
+    },
+    "frz/hypervisor/go.mod": {
+      "raw_sha256": "0720883b6dd8a52a624b94bad43e50bd5089467d0658216d9bbb4faf189e3ffd",
+      "normalized_text_sha256": "0720883b6dd8a52a624b94bad43e50bd5089467d0658216d9bbb4faf189e3ffd"
+    },
+    "frz/hypervisor/go.sum": {
+      "raw_sha256": "0c4155df83aa8c5b6c4cc18d77c3762d93ac85c7370cde6ed96dd6949dc568dc",
+      "normalized_text_sha256": "0c4155df83aa8c5b6c4cc18d77c3762d93ac85c7370cde6ed96dd6949dc568dc"
+    }
+  },
+  "source_after": {
+    "frz/angerona_watchdog.go": {
+      "raw_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2",
+      "normalized_text_sha256": "698653dd7f336f33f9ed38fcf8e58576a091c99836d64fd4ed783d00509d81a2"
+    },
+    "frz/angerona_watchdog_test.go": {
+      "raw_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b",
+      "normalized_text_sha256": "45a8cf9d36c7db7abda5f495ca43dff0d2705a250c1b1dc8a799cc637464a67b"
+    },
+    "frz/go.mod": {
+      "raw_sha256": "d8532c71e449499918607b8fc9d65823a7c1423d5205a69d13fe99ded3797512",
+      "normalized_text_sha256": "d8532c71e449499918607b8fc9d65823a7c1423d5205a69d13fe99ded3797512"
+    },
+    "frz/go.sum": {
+      "raw_sha256": "59ff7906e3b7738fa8361e647f98c13c78417293ddb48f7c4f7ca8ead4531c63",
+      "normalized_text_sha256": "59ff7906e3b7738fa8361e647f98c13c78417293ddb48f7c4f7ca8ead4531c63"
+    },
+    "frz/hypervisor/main.go": {
+      "raw_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7",
+      "normalized_text_sha256": "b796a3a079d06ee14ed24c0606137d62c0f7fdcf1a3a2f22926502916b09bef7"
+    },
+    "frz/hypervisor/main_test.go": {
+      "raw_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727",
+      "normalized_text_sha256": "695c60787ef0388a8d847a98542bc419deee66141991cbccd7f2d79861b60727"
+    },
+    "frz/hypervisor/go.mod": {
+      "raw_sha256": "0720883b6dd8a52a624b94bad43e50bd5089467d0658216d9bbb4faf189e3ffd",
+      "normalized_text_sha256": "0720883b6dd8a52a624b94bad43e50bd5089467d0658216d9bbb4faf189e3ffd"
+    },
+    "frz/hypervisor/go.sum": {
+      "raw_sha256": "0c4155df83aa8c5b6c4cc18d77c3762d93ac85c7370cde6ed96dd6949dc568dc",
+      "normalized_text_sha256": "0c4155df83aa8c5b6c4cc18d77c3762d93ac85c7370cde6ed96dd6949dc568dc"
+    }
+  },
+  "source_and_module_manifests_unchanged": true,
+  "matches_previous_published_native_raw_hashes": {
+    "frz/angerona_watchdog.go": true,
+    "frz/angerona_watchdog_test.go": true,
+    "frz/go.mod": true,
+    "frz/go.sum": true,
+    "frz/hypervisor/main.go": true,
+    "frz/hypervisor/main_test.go": true,
+    "frz/hypervisor/go.mod": true,
+    "frz/hypervisor/go.sum": true
+  },
+  "groups": [
+    {
+      "group": "watchdog",
+      "directory": "frz",
+      "command": [
+        "go",
+        "test",
+        "-mod=readonly",
+        "-count=1",
+        "-json",
+        "angerona_watchdog.go",
+        "angerona_watchdog_test.go"
+      ],
+      "exit_code": 0,
+      "wall_seconds": 22.65296059998218,
+      "top_level": {
+        "pass": 3,
+        "fail": 0,
+        "skip": 0
+      },
+      "subtests": {
+        "pass": 9,
+        "fail": 0,
+        "skip": 0
+      },
+      "test_outcomes": [
+        {
+          "test": "TestChillAgentArgs/nil",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillAgentArgs/empty",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillAgentArgs/absent",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillAgentArgs/existing",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillAgentArgs/duplicates",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillAgentArgs/exactOnly",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillAgentArgs",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestWatchdogLaunchHelper",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestLaunchAgentChillArguments/0",
+          "outcome": "pass",
+          "elapsed_seconds": 0.3
+        },
+        {
+          "test": "TestLaunchAgentChillArguments/1",
+          "outcome": "pass",
+          "elapsed_seconds": 0.03
+        },
+        {
+          "test": "TestLaunchAgentChillArguments/2",
+          "outcome": "pass",
+          "elapsed_seconds": 0.03
+        },
+        {
+          "test": "TestLaunchAgentChillArguments",
+          "outcome": "pass",
+          "elapsed_seconds": 0.37
+        }
+      ],
+      "json_log_basename": "timeout-native-watchdog.jsonl",
+      "stderr_log_basename": "timeout-native-watchdog.stderr.log",
+      "json_log_sha256": "55d21b10696f2a6533569bede4b707646b8ea8aeb573602cf952c714c5b25d0b",
+      "stderr_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "group": "hypervisor",
+      "directory": "frz/hypervisor",
+      "command": [
+        "go",
+        "test",
+        "-mod=readonly",
+        "-count=1",
+        "-json",
+        "."
+      ],
+      "exit_code": 0,
+      "wall_seconds": 5.695827599993208,
+      "top_level": {
+        "pass": 2,
+        "fail": 0,
+        "skip": 0
+      },
+      "subtests": {
+        "pass": 8,
+        "fail": 0,
+        "skip": 0
+      },
+      "test_outcomes": [
+        {
+          "test": "TestChillCoreCommand/nil",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/empty",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/executableOnly",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/absent",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/existing",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/duplicates",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/exactOnly",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand/executablePreserved",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommand",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        },
+        {
+          "test": "TestChillCoreCommandRetainsFieldsParsing",
+          "outcome": "pass",
+          "elapsed_seconds": 0
+        }
+      ],
+      "json_log_basename": "timeout-native-hypervisor.jsonl",
+      "stderr_log_basename": "timeout-native-hypervisor.stderr.log",
+      "json_log_sha256": "8fe8619c2aeea5c8eefcdff4408e68dac28453dda0f00f3d8c157f8f477dd8e7",
+      "stderr_log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "totals": {
+    "top_level": {
+      "pass": 5,
+      "fail": 0,
+      "skip": 0
+    },
+    "subtests": {
+      "pass": 17,
+      "fail": 0,
+      "skip": 0
+    },
+    "group_failures": 0
+  },
+  "harmless_child_launch_scope": {
+    "actual_test_child_launches": 3,
+    "purpose": "Watchdog test-binary children capture their own argv and inert test-session environment, then exit; parents wait for them.",
+    "launcher_semantics": "Absent, existing and repeated exact --chill arguments normalize to one flag while preserving other arguments and retained child-process custody.",
+    "hypervisor_scope": "Argument normalization and existing strings.Fields parsing; no real supervisor recovery loop was started."
+  },
+  "limits": [
+    "Go test compiles the native test binaries; no separate architecture rebuild was requested or performed.",
+    "These tests do not install or deploy supervisors, exercise live watchdog/SCM recovery, or prove native GPU/model release.",
+    "Raw logs stay in ignored temporary storage; this summary contains no machine-specific executable paths, captured child environment values or process IDs."
+  ],
+  "initial_setup_attempt": {
+    "scope": "Runner environment setup; native test binaries did not execute.",
+    "diagnostic": "GOROOT initially pointed one directory above the portable SDK root, so go reported no such tool vet. Corrected before the actual gates.",
+    "corrected_GOROOT": "<repository>/.tmp/go-portable/go",
+    "test_execution": false,
+    "dependency_downloads": false,
+    "exit_codes": {
+      "watchdog": 2,
+      "hypervisor": 2
+    }
+  }
+}

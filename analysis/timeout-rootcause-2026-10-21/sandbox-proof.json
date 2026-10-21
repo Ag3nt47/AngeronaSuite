@@ -1,0 +1,297 @@
+{
+  "schema": "angerona.sandbox-priority-proof/v1",
+  "date": "2026-10-21",
+  "baseline_commit": "a3188df",
+  "method": "Two sequential controlled pairs, each in a fresh disposable coordinator. The coordinator, a finite 16-second NORMAL CPU peer, and the exact isolated child share one allowed CPU; no system or unrelated process priority/affinity changed. Child bootstrap uses minimal native-output stage markers; wrappers call original custody/output helpers unchanged. Only child creation priority differs between pair variants. The original 10-second output deadline and original 3-second descendant retirement postcondition are retained.",
+  "results": [
+    {
+      "priority_variant": "below",
+      "output_timeout_seconds": 10,
+      "peer_max_seconds": 16.0,
+      "passed": false,
+      "total_seconds": 11.335376500006532,
+      "bounded_output_state": "timeout",
+      "bounded_output_seconds": 10.515141200012295,
+      "raw_output_bytes": 0,
+      "child_priority": 16384,
+      "peer_priority": 32,
+      "child_affinity": [
+        7
+      ],
+      "peer_affinity": [
+        7
+      ],
+      "peer_still_running_at_result": true,
+      "bootstrap_stages": [],
+      "stages": [
+        {
+          "stage": "_assign_windows_kill_job",
+          "seconds": 0.004748899984406307
+        },
+        {
+          "stage": "_resume_windows_process",
+          "seconds": 0.250778799992986
+        },
+        {
+          "stage": "_stop_process_custody",
+          "seconds": 0.00017329998081550002
+        },
+        {
+          "stage": "_remove_owned_temp",
+          "seconds": 0.001906499994220212
+        }
+      ],
+      "pair": 1,
+      "external_cpu_observations": {
+        "sample_count": 84,
+        "max_user_seconds": 0.0,
+        "max_kernel_seconds": 0.0
+      },
+      "descendant_check_scope": "No child harness/target stage ran; no disposable descendant was created."
+    },
+    {
+      "priority_variant": "normal",
+      "output_timeout_seconds": 10,
+      "peer_max_seconds": 16.0,
+      "passed": true,
+      "total_seconds": 4.608331299998099,
+      "bounded_output_state": "complete",
+      "bounded_output_seconds": 4.279329900018638,
+      "raw_output_bytes": 667,
+      "child_priority": 32,
+      "peer_priority": 32,
+      "child_affinity": [
+        7
+      ],
+      "peer_affinity": [
+        7
+      ],
+      "peer_still_running_at_result": true,
+      "bootstrap_stages": [
+        {
+          "stage": "harness_enter",
+          "cpu": 0.078125,
+          "since_output_wait_seconds": 1.1340316999994684
+        },
+        {
+          "stage": "limits_ready",
+          "cpu": 0.265625,
+          "since_output_wait_seconds": 3.0854823000263423
+        },
+        {
+          "stage": "token_admitted",
+          "cpu": 0.28125,
+          "since_output_wait_seconds": 3.0857430000032764
+        },
+        {
+          "stage": "target_enter",
+          "cpu": 0.28125,
+          "since_output_wait_seconds": 3.1685559000179637
+        },
+        {
+          "stage": "target_dependencies_ready",
+          "cpu": 0.375,
+          "since_output_wait_seconds": 3.8152032000070903
+        },
+        {
+          "stage": "descendant_started",
+          "cpu": 0.390625,
+          "since_output_wait_seconds": 3.8514903000032064
+        }
+      ],
+      "stages": [
+        {
+          "stage": "_assign_windows_kill_job",
+          "seconds": 0.0033063000009860843
+        },
+        {
+          "stage": "_resume_windows_process",
+          "seconds": 0.1930391000059899
+        },
+        {
+          "stage": "_stop_process_custody",
+          "seconds": 6.160000339150429e-05
+        },
+        {
+          "stage": "_remove_owned_temp",
+          "seconds": 0.0003372000064700842
+        }
+      ],
+      "pair": 1,
+      "external_cpu_observations": {
+        "sample_count": 32,
+        "max_user_seconds": 0.0,
+        "max_kernel_seconds": 0.015625
+      },
+      "descendant_check_scope": "The initial immediate poll was inconclusive for asynchronous job closure; only pair 2 uses and grades the original 3-second retirement postcondition."
+    },
+    {
+      "priority_variant": "below",
+      "output_timeout_seconds": 10,
+      "peer_max_seconds": 16.0,
+      "passed": false,
+      "total_seconds": 12.952901699987706,
+      "bounded_output_state": "timeout",
+      "bounded_output_seconds": 12.144475499982946,
+      "raw_output_bytes": 0,
+      "child_priority": 16384,
+      "peer_priority": 32,
+      "child_affinity": [
+        7
+      ],
+      "peer_affinity": [
+        7
+      ],
+      "peer_still_running_at_result": true,
+      "bootstrap_stages": [],
+      "stages": [
+        {
+          "stage": "_assign_windows_kill_job",
+          "seconds": 0.004739199997857213
+        },
+        {
+          "stage": "_resume_windows_process",
+          "seconds": 0.1899834999931045
+        },
+        {
+          "stage": "_stop_process_custody",
+          "seconds": 0.00035310001112520695
+        },
+        {
+          "stage": "_remove_owned_temp",
+          "seconds": 0.0003267000138293952
+        }
+      ],
+      "pair": 2,
+      "external_cpu_observations": {
+        "sample_count": 94,
+        "max_user_seconds": 0.0,
+        "max_kernel_seconds": 0.015625
+      },
+      "descendant_check_scope": "No child harness/target stage ran; no disposable descendant was created."
+    },
+    {
+      "priority_variant": "normal",
+      "output_timeout_seconds": 10,
+      "peer_max_seconds": 16.0,
+      "passed": true,
+      "total_seconds": 4.3639632999838796,
+      "bounded_output_state": "complete",
+      "bounded_output_seconds": 3.4832400000013877,
+      "raw_output_bytes": 669,
+      "child_priority": 32,
+      "peer_priority": 32,
+      "child_affinity": [
+        7
+      ],
+      "peer_affinity": [
+        7
+      ],
+      "peer_still_running_at_result": true,
+      "bootstrap_stages": [
+        {
+          "stage": "harness_enter",
+          "cpu": 0.109375,
+          "since_output_wait_seconds": 2.170190500008175
+        },
+        {
+          "stage": "limits_ready",
+          "cpu": 0.21875,
+          "since_output_wait_seconds": 2.8256897999963257
+        },
+        {
+          "stage": "token_admitted",
+          "cpu": 0.234375,
+          "since_output_wait_seconds": 2.825978499982739
+        },
+        {
+          "stage": "target_enter",
+          "cpu": 0.234375,
+          "since_output_wait_seconds": 2.966719199990621
+        },
+        {
+          "stage": "target_dependencies_ready",
+          "cpu": 0.28125,
+          "since_output_wait_seconds": 3.0583925000100862
+        },
+        {
+          "stage": "descendant_started",
+          "cpu": 0.3125,
+          "since_output_wait_seconds": 3.075508499983698
+        }
+      ],
+      "stages": [
+        {
+          "stage": "_assign_windows_kill_job",
+          "seconds": 0.004091000009793788
+        },
+        {
+          "stage": "_resume_windows_process",
+          "seconds": 0.24964160000672564
+        },
+        {
+          "stage": "_stop_process_custody",
+          "seconds": 4.770001396536827e-05
+        },
+        {
+          "stage": "_remove_owned_temp",
+          "seconds": 0.0017560000123921782
+        }
+      ],
+      "pair": 2,
+      "external_cpu_observations": {
+        "sample_count": 26,
+        "max_user_seconds": 0.03125,
+        "max_kernel_seconds": 0.03125
+      },
+      "descendant_retired_within_original_3_seconds": true,
+      "descendant_retirement_seconds": 0.1138523000117857
+    }
+  ],
+  "candidate_fix": "Explicit NORMAL_PRIORITY_CLASS rather than BELOW_NORMAL or inherited priority; all other creation flags and custody/resource boundaries are preserved.",
+  "security_limits": {
+    "_SELFTEST_PROCESS_LIMIT": 32,
+    "_SELFTEST_PROCESS_MEMORY_BYTES": 536870912,
+    "_SELFTEST_JOB_MEMORY_BYTES": 1073741824,
+    "_SELFTEST_CPU_SECONDS": 90
+  },
+  "security_boundary_unchanged": {
+    "resilience_helper_matches_baseline": true,
+    "shared_helper_sha256": "d4a5c23eea7780d1745349e7e370df60c6b08a4704c95adeb237df5e7646dee1",
+    "baseline_runner_sha256": "34abd38d70825495702ae0f7d1c4a5933d4c5ff109d597e55134a1873ce09586",
+    "fixed_runner_sha256": "0f67e75175a2e883daa73f60be676edd4ddd6a7063ab9a2ffe7f2f7b5fbc058b",
+    "deadline_seconds": 10,
+    "descendant_retirement_deadline_seconds": 3,
+    "suspended_child_before_job_assignment": true,
+    "bounded_token_output_and_job_kill_custody": true
+  },
+  "interpretation": "Code-level CPU starvation is reproduced in both baseline trials: zero output, no Python bootstrap stage, and zero sampled user CPU before the unchanged deadline; sampled kernel CPU was 0 to 0.015625 seconds. Explicit NORMAL completed both trials while the NORMAL peer remained active. Child self-reported process CPU at stage markers is primary for successful child CPU; external polling can miss samples under contention.",
+  "historical_limit": "The earlier full-run physical load and failed-child stage data were not retained. This controlled experiment proves a vulnerable scheduling mechanism and its correction; it does not establish the exact unrecorded historical trigger or general hardware throughput.",
+  "primary_reference": "https://learn.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities",
+  "scope": "Offline disposable component evidence only; no models/services or real detections, and no whole-app CPU/RAM percentage claim. PIDs, tokens, and host paths are omitted.",
+  "validation": [
+    {
+      "name": "single_actual_scheduling_regression",
+      "command": ".\\venv\\Scripts\\python.exe -X pycache_prefix=.tmp/sandbox-normal-priority-pycache -m pytest -q tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent --basetemp=.tmp/pytest-sandbox-normal-priority --junitxml=.tmp/sandbox-normal-priority.xml",
+      "tests": 1,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "junit_seconds": 6.828
+    },
+    {
+      "name": "whole_resource_and_security_gate",
+      "command": ".\\venv\\Scripts\\python.exe -X pycache_prefix=.tmp/sandbox-normal-priority-pycache -m pytest -q tests/test_sandbox_resource_bounds.py tests/test_source_sandbox_hardening.py tests/test_sandbox_editor_lifecycle.py tests/test_cycle26_round3_runtime_auth.py tests/test_cycle26_surface_hardening.py --basetemp=.tmp/pytest-sandbox-normal-priority-gate --junitxml=.tmp/sandbox-normal-priority-gate.xml",
+      "tests": 51,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "junit_seconds": 40.074
+    }
+  ],
+  "static_validation": {
+    "ruff": "passed",
+    "git_diff_check": "passed"
+  },
+  "regression_test_sha256": "afb4bb68f331169bc5e794b0a404efe9bdc9d618b436b94fd0f7f0186929af1e"
+}

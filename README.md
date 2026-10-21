@@ -38,6 +38,13 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [October 21 timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md)
+corrects sandbox child priority under CPU contention and reduces repeated
+Windows credential-file permission overhead in response checkpoints. The
+record distinguishes controlled cause reproduction, component measurements
+and the complete regression result while retaining the original deadlines
+and containment durability checks.
+
 The [October 18 Chill update](analysis/chill-efficiency-2026-10-18/README.md)
 slows optional background work and dashboard refreshes substantially, stops idle
 animations and FPS sampling, and reduces empty recorder wakeups. **Ollama and
@@ -406,7 +413,13 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
-The final upgrade regression suite passed **4,303 tests with 20 skips**.
+The [October 21 complete regression](analysis/timeout-rootcause-2026-10-21/README.md)
+passed **5,107 tests with 25 skips and zero failures or errors**. Its 994 Python
+source files matched before and after the run. Both previously timed-out cases
+passed with their original deadlines; fresh offline self-check passed all 28
+phases and all nine verifier checks. Skips do not establish live coverage.
+
+The historical September 23 upgrade regression suite passed **4,303 tests with 20 skips**.
 The [validation record](analysis/upgrade-20260923/validation.md) separates native
 automatic-containment checks, module self-tests and component benchmarks.
 Its isolated selfcheck passed all 26 phases; SelfTestRunner reported 66 module

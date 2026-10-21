@@ -1,0 +1,112 @@
+{
+  "schema": "angerona.timeout-rootcause-validation/v1",
+  "date": "2026-10-21",
+  "version": "1.13.0",
+  "baseline_commit": "a3188df2841608bc7b58690d3808c70bc9b538e7",
+  "full_regression": {
+    "command": "venv/Scripts/python.exe -m pytest -q -p tools.pytest_execution_trace --basetemp=.tmp/timeout-rootcause-full-2026-10-21/pytest --junitxml=.tmp/timeout-rootcause-full-2026-10-21/junit.xml",
+    "environment": {
+      "ANGERONA_PYTEST_TRACE_PATH": ".tmp/timeout-rootcause-full-2026-10-21/execution.jsonl"
+    },
+    "path_note": "Command and environment paths are shown relative to the repository; the wrapper resolved them to absolute workspace paths. Use a fresh trace destination on reproduction.",
+    "exit_code": 0,
+    "tests": 5132,
+    "passed": 5107,
+    "skipped": 25,
+    "failures": 0,
+    "errors": 0,
+    "observer_wall_seconds": 2663.015000000014,
+    "junit_seconds": 2639.339,
+    "execution_trace": {
+      "session-start": 1,
+      "test-start": 5132,
+      "test-report": 15390,
+      "session-end": 1
+    },
+    "failed_reports": [],
+    "original_deadline_cases": [
+      {
+        "test": "tests/test_redteam_live_scoring_regression.py::test_live_redteam_marker_custody_allows_verified_containment[comprehensive]",
+        "outcome": "passed",
+        "seconds": 36.56565030000638
+      },
+      {
+        "test": "tests/test_sandbox_resource_bounds.py::test_success_also_retires_disposable_descendants",
+        "outcome": "passed",
+        "seconds": 0.5392431000072975
+      },
+      {
+        "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+        "outcome": "passed",
+        "seconds": 3.8972264000040013
+      }
+    ],
+    "raw_artifact_sha256": {
+      "junit.xml": "b3050df0c93dc886f17771c12dab96e32eb62fd4b74df78d73ec3403254f7197",
+      "execution.jsonl": "a59b73999c2d6c4f7189bbfd6155448258c8d6b6b8cd8a8d860022ea35467b1d",
+      "resources.jsonl": "097e18e8f598d948818b572979f6d048d0db0584f084c85f3332e2a54362e50c",
+      "resources-pytest-runtime.jsonl": "0f697dc747c93f3f7a8782a6a19f76ca1af74154b849ae344613f14ecff65a98"
+    },
+    "scope": "Complete one-process suite with opt-in outcome/Qt journal and separate external observer. No competing maintainer build/test jobs; no retries or deadline changes."
+  },
+  "source_freeze": {
+    "files": 994,
+    "sha256": "e52dd07018eef0a8ae4f55c859859d23c185328baca8cc59b557608b7288de15",
+    "unchanged": true,
+    "scope": "All Python files under src, tests and tools; SHA256 of UTF-8 text normalized to LF, then SHA256 of sorted compact path-to-hash JSON."
+  },
+  "resource_observation": {
+    "samples": 511,
+    "observer_errors": 0,
+    "sample_interval_seconds": 5,
+    "scope": "Separate read-only observer of the actual CPython pytest runtime beneath the Windows venv redirector. Began during collection. Children excluded; samples can miss peaks. No grading or source instrumentation.",
+    "pytest_process": {
+      "max_sampled_rss_bytes": 661942272,
+      "max_sampled_threads": 20,
+      "last_sampled_cumulative_cpu_seconds": 310.28125
+    },
+    "host_min_sampled_available_memory_bytes": 410193920,
+    "limits": "Sampled actual pytest runtime only; child resources are excluded. Five-second samples can miss peaks. Collection began before the corrected observer. The initial resources.jsonl sampled the Windows venv launcher and is excluded from pytest resource totals. No whole-application speedup or old-machine performance claim."
+  },
+  "offline_selfcheck": {
+    "evidence": "selfcheck.json",
+    "phase_totals": {
+      "total": 28,
+      "PASS": 28,
+      "FAIL": 0
+    },
+    "scope": "Fresh isolated offline harness; no live sensors, model startup or real containment readiness claim."
+  },
+  "focused_evidence": [
+    {
+      "evidence": "sandbox-proof.json",
+      "scope": "Controlled baseline/corrected scheduling pairs and 51-case resource/security selection."
+    },
+    {
+      "evidence": "containment-proof.json",
+      "scope": "Matched native ACL measurements, 38-case security gate and instrumented comprehensive integration."
+    }
+  ],
+  "native_tests": {
+    "evidence": "native-tests.json",
+    "top_level_passed": 5,
+    "subtests_passed": 17,
+    "failures": 0,
+    "skipped": 0,
+    "scope": "Both native watchdog test groups, run sequentially offline after full Python completion; no source changes or deployment. Initial SDK-root configuration failure occurred before test execution and is recorded separately."
+  },
+  "static_checks": {
+    "compiled_files": 994,
+    "compile_failures": 0,
+    "compile_command": "venv/Scripts/python.exe tools/compile_check.py src tests tools",
+    "ruff": "PASS",
+    "ruff_command": "venv/Scripts/python.exe -m ruff check src tests tools",
+    "pre_full_documentation_drift": "PASS",
+    "pre_full_git_diff_check": "PASS",
+    "final_documentation_drift": "PASS",
+    "final_git_diff_check": "PASS",
+    "strict_json_evidence_files": 6,
+    "strict_json_evidence": "PASS"
+  },
+  "limitations": "The exact physical trigger of the historical failures was not retained. Controlled mechanism proofs and this new full-suite result cannot reconstruct it. Focused groups overlap and are not added to this full count."
+}

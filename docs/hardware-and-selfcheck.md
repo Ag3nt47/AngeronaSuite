@@ -146,6 +146,14 @@ pacing. A timeout remains a failure; Python cannot safely kill an arbitrary
 running thread, so timed-out calls keep their bounded permit until they exit.
 Repeated tests cannot create an unlimited number of abandoned workers.
 
+On Windows, deadline-bound isolated sandbox children explicitly use normal
+process priority even when Angerona's parent process has below-normal
+priority. This corrects the scheduling starvation reproduced with a
+normal-priority CPU peer. The requested output deadline (ten seconds in the
+regression fixture), process-tree cleanup and memory/process/CPU limits remain
+enforced. This selected child priority does not change Chill's optional-work
+policy or permit local AI.
+
 ## Reproducing the engineering evidence
 
 Use the installation's `venv/Scripts/python.exe` for these commands:
@@ -169,6 +177,9 @@ coverage or proof that every source file needed an optimization.
 Measured component results and validation outcomes are recorded in the
 [hardware review](../analysis/hardware-adaptation-2026-10-18/README.md) and the
 [Chill follow-up](../analysis/chill-efficiency-2026-10-18/README.md).
+The [October 21 timeout investigation](../analysis/timeout-rootcause-2026-10-21/README.md)
+records controlled scheduling and native permission measurements together
+with complete regression and offline self-check results.
 Virtual profiles are distinct from actual performance measurements. Physical
 low-memory machines, extended all-sensor sessions and native response efficacy
 require their own validation.
