@@ -38,6 +38,12 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [hosted CI follow-up](analysis/ci-scan-followup-2026-10-21/README.md)
+corrects when the scheduling fixture observes its finite CPU peer and records
+narrow historical exceptions for public source hashes flagged by secret scan.
+Original deadlines and security checks remain. Local and hosted validation
+are recorded separately.
+
 The [October 21 timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md)
 corrects sandbox child priority under CPU contention and reduces repeated
 Windows credential-file permission overhead in response checkpoints. The
@@ -413,11 +419,15 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
-The [October 21 complete regression](analysis/timeout-rootcause-2026-10-21/README.md)
+The [October 21 local complete regression](analysis/timeout-rootcause-2026-10-21/README.md)
+on commit `306911a`
 passed **5,107 tests with 25 skips and zero failures or errors**. Its 994 Python
 source files matched before and after the run. Both previously timed-out cases
 passed with their original deadlines; fresh offline self-check passed all 28
 phases and all nine verifier checks. Skips do not establish live coverage.
+The subsequent [hosted CI correction](analysis/ci-scan-followup-2026-10-21/README.md)
+addresses the new fixture's observation phase and hash false positives; it
+preserves that dated local record and requires separate hosted acceptance.
 
 The historical September 23 upgrade regression suite passed **4,303 tests with 20 skips**.
 The [validation record](analysis/upgrade-20260923/validation.md) separates native

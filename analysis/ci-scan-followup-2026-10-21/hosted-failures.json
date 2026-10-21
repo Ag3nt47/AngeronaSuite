@@ -1,0 +1,153 @@
+{
+  "schema": "angerona.hosted-ci-failure-snapshot/v1",
+  "date": "2026-10-21",
+  "commit": "306911a931dab28d3ba0234711676f8653cf242f",
+  "scope": "Historical hosted results before the CI fixture/scan follow-up; not the corrected commit's acceptance result.",
+  "runs": [
+    {
+      "name": "Security assurance",
+      "id": 39659889812,
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39659889812",
+      "conclusion": "failure",
+      "jobs": [
+        {
+          "id": 119429840560,
+          "name": "secret-scan",
+          "conclusion": "failure",
+          "failed_steps": [
+            "Run gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e"
+          ],
+          "findings": {
+            "rule": "generic-api-key",
+            "count": 21,
+            "path": "analysis/timeout-rootcause-2026-10-21/sources.json",
+            "verified_value_type": "public source SHA-256 digest"
+          }
+        },
+        {
+          "id": 119429840590,
+          "name": "scorecard",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840907,
+          "name": "codeql",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "CI",
+      "id": 39659889736,
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39659889736",
+      "conclusion": "failure",
+      "jobs": [
+        {
+          "id": 119429839670,
+          "name": "dependency-audit",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840108,
+          "name": "Native installer (macos-15)",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840119,
+          "name": "Python 3.13",
+          "conclusion": "failure",
+          "failed_steps": [
+            "Test"
+          ],
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "warnings": 29,
+            "seconds": 511.95,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_active_at_result"
+          }
+        },
+        {
+          "id": 119429840163,
+          "name": "macos-arm64 platform contract",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840188,
+          "name": "linux platform contract",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840202,
+          "name": "Public README integrity",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840224,
+          "name": "Python 3.12",
+          "conclusion": "failure",
+          "failed_steps": [
+            "Test"
+          ],
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "seconds": 428.26,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_active_at_result"
+          }
+        },
+        {
+          "id": 119429840243,
+          "name": "Python 3.10",
+          "conclusion": "failure",
+          "failed_steps": [
+            "Test"
+          ],
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "seconds": 544,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_active_at_result"
+          }
+        },
+        {
+          "id": 119429840291,
+          "name": "windows platform contract",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840311,
+          "name": "Python 3.11",
+          "conclusion": "failure",
+          "failed_steps": [
+            "Test"
+          ],
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "seconds": 784.72,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_active_at_result"
+          }
+        },
+        {
+          "id": 119429840475,
+          "name": "Native installer (macos-15-intel)",
+          "conclusion": "success"
+        },
+        {
+          "id": 119429840954,
+          "name": "Native installer (ubuntu-24.04)",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}

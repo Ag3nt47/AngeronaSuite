@@ -24,8 +24,13 @@ kernel component is a product capability.
 
 ## LATEST (v1.13.0 — Timeout investigation, 2026-10-21)
 
+- Hosted follow-up: analysis/ci-scan-followup-2026-10-21/README.md. The scheduling
+  fixture observes its finite peer at completed bounded output, separately from
+  later cleanup; all deadlines, priorities, affinity and retirement checks remain.
+  Exact historical public-hash fingerprints preserve future secret detection.
+  This follow-up changes the test and scan exceptions, with no production edits.
 - Record: analysis/timeout-rootcause-2026-10-21/README.md. Version remains 1.13.0.
-- Complete regression: 5,107 passed / 25 skipped / zero failures or errors;
+- Local complete regression at 306911a: 5,107 passed / 25 skipped / zero failures or errors;
   all 994 Python source files identical before/after by normalized fingerprint.
   Both historical deadline cases passed without deadline changes. Fresh offline
   self-check: 28/28 phases, 84 module rows (66 PASS/18 SKIP), nine verifier checks.

@@ -1,10 +1,10 @@
 # 🛡️ Angerona — Cyber Security Suite
 
-Latest maintenance: [timeout investigation and verification, 2026-10-21](timeout-rootcause-2026-10-21/README.md).
-Previous maintenance: [Chill efficiency and local AI lock, 2026-10-18](chill-efficiency-2026-10-18/README.md).
+Latest maintenance: [hosted CI and secret-scan follow-up, 2026-10-21](ci-scan-followup-2026-10-21/README.md).
+Previous maintenance: [timeout investigation and verification, 2026-10-21](timeout-rootcause-2026-10-21/README.md).
 Operator instructions: [hardware and self-check guide](../docs/hardware-and-selfcheck.md).
 
-October 21 complete regression: **5,107 passed / 25 skipped / 0 failures or errors**;
+October 21 local complete regression at `306911a`: **5,107 passed / 25 skipped / 0 failures or errors**;
 994 Python files unchanged through the run. Fresh offline self-check: **28/28 phases**.
 
 > **Archived historical analysis snapshot.** This long-form record preserves

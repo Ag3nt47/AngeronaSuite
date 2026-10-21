@@ -1,0 +1,127 @@
+{
+  "schema": "angerona.gitleaks-ci-followup/v1",
+  "date": "2026-10-21",
+  "scope": "Local verification of exact historical false-positive suppressions using the same scanner version as the failed GitHub job. The history snapshot predates the follow-up commit.",
+  "snapshot": {
+    "repository_head": "306911a931dab28d3ba0234711676f8653cf242f",
+    "ignore_policy_source": "Updated working-tree .gitleaksignore; historical commits were not rewritten.",
+    "followup_commit_scan": "This records the pre-follow-up snapshot only. Post-commit clearance and hosted acceptance are separate verification steps.",
+    "product_source_config_and_manifest_changes_by_this_fix": false
+  },
+  "scanner": {
+    "version": "8.24.3",
+    "matches_failed_ci_version": true,
+    "official_archive": "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_windows_x64.zip",
+    "official_checksums": "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_checksums.txt",
+    "archive_sha256": "3f1a35578631dbfe633cc5b49e6c906e55ff14a4bfd7336a10fb27fe33b6dcd2",
+    "executable_sha256": "8f397272f513c00b573f50380c4724e4b3ac759be1de313d907bb968c5d14c09",
+    "official_archive_checksum_verified": true,
+    "executable_bytes_equal_verified_archive_entry": true,
+    "configuration": "Built-in default rules; no new scanner configuration or disabled rules."
+  },
+  "verified_false_positives": {
+    "ci_reported": {
+      "commit": "306911a931dab28d3ba0234711676f8653cf242f",
+      "path": "analysis/timeout-rootcause-2026-10-21/sources.json",
+      "rule": "generic-api-key",
+      "count": 21,
+      "lines": [107, 142, 164, 217, 300, 385, 387, 399, 492, 497, 512, 515, 554, 689, 708, 765, 766, 767, 796, 822, 920],
+      "every_value_verified": true,
+      "verification": "Each reported value is a 64-character hexadecimal SHA256 digest, recomputed from its named current public source file after UTF-8 universal-newline normalization to LF. No credential-filename-to-digest pairs are repeated in this report."
+    },
+    "additional_full_history_finding": {
+      "commit": "a3188df2841608bc7b58690d3808c70bc9b538e7",
+      "path": "analysis/chill-efficiency-2026-10-18/reviewed-sources.json",
+      "rule": "generic-api-key",
+      "line": 14,
+      "count": 1,
+      "verified_against_historical_and_current_source": true,
+      "verification": "The public digest equals the normalized content hash of the named source in both the historical Git commit and current tree. This finding is separate from the 21 reported by the failed CI job."
+    }
+  },
+  "suppression": {
+    "path": ".gitleaksignore",
+    "new_exact_fingerprints": 22,
+    "ci_commit_fingerprints": 21,
+    "additional_older_fingerprints": 1,
+    "scope": "Exact commit:path:rule:line fingerprints only; future commits, other paths, lines and rules remain scanned.",
+    "existing_entries_preserved": true,
+    "duplicate_entries": false,
+    "wildcard_or_global_hash_path_suppression_added": false,
+    "full_history_checkout_and_default_rules_retained": true,
+    "normalized_text_sha256": "6601d41f24d6c8f3ede3a793c6f6878dc6f81b0d0b81bd8144f1014f78835407",
+    "observed_raw_sha256": "d175c245fc1b32d4fdb66ecc16f8b5d04b4f7aee3c27ef956405c962b07f0220",
+    "hash_methods": "Normalized text hashes decode UTF-8 and convert universal newlines to LF. Raw hashes cover the observed checked-out file bytes."
+  },
+  "validation": {
+    "offending_commit_before": {
+      "command": ".tmp/gitleaks-8.24.3/bin/gitleaks.exe git --no-banner --redact --log-opts='-1 306911a931dab28d3ba0234711676f8653cf242f' --report-format=json --report-path=.tmp/gitleaks-306911a-before.json .",
+      "exit_code": 1,
+      "commits_scanned": 1,
+      "findings": 21,
+      "actual_fingerprints_equal_reported_set": true
+    },
+    "offending_commit_after": {
+      "command": ".tmp/gitleaks-8.24.3/bin/gitleaks.exe git --no-banner --redact --log-opts='-1 306911a931dab28d3ba0234711676f8653cf242f' --report-format=json --report-path=.tmp/gitleaks-306911a-after.json .",
+      "exit_code": 0,
+      "commits_scanned": 1,
+      "findings": 0
+    },
+    "full_history_after_first_21_suppressions": {
+      "command": ".tmp/gitleaks-8.24.3/bin/gitleaks.exe git --no-banner --redact --log-opts='--all --no-textconv' --report-format=json --report-path=.tmp/gitleaks-full-history-no-textconv.json .",
+      "exit_code": 1,
+      "commits_scanned": 200,
+      "findings": 1,
+      "interpretation": "The additional older public-hash finding remained visible until separately verified and exactly suppressed."
+    },
+    "full_history_after_all_22_suppressions": {
+      "command": ".tmp/gitleaks-8.24.3/bin/gitleaks.exe git --no-banner --redact --log-opts='--all --no-textconv' --report-format=json --report-path=.tmp/gitleaks-full-history-final.json .",
+      "exit_code": 0,
+      "commits_scanned": 200,
+      "reported_patch_bytes_scanned": 24713796,
+      "reported_decimal_megabytes_scanned": 24.71,
+      "scanner_reported_seconds": 3.11,
+      "findings": 0,
+      "scope": "All locally reachable refs in the pre-follow-up HEAD snapshot, using the updated ignore file. This is not a scan of the future follow-up commit."
+    },
+    "historical_detection_canaries": {
+      "command": "venv/Scripts/python.exe .tmp/check_gitleaks_ignore_scope.py",
+      "status": "passed",
+      "scanner_version": "8.24.3",
+      "fixture": "Separate disposable two-commit Git repository; no product history changes or real credentials.",
+      "current_ignore_file_applied": true,
+      "generic_rule": "generic-api-key",
+      "generic_canary_path": "analysis/timeout-rootcause-2026-10-21/sources.json",
+      "generic_canary_line": 107,
+      "generic_canary_commit_differs_from_suppressed_commit": true,
+      "provider_rule": "github-pat",
+      "both_inert_canaries_removed_from_latest_fixture_commit": true,
+      "both_unignored_historical_canaries_still_detected": true,
+      "findings": 2,
+      "expected_scanner_exit_code": 1,
+      "interpretation": "Exact suppressions did not hide a generic credential-shaped value at the same path and line in another commit, a provider-token canary, or either historical value after removal from the latest fixture tree. Canary values are intentionally omitted."
+    },
+    "diff_check": "git diff --check -- .gitleaksignore passed."
+  },
+  "rejected_environment_attempt": {
+    "command": ".tmp/gitleaks-8.24.3/bin/gitleaks.exe git --no-banner --redact --log-opts='--all' --report-format=json --report-path=.tmp/gitleaks-full-history-after.json .",
+    "status": "Stopped; not clearance evidence.",
+    "reason": "Local Windows Git textconv configuration invoked an unavailable docx2txt.exe helper while traversing historical document patches.",
+    "correction": "The successful runs explicitly disable local textconv with --no-textconv, retaining all reachable history and built-in scanner rules. No binary-document-content acceptance is claimed."
+  },
+  "raw_artifacts": [
+    {"path": ".tmp/gitleaks-306911a-before.json", "sha256": "e20b0460d394d92c29b7a41cc344930198082de0eae730570b39d15e87378ba7"},
+    {"path": ".tmp/gitleaks-306911a-after.json", "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"},
+    {"path": ".tmp/gitleaks-full-history-no-textconv.json", "sha256": "130c54786bb100065a3152f111a7c213cfd28ed332112288f630ae726f0811c4"},
+    {"path": ".tmp/gitleaks-full-history-final.json", "sha256": "37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570"},
+    {"path": ".tmp/gitleaks-ignore-scope-proof.json", "sha256": "ff4b01765e228f76782bc36a8092ef2c4009eb3e5c7e7acadcbc968ac893b040"},
+    {"path": ".tmp/check_gitleaks_ignore_scope.py", "sha256": "3924609a468ae143f07f6167151cf12b3a5e51e6b5c47479766e2d7ba1d473a4"},
+    {"path": ".tmp/gitleaks-8.24.3/official-checksums.txt", "sha256": "eefa9ab1ee69571248a6fa070a2a7de0837dd9eb72745d131f8766206aac8ac2"}
+  ],
+  "limits": [
+    "A clean local scan is not the post-publication GitHub job result; the maintainer must verify the new commit separately.",
+    "Gitleaks detection is heuristic and does not prove absence of every possible credential or validate production credentials.",
+    "The existing source-manifest schema is unchanged; future findings require individual review rather than a broad hash-shaped-value exemption.",
+    "Only public metadata, relative commands, counts and artifact hashes are retained here; no canary values, raw secrets, operator paths or credential-filename-to-digest mappings are included."
+  ]
+}

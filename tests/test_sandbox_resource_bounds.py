@@ -191,11 +191,13 @@ until=time.monotonic()+16
 while time.monotonic()<until: pass
 '''
 native_popen = subprocess.Popen
+started = time.monotonic()
 peer = native_popen([sys.executable, '-I', '-S', '-c', peer_code, str(go), str(ready), str(active)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.NORMAL_PRIORITY_CLASS)
 observed = {}
 native_resume = sandbox_runner._resume_windows_process
+native_output = sandbox_runner._bounded_process_output
 try:
     until = time.monotonic() + 3
     while not ready.exists() and time.monotonic() < until:
@@ -226,14 +228,29 @@ try:
             assert peer.poll() is None, 'finite peer exited before activation'
             time.sleep(.01)
         assert active.exists(), 'finite peer did not begin bounded work'
-        return native_resume(process)
+        observed['before_native_resume_seconds'] = time.monotonic() - started
+        observed['peer_exit_code_before_resume'] = peer.poll()
+        assert observed['peer_exit_code_before_resume'] is None, observed
+        result = native_resume(process)
+        observed['after_native_resume_seconds'] = time.monotonic() - started
+        return result
+
+    def output_with_peer(*args, **kwargs):
+        observed['output_started_seconds'] = time.monotonic() - started
+        state, raw = native_output(*args, **kwargs)
+        observed['output_returned_seconds'] = time.monotonic() - started
+        observed['output_state'] = state
+        observed['peer_exit_code_at_output'] = peer.poll()
+        return state, raw
 
     sandbox_runner.subprocess = SimpleNamespace(**{**vars(subprocess), 'Popen': start_from_low_parent})
     sandbox_runner._resume_windows_process = resume_with_peer
+    sandbox_runner._bounded_process_output = output_with_peer
     passed, detail = sandbox_runner.run_isolated_self_test(
         'bounded_probe.module', 'Probe', 'Inert probe', source_root=root, timeout=10,
     )
-    observed.update(passed=passed, detail=detail, peer_active_at_result=peer.poll() is None)
+    observed.update(passed=passed, detail=detail, runner_returned_seconds=time.monotonic() - started,
+                    peer_exit_code_after_run=peer.poll())
     if passed:
         child = json.loads(detail.split('[self_test detail] ', 1)[1])
         observed['target_priority'] = child['priority']
@@ -264,11 +281,16 @@ finally:
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
     assert observed["passed"], observed
-    assert observed["parent_priority_at_spawn"] == 0x4000
-    assert observed["child_priority"] == observed["target_priority"] == observed["peer_priority"] == 0x20
-    assert observed["child_affinity"] == observed["peer_affinity"]
-    assert observed["peer_active_at_result"]
-    assert observed["descendant_retired"]
+    assert observed["parent_priority_at_spawn"] == 0x4000, observed
+    assert observed["child_priority"] == observed["target_priority"] == observed["peer_priority"] == 0x20, observed
+    assert observed["child_affinity"] == observed["peer_affinity"], observed
+    # Pressure must overlap the completed bounded child output. The runner's
+    # later custody/directory cleanup can outlast this deliberately finite peer.
+    assert observed["output_state"] == "complete", observed
+    assert observed["peer_exit_code_at_output"] is None, observed
+    # Cleanup must not terminate the sibling: natural peer expiry is exit 0.
+    assert observed["peer_exit_code_after_run"] in (None, 0), observed
+    assert observed["descendant_retired"], observed
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows suspended-child custody")

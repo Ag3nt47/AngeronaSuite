@@ -3,6 +3,12 @@
 Date: 2026-10-21. Maintenance version remains 1.13.0. Baseline:
 `a3188df2841608bc7b58690d3808c70bc9b538e7`.
 
+This is the local validation record committed in `306911a`. The subsequent
+[hosted CI and scan follow-up](../ci-scan-followup-2026-10-21/README.md) corrects
+the new fixture's observation phase and documents source-hash false positives.
+Its test change has separate validation; the source inventory below remains
+the exact historical full-run snapshot.
+
 This follow-up investigates the two deadline failures retained in the
 [October 18 record](../chill-efficiency-2026-10-18/README.md). It preserves the
 10-second sandbox output deadline, three-second descendant retirement check,
@@ -107,8 +113,9 @@ The new one-process full suite completed with **5,107 passed, 25 skipped,
 zero failures and zero errors** across 5,132 cases. JUnit duration was
 2,639.339 seconds; the external wrapper took 2,663.015 seconds including
 observation and final source verification. No competing maintainer build or
-test job ran during this gate. There were no retries, deadline changes or
-post-run Python source corrections.
+test job ran during this gate. There were no retries or deadline changes.
+That commit contained no post-run Python source corrections; the later
+test-only hosted follow-up is recorded separately above.
 
 | Case | Full-run call result | Call duration |
 | --- | --- | --- |

@@ -1,6 +1,11 @@
 # Project Angerona (AngeronaSuite) — llms.txt
 
-Latest maintenance (2026-10-21): timeout-rootcause-2026-10-21/README.md records
+Latest maintenance (2026-10-21): ci-scan-followup-2026-10-21/README.md corrects
+the scheduling fixture's peer observation boundary and documents exact
+historical public-hash exceptions. Production code and all deadlines remain.
+Hosted workflow acceptance is separate from the prior local gate at 306911a.
+
+Previous maintenance (2026-10-21): timeout-rootcause-2026-10-21/README.md records
 the sandbox scheduling reproduction, native Windows ACL optimization and
 complete-suite verification. Original deadlines and durability checks remain.
 Historical physical load was not captured; controlled reproductions cannot

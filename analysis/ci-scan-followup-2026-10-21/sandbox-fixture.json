@@ -1,0 +1,78 @@
+{
+  "schema": "angerona.sandbox-peer-phase-proof/v1",
+  "baseline_commit": "306911a931dab28d3ba0234711676f8653cf242f",
+  "method": "One controlled disposable coordinator from the exact baseline fixture. Original bounded output and custody helpers are called unchanged. Only after native custody cleanup, the probe waits for the original finite peer to finish; this deliberate post-output latency reproduces the old observation mismatch without changing product code, peer lifetime, or deadlines.",
+  "output_deadline_seconds": 10,
+  "descendant_retirement_deadline_seconds": 3,
+  "peer_max_seconds": 16,
+  "coordinator_guard_seconds": 30,
+  "elapsed_seconds": 17.312999999994645,
+  "observations": {
+    "peer_priority": 32,
+    "peer_affinity": [
+      7
+    ],
+    "parent_priority_at_spawn": 16384,
+    "child_priority": 32,
+    "child_affinity": [
+      7
+    ],
+    "output_state": "complete",
+    "output_seconds": 3.2960000000020955,
+    "peer_active_at_output_complete": true,
+    "controlled_cleanup_seconds": 12.5,
+    "peer_exit_code_after_native_cleanup": 0,
+    "passed": true,
+    "peer_active_at_result": false,
+    "target_priority": 32,
+    "descendant_retired": true
+  },
+  "interpretation": "The complete child output was obtained while the peer was active, and its disposable descendant retired. The old end-of-call peer assertion fails because later valid teardown need not overlap the finite peer.",
+  "ci_limit": "CI logs establish the incorrect late observation failed; they do not retain enough phase timing to identify which earlier or teardown operation consumed the peer window.",
+  "candidate_validation": {
+    "all_actual_test_assertions_passed": true,
+    "assertions": 9,
+    "elapsed_seconds": 16.78200000000652,
+    "observations": {
+      "peer_priority": 32,
+      "peer_affinity": [
+        7
+      ],
+      "parent_priority_at_spawn": 16384,
+      "child_priority": 32,
+      "child_affinity": [
+        7
+      ],
+      "before_native_resume_seconds": 0.29699999999138527,
+      "peer_exit_code_before_resume": null,
+      "after_native_resume_seconds": 0.5940000000118744,
+      "output_started_seconds": 0.5940000000118744,
+      "output_returned_seconds": 4.032000000006519,
+      "output_state": "complete",
+      "peer_exit_code_at_output": null,
+      "controlled_cleanup_seconds": 12.296999999991385,
+      "passed": true,
+      "runner_returned_seconds": 16.328999999997905,
+      "peer_exit_code_after_run": 0,
+      "target_priority": 32,
+      "descendant_retired": true
+    }
+  },
+  "focused_validation": {
+    "command": ".\\venv\\Scripts\\python.exe -X pycache_prefix=.tmp/sandbox-peer-phase-pycache -m pytest -q tests/test_sandbox_resource_bounds.py tests/test_source_sandbox_hardening.py tests/test_sandbox_editor_lifecycle.py tests/test_cycle26_round3_runtime_auth.py tests/test_cycle26_surface_hardening.py --basetemp=.tmp/pytest-sandbox-peer-phase-gate --junitxml=.tmp/sandbox-peer-phase-gate.xml",
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 34.949,
+    "console_seconds": 44.29,
+    "junit_sha256": "f5109a054bd814ce9273dd44cf6cdcab6344da7967513b3fc6eb23249ae18717",
+    "regression_file_sha256": "608dbaf4387b9039a293895e5de7393ba9839b5fd90eed76575f1fd2a0ef33fa",
+    "production_files_identical_to_baseline": {
+      "src/angerona/core/sandbox_runner.py": "0f67e75175a2e883daa73f60be676edd4ddd6a7063ab9a2ffe7f2f7b5fbc058b",
+      "src/angerona/resilience/_selftest_environment.py": "d4a5c23eea7780d1745349e7e370df60c6b08a4704c95adeb237df5e7646dee1"
+    },
+    "ruff": "PASS",
+    "git_diff_check": "PASS"
+  }
+}

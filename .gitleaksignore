@@ -24,3 +24,33 @@ a8d69c382f579c62e6e0ed86fee79a203139974d:src/angerona/shark/run_manifest.py:gene
 # libxcb-randr.so.0 follows libxcb-keysyms.so.1 in a fixed dependency tuple.
 # No credential is present; future commits and other lines remain scanned.
 a5d9905b6bca9ebe12806535a3271249aaf9b0ab:tools/check_native_gui.py:generic-api-key:20
+
+# Exact historical false positives for public source-file SHA256 values.
+# Each value was recomputed from its named UTF-8/LF-normalized source file.
+# The generic rule matches credential-related filenames next to these hashes.
+# Only this commit/path/rule/line is suppressed; future commits remain scanned.
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:107
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:142
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:164
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:217
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:300
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:385
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:387
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:399
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:492
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:497
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:512
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:515
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:554
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:689
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:708
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:765
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:766
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:767
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:796
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:822
+306911a931dab28d3ba0234711676f8653cf242f:analysis/timeout-rootcause-2026-10-21/sources.json:generic-api-key:920
+
+# One additional public source SHA256 found by scanning all older history.
+# This value matches the named source in both this commit and the current tree.
+a3188df2841608bc7b58690d3808c70bc9b538e7:analysis/chill-efficiency-2026-10-18/reviewed-sources.json:generic-api-key:14
