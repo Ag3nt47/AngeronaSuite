@@ -1,7 +1,8 @@
 # Hosted CI and secret-scan follow-up
 
-Date: 2026-10-21. Maintenance version remains 1.13.0. Investigated commit:
-`306911a931dab28d3ba0234711676f8653cf242f`.
+Date: 2026-10-21. Maintenance version remains 1.13.0. Investigated commits:
+`306911a931dab28d3ba0234711676f8653cf242f` and
+`faadba63a3d6046aeec79233b020a908793e67bd`.
 
 The [local complete-suite record](../timeout-rootcause-2026-10-21/README.md)
 passed 5,107 tests with 25 skips. The subsequent hosted runs exposed two
@@ -44,9 +45,9 @@ CodeQL, Scorecard, dependency audit, public README integrity, all three
 platform-contract jobs and all three native installer jobs passed in those
 same runs. Their success does not erase the five failed jobs.
 
-## Corrected observation and independent challenges
+## First correction and independent challenges
 
-The scheduling fixture now records the owned peer's process-handle status
+The first correction records the owned peer's process-handle status
 immediately after the original bounded-output helper returns complete. It
 also captures resume/output/return timing for diagnosis. After the sandbox
 returns, the peer must still be running or have exited naturally with code
@@ -72,6 +73,79 @@ Compilation of the changed fixture, repository Ruff, documentation drift
 and whitespace checks also passed. The prior all-module self-check and
 complete local suite remain the dated `306911a` record; no new local
 full-suite total is inferred from this focused selection.
+
+## Second hosted attempt and coordinator priority
+
+The first correction's [Security assurance run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39668432650)
+passed secret scanning, CodeQL and Scorecard. Its [CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39668432468)
+passed all eight non-Python jobs, but all four Python jobs failed. The
+[second snapshot](hosted-second-attempt.json) retains the outcomes rather than
+treating the passing local selection as hosted acceptance.
+
+Python 3.11 recorded the finite peer's natural exit before native child resume
+at 16.078 seconds. Python 3.12 and 3.13 completed child output but observed that
+the peer had already exited. These logs locate the starvation earlier than
+post-output cleanup. They did not record the coordinator's initial priority.
+
+A paired experiment ran the exact test function under a disposable
+below-normal driver. With inherited coordinator priority, the coordinator's
+initial, saved and restored classes were all BELOW_NORMAL. Native resume
+returned at 17.172 seconds and output at 17.922 seconds, after the peer's
+natural exit. The actual test failed despite successful child output and
+descendant retirement. With explicit NORMAL on outer coordinator creation,
+those three readbacks were NORMAL, output completed at 5.063 seconds while
+the peer remained active, and the actual test passed. The deliberate
+BELOW_NORMAL parent around sandbox child creation remained verified.
+
+This proves an inherited-priority defect in the fixture: the normal CPU peer
+can delay the coordinator's native-resume and output phases. The paired probe
+does not timestamp the inner ResumeThread call. Its mechanism is consistent
+with the hosted phases, but does not reconstruct their unrecorded starting
+process classes. [Paired evidence](coordinator-priority.json)
+retains both observations and the unchanged 10-second output, 3-second
+retirement, 16-second peer and 30-second coordinator budgets.
+
+The correction requests NORMAL for the disposable coordinator and verifies
+its initial and restored classes, including immediately before child resume.
+The real sandbox child still starts from the temporarily below-normal parent;
+child priority, shared CPU affinity, peer activity during output and sibling
+ownership checks remain mandatory. No production scheduler or deadline changes.
+
+The final fixture also passed under an actual below-normal driver with output
+at 5.313 seconds and the peer active. Its 51-case focused gate passed in
+33.13 seconds with zero skips, failures or errors. The proof records the final
+test-file and JUnit hashes and confirms that all 414 product Python sources
+match the earlier complete local regression's source map.
+
+## Exit diagnostics after a passing summary
+
+In the second attempt, Python 3.10 printed **5,120 passed / 12 skipped** and
+then exited with code 1 about 0.402 seconds after its summary, without a
+traceback or a reported failed test. This job failed; the passing test count
+does not establish successful process shutdown. Its cause is not proved by
+that log. The PowerShell step launched only one native command, so an exit
+status from the separate custody step cannot explain it.
+
+CI now keeps an independent journal of pytest's session result, unconfigure
+boundaries, the actual pytest entry point's SystemExit or exception, and an
+interpreter atexit observation. PowerShell records the native exit status
+immediately after Python and returns that same status. The observer retains
+the real pytest command-line arguments and verdict, with no skip, retry,
+timeout increase or conversion of nonzero status into success. Future logs
+can distinguish a test verdict from a later entry-point or shutdown failure.
+
+The observer's **15-case gate passed in 35.75 seconds**. It challenges real
+test and collection failures, unconfigure exceptions, closed stdout, failed
+journal I/O, and a passing pytest exit followed by native shutdown exit 7.
+That last challenge retains process exit 7 rather than reporting success.
+The exact CI launcher then passed the **51-case resource gate in 22.08
+seconds**, with pytest, session and native process exit codes all zero.
+Both atexit markers and completed unconfigure were observed. These markers
+do not cover every native cleanup operation; the external exit code covers
+the process result. [Diagnostic evidence](ci-diagnostics.json) retains the
+commands, hashes, limits and the earlier local collection-probe failure
+whose original cause could not be recovered. CI diagnostic tails print
+curated status fields and omit raw failure/Qt text and parameter values.
 
 ## Secret-scanner validation
 

@@ -1,0 +1,147 @@
+{
+  "schema": "angerona.hosted-ci-failure-snapshot/v1",
+  "date": "2026-10-21",
+  "commit": "faadba63a3d6046aeec79233b020a908793e67bd",
+  "scope": "Second hosted attempt. Historical failures retained separately from subsequent fixes and acceptance; the scan correction passed, while Python acceptance failed.",
+  "runs": [
+    {
+      "name": "CI",
+      "id": 39668432468,
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39668432468",
+      "conclusion": "failure",
+      "jobs": [
+        {
+          "id": 119459552760,
+          "name": "linux platform contract",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459552782,
+          "name": "Native installer (macos-15-intel)",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459552827,
+          "name": "dependency-audit",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459552839,
+          "name": "windows platform contract",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459552925,
+          "name": "Native installer (ubuntu-24.04)",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459552970,
+          "name": "Python 3.10",
+          "conclusion": "failure",
+          "pytest": {
+            "failed": 0,
+            "passed": 5120,
+            "skipped": 12,
+            "seconds": 557.99,
+            "process_exit_code": 1,
+            "observation": "All tests passed, but the Python process exited with code 1 about 0.402 seconds after the summary. The log contains no traceback or shutdown diagnostic."
+          }
+        },
+        {
+          "id": 119459552977,
+          "name": "macos-arm64 platform contract",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459553024,
+          "name": "Python 3.11",
+          "conclusion": "failure",
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "seconds": 518.7,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_exit_code_before_resume is None",
+            "observed": {
+              "peer_priority": 32,
+              "peer_affinity": [
+                3
+              ],
+              "parent_priority_at_spawn": 16384,
+              "child_priority": 32,
+              "child_affinity": [
+                3
+              ],
+              "before_native_resume_seconds": 16.077999999999975,
+              "peer_exit_code_before_resume": 0
+            }
+          }
+        },
+        {
+          "id": 119459553046,
+          "name": "Public README integrity",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459553107,
+          "name": "Python 3.12",
+          "conclusion": "failure",
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "seconds": 538.72,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_exit_code_at_output is None",
+            "observation": "Output completed, but the peer had already exited. The formatted assertion dictionary was truncated."
+          }
+        },
+        {
+          "id": 119459553163,
+          "name": "Python 3.13",
+          "conclusion": "failure",
+          "pytest": {
+            "failed": 1,
+            "passed": 5119,
+            "skipped": 12,
+            "warnings": 29,
+            "seconds": 618.56,
+            "test": "tests/test_sandbox_resource_bounds.py::test_deadline_child_gets_cpu_with_normal_peer_and_below_normal_parent",
+            "assertion": "peer_exit_code_at_output is None",
+            "observation": "Output completed, but the peer had already exited. The formatted assertion dictionary was truncated."
+          }
+        },
+        {
+          "id": 119459553365,
+          "name": "Native installer (macos-15)",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "Security assurance",
+      "id": 39668432650,
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39668432650",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "id": 119459552655,
+          "name": "codeql",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459553052,
+          "name": "scorecard",
+          "conclusion": "success"
+        },
+        {
+          "id": 119459553075,
+          "name": "secret-scan",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ]
+}

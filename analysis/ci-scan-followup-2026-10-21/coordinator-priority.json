@@ -1,0 +1,152 @@
+{
+  "schema": "angerona.sandbox-coordinator-priority-proof/v1",
+  "baseline_commit": "faadba63a3d6046aeec79233b020a908793e67bd",
+  "method": "The exact faadba6 fixture function runs inside a disposable BELOW_NORMAL driver. Initial/previous/restored coordinator priority diagnostics and an exception hook are injected without modifying embedded scripts. The paired candidate additionally requests explicit NORMAL only when that fixture creates its outer coordinator; actual test assertions, native runner calls, finite peer, child output and descendant budgets remain unchanged. A separate validation runs the final amended fixture under the same actual BELOW parent.",
+  "output_deadline_seconds": 10,
+  "descendant_retirement_deadline_seconds": 3,
+  "peer_max_seconds": 16,
+  "coordinator_guard_seconds": 30,
+  "results": [
+    {
+      "variant": "inherited",
+      "driver_priority": 16384,
+      "outer_creationflags": 134217728,
+      "coordinator_returncode": 0,
+      "observations": {
+        "coordinator_initial_priority": 16384,
+        "peer_priority": 32,
+        "peer_affinity": [
+          7
+        ],
+        "coordinator_previous_priority": 16384,
+        "parent_priority_at_spawn": 16384,
+        "coordinator_restored_priority": 16384,
+        "child_priority": 32,
+        "child_affinity": [
+          7
+        ],
+        "before_native_resume_seconds": 0.485000000015134,
+        "peer_exit_code_before_resume": null,
+        "after_native_resume_seconds": 17.17200000002049,
+        "output_started_seconds": 17.17200000002049,
+        "output_returned_seconds": 17.92200000002049,
+        "output_state": "complete",
+        "peer_exit_code_at_output": 0,
+        "passed": true,
+        "runner_returned_seconds": 17.953000000008615,
+        "peer_exit_code_after_run": 0,
+        "target_priority": 32,
+        "descendant_retired": true
+      },
+      "actual_test_assertions": "FAIL",
+      "elapsed_seconds": 20.23399999999674
+    },
+    {
+      "variant": "explicit-normal",
+      "driver_priority": 16384,
+      "outer_creationflags": 134217760,
+      "coordinator_returncode": 0,
+      "observations": {
+        "coordinator_initial_priority": 32,
+        "peer_priority": 32,
+        "peer_affinity": [
+          7
+        ],
+        "coordinator_previous_priority": 32,
+        "parent_priority_at_spawn": 16384,
+        "coordinator_restored_priority": 32,
+        "child_priority": 32,
+        "child_affinity": [
+          7
+        ],
+        "before_native_resume_seconds": 0.5160000000032596,
+        "peer_exit_code_before_resume": null,
+        "after_native_resume_seconds": 0.8289999999979045,
+        "output_started_seconds": 0.8289999999979045,
+        "output_returned_seconds": 5.062999999994645,
+        "output_state": "complete",
+        "peer_exit_code_at_output": null,
+        "passed": true,
+        "runner_returned_seconds": 5.062999999994645,
+        "peer_exit_code_after_run": null,
+        "target_priority": 32,
+        "descendant_retired": true
+      },
+      "actual_test_assertions": "PASS",
+      "elapsed_seconds": 8.280999999988126
+    }
+  ],
+  "interpretation": "Inherited BELOW coordinator priority causes the coordinator itself to lose CPU to its normal-priority busy peer. In the retained pair, entry and return of the native resume helper span 0.485 to 17.172 seconds; output/token admission begins afterward, once the peer has naturally exited. Explicit NORMAL makes that helper return at 0.829 seconds and completes output at 5.063 seconds with the peer active. The exact position of ResumeThread inside the delayed helper was not instrumented, so the process suspension state throughout that interval is not claimed.",
+  "hosted_limit": "Hosted faadba6 logs show natural peer expiry before the pre-resume observation or completed output, but do not record coordinator priority. This paired experiment proves the fixture inheritance mechanism locally; it does not reconstruct each hosted scheduling event or the separate post-summary exit-code failure.",
+  "current_source_low_parent_validation": {
+    "variant": "explicit-normal",
+    "driver_priority": 16384,
+    "outer_creationflags": 134217760,
+    "coordinator_returncode": 0,
+    "observations": {
+      "coordinator_initial_priority": 32,
+      "peer_priority": 32,
+      "peer_affinity": [
+        7
+      ],
+      "coordinator_previous_priority": 32,
+      "parent_priority_at_spawn": 16384,
+      "coordinator_restored_priority": 32,
+      "child_priority": 32,
+      "child_affinity": [
+        7
+      ],
+      "coordinator_priority_before_resume": 32,
+      "before_native_resume_seconds": 1.0320000000065193,
+      "peer_exit_code_before_resume": null,
+      "after_native_resume_seconds": 1.4690000000118744,
+      "output_started_seconds": 1.4690000000118744,
+      "output_returned_seconds": 5.312999999994645,
+      "output_state": "complete",
+      "peer_exit_code_at_output": null,
+      "passed": true,
+      "runner_returned_seconds": 5.407000000006519,
+      "peer_exit_code_after_run": null,
+      "target_priority": 32,
+      "descendant_retired": true
+    },
+    "actual_test_assertions": "PASS",
+    "elapsed_seconds": 18.187999999994645
+  },
+  "fixed_test_sha256": "9996cf16b22165ffbba23492d6927f868bc064b1818f9313af59a23169353e35",
+  "date": "2026-10-21",
+  "paired_fixture_source": {
+    "path": "tests/test_sandbox_resource_bounds.py",
+    "normalized_sha256": "608dbaf4387b9039a293895e5de7393ba9839b5fd90eed76575f1fd2a0ef33fa",
+    "diagnostics_only": [
+      "coordinator_initial_priority",
+      "coordinator_previous_priority",
+      "coordinator_restored_priority",
+      "uncaught-exception observation hook"
+    ],
+    "candidate_change": "Outer creation flags additionally include NORMAL_PRIORITY_CLASS (0x20)."
+  },
+  "primary_reference": "https://learn.microsoft.com/en-us/windows/win32/procthread/scheduling-priorities",
+  "production_unchanged": {
+    "git_diff_against_baseline_src": "empty",
+    "normalized_product_python_files": 414,
+    "normalized_product_python_aggregate_sha256": "120d53d308061155596098b71b68c3f3c60ba63fc05bd58a27a8dbf4b7d82a44",
+    "matches_prior_full_suite_product_source_map": true,
+    "runner_sha256": "0f67e75175a2e883daa73f60be676edd4ddd6a7063ab9a2ffe7f2f7b5fbc058b",
+    "custody_helper_sha256": "d4a5c23eea7780d1745349e7e370df60c6b08a4704c95adeb237df5e7646dee1"
+  },
+  "focused_validation": {
+    "command": ".\\venv\\Scripts\\python.exe -X pycache_prefix=.tmp/sandbox-peer-phase-pycache -m pytest -q tests/test_sandbox_resource_bounds.py tests/test_source_sandbox_hardening.py tests/test_sandbox_editor_lifecycle.py tests/test_cycle26_round3_runtime_auth.py tests/test_cycle26_surface_hardening.py --basetemp=.tmp/pytest-sandbox-coordinator-priority-gate --junitxml=.tmp/sandbox-coordinator-priority-gate.xml",
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 29.634,
+    "console_seconds": 33.13,
+    "junit_sha256": "2886d6dd684864694eff2d0a330e3f9fb57df0ef8853a33da1b44360c64b43b1",
+    "ruff": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "excluded_probe": "An initial rejected diagnostic wrapper indented an embedded peer script and never reached sandbox child creation. None of that invalid attempt is included in these measurements or conclusions.",
+  "scope": "Offline finite disposable component experiment only. No unrelated process affinity/priority changes, no high/realtime classes, no product modification, no claim of every-host deadline success. PIDs, birth timestamps, operator paths, target detail and raw command output are omitted."
+}

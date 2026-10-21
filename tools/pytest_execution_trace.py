@@ -8,6 +8,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 _CLOCK = time.monotonic
 _ENCODE = json.dumps
 _install_handler = None
@@ -22,8 +24,12 @@ def _record(kind: str, **fields) -> None:
     with _lock:
         if _stream is None:
             return
-        _stream.write(_ENCODE({"kind": kind, "monotonic": _CLOCK(), **fields}) + "\n")
-        _stream.flush()  # survive process abort; no per-test durable fsync
+        try:
+            _stream.write(_ENCODE({"kind": kind, "monotonic": _CLOCK(), **fields}) + "\n")
+            _stream.flush()  # survive process abort; no per-test durable fsync
+        except (OSError, ValueError):
+            # Observation must not replace a test or shutdown exception.
+            pass
 
 
 def _qt_handler(mode, context, message):
@@ -79,13 +85,51 @@ def pytest_runtest_logreport(report):
     )
 
 
+def pytest_collectreport(report):
+    if report.failed:
+        _record(
+            "collection-report", nodeid=str(report.nodeid)[:4096],
+            outcome=report.outcome, failure=str(report.longrepr)[-8192:],
+        )
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_sessionfinish(session, exitstatus):
+    try:
+        return (yield)
+    finally:
+        _record(
+            "session-finish", exitstatus=int(session.exitstatus),
+            testsfailed=session.testsfailed, testscollected=session.testscollected,
+        )
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_unconfigure(config):
     global _stream, _installed
-    if _installed:
-        _install_handler(_previous_qt_handler)
-        _installed = False
-    with _lock:
-        if _stream is not None:
-            _record("session-end")
-            _stream.close()
-            _stream = None
+    _record("unconfigure-begin")
+    completed = False
+    try:
+        result = yield
+        completed = True
+        return result
+    finally:
+        # Keep native diagnostics observable while other unconfigure hooks
+        # collect objects. Config's later cleanup stack is outside this hook.
+        if _installed:
+            try:
+                _install_handler(_previous_qt_handler)
+            except Exception:
+                pass
+            finally:
+                _installed = False
+        with _lock:
+            if _stream is not None:
+                _record("unconfigure-end", completed=completed)
+                _record("session-end")
+                try:
+                    _stream.close()
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    _stream = None

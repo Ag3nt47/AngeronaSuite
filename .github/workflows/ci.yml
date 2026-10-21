@@ -62,7 +62,34 @@ jobs:
           $dataRoot = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "AngeronaData"
           & "$env:GITHUB_WORKSPACE\tools\protect-key-custody.ps1" -DataRoot $dataRoot
       - name: Test
-        run: python -m pytest -q
+        shell: pwsh
+        env:
+          ANGERONA_PYTEST_TRACE_PATH: ${{ runner.temp }}/angerona-pytest-trace.jsonl
+          ANGERONA_PYTEST_EXIT_PATH: ${{ runner.temp }}/angerona-pytest-exit.jsonl
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          python -X faulthandler -m tools.ci_pytest -q -p tools.pytest_execution_trace
+          $pytestExit = $LASTEXITCODE
+          Write-Host "Pytest native process exit code: $pytestExit"
+          try {
+            foreach ($diagnosticPath in @($env:ANGERONA_PYTEST_TRACE_PATH, $env:ANGERONA_PYTEST_EXIT_PATH)) {
+              if (Test-Path -LiteralPath $diagnosticPath) {
+                Write-Host "Pytest diagnostic tail: $(Split-Path -Leaf $diagnosticPath)"
+                foreach ($line in (Get-Content -LiteralPath $diagnosticPath -Tail 8)) {
+                  $row = ConvertFrom-Json -InputObject $line -AsHashtable
+                  $safe = [ordered]@{}
+                  foreach ($field in @('kind', 'monotonic', 'when', 'outcome', 'duration', 'exitstatus', 'testsfailed', 'testscollected', 'completed', 'exit_code', 'exit_code_type', 'exception_type', 'python', 'argument_count')) {
+                    if ($row.ContainsKey($field)) { $safe[$field] = $row[$field] }
+                  }
+                  if ($row.ContainsKey('nodeid')) { $safe['nodeid'] = ($row['nodeid'] -split '\[', 2)[0] }
+                  $safe | ConvertTo-Json -Compress
+                }
+              }
+            }
+          } catch {
+            Write-Host "Pytest diagnostic tail unavailable."
+          }
+          exit $pytestExit
 
   dependency-audit:
     runs-on: ubuntu-latest

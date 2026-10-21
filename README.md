@@ -39,10 +39,11 @@ identifiers, timestamps, and counts are synthetic.
 ## What's new
 
 The [hosted CI follow-up](analysis/ci-scan-followup-2026-10-21/README.md)
-corrects when the scheduling fixture observes its finite CPU peer and records
-narrow historical exceptions for public source hashes flagged by secret scan.
-Original deadlines and security checks remain. Local and hosted validation
-are recorded separately.
+corrects the scheduling fixture's observation phase and inherited coordinator
+priority, and records narrow historical exceptions for public source hashes
+flagged by secret scan. CI records pytest and interpreter exit status separately
+to diagnose failures after a passing summary. Original deadlines and security
+checks remain. Local and hosted validation are recorded separately.
 
 The [October 21 timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md)
 corrects sandbox child priority under CPU contention and reduces repeated
@@ -426,8 +427,9 @@ source files matched before and after the run. Both previously timed-out cases
 passed with their original deadlines; fresh offline self-check passed all 28
 phases and all nine verifier checks. Skips do not establish live coverage.
 The subsequent [hosted CI correction](analysis/ci-scan-followup-2026-10-21/README.md)
-addresses the new fixture's observation phase and hash false positives; it
-preserves that dated local record and requires separate hosted acceptance.
+addresses the new fixture's observation phase, coordinator priority and hash
+false positives. Its report preserves both failed hosted attempts and the dated
+local record; each published correction requires separate hosted acceptance.
 
 The historical September 23 upgrade regression suite passed **4,303 tests with 20 skips**.
 The [validation record](analysis/upgrade-20260923/validation.md) separates native

@@ -58,7 +58,9 @@ def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
     else:
         assert result.returncode != 0, "diagnostic observation must never turn failure into success"
     records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
-    assert any(row["kind"] == "test-start" and row["nodeid"].endswith("test_inert_probe") for row in records)
+    assert any(row["kind"] == "test-start" and row["nodeid"].endswith("test_inert_probe") for row in records), (
+        result.returncode, result.stdout.decode(errors="replace"), result.stderr.decode(errors="replace"),
+    )
     if fault == "assertion":
         assert any(row.get("outcome") == "failed" and row.get("when") == "call" for row in records)
     elif fault == "qt-fatal":

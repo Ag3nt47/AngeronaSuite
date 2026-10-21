@@ -195,10 +195,11 @@ started = time.monotonic()
 peer = native_popen([sys.executable, '-I', '-S', '-c', peer_code, str(go), str(ready), str(active)],
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.NORMAL_PRIORITY_CLASS)
-observed = {}
+observed = {'coordinator_initial_priority': int(own.nice())}
 native_resume = sandbox_runner._resume_windows_process
 native_output = sandbox_runner._bounded_process_output
 try:
+    assert observed['coordinator_initial_priority'] == int(psutil.NORMAL_PRIORITY_CLASS), observed
     until = time.monotonic() + 3
     while not ready.exists() and time.monotonic() < until:
         assert peer.poll() is None, 'finite peer exited before ready'
@@ -209,12 +210,14 @@ try:
 
     def start_from_low_parent(*args, **kwargs):
         previous = own.nice()
+        observed['coordinator_previous_priority'] = int(previous)
         own.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
         try:
             observed['parent_priority_at_spawn'] = int(own.nice())
             process = native_popen(*args, **kwargs)
         finally:
             own.nice(previous)
+            observed['coordinator_restored_priority'] = int(own.nice())
         observed['child_priority'] = int(psutil.Process(process.pid).nice())
         observed['child_affinity'] = psutil.Process(process.pid).cpu_affinity()
         return process
@@ -228,6 +231,8 @@ try:
             assert peer.poll() is None, 'finite peer exited before activation'
             time.sleep(.01)
         assert active.exists(), 'finite peer did not begin bounded work'
+        observed['coordinator_priority_before_resume'] = int(own.nice())
+        assert observed['coordinator_priority_before_resume'] == int(psutil.NORMAL_PRIORITY_CLASS), observed
         observed['before_native_resume_seconds'] = time.monotonic() - started
         observed['peer_exit_code_before_resume'] = peer.poll()
         assert observed['peer_exit_code_before_resume'] is None, observed
@@ -276,11 +281,18 @@ finally:
         [sys.executable, "-I", "-c", coordinator,
          str(Path(sandbox_runner.__file__).resolve().parents[2]), str(tmp_path)],
         capture_output=True, text=True, timeout=30,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        # A hosted pytest process may itself run below normal. Keep only the
+        # deliberate child-spawn interval below normal, so the coordinator
+        # can resume its suspended child while the normal-priority peer runs.
+        creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                       | getattr(subprocess, "NORMAL_PRIORITY_CLASS", 0x00000020)),
     )
     assert result.returncode == 0, result.stderr
     observed = json.loads(result.stdout)
     assert observed["passed"], observed
+    assert (observed["coordinator_initial_priority"] == observed["coordinator_previous_priority"]
+            == observed["coordinator_restored_priority"] == observed["coordinator_priority_before_resume"]
+            == 0x20), observed
     assert observed["parent_priority_at_spawn"] == 0x4000, observed
     assert observed["child_priority"] == observed["target_priority"] == observed["peer_priority"] == 0x20, observed
     assert observed["child_affinity"] == observed["peer_affinity"], observed

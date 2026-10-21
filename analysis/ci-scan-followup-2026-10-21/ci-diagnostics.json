@@ -1,0 +1,128 @@
+{
+  "schema": "angerona.ci-exit-diagnostics-validation/v1",
+  "date": "2026-10-21",
+  "baseline_commit": "faadba63a3d6046aeec79233b020a908793e67bd",
+  "scope": "Offline observer and focused-resource integration validation; not a local complete-suite rerun or hosted acceptance.",
+  "production_changes": "None. Product Python sources remain identical to the prior complete-suite source map, as recorded in coordinator-priority.json.",
+  "observer_gate": {
+    "command": "venv/Scripts/python.exe -m pytest -q tests/test_ci_pytest.py tests/test_pytest_execution_trace.py --junitxml=.tmp/ci-observer-reviewed.xml",
+    "tests": 15,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 33.055,
+    "console_seconds": 35.75,
+    "junit_sha256": "c47ac744a374525bb8c832d4d32d82c233faea05dddc2329e4a1e0a2ebed5492",
+    "new_observer_cases": 12,
+    "existing_trace_cases": 3,
+    "verified_challenges": [
+      "Command-line arguments, including spaces, arrive unchanged at the module entry point.",
+      "Passing and failing actual pytest sessions retain numeric exit codes 0 and 1.",
+      "An actual collection error retains exit code 2 and the collection-failure trace row.",
+      "A real unconfigure RuntimeError survives failed observer writes and close.",
+      "A passing pytest exit followed by an injected native atexit exit 7 remains process exit 7.",
+      "An unexpected exception and closed stdout retain nonzero process exits.",
+      "String SystemExit values are excluded from the independent diagnostic journal.",
+      "An existing journal is not overwritten; journal open/write failures preserve the target verdict.",
+      "The existing assertion, Qt-fatal and mocked-clock/serializer trace probes retain their expected behavior."
+    ],
+    "powershell_ci_block_parse": "PASS, PowerShell 7.6.5",
+    "review": "Independent read-only review found no exit-preservation, custody, deadline or curated-log privacy blocker."
+  },
+  "ci_launcher_resource_gate": {
+    "command": "venv/Scripts/python.exe -X faulthandler -m tools.ci_pytest -q -p tools.pytest_execution_trace tests/test_sandbox_resource_bounds.py tests/test_source_sandbox_hardening.py tests/test_sandbox_editor_lifecycle.py tests/test_cycle26_round3_runtime_auth.py tests/test_cycle26_surface_hardening.py --junitxml=.tmp/ci-resource-integration.xml",
+    "tests": 51,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "junit_seconds": 20.554,
+    "console_seconds": 22.08,
+    "junit_sha256": "3627e057f0c823e3f2956cd248f4c9a8b7c17ba6d6a39f67cf89881534821339",
+    "native_process_exit_code": 0,
+    "phase_observations": [
+      {
+        "kind": "session-finish",
+        "monotonic": 260564.859,
+        "exitstatus": 0,
+        "testsfailed": 0,
+        "testscollected": 51
+      },
+      {
+        "kind": "unconfigure-begin",
+        "monotonic": 260564.859
+      },
+      {
+        "kind": "unconfigure-end",
+        "monotonic": 260564.906,
+        "completed": true
+      },
+      {
+        "kind": "session-end",
+        "monotonic": 260564.906
+      }
+    ],
+    "entrypoint_and_atexit_observations": [
+      {
+        "kind": "process-start",
+        "monotonic": 260540.437,
+        "python": "3.12.10",
+        "argument_count": 9
+      },
+      {
+        "kind": "pytest-system-exit",
+        "monotonic": 260564.953,
+        "exit_code_type": "ExitCode",
+        "exit_code": 0
+      },
+      {
+        "kind": "pytest-entrypoint-finished",
+        "monotonic": 260564.953
+      },
+      {
+        "kind": "python-atexit-begin",
+        "monotonic": 260564.953
+      },
+      {
+        "kind": "python-atexit-end",
+        "monotonic": 260564.968
+      }
+    ],
+    "trace_sha256": "88f8fa8bb4e3778a6b09aa164acfb53183f84c19b0a9efcd67713708c9ccd003",
+    "exit_journal_sha256": "fa55b6782bf64677531af311b611607ccac44a2525c6ccd694f3f65b35679f21"
+  },
+  "sources": [
+    {
+      "path": "tools/ci_pytest.py",
+      "normalized_sha256": "4a525160bf05673bb563a675ee1734f0ec5d7d916fbcd39f81d6b7ad15c51725"
+    },
+    {
+      "path": "tools/pytest_execution_trace.py",
+      "normalized_sha256": "24a919afc4b3317aa91c03fc87415d0ed866cf7795a1c5937d1225e1878b6f3a"
+    },
+    {
+      "path": "tests/test_ci_pytest.py",
+      "normalized_sha256": "3b13a73b307cbfce9296b655aa71b3c841aad0b126c9a164c0b1a697c7f866c5"
+    },
+    {
+      "path": "tests/test_pytest_execution_trace.py",
+      "normalized_sha256": "a9a236a835760b3e90b8988c5d9d987b704749f0240bf42fe7a80421a5c68fbd"
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "normalized_sha256": "7cf58e987ac27440b87f2ab2cbda6ce64d2e829d19ffa266e4cc9f581839da6e"
+    }
+  ],
+  "normalization": "Source hashes replace CRLF with LF. JUnit and local journal hashes cover their raw bytes.",
+  "prior_local_failed_probe": {
+    "artifact": ".tmp/ci-observer-focused-final.xml",
+    "summary": "13 passed, 1 failed in the initial 14-case selection. The existing Qt-fatal child's trace showed collection failure before test-start; the old assertion discarded subprocess stdout/stderr.",
+    "cause": "Unconfirmed. Subsequent exact child probes reached the intended fatal result; they do not reconstruct the earlier failure.",
+    "followup": "The assertion now includes child exit/stdout/stderr on failure, the observer records failed collection reports, and an intentional collection-error canary verifies that path. The reviewed 15-case gate is the acceptance result; the failed artifact was retained."
+  },
+  "limits": [
+    "The historical hosted Python 3.10 post-summary exit 1 remains unexplained; this observer records future evidence without changing verdicts.",
+    "The atexit markers bracket Python callbacks registered during pytest. Earlier callbacks, later Config cleanup and native finalization are outside those marker boundaries.",
+    "CI prints curated status fields and nodeids without parametrized values; it excludes raw failure text, Qt message text and arbitrary exception values from diagnostic tails.",
+    "Hosted full-matrix and security acceptance must be verified separately after publication."
+  ]
+}
