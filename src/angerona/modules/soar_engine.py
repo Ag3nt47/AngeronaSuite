@@ -511,7 +511,7 @@ class ActiveResponseSOAR(BaseModule):
             details=request_details,
         )
         try:
-            bus.publish(request)
+            self.publish_event(request)
             signed_request = next(
                 event
                 for event in bus.recent(50)

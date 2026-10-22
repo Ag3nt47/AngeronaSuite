@@ -35,6 +35,7 @@ _LINUX_REFERENCE_FILENAME = "secrets.secret-service-reference"
 _LINUX_SECRET_SERVICE = "org.angerona.security-suite"
 _LINUX_SECRET_ACCOUNT = "runtime-secrets-v1"
 _NON_ENVIRONMENT_SECRETS = frozenset({
+    "SPYWAREGUARD_ARCHIVE_KEY",
     "ANGERONA_USB_PIN",
     # This token authorizes a loopback control plane in an elevated process.
     # Consumers must read it directly from the OS-protected store so a launcher,

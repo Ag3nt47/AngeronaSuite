@@ -73,6 +73,8 @@ def test_setup_profiles_never_enable_egress_or_local_listeners() -> None:
         "mcp_enabled",
         "fleet_service_enabled",
         "ebpf_enabled",
+        "spyware_network_enabled",
+        "spyware_beacon_enabled",
     }
     for profile in SETUP_PROFILES.values():
         assert not any(bool(profile.get(key, False)) for key in forbidden)
@@ -201,6 +203,92 @@ def test_setup_normalizes_provider_priority_and_excludes_secrets() -> None:
     )
 
 
+def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> None:
+    spyware = next(step for step in STEPS if step.title.startswith("SpywareGuard"))
+    ugcap = next(step for step in STEPS if step.title.startswith("UGCAP"))
+    assert {field.key for field in spyware.fields} == {
+        "spyware_auto_contain", "spyware_network_enabled", "spyware_memory_enabled",
+        "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
+        "spyware_research_urls",
+    }
+    assert {field.key for field in ugcap.fields} == {
+        "ugcap_enabled", "ugcap_cadence_hours", "ugcap_vault_path", "ugcap_key_name",
+        "ugcap_lockdown",
+    }
+    defaults = _default_values()
+    assert defaults["spyware_research_urls"] == []
+    assert defaults["spyware_auto_contain"] is defaults["ugcap_lockdown"] is True
+    assert defaults["ugcap_cadence_hours"] == 168
+    assert defaults["ugcap_key_name"] == "Angerona.UGCAP.v1"
+    for key in ("spyware_network_enabled", "spyware_memory_enabled",
+                "spyware_beacon_enabled", "spyware_beacon_signal", "ugcap_enabled"):
+        assert defaults[key] is False
+    enabled = next(field for field in ugcap.fields if field.key == "ugcap_enabled")
+    assert field_supported(enabled, "win32")
+    assert not field_supported(enabled, "linux")
+    assert "restart" in ugcap.intro.lower()
+
+
+def test_setup_normalizes_saved_research_urls_without_fetching() -> None:
+    values = _default_values()
+    values["spyware_research_urls"] = " https://example.org/report, https://example.org/report, https://example.net/news "
+    normalized = normalize_setup_values(values)
+    assert normalized["spyware_research_urls"] == [
+        "https://example.org/report", "https://example.net/news",
+    ]
+    assert validate_setup(normalized) == []
+    assert normalize_setup_values({"spyware_research_urls": [" https://example.org/report ", ""]}) == {
+        "spyware_research_urls": ["https://example.org/report"],
+    }
+
+
+@pytest.mark.parametrize("urls", [
+    "http://example.org/report", "https://user@example.org/report",
+    "https://example.org/report#fragment", "https://example.org:8443/report",
+    "https://example.org:invalid/report", "https://example.org/report with spaces",
+    "https://example.org/" + "x" * 2048,
+    [f"https://example.org/report/{index}" for index in range(33)],
+    [42],
+])
+def test_setup_rejects_invalid_or_unbounded_saved_research_urls(urls) -> None:
+    values = _default_values()
+    values["spyware_research_urls"] = urls
+    assert any("SpywareGuard research URLs" in error for error in validate_setup(values))
+
+
+def test_setup_beacon_requires_existing_authorized_destination() -> None:
+    values = _default_values()
+    values["spyware_beacon_enabled"] = True
+    assert any("emergency beacon requires" in error for error in validate_setup(values))
+    values.update(aria_enabled=True, aria_push_enabled=True,
+                  aria_push_url="https://example.org/operator-webhook")
+    assert validate_setup(values) == []
+    values["spyware_beacon_channel"] = False
+    assert any("emergency beacon requires" in error for error in validate_setup(values))
+
+
+@pytest.mark.parametrize("key,value", [
+    ("ugcap_cadence_hours", 0), ("ugcap_cadence_hours", 8761),
+    ("ugcap_cadence_hours", True), ("ugcap_key_name", "software-key"),
+    ("ugcap_key_name", "Angerona.UGCAP."), ("ugcap_vault_path", "relative.ugcap"),
+    ("ugcap_vault_path", "//server/share/vault.ugcap"),
+    ("ugcap_vault_path", "/tmp/vault\x00.ugcap"),
+])
+def test_setup_rejects_invalid_integrity_vault_settings(key, value) -> None:
+    values = _default_values()
+    values[key] = value
+    assert any("UGCAP" in error for error in validate_setup(values))
+
+
+def test_setup_accepts_integrity_plan_without_touching_media_or_hardware(tmp_path) -> None:
+    values = _default_values()
+    values["ugcap_enabled"] = True
+    assert any("UGCAP requires" in error for error in validate_setup(values))
+    values["ugcap_vault_path"] = str(tmp_path / "attached-media" / "baseline.ugcap")
+    assert validate_setup(values) == []
+    assert not (tmp_path / "attached-media").exists()
+
+
 def test_setup_platform_gates_privileged_sensors() -> None:
     ebpf = next(
         field
@@ -240,11 +328,16 @@ def test_full_setup_dialog_constructs_without_writing(tmp_path, monkeypatch) -> 
     from angerona.gui.setup_wizard import SetupWizard
 
     app = QApplication.instance() or QApplication([])
-    cfg = Config(data_dir=tmp_path)
+    cfg = Config(data_dir=tmp_path, spyware_research_urls=[
+        "https://example.org/" + ("a" * 1900) + str(index) for index in range(32)])
     dialog = SetupWizard(cfg)
     try:
         assert dialog.windowTitle() == "Angerona — Full Setup"
         assert dialog._stack.count() == len(STEPS)
+        staged, secrets, providers = dialog._staged()
+        assert staged["spyware_research_urls"] == cfg.spyware_research_urls
+        assert staged["ugcap_key_name"] == cfg.ugcap_key_name
+        assert not secrets and not providers
         assert not (tmp_path / "settings.json").exists()
     finally:
         dialog.close()

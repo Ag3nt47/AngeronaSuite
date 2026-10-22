@@ -1,0 +1,72 @@
+{
+  "schema": "angerona.spyware-enclave-validation.v1",
+  "review_date": "2026-10-21",
+  "python": "3.12.10",
+  "platform": "Windows",
+  "pytest": {
+    "passed": 5775,
+    "skipped": 28,
+    "failed": 1,
+    "seconds": 1003.02,
+    "process_exit": 1,
+    "atexit_completed": true,
+    "failure": "tests/test_startup_repair_tools.py::test_real_process_exit_at_each_rename_and_refresh_restores_original_before_execution[during-refresh]",
+    "failure_detail": "Windows File.Replace IOException before injected fault; original environment restored"
+  },
+  "startup_repair_followup": {
+    "exact_case_repeats_passed": 3,
+    "whole_file_passed": 33,
+    "process_exit": 0,
+    "assessment": "Consistent with transient Windows replacement contention; locking process and cause unproven; no source/test changes"
+  },
+  "selfcheck": {
+    "phases_passed": 28,
+    "phases_failed": 0,
+    "modules": {
+      "PASS": 68,
+      "SKIP": 18
+    },
+    "pipeline_passed": 1,
+    "verifier_checks": 9,
+    "work_ms": 1713.8328000437468,
+    "workers": 2
+  },
+  "inventory": {
+    "capabilities": 86,
+    "native_contracts": 11,
+    "compatibility_adapters": 75
+  },
+  "source_inputs": 1056,
+  "source_manifest_sha256": "0332f433a6b806543c00336c3c00a6f5f7628150a585a5f59ceaf0991ac8d73b",
+  "source_note": "Product/test inputs unchanged during final suite. Standalone selfcheck retry correction validated separately.",
+  "checks": {
+    "compile_files": 429,
+    "ruff_python_files": 62,
+    "documentation_drift": "PASS",
+    "workflow_policy": "PASS",
+    "compile_cache": "isolated validation cache; normal-cache concurrent attempt had eight Windows replacement denials"
+  },
+  "read_only_source_scan_checkpoint": {
+    "files": 1193,
+    "bytes": 19249746,
+    "errors": 0,
+    "hardware_or_vault_write": false
+  },
+  "live_news_read_checks": {
+    "citizen_lab_items": 1,
+    "project_zero_items": 1,
+    "cisa": "HTTP 403; unavailable"
+  },
+  "unexercised": [
+    "physical TPM provisioning",
+    "production containment",
+    "live spyware",
+    "external emergency notifications"
+  ],
+  "environment_note": "Existing Ollama wildcard bind rejected. Service unchanged; final selfcheck uses unused loopback port 65534.",
+  "publication": {
+    "required": true,
+    "publisher": "tools/publish_github_update.py",
+    "proof": "Guarded publisher output and public main"
+  }
+}

@@ -206,6 +206,11 @@ class NetworkProtocolDecoderModule(BaseModule):
     def _on_event(self, event) -> None:
         if self.stopping:
             return
+        # A valid output receipt must never launder raw caller-described DNS
+        # into an enrolled detector identity while the attested mesh is active.
+        if (self._bus is not None and self._bus.mesh_required
+                and not self._bus.verify(event)):
+            return
         # Ignore our OWN emissions (and any DNS *alert* echoes on the bus): the
         # bus delivers each event back to every subscriber including the
         # publisher, so scoring an alert's own text would feed back into another

@@ -638,7 +638,7 @@ class YaraScannerModule(BaseModule):
                     while len(self._detection_receipts) > 4096:
                         self._detection_receipts.popitem(last=False)
                 if self._bus is not None:
-                    self._bus.publish(event)
+                    self.publish_event(event)
             if archive_error:
                 self.last_error = archive_error
                 return "failed"

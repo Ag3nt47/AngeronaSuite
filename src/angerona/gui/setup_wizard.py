@@ -12,6 +12,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
@@ -65,6 +66,8 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "mcp_enabled": False,
         "jarvis_control_enabled": False,
         "fleet_service_enabled": False,
+        "spyware_network_enabled": False,
+        "spyware_beacon_enabled": False,
     },
     "Maximum local coverage": {
         "eco_mode": False,
@@ -88,6 +91,8 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "mcp_enabled": False,
         "jarvis_control_enabled": False,
         "fleet_service_enabled": False,
+        "spyware_network_enabled": False,
+        "spyware_beacon_enabled": False,
     },
     "Low-resource local": {
         "eco_mode": True,
@@ -111,6 +116,8 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "mcp_enabled": False,
         "jarvis_control_enabled": False,
         "fleet_service_enabled": False,
+        "spyware_network_enabled": False,
+        "spyware_beacon_enabled": False,
     },
 }
 
@@ -445,6 +452,59 @@ STEPS: tuple[Step, ...] = (
         ),
     ),
     Step(
+        "SpywareGuard surveillanceware defense",
+        "Local spyware evidence requests containment on the first detection rule by "
+        "default; Adversary Combat independently enforces its standing response policy. "
+        "Research downloads, memory inspection and the Hail Mary beacon are separate "
+        "opt-ins. Research reports remain advisory until their indicators are reviewed.",
+        (
+            Field("check", "spyware_auto_contain", "Request containment on a single local detection rule",
+                  note="On by default. Exact-target responses and local-host isolation remain subject "
+                       "to Adversary Combat policy; a detection is not proof of spyware attribution."),
+            Field("check", "spyware_network_enabled", "Allow HTTPS spyware research and news downloads",
+                  note="Off by default. Downloads use public HTTPS sources with bounded fetches."),
+            Field("check", "spyware_memory_enabled", "Enable optional process memory inspection",
+                  note="Off by default. Permission and platform limits appear in source coverage."),
+            Field("text", "spyware_research_urls", "Saved research URLs", "https://example.org/report",
+                  note="Comma-separated HTTPS URLs; maximum 32 entries of 2048 characters each. "
+                       "Use the SpywareGuard tab to ingest and review reports; saving URLs grants no response authority."),
+            Field("check", "spyware_beacon_enabled", "Enable the Hail Mary emergency beacon",
+                  note="Off by default. Requires an authorized destination below; delivery is best effort "
+                       "and can fail after network isolation, power loss or compromise."),
+            Field("check", "spyware_beacon_channel", "Use the configured critical-alert destination",
+                  note="Selected by default, but sends nothing until the beacon and Critical-alert destination "
+                       "are both enabled with a protected destination URL."),
+            Field("check", "spyware_beacon_signal", "Use the configured authorized Signal destination",
+                  note="Off by default. Requires the enabled Signal mobile bridge, exact executable pins "
+                       "and approved phone numbers configured earlier."),
+        ),
+    ),
+    Step(
+        "UGCAP integrity vault and enclave mesh",
+        "Optional startup integrity enforcement is disabled by default. The current "
+        "hardware backend requires Windows TPM, the optional ugcap dependencies, and "
+        "an attached secondary volume. Enable and restart before ordinary module imports; "
+        "then explicitly provision the TPM key and initialize a known-clean baseline in "
+        "the UGCAP tab. Setup never creates a key, accepts changed code or stores a passcode.",
+        (
+            Field("check", "ugcap_enabled", "Enable strict UGCAP integrity enforcement after restart",
+                  platforms=("win32",),
+                  note="Install the ugcap extra first. Until the baseline is verified, ordinary managed "
+                       "modules remain paused; UGCAP and Adversary Combat control paths remain available."),
+            Field("spin", "ugcap_cadence_hours", "Verification prompt interval (hours)",
+                  minimum=1, maximum=8760,
+                  note="Default 168 hours. Prompts for a new passcode and hardware challenge; no automatic decryption."),
+            Field("text", "ugcap_vault_path", "Secondary-media vault FILE path", maximum=32768,
+                  note="Absolute local file path on a different volume, outside the repository, with an existing "
+                       "parent directory. Media and path custody are checked during each vault operation."),
+            Field("text", "ugcap_key_name", "TPM key name", "Angerona.UGCAP.v1", maximum=120,
+                  note="Default Angerona.UGCAP.v1. Provision explicitly in the UGCAP tab; no software-key fallback."),
+            Field("check", "ugcap_lockdown", "Request local-host isolation when integrity divergence is detected",
+                  note="On by default. Adversary Combat independently gates isolation. Managed workers pause "
+                       "on integrity failure regardless of this optional isolation request."),
+        ),
+    ),
+    Step(
         "Performance and startup",
         "Choose the resource profile and sign-in behavior.",
         (
@@ -516,6 +576,15 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
         normalized["ai_provider_order"] = [
             item.strip().casefold() for item in order.split(",") if item.strip()
         ]
+    urls = normalized.get("spyware_research_urls")
+    if isinstance(urls, str):
+        normalized["spyware_research_urls"] = list(dict.fromkeys(
+            item.strip() for item in urls.split(",") if item.strip()
+        ))
+    elif isinstance(urls, list) and all(isinstance(item, str) for item in urls):
+        normalized["spyware_research_urls"] = list(dict.fromkeys(
+            item.strip() for item in urls if item.strip()
+        ))
     for key in ("ollama_host", "ollama_model", "ollama_keep_alive", "accent",
                 "aria_imap_host", "aria_imap_user", "teams_app_id",
                 "teams_allowed_users", "mobile_signal_cli",
@@ -525,7 +594,7 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
                 "adversary_combat_process_action", "siem_host", "siem_protocol",
                 "siem_min_severity", "siem_ca_file", "remote_bridge_mode",
                 "remote_bridge_peer", "remote_bridge_bind", "remote_bridge_node_id",
-                "ioc_feed_url", "ioc_feed_sha256"):
+                "ioc_feed_url", "ioc_feed_sha256", "ugcap_vault_path", "ugcap_key_name"):
         if key in normalized:
             normalized[key] = str(normalized[key]).strip()
     if "mobile_signal_cli_sha256" in normalized:
@@ -604,6 +673,45 @@ def validate_setup(values: dict[str, object]) -> list[str]:
         errors.append("IOC feed SHA-256 must contain exactly 64 hexadecimal characters.")
     if feed_pin and not feed_url:
         errors.append("IOC feed SHA-256 requires an IOC feed URL.")
+
+    research_urls = values.get("spyware_research_urls", [])
+    if not isinstance(research_urls, list) or len(research_urls) > 32:
+        errors.append("SpywareGuard research URLs must be a list of at most 32 HTTPS URLs.")
+    else:
+        for url in research_urls:
+            try:
+                if not isinstance(url, str) or not 1 <= len(url) <= 2048:
+                    raise ValueError
+                report = urlsplit(url)
+                if (report.scheme != "https" or not report.hostname
+                        or report.username is not None or report.password is not None
+                        or report.port not in (None, 443) or report.fragment
+                        or any(ord(character) < 33 for character in url)):
+                    raise ValueError
+            except ValueError:
+                errors.append("SpywareGuard research URLs must use credential-free HTTPS on port 443 "
+                              "without fragments, whitespace or more than 2048 characters.")
+                break
+    if values.get("spyware_beacon_enabled"):
+        channel_ready = (values.get("spyware_beacon_channel") and values.get("aria_push_enabled")
+                         and bool(str(values.get("aria_push_url", "")).strip()))
+        signal_ready = values.get("spyware_beacon_signal") and values.get("mobile_enabled")
+        if not (channel_ready or signal_ready):
+            errors.append("The SpywareGuard emergency beacon requires an enabled critical-alert "
+                          "destination or authorized Signal mobile bridge.")
+
+    cadence = values.get("ugcap_cadence_hours", 168)
+    if type(cadence) is not int or not 1 <= cadence <= 8760:
+        errors.append("UGCAP verification prompt interval must be between 1 and 8760 hours.")
+    key_name = str(values.get("ugcap_key_name", "Angerona.UGCAP.v1"))
+    if not re.fullmatch(r"Angerona\.UGCAP\.[A-Za-z0-9_-]{1,96}", key_name):
+        errors.append("UGCAP TPM key name must use Angerona.UGCAP. followed by 1-96 letters, digits, _ or -.")
+    vault_path = str(values.get("ugcap_vault_path", ""))
+    if (vault_path or values.get("ugcap_enabled")) and (
+        not vault_path or len(vault_path) > 32768 or not Path(vault_path).is_absolute()
+        or vault_path.startswith(("\\\\", "//")) or "\x00" in vault_path
+    ):
+        errors.append("UGCAP requires an absolute local vault FILE path on the attached secondary volume.")
 
     try:
         interval = int(values.get("aria_inbox_interval_min", 0))
@@ -909,12 +1017,14 @@ if _HAVE_QT:
                 return widget
             if field.kind in {"text", "secret_config", "password_env", "provider_secret"}:
                 current = "" if field.kind in SECRET_KINDS or field.kind == "secret_config" else getattr(self._cfg, field.key, "")
-                if field.key == "ai_provider_order" and isinstance(current, list):
+                if field.key in {"ai_provider_order", "spyware_research_urls"} and isinstance(current, list):
                     current = ",".join(current)
                 widget = QLineEdit(str(current))
                 widget.setPlaceholderText(field.placeholder or "Leave blank to keep the protected value")
                 if field.kind == "text" and field.maximum < 65535:
                     widget.setMaxLength(int(field.maximum))
+                if field.key == "spyware_research_urls":
+                    widget.setMaxLength(32 * 2048 + 31)
                 if field.kind in SECRET_KINDS or field.kind == "secret_config":
                     widget.setEchoMode(QLineEdit.Password)
                 return widget
@@ -1044,6 +1154,7 @@ if _HAVE_QT:
                 "aria_cloud_fallback", "alert_analysis_cloud_fallback",
                 "aria_voice_cloud_tts", "aria_research_egress", "aria_push_enabled",
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
+                "spyware_network_enabled", "spyware_beacon_enabled",
             ) if values.get(key)]
             return (
                 f"Platform: {platform_family()}\n"
@@ -1052,6 +1163,7 @@ if _HAVE_QT:
                 f"Chill Mode: {'on' if values.get('eco_mode') else 'off'}\n"
                 f"Local AI: {values.get('ollama_model')} at {values.get('ollama_host')}\n"
                 f"Optional outbound features: {', '.join(enabled_cloud) if enabled_cloud else 'none'}\n"
+                f"UGCAP strict integrity: {'enable after restart' if values.get('ugcap_enabled') else 'disabled'}\n"
                 f"Protected credentials being updated: {len(secrets) + len(providers)}\n"
                 f"Module defaults: {'restore' if self._reset_modules else 'keep current overrides'}\n"
                 f"Evidence directory: {self._cfg.data_dir}"
@@ -1118,6 +1230,7 @@ if _HAVE_QT:
                 "aria_voice_cloud_tts", "aria_research_egress", "aria_push_enabled",
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
                 "siem_host", "remote_bridge_mode", "ioc_feed_url",
+                "spyware_network_enabled", "spyware_beacon_enabled",
             ))
             if outbound and QMessageBox.question(
                 self, "Confirm optional network features",

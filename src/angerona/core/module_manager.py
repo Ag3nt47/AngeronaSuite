@@ -11,10 +11,14 @@ no registration, no core edits.
 from __future__ import annotations
 
 import importlib
+import importlib.abc
 import importlib.util
 import inspect
+import hashlib
 import os
 import pkgutil
+import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -32,7 +36,7 @@ from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.module_contract import ContractError, build_capability_contract
 from angerona.core.module_usage import (
-    has_optional_policy, kernel_service_installed, module_identity, usage_for,
+    ModuleUsage, has_optional_policy, kernel_service_installed, module_identity, usage_for,
 )
 from angerona.core.platforms import (
     availability_for,
@@ -42,6 +46,62 @@ from angerona.core.platforms import (
 
 
 _TRUE = frozenset({"1", "true", "yes", "on"})
+_UGCAP_BOOTSTRAP = frozenset({"angerona.modules.ugcap_guard", "angerona.modules.adversary_combat"})
+_UGCAP_TOKEN = re.compile(r"[0-9a-f]{32}\Z")
+_UGCAP_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _is_ugcap_control(module) -> bool:
+    return (type(module).__module__, type(module).__name__, module.name) in {
+        ("angerona.modules.ugcap_guard", "UGCAPGuardModule", "UGCAP Integrity Guard"),
+        ("angerona.modules.adversary_combat", "AdversaryCombat", "Adversary Combat"),
+    }
+
+
+class _AttestedSourceLoader(importlib.abc.Loader):
+    """Execute only the byte snapshot checked against the live golden receipt.
+
+    SourceFileLoader can accept a forged timestamp/hash-valid .pyc after a
+    separate source check. This loader never opens or writes bytecode caches.
+    The trusted bootstrap/interpreter/libraries remain outside this boundary.
+    """
+
+    def __init__(self, manager, fullname: str, source: Path) -> None:
+        self.manager, self.fullname, self.source = manager, fullname, source
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        manager = self.manager
+        if (self.fullname.startswith("angerona.modules.")
+                and self.fullname not in _UGCAP_BOOTSTRAP and manager.ugcap_paused
+                and manager._ugcap_preparing_thread != threading.get_ident()):
+            raise ImportError("ordinary module imports are held by the UGCAP gate")
+        content, digest = manager._verified_source_bytes(self.source)
+        code = compile(content, str(self.source), "exec", dont_inherit=True)
+        exec(code, module.__dict__)  # nosec B102 -- exact attested bounded bytes.
+        module._angerona_attested_load = (str(manager._ugcap_repository), digest)
+
+
+class _AttestedSourceFinder(importlib.abc.MetaPathFinder):
+    def __init__(self, manager) -> None:
+        self.manager = manager
+
+    def find_spec(self, fullname, path=None, target=None):
+        if not fullname.startswith("angerona."):
+            return None
+        root = self.manager._ugcap_repository
+        if root is None:
+            raise ImportError("attested installation source is unavailable")
+        source = root / "src" / Path(*fullname.split("."))
+        package = source / "__init__.py"
+        is_package = package.is_file()
+        source = package if is_package else source.with_suffix(".py")
+        # Missing source is intentionally an error, never a .pyc/native fallback.
+        loader = _AttestedSourceLoader(self.manager, fullname, source)
+        return importlib.util.spec_from_file_location(fullname, source, loader=loader,
+            submodule_search_locations=[str(source.parent)] if is_package else None)
 
 
 def _env_enabled(name: str) -> bool:
@@ -83,6 +143,17 @@ class ModuleManager:
         self._control_generation = 0
         self._runtime_active = False
         self._shutdown = False
+        self._ugcap_paused = getattr(config, "ugcap_enabled", False) is True
+        self._ugcap_reason = "UGCAP user challenge required" if self._ugcap_paused else ""
+        self._ugcap_held: set[str] = set()
+        self._ugcap_deferred_discovery = self._ugcap_paused
+        self._ugcap_verified_files: dict[str, str] = {}
+        self._ugcap_repository: Path | None = None
+        self._ugcap_finder = None
+        self._ugcap_preparing_thread = None
+        self._ugcap_resume_lock = threading.Lock()
+        if self._ugcap_paused:
+            self.bus.require_mesh()
         self._optional_enabled: dict[str, bool] = {}
         self._kernel_installed: bool | None = None
         self.assurance_receipt_broker = AssuranceReceiptBroker(lambda: self.modules)
@@ -94,15 +165,21 @@ class ModuleManager:
         self.external_rejections: List[dict[str, str]] = []
 
     # ── Discovery ───────────────────────────────────────────────────────────
-    def discover(self) -> None:
-        capability_ids: set[str] = set()
+    def discover(self, *, continue_bootstrap: bool = False) -> None:
+        capability_ids: set[str] = {
+            row.get("capability_id", "") for row in self.module_trust.values()
+        } if continue_bootstrap else set()
         for cls in self._builtin_classes() + self._external_classes():
+            if continue_bootstrap and any(type(module) is cls for module in self.modules.values()):
+                continue
             try:
                 inst = self._construct_module(cls)
             except Exception as exc:
                 self.discovery_errors.append(f"{cls.__module__}.{cls.__name__}: {exc}")
                 continue
             if inst.name in self.modules:
+                if continue_bootstrap and type(self.modules[inst.name]) is cls:
+                    continue
                 self.discovery_errors.append(
                     f"{cls.__module__}.{cls.__name__}: duplicate module name {inst.name!r}"
                 )
@@ -164,6 +241,13 @@ class ModuleManager:
             setattr(inst, "_angerona_contract", contract)
             capability_ids.add(capability_id)
             self.modules[inst.name] = inst
+            if self.bus.mesh_required:
+                try:
+                    self._enroll_mesh_module(inst)
+                except Exception as exc:
+                    self.discovery_errors.append(f"{inst.name}: mesh enrollment {type(exc).__name__}")
+                    self.modules.pop(inst.name, None)
+                    continue
             try:
                 if getattr(inst, "CODE", "") == "CHAOS" and inst.name == "CHAOS":
                     self.assurance_receipt_broker.enroll_consumer(inst)
@@ -241,6 +325,8 @@ class ModuleManager:
         def _load(name: str) -> None:
             if name in seen or name.startswith("_"):
                 return
+            if self._ugcap_deferred_discovery and name not in {"ugcap_guard", "adversary_combat"}:
+                return
             seen.add(name)
             # On non-Windows hosts, preflight the literal declaration without
             # importing the file.  Legacy modules default to Windows-only, which
@@ -256,6 +342,11 @@ class ModuleManager:
                 if self.platform not in supported:
                     return
             try:
+                if self._ugcap_verified_files:
+                    source = _source_path(name)
+                    if source is None:
+                        raise RuntimeError("attested source is unavailable")
+                    self._verified_source_digest(source)
                 mod = importlib.import_module(f"angerona.modules.{name}")
             except Exception as exc:
                 self.discovery_errors.append(f"angerona.modules.{name}: {exc}")
@@ -291,6 +382,8 @@ class ModuleManager:
         return found
 
     def _external_classes(self) -> List[type]:
+        if self._ugcap_deferred_discovery:
+            return []
         # A-04: importing a drop-in executes arbitrary top-level Python with the
         # suite's elevated token. Keep the extensibility feature explicit opt-in,
         # then verify a detached manifest and source digest before Python ever
@@ -326,6 +419,10 @@ class ModuleManager:
                 self.external_rejections.append({"path": str(path), "reason": decision.reason})
                 continue
             try:
+                if self.bus is not None and self.bus.mesh_required:
+                    attested, _digest = self._verified_source_bytes(path)
+                    if decision.source_bytes != attested:
+                        raise ImportError("external source differs from the UGCAP byte snapshot")
                 spec = importlib.util.spec_from_file_location(f"angerona_ext_{path.stem}", path)
                 if spec is None or spec.loader is None:
                     raise ImportError("Python could not create an import specification")
@@ -367,8 +464,17 @@ class ModuleManager:
         return self.module_usage(name).enabled
 
     def module_usage(self, name: str):
-        return usage_for(self.modules[name], self.config, self.platform,
-                         kernel_installed=self._kernel_installed)
+        module = self.modules[name]
+        usage = usage_for(module, self.config, self.platform,
+                          kernel_installed=self._kernel_installed)
+        if self._ugcap_guard_required(module) and usage.eligible:
+            return ModuleUsage(True, True, True, "enabled",
+                "UGCAP integrity policy requires its challenge and cadence service.")
+        return usage
+
+    def _ugcap_guard_required(self, module: BaseModule) -> bool:
+        return (module_identity(module) == ("angerona.modules.ugcap_guard", "UGCAPGuardModule")
+                and (getattr(self.config, "ugcap_enabled", False) is True or self._ugcap_paused))
 
     def reconcile_usage(self) -> None:
         """Apply changed opt-in policy without waking paused/failed detectors.
@@ -387,13 +493,202 @@ class ModuleManager:
                 previous = self._optional_enabled.get(name, False)
                 self._optional_enabled[name] = enabled
                 if previous != enabled:
-                    mod.start() if enabled else mod.stop()
+                    mod.start() if enabled and self._ugcap_allows(mod) else mod.stop()
+
+    @property
+    def ugcap_paused(self) -> bool:
+        return self._ugcap_paused
+
+    def _ugcap_allows(self, mod: BaseModule) -> bool:
+        if not self._ugcap_paused or _is_ugcap_control(mod):
+            return True
+        self._ugcap_held.add(mod.name)
+        mod.set_health(min(mod.health, 40), self._ugcap_reason)
+        return False
+
+    def pause_for_ugcap(self, reason: str) -> dict:
+        """Hold managed workers; retain the integrity UI and response broker."""
+        with self._module_control_lock:
+            self._ugcap_paused = True
+            self._ugcap_reason = str(reason)[:160]
+            for mod in tuple(self.modules.values()):
+                if _is_ugcap_control(mod):
+                    continue
+                if mod.status in {"running", "starting"}:
+                    self._ugcap_held.add(mod.name)
+                    mod.stop()
+            return {"paused": True, "held": sorted(self._ugcap_held),
+                    "scope": "managed-workers; in-flight OS calls may still retire"}
+
+    def resume_after_ugcap(self, *, permit=None) -> dict:
+        """Prepare trusted modules while closed, then commit one small gate-open.
+
+        Production supplies permit(open_gate), which checks its authorization
+        epoch under the guard's own state lock. No imports, hashing or starts
+        happen under that lock or the manager's operator-control mutex.
+        """
+        with self._ugcap_resume_lock:
+            if self._ugcap_deferred_discovery:
+                if not self._ugcap_verified_files or self._ugcap_finder is None:
+                    raise RuntimeError("UGCAP source attestation has not activated")
+                previous_errors = len(self.discovery_errors)
+                self._ugcap_preparing_thread = threading.get_ident()
+                self._ugcap_deferred_discovery = False
+                try:
+                    self.discover(continue_bootstrap=True)
+                except Exception:
+                    self._ugcap_deferred_discovery = True
+                    self.bus.freeze_mesh()
+                    raise
+                finally:
+                    self._ugcap_preparing_thread = None
+                if len(self.discovery_errors) != previous_errors:
+                    self._ugcap_deferred_discovery = True
+                    self._ugcap_reason = "UGCAP deferred discovery could not establish source/mesh trust"
+                    self.bus.freeze_mesh()
+                    raise RuntimeError(self._ugcap_reason)
+                with self._module_control_lock:
+                    self._ugcap_held.update(self.modules)
+            with self._module_control_lock:
+                def open_gate():
+                    self._ugcap_paused = False
+                    self._ugcap_reason = ""
+                approved = not self._shutdown
+                if approved and permit is not None:
+                    try:
+                        approved = permit(open_gate) is True
+                    except Exception:
+                        self._ugcap_paused = True
+                        self.bus.freeze_mesh()
+                        raise
+                elif approved:
+                    open_gate()
+                if not approved or self._ugcap_paused:
+                    self._ugcap_paused = True
+                    self.bus.freeze_mesh()
+                    return {"paused": True, "resumed": []}
+                held = tuple(self._ugcap_held)
+                self._ugcap_held.clear()
+                generation = self._control_generation
+            resumed = []
+            for name in held:
+                mod = self.modules.get(name)
+                if mod is not None and self._start_current(mod, generation):
+                    resumed.append(name)
+            return {"paused": self._ugcap_paused, "resumed": sorted(resumed)}
+
+    def _verified_source_digest(self, source: Path) -> str:
+        return self._verified_source_bytes(source)[1]
+
+    def _verified_source_bytes(self, source: Path) -> tuple[bytes, str]:
+        from blake3 import blake3
+        if self._ugcap_repository is None:
+            raise RuntimeError("attested repository is unavailable")
+        # Preserve the requested lexical name: resolve() before this check can
+        # turn an unlisted symlink into a listed source and bless the redirect.
+        source = Path(os.path.abspath(os.fspath(source)))
+        relative = source.relative_to(self._ugcap_repository).as_posix()
+        expected = self._ugcap_verified_files.get(relative)
+        if not isinstance(expected, str) or len(expected) != 64:
+            raise RuntimeError("module source is outside the verified manifest")
+        from angerona.core.source_sandbox import _read_bytes
+        content = _read_bytes(source, root=self._ugcap_repository)
+        if blake3(content).hexdigest() != expected:
+            raise RuntimeError("source changed after the user integrity challenge")
+        return content, expected
+
+    def _enroll_mesh_module(self, module: BaseModule) -> None:
+        source = Path(inspect.getfile(type(module)))
+        control = _is_ugcap_control(module)
+        if control and getattr(module, "_mesh_publishers", None):
+            return
+        if self._ugcap_verified_files:
+            digest = self._verified_source_digest(source)
+        elif control:
+            # The externally trusted bootstrap is the TCB, not a golden match.
+            from angerona.core.source_sandbox import _read_bytes
+            digest = hashlib.sha256(_read_bytes(source,
+                root=Path(os.path.abspath(__file__)).parents[3])).hexdigest()
+        else:
+            raise RuntimeError("non-bootstrap module cannot enroll before attestation")
+        names = [module.name]
+        if module.name == "Active Response SOAR":
+            names.append("Active Response SOAR Request")
+        module._mesh_publishers = {name: self.bus.enroll_mesh_publisher(name, digest, control=control)
+                                   for name in names}
+
+    def activate_enclave_mesh(self, report: dict) -> bool:
+        receipt = report.get("verification_receipt") if isinstance(report, dict) else None
+        if (not isinstance(report, dict) or report.get("status") != "verified" or not isinstance(receipt, dict)
+                or any(not isinstance(report.get(name), str) or not _UGCAP_TOKEN.fullmatch(report[name])
+                       or receipt.get(name) != report[name] for name in ("report_id", "generation"))
+                or not isinstance(report.get("source_manifest_digest"), str)
+                or not _UGCAP_DIGEST.fullmatch(report["source_manifest_digest"])
+                or receipt.get("source_manifest_digest") != report["source_manifest_digest"]):
+            raise RuntimeError("verified source receipt is missing")
+        files = receipt.get("verified_files")
+        if (not isinstance(files, dict) or not files
+                or any(not isinstance(path, str) or not path or not isinstance(digest, str)
+                       or not _UGCAP_DIGEST.fullmatch(digest) for path, digest in files.items())
+                or ("verified_files" in report and report["verified_files"] != files)):
+            raise RuntimeError("verified source receipt has an invalid source map")
+        for name in ("repository", "vault_path"):
+            value = receipt.get(name)
+            if (not isinstance(value, str) or not value or not Path(value).is_absolute()
+                    or (name in report and report[name] != value)):
+                raise RuntimeError("verified source receipt has inconsistent installation/vault context")
+        expected_root = Path(os.path.abspath(__file__)).parents[3]
+        root = Path(os.path.abspath(receipt.get("repository", "")))
+        if root != expected_root:
+            raise RuntimeError("verified source receipt names another installation")
+        from angerona.core.source_sandbox import _validate_chain
+        _validate_chain(root)
+        self._ugcap_repository = root
+        self._ugcap_verified_files = dict(receipt["verified_files"])
+        if self.requires_ugcap_restart:
+            raise RuntimeError("UGCAP requires a fresh process: ordinary modules were loaded without source attestation")
+        for relative in ("src/angerona/core/eventbus.py", "src/angerona/core/module_base.py",
+                         "src/angerona/core/module_manager.py", "src/angerona/core/enclave_mesh.py",
+                         "src/angerona/core/ugcap_worker.py", "src/angerona/core/ugcap.py",
+                         "src/angerona/core/ugcap_hardware.py", "src/angerona/modules/ugcap_guard.py",
+                         "src/angerona/modules/adversary_combat.py"):
+            self._verified_source_digest(root / relative)
+        if self._ugcap_finder is None:
+            self._ugcap_finder = _AttestedSourceFinder(self)
+            sys.meta_path.insert(0, self._ugcap_finder)
+        self.bus.activate_mesh(admission_gate=lambda: not self._ugcap_paused and not self._shutdown)
+        for module in self.modules.values():
+            if not _is_ugcap_control(module):
+                self._enroll_mesh_module(module)
+        return True
+
+    @property
+    def requires_ugcap_restart(self) -> bool:
+        """A disk match cannot attest already executed ordinary Python code."""
+        for name, module in tuple(sys.modules.items()):
+            if (not name.startswith("angerona.modules.") or name in _UGCAP_BOOTSTRAP
+                    or module is None):
+                continue
+            marker = getattr(module, "_angerona_attested_load", None)
+            if not marker or self._ugcap_repository is None or marker[0] != str(self._ugcap_repository):
+                return True
+            source = getattr(module, "__file__", None)
+            try:
+                relative = Path(os.path.abspath(source)).relative_to(self._ugcap_repository).as_posix()
+            except (TypeError, ValueError):
+                return True
+            if marker[1] != self._ugcap_verified_files.get(relative):
+                return True
+        return False
+
+    def freeze_enclave_mesh(self) -> None:
+        self.bus.freeze_mesh()
 
     def _start_current(self, mod: BaseModule, generation: int) -> bool:
         with self._module_control_lock:
             if (generation != self._control_generation or self._shutdown
                     or self.modules.get(mod.name) is not mod
-                    or not self.is_enabled(mod.name)):
+                    or not self.is_enabled(mod.name) or not self._ugcap_allows(mod)):
                 return False
             mod.start()
             return True
@@ -407,6 +702,7 @@ class ModuleManager:
         "Watchdog Monitor",
         "Anti-Suspension Heartbeat",
         "Adversary Combat",
+        "UGCAP Integrity Guard",
         "Active Response SOAR",
         "Zero-Trust Local IPC Guard",
         "SOAR Automation",
@@ -542,6 +838,8 @@ class ModuleManager:
             mod = self.modules.get(name)
             if not mod:
                 return
+            if self._ugcap_guard_required(mod):
+                enabled = True
             platform = availability_for(mod, self.platform)
             if enabled and not platform.available:
                 mod.status = "unavailable"
@@ -552,7 +850,7 @@ class ModuleManager:
             effective = self.is_enabled(name)
             if has_optional_policy(mod):
                 self._optional_enabled[name] = effective
-            if effective and not self._shutdown:
+            if effective and not self._shutdown and self._ugcap_allows(mod):
                 mod.start()
             else:
                 mod.stop()
@@ -572,7 +870,7 @@ class ModuleManager:
         with self._module_control_lock:
             current = self.modules.get(name)
             if (self._shutdown or current is not expected_module
-                    or not self.is_enabled(name)):
+                    or not self.is_enabled(name) or not self._ugcap_allows(current)):
                 return False
             restart = getattr(current, "restart_if_generation", None)
             if not callable(restart):
@@ -586,6 +884,10 @@ class ModuleManager:
             self._shutdown = True
             for mod in tuple(self.modules.values()):
                 mod.stop()
+            if self.bus is not None:
+                self.bus.close_mesh()
+            if self._ugcap_finder in sys.meta_path:
+                sys.meta_path.remove(self._ugcap_finder)
 
     # ── Enterprise trust/readiness inventory ───────────────────────────────
     def capability_inventory(self) -> List[dict[str, Any]]:

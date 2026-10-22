@@ -427,6 +427,7 @@ class RedTeamConsole(QDialog):
         live_lay.setSpacing(6)
         live_lay.addWidget(self._h("Live kill-chain"))
         self.live_status = QLabel("Waiting to launch…")
+        self.live_status.setTextFormat(Qt.TextFormat.PlainText)
         self.live_status.setWordWrap(True)
         self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         live_lay.addWidget(self.live_status)
@@ -568,7 +569,7 @@ class RedTeamConsole(QDialog):
         reason = str(result.get("reason") or "Launch was not accepted.")
         if (status == "rejected" and self._run_pending
                 and (not self._launch_queued or result.get("busy") is True)):
-            self.log.append("Additional launch refused — " + reason)
+            self.log.append(escape("Additional launch refused — " + reason))
             return
         self.run_spinner.stop()
         self._launch_preparing = status == "preparing"
@@ -609,7 +610,7 @@ class RedTeamConsole(QDialog):
             self.live_status.setStyleSheet("color:#fbbf24; font-size:11px;")
             if self._launch_preparing:
                 self.run_spinner.start("Preparing simulation")
-        self.log.append(self.live_status.text())
+        self.log.append(escape(self.live_status.text()))
         if warning:
             self.log.append(escape("Containment warning — " + warning))
 
@@ -736,7 +737,7 @@ class RedTeamConsole(QDialog):
             color = "#fbbf24" if count else "#ff7373"
         self.live_status.setText(message)
         self.live_status.setStyleSheet(f"color:{color}; font-size:11px;")
-        self.log.append(message)
+        self.log.append(escape(message))
 
     # ── History tab ──────────────────────────────────────────────────────────
     def _build_history_tab(self) -> QWidget:
@@ -779,7 +780,7 @@ class RedTeamConsole(QDialog):
         worker = _HistoryWorker("list", self._history_dir())
         worker.signals.finished.connect(self._on_history_result)
         try:
-            self._history_pool.start(worker)
+            self._admit_history_worker(worker)
         except Exception as exc:
             worker._retire_signals()
             self._hist_listing = False
@@ -869,11 +870,22 @@ class RedTeamConsole(QDialog):
         worker = _HistoryWorker("text", self._history_dir(), name)
         worker.signals.finished.connect(self._on_history_result)
         try:
-            self._history_pool.start(worker)
+            self._admit_history_worker(worker)
         except Exception as exc:
             worker._retire_signals()
             self._hist_reading = False
             self._hist_view.setPlainText(f"Could not verify report history: {exc}")
+
+    def _admit_history_worker(self, worker) -> None:
+        # QThreadPool.start() queues without a bound. Reopened consoles must
+        # not accumulate readers behind a stuck filesystem or signature read.
+        # Reject promptly; the existing Refresh action is the explicit retry.
+        attempt = getattr(self._history_pool, "tryStart", None)
+        if callable(attempt):
+            if not attempt(worker):
+                raise RuntimeError("history readers are busy; select Refresh to retry")
+        else:
+            self._history_pool.start(worker)  # compatibility for external hosts
 
     def _stop_history_loads(self, _result: int) -> None:
         self._hist_accept_results = False
@@ -1494,6 +1506,9 @@ class RedTeamConsole(QDialog):
                     f"{engine_name}: {stage} · {getattr(step, 'technique', '')} · "
                     f"ok={bool(getattr(step, 'ok', False))}"
                 )
+                elapsed = getattr(step, "duration_ms", None)
+                if isinstance(elapsed, (int, float)) and elapsed >= 0:
+                    evidence.append(f"  elapsed: {elapsed:.1f} ms (includes configured jitter and validation)")
                 for path in list(getattr(step, "artifact_paths", ()) or ()):
                     evidence.append(f"  artifact: {path}")
                 for pid in list(getattr(step, "pids", ()) or ()):
@@ -1525,7 +1540,7 @@ class RedTeamConsole(QDialog):
 
     def _on_narration(self, text: str) -> None:
         message = str(text)
-        self.log.append(message)
+        self.log.append(escape(message))
         stage = self._stage_from_narration(message)
         if stage is None:
             return

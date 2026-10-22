@@ -53,6 +53,8 @@ from angerona.gui.pages import (
 )
 from angerona.gui.sandbox_editor import launch_sandbox_editor
 from angerona.gui.scan_center import ScanCenterPanel
+from angerona.gui.spyware_guard_page import SpywareGuardPage
+from angerona.gui.ugcap_page import UGCAPPage
 from angerona.gui.upgrade_console import launch_upgrade_console
 from angerona.gui.system_pulse import SystemPulseCard
 from angerona.gui.theme import build_qss, clamp_scale
@@ -556,10 +558,16 @@ class MainWindow(QMainWindow):
         # scanning together without blocking the dashboard thread.
         self.soar_panel = SoarPanel(bus, manager)
         self.scan_center = ScanCenterPanel(bus=bus)
+        self.spyware_guard = SpywareGuardPage(manager, config, bus)
+        self.spyware_guard.settings_requested.connect(self._show_settings)
+        self.ugcap_page = UGCAPPage(manager, config, bus)
+        self.ugcap_page.lock_state_changed.connect(self._set_ugcap_workspace_locked)
         self._right_tabs = QTabWidget()
         self._right_tabs.addTab(self.alerts_panel, "Live Alerts")
         self._right_tabs.addTab(self.soar_panel, "SOAR Queue")
         self._right_tabs.addTab(self.scan_center, "🛡 Scan Center")
+        self._right_tabs.addTab(self.spyware_guard, "SpywareGuard")
+        self._right_tabs.addTab(self.ugcap_page, "UGCAP")
         from angerona.gui.context_info import attach_context_info
         self._dashboard_info = attach_context_info(
             self._right_tabs, "dashboard"
@@ -837,7 +845,9 @@ class MainWindow(QMainWindow):
         # Classic stays available behind the Flow workspace and its data stores
         # are shared, so switching modes cannot orphan alerts or cases.
         if str(getattr(self.config, "dashboard_mode", "classic")).lower() == "flow":
-            QTimer.singleShot(900, self._open_operations_center)
+            QTimer.singleShot(900, lambda: self._open_operations_center()
+                              if not getattr(self.manager, "ugcap_paused", False) else None)
+        self._sync_ugcap_gate()
 
     # ── Theme ────────────────────────────────────────────────────────────────
     def _qss(self) -> str:
@@ -1120,6 +1130,9 @@ class MainWindow(QMainWindow):
 
     # ── Refresh ──────────────────────────────────────────────────────────────
     def _refresh(self) -> None:
+        synchronizer = getattr(self, "_sync_ugcap_gate", None)
+        if callable(synchronizer):
+            synchronizer()
         metrics = getattr(self, "runtime_metrics", None)
         started = time.perf_counter() if metrics is not None else 0.0
         self._tick_count += 1
@@ -1255,6 +1268,9 @@ class MainWindow(QMainWindow):
             self._security_wake_cleanup()
 
     def _handle_security_event_wake(self) -> None:
+        synchronizer = getattr(self, "_sync_ugcap_gate", None)
+        if callable(synchronizer):
+            synchronizer()
         if self._security_wake_closed.is_set():
             return
         # A cosmetic refresh may have started the read before this queued
@@ -5283,6 +5299,45 @@ class MainWindow(QMainWindow):
                 f"[aria] hand controls not started: {controls.last_error}")
 
     # ── Self-test (off-thread) + fix prompt on failures ──────────────────────
+    def _sync_ugcap_gate(self) -> None:
+        manager = getattr(self, "manager", None)
+        locked = getattr(manager, "ugcap_paused", False) is True
+        if locked != getattr(self, "_ugcap_workspace_locked", False):
+            self._set_ugcap_workspace_locked(locked)
+
+    def _set_ugcap_workspace_locked(self, locked: bool) -> None:
+        page = getattr(self, "ugcap_page", None)
+        tabs = getattr(self, "_right_tabs", None)
+        if page is None or tabs is None:
+            return
+        if locked == getattr(self, "_ugcap_workspace_locked", False):
+            return
+        self._ugcap_workspace_locked = locked
+        if locked:
+            self._ugcap_widget_states = []
+            for index in range(tabs.count()):
+                widget = tabs.widget(index)
+                if widget is not page:
+                    self._ugcap_widget_states.append((widget, widget.isEnabled()))
+                    widget.setEnabled(False)
+                    tabs.setTabEnabled(index, False)
+            for widget in [getattr(self, "modules_panel", None), getattr(self, "console", None),
+                           *getattr(self, "_header_primary_buttons", []),
+                           *(button for button in getattr(self, "_header_nav_buttons", [])
+                             if button not in {getattr(self, "_settings_btn", None),
+                                               getattr(self, "_help_btn", None)})]:
+                if widget is not None:
+                    self._ugcap_widget_states.append((widget, widget.isEnabled()))
+                    widget.setEnabled(False)
+            tabs.setCurrentWidget(page)
+        else:
+            for widget, enabled in getattr(self, "_ugcap_widget_states", []):
+                widget.setEnabled(enabled)
+                index = tabs.indexOf(widget)
+                if index >= 0:
+                    tabs.setTabEnabled(index, enabled)
+            self._ugcap_widget_states = []
+
     def _claim_self_test(self) -> bool:
         """Single-flight gate; button invocations occur on the GUI thread."""
         if self._selftest_active.is_set():
@@ -5317,10 +5372,8 @@ class MainWindow(QMainWindow):
 
     def _self_test_worker(self) -> None:
         try:
-            # Explicit self-test also prepares optional local AI in Chill,
-            # where the ordinary module sweep correctly skips parked workers.
-            from angerona.core.ollama_lifecycle import ensure_ollama_service
-            ensure_ollama_service(self.config.ollama_host, timeout=30.0)
+            # The runner grades optional AI readiness under the active profile.
+            # A button press must not start a service or bypass Chill's lease.
             from angerona.core.selftest import SelfTestRunner
             runner = SelfTestRunner(self.manager, self.bus)
             report = runner.run(

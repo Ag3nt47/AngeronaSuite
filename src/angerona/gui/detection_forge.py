@@ -6,7 +6,7 @@ import re
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Sequence
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
@@ -48,7 +48,9 @@ from angerona.core.detection_quality_store import (
     QualityReceipt,
 )
 from angerona.core.detection_registry import DetectionPackageRegistry, ValidationReport
-from angerona.modules.detection_runtime import DetectionRuntimeEngine
+
+if TYPE_CHECKING:
+    from angerona.modules.detection_runtime import DetectionRuntimeEngine
 
 
 _SENSITIVE_EXPORT_KEYS = frozenset({

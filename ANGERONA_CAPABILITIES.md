@@ -6,6 +6,30 @@ engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
 
+The newest active-development preview combines
+[UGCAP and the rotating Enclave Mesh](docs/ugcap-enclave-mesh.md): explicit
+offline baseline enrollment, Windows TPM key proof, BLAKE3 source verification,
+reviewed recovery and authenticated local producer/handler traffic. Its own tab
+shows the challenge, diff and readiness state. Strict source bootstrap requires
+enabling the feature and restarting; missing proof keeps managed workers held.
+Fresh X25519 exchange rotates local traffic keys every ten seconds. These are
+process-held capabilities, with the limits described in the guide.
+
+[SpywareGuard](docs/spyware-guard.md) is also a new preview, with its own
+dashboard, bounded persistence/memory audits, telemetry heuristics, reviewed
+research indicators, single-rule exact-target response requests, inert sandbox,
+dated intelligence strip and opt-in independent emergency watcher. The Windows
+catalog now discovers **86 capabilities**. Encrypted forensic copies supplement
+the existing plaintext journaled quarantine; kernel hooks, arbitrary API
+interception, mobile device scanning and automatic persistence deletion remain
+outside this preview's implemented scope.
+
+Users may edit the MIT-licensed implementation and add security features of
+their own choosing. [Contributing](CONTRIBUTING.md) and
+[Writing modules](docs/writing-modules.md) explain the extension contracts.
+Intentional source changes require a reviewed new UGCAP baseline; an existing
+baseline is never silently replaced or updated to accept drift.
+
 ## Core proposition
 
 Angerona is a local-first EDR/NDR/SOAR and digital-forensics workbench for
@@ -19,7 +43,8 @@ extends routine pacing to RAM pressure, pauses selected unattended presentation
 timers, reduces idle processing, and adds per-module contract checks with
 independent self-check challenges and recorded timing evidence. The
 [operator guide](docs/hardware-and-selfcheck.md) explains the settings and
-limits. Capability counts and platform support remain unchanged.
+limits. That maintenance left the then-current catalog size and platform
+declarations unchanged.
 
 The [Chill follow-up](analysis/chill-efficiency-2026-10-18/README.md) adds an
 explicit optional-work budget, slower presentation, suspended idle cosmetics,
@@ -50,14 +75,15 @@ The current security model separates four kinds of claims:
 
 ## v12 capability contract and operator surfaces
 
-- Exactly **84** built-in capabilities are present in the reproducible
+- Exactly **86** built-in capabilities are present in the current
   Windows-target inventory. Every capability receives the same validated v12
   contract and operational lifecycle/freshness/loss snapshot.
 - Contract fields cover implementation version, platform, mode, permissions,
   inputs/outputs, egress, retention, response authority, dependencies,
   conflicts, settings, self-test, restart/loss behavior, and resource budget.
-- Contract truth is explicit: **9 native contracts** and **75 compatibility
-  adapters**. Compatibility metadata gaps remain visible and lower assurance
+- The historical 84-capability inventory contained **9 native contracts** and
+  **75 compatibility adapters**; SpywareGuard and UGCAP are subsequent additions.
+  Compatibility metadata gaps remain visible and lower assurance
   even though every shipped built-in module now carries the v1.13.0 release
   implementation label. A shared version does not imply equal platform support,
   evidence completeness, response authority, or independent efficacy.
@@ -370,14 +396,21 @@ Angerona host
 
 ## Platform contract and module discovery
 
-| Platform | Current use | Catalog entries declaring support |
+The current shared catalog has **86** identities. Platform declarations do not
+prove that an optional hardware backend or response adapter is available.
+UGCAP's implemented hardware backend is Windows TPM; its other platform entries
+surface unsupported prerequisites instead of substituting software keys.
+
+The following declaration counts are the historical 84-capability snapshot,
+before the SpywareGuard and UGCAP additions:
+
+| Platform | Product scope | Historical entries declaring support |
 | --- | --- | ---: |
 | Windows | **Protect** depends on installed trusted authority and each action's prerequisites; ordinary-user source remains Observe/development scope. | **81** |
 | Linux | **Observe + optional eBPF:** rootless shared-core visibility with an explicit privileged BCC/eBPF supplement. | **20** |
 | macOS | **Observe preview:** privacy-minimized shared-core visibility; no native enforcement claim. | **19** |
 
-The shared catalog has **84** identities, including platform-specific entries.
-These overlapping declaration counts are not active module counts. Runtime
+These overlapping historical declaration counts are not active module counts. Runtime
 running/enabled counts exclude unsupported, disabled and unconfigured optional
 integrations. Failed expected sensors remain visible; quiet telemetry alone is
 not grounds to disable a sensor or conceal a coverage gap.
@@ -414,18 +447,25 @@ not grounds to disable a sensor or conceal a coverage gap.
 - Historical September upgrade serial regression suite after code freeze:
   **4,303 passed / 20 skipped / 0 failed**, 478.73 seconds. See the linked
   upgrade validation record below for that scope and separate native acceptance.
-- Current read-only inventory: **84 capabilities**, **9 native contracts** and
-  **75 compatibility adapters**, without duplicate identity; all implementation
-  versions report 1.13.0. The exporter starts no module workers.
+- Current catalog: **86 capabilities**, including the new SpywareGuard and
+  UGCAP previews. The historical read-only 84-capability inventory contained
+  **9 native contracts** and **75 compatibility adapters**, without duplicate
+  identity. The exporter starts no module workers.
 - Corrected startup-repair full regression (October 21): **5,230 passed / 25 skipped**,
   clean native/session/SystemExit status, completed unconfigure and atexit;
   1,018 source/lock inputs unchanged, including 1,002 Python files.
-- Current isolated **Chill-locked** selfcheck (October 21): **28 phases passed / 0 failed**.
+- Pre-preview isolated **Chill-locked** selfcheck (October 21): **28 phases passed / 0 failed**.
   Its 84 module rows reconcile to **66 PASS / 18 prerequisite SKIP** results;
   the separate event-pipeline check also passed, as did all nine independent
   verifier checks. Earlier Full-mode diagnostics correctly refused an existing
   wildcard Ollama listener; that module failure remains recorded. Skips are not
   live sensor passes. [Corrective startup-repair evidence](analysis/startup-repair-2026-10-21/hosted-followup.json).
+- The subsequent [Self-Test / Red Team button review](docs/selftest-redteam-button-review.md)
+  records its 28-phase, 85-module checkpoint before UGCAP was added. The
+  [Adaptation review](docs/adaptation-button-review.md) documents a 4.321×
+  median ratio for injected probe scheduling; the Red Team review records an
+  approximately 34× faster PID-count query on its host. These are component
+  measurements, not whole-program speed or attack-detection efficacy.
 - Native scan-to-containment, detached-engine lifetime, encrypted recovery and
   the regression-run results are recorded with their scopes in the
   [upgrade validation record](analysis/upgrade-20260923/validation.md).

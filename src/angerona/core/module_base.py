@@ -868,8 +868,15 @@ class BaseModule:
             self._throttle = max(floor, self._throttle)
 
     def emit(self, message: str, severity: Severity = Severity.INFO, **details) -> None:
+        self.publish_event(Event(self.name, message, severity, time.time(), details))
+
+    def publish_event(self, event: Event) -> None:
         if self._bus is not None:
-            self._bus.publish(Event(self.name, message, severity, time.time(), details))
+            publisher = getattr(self, "_mesh_publishers", {}).get(event.module)
+            if publisher is not None:
+                publisher(event)
+            else:
+                self._bus.publish(event)
 
     def seed_bus_cursor(self, *, priority: bool = False) -> int:
         """Ignore existing history and begin at the bus's current revision.

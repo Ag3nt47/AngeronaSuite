@@ -145,7 +145,7 @@ class SelfTestRunner:
         timeout = float(timeout)
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("self-test timeout must be positive and finite")
-        started = time.monotonic()
+        started = time.perf_counter()
         self.run_id = uuid.uuid4().hex
         self.last_results = []
         self.last_verification = {}
@@ -217,7 +217,7 @@ class SelfTestRunner:
                 _PROGRESS_CALLS.release()
 
         def _run_pipeline():
-            began = time.monotonic()
+            began = time.perf_counter()
             completed, error, result = _bounded_call(
                 self._pipeline_check,
                 _EVENT_CALLS,
@@ -227,11 +227,11 @@ class SelfTestRunner:
             pipeline_res["res"] = (
                 result if completed else (False, f"pipeline check {error}")
             )
-            pipeline_timing["duration_ms"] = (time.monotonic() - began) * 1000
+            pipeline_timing["duration_ms"] = (time.perf_counter() - began) * 1000
             _bump()
 
         def _run_single(mod):
-            began = time.monotonic()
+            began = time.perf_counter()
             evidence = {"checks": []}
             try:
                 mod_results[mod.name] = self._test_module(
@@ -239,7 +239,7 @@ class SelfTestRunner:
                 )
             except Exception as exc:
                 mod_results[mod.name] = (False, f"error: {exc}")
-            evidence["duration_ms"] = (time.monotonic() - began) * 1000
+            evidence["duration_ms"] = (time.perf_counter() - began) * 1000
             module_evidence[mod.name] = evidence
             _bump()
 
@@ -358,6 +358,7 @@ class SelfTestRunner:
             evidence = module_evidence.get(mod.name, {"duration_ms": 0.0, "checks": []})
             record = {"module": mod.name, "kind": "module", "status": "PASS" if t_ok else "FAIL",
                       "detail": t_detail, "duration_ms": evidence["duration_ms"],
+                      "stage_ms": dict(evidence.get("stage_ms", {})),
                       "checks": list(evidence["checks"])}
             records.append(record)
             if t_ok:
@@ -424,7 +425,7 @@ class SelfTestRunner:
             failures.append({"module": "Module selection", "detail": detail, "repairable": False})
             records.append({"module": "Module selection", "kind": "selection", "status": "FAIL",
                             "detail": detail, "duration_ms": 0.0, "checks": []})
-        verification_started = time.monotonic()
+        verification_started = time.perf_counter()
         verified, verification_detail, verification_checks = verify_harness(type(self))
         reconciled, reconciliation_detail = verify_accounting(
             records, target_names, passed, failed, skipped,
@@ -435,7 +436,7 @@ class SelfTestRunner:
         verified = verified and reconciled
         self.last_verification = {"status": "PASS" if verified else "FAIL",
                                   "detail": verification_detail + "; " + reconciliation_detail,
-                                  "duration_ms": (time.monotonic() - verification_started) * 1000,
+                                  "duration_ms": (time.perf_counter() - verification_started) * 1000,
                                   "checks": verification_checks}
         lines.append(f"  [{'VERIFY' if verified else 'FAIL'}] Harness verification — {self.last_verification['detail']}")
         if not verified:
@@ -448,13 +449,17 @@ class SelfTestRunner:
         self.last_results = records
         durations = sorted((r for r in records if r["kind"] == "module"),
                            key=lambda r: r["duration_ms"], reverse=True)
-        self.last_metrics = {"elapsed_ms": (time.monotonic() - started) * 1000,
+        self.last_metrics = {"elapsed_ms": (time.perf_counter() - started) * 1000,
                              "timing_scope": "checks and verification; excludes report I/O and notifications",
                              "module_workers": worker_count, "worker_budget": worker_reason,
                              "module_count": len(target_modules),
                              "slowest_modules": [{"module": r["module"], "duration_ms": r["duration_ms"]}
                                                  for r in durations[:10]]}
         lines.append(f"  Timing: {self.last_metrics['elapsed_ms']:.1f} ms for checks and verification; active checks bounded to {timeout:g}s each.")
+        if durations:
+            lines.append("  Slowest modules: " + "; ".join(
+                f"{row['module']} {row['duration_ms']:.1f} ms" for row in durations[:5]
+            ))
         self.last_failures = failures
         self.last_skips = skips
         if self._write_failure_log(passed, failed, failures, skipped, skips) is False:
@@ -469,7 +474,7 @@ class SelfTestRunner:
         notifications.append(Event("Self-Test",
                                    f"Drill complete: {passed} passed, {failed} failed, {skipped} skipped.",
                                    Severity.CRITICAL if failed else Severity.INFO))
-        reporting_started = time.monotonic()
+        reporting_started = time.perf_counter()
         delivered, error, delivery_errors = _bounded_call(
             _publish_notifications, _EVENT_CALLS, self._REPORT_TIMEOUT,
             name="AngeronaSelfTestEventDelivery",
@@ -482,7 +487,7 @@ class SelfTestRunner:
             failed += 1
             failures.append({"module": "Event reporting", "detail": delivery_detail, "repairable": False})
             records.append({"module": "Event reporting", "kind": "reporting", "status": "FAIL",
-                            "detail": delivery_detail, "duration_ms": (time.monotonic() - reporting_started) * 1000,
+                            "detail": delivery_detail, "duration_ms": (time.perf_counter() - reporting_started) * 1000,
                             "checks": [{"check": "notification_delivery", "status": "FAIL"}]})
             # Preserve reporting failures even if a blocked bus can never
             # deliver a corrected notification. This path is still bounded.
@@ -619,17 +624,36 @@ class SelfTestRunner:
         )
 
     def _pipeline_check(self) -> tuple[bool, str]:
-        marker = f"selftest-{time.time()}"
-        # Use HIGH severity to bypass EventBus INFO backpressure dropping under load
+        marker = f"selftest-{uuid.uuid4().hex}"
+        subscribe = getattr(self.bus, "subscribe", None)
+        unsubscribe = getattr(self.bus, "unsubscribe", None)
+        if callable(subscribe) and callable(unsubscribe):
+            delivered = threading.Event()
+
+            def receive(event):
+                if event.module != "Self-Test" or event.message != marker:
+                    return
+                verify = getattr(self.bus, "verify", None)
+                if callable(verify) and verify(event) is not True:
+                    return
+                delivered.set()
+
+            subscribe(receive)
+            try:
+                self.bus.publish(Event("Self-Test", marker, Severity.HIGH))
+                if delivered.wait(2.0):
+                    return True, "synthetic event delivered to diagnostic subscriber"
+                return False, "event not delivered to diagnostic subscriber"
+            finally:
+                unsubscribe(receive)
+        # Compatibility for minimal external bus adapters without a subscriber
+        # lifecycle. The normal bus uses one receipt, avoiding ring-flood false
+        # failures and repeated history allocations during startup.
         self.bus.publish(Event("Self-Test", marker, Severity.HIGH))
-        
-        # Poll for up to 2 seconds to allow async delivery, checking a wider
-        # window (50) in case other modules are flooding the bus during startup.
         for _ in range(20):
             if any(e.message == marker for e in self.bus.recent(50)):
-                return True, "synthetic event delivered"
+                return True, "synthetic event retained by adapter"
             time.sleep(0.1)
-            
         return False, "event not delivered"
 
     @staticmethod
@@ -640,6 +664,7 @@ class SelfTestRunner:
         # ``optional_kernel_policy`` is retained for API compatibility. Optional
         # prerequisites are classified as skips by run(), never successes here.
         checks = []
+        stages = {}
 
         def work():
             # The inspector uses this same lock, so an active inspector check
@@ -648,13 +673,19 @@ class SelfTestRunner:
             if not lock.acquire(blocking=False):
                 return False, "test already running for this capability"
             try:
+                stage_started = time.perf_counter()
                 checks.extend(module_contract_checks(mod))
+                stages["contract"] = (time.perf_counter() - stage_started) * 1000
                 defects = [c for c in checks if c["status"] == "FAIL"]
                 if defects:
                     return False, "contract check failed: " + "; ".join(
                         c["check"] + " — " + c["detail"] for c in defects
                     )
-                result = mod.self_test()
+                stage_started = time.perf_counter()
+                try:
+                    result = mod.self_test()
+                finally:
+                    stages["active_test"] = (time.perf_counter() - stage_started) * 1000
                 valid = (isinstance(result, (tuple, list)) and len(result) == 2
                          and type(result[0]) is bool and isinstance(result[1], str)
                          and bool(result[1].strip()) and len(result[1]) <= 32_768)
@@ -669,7 +700,9 @@ class SelfTestRunner:
                 # exercise offline classifiers, so do not invent live coverage.
                 summary = getattr(mod, "health_summary", None)
                 if ok and callable(summary):
+                    stage_started = time.perf_counter()
                     status, health, _state = summary()
+                    stages["health_consistency"] = (time.perf_counter() - stage_started) * 1000
                     consistent = status != "error" and not (status == "running" and health <= 0)
                     checks.append({"check": "health_result_consistency",
                                    "status": "PASS" if consistent else "FAIL",
@@ -691,6 +724,7 @@ class SelfTestRunner:
             # Copy after completion/timeout: late workers cannot mutate the
             # evidence already returned to a report or GUI.
             evidence["checks"] = [dict(check) for check in checks]
+            evidence["stage_ms"] = dict(stages)
             if not completed:
                 evidence["checks"].append({"check": "bounded_completion", "status": "FAIL", "detail": error})
         if not completed:

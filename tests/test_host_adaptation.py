@@ -844,3 +844,51 @@ def test_remote_session_state_detects_shell_and_third_party_agents(monkeypatch) 
         lambda attrs: processes,
     )
     assert HostAdaptationService._remote_control_agent_active() == (True, "")
+
+
+def test_snapshot_probe_failure_is_partial_and_cannot_invent_hardware_drift(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    service = HostAdaptationService(tmp_path)
+    baseline = _snapshot(service)
+    complete = service._quality(complete=True)
+    monkeypatch.setattr(service, "_collect_services", lambda: (baseline["services"], complete))
+    monkeypatch.setattr(service, "_collect_ports", lambda: (baseline["ports"], complete))
+    monkeypatch.setattr(service, "capture_context", lambda: {**baseline["network"], "collector": complete})
+    monkeypatch.setattr(service, "_firewall", lambda: {**baseline["firewall"], "complete": True})
+
+    def unavailable():
+        raise PermissionError("fixture hardware query refused")
+
+    monkeypatch.setattr(service, "_hardware", unavailable)
+    service.save_baseline(baseline)
+    report = service.audit()
+    assert report["incomplete_collectors"] == ["hardware"]
+    assert report["risk_score_complete"] is False
+    assert not any(row["category"] == "hardware" for row in report["findings"])
+    quality = report["current"]["collector_status"]["hardware"]
+    assert quality["available"] is False
+    assert "fixture hardware query refused" in quality["error"]
+    with pytest.raises(AdaptationError, match="incomplete host collectors: hardware"):
+        service.save_baseline(report["current"])
+    assert service.activity()[0]["result"] == "partial"
+
+
+def test_hardware_collector_reports_inaccessible_disks(tmp_path: Path, monkeypatch) -> None:
+    service = HostAdaptationService(tmp_path)
+    monkeypatch.setattr("angerona.core.host_adaptation.psutil.virtual_memory", lambda: SimpleNamespace(total=16000))
+    monkeypatch.setattr("angerona.core.host_adaptation.psutil.cpu_count", lambda **kwargs: 4)
+    monkeypatch.setattr(
+        "angerona.core.host_adaptation.psutil.disk_partitions",
+        lambda **kwargs: [SimpleNamespace(mountpoint="C:\\", fstype="NTFS")],
+    )
+
+    def inaccessible(_mount):
+        raise PermissionError("fixture disk unavailable")
+
+    monkeypatch.setattr("angerona.core.host_adaptation.psutil.disk_usage", inaccessible)
+    hardware = service._hardware()
+    assert hardware["disks"] == []
+    assert hardware["collector"]["complete"] is False
+    assert hardware["collector"]["skipped"] == 1
+    assert "fixture disk unavailable" in hardware["collector"]["error"]

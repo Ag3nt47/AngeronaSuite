@@ -27,7 +27,7 @@ def test_all_builtins_publish_unique_v12_contracts() -> None:
     manager.discover()
 
     assert not manager.discovery_errors
-    assert len(manager.modules) == 84
+    assert len(manager.modules) == 86
     rows = manager.capability_inventory()
     identifiers = {row["capability_id"] for row in rows}
     assert len(identifiers) == len(rows)

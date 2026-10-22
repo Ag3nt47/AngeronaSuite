@@ -118,6 +118,14 @@ def main() -> int:
         )
         return 2
 
+    if "--spyware-beacon-watch" in sys.argv:
+        from angerona.core.spyware_beacon import watch_main
+        return watch_main()
+
+    if "--ugcap-worker" in sys.argv:
+        from angerona.core.ugcap_worker import worker_main
+        return worker_main()
+
     if engine_mode:
         return _run_engine_mode(engine_mode, **({"force_chill": True} if chill_requested else {}))
 

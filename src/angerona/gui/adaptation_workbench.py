@@ -94,6 +94,7 @@ class AdaptationWorkbench(QDialog):
     """
 
     _task_finished = Signal(str, object, object)
+    _status_finished = Signal(object)
 
     def __init__(
         self,
@@ -105,6 +106,9 @@ class AdaptationWorkbench(QDialog):
         self._latest_report: dict[str, Any] | None = None
         self._latest_plan: AdaptationPlan | None = None
         self._busy_task = ""
+        self._status_active = False
+        self._status_dirty = False
+        self._recovery_view: dict[str, Any] = {"available": False, "checking": True}
         # Persisted views can be refreshed by both operator actions and the
         # dashboard context monitor.  Retain small, bounded row signatures so
         # an unchanged poll does not discard and recreate hundreds of Qt items.
@@ -180,6 +184,7 @@ class AdaptationWorkbench(QDialog):
         root.addLayout(footer)
 
         self._task_finished.connect(self._on_task_finished)
+        self._status_finished.connect(self._on_status_finished)
         self._load_persisted_views()
 
     # ── Menus and overview ────────────────────────────────────────────────
@@ -249,10 +254,7 @@ class AdaptationWorkbench(QDialog):
             "Never applies silently; the final dialog includes exact commands and rollback coverage."
         )
         form.addRow("Host change:", apply_after)
-        try:
-            recovery_before = self.service.security_baseline_status()
-        except Exception:
-            recovery_before = {"available": False, "supported": True}
+        recovery_before = self._recovery_view
         capture_recovery = QCheckBox(
             "Explicitly capture the immutable firewall recovery baseline if missing"
         )
@@ -385,6 +387,13 @@ class AdaptationWorkbench(QDialog):
             "A proposed profile must pass a fresh audit, immutable preview, no-write simulation, "
             "and exact operator approval. Dismissing a false positive creates an exception and "
             "gently lowers only that local drift category's scoring multiplier.",
+        ))
+        layout.addWidget(_InfoPanel(
+            "SpywareGuard and adaptation coverage",
+            "Use the dedicated SpywareGuard dashboard for spyware evidence, research intake, "
+            "containment status, and its opt-in emergency beacon. Adaptation audits general host "
+            "configuration and proposes reversible firewall profiles. A clean drift report does "
+            "not prove that spyware is absent; review SpywareGuard coverage gaps as well.",
         ))
         layout.addWidget(_InfoPanel(
             "Hard safety boundary",
@@ -643,8 +652,9 @@ class AdaptationWorkbench(QDialog):
         layout = QVBoxLayout(page)
         layout.addWidget(_InfoPanel(
             "Trigger-based contexts",
-            "Rules use an exact SSID, Windows Public category, or active VPN adapter. Exact SSID "
-            "rules take priority. Rules are proposal-only: SSIDs and session hints are not "
+            "Rules use an exact SSID, Windows Public category, or active VPN adapter. The "
+            "strongest matching profile wins; Public context wins ties on an active public "
+            "network. Rules are proposal-only: SSIDs and session hints are not "
             "authenticated liveness proof and cannot safely authorize unattended firewall "
             "changes. Use Guided Auto Adapt for the one-flow audited preview and exact approval.",
         ))
@@ -785,6 +795,7 @@ class AdaptationWorkbench(QDialog):
             report = dict(result.get("report") or {})
             plan = result.get("plan")
             simulation = dict(result.get("simulation") or {})
+            self._recovery_view = dict(result.get("recovery") or {})
             self._display_audit(report)
             self._display_sandbox(simulation)
             if isinstance(plan, AdaptationPlan):
@@ -927,6 +938,17 @@ class AdaptationWorkbench(QDialog):
                 f"collector{'s' if len(coverage_gaps) != 1 else ''}: "
                 f"{', '.join(coverage_gaps)}. Missing coverage is never scored as healthy."
             )
+        snapshot = report.get("current") or {}
+        collection = snapshot.get("collection") or {}
+        if "elapsed_ms" in collection:
+            summary += f" · Capture: {float(collection['elapsed_ms']):.0f} ms"
+        collector_rows = snapshot.get("collector_status") or {}
+        self.audit_summary.setToolTip("\n".join(
+            f"{name}: {'complete' if row.get('complete') else 'INCOMPLETE'}"
+            f" · {float(row.get('elapsed_ms', 0)):.1f} ms"
+            + (f" · {row.get('error')}" if row.get("error") else "")
+            for name, row in collector_rows.items() if isinstance(row, dict)
+        ))
         self.audit_summary.setText(summary)
         self.footer_detail.setText(summary)
         self._refresh_status()
@@ -1070,12 +1092,7 @@ class AdaptationWorkbench(QDialog):
         lines.extend(f"  - {warning}" for warning in plan.warnings)
         lines.append("  - A rollback snapshot is mandatory before command 1.")
         self.plan_text.setPlainText("\n".join(lines))
-        try:
-            recovery_ready = bool(
-                self.service.security_baseline_status().get("available")
-            )
-        except Exception:
-            recovery_ready = False
+        recovery_ready = bool(self._recovery_view.get("available"))
         self.apply_button.setEnabled(recovery_ready)
         self.apply_button.setToolTip(
             "Apply this exact plan."
@@ -1092,11 +1109,7 @@ class AdaptationWorkbench(QDialog):
         if plan is None:
             QMessageBox.information(self, "Apply profile", "Preview the selected profile first.")
             return
-        try:
-            recovery = self.service.security_baseline_status()
-        except Exception as exc:
-            QMessageBox.warning(self, "Apply profile", str(exc))
-            return
+        recovery = self._recovery_view
         if not recovery.get("available"):
             QMessageBox.information(
                 self,
@@ -1199,10 +1212,10 @@ class AdaptationWorkbench(QDialog):
         )
 
     def _capture_security_baseline(self) -> None:
-        try:
-            status = self.service.security_baseline_status()
-        except Exception as exc:
-            QMessageBox.warning(self, "Host security baseline", str(exc))
+        status = self._recovery_view
+        if status.get("checking"):
+            self._refresh_status()
+            self.footer_detail.setText("Recovery integrity check is running; retry after it completes.")
             return
         if status.get("available"):
             QMessageBox.information(
@@ -1228,11 +1241,7 @@ class AdaptationWorkbench(QDialog):
             )
 
     def _restore_security_baseline(self) -> None:
-        try:
-            status = self.service.security_baseline_status()
-        except Exception as exc:
-            QMessageBox.warning(self, "Host security baseline", str(exc))
-            return
+        status = self._recovery_view
         if not status.get("available"):
             QMessageBox.information(
                 self, "Host security baseline", "No restorable host baseline exists yet."
@@ -1493,31 +1502,7 @@ class AdaptationWorkbench(QDialog):
             self._view_signatures.pop("activity", None)
 
     def _refresh_status(self) -> None:
-        try:
-            baseline = self.service.load_baseline()
-            self.baseline_status.setText(
-                f"Baseline: {baseline.get('captured_at', 'saved')}" if baseline else "Baseline: not set"
-            )
-        except Exception as exc:
-            self.baseline_status.setText(f"Baseline: integrity warning ({exc})")
-        try:
-            recovery = self.service.security_baseline_status()
-            if recovery.get("available"):
-                self.recovery_status.setText(
-                    "Recovery: Firewall · " + str(recovery.get("captured_at") or "captured")
-                )
-                self.recovery_status.setToolTip(
-                    "Restorable: Windows Firewall policy. Observational only: hardware, "
-                    "services, listening ports, and network context."
-                )
-            else:
-                if recovery.get("supported") is False:
-                    self.recovery_status.setText("Recovery: Windows Firewall unsupported")
-                else:
-                    self.recovery_status.setText("Recovery: Firewall baseline not captured")
-                self.recovery_status.setToolTip(str(recovery.get("detail") or ""))
-        except Exception as exc:
-            self.recovery_status.setText(f"Recovery: integrity warning ({exc})")
+        """Render local risk and coalesce expensive integrity reads off-thread."""
         if self._latest_report:
             gaps = list(dict.fromkeys(
                 list(self._latest_report.get("skipped_incomplete_collectors") or [])
@@ -1527,12 +1512,77 @@ class AdaptationWorkbench(QDialog):
                 self.risk_status.setText(
                     f"Drift risk: unavailable · coverage incomplete ({len(gaps)})"
                 )
+            elif not self._latest_report.get("baseline_exists"):
+                self.risk_status.setText("Drift risk: baseline required")
             else:
                 self.risk_status.setText(
                     f"Drift risk: {float(self._latest_report.get('risk_score', 0)):.1f}/100"
                 )
+        if self._status_active:
+            self._status_dirty = True
+            return
+        self._status_active = True
+        self._status_dirty = False
+        service = self.service
+
+        def worker() -> None:
+            values = {}
+            for name, operation in (
+                ("baseline", service.load_baseline),
+                ("recovery", service.security_baseline_status),
+                ("breaker", service.breaker_status),
+            ):
+                try:
+                    values[name] = {"value": operation()}
+                except Exception as exc:
+                    values[name] = {"error": str(exc)}
+            self._status_finished.emit(values)
+
         try:
-            breaker = self.service.breaker_status()
+            threading.Thread(target=worker, name="HostAdaptationStatus", daemon=True).start()
+        except Exception as exc:
+            self._status_active = False
+            self._on_status_finished({name: {"error": str(exc)} for name in ("baseline", "recovery", "breaker")})
+
+    def _on_status_finished(self, values: dict[str, Any]) -> None:
+        self._status_active = False
+        baseline_result = values.get("baseline") or {}
+        baseline = baseline_result.get("value")
+        if "error" in baseline_result:
+            self.baseline_status.setText(f"Baseline: integrity warning ({baseline_result['error']})")
+        else:
+            self.baseline_status.setText(
+                f"Baseline: {baseline.get('captured_at', 'saved')}" if baseline else "Baseline: not set"
+            )
+        recovery_result = values.get("recovery") or {}
+        self._recovery_view = dict(recovery_result.get("value") or {})
+        if "error" in recovery_result:
+            self.recovery_status.setText(f"Recovery: integrity warning ({recovery_result['error']})")
+            self.recovery_status.setToolTip(str(recovery_result["error"]))
+        elif self._recovery_view.get("available"):
+            self.recovery_status.setText(
+                "Recovery: Firewall · " + str(self._recovery_view.get("captured_at") or "captured")
+            )
+            self.recovery_status.setToolTip(
+                "Restorable: Windows Firewall policy. Observational only: hardware, "
+                "services, listening ports, and network context. Integrity verified in the background."
+            )
+        else:
+            self.recovery_status.setText(
+                "Recovery: Windows Firewall unsupported"
+                if self._recovery_view.get("supported") is False else
+                "Recovery: Firewall baseline not captured"
+            )
+            self.recovery_status.setToolTip(str(self._recovery_view.get("detail") or ""))
+        # This is a presentation hint only. Apply/restore always re-authenticate
+        # the artifact in the broker immediately before the host change.
+        if self._latest_plan is not None and not self._busy_task:
+            self.apply_button.setEnabled(bool(self._recovery_view.get("available")))
+        breaker_result = values.get("breaker") or {}
+        if "error" in breaker_result:
+            self.breaker_status_label.setText(f"Circuit breaker: unavailable ({breaker_result['error']})")
+        else:
+            breaker = breaker_result.get("value") or {}
             if breaker.get("locked"):
                 self.breaker_status_label.setText("Circuit breaker: LOCKED")
                 self.breaker_status_label.setStyleSheet(
@@ -1540,11 +1590,16 @@ class AdaptationWorkbench(QDialog):
                     "background:#450a0a; color:#fecaca;"
                 )
             else:
+                self.breaker_status_label.setStyleSheet(
+                    "padding:6px 10px; border:1px solid #334155; border-radius:6px; "
+                    "background:#0f172a; color:#cbd5e1;"
+                )
                 self.breaker_status_label.setText(
                     f"Circuit breaker: ready · {len(breaker.get('events', []))} recent"
                 )
-        except Exception as exc:
-            self.breaker_status_label.setText(f"Circuit breaker: unavailable ({exc})")
+        if self._status_dirty:
+            self._status_dirty = False
+            self._refresh_status()
 
     def _load_persisted_views(self) -> None:
         self._profile_changed()

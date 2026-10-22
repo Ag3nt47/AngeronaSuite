@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
@@ -213,6 +214,9 @@ class HostAdaptationService:
         # entire snapshot→mutate→receipt transaction exclusive so two valid
         # plans cannot both pass a precondition before either records its change.
         self._mutation_lock = threading.RLock()
+        # Overlap independent read-only probes, but never multiply probe pools
+        # when the workbench and a broker request a snapshot concurrently.
+        self._snapshot_lock = threading.Lock()
         self._store_warnings: dict[str, str] = {}
         self.baseline_path = self.root / "golden-baseline.json"
         self.exceptions_path = self.root / "exceptions.json"
@@ -799,24 +803,33 @@ class HostAdaptationService:
         memory = psutil.virtual_memory()
         disks: list[dict[str, Any]] = []
         seen: set[str] = set()
+        errors: list[str] = []
+        skipped = 0
+        truncated = False
         try:
             for part in psutil.disk_partitions(all=False):
                 mount = str(part.mountpoint)
                 if not mount or mount in seen:
                     continue
                 seen.add(mount)
+                if len(disks) >= 128:
+                    truncated = True
+                    break
                 try:
                     usage = psutil.disk_usage(mount)
                     total = int(usage.total)
-                except (OSError, PermissionError):
-                    total = 0
+                except (OSError, PermissionError) as exc:
+                    skipped += 1
+                    if len(errors) < 3:
+                        errors.append(_safe_text(exc, 120))
+                    continue
                 disks.append({
                     "mount": _safe_text(mount, 160),
                     "filesystem": _safe_text(part.fstype, 40),
                     "total_bytes": total,
                 })
-        except Exception:
-            pass
+        except Exception as exc:
+            errors.append(_safe_text(exc, 180))
         return {
             "system": platform.system(),
             "release": platform.release(),
@@ -824,7 +837,11 @@ class HostAdaptationService:
             "logical_cpus": int(psutil.cpu_count(logical=True) or 0),
             "physical_cpus": int(psutil.cpu_count(logical=False) or 0),
             "memory_bytes": int(memory.total),
-            "disks": sorted(disks, key=lambda row: row["mount"].casefold())[:128],
+            "disks": sorted(disks, key=lambda row: row["mount"].casefold()),
+            "collector": self._quality(
+                complete=not errors and not truncated, truncated=truncated,
+                error="; ".join(errors), skipped=skipped,
+            ),
         }
 
     @staticmethod
@@ -1442,30 +1459,70 @@ class HostAdaptationService:
         }
 
     def capture_snapshot(self) -> dict[str, Any]:
-        """Capture bounded local state. This method never writes or mutates it."""
-        services, services_quality = self._collect_services()
-        ports, ports_quality = self._collect_ports()
-        network = self.capture_context()
-        firewall = self._firewall()
+        """Capture fresh local state using at most five independent probes.
+
+        There is deliberately no result cache: mutation preconditions and drift
+        comparisons must observe the host again. Collector failures are explicit
+        coverage gaps, never empty successful inventories.
+        """
+        with self._snapshot_lock:
+            return self._capture_snapshot_locked()
+
+    def _capture_snapshot_locked(self) -> dict[str, Any]:
+        started = time.perf_counter()
+        probes = {
+            "services": self._collect_services,
+            "ports": self._collect_ports,
+            "network": self.capture_context,
+            "firewall": self._firewall,
+            "hardware": self._hardware,
+        }
+
+        def collect(operation: Callable[[], Any]) -> tuple[Any, str, float]:
+            begin = time.perf_counter()
+            try:
+                return operation(), "", (time.perf_counter() - begin) * 1000
+            except Exception as exc:
+                return None, _safe_text(exc, 500), (time.perf_counter() - begin) * 1000
+
+        with ThreadPoolExecutor(max_workers=5, thread_name_prefix="HostAdaptationProbe") as pool:
+            futures = {name: pool.submit(collect, operation) for name, operation in probes.items()}
+            results = {name: future.result() for name, future in futures.items()}
+
+        services = results["services"][0] or ([], self._quality(complete=False))
+        ports = results["ports"][0] or ([], self._quality(complete=False))
+        network = results["network"][0] or {}
+        firewall = results["firewall"][0] or {}
+        hardware = dict(results["hardware"][0] or {})
+        quality = {
+            "services": dict(services[1]),
+            "ports": dict(ports[1]),
+            "network": dict(network.get("collector") or {}),
+            "firewall": self._quality(
+                complete=bool(firewall.get("complete")),
+                available=bool(firewall.get("supported")),
+                truncated=bool(firewall.get("truncated")),
+                error=str(firewall.get("reason") or ""),
+            ),
+            "hardware": dict(hardware.pop("collector", self._quality(complete=True))),
+        }
+        for name, (_value, error, elapsed) in results.items():
+            if error:
+                quality[name] = self._quality(complete=False, available=False, error=error)
+            quality[name]["elapsed_ms"] = round(elapsed, 3)
         return {
             "schema": f"angerona.host-snapshot/v{SCHEMA_VERSION}",
             "captured_at": _utc_now(),
             "host_id": self.host_id(),
-            "hardware": self._hardware(),
-            "services": services,
-            "ports": ports,
+            "hardware": hardware,
+            "services": services[0],
+            "ports": ports[0],
             "network": network,
             "firewall": firewall,
-            "collector_status": {
-                "services": services_quality,
-                "ports": ports_quality,
-                "network": dict(network.get("collector") or {}),
-                "firewall": self._quality(
-                    complete=bool(firewall.get("complete")),
-                    available=bool(firewall.get("supported")),
-                    truncated=bool(firewall.get("truncated")),
-                    error=str(firewall.get("reason") or ""),
-                ),
+            "collector_status": quality,
+            "collection": {
+                "strategy": "bounded-parallel", "max_workers": 5,
+                "elapsed_ms": round((time.perf_counter() - started) * 1000, 3),
             },
         }
 
@@ -1474,7 +1531,9 @@ class HostAdaptationService:
         if snapshot.get("host_id") != self.host_id():
             raise AdaptationError("refusing a golden baseline captured from another host")
         quality = snapshot.get("collector_status")
-        required = ("services", "ports", "network", "firewall")
+        required = ("services", "ports", "network", "firewall") + (
+            ("hardware",) if isinstance(quality, Mapping) and "hardware" in quality else ()
+        )
         if not isinstance(quality, Mapping) or any(
             not isinstance(quality.get(name), Mapping)
             or quality[name].get("complete") is not True
@@ -1664,18 +1723,19 @@ class HostAdaptationService:
         }
         findings: list[dict[str, Any]] = []
 
-        old_hw = dict(baseline.get("hardware") or {})
-        new_hw = dict(current.get("hardware") or {})
-        for key in ("system", "release", "machine", "logical_cpus", "physical_cpus", "memory_bytes"):
-            if old_hw.get(key) != new_hw.get(key):
-                findings.append(self._finding(
-                    "hardware", key, "changed", old_hw.get(key), new_hw.get(key),
-                    "high", 12.0, weights, exceptions,
-                ))
-        old_disks = self._indexed(old_hw.get("disks") or [], "mount")
-        new_disks = self._indexed(new_hw.get("disks") or [], "mount")
-        self._compare_maps(findings, "hardware", "disk:", old_disks, new_disks,
-                           "medium", 5.0, weights, exceptions)
+        if self._collector_comparable(baseline, current, "hardware"):
+            old_hw = dict(baseline.get("hardware") or {})
+            new_hw = dict(current.get("hardware") or {})
+            for key in ("system", "release", "machine", "logical_cpus", "physical_cpus", "memory_bytes"):
+                if old_hw.get(key) != new_hw.get(key):
+                    findings.append(self._finding(
+                        "hardware", key, "changed", old_hw.get(key), new_hw.get(key),
+                        "high", 12.0, weights, exceptions,
+                    ))
+            old_disks = self._indexed(old_hw.get("disks") or [], "mount")
+            new_disks = self._indexed(new_hw.get("disks") or [], "mount")
+            self._compare_maps(findings, "hardware", "disk:", old_disks, new_disks,
+                               "medium", 5.0, weights, exceptions)
 
         if self._collector_comparable(baseline, current, "services"):
             old_services = self._indexed(baseline.get("services") or [], "name")
@@ -1751,7 +1811,8 @@ class HostAdaptationService:
         findings = self.compare(baseline, current) if baseline else []
         active = [row for row in findings if not row["excluded"]]
         incomplete_collectors = [
-            name for name in ("services", "ports", "firewall", "network")
+            name for name in ("services", "ports", "firewall", "network", "hardware")
+            if name != "hardware" or name in (current.get("collector_status") or {})
             if not bool(
                 ((current.get("collector_status") or {}).get(name) or {}).get(
                     "complete", False
@@ -1761,7 +1822,7 @@ class HostAdaptationService:
         skipped_collectors = []
         if baseline:
             skipped_collectors = [
-                name for name in ("services", "ports", "firewall", "network")
+                name for name in ("services", "ports", "firewall", "network", "hardware")
                 if not self._collector_comparable(baseline, current, name)
             ]
         report = {
@@ -1779,8 +1840,13 @@ class HostAdaptationService:
             "skipped_incomplete_collectors": skipped_collectors,
         }
         self.log_activity(
-            "audit.completed", "success",
-            f"{len(active)} active drift findings; risk {report['risk_score']:.1f}/100.",
+            "audit.completed", "success" if report["risk_score_complete"] else "partial",
+            f"{len(active)} active drift findings; " + (
+                f"risk {report['risk_score']:.1f}/100."
+                if report["risk_score_complete"] else
+                "risk unavailable; incomplete coverage: "
+                + ", ".join(dict.fromkeys(incomplete_collectors + skipped_collectors))
+            ),
         )
         return report
 

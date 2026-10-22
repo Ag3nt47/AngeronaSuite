@@ -39,15 +39,13 @@ from angerona.core.eventbus import Event, Severity, is_remote_observe_only
 from angerona.core.module_base import BaseModule
 from angerona.core.threat import event_disposition
 
-try:
-    # Keep the two autonomous response tiers on the same immutable Windows
-    # never-contain policy.  This is deliberately not operator-configurable.
-    from angerona.modules.soar import _SYSTEM32_NEVER_CONTAIN
-except Exception:  # pragma: no cover - import failure must fail safe
-    _SYSTEM32_NEVER_CONTAIN = frozenset({
-        "lsass.exe", "csrss.exe", "smss.exe", "wininit.exe", "winlogon.exe",
-        "services.exe", "svchost.exe", "ntoskrnl.exe", "system", "registry",
-    })
+# The UGCAP bootstrap cannot import an ordinary response module before source
+# attestation. This immutable policy matches SOAR's protected-process set; its
+# equality is checked by the offline integration regression.
+_SYSTEM32_NEVER_CONTAIN = frozenset({
+    "lsass.exe", "csrss.exe", "smss.exe", "wininit.exe", "winlogon.exe",
+    "services.exe", "svchost.exe", "ntoskrnl.exe", "system", "registry",
+})
 
 try:
     import psutil

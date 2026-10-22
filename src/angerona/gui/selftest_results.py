@@ -20,6 +20,10 @@ def next_step(failure: dict) -> str:
     if name == "Adversary Combat":
         return ("Review the module's recovery and journal status. Recovery requires operator "
                 "review; this self-test does not arm response or clear its recovery hold.")
+    if name == "SpywareGuard":
+        return ("Open the SpywareGuard dashboard and inspect source coverage, settings and recent "
+                "hits. Its offline sandbox checks detection policy; verified isolation requires "
+                "separate response receipts from Adversary Combat.")
     if "timed out" in detail or "still running" in detail:
         return "The check has not returned. Review module details; repeated tests will not restart it."
     if failure.get("repairable") is True:

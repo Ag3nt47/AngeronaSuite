@@ -234,6 +234,20 @@ class Config:
     # changes threat posture until the operator approves a mature candidate.
     process_baseline_enabled: bool = False
 
+    # SpywareGuard standing response authority and separately opt-in egress.
+    spyware_auto_contain: bool = True
+    spyware_network_enabled: bool = False
+    spyware_memory_enabled: bool = False
+    spyware_beacon_enabled: bool = False
+    spyware_beacon_channel: bool = True
+    spyware_beacon_signal: bool = False
+    spyware_research_urls: list[str] = field(default_factory=list)
+    ugcap_enabled: bool = False
+    ugcap_cadence_hours: int = 168
+    ugcap_vault_path: str = ""
+    ugcap_key_name: str = "Angerona.UGCAP.v1"
+    ugcap_lockdown: bool = True
+
     # ── Adversary Combat standing authority ────────────────────────────────
     # Maximum mode is deliberately availability-aggressive: detections are
     # acted on without a per-incident approval prompt. Every reversible action
@@ -594,6 +608,25 @@ class Config:
                 cfg.ioc_feed_sha256 = (
                     requested_ioc_pin if _SHA256.fullmatch(requested_ioc_pin) else ""
                 )
+                for name in (
+                    "spyware_auto_contain", "spyware_network_enabled", "spyware_memory_enabled",
+                    "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
+                ):
+                    setattr(cfg, name, _bool_setting(data, name, getattr(cfg, name)))
+                urls = data.get("spyware_research_urls", [])
+                if isinstance(urls, list):
+                    cfg.spyware_research_urls = list(dict.fromkeys(
+                        value for item in urls[:32] if isinstance(item, str)
+                        and (value := _https_feed_setting(item))
+                    ))
+                for name in ("ugcap_enabled", "ugcap_lockdown"):
+                    setattr(cfg, name, _bool_setting(data, name, getattr(cfg, name)))
+                cadence = data.get("ugcap_cadence_hours", 168)
+                cfg.ugcap_cadence_hours = cadence if type(cadence) is int and 1 <= cadence <= 8760 else 168
+                cfg.ugcap_vault_path = _bounded_setting(data.get("ugcap_vault_path"), "", 32768)
+                key_name = _bounded_setting(data.get("ugcap_key_name"), "Angerona.UGCAP.v1", 120)
+                cfg.ugcap_key_name = (key_name if re.fullmatch(r"Angerona\.UGCAP\.[A-Za-z0-9_-]{1,96}", key_name)
+                                     else "Angerona.UGCAP.v1")
                 cfg.aria_enabled = _bool_setting(
                     data, "aria_enabled", cfg.aria_enabled)
                 cfg.perf_governor_enabled = _bool_setting(
@@ -920,6 +953,18 @@ class Config:
                     ),
                     "ioc_feed_url": self.ioc_feed_url,
                     "ioc_feed_sha256": self.ioc_feed_sha256,
+                    "spyware_auto_contain": self.spyware_auto_contain,
+                    "spyware_network_enabled": self.spyware_network_enabled,
+                    "spyware_memory_enabled": self.spyware_memory_enabled,
+                    "spyware_beacon_enabled": self.spyware_beacon_enabled,
+                    "spyware_beacon_channel": self.spyware_beacon_channel,
+                    "spyware_beacon_signal": self.spyware_beacon_signal,
+                    "spyware_research_urls": self.spyware_research_urls[:32],
+                    "ugcap_enabled": self.ugcap_enabled,
+                    "ugcap_cadence_hours": self.ugcap_cadence_hours,
+                    "ugcap_vault_path": self.ugcap_vault_path,
+                    "ugcap_key_name": self.ugcap_key_name,
+                    "ugcap_lockdown": self.ugcap_lockdown,
                     "aria_enabled":          self.aria_enabled,
                     "perf_governor_enabled": self.perf_governor_enabled,
                     "aria_persona":          self.aria_persona,

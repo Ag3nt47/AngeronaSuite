@@ -23,6 +23,26 @@ Current version: **v1.13.0** · [Capabilities](ANGERONA_CAPABILITIES.md) ·
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Hardware and self-check guide](docs/hardware-and-selfcheck.md) · [Security](SECURITY.md)
 
+**Newest safeguards, under active development: [UGCAP and the rotating Enclave Mesh](docs/ugcap-enclave-mesh.md).**
+Bring a user-enrolled offline integrity vault, Windows TPM key proof, exact
+source verification and ten-second authenticated local key exchange into one
+reviewable workflow. The dedicated UGCAP tab exposes challenges, differences,
+hardware readiness and selected-path recovery. This opt-in source preview
+requires a restart for strict bootstrap enforcement; it does not claim an
+impenetrable operating system or hardware enclave.
+
+**Also new and actively evolving: [SpywareGuard](docs/spyware-guard.md).**
+A dedicated surveillanceware dashboard brings together host audits, reviewed
+intelligence, single-rule lockdown requests, an inert sandbox, dated news and
+an opt-in Hail Mary emergency beacon. Inspect recent hits and response receipts,
+add research URLs, and tune the policy from its own tab. This is a preview with
+explicit sensor coverage and platform limits.
+
+[![SpywareGuard application dashboard with synthetic DEMO detections and response records](docs/screenshots/angerona-spywareguard-preview.png)](docs/screenshots/angerona-spywareguard-preview.png)
+
+**DEMO:** actual SpywareGuard application UI populated with fixed synthetic
+examples. No host was scanned and no network was used for this screenshot.
+
 ## Dashboard and major features
 
 | v1.13.0 enterprise-pattern Local SOC programs | SentinelLens local-first hunt graph |
@@ -50,6 +70,9 @@ identifiers, timestamps, and counts are synthetic.
   and inspect local Fleet Fabric, DetectionForge and AegisPath lab programs.
 - **Assist locally:** ask the optional Ollama-backed assistant for explanations.
   Model approval, source provenance and response permissions remain separate.
+- **Check the program itself:** explicitly enroll a known-clean installation in
+  the optional UGCAP vault, review integrity differences and authorize supported
+  recovery. Fresh source receipts gate the opt-in authenticated module mesh.
 
 Windows sources include event logs, Defender, process and file telemetry, and
 Windows Filtering Platform (WFP) integration. Individual collection and response
@@ -95,7 +118,7 @@ older full POSIX release-build locks still need dependency-graph repair.
 
 ## Modules, resource use and local AI
 
-Static discovery reports **84 modules** in the Windows catalog. Runtime counts
+Static discovery reports **86 modules** in the Windows catalog. Runtime counts
 show **running / enabled for this machine**, excluding unsupported, disabled
 and unconfigured optional integrations. Failed expected sensors and paused
 configured modules remain visible; quiet telemetry does not prove irrelevance.
@@ -192,6 +215,27 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
+The [SpywareGuard, UGCAP and Enclave Mesh review](analysis/spyware-enclave-2026-10-21/README.md)
+records the new feature checks, adversarial fixes and remaining coverage limits.
+The full local regression recorded **5,775 passes and 28 skips**. One Windows
+file-replacement failure passed three exact repeats and all **33 repair tests**
+on follow-up. The offline selfcheck passed **28/28 phases**, accounting for all **86 modules**.
+
+Users can edit the MIT-licensed source and build their own security features:
+add sensors, improve rules, extend dashboards or contribute a reviewed module.
+Start with [Contributing](CONTRIBUTING.md) and
+[Writing a module](docs/writing-modules.md). UGCAP intentionally detects source
+edits; review an intentional change and explicitly enroll a new baseline rather
+than automatically trusting changed code.
+
+The [Adaptation review](docs/adaptation-button-review.md) and
+[Self-Test / Red Team review](docs/selftest-redteam-button-review.md) trace the
+actual button paths and document their improvements. Five injected 20-ms
+collectors achieved a **4.321×** median scheduling ratio; the measured PID-count
+query was approximately **34×** faster on its test host. These are component
+measurements, not whole-PC speed or spyware-detection claims. The review's
+28-phase / 85-module selfcheck predates the new UGCAP module.
+
 The [October 21 local complete regression](analysis/timeout-rootcause-2026-10-21/README.md)
 on commit `306911a`
 passed **5,107 tests with 25 skips and zero failures or errors**. Its 994 Python
@@ -246,6 +290,13 @@ This is the earlier release record, not the September 23 full-suite result.
 [Historical validation details](analysis/loop/LOOP_LOG.md).
 
 ## What's new
+
+The [UGCAP / Enclave Mesh preview](docs/ugcap-enclave-mesh.md) adds a dedicated
+integrity challenge and recovery tab, a hardware-bound encrypted baseline on
+separately attached media, and authenticated local producer/handler traffic.
+[SpywareGuard](docs/spyware-guard.md) adds its own surveillanceware dashboard,
+reviewed research intake, sandbox and authorized emergency beacon. Both are
+active development features with explicit prerequisites and coverage limits.
 
 The [automatic startup repair](docs/safe-startup.md#repairs-and-failures)
 supervisor can run one verified runtime/dependency/Tk/Qt repair, preserve the
@@ -512,4 +563,4 @@ and [native Mac/Linux source launchers](docs/NATIVE_INSTALL.md) remain available
 Unused or unsupported modules stay off and outside the running/enabled count.
 Restart Angerona to load changes. [Review, tests and remaining work](analysis/upgrade-20260923/validation.md).
 
-<!-- ANGERONA_DOC_STATUS tests=2882 skips=15 modules=84 -->
+<!-- ANGERONA_DOC_STATUS tests=2882 skips=15 modules=86 -->

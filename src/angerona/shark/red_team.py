@@ -33,7 +33,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 from angerona.core.practice_scope import (
     register_artifact,
@@ -42,10 +42,8 @@ from angerona.core.practice_scope import (
     unregister_artifact,
     unregister_run,
 )
-from angerona.modules.purple_guard import (
-    RedTeamValidationError,
-    RedTeamValidationLease,
-)
+if TYPE_CHECKING:
+    from angerona.modules.purple_guard import RedTeamValidationLease
 from angerona.shark.run_manifest import (
     RED_TEAM_COMPREHENSIVE_PLAN,
     build_run_history,
@@ -129,6 +127,7 @@ class RedTeamStep:
     ok: bool = True
     cycle: int = 0
     plan_step_id: str = ""
+    duration_ms: float = 0.0
 
 
 class RedTeamEngine:
@@ -194,6 +193,8 @@ class RedTeamEngine:
         return step
 
     def _marker(self, name: str, body: str) -> Path:
+        from angerona.modules.purple_guard import RedTeamValidationError, RedTeamValidationLease
+
         if self._cancel.is_set():
             raise _DrillCancelled()
         lease = self._validation_lease
@@ -369,6 +370,7 @@ class RedTeamEngine:
                     continue
                 seen.add(path)
                 lease = self._validation_lease
+                from angerona.modules.purple_guard import RedTeamValidationLease
                 if type(lease) is RedTeamValidationLease:
                     if RedTeamValidationLease.remove_registered_artifact(
                         lease, path, run_id=self.run_id
@@ -559,6 +561,7 @@ class RedTeamEngine:
                 "are not authoritative; acquire a live validation lease."
             )
             return False
+        from angerona.modules.purple_guard import RedTeamValidationError, RedTeamValidationLease
         try:
             if type(validation_lease) is not RedTeamValidationLease:
                 raise RedTeamValidationError(
@@ -653,6 +656,8 @@ class RedTeamEngine:
 
     # ── playbook ─────────────────────────────────────────────────────────────
     def _run_playbook(self, jitter_range, noise_chance) -> None:
+        from angerona.modules.purple_guard import RedTeamValidationError, RedTeamValidationLease
+
         self._narrate(
             f"\U0001F5E1️ Red Team Attack {self.run_id} starting — an APT-style "
             "credential-access / fileless-persistence drill (distinct from the Shark "
@@ -751,6 +756,7 @@ class RedTeamEngine:
                             (cycle + 1, plan_key)
                         )
                     before = len(self.steps)
+                    stage_started = time.perf_counter()
                     try:
                         RedTeamValidationLease.assert_target_identity(
                             self._validation_lease, run_id=self.run_id
@@ -798,6 +804,9 @@ class RedTeamEngine:
                                 ok=False,
                             )
                     finally:
+                        duration_ms = (time.perf_counter() - stage_started) * 1000
+                        for step in self.steps[before:]:
+                            step.duration_ms = duration_ms
                         self._active_plan_entry = None
                     if self._cancel.is_set():
                         raise _DrillCancelled()
@@ -870,16 +879,22 @@ class RedTeamEngine:
         self._jitter(*jitter_range, note="Discovery — read-only host enumeration")
         ts = time.time()
         count = 0
+        error = ""
         try:
             import psutil
-            count = sum(1 for _ in psutil.process_iter(["pid", "name"]))
-        except Exception:
-            pass
-        self._narrate(f"▶ STAGE: Discovery [T1057/T1082] — read-only enumeration of "
-                      f"{count} running processes (no writes, no subprocess, no exfil).")
+            # This probe uses only the count: a PID snapshot avoids creating a
+            # Process object and querying the name of every process on the host.
+            count = len(psutil.pids())
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"[:500]
+        if error:
+            self._narrate(f"▶ STAGE: Discovery [T1057/T1082] — process enumeration unavailable: {error}")
+        else:
+            self._narrate(f"▶ STAGE: Discovery [T1057/T1082] — read-only enumeration of "
+                          f"{count} running processes (no writes, no subprocess, no exfil).")
         self._record("Discovery", "read-only enumeration",
-                     f"Enumerated {count} processes read-only.", ts,
-                     detail="unmonitored by design")
+                     "Process enumeration unavailable." if error else f"Enumerated {count} processes read-only.", ts,
+                     detail=error or "unmonitored by design", ok=not error)
 
     def _step_comprehensive_marker(self, key: str, jitter_range) -> None:
         """Create one fixed ATT&CK-shaped marker without performing the behavior.
@@ -1124,6 +1139,7 @@ class RedTeamEngine:
         exercised end-to-end. Nothing harmful runs — each process just carries the
         tag on its command line and idles for at most 30 seconds."""
         import subprocess
+        from angerona.modules.purple_guard import RedTeamValidationLease
         self._jitter(*jitter_range, note="Execution — benign tagged process spawns")
         ts = time.time()
         level = int(getattr(self, "_threat_level", getattr(self, "_complexity", 1)) or 1)

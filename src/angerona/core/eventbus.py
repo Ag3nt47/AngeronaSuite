@@ -30,6 +30,7 @@ Usage::
 from __future__ import annotations
 
 import dataclasses
+import copy
 import hashlib
 import hmac
 import json
@@ -37,7 +38,7 @@ import os
 import secrets
 import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from itertools import islice
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -66,6 +67,8 @@ class Event:
     details: dict = field(default_factory=dict)
     # G3-A: HMAC-SHA256 signature over canonical fields (empty = unsigned)
     hmac_sig: str = ""
+    mesh_sig: str = ""
+    mesh_peer: str = ""
 
     @property
     def time_str(self) -> str:
@@ -87,6 +90,7 @@ def is_remote_observe_only(event: object) -> bool:
         return False
     return (
         details.get("response_authority") == REMOTE_OBSERVE_AUTHORITY
+        or details.get("response_authority") == "unattributed-advisory"
         or bool(details.get("node_origin"))
     )
 
@@ -239,6 +243,17 @@ class EventBus:
         )
         self._lock:      threading.RLock           = threading.RLock()
         self._authority: Optional[BusAuthority]    = None   # G3-A
+        self._mesh_required = False
+        self._mesh_authority = None
+        self._mesh_receiver = None
+        self._control_mesh = None
+        self._control_receiver = None
+        # Receipt authority is a live lane/generation, not just a remembered
+        # signature. Freezing/replacing the telemetry mesh revokes old work.
+        self._mesh_receipts: OrderedDict[str, tuple[bool, int]] = OrderedDict()
+        self._mesh_generation = 0
+        self._mesh_active = False
+        self._mesh_admission_gate = None
         # Monotonic in-process change token for polling consumers. Reading an
         # integer is much cheaper than repeatedly copying and scanning the ring
         # merely to discover that no event arrived since the previous cycle.
@@ -253,14 +268,132 @@ class EventBus:
 
     def verify(self, event: Event) -> bool:
         """True if event carries a valid HMAC signature (requires arm() first)."""
+        if self._mesh_required:
+            try:
+                with self._lock:
+                    receipt = self._mesh_receipts.get(self._mesh_receipt_key(event))
+                    if receipt is None or is_remote_observe_only(event):
+                        return False
+                    control, generation = receipt
+                    if not control and (not self._mesh_active or generation != self._mesh_generation
+                                        or not self._mesh_gate_open()):
+                        return False
+                    return self.verify_archived(event)
+            except (TypeError, ValueError, AttributeError, RecursionError):
+                return False
+        return self.verify_archived(event)
+
+    def verify_archived(self, event: Event) -> bool:
+        """Stored HMAC integrity alone does not establish live producer identity."""
         if self._authority is None:
             return True   # unarmed bus — all events pass
         return self._authority.verify(event)
 
     @property
+    def mesh_required(self) -> bool:
+        return self._mesh_required
+
+    def require_mesh(self) -> None:
+        from angerona.core.enclave_mesh import MeshAuthority
+        with self._lock:
+            self._mesh_required = True
+            if self._control_mesh is None:
+                self._control_mesh = MeshAuthority(verified=True)
+                self._control_receiver = self._control_mesh.enroll("angerona.control.receiver")
+                self._control_mesh.start_rotator()
+
+    def activate_mesh(self, *, admission_gate=None) -> None:
+        from angerona.core.enclave_mesh import MeshAuthority
+        self.require_mesh()
+        replacement = MeshAuthority(verified=True)
+        receiver = replacement.enroll("angerona.telemetry.receiver")
+        replacement.start_rotator()
+        with self._lock:
+            previous = self._mesh_authority
+            self._mesh_generation += 1
+            self._mesh_receipts = OrderedDict((key, value) for key, value in self._mesh_receipts.items() if value[0])
+            self._mesh_authority, self._mesh_receiver = replacement, receiver
+            self._mesh_active = True
+            self._mesh_admission_gate = admission_gate
+        if previous is not None:
+            previous.close()
+
+    def freeze_mesh(self) -> None:
+        with self._lock:
+            self._mesh_active = False
+            self._mesh_generation += 1
+            self._mesh_receipts = OrderedDict((key, value) for key, value in self._mesh_receipts.items() if value[0])
+            authority = self._mesh_authority
+        if authority is not None:
+            authority.freeze()
+
+    def close_mesh(self) -> None:
+        with self._lock:
+            self._mesh_active = False
+            self._mesh_generation += 1
+            self._mesh_receipts.clear()
+            authorities = (self._mesh_authority, self._control_mesh)
+        for authority in authorities:
+            if authority is not None:
+                authority.close()
+
+    def _mesh_gate_open(self) -> bool:
+        try:
+            return self._mesh_admission_gate is None or self._mesh_admission_gate() is True
+        except Exception:
+            return False
+
+    @staticmethod
+    def _event_payload(event: Event) -> bytes:
+        payload = json.dumps({"module": event.module, "message": event.message,
+            "severity": int(event.severity), "ts": event.ts, "details": event.details},
+            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+            allow_nan=False, default=str).encode("utf-8")
+        if len(payload) > 256 * 1024:
+            raise ValueError("mesh event exceeds 256 KiB")
+        return payload
+
+    @classmethod
+    def _mesh_receipt_key(cls, event: Event) -> str:
+        return hashlib.sha256(cls._event_payload(event) + b"\0" + event.mesh_sig.encode()
+                              + b"\0" + event.mesh_peer.encode()).hexdigest()
+
+    def enroll_mesh_publisher(self, name: str, source_digest: str, *, control: bool = False):
+        """Manager-issued possession handle; never infer identity from packet text.
+
+        These Python-held handles require the enclosing process trust boundary.
+        They do not sandbox hostile Python running in the same interpreter.
+        """
+        with self._lock:
+            authority = self._control_mesh if control else self._mesh_authority
+            receiver = self._control_receiver if control else self._mesh_receiver
+            generation = self._mesh_generation
+        if authority is None or receiver is None:
+            raise RuntimeError("mesh producer enrollment is unavailable")
+        label = "module." + hashlib.sha256(name.encode()).hexdigest()[:32]
+        peer = authority.enroll(label, source_digest)
+        def publish(event: Event):
+            if event.module != name:
+                raise ValueError("producer handle cannot publish another module identity")
+            with authority.transaction():
+                envelope = peer.seal(self._event_payload(event), receiver, "telemetry.event")
+                payload = receiver.open(envelope, "telemetry.event", expected_sender=peer)
+            document = json.loads(payload)
+            admitted = Event(document["module"], document["message"], Severity(document["severity"]),
+                             document["ts"], document["details"],
+                             mesh_sig=envelope["signature"], mesh_peer=peer.peer_id)
+            self._deliver(admitted, mesh_admitted=(control, generation, authority))
+        return publish
+
+    def mesh_snapshot(self) -> dict:
+        return {"required": self._mesh_required,
+                "telemetry": self._mesh_authority.snapshot() if self._mesh_authority else {"verified": False},
+                "control": self._control_mesh.snapshot() if self._control_mesh else {"verified": False}}
+
+    @property
     def integrity_enabled(self) -> bool:
         """Whether newly published events are HMAC authenticated."""
-        return self._authority is not None
+        return self._authority is not None or self._mesh_required
 
     def subscribe(self, fn: Subscriber, *, delivery_budget_ms: float = 25.0) -> None:
         """Register one deterministic, bounded inline callback.
@@ -312,6 +445,20 @@ class EventBus:
                     break
 
     def publish(self, event: Event) -> None:
+        if self._mesh_required:
+            details = json.loads(self._event_payload(event))["details"]
+            details.pop("response_contract", None)
+            details.update(response_authorized=False, response_authority="unattributed-advisory",
+                           active_attack=False, disposition="observation",
+                           unattributed_module=str(event.module)[:160])
+            event = dataclasses.replace(event, module="Unattributed local producer", details=details,
+                                        mesh_sig="", mesh_peer="", hmac_sig="")
+        self._deliver(event)
+
+    def _deliver(self, event: Event, *, mesh_admitted=None) -> None:
+        # A frozen dataclass still contains mutable details. Never retain a
+        # caller-owned dictionary after signing or issuing a live receipt.
+        event = dataclasses.replace(event, details=copy.deepcopy(event.details))
         # G3-A: sign the event if an authority is registered
         if self._authority is not None:
             sig   = self._authority.sign(event)
@@ -320,6 +467,16 @@ class EventBus:
         # deque(maxlen=...) is the backpressure: it evicts old history while
         # every new event still reaches subscribers and persistent storage.
         with self._lock:
+            if mesh_admitted:
+                control, generation, authority = mesh_admitted
+                current = self._control_mesh if control else self._mesh_authority
+                if (authority is not current or (not control and
+                        (not self._mesh_active or generation != self._mesh_generation
+                         or not self._mesh_gate_open()))):
+                    raise RuntimeError("mesh event admission was revoked")
+                self._mesh_receipts[self._mesh_receipt_key(event)] = (control, generation)
+                while len(self._mesh_receipts) > 8192:
+                    self._mesh_receipts.popitem(last=False)
             self._ring.append(event)
             self._revision += 1
             if event.severity >= Severity.HIGH:

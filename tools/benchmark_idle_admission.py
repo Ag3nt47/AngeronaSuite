@@ -146,7 +146,7 @@ def cadence_audit():
                      "chill_policy": "parked" if name in CHILL_PAUSED_MODULES else "live",
                      "chill_floor": CHILL_THROTTLE_FLOORS.get(name, 1.0),
                      "sleep_calls": calls, "source_work_markers": markers})
-    assert len(rows) == 84
+    assert len(rows) == 86
     return {"scope": "Static declared policy; runtime settings/platform/usage gates still apply. "
                      "Literal sleeps exclude work duration; unresolved expressions remain explicit. "
                      "Source markers include helpers and do not prove work on every cycle.",

@@ -306,10 +306,16 @@ def _():
             f"crit={c.c_crit.value.text()} threat={c.c_threat.value.text()}")
 
 
-def _wait_event_history(dialog) -> None:
+def _wait_event_history(dialog, *, min_rows: int) -> None:
     deadline = time.monotonic() + 5.0
-    while dialog._events_reader.busy and time.monotonic() < deadline:
+    while time.monotonic() < deadline:
         qt.processEvents()
+        if not dialog._events_reader.busy:
+            if dialog.table.rowCount() >= min_rows:
+                return
+            # A nonblocking ledger read can return no snapshot while its
+            # writer owns the database; wait for the actual seeded evidence.
+            dialog._refresh()
         time.sleep(0.005)
     assert not dialog._events_reader.busy, "event history reader did not finish"
 
@@ -318,7 +324,7 @@ def _wait_event_history(dialog) -> None:
 def _():
     d = pages.EventsWindow("Alerts", bus, storage, min_sev=Severity.LOW)
     try:
-        _wait_event_history(d)
+        _wait_event_history(d, min_rows=2)
         assert d.table.rowCount() >= 2, "alert history did not render seeded evidence"
         return f"{d.table.rowCount()} rows"
     finally:
@@ -329,7 +335,7 @@ def _():
 def _():
     d = pages.EventsWindow("Critical", bus, storage, min_sev=Severity.CRITICAL)
     try:
-        _wait_event_history(d)
+        _wait_event_history(d, min_rows=1)
         assert d.table.rowCount() >= 1, "critical history did not render seeded evidence"
         return f"{d.table.rowCount()} rows"
     finally:

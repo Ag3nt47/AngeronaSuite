@@ -22,7 +22,74 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Startup repair and validation, 2026-10-21)
+## LATEST (v1.13.0 — UGCAP, rotating Enclave Mesh and SpywareGuard previews, 2026-10-21)
+
+- Newest active-development integrity/communications preview:
+  docs/ugcap-enclave-mesh.md. Optional UGCAP is disabled by default. Strict
+  enforcement requires enabling it and restarting before ordinary module
+  imports. Its dedicated tab covers user challenges, readiness, exact diffs,
+  selected-path restore and schedule/hardware settings. The current Windows
+  catalog contains 86 modules; implementation version remains 1.13.0.
+- Real BLAKE3 fingerprints and encrypted compressed pristine backups live in an
+  explicitly enrolled vault FILE on a physically attached different volume.
+  AES-256-GCM combines a 600,000-iteration PBKDF2 passphrase key with a random
+  hardware-wrapped secret through HKDF. Each encrypted-vault operation needs the passphrase and
+  fresh Windows TPM key-possession proof; no password-only or software-hardware
+  substitute. TPM key provisioning (Angerona.UGCAP.v1) is explicit and separate.
+  The optional ugcap dependency pins official blake3 1.0.11 on Python >=3.11 and
+  1.0.8 on Python 3.10; both use BLAKE3, with no alternate-hash fallback.
+- Opt-in Enclave Mesh gives enrolled producers and handlers ephemeral
+  certificates, signed AES-GCM local frames and fresh X25519 exchange every ten
+  seconds, with HKDF, counters and replay/expiry checks. Isolated UGCAP uses an
+  independently authenticated private worker pipe; UGCAP and Adversary Combat
+  control remain available while general mesh traffic is frozen. Successful
+  complete verification supplies a source receipt for exact fresh imports and
+  communication enrollment; changed source is never accepted by silent TOFU.
+- Scheduled challenges default to 168 hours (1..8760 configurable); they ask the
+  user to attach media and re-enter the challenge, not decrypt automatically.
+  Drift holds managed workers and can request local-host isolation through the
+  independent Adversary Combat response policy. Pauses are cooperative and
+  in-flight calls are bounded, not atomic revocation of every process/socket.
+  Source restore requires a new process and verification; binaries, POSIX
+  modified targets and missing-parent paths require offline recovery. Windows
+  retained displaced originals stay private; nothing restarts automatically.
+- Enclave is a local protocol name, not an impenetrable hardware enclave.
+  Externally trusted bootstrap/libraries remain the TCB. Frozen or sourceless
+  builds need a separate signed-build receipt and otherwise cannot establish
+  this source proof. A vTPM can be cloned; local key continuity is not remote
+  attestation. No YubiKey backend. Python wiping is best effort; mounted media
+  remain kernel-visible; encrypted audit chains need an independent witness to
+  establish rollback resistance. See the guide for exact scopes and limits.
+
+- Newest feature under active development: docs/spyware-guard.md. The dedicated
+  SpywareGuard tab exposes recent detections/response receipts, settings,
+  reviewed report-URL ingestion, inactive YARA/Sigma/NDR candidates, inert
+  sandbox, sourced worldwide surveillanceware profiles and dated news.
+  One eligible local rule requests containment; an unbound local finding can
+  request local-host isolation under Adversary Combat policy. Research text,
+  CVEs, unreviewed indicators, remote records and drills confer no authority.
+  SpywareGuard brought the catalog to 85 before UGCAP added the 86th module;
+  version remains 1.13.0.
+- Optional emergency beacons use authorized existing channel/Signal destinations
+  and an independent authenticated liveness watcher. Delivery is best effort;
+  power/network loss and containment can prevent it. No development live send.
+  AES-GCM forensic archives are encrypted copies; plaintext combat quarantine
+  remains. No claim of kernel interception, universal zero-day prevention,
+  mobile spyware detection or complete actor/country attribution.
+- Users may edit MIT-licensed source, add sensors/rules and improve their own
+  posture; docs/writing-modules.md and CONTRIBUTING.md explain extension.
+  Intentional edits require a reviewed new UGCAP baseline, never blind approval
+  of changed code. README includes an actual SpywareGuard UI screenshot with
+  explicit DEMO data: docs/screenshots/angerona-spywareguard-preview.png.
+- Button path reviews: docs/adaptation-button-review.md and
+  docs/selftest-redteam-button-review.md. Adaptation's injected five-probe
+  benchmark median was 101.768->23.554ms (4.321x), with a slower cold parallel
+  sample. Red Team's measured PID-count operation was approximately 34x faster
+  on its test host. Neither measures full-PC speed or live spyware efficacy.
+  The button review's 28-phase/85-module selfcheck predates UGCAP; historical
+  validation counts below remain evidence for their dated source boundaries.
+
+## Previous maintenance (v1.13.0 — Startup repair and validation, 2026-10-21)
 
 - Source automatic repair: docs/safe-startup.md and
   analysis/startup-repair-2026-10-21/README.md. A fixed supervisor handles only
