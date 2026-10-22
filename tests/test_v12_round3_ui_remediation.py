@@ -296,7 +296,9 @@ def test_per_row_cve_analysis_is_owned_nonblocking_and_close_safe(
     )
     assert worker is not None
     review._analysis_worker = worker
-    assert worker.parent() is dashboard
+    from angerona.gui.cve_detail_admission import detail_analysis_admission
+
+    assert worker.parent() is detail_analysis_admission()
     assert entered.wait(2.0)
     assert len(analysis_threads) == 1
     assert analysis_threads[0] is not main_thread

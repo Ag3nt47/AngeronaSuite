@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from shiboken6 import isValid
+
 from PySide6.QtCore import Qt, QTimer, QThread, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
@@ -486,12 +488,24 @@ class ThreatIntelDashboard(QDialog):
         rec: dict,
         on_result: Callable[[dict], None],
         on_finished: Callable[[], None] | None = None,
+        on_refused: Callable[[str], None] | None = None,
+        callback_owner: QWidget | None = None,
     ) -> _FixWorker | None:
-        """Start one owned, single-flight per-CVE analysis off the Qt thread."""
+        """Start one owned detail worker within the shared analysis limit."""
+        from angerona.gui.cve_detail_admission import detail_analysis_admission
+
+        def refuse(message: str) -> None:
+            if on_refused is not None:
+                on_refused(message)
+
+        if getattr(self, "_angerona_deferred_close", False):
+            refuse("This window is closing; reopen it after analysis finishes.")
+            return None
         current = self._detail_workers.get(cve)
         if current is not None:
             try:
                 if current.isRunning():
+                    refuse("Analysis for this CVE is already running.")
                     return None
             except RuntimeError:
                 pass
@@ -500,26 +514,55 @@ class ThreatIntelDashboard(QDialog):
         # CVE records originate as JSON. Copy the row before leaving the Qt
         # thread so a refresh cannot alter the worker's accepted input.
         record = dict(rec)
-        worker = _FixWorker([(cve, record)], self)
+        admission = detail_analysis_admission()
+        reservation = admission.reserve()
+        if reservation is None:
+            message = (
+                "CVE analysis is shutting down; no new analysis was started."
+                if admission.closing else
+                "Two CVE detail analyses are active. Retry after one finishes; "
+                "this request was not queued."
+            )
+            refuse(message)
+            return None
+        try:
+            worker = _FixWorker([(cve, record)], self)
+        except BaseException:
+            admission.abandon(reservation)
+            raise
         self._detail_workers[cve] = worker
 
         def handle_result(returned_cve: str, analysis: dict) -> None:
-            if returned_cve == cve:
+            if (returned_cve == cve and isValid(self)
+                    and (callback_owner is None or isValid(callback_owner))):
                 on_result(analysis)
 
-        worker.result.connect(handle_result)
-        worker.finished.connect(
-            lambda: self._release_detail_worker(cve, worker)
-        )
-        if on_finished is not None:
-            worker.finished.connect(on_finished)
-        worker.start()
+        def handle_finished() -> None:
+            if (on_finished is not None and isValid(self)
+                    and (callback_owner is None or isValid(callback_owner))):
+                on_finished()
+
+        try:
+            admission.attach(
+                reservation, worker,
+                lambda: self._release_detail_worker(cve, worker),
+            )
+            worker.result.connect(handle_result)
+            if on_finished is not None:
+                worker.finished.connect(handle_finished)
+            worker.start()
+        except BaseException:
+            # A start implementation can fail after the worker began. The
+            # admission owner checks that exact worker before returning its slot.
+            admission.abandon(reservation)
+            raise
         return worker
 
     def _release_detail_worker(self, cve: str, worker: _FixWorker) -> None:
         if self._detail_workers.get(cve) is worker:
             self._detail_workers.pop(cve, None)
-        worker.deleteLater()
+        if isValid(worker):
+            worker.deleteLater()
 
     def _on_fix_result(self, cve: str, analysis: dict) -> None:
         self._fix_cache[cve] = analysis
@@ -721,12 +764,15 @@ class ThreatIntelDashboard(QDialog):
         def _do_analyze() -> None:
             fix_box.setText("🔎 Analyzing with local AI…")
             analyze1.setEnabled(False)
+            def _analysis_refused(message: str) -> None:
+                fix_box.setText(message)
+                analyze1.setEnabled(True)
+
             worker = self._start_detail_analysis(
-                cve, rec, _render_analysis, _analysis_done
+                cve, rec, _render_analysis, _analysis_done, _analysis_refused,
+                callback_owner=dlg,
             )
             if worker is None:
-                fix_box.setText("Analysis for this CVE is already running.")
-                analyze1.setEnabled(True)
                 return
             dlg._analysis_worker = worker
             worker.finished.connect(
@@ -820,11 +866,6 @@ class ThreatIntelDashboard(QDialog):
         self._cve_analysis_dlg.show()
         self._cve_analysis_dlg.raise_()
         self._cve_analysis_dlg.activateWindow()
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self._load_and_render()
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
