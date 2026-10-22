@@ -59,3 +59,15 @@ a3188df2841608bc7b58690d3808c70bc9b538e7:analysis/chill-efficiency-2026-10-18/re
 # Angerona.UGCAP.v1. This is a key identifier, never secret key material.
 # Only this commit/path/rule/line is suppressed; future changes remain scanned.
 7524eb9fdc24d9e9d6a380cd410925acb0cce1ce:src/angerona/gui/setup_wizard.py:generic-api-key:500
+
+# Exact historical scanner-readiness fixture: a deterministic alphabet/digit
+# sample is passed to Gitleaks and must produce its expected detection.
+# It is never used for authentication; future commits/paths remain scanned.
+a5d9905b6bca9ebe12806535a3271249aaf9b0ab:src/angerona/core/tool_analysis_jobs.py:github-pat:480
+
+# Exact historical cloud-privacy fixtures, injected into a capture-only fake
+# provider to verify that token-shaped input is removed from outbound prompts.
+# Both use deterministic alphabet/digit sequences, not service credentials.
+# Only these commit/path/rule/line findings are suppressed.
+dca1dacebb940f50a31d989f75ac59ffb9ce1532:tests/test_cycle4_round2_cloud_privacy.py:stripe-access-token:55
+a2f99747395ef315898ff1f7d26b10c752837736:tests/test_cycle4_round2_cloud_privacy.py:generic-api-key:55
