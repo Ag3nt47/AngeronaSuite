@@ -30,7 +30,7 @@ import uuid
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterator
 
 from angerona.core.authorization import AuthorizationDecision, AuthorizationPolicy
@@ -56,6 +56,7 @@ except Exception:  # pragma: no cover - the module still blocks/quarantines
 _TRUE = frozenset({"1", "true", "yes", "on"})
 _MODES = frozenset({"contain", "aggressive", "maximum"})
 _PROCESS_ACTIONS = frozenset({"suspend", "terminate"})
+_WINDOWS_PROCESS_CUSTODY = os.name == "nt"
 _SELF_MODULES = frozenset({
     "Adversary Combat",
     "Active Response SOAR",
@@ -4134,6 +4135,26 @@ class AdversaryCombat(BaseModule):
                     handoff_lease, self, source, recapture=True
                 )
 
+    def _acquire_termination_lease(self, action: CombatAction) -> Any:
+        """Acquire object custody independently of psutil's cached PID view."""
+        from angerona.core.windows_process_lease import WindowsProcessLease
+
+        lease = WindowsProcessLease(
+            action.details.get("pid"), action.details.get("create_time"),
+            action.details.get("exe"),
+        )
+        try:
+            image = Path(lease.identity.image)
+            if (lease.identity.pid in {os.getpid(), os.getppid()}
+                    or PureWindowsPath(lease.identity.image).name.casefold()
+                    in _SYSTEM32_NEVER_CONTAIN
+                    or self._is_system_path(image)):
+                raise ValueError("native process image is protected")
+            return lease
+        except BaseException:
+            lease.close()
+            raise
+
     def _terminate_process_transaction(
         self, process: Any, action: CombatAction
     ) -> CombatAction | None:
@@ -4145,9 +4166,34 @@ class AdversaryCombat(BaseModule):
         """
         with self._receipt_lock:
             mutation_started = False
+            lease = None
+            committed = None
             try:
+                if _WINDOWS_PROCESS_CUSTODY:
+                    # Failure refuses this Windows operation. In particular,
+                    # there is no fallback to a second PID-based kill.
+                    lease = self._acquire_termination_lease(action)
+                    action = CombatAction(**{
+                        **asdict(action),
+                        "details": {
+                            **action.details,
+                            "process_custody": "windows-retained-handle-v1",
+                            "native_pid": lease.identity.pid,
+                            "native_birth_ticks": lease.identity.birth_ticks,
+                            "native_image": lease.identity.image,
+                        },
+                    })
                 with self._journaled_mutation(action):
-                    try:
+                    if lease is not None:
+                        # Persistence can block. Recheck the same object and
+                        # deadline after intent and again at native dispatch.
+                        lease.validate(alive=True)
+                        lease.terminate()
+                        mutation_started = lease.dispatch_started
+                        lease.wait_terminated(timeout=3.0)
+                        with self._terminal_commit_validator(lease.terminal_proof):
+                            committed = self._commit_after_mutation(action)
+                    else:
                         # Cross the uncertainty boundary before kill(): an
                         # exception from the call cannot prove that no effect
                         # occurred.
@@ -4163,25 +4209,32 @@ class AdversaryCombat(BaseModule):
                                 "process termination postcondition was not proven",
                             )
                             return None
-                        return self._commit_after_mutation(action)
-                    except Exception as exc:
-                        if mutation_started:
-                            self._mark_nonreversible_uncertain(
-                                action, f"{type(exc).__name__}: {exc}"
-                            )
-                        else:
-                            self._journal_failure(
-                                action, f"{type(exc).__name__}: {exc}"
-                            )
-                        return None
+                        committed = self._commit_after_mutation(action)
             except Exception as exc:
+                mutation_started = mutation_started or bool(
+                    lease is not None and lease.dispatch_started
+                )
                 if mutation_started:
                     self._mark_nonreversible_uncertain(
                         action, f"{type(exc).__name__}: {exc}"
                     )
                 else:
                     self._journal_failure(action, f"{type(exc).__name__}: {exc}")
-                return None
+                committed = None
+            finally:
+                if lease is not None:
+                    try:
+                        lease.close()
+                    except Exception as exc:
+                        if mutation_started or lease.dispatch_started:
+                            self._mark_nonreversible_uncertain(
+                                action, "process custody release failed: "
+                                f"{type(exc).__name__}: {exc}",
+                            )
+                        else:
+                            self._journal_failure(action, "process custody release failed")
+                        committed = None
+            return committed
 
     def _act_on_process(
         self,
@@ -4192,7 +4245,7 @@ class AdversaryCombat(BaseModule):
         *,
         allowed_actions: frozenset[str] | None = None,
     ) -> list[CombatAction] | None:
-        if not isinstance(pid, int) or pid <= 0 or psutil is None:
+        if type(pid) is not int or pid <= 0 or psutil is None:
             return None
         # Killing the response engine itself ends autonomous defense.  Parent
         # exclusion prevents a child detector from terminating its launcher.
@@ -4283,6 +4336,7 @@ class AdversaryCombat(BaseModule):
                         "pid": pid,
                         "create_time": created,
                         "name": name,
+                        "exe": exe,
                     },
                 )
                 committed = self._terminate_process_transaction(process, action)

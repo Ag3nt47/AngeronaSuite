@@ -305,7 +305,7 @@ def test_cross_process_writer_contention_and_crash_release(
 
 
 def test_hardlink_added_at_irreversible_effect_boundary_opens_circuit(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -325,9 +325,21 @@ def test_hardlink_added_at_irreversible_effect_boundary_opens_circuit(
         def is_running() -> bool:
             return False
 
-    result = module._terminate_process_transaction(
-        _InertProcess(), _irreversible_action()
+    process = _InertProcess()
+    lease = SimpleNamespace(
+        identity=SimpleNamespace(pid=4242, birth_ticks=1, image=r"C:\fixture\inert.exe"),
+        validate=lambda **_kwargs: None, wait_terminated=process.wait,
+        terminal_proof=lambda: {"inert_journal_custody": True}, close=lambda: None,
+        dispatch_started=False,
     )
+
+    def inert_terminate():
+        lease.dispatch_started = True
+        process.kill()
+
+    lease.terminate = inert_terminate
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
+    result = module._terminate_process_transaction(process, _irreversible_action())
 
     assert result is None
     assert module._mutation_blocked is True

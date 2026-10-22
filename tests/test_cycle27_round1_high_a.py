@@ -259,6 +259,28 @@ class _UncertainKillProcess:
         raise RuntimeError("inert postcondition transport failure")
 
 
+def _inert_termination_lease(process):
+    """Keep these journal races inert across the native Windows boundary."""
+    lease = SimpleNamespace(
+        identity=SimpleNamespace(pid=4242, birth_ticks=1, image=str(process._executable)),
+        validate=lambda **_kwargs: None, terminal_proof=lambda: {},
+        close=lambda: None, dispatch_started=False,
+    )
+
+    def terminate():
+        lease.dispatch_started = True
+        process.kill()
+
+    def wait_terminated(*, timeout):
+        process.wait(timeout)
+        if process.is_running():
+            raise RuntimeError("inert termination did not complete")
+
+    lease.terminate = terminate
+    lease.wait_terminated = wait_terminated
+    return lease
+
+
 def test_uncertain_kill_postcondition_durably_blocks_mutation_across_restart(
     tmp_path, monkeypatch
 ) -> None:
@@ -270,6 +292,8 @@ def test_uncertain_kill_postcondition_durably_blocks_mutation_across_restart(
         SimpleNamespace(Process=lambda _pid: process, STATUS_STOPPED="stopped"),
     )
     module = _new_combat(tmp_path)
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action:
+                        _inert_termination_lease(process))
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
     policy = dataclasses.replace(module.policy(), block_network=False)
 
@@ -322,6 +346,8 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
         SimpleNamespace(Process=lambda _pid: process, STATUS_STOPPED="stopped"),
     )
     module = _new_combat(tmp_path)
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action:
+                        _inert_termination_lease(process))
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
     policy = dataclasses.replace(module.policy(), block_network=False)
     captured: dict[str, CombatAction] = {}

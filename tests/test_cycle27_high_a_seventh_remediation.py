@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -191,7 +192,7 @@ def test_read_append_and_final_read_swaps_cannot_return_false_success(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows host mutation custody contract")
 def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -215,6 +216,21 @@ def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
             return False
 
     process = _InertProcess()
+    # Inject only the host effect. Windows termination now retains a native
+    # object lease; this existing test isolates canonical-journal custody.
+    lease = SimpleNamespace(
+        identity=SimpleNamespace(pid=4242, birth_ticks=1, image=r"C:\fixture\inert.exe"),
+        validate=lambda **_kwargs: None, wait_terminated=process.wait,
+        terminal_proof=lambda: {"inert_journal_custody": True}, close=lambda: None,
+        dispatch_started=False,
+    )
+
+    def inert_terminate():
+        lease.dispatch_started = True
+        process.kill()
+
+    lease.terminate = inert_terminate
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
     committed = module._terminate_process_transaction(process, _action())
 
     assert process.delete_was_blocked is True

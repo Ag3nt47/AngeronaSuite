@@ -536,17 +536,33 @@ class CommandConsole:
     # ── SQL threat hunting (osquery-style, read-only) ────────────────────────
     # ── Analyst-standard commands ────────────────────────────────────────────
     def _sessions(self, args: List[str]) -> str:
-        import getpass
-        lines = [f"current user: {getpass.getuser()}"]
+        from angerona.core.local_user_context import (
+            LocalUsernameUnavailable, local_username_hint,
+        )
+        try:
+            current_user = local_username_hint()
+        except LocalUsernameUnavailable:
+            # Sanitized service/diagnostic environments may omit username
+            # variables. Python 3.12 then imports POSIX-only pwd on Windows;
+            # newer Python reports OSError. Neither is authentication evidence,
+            # nor should missing display context prevent session collection.
+            lines = ["current user: unavailable"]
+        else:
+            lines = [f"current user: {current_user}"]
         if psutil is not None:
             try:
-                for u in psutil.users():
+                sessions = psutil.users()
+                for u in sessions:
                     when = (time.strftime("%Y-%m-%d %H:%M", time.localtime(u.started))
                             if getattr(u, "started", None) else "?")
                     lines.append(f"  {u.name}  terminal={getattr(u, 'terminal', '') or '-'}  "
                                  f"host={getattr(u, 'host', '') or '-'}  since {when}")
+                if not sessions:
+                    lines.append("  no logged-in sessions reported")
             except Exception as exc:
                 lines.append(f"  (sessions unavailable: {exc})")
+        else:
+            lines.append("  (sessions unavailable: psutil is not installed)")
         return "\n".join(lines)
 
     def _timeline(self, args: List[str]) -> str:

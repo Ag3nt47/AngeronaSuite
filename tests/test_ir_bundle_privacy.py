@@ -60,7 +60,9 @@ class IrBundlePrivacyTests(unittest.TestCase):
             root = Path(td)
             logs = root / "shared_logs"
             logs.mkdir()
-            username = os.environ.get("USERNAME") or os.environ.get("USER") or "local-user"
+            # Bind this synthetic payload to its explicit privacy seed rather
+            # than an ambient username or an unrelated missing-env fallback.
+            username = "ir-fixture-user"
             secret = "fixture-secret-ThisMustNeverLeaveTheMachine-1234567890"
             dpapi = "AQAAANCMnd8BFdERjHoAwEAAAAAAAAAAAAAAAAAAAA"
             raw_path = f"C:\\Users\\{username}\\Documents\\case.txt"
@@ -75,7 +77,8 @@ class IrBundlePrivacyTests(unittest.TestCase):
                          f"from {raw_ip} at {raw_path}"),
                 details={"password": secret, "nested": {"contact": "person@example.com"}},
             )
-            path = self._collect(root, events=[event])
+            with patch("getpass.getuser", return_value=username):
+                path = self._collect(root, events=[event])
             with zipfile.ZipFile(path) as archive:
                 payload = b"\n".join(archive.read(name) for name in archive.namelist())
                 manifest = json.loads(archive.read("00_MANIFEST.json"))

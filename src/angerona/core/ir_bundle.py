@@ -8,7 +8,6 @@ addresses are intentionally excluded.
 """
 from __future__ import annotations
 
-import getpass
 import hashlib
 import hmac
 import ipaddress
@@ -24,6 +23,8 @@ from collections import Counter
 from itertools import islice
 from pathlib import Path
 from typing import Any
+
+from angerona.core.local_user_context import local_username_hint
 
 try:
     import psutil
@@ -100,18 +101,24 @@ class _PrivacyFilter:
     """Deterministic-within-one-bundle redaction and audit counters."""
 
     def __init__(self) -> None:
+        # Missing privacy context must refuse export, not silently omit the
+        # username redaction seed. This hint is never response authority.
+        username = local_username_hint()
         self._key = secrets.token_bytes(32)
         self.counts: Counter[str] = Counter()
         self._nodes = 0
         self._identities = {
             value.casefold(): label
             for value, label in (
-                (getpass.getuser(), "user"),
+                (username, "user"),
                 (os.environ.get("USERNAME", ""), "user"),
                 (os.environ.get("USER", ""), "user"),
                 (platform.node(), "host"),
             )
-            if value and len(value) >= 2
+            if value and (
+                (label == "user" and len(value) <= 256 and value.isprintable())
+                or (label == "host" and len(value) >= 2)
+            )
         }
 
     def token(self, kind: str, value: Any) -> str:
@@ -382,13 +389,15 @@ def collect_triage_bundle(dest_dir: str | Path | None = None, bus=None, *,
             "security telemetry can still be sensitive"
         )
 
+    # Establish required redaction context before collecting or creating any
+    # export destination. Failure leaves no partial archive or output folder.
+    redactor = _PrivacyFilter()
     destination = _safe_destination(dest_dir)
     stamp = time.strftime("%Y%m%d-%H%M%S")
     zip_path = destination / f"ir_triage_{stamp}-{secrets.token_hex(4)}.zip"
     if zip_path.exists():  # defensive; random suffix makes this vanishingly unlikely
         raise FileExistsError("refusing to overwrite an existing IR bundle")
 
-    redactor = _PrivacyFilter()
     system_info = _system_info()
     processes = _process_list(redactor)
     connections = _connections(redactor)
