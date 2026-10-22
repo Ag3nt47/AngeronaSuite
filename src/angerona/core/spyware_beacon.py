@@ -43,6 +43,7 @@ _WINDOW_ATTEMPTS = 3
 # A full host audit plus bounded research fetches can exceed 30 seconds. Exact
 # parent death remains immediate; a stalled worker receives a two-minute lease.
 _HEARTBEAT_TIMEOUT = 120.0
+_EOF_EXIT_GRACE = 0.25
 _CONFIG_FIELDS = (
     "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
     "aria_push_enabled", "aria_push_url", "aria_push_kind", "mobile_enabled",
@@ -642,16 +643,19 @@ def _consume_watch_messages(messages, fault, *, key, run, pid, birth, settings, 
     last_seen = time.monotonic()
     previous = 0
     authenticated = False
-    eof = False
+    eof_at = None
     while True:
         if fault.is_set():
             return "invalid_state"
         try:
-            kind, message = messages.get(timeout=poll_seconds)
+            wait = poll_seconds
+            if eof_at is not None:
+                wait = min(wait, max(0.0, _EOF_EXIT_GRACE - (time.monotonic() - eof_at)))
+            kind, message = messages.get(timeout=wait)
             if kind == "invalid":
                 return "invalid_state"
             if kind == "eof":
-                eof = True
+                eof_at = time.monotonic()
             if kind == "message":
                 body = _verify(message, key, run, previous)
                 if body is None:
@@ -676,11 +680,17 @@ def _consume_watch_messages(messages, fault, *, key, run, pid, birth, settings, 
         if identity in {"unknown", "reused"}:
             return "identity_unverifiable"
         if not authenticated:
-            if eof or identity != "alive" or time.monotonic() - last_seen > heartbeat_timeout:
+            if eof_at is not None or identity != "alive" or time.monotonic() - last_seen > heartbeat_timeout:
                 return "unauthenticated_state"
             continue
+        # Windows may close a terminating parent's pipe before its process
+        # identity reports gone. Reprobe the same PID and birth during this
+        # bounded grace; confirmed death still takes the immediate exit path.
+        # A live parent with a broken pipe still gets a heartbeat-loss alert.
+        now = time.monotonic()
+        eof_settled = eof_at is not None and now - eof_at >= _EOF_EXIT_GRACE
         reason = ("SPYWARE_ENGINE_EXIT" if identity == "gone" else
-                  "SPYWARE_HEARTBEAT_LOST" if eof or time.monotonic() - last_seen > heartbeat_timeout else "")
+                  "SPYWARE_HEARTBEAT_LOST" if eof_settled or now - last_seen > heartbeat_timeout else "")
         if not reason:
             continue
         # Revalidate immediately before egress. Only the minimal fixed event is

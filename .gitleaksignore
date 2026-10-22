@@ -54,3 +54,8 @@ a5d9905b6bca9ebe12806535a3271249aaf9b0ab:tools/check_native_gui.py:generic-api-k
 # One additional public source SHA256 found by scanning all older history.
 # This value matches the named source in both this commit and the current tree.
 a3188df2841608bc7b58690d3808c70bc9b538e7:analysis/chill-efficiency-2026-10-18/reviewed-sources.json:generic-api-key:14
+
+# Exact historical false positive for the public TPM key-name placeholder
+# Angerona.UGCAP.v1. This is a key identifier, never secret key material.
+# Only this commit/path/rule/line is suppressed; future changes remain scanned.
+7524eb9fdc24d9e9d6a380cd410925acb0cce1ce:src/angerona/gui/setup_wizard.py:generic-api-key:500

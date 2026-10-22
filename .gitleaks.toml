@@ -1,0 +1,16 @@
+# Keep the complete upstream ruleset and its existing allowlists.
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+    # This public TPM key identifier names a CNG key; it contains no key material.
+    # AND requires this exact extracted value AND this exact source path. Other
+    # values in the wizard and this value in other files remain subject to scan.
+    [[rules.allowlists]]
+    description = "Public UGCAP TPM key-name placeholder in the setup wizard"
+    condition = "AND"
+    regexTarget = "secret"
+    regexes = ['''^Angerona\.UGCAP\.v1$''']
+    paths = ['''^src[/\\]angerona[/\\]gui[/\\]setup_wizard\.py$''']

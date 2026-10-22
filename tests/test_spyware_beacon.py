@@ -189,6 +189,49 @@ def test_authenticated_normal_stop_wins_over_exit():
     assert result == "normal_stop" and not sent
 
 
+@pytest.mark.parametrize("state,expected", [
+    ("gone", "SPYWARE_ENGINE_EXIT"),
+    ("unknown", "identity_unverifiable"),
+    ("reused", "identity_unverifiable"),
+])
+def test_pipe_eof_rechecks_exact_parent_identity_before_classifying(state, expected):
+    initial = startup()
+    # Windows can close a terminating parent's pipe before its process identity
+    # changes to gone. Bootstrap and the first EOF probe still see it alive.
+    probes = iter(["alive", "alive", state])
+    result, sent = run_watch(wire(initial, 1),
+                             identity=lambda *_: next(probes, state))
+    assert result == expected
+    assert sent == ([{"rule_code": expected, "severity": "CRITICAL", "pid": initial["pid"]}]
+                    if state == "gone" else [])
+
+
+def test_pipe_eof_from_live_parent_still_sends_one_bounded_heartbeat_alert(monkeypatch):
+    initial = startup()
+    clock, sent = [0.0], []
+    frames = [("message", json.loads(wire(initial, 1))), ("eof", None)]
+    waits = []
+    class TimedQueue:
+        def get(self, *, timeout):
+            waits.append(timeout)
+            if frames:
+                return frames.pop(0)
+            clock[0] += timeout
+            raise queue.Empty
+    monkeypatch.setattr(beacon, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    result = beacon._consume_watch_messages(TimedQueue(), threading.Event(),
+        key=bytes.fromhex(initial["key"]), run=initial["run"], pid=initial["pid"],
+        birth=initial["birth"], settings=Path(initial["settings"]), initial=initial["config"],
+        config=config(), sender=lambda event: sent.append((clock[0], event)),
+        identity_probe=lambda *_: "alive", authority_probe=lambda *_: True,
+        destination_probe=lambda *_: True, on_ready=None, heartbeat_timeout=10.0,
+        poll_seconds=1.0)
+    assert result == "SPYWARE_HEARTBEAT_LOST"
+    assert sent == [(beacon._EOF_EXIT_GRACE,
+                     {"rule_code": result, "severity": "CRITICAL", "pid": initial["pid"]})]
+    assert waits == [1.0, 1.0, beacon._EOF_EXIT_GRACE]
+
+
 @pytest.mark.parametrize("raw", [b"", b"not-json\n", b"x" * (beacon._MAX_WIRE + 1)])
 def test_unauthenticated_or_invalid_state_never_sends(raw):
     result, sent = run_watch(raw)
