@@ -38,8 +38,20 @@ def test_every_source_entrypoint_is_unelevated_and_machine_non_mutating() -> Non
 def test_delegates_and_desktop_shortcut_reach_only_canonical_source_launcher() -> None:
     canonical = _text("start-angerona.bat")
     assert "Refusing to execute mutable Angerona source with Administrator rights" in canonical
-    assert "--require-hashes --no-deps -r requirements-bootstrap-pip.txt" in canonical
-    assert "--require-hashes --no-deps -r requirements-release-hashed.txt" in canonical
+    supervisor = _text("tools/Invoke-AngeronaSourceStartup.ps1")
+    repair_supervisor = _text("tools/Invoke-AngeronaStartupRepair.ps1")
+    repair = _text("Repair-Angerona-Python.ps1")
+    assert '-File "%~dp0tools\\Invoke-AngeronaSourceStartup.ps1" -RepositoryRoot "%~dp0."' in canonical
+    assert "-File (Join-Path $Root 'tools\\Invoke-AngeronaStartupRepair.ps1')" in supervisor
+    assert "-RepositoryRoot $Root -FailureCategory $Category -Attempt 1" in supervisor
+    assert ". (Join-Path $RepositoryRoot 'Repair-Angerona-Python.ps1')" in repair_supervisor
+    assert "Invoke-RepairTransaction" in repair_supervisor
+    assert "$bootstrap = (Join-Path $root 'requirements-bootstrap-pip.txt')" in repair
+    assert "$dependencies = (Join-Path $root 'requirements-release-hashed.txt')" in repair
+    assert "'--only-binary', ':all:', '--require-hashes', '--no-deps', '--no-index'" in repair
+    assert repair.index("Install-LockedRepairArtifacts $python $bootstrap") < repair.index(
+        "Install-LockedRepairArtifacts $python $dependencies"
+    )
 
     assert 'call "%~dp0start-angerona.bat" --source-setup' in _text(
         "Install-Angerona.bat"

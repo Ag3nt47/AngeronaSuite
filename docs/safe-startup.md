@@ -1,7 +1,7 @@
 # Windows Safe Startup
 
-Use `start-angerona.bat` in a source checkout. After its existing trusted Python
-setup and source checks, it opens the separate **Angerona Safe Startup** window.
+Use `start-angerona.bat` in a source checkout. Its trusted supervisor verifies
+the runtime and source checks, then opens **Angerona Safe Startup**.
 The release build includes **AngeronaStartup.exe**, and the Windows package,
 desktop shortcut and Windows sign-in startup use that helper. `--setup` opens
 the setup page after the dashboard starts. Direct dashboard execution remains
@@ -10,11 +10,14 @@ available for diagnostics, with its existing authority and singleton checks.
 The helper uses Tk, independently of the dashboard's Qt runtime. It:
 
 1. Verifies the installation location and existing Windows source/MSIX authority.
-2. Creates missing helper log/temp directories, checks at least 128 MB of free
-   space, and performs a temporary write/flush/delete probe.
-3. Checks source Python 3.12 x64, reviewed pip and required Python/Qt imports in
-   an isolated process with a 30-second deadline. The probe runs Qt offscreen
-   and does not start Angerona sensors.
+2. Creates missing helper directories, independently requires 128 MB free on
+   the canonical data drive, and verifies flushed bytes by reading them back.
+   Temporary work uses fresh private scratch. If the usual temporary location
+   is unusable, checked scratch on the installation drive can be selected;
+   persistent settings and evidence stay in their canonical location.
+3. Checks source Python 3.12 x64, exact reviewed dependency versions, dependency
+   consistency and native offscreen Qt in separate processes sharing the
+   original 30-second probe deadline. These probes do not start sensors.
 4. Launches one dashboard in Chill Mode using a clean environment. A helper
    lease prevents concurrent helpers; the dashboard retains its own singleton.
 5. Waits up to 120 seconds for a per-launch nonce and live process confirmation.
@@ -30,16 +33,33 @@ Old `dashboard-ready.signal` files cannot satisfy this handshake.
 
 ## Repairs and failures
 
-Automatic repairs are limited to missing startup directories and clean launch
-environment values. Source first-run dependency installation continues through
-the existing hash-locked batch setup. Runtime replacement remains available
-through `Repair-Angerona-Python.bat`, which preserves the previous environment
-and asks before replacing it. The startup assistant never resets configuration,
-credentials, response approvals, singleton records, evidence or journals; it
-does not change privileges, install drivers, or invent recovery evidence.
+For a source checkout, the supervisor automatically invokes the Angerona repair
+tool once when a check positively identifies a missing/wrong runtime, a reviewed
+dependency failure, or a recognized Tk/Qt runtime failure. The helper exits
+before repair begins. Repair builds a candidate with PSF-signed CPython 3.12
+x64, hash-locked dependencies and reviewed local packages. It preserves the
+previous environment, refreshes launchers at their final path, and independently
+checks ABI, dependencies, Tk and native Qt before accepting the replacement.
+The supervisor then repeats every startup check once. A second failure stops.
+The manual `Repair-Angerona-Python.bat` entry point retains its confirmation.
 
-A failed dependency probe or early application exit leaves the helper open with
-an explanation. A timeout leaves the existing dashboard process running and
+Repair holds both checkout and canonical helper locks, so direct helper,
+check-only and launcher startup cannot overlap replacement. A flushed private
+transaction records directory identities before either rename. A later launch
+detects interrupted work before executing the environment; repair restores the
+identified original environment when the transaction is consistent. Corrupt,
+missing or ambiguous custody evidence stops recovery and preserves the files.
+
+The fixed repair tools have a 900-second overall command budget, bounded child
+commands, and owned-process cleanup. They do not use Ollama, Llama or AI-generated
+commands. Successful retry always starts in Chill; automatic repair cannot
+enable AI. Settings, credentials, approvals, evidence and journals are preserved.
+Source/MSIX trust failures, insufficient persistent storage, busy environments,
+cancellation and unknown failures require their specific corrective action.
+Packaged installations retain their signed installer repair boundary.
+
+A nonrepairable failure or early dashboard exit leaves the helper open with
+an explanation. A dashboard timeout leaves the existing process running and
 does not retry. Closing the assistant also leaves a launched dashboard running;
 an active disposable dependency probe is cancelled and reaped before the helper
 process exits. Check the tray before manually retrying a failed launch.
@@ -49,6 +69,12 @@ Source helper logs are under `%LOCALAPPDATA%\Angerona\SourceData\logs`:
 - `startup-preflight.log`: isolated source dependency/Qt check.
 - `startup-dashboard.log`: dashboard stdout/stderr from the helper launch.
 - The immediately preceding copy of each log uses `.previous.log`.
+
+Supervisor and repair command logs use the selected private scratch under
+`SourceData\tmp` or the checkout's `.tmp`. Failed transaction evidence and the
+preserved environment remain available for diagnosis. See the
+[automatic repair engineering record](../analysis/startup-repair-2026-10-21/README.md)
+for test scope and limitations.
 
 Packaged helper logs use `%LOCALAPPDATA%\Angerona\Startup\logs`. The protected
 dashboard keeps its existing separate runtime data and crash logs. The helper

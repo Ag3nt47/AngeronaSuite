@@ -138,6 +138,122 @@ def _os_witness_accepts(
     )
 
 
+def _witness_runtime_snapshot(combat, bus) -> dict:
+    """Observe fixed policy fields and delivery counters without host I/O."""
+    policy = combat.policy()
+    snapshots = {
+        "journal_error_present": bool(getattr(combat, "_journal_error", "")),
+        "mutation_blocked": getattr(combat, "_mutation_blocked", False) is True,
+        "journal_saturated": getattr(combat, "_journal_saturated", False) is True,
+        "policy": {
+            key: getattr(policy, key, None) if type(getattr(policy, key, None)) is bool else None
+            for key in ("enabled", "block_network", "quarantine_files", "isolate_host", "activate_honeypots")
+        },
+        "submit_current": [],
+    }
+    for key, allowed in (
+        ("mode", {"contain", "aggressive", "maximum"}),
+        ("process_action", {"none", "suspend", "terminate"}),
+    ):
+        value = getattr(policy, key, None)
+        snapshots["policy"][key] = value if value in allowed else "other"
+    severity = getattr(getattr(policy, "min_severity", None), "name", "")
+    snapshots["policy"]["min_severity"] = severity if severity in {"INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"} else "other"
+    for row in bus.subscriber_metrics():
+        if row.name.endswith(".submit_current"):
+            snapshots["submit_current"].append({
+                key: value if type(value := getattr(row, key, None)) is int and value >= 0 else None
+                for key in ("deliveries", "failures", "budget_violations")
+            })
+    snapshots["submit_current_count"] = len(snapshots["submit_current"])
+    snapshots["submit_current"] = snapshots["submit_current"][:4]
+    return snapshots
+
+
+def _os_witness_failure_summary(
+    witness: dict, *, phase: str, run_index: int, expected_markers: int,
+    require_process: bool, require_digest: bool, report: dict,
+    settled: dict, combat: dict,
+) -> str:
+    """Bounded CI diagnostics; paths, tokens, report text and errors stay local."""
+    markers = witness.get("markers", [])
+    processes = witness.get("processes", [])
+    failed_markers = []
+    for row in markers:
+        if (
+            not row.get("source_absent") or not row.get("candidate_quarantines")
+            or (require_digest and (
+                not row.get("matching_quarantines") or row.get("read_errors")
+            ))
+        ):
+            failed_markers.append({
+                "basename": Path(str(row.get("source", ""))).name[:128],
+                "source_absent": row.get("source_absent") is True,
+                "candidate_count": len(row.get("candidate_quarantines", [])),
+                "digest_match_count": len(row.get("matching_quarantines", [])),
+                "read_error_count": len(row.get("read_errors", [])),
+            })
+
+    def count(value):
+        return value if type(value) is int and value >= 0 else None
+
+    states = {"absent", "pid_reused_or_exited", "original_alive", "birth_unrecorded", "access_denied"}
+    process_rows = [{
+        "index": index,
+        "birth_recorded": isinstance(row.get("expected_birth"), (int, float)),
+        "birth_positive": isinstance(row.get("expected_birth"), (int, float)) and row["expected_birth"] > 0,
+        "original_alive": row.get("original_alive") is True,
+        "status": row.get("status") if row.get("status") in states else "other",
+    } for index, row in enumerate(processes[:16])]
+    outcome = report.get("outcome")
+    taxonomy = report.get("evidence_taxonomy", {})
+    response = taxonomy.get("successful_response", {})
+    combat_states = {"RECOVERY REQUIRED", "JOURNAL FULL", "DISABLED", "STARTING", "QUEUE FULL", "ARMED"}
+    decision_codes = (
+        "waiting", "generation_discarded", "startup_expired", "below_threshold",
+        "missing_contract", "integrity_failed", "queue_saturated", "queued",
+        "recovery_required", "policy_disabled", "not_actionable", "invalid_contract",
+        "executed", "no_eligible_target", "file_content_changed",
+    )
+    decision_counts = combat.get("counts", {})
+    summary = {
+        "schema": "angerona.gui-live-witness-failure.v1",
+        "phase": phase, "run_index": run_index,
+        "expected_marker_count": expected_markers, "marker_count": len(markers),
+        "require_process": require_process, "require_digest": require_digest,
+        "digest_verified": witness.get("verify_digest") is True,
+        "source_present_count": sum(not row.get("source_absent") for row in markers),
+        "missing_candidate_count": sum(not row.get("candidate_quarantines") for row in markers),
+        "missing_digest_count": sum(not row.get("matching_quarantines") for row in markers),
+        "read_error_count": sum(len(row.get("read_errors", [])) for row in markers),
+        "failed_markers": failed_markers[:64],
+        "failed_markers_omitted": max(0, len(failed_markers) - 64),
+        "process_count": len(processes), "processes": process_rows,
+        "processes_omitted": max(0, len(processes) - 16),
+        "aar": {
+            "outcome": outcome if outcome in {"verified", "partial", "failed", "inconclusive", "detection_only"} else "other",
+            **{key: count(report.get(key)) for key in (
+                "steps_run", "detected", "remediated", "response_actions_applied",
+                "detection_response_actions_applied", "verified_closures",
+            )},
+            "denominator": count(taxonomy.get("denominator")),
+            "successful_response_count": count(response.get("count")),
+        },
+        "settlement": {
+            "pending": count(settled.get("pending")),
+            "timed_out": settled.get("timed_out") if type(settled.get("timed_out")) is bool else None,
+            "combat_ready": combat.get("ready") if type(combat.get("ready")) is bool else None,
+            "combat_state": combat.get("state") if combat.get("state") in combat_states else "other",
+            **{key: count(combat.get(key)) for key in (
+                "queue_depth", "queue_pending", "queue_capacity", "queue_drops",
+            )},
+            "decision_counts": {key: count(decision_counts[key]) for key in decision_codes if key in decision_counts},
+            "last_decision": combat.get("last_decision") if combat.get("last_decision") in decision_codes else "other",
+        },
+    }
+    return json.dumps(summary, sort_keys=True)
+
+
 def test_os_witness_rejects_uncontained_marker(isolated_root: Path) -> None:
     """Independent OS check rejects an AAR-like success without containment."""
     marker = isolated_root / "_redteam_negative_control.txt"
@@ -173,6 +289,54 @@ def test_os_witness_rejects_uncontained_marker(isolated_root: Path) -> None:
     assert _os_witness_accepts(
         contained, expected_markers=1, require_process=False,
     )
+
+
+def test_witness_failure_summary_keeps_reasons_without_private_values() -> None:
+    summary_text = _os_witness_failure_summary(
+        {
+            "verify_digest": False,
+            "markers": [{
+                "source": str(Path("private-parent") / "inert-marker.txt"),
+                "source_absent": True, "candidate_quarantines": [],
+                "matching_quarantines": [],
+                "read_errors": [{"path": "private-quarantine", "error": "private-error"}],
+            }],
+            "processes": [{
+                "pid": 76543, "token": "private-token", "expected_birth": None,
+                "observed_birth": 123456.789, "original_alive": False,
+                "status": "access_denied",
+            }],
+        },
+        phase="pre", run_index=1, expected_markers=36, require_process=True,
+        require_digest=False,
+        report={"outcome": "partial", "response_actions_applied": 0,
+                "verified_closures": 0, "body": "private-report",
+                "evidence_taxonomy": {"denominator": 37, "successful_response": {"count": 0}}},
+        settled={"pending": 0, "timed_out": False},
+        combat={"ready": True, "state": "ARMED", "reason": "private-reason",
+                "counts": {"no_eligible_target": 37, "private-code": 1},
+                "last_decision": "no_eligible_target"},
+    )
+    summary = json.loads(summary_text)
+    assert summary["missing_candidate_count"] == 1
+    assert summary["failed_markers"] == [{
+        "basename": "inert-marker.txt", "source_absent": True,
+        "candidate_count": 0, "digest_match_count": 0, "read_error_count": 1,
+    }]
+    assert summary["processes"] == [{
+        "index": 0, "birth_recorded": False, "birth_positive": False,
+        "original_alive": False, "status": "access_denied",
+    }]
+    assert summary["aar"]["outcome"] == "partial"
+    assert summary["aar"]["response_actions_applied"] == 0
+    assert summary["aar"]["successful_response_count"] == 0
+    assert summary["settlement"]["pending"] == 0
+    assert summary["settlement"]["timed_out"] is False
+    assert summary["settlement"]["decision_counts"] == {"no_eligible_target": 37}
+    assert all(private not in summary_text for private in (
+        "private-parent", "private-quarantine", "private-error", "private-token",
+        "private-report", "private-reason", "private-code", "76543", "123456.789",
+    ))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows response clickthrough")
@@ -439,6 +603,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     modal_errors: list[str] = []
     activation_states: list[str] = []
     witness_paths: dict[str, tuple[Path, Path]] = {}
+    settlement_evidence: dict[str, tuple[dict, dict]] = {}
+    settlement_runtime: dict[str, dict] = {}
     window._aar_ready.connect(delivered.append)
     window._settings_combat_status.connect(
         lambda state, _message: activation_states.append(state)
@@ -498,6 +664,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         process.start()
         deadline = time.monotonic() + 10.0
         process_ready = {}
+        readiness_observed = False
         while time.monotonic() < deadline:
             process_ready = process.operational_snapshot()
             # The startup PID boundary is cycle 1 with enrichment pending.
@@ -511,9 +678,35 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 and process_ready["health"] >= 50
                 and process_ready["event_overflow_count"] == 0
             ):
+                readiness_observed = True
                 break
             app.processEvents()
             time.sleep(0.05)
+        if not readiness_observed:
+            worker = getattr(process, "_thread", None)
+            frame = sys._current_frames().get(worker.ident) if worker is not None else None
+            frames = []
+            for _ in range(8):
+                if frame is None:
+                    break
+                frames.append({
+                    "file": Path(frame.f_code.co_filename).name,
+                    "function": frame.f_code.co_name, "line": frame.f_lineno,
+                })
+                frame = frame.f_back
+            del frame
+            diagnostic = {
+                "schema": "angerona.gui-live-readiness-failure.v1",
+                "worker_frames": frames,
+                "process": {key: process_ready.get(key) for key in (
+                    "cycle_count", "thread_alive", "health", "first_cycle_complete",
+                    "last_cycle_age_seconds", "declared_cycle_interval_seconds",
+                    "generation_uptime_seconds", "throttle_multiplier", "throttle_floor",
+                    "event_overflow_count", "watchdog_deadline_remaining_seconds",
+                )},
+            }
+            print("ANGERONA_GUI_READINESS_FAILURE " + json.dumps(diagnostic), flush=True)
+            trace("readiness_failed", summary=diagnostic)
         assert process.operational_snapshot()["first_cycle_complete"]
         assert process_ready.get("cycle_count", 0) > 1, process_ready
         assert process_ready.get("status") == "running", process_ready
@@ -529,10 +722,14 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             trace("settlement_start", steps=len(window.red_team_engine.steps),
                   combat=combat.response_snapshot())
             settled = original_settlement(started_at=started_at, **kwargs)
+            combat_settled = combat.response_snapshot()
+            runtime_settled = _witness_runtime_snapshot(combat, bus)
             trace("settlement_done", settled=settled,
-                  combat=combat.response_snapshot())
+                  combat=combat_settled, runtime=runtime_settled)
             engine = window.red_team_engine
             run_id = str(engine.run_id)
+            settlement_evidence[run_id] = settled, combat_settled
+            settlement_runtime[run_id] = runtime_settled
             with marker_lock:
                 expected_markers = dict(marker_digests.get(run_id, {}))
             with marker_lock:
@@ -710,13 +907,29 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                         "modal_errors": modal_errors,
                     }, indent=2), encoding="utf-8",
                 )
-                assert _os_witness_accepts(
-                    pre_witness, expected_markers=36, require_process=True,
-                    require_digest=False,
-                ), pre_witness
-                assert _os_witness_accepts(
-                    witness, expected_markers=36, require_process=True,
-                ), witness
+                for phase, observed, require_digest in (
+                    ("pre", pre_witness, False), ("post", witness, True),
+                ):
+                    accepted = _os_witness_accepts(
+                        observed, expected_markers=36, require_process=True,
+                        require_digest=require_digest,
+                    )
+                    diagnostic = ""
+                    if not accepted:
+                        settled, combat_settled = settlement_evidence.get(handoff.run_id, ({}, {}))
+                        diagnostic = _os_witness_failure_summary(
+                            observed, phase=phase, run_index=run_index,
+                            expected_markers=36, require_process=True,
+                            require_digest=require_digest, report=report,
+                            settled=settled, combat=combat_settled,
+                        )
+                        detail = json.loads(diagnostic)
+                        detail["runtime_at_settlement"] = settlement_runtime.get(handoff.run_id, {})
+                        detail["runtime_at_assertion"] = _witness_runtime_snapshot(combat, bus)
+                        diagnostic = json.dumps(detail, sort_keys=True)
+                        print("ANGERONA_GUI_OS_WITNESS_FAILURE " + diagnostic, flush=True)
+                        trace("os_witness_rejected", summary=json.loads(diagnostic))
+                    assert accepted, diagnostic
                 assert report["coverage_score_eligible"] is True
                 assert report["evidence_taxonomy"]["denominator"] == 37
                 assert report["evidence_taxonomy"]["successful_response"]["count"] == 37

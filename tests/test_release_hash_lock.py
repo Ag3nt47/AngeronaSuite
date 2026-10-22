@@ -113,13 +113,9 @@ def test_windows_pip_bootstrap_is_exact_hash_locked_and_ordered() -> None:
     assert f"{pin}\n" in constraints
 
     launcher = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
-    bootstrap_install = launcher.index(
-        "--require-hashes --no-deps -r requirements-bootstrap-pip.txt"
-    )
-    dependency_install = launcher.index(
-        "--require-hashes --no-deps -r requirements-release-hashed.txt"
-    )
-    assert bootstrap_install < dependency_install
+    supervisor = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
+    assert "Invoke-AngeronaSourceStartup.ps1" in launcher
+    assert "Invoke-AngeronaStartupRepair.ps1" in supervisor
     assert "pip install --upgrade" not in launcher.casefold()
 
     installer = (ROOT / "Install-Angerona.bat").read_text(encoding="utf-8")
@@ -162,17 +158,22 @@ def test_release_workflow_does_not_build_candidate_controlled_inno_setup() -> No
 
 
 def test_unelevated_source_bootstrap_has_no_unhashed_dependency_path() -> None:
-    text = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
+    launcher = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
+    source = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
+    text = (ROOT / "Repair-Angerona-Python.ps1").read_text(encoding="utf-8")
 
-    assert "--require-hashes --no-deps -r requirements-release-hashed.txt" in text
-    assert "--no-build-isolation --no-deps -e ." in text
-    assert "--no-deps \"%TEMP%\\wheels\\srt-0.0.0+angerona.1-py3-none-any.whl\"" in text
+    assert "--require-hashes --no-deps" in text
+    assert "requirements-release-hashed.txt" in text
+    assert "'--no-build-isolation', '--no-deps', '-e'" in text
+    assert "srt-0.0.0+angerona.1-py3-none-any.whl" in text
+    assert "Invoke-AngeronaSourceStartup.ps1" in launcher
+    assert "-FailureCategory $Category -Attempt 1" in source
     assert "-c constraints-release.txt" not in text
     assert "-r requirements.txt" not in text
     assert "--upgrade \"pip==" not in text
     assert "--no-deps \"vosk==" not in text
-    assert "sys.version_info[:2] == (3, 12)" in text
-    assert "sysconfig.get_platform() == 'win-amd64'" in text
+    assert "sys.version_info[:2] == (3, 12)" in source
+    assert "sysconfig.get_platform() == 'win-amd64'" in source
 
 
 def test_source_installer_is_an_unelevated_exact_setup_delegate() -> None:
@@ -180,9 +181,11 @@ def test_source_installer_is_an_unelevated_exact_setup_delegate() -> None:
     launcher = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
 
     assert 'call "%~dp0start-angerona.bat" --source-setup' in installer
-    assert "--require-hashes --no-deps -r requirements-release-hashed.txt" in launcher
-    assert "sys.version_info[:2] == (3, 12)" in launcher
-    assert "sysconfig.get_platform() == 'win-amd64'" in launcher
+    source = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
+    assert "Invoke-AngeronaSourceStartup.ps1" in launcher
+    assert "-SetupOnly" in launcher
+    assert "sys.version_info[:2] == (3, 12)" in source
+    assert "sysconfig.get_platform() == 'win-amd64'" in source
     for text in (installer, launcher):
         lowered = text.casefold()
         assert "-verb runas" not in lowered

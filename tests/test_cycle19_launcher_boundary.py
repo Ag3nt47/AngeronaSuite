@@ -54,17 +54,19 @@ def test_launchers_pin_cmd_owned_windows_root_before_redirect_or_local_code():
 
 def test_canonical_launcher_refuses_an_unreviewed_existing_venv_before_launch():
     canonical = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
+    supervisor = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
 
-    abi_gate = canonical.index(
+    abi_gate = supervisor.index(
         "sys.version_info[:2] == (3, 12) and "
         "sysconfig.get_platform() == 'win-amd64'"
     )
-    pip_gate = canonical.index("m.version('pip') == '26.2.1'")
-    dependency_preflight = canonical.index('"tools\\source_trust_preflight.py"')
-    launch = canonical.index("Start-Process -FilePath $env:ANGERONA_PYTHON")
+    pip_gate = supervisor.index("m.version('pip') == '26.2.1'")
+    dependency_preflight = supervisor.index("Join-Path $Root 'tools\\source_trust_preflight.py'")
+    launch = supervisor.index("return Invoke-SourceStartupAssistant")
 
     assert abi_gate < pip_gate < dependency_preflight < launch
-    assert "Angerona did not modify or delete it." in canonical
+    assert "Enter-RepairLease -Root $Root" in supervisor
+    assert "Invoke-AngeronaSourceStartup.ps1" in canonical
     assert "Repair-Angerona-Python.bat" in canonical
     assert "Install-Angerona-Release.bat" in canonical
 
@@ -73,6 +75,7 @@ def test_source_python_repair_is_confirmed_bounded_and_hash_locked():
     wrapper = (ROOT / "Repair-Angerona-Python.bat").read_text(encoding="utf-8")
     repair = (ROOT / "Repair-Angerona-Python.ps1").read_text(encoding="utf-8")
     ignored = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    common = (ROOT / "tools" / "startup_repair_common.ps1").read_text(encoding="utf-8")
 
     assert "Type REPAIR to continue" in repair
     assert "[IO.Path]::GetFullPath((Join-Path $root 'venv'))" in repair
@@ -87,11 +90,16 @@ def test_source_python_repair_is_confirmed_bounded_and_hash_locked():
         "requirements-release-hashed.txt"
     )
     assert "m.version('pip') == '26.2.1'" in repair
-    assert "venv.incompatible.$stamp" in repair
-    assert "Remove-Item -LiteralPath $venv -Recurse -Force" in repair
-    assert "Move-Item -LiteralPath $backup -Destination $venv" in repair
+    assert "venv.incompatible.repair.$id" in repair
+    assert "Remove-OwnedRepairDirectory" in repair
+    assert "Move-Item -LiteralPath $intent.Backup -Destination $venv" in repair
     assert "Set-Acl" not in repair and "icacls" not in repair.casefold()
-    assert "ANGERONA_DATA" not in repair and "Config" not in repair
+    assert "ANGERONA_DATA" not in repair
+    assert "New-PrivateRepairDirectory" in common
+    assert "SetAccessRuleProtection($true, $false)" in common
+    assert "Enter-RepairLease" in common and "$lease.Lock(0, 1)" in common
+    assert "Enter-CanonicalSourceHelperLease" in repair
+    assert "New-PendingRepairIntent" in repair and "Restore-InterruptedRepair" in repair
     assert "Repair-Angerona-Python.ps1" in wrapper
     assert "/venv.incompatible.*/" in ignored
     assert "/.tmp/repair-wheels/" in ignored

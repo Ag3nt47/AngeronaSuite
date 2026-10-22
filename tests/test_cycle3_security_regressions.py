@@ -203,19 +203,33 @@ def test_source_launcher_refuses_admin_and_uses_user_scoped_storage():
 def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     root = os.path.dirname(os.path.dirname(__file__))
     text = open(os.path.join(root, "start-angerona.bat"), encoding="utf-8").read()
+    supervisor = open(os.path.join(root, "tools/Invoke-AngeronaSourceStartup.ps1"), encoding="utf-8").read()
     assert "call :harden_trust_root" not in text
     assert 'icacls.exe" "%~dp0*" /reset /T' not in text
     assert "Removing an untrusted pre-existing virtual environment" not in text
-    assert text.index(":validate") < text.index(":launch")
-    assert "launcher-preflight.log" in text
-    assert "launcher-stderr.log" in text
-    assert "angerona.startup" in text
-    assert "-PassThru; $p.WaitForExit(); exit $p.ExitCode" in text
-    assert "-PassThru -Wait;" not in text
+    assert '-File "%~dp0tools\\Invoke-AngeronaSourceStartup.ps1" -RepositoryRoot "%~dp0."' in text
+    assert supervisor.index("Assert-SourceStartupBoundary $Root") < supervisor.index(
+        "Enter-RepairLease -Root $Root"
+    ) < supervisor.index("Invoke-OwnedRepairProcess -FilePath $python")
+    assert supervisor.index("Join-Path $Root 'tools\\source_trust_preflight.py'") < supervisor.index(
+        "return Invoke-SourceStartupAssistant"
+    )
+    for log in ("abi.log", "pip.log", "source-trust.log", "launcher-stderr.log"):
+        assert log in supervisor
+    assert "Startup assistant details: $stderr" in supervisor
+    assert "Start-Process -FilePath $Python -ArgumentList @('-m', 'angerona.startup', '--chill')" in supervisor
+    assert "$process.WaitForExit()" in supervisor
+    assert "-PassThru -Wait" not in supervisor
+    assert "-TimeoutSeconds 30" in supervisor
+    assert "$attempt -ge 1" in supervisor
+    assert "-FailureCategory $Category -Attempt 1" in supervisor
     helper = open(os.path.join(root, "src/angerona/startup.py"), encoding="utf-8").read()
+    assert "deadline = time.monotonic() + 30" in helper
+    assert 'QT_QPA_PLATFORM="offscreen"' in helper
     assert "timeout: float = 120" in helper
     assert "wait_dashboard(listener, process" in helper
     assert "Startup will not retry" in helper
     assert "Start-Sleep -Milliseconds 1500" not in text
-    assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r.FullName))" in text
+    assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r))" in text
+    assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($Root))" in supervisor
     assert "$r.PSDrive.DriveType" not in text

@@ -28,6 +28,15 @@ startup and model requests remain blocked in every Chill state, including alert
 escalation, until the operator manually switches Chill off. Self-check records
 the blocked AI capability as a skip, without starting the service.
 
+The source [Safe Startup supervisor](docs/safe-startup.md) can invoke one
+bounded verified repair for recognized runtime, dependency and Tk/Qt failures,
+preserve the old environment, and repeat the complete checks. Checkout/helper
+locks exclude concurrent startup; durable transaction identities gate recovery
+after interruption. Repair uses fixed signed/hash-locked tools, preserves
+operator state and evidence, and retries in Chill without starting Ollama.
+Unknown failures and missing trust, custody or persistent storage stop startup.
+The signed package retains its installer repair boundary.
+
 The current security model separates four kinds of claims:
 
 - **Integrated:** a production path is connected to the application and covered
@@ -408,11 +417,15 @@ not grounds to disable a sensor or conceal a coverage gap.
 - Current read-only inventory: **84 capabilities**, **9 native contracts** and
   **75 compatibility adapters**, without duplicate identity; all implementation
   versions report 1.13.0. The exporter starts no module workers.
-- Current isolated selfcheck (October 21): **28 phases passed / 0 failed**.
+- Startup-repair full regression (October 21): **5,228 passed / 25 skipped**,
+  clean native/session/SystemExit status, completed unconfigure and atexit;
+  1,018 source/lock inputs unchanged, including 1,002 Python files.
+- Current isolated **Chill-locked** selfcheck (October 21): **28 phases passed / 0 failed**.
   Its 84 module rows reconcile to **66 PASS / 18 prerequisite SKIP** results;
   the separate event-pipeline check also passed, as did all nine independent
-  verifier checks. Skips are not live sensor passes.
-  [Timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md).
+  verifier checks. Separate Full-mode diagnostics correctly refused an existing
+  wildcard Ollama listener; that module failure remains recorded. Skips are not
+  live sensor passes. [Startup-repair evidence](analysis/startup-repair-2026-10-21/README.md).
 - Native scan-to-containment, detached-engine lifetime, encrypted recovery and
   the regression-run results are recorded with their scopes in the
   [upgrade validation record](analysis/upgrade-20260923/validation.md).

@@ -356,3 +356,52 @@ hashes, narrow exception scope and the historical snapshot boundary.
 The accepted code run and its exit diagnostics are linked above. Subsequent
 commits receive their own checks in
 [GitHub Actions](https://github.com/Ag3nt47/AngeronaSuite/actions).
+
+## Documentation repetition exposed a separate response assertion
+
+The documentation-only `ee61f3c` preserved the product, test and tool sources
+from `5919c67`. Its [CI repetition](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794787)
+passed 11 of 12 jobs; [Security assurance](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794744)
+passed all three jobs. Python 3.10, 3.12 and 3.13 each passed 5,150 tests with
+12 skips and native exit zero. Python 3.11 passed 5,149, skipped 12 and failed
+one actual GUI containment assertion. Its pytest and native statuses were
+both one, with completed unconfigure and both atexit markers. The earlier
+native access violation did not recur.
+
+The failing signed report recorded 37 simulation detections and zero
+correlated response actions or verified closures. The independent pre-cleanup
+OS witness rejected that result. The report correctly marked containment as
+failed. The truncated hosted witness and absence of uploaded private artifacts
+do not establish which admission, delivery, policy or mutation-circuit branch
+caused the missing responses. The preceding green matrix remains an exact
+historical result, not proof that this separate failure was fixed.
+
+The GUI test now emits bounded, whitelisted failure diagnostics: marker
+basenames and result counts, process-state flags without identities or tokens,
+effective policy, queue decisions, journal circuit flags and subscriber
+delivery/failure counters. Readiness failures also record up to eight selected
+worker code locations without frame locals, arguments or full paths. Original
+deadlines and acceptance predicates remain mandatory.
+
+Two local attempts stopped before the drill. The first missed the existing
+Process Monitor readiness bound. The second also encountered a full local C
+drive while pytest captured its failure diagnostic. A third attempt set child
+temporary directories to a fresh D-drive fixture before Python startup and
+passed both real drills, their signed reports and independent OS witnesses:
+one test passed in 152.80 seconds, native exit zero, unchanged tested sources
+and empty stderr. The two settlements recorded 39 and 78 cumulative executed
+responses, zero pending work, no delivery failures and no mutation circuit
+fault. These diagnostic attempts do not prove that local disk exhaustion
+caused the hosted failure, or that its source cause has been repaired.
+
+A separate private PSF-signed Python 3.11.9 runtime used the failed hosted
+job's 27 dependency versions from hash-verified official wheels. Both drills
+again passed: one test passed in 149.14 seconds, native exit zero, completed
+unconfigure and both atexit markers. Unrelated startup repair files changed
+concurrently, so its whole-source guard was false; this remains diagnostic
+evidence, not frozen release acceptance. The GUI test fingerprint stayed fixed.
+This pass also does not establish the hosted failure's cause.
+
+[Structured follow-up](gui-response-followup.json) retains the failed hosted
+result, all local attempts and their verification limits. Raw logs,
+process identities, tokens and private state remain local ignored artifacts.

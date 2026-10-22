@@ -38,6 +38,22 @@ identifiers, timestamps, and counts are synthetic.
 
 ## What's new
 
+The [automatic startup repair](docs/safe-startup.md#repairs-and-failures)
+supervisor can run one verified runtime/dependency/Tk/Qt repair, preserve the
+previous environment, and repeat the complete startup checks. Concurrent helper
+startup is excluded during repair; interrupted replacement is reconciled from
+private transaction evidence before the environment executes. Retry always
+starts in Chill with Ollama blocked. Unknown failures, trust/custody problems,
+low persistent storage and a live dashboard timeout remain visible failures.
+
+The [startup-repair validation](analysis/startup-repair-2026-10-21/README.md)
+passed **5,228 tests / 25 skipped**, with clean native shutdown and an unchanged
+1,018-file source/lock snapshot. Chill-locked selfcheck passed **28/28 phases**
+and **9/9 independent verifier checks**. Full-mode diagnostics correctly failed
+AI endpoint attestation for an existing wildcard Ollama listener; that finding
+is preserved separately. The observer fixtures now isolate collection to their
+own temporary directories, retaining the original 30-second deadline.
+
 The [hosted CI follow-up](analysis/ci-scan-followup-2026-10-21/README.md)
 corrects the scheduling fixture's observation phase and inherited coordinator
 priority, and records narrow historical exceptions for public source hashes
@@ -47,12 +63,17 @@ a presentation timer querying a deleted dialog during teardown; its window
 checks and destruction handling now prevent that callback error. The test session
 also explicitly releases its own Qt application. Original deadlines and security
 checks remain. Local and hosted validation are recorded separately.
-The complete local rerun passed **5,138 tests / 24 skipped**, with successful
+The earlier correction's local rerun passed **5,138 tests / 24 skipped**, with successful
 native process shutdown and an unchanged 999-file Python source snapshot.
 The [hosted rerun](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727025)
 passed on Python **3.10–3.13: 5,150 passed / 12 skipped per version**, with
 clean native exits. [Security checks](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39681727269)
 also passed.
+A later documentation-only repetition exposed a separate Python 3.11 GUI
+response assertion: the signed report correctly rejected zero containment
+actions. Local Python 3.11 and 3.12 drills passed, but its source cause remains
+unproved. The follow-up records that failure and adds bounded diagnostics
+without changing deadlines or acceptance checks.
 
 The [October 21 timeout investigation](analysis/timeout-rootcause-2026-10-21/README.md)
 corrects sandbox child priority under CPU contention and reduces repeated

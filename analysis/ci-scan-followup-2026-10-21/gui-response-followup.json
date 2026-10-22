@@ -1,0 +1,355 @@
+{
+  "schema": "angerona.gui-response-followup/v1",
+  "date": "2026-10-21",
+  "status": "Hosted zero-action assertion retained; source cause unproved; further exact-version and hosted verification required.",
+  "repeated_published_head": "ee61f3cf82d8ce59dfe3d1dd2a2bf431061d219d",
+  "source_tests_tools_equal_to_preceding_accepted_commit": "5919c670922016985dc69fd6de0b4259d0fe75b7",
+  "workflows": [
+    {
+      "id": 39683794744,
+      "name": "Security assurance",
+      "status": "completed",
+      "conclusion": "success",
+      "head_sha": "ee61f3cf82d8ce59dfe3d1dd2a2bf431061d219d",
+      "html_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794744"
+    },
+    {
+      "id": 39683794787,
+      "name": "CI",
+      "status": "completed",
+      "conclusion": "failure",
+      "head_sha": "ee61f3cf82d8ce59dfe3d1dd2a2bf431061d219d",
+      "html_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794787"
+    }
+  ],
+  "ci_job_successes": 11,
+  "ci_job_failures": 1,
+  "security_job_successes": 3,
+  "python_jobs": [
+    {
+      "job_id": 119512621801,
+      "job_name": "Python 3.10",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794787/job/119512621801",
+      "conclusion": "success",
+      "summary": {
+        "passed": 5150,
+        "skipped": 12,
+        "warnings": 0,
+        "elapsed_seconds": 546.66,
+        "failed": 0
+      },
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 727.593,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 727.843,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 728.031,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "fatal_exception_lines": 0
+    },
+    {
+      "job_id": 119512621660,
+      "job_name": "Python 3.11",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794787/job/119512621660",
+      "conclusion": "failure",
+      "summary": {
+        "passed": 5149,
+        "skipped": 12,
+        "warnings": 0,
+        "elapsed_seconds": 566.97,
+        "failed": 1
+      },
+      "native_process_exit_codes": [
+        1
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 806.609,
+          "exitstatus": 1,
+          "testsfailed": 1,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 806.859,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 807.046,
+          "exit_code": 1,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "fatal_exception_lines": 0
+    },
+    {
+      "job_id": 119512621796,
+      "job_name": "Python 3.12",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794787/job/119512621796",
+      "conclusion": "success",
+      "summary": {
+        "passed": 5150,
+        "skipped": 12,
+        "warnings": 0,
+        "elapsed_seconds": 600.41,
+        "failed": 0
+      },
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 772.343,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 772.578,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 772.75,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "fatal_exception_lines": 0
+    },
+    {
+      "job_id": 119512621683,
+      "job_name": "Python 3.13",
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39683794787/job/119512621683",
+      "conclusion": "success",
+      "summary": {
+        "passed": 5150,
+        "skipped": 12,
+        "warnings": 29,
+        "elapsed_seconds": 623.97,
+        "failed": 0
+      },
+      "native_process_exit_codes": [
+        0
+      ],
+      "session_finish": [
+        {
+          "kind": "session-finish",
+          "monotonic": 1172.7123896,
+          "exitstatus": 0,
+          "testsfailed": 0,
+          "testscollected": 5162
+        }
+      ],
+      "unconfigure_end": [
+        {
+          "kind": "unconfigure-end",
+          "monotonic": 1172.9114257,
+          "completed": true
+        }
+      ],
+      "pytest_system_exit": [
+        {
+          "kind": "pytest-system-exit",
+          "monotonic": 1173.0543431,
+          "exit_code": 0,
+          "exit_code_type": "ExitCode"
+        }
+      ],
+      "atexit_begin": true,
+      "atexit_end": true,
+      "fatal_exception_lines": 0
+    }
+  ],
+  "failed_assertion": {
+    "test": "tests/test_cycle35_redteam_gui_live.py::test_mainwindow_arm_launch_and_deliver_signed_aar_twice",
+    "phase": "Independent pre-AAR-cleanup OS witness acceptance",
+    "printed_report_simulation_detections": 37,
+    "printed_report_planned_positive_steps": 37,
+    "printed_report_correlated_response_actions": 0,
+    "printed_report_verified_closures": 0,
+    "printed_report_containment_outcome": "FAILED",
+    "native_status": "Normal pytest failure 1 with completed cleanup and both atexit markers; earlier access violation did not recur.",
+    "limits": "Truncated witness and absent private artifact upload do not identify the precise refusal, delivery, policy, or mutation-circuit branch."
+  },
+  "local_diagnostic_attempts": [
+    {
+      "attempt": 1,
+      "classification": "Failed the unchanged ten-second Process Monitor readiness check before drill launch; does not reproduce or clear the hosted response failure.",
+      "console_summary": "1 failed in 118.69s (0:01:58)",
+      "native_exit": 1,
+      "pytest_exit": 1,
+      "tests_failed": 1,
+      "tests_collected": 1,
+      "unconfigure_completed": true,
+      "both_atexit_markers": true,
+      "sources_unchanged": true,
+      "guard": "999 normalized Python source hashes",
+      "summary_sha256": "20f432ec96922829b85117bc3e8a187e494a88a1fe21c102112c5efd6923c8e9"
+    },
+    {
+      "attempt": 2,
+      "classification": "Again missed readiness; the new failure diagnostic then hit ENOSPC in pytest output capture on the full C drive. No witness or settlement was reached.",
+      "console_summary": "1 failed in 120.91s (0:02:00)",
+      "native_exit": 1,
+      "pytest_exit": 1,
+      "tests_failed": 1,
+      "tests_collected": 1,
+      "unconfigure_completed": true,
+      "both_atexit_markers": true,
+      "sources_unchanged": true,
+      "guard": "HEAD plus binary working-tree patch; no untracked source; diagnostic reproduction only",
+      "summary_sha256": "c46bbabca9785f8f75a4381690dd8d69a7e36107f2cc23ed2df581efba7b76fc"
+    },
+    {
+      "attempt": 3,
+      "classification": "Fresh D-drive child TEMP/TMP/TMPDIR; both actual drill runs and their independent OS witnesses passed. Hosted zero-action cause remains unproved.",
+      "console_summary": "1 passed in 152.80s (0:02:32)",
+      "native_exit": 0,
+      "pytest_exit": 0,
+      "tests_failed": 0,
+      "tests_collected": 1,
+      "unconfigure_completed": true,
+      "both_atexit_markers": true,
+      "sources_unchanged": true,
+      "guard": "HEAD plus binary working-tree patch; no untracked source; diagnostic reproduction only",
+      "summary_sha256": "56bc55f2e756aacea14baab10859446543c16da8e5c6ec19c1617ea767420d5c"
+    }
+  ],
+  "passing_attempt_settlements": [
+    {
+      "run_index": 1,
+      "pending": 0,
+      "timed_out": false,
+      "combat_state": "ARMED",
+      "queue_drops": 0,
+      "cumulative_queued": 39,
+      "cumulative_executed": 39,
+      "journal_error_present": false,
+      "mutation_blocked": false,
+      "journal_saturated": false,
+      "submit_current": [
+        {
+          "deliveries": 99,
+          "failures": 0,
+          "budget_violations": 0
+        }
+      ],
+      "aar_outcome": "verified"
+    },
+    {
+      "run_index": 2,
+      "pending": 0,
+      "timed_out": false,
+      "combat_state": "ARMED",
+      "queue_drops": 0,
+      "cumulative_queued": 78,
+      "cumulative_executed": 78,
+      "journal_error_present": false,
+      "mutation_blocked": false,
+      "journal_saturated": false,
+      "submit_current": [
+        {
+          "deliveries": 183,
+          "failures": 0,
+          "budget_violations": 0
+        }
+      ],
+      "aar_outcome": "verified"
+    }
+  ],
+  "qualifications": [
+    "No claim that local C-drive exhaustion caused the hosted failure.",
+    "No comparison of diagnostic wall time is a product performance benchmark; source inventory, collection and host conditions differ.",
+    "Original readiness, launch, settlement and independent witness requirements remain mandatory.",
+    "Raw logs, paths, PID/birth identities, process tokens and private state remain ignored local artifacts."
+  ],
+  "private_python311_diagnostic": {
+    "interpreter": "PSF-signed CPython 3.11.9, official archive SHA-256 verified",
+    "dependency_versions": "27 exact versions from the failed hosted job, hash-locked official PyPI wheels",
+    "console_summary": "1 passed in 149.14s (0:02:29)",
+    "native_exit": 0,
+    "unconfigure_completed": true,
+    "both_atexit_markers": true,
+    "sources_unchanged": false,
+    "source_guard_qualification": "Unrelated startup repair files changed concurrently. GUI test SHA remained fixed; this is a diagnostic reproduction, not frozen release acceptance.",
+    "diagnostic_test_normalized_sha256": "45062ead8a863a1a63e65238661de8c9f2ad355d176a8dc140267a5a3de2ad6a",
+    "settlements": [
+      {
+        "run_index": 1,
+        "pending": 0,
+        "timed_out": false,
+        "cumulative_executed": 39,
+        "queue_drops": 0,
+        "submit_current": [
+          {
+            "deliveries": 92,
+            "failures": 0,
+            "budget_violations": 0
+          }
+        ],
+        "mutation_blocked": false,
+        "journal_error_present": false,
+        "aar_outcome": "verified"
+      },
+      {
+        "run_index": 2,
+        "pending": 0,
+        "timed_out": false,
+        "cumulative_executed": 78,
+        "queue_drops": 0,
+        "submit_current": [
+          {
+            "deliveries": 195,
+            "failures": 0,
+            "budget_violations": 0
+          }
+        ],
+        "mutation_blocked": false,
+        "journal_error_present": false,
+        "aar_outcome": "verified"
+      }
+    ],
+    "summary_sha256": "ea4e0e5368cdf13e5ab706bd50389aff9635858f39aeec55d16f5b3018e28e28",
+    "setup_receipt_sha256": "bf7d2160badbd4af99c22d8a386fa041b0a3d94f939f6b81667633e5e5dac903",
+    "versions_comparison_sha256": "deb63432f728b65bac9343f65446e09856cea6f1d771266b4eeb292e02d53954"
+  }
+}

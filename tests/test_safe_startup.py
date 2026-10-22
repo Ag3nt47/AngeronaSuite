@@ -256,7 +256,7 @@ def test_low_disk_failure_preserves_existing_state_and_creates_no_probe(tmp_path
     with pytest.raises(startup.StartupError, match="128 MB"):
         startup.prepare_storage(root)
     assert evidence.read_bytes() == b"existing settings"
-    assert list((root / "tmp").iterdir()) == []
+    assert not (root / "tmp").exists()
 
 
 def test_storage_failed_flush_removes_only_its_own_probe(tmp_path, monkeypatch) -> None:
@@ -470,13 +470,17 @@ def test_source_probe_cancellation_and_timeout_only_kill_disposable_probe(
     startup.prepare_storage(plan.storage)
     process = Process()
     launched = []
-    monkeypatch.setattr(startup.subprocess, "Popen", lambda *args, **kwargs: launched.append((args, kwargs)) or process)
     cancel = threading.Event()
-    if reason == "cancel":
-        cancel.set()
-    else:
-        cancel = SimpleNamespace(wait=lambda _timeout: False)
-        clock = iter([0, 31])
+    def launch(*args, **kwargs):
+        launched.append((args, kwargs))
+        if reason == "cancel":
+            cancel.set()
+        return process
+
+    monkeypatch.setattr(startup.subprocess, "Popen", launch)
+    if reason == "timeout":
+        cancel = SimpleNamespace(wait=lambda _timeout: False, is_set=lambda: False)
+        clock = iter([0, 0.1, 31])
         monkeypatch.setattr(startup.time, "monotonic", lambda: next(clock))
     with pytest.raises(startup.StartupError, match="cancelled or timed out"):
         startup.probe_source(plan, {}, cancel)
@@ -484,6 +488,7 @@ def test_source_probe_cancellation_and_timeout_only_kill_disposable_probe(
     assert len(launched) == 1
     assert launched[0][0][0][:2] == [plan.command[0], "-c"]
     assert launched[0][1]["env"]["QT_QPA_PLATFORM"] == "offscreen"
+    assert launched[0][1]["env"]["PIP_CONFIG_FILE"] == os.devnull
 
 
 def test_failed_dependency_probe_preserves_settings_and_evidence(tmp_path, monkeypatch) -> None:
@@ -546,6 +551,7 @@ def test_cancelled_startup_never_launches_dashboard_and_releases_lease(tmp_path,
 
 def _fake_tk(monkeypatch, *, close_after_dispatch=None):
     """Run Tk's callback contract without opening a real desktop window."""
+    monkeypatch.setattr(startup, "_interface_lease", lambda: SimpleNamespace(close=lambda: None))
     widgets = []
 
     class Widget:
@@ -647,7 +653,7 @@ def test_helper_ui_closes_on_ready_and_keeps_errors_visible_until_user_closes(
 
     window, widgets = _fake_tk(monkeypatch, close_after_dispatch=user_closes_error_window)
 
-    def run(report, cancel, *, setup):
+    def run(report, cancel, *, setup, **_kwargs):
         runs.append((cancel, setup))
         report("Checking the isolated installation")
         if failure:
@@ -711,6 +717,31 @@ def test_closing_helper_retains_worker_until_its_owned_probe_is_reaped(tmp_path,
             thread.join(timeout=2)
     assert not threads[0].is_alive()
     assert process.actions == ["kill", ("wait", 5)]
+
+
+@pytest.mark.parametrize("code", [81, 82, 83])
+def test_closed_pre_dashboard_failure_exits_helper_for_parent_owned_repair(monkeypatch, code):
+    window, widgets = _fake_tk(monkeypatch)
+
+    def failed_probe(*_args, **_kwargs):
+        raise startup.RepairableStartupError(code, "Synthetic reviewed startup failure")
+
+    monkeypatch.setattr(startup, "run_startup", failed_probe)
+    monkeypatch.setattr(startup.threading, "Thread", lambda **kwargs: SimpleNamespace(start=kwargs["target"]))
+    monkeypatch.setattr(startup.sys, "argv", ["AngeronaStartup.exe"])
+    assert startup.main() == code
+    assert window.destroyed
+    assert 250 in window.scheduled_delays
+    assert any("one verified repair" in text for widget in widgets for text in widget.text)
+
+
+def test_check_only_runs_all_startup_checks_without_constructing_tk(monkeypatch):
+    calls = []
+    monkeypatch.setattr(startup, "run_startup", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(startup, "_startup_window", lambda *_args: pytest.fail("A check-only probe must not create Tk"))
+    monkeypatch.setattr(startup.sys, "argv", ["startup", "--check-only", "--chill"])
+    assert startup.main() == 0
+    assert calls == [{"check_only": True}]
 
 
 def test_malformed_readiness_endpoint_rejected_after_uac_without_runtime_writes(monkeypatch) -> None:

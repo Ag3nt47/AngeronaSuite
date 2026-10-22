@@ -35,8 +35,14 @@ def _run(tmp_path, arguments, *, fake_body=None, journal_initial=None, environme
         (package / "__init__.py").write_text("", encoding="utf-8")
         (package / "__main__.py").write_text(fake_body, encoding="utf-8")
         environment["PYTHONPATH"] = str(tmp_path)
+    child_arguments = list(arguments)
+    if fake_body is None:
+        # An explicit file can still make pytest enumerate all ancestor
+        # directories. Keep real inert probes inside their owned fixture;
+        # accumulated repository scratch must not consume the 30s deadline.
+        child_arguments[:0] = ["--confcutdir", str(tmp_path), "--rootdir", str(tmp_path)]
     result = subprocess.run(
-        [sys.executable, "-X", "faulthandler", "-m", "tools.ci_pytest", *arguments],
+        [sys.executable, "-X", "faulthandler", "-m", "tools.ci_pytest", *child_arguments],
         cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
@@ -139,6 +145,33 @@ def test_actual_pytest_records_final_session_and_unconfigure_status(tmp_path, pa
         "unconfigure-begin", "unconfigure-end", "session-end",
     ]
     assert phases[-2]["completed"] is True
+
+
+def test_real_probe_collection_never_visits_ancestor_scratch(tmp_path):
+    visited = tmp_path / "visited.jsonl"
+    (tmp_path / "boundary_plugin.py").write_text(
+        "import json, os\nfrom pathlib import Path\nimport pytest\n"
+        "@pytest.hookimpl(tryfirst=True)\n"
+        "def pytest_collect_directory(path, parent):\n"
+        "    expected = Path(os.environ['ANGERONA_PROBE_COLLECTION_ROOT'])\n"
+        "    assert path == expected, 'inert probe escaped its owned collection root'\n"
+        "    with (expected / 'visited.jsonl').open('a', encoding='utf-8') as stream:\n"
+        "        stream.write(json.dumps({'owned': path == expected}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    probe = tmp_path / "test_inert_probe.py"
+    probe.write_text("def test_inert_probe():\n    assert True\n", encoding="utf-8")
+    result, records, trace = _run(
+        tmp_path, ["-q", "-p", "tools.pytest_execution_trace", "-p", "boundary_plugin", str(probe)],
+        environment_updates={"PYTHONPATH": str(tmp_path), "ANGERONA_PROBE_COLLECTION_ROOT": str(tmp_path)},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert [json.loads(line) for line in visited.read_text(encoding="utf-8").splitlines()] == [{"owned": True}]
+    phases = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    finish = next(row for row in phases if row["kind"] == "session-finish")
+    assert finish["testscollected"] == 1 and finish["exitstatus"] == 0
+    assert any(row["kind"] == "pytest-system-exit" and row["exit_code"] == 0 for row in records)
+    assert {"python-atexit-begin", "python-atexit-end"} <= {row["kind"] for row in records}
 
 
 def test_broken_trace_write_and_close_preserve_original_unconfigure_exception(tmp_path):

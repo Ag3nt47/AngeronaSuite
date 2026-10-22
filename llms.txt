@@ -22,8 +22,42 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.13.0 — Timeout investigation, 2026-10-21)
+## LATEST (v1.13.0 — Startup repair and validation, 2026-10-21)
 
+- Source automatic repair: docs/safe-startup.md and
+  analysis/startup-repair-2026-10-21/README.md. A fixed supervisor handles only
+  recognized runtime/dependency/Tk/Qt outcomes, invokes the repair tool once,
+  independently verifies the candidate at its final path and repeats all
+  startup checks. Both checkout and canonical helper leases exclude concurrent
+  startup. Durable private identities precede renames; interrupted promotion
+  must reconcile before any environment process executes. Ambiguous evidence,
+  trust failure, low persistent storage, cancellation and live dashboard
+  timeout cannot trigger a repair loop. Settings/evidence are preserved; no
+  AI/model tools or Chill unlock. Packaged installs retain installer repair.
+- Frozen startup-repair full suite: 5,228 passed / 25 skipped / 5,253 collected;
+  native/session/SystemExit zero, completed unconfigure, both atexit markers,
+  empty stderr. All 1,018 source/lock inputs (1,002 Python) unchanged under
+  newline-normalized fingerprints. Two actual GUI drills passed the original
+  37-positive-closure and independent OS-witness assertions each.
+  Chill-locked selfcheck: 28/28 phases, 84 modules (66 PASS/18 SKIP), 558 module
+  subchecks (528 PASS/30 SKIP), nine independent verifiers all PASS. Separate
+  Full-profile diagnostics correctly refused an existing wildcard Ollama
+  listener; its module FAIL and all nine passing verifier checks are retained.
+  No unowned daemon was stopped or reconfigured. Structured evidence:
+  analysis/startup-repair-2026-10-21/verification.json.
+- The inert CI-observer fixture now sets pytest rootdir/confcutdir to its own
+  temporary directory. A negative control reproduces ancestor traversal refusal;
+  the fixed probe visits only its own directory. Its 30-second deadline and
+  native/session/unconfigure/atexit acceptance checks remain unchanged.
+- A documentation-only repetition at ee61f3c passed 11/12 CI jobs and 3/3
+  security jobs. Python 3.11 failed one GUI independent OS containment witness:
+  its signed report correctly recorded zero response actions and failed
+  containment. Native/session statuses were one with normal cleanup; the
+  earlier native crash did not recur. Local Python 3.11/3.12 drills passed,
+  but this separate source cause remains unproved. Failure-only safe counters
+  now preserve admission/policy/queue/journal/delivery and worker locations.
+  Original deadlines and predicates remain. Structured record:
+  analysis/ci-scan-followup-2026-10-21/gui-response-followup.json.
 - Hosted follow-up: analysis/ci-scan-followup-2026-10-21/README.md. The scheduling
   fixture observes its finite peer at completed bounded output, separately from
   later cleanup. Its coordinator explicitly starts at normal priority while the

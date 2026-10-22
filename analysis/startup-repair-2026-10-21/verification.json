@@ -1,0 +1,819 @@
+{
+  "schema": "angerona.startup-repair-validation/v1",
+  "created_utc": "2026-10-22T00:07:14.743698+00:00",
+  "version": "1.13.0",
+  "focused_gates": {
+    "startup_flow": {
+      "passed": 154,
+      "skipped": 1,
+      "seconds": 35.7
+    },
+    "repair_tools": {
+      "passed": 32,
+      "execution": "31 cases in 145.68s plus final actual pip loader regression in 4.61s"
+    },
+    "security_review": {
+      "resolved_findings": 3,
+      "remaining_concrete_blockers": 0
+    },
+    "delegated_launcher_contracts": {
+      "passed": 25,
+      "seconds": 5.6
+    },
+    "ci_observer": {
+      "passed": 13,
+      "seconds": 15.08,
+      "child_deadline_seconds": 30
+    }
+  },
+  "excluded_interrupted_candidate": {
+    "completed_full_suite": false,
+    "observed_failures": [
+      "tests/test_ci_pytest.py::test_actual_pytest_records_final_session_and_unconfigure_status[True]: real inert child timed out during collection",
+      "tests/test_cycle26_source_authority.py::test_delegates_and_desktop_shortcut_reach_only_canonical_source_launcher: stale inline BAT dependency expectation"
+    ],
+    "review_also_found_stale_contract": "tests/test_cycle3_security_regressions.py::test_source_launcher_is_bounded_and_reports_early_startup_failures",
+    "stop_reason": "The agent stopped only its verified owned pytest process after sufficient failure evidence, before applying fixes and restarting the full suite.",
+    "native_exit_is_deliberate_termination": 4294967295,
+    "sources_unchanged": true,
+    "summary_sha256": "536f2ebec2e8aeeb5e91832d7d94d1b47fa4573dd11ce87d5439927b263d057e",
+    "dependent_selfcheck_correctly_refused_to_run": true
+  },
+  "inert_collection_boundary_controls": {
+    "mechanism": "Pytest traversed ancestor scratch directories even for an explicit inert probe file; the fixture now fixes rootdir/confcutdir to its own temporary directory.",
+    "original_sibling_pretest_collection_seconds": 16.468,
+    "isolated_profile_pretest_collection_seconds": 0.062,
+    "unchanged_child_deadline_seconds": 30,
+    "old_behavior_control": {
+      "native_exit": 2,
+      "session_exit": 2,
+      "collected": 0,
+      "boundary_rejected": true,
+      "seconds": 2.11
+    },
+    "fixed_behavior_control": {
+      "native_exit": 0,
+      "session_exit": 0,
+      "collected": 1,
+      "only_owned_directory_visited": true,
+      "seconds": 1.328
+    },
+    "both_controls_completed_unconfigure_and_atexit": true,
+    "receipt_sha256": "4e359263ae757f1fc4af54f5fcab15bc077846585c04c1541fec03c3e6963e52",
+    "limit": "Ancestor metadata fanout is reproduced; exact cold/contended filesystem latency at the original timeout was not captured. Component profiles are not whole-product performance benchmarks."
+  },
+  "full_suite": {
+    "python": "3.12",
+    "passed": 5228,
+    "skipped": 25,
+    "collected": 5253,
+    "failures": 0,
+    "errors": 0,
+    "console_summary": "5228 passed, 25 skipped in 2543.25s (0:42:23)",
+    "supervisor_seconds_including_postrun_source_readback": 2615.5939999999828,
+    "native_exit": 0,
+    "session_exit": 0,
+    "system_exit": 0,
+    "unconfigure_completed": true,
+    "both_atexit_markers": true,
+    "stderr_bytes": 0,
+    "sources_unchanged": true,
+    "selected_regression_groups": {
+      "chill_regressions": {
+        "statuses": {
+          "passed": 128
+        },
+        "files": [
+          "tests/test_chill_ai_lock.py",
+          "tests/test_chill_live_idle_io.py",
+          "tests/test_chill_mode.py",
+          "tests/test_chill_optional_runtime.py",
+          "tests/test_chill_presentation_budget.py",
+          "tests/test_chill_resilience_restart.py",
+          "tests/test_chill_ui_idle.py",
+          "tests/test_deep_review_round2_semantic_chill.py",
+          "tests/test_headless_chill_runtime.py",
+          "tests/test_recorder_chill_efficiency.py"
+        ],
+        "scope": "Component/contract regression fixtures within the full run; not a whole-host benchmark"
+      },
+      "performance_regressions": {
+        "statuses": {
+          "passed": 98
+        },
+        "files": [
+          "tests/test_adaptation_performance.py",
+          "tests/test_cycle15_performance.py",
+          "tests/test_cycle15_system_pulse_performance.py",
+          "tests/test_cycle19_performance.py",
+          "tests/test_cycle2_round3_performance.py",
+          "tests/test_cycle34_round2_performance.py",
+          "tests/test_cycle34_round3_performance.py",
+          "tests/test_cycle3_round1_performance.py",
+          "tests/test_cycle4_performance_full_sweep.py",
+          "tests/test_cycle4_round1_performance.py",
+          "tests/test_cycle7_round2_performance.py",
+          "tests/test_etw_pid_cache_performance.py",
+          "tests/test_performance_lifecycle.py",
+          "tests/test_round7_performance_boundaries.py",
+          "tests/test_runbook_rag_performance.py",
+          "tests/test_runtime_growth_performance.py",
+          "tests/test_upgrade_console_performance.py",
+          "tests/test_v12_final_performance.py",
+          "tests/test_v12_round2_performance.py"
+        ],
+        "scope": "Component/contract regression fixtures within the full run; not a whole-host benchmark"
+      },
+      "selfcheck_regressions": {
+        "statuses": {
+          "passed": 27
+        },
+        "files": [
+          "tests/test_selfcheck_drill_cleanup.py",
+          "tests/test_selfcheck_policy.py"
+        ],
+        "scope": "Component/contract regression fixtures within the full run; not a whole-host benchmark"
+      }
+    },
+    "actual_gui_drills": {
+      "passed_drills": 2,
+      "required_verified_positive_closures_per_drill": 37,
+      "independent_pre_and_post_os_witness_assertions": "passed",
+      "settlements": [
+        {
+          "run_index": 1,
+          "pending": 0,
+          "timed_out": false,
+          "queue_drops": 0,
+          "cumulative_executed": 39,
+          "submit_current": [
+            {
+              "deliveries": 99,
+              "failures": 0,
+              "budget_violations": 0
+            }
+          ],
+          "mutation_blocked": false,
+          "journal_error_present": false
+        },
+        {
+          "run_index": 2,
+          "pending": 0,
+          "timed_out": false,
+          "queue_drops": 0,
+          "cumulative_executed": 78,
+          "submit_current": [
+            {
+              "deliveries": 192,
+              "failures": 0,
+              "budget_violations": 0
+            }
+          ],
+          "mutation_blocked": false,
+          "journal_error_present": false
+        }
+      ],
+      "private_trace_sha256": "4b5d0097ea95b78a7186741a741a445831fb2a20215f410803bb4b671e9cb5f0",
+      "scope": "Inert simulation containment, not native attack detection efficacy. Passing repeats do not prove the cause of the earlier ee61 hosted failure."
+    },
+    "source_count": 1018,
+    "python_source_count": 1002,
+    "source_scope": "Python/PowerShell/batch sources under src/tests/tools plus root launch/repair and dependency lock inputs",
+    "source_hash_normalization": "CRLF and CR converted to LF; all other source bytes retained",
+    "evidence_sha256": {
+      ".summary.json": "a1927bb303c0257a6437eeb3042ecb7969e74d5253b03f2bcfe92028cac5dd62",
+      ".before.json": "a6037fdf2f478f2b1c74c62108cb48072c7c2886a0349d3fee7d7542245dfe81",
+      ".after.json": "a6037fdf2f478f2b1c74c62108cb48072c7c2886a0349d3fee7d7542245dfe81",
+      ".trace.jsonl": "3261757279acda49bd5cfcf2c48477962842988e4039d3bc3de3f1533fe82e1a",
+      ".exit.jsonl": "0e5d1cb08131515a9b2722c18fc4355dac9c8a515875d07e79fa311417685b0a",
+      ".xml": "76f9c69b04b5fac82e1e9763b5bf4f7cf4ad90df8018461eaef62c5ff25d2e77"
+    }
+  },
+  "selfcheck": {
+    "runtime_mode": "Chill operator AI lock enabled",
+    "status": "passed",
+    "native_harness_verdict": 0,
+    "seconds": 39.5,
+    "report": {
+      "run_id": "c71073d72a03499cb2f9776c825d6278",
+      "phases": {
+        "count": 28,
+        "statuses": {
+          "PASS": 28
+        },
+        "rows": [
+          {
+            "phase": "discover modules",
+            "status": "PASS",
+            "duration_ms": 3667.979000019841
+          },
+          {
+            "phase": "SelfTestRunner over all modules",
+            "status": "PASS",
+            "duration_ms": 1936.06329994509
+          },
+          {
+            "phase": "Self-test verification \u2014 canaries, inventory coverage and saved report readback",
+            "status": "PASS",
+            "duration_ms": 4.96779999230057
+          },
+          {
+            "phase": "Self-test performance \u2014 constrained hardware worker budget and completion",
+            "status": "PASS",
+            "duration_ms": 97.70509996451437
+          },
+          {
+            "phase": "build MainWindow",
+            "status": "PASS",
+            "duration_ms": 2194.4693000405096
+          },
+          {
+            "phase": "DashboardCards.refresh",
+            "status": "PASS",
+            "duration_ms": 49.056700023356825
+          },
+          {
+            "phase": "EventsWindow \u2014 Alerts (LOW+)",
+            "status": "PASS",
+            "duration_ms": 312.4410000164062
+          },
+          {
+            "phase": "EventsWindow \u2014 Critical",
+            "status": "PASS",
+            "duration_ms": 81.02089999010786
+          },
+          {
+            "phase": "ModulesStatusWindow",
+            "status": "PASS",
+            "duration_ms": 115.03599997377023
+          },
+          {
+            "phase": "ThreatWindow \u2014 refresh + select + posture lookup",
+            "status": "PASS",
+            "duration_ms": 27.011799975298345
+          },
+          {
+            "phase": "ModuleInspector \u2014 build for first module",
+            "status": "PASS",
+            "duration_ms": 222.81830001156777
+          },
+          {
+            "phase": "process-mitigation self-hardening",
+            "status": "PASS",
+            "duration_ms": 0.3258000360801816
+          },
+          {
+            "phase": "Judgment Gate \u2014 stamp / verify / tamper-detect",
+            "status": "PASS",
+            "duration_ms": 1404.0709999972023
+          },
+          {
+            "phase": "Ring 1 Driver-Intel Shield (INTL + FIM + shark)",
+            "status": "PASS",
+            "duration_ms": 0.20670000230893493
+          },
+          {
+            "phase": "Timing jitter (os.urandom, anti-TOCTOU)",
+            "status": "PASS",
+            "duration_ms": 0.5434000049717724
+          },
+          {
+            "phase": "Blast-radius tree + Shark-vs-Shield collision view",
+            "status": "PASS",
+            "duration_ms": 21.770399995148182
+          },
+          {
+            "phase": "Unified Red Team Simulation (dialog + engine params)",
+            "status": "PASS",
+            "duration_ms": 24.34420003555715
+          },
+          {
+            "phase": "Red Team drill \u2014 LIVE run (complexity + custom + target)",
+            "status": "PASS",
+            "duration_ms": 14657.224799972028
+          },
+          {
+            "phase": "Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)",
+            "status": "PASS",
+            "duration_ms": 1938.2412999984808
+          },
+          {
+            "phase": "Console cmds + custom library CRUD + two-pane monitor",
+            "status": "PASS",
+            "duration_ms": 77.99850002629682
+          },
+          {
+            "phase": "AI guardrail proxy + hardware-patching layer",
+            "status": "PASS",
+            "duration_ms": 41.602900018915534
+          },
+          {
+            "phase": "Sprint-1 remediations (guardrail token/neutralize + gate TOCTOU)",
+            "status": "PASS",
+            "duration_ms": 1523.601500026416
+          },
+          {
+            "phase": "Vetted remediation (inert path proposals + gated host actions)",
+            "status": "PASS",
+            "duration_ms": 1249.5381999760866
+          },
+          {
+            "phase": "Persistence Sweep (autorun classifier + discovery)",
+            "status": "PASS",
+            "duration_ms": 0.16279995907098055
+          },
+          {
+            "phase": "ATT&CK coverage heatmap (honest, cross-checked vs ACTIONS)",
+            "status": "PASS",
+            "duration_ms": 4.786400008015335
+          },
+          {
+            "phase": "Incident correlation (grouping + scoring + window split)",
+            "status": "PASS",
+            "duration_ms": 7.389499980490655
+          },
+          {
+            "phase": "World View \u2192 native Qt flow window (live)",
+            "status": "PASS",
+            "duration_ms": 230.48289999132976
+          },
+          {
+            "phase": "Speed pass (WAL + ledger cap + audit-count cache)",
+            "status": "PASS",
+            "duration_ms": 5564.0157999587245
+          }
+        ]
+      },
+      "modules": {
+        "count": 84,
+        "statuses": {
+          "PASS": 66,
+          "SKIP": 18
+        }
+      },
+      "nonmodule_results": {
+        "count": 1,
+        "statuses": {
+          "PASS": 1
+        }
+      },
+      "module_subchecks": {
+        "count": 558,
+        "statuses": {
+          "PASS": 528,
+          "SKIP": 30
+        },
+        "check_names": {
+          "identity": 84,
+          "self_test_callable": 84,
+          "capability_metadata": 84,
+          "health_contract": 84,
+          "result_contract": 72,
+          "active_test": 84,
+          "health_result_consistency": 66
+        },
+        "minimum_per_module": 5,
+        "maximum_per_module": 7
+      },
+      "verification": {
+        "status": "PASS",
+        "count": 9,
+        "statuses": {
+          "PASS": 9
+        },
+        "duration_ms": 31.000000017229468,
+        "checks": [
+          {
+            "check": "success canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "failure canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "exception canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "malformed-result canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "timeout canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "disabled skip canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "platform skip canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "corrupt-accounting canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "report reconciliation",
+            "status": "PASS",
+            "duration_ms": null
+          }
+        ]
+      },
+      "module_metrics": {
+        "elapsed_ms": 1860.0000000442378,
+        "timing_scope": "checks and verification; excludes report I/O and notifications",
+        "module_workers": 4,
+        "worker_budget": "8 logical CPUs; 2574 MiB available RAM; pacing 1x",
+        "module_count": 84,
+        "slowest_modules": [
+          {
+            "module": "Monolithic Packaging",
+            "duration_ms": 1625.0
+          },
+          {
+            "module": "Posture Hardening",
+            "duration_ms": 1577.999999979511
+          },
+          {
+            "module": "Temporal Tradecraft Correlator",
+            "duration_ms": 391.00000000325963
+          },
+          {
+            "module": "WLAN Monitor",
+            "duration_ms": 327.9999999795109
+          },
+          {
+            "module": "Active Deception",
+            "duration_ms": 172.0000000204891
+          },
+          {
+            "module": "Compliance Mapper",
+            "duration_ms": 92.99999999348074
+          },
+          {
+            "module": "API Patch / Anti-Blinding Detector",
+            "duration_ms": 78.00000003771856
+          },
+          {
+            "module": "Anti-Suspension Heartbeat",
+            "duration_ms": 78.00000003771856
+          },
+          {
+            "module": "ETW Core Listener",
+            "duration_ms": 63.000000023748726
+          },
+          {
+            "module": "Storage Hygiene Enforcer",
+            "duration_ms": 47.0000000204891
+          }
+        ]
+      },
+      "reconciliation": {
+        "phase_pass_count": true,
+        "phase_failure_count": true,
+        "module_count": true,
+        "unique_module_names": true,
+        "modules_have_checks": true,
+        "no_phase_failures": true,
+        "valid_module_statuses": true,
+        "valid_subcheck_statuses": true,
+        "verifier_passes": true,
+        "all_required_verifiers_present": true
+      },
+      "reconciled": true
+    },
+    "native_scope": "Existing self-check harness uses its established os._exit policy; native zero is its harness verdict, not evidence of normal interpreter shutdown. Independent lifecycle gates establish normal shutdown.",
+    "report_sha256": "6071b2c8b011cd3bcdc081324dc0ed55e5135db7b788bdda4d469faefdff7be7",
+    "summary_sha256": "c76169d6cc08ff2ab07c4417d209aac9cf6af85e819baa868b973fe0456bef52"
+  },
+  "full_ai_profile_security_refusal": {
+    "runtime_mode": "AI lock cleared for Full capability diagnostics",
+    "status": "failed as intended for the observed unsafe listener",
+    "native_harness_verdict": 1,
+    "reason": "AI Triage (Ollama) refused a local wildcard listener during endpoint attestation",
+    "report": {
+      "run_id": "478b33f526424d56bfdd614399c28e13",
+      "phases": {
+        "count": 28,
+        "statuses": {
+          "PASS": 27,
+          "FAIL": 1
+        },
+        "rows": [
+          {
+            "phase": "discover modules",
+            "status": "PASS",
+            "duration_ms": 5268.069099984132
+          },
+          {
+            "phase": "SelfTestRunner over all modules",
+            "status": "FAIL",
+            "duration_ms": 1848.4472000272945
+          },
+          {
+            "phase": "Self-test verification \u2014 canaries, inventory coverage and saved report readback",
+            "status": "PASS",
+            "duration_ms": 1.620899944100529
+          },
+          {
+            "phase": "Self-test performance \u2014 constrained hardware worker budget and completion",
+            "status": "PASS",
+            "duration_ms": 73.96459998562932
+          },
+          {
+            "phase": "build MainWindow",
+            "status": "PASS",
+            "duration_ms": 2772.7294000214897
+          },
+          {
+            "phase": "DashboardCards.refresh",
+            "status": "PASS",
+            "duration_ms": 6.833699997514486
+          },
+          {
+            "phase": "EventsWindow \u2014 Alerts (LOW+)",
+            "status": "PASS",
+            "duration_ms": 274.8352999915369
+          },
+          {
+            "phase": "EventsWindow \u2014 Critical",
+            "status": "PASS",
+            "duration_ms": 126.51079997885972
+          },
+          {
+            "phase": "ModulesStatusWindow",
+            "status": "PASS",
+            "duration_ms": 103.75010001007468
+          },
+          {
+            "phase": "ThreatWindow \u2014 refresh + select + posture lookup",
+            "status": "PASS",
+            "duration_ms": 36.76909999921918
+          },
+          {
+            "phase": "ModuleInspector \u2014 build for first module",
+            "status": "PASS",
+            "duration_ms": 204.65369999874383
+          },
+          {
+            "phase": "process-mitigation self-hardening",
+            "status": "PASS",
+            "duration_ms": 0.37029996747151017
+          },
+          {
+            "phase": "Judgment Gate \u2014 stamp / verify / tamper-detect",
+            "status": "PASS",
+            "duration_ms": 1189.2932000337169
+          },
+          {
+            "phase": "Ring 1 Driver-Intel Shield (INTL + FIM + shark)",
+            "status": "PASS",
+            "duration_ms": 0.3483999753370881
+          },
+          {
+            "phase": "Timing jitter (os.urandom, anti-TOCTOU)",
+            "status": "PASS",
+            "duration_ms": 1.0283999727107584
+          },
+          {
+            "phase": "Blast-radius tree + Shark-vs-Shield collision view",
+            "status": "PASS",
+            "duration_ms": 22.357100038789213
+          },
+          {
+            "phase": "Unified Red Team Simulation (dialog + engine params)",
+            "status": "PASS",
+            "duration_ms": 13.187100004870445
+          },
+          {
+            "phase": "Red Team drill \u2014 LIVE run (complexity + custom + target)",
+            "status": "PASS",
+            "duration_ms": 15027.958800026681
+          },
+          {
+            "phase": "Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)",
+            "status": "PASS",
+            "duration_ms": 2567.5862000207417
+          },
+          {
+            "phase": "Console cmds + custom library CRUD + two-pane monitor",
+            "status": "PASS",
+            "duration_ms": 443.7193999765441
+          },
+          {
+            "phase": "AI guardrail proxy + hardware-patching layer",
+            "status": "PASS",
+            "duration_ms": 33.921999973244965
+          },
+          {
+            "phase": "Sprint-1 remediations (guardrail token/neutralize + gate TOCTOU)",
+            "status": "PASS",
+            "duration_ms": 2340.2998999808915
+          },
+          {
+            "phase": "Vetted remediation (inert path proposals + gated host actions)",
+            "status": "PASS",
+            "duration_ms": 592.5117000006139
+          },
+          {
+            "phase": "Persistence Sweep (autorun classifier + discovery)",
+            "status": "PASS",
+            "duration_ms": 0.15700003132224083
+          },
+          {
+            "phase": "ATT&CK coverage heatmap (honest, cross-checked vs ACTIONS)",
+            "status": "PASS",
+            "duration_ms": 6.859100016299635
+          },
+          {
+            "phase": "Incident correlation (grouping + scoring + window split)",
+            "status": "PASS",
+            "duration_ms": 7.9338999930769205
+          },
+          {
+            "phase": "World View \u2192 native Qt flow window (live)",
+            "status": "PASS",
+            "duration_ms": 229.87199999624863
+          },
+          {
+            "phase": "Speed pass (WAL + ledger cap + audit-count cache)",
+            "status": "PASS",
+            "duration_ms": 4042.5305000389926
+          }
+        ]
+      },
+      "modules": {
+        "count": 84,
+        "statuses": {
+          "PASS": 66,
+          "FAIL": 1,
+          "SKIP": 17
+        }
+      },
+      "nonmodule_results": {
+        "count": 1,
+        "statuses": {
+          "PASS": 1
+        }
+      },
+      "module_subchecks": {
+        "count": 559,
+        "statuses": {
+          "PASS": 530,
+          "FAIL": 1,
+          "SKIP": 28
+        },
+        "check_names": {
+          "identity": 84,
+          "self_test_callable": 84,
+          "capability_metadata": 84,
+          "health_contract": 84,
+          "result_contract": 73,
+          "active_test": 84,
+          "health_result_consistency": 66
+        },
+        "minimum_per_module": 5,
+        "maximum_per_module": 7
+      },
+      "verification": {
+        "status": "PASS",
+        "count": 9,
+        "statuses": {
+          "PASS": 9
+        },
+        "duration_ms": 31.000000017229468,
+        "checks": [
+          {
+            "check": "success canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "failure canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "exception canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "malformed-result canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "timeout canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "disabled skip canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "platform skip canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "corrupt-accounting canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "report reconciliation",
+            "status": "PASS",
+            "duration_ms": null
+          }
+        ]
+      },
+      "module_metrics": {
+        "elapsed_ms": 1765.0000000139698,
+        "timing_scope": "checks and verification; excludes report I/O and notifications",
+        "module_workers": 4,
+        "worker_budget": "8 logical CPUs; 2908 MiB available RAM; pacing 1x",
+        "module_count": 84,
+        "slowest_modules": [
+          {
+            "module": "Posture Hardening",
+            "duration_ms": 1452.999999979511
+          },
+          {
+            "module": "Monolithic Packaging",
+            "duration_ms": 891.0000000032596
+          },
+          {
+            "module": "Temporal Tradecraft Correlator",
+            "duration_ms": 469.0000000409782
+          },
+          {
+            "module": "WLAN Monitor",
+            "duration_ms": 219.0000000409782
+          },
+          {
+            "module": "YARA Scanner",
+            "duration_ms": 219.0000000409782
+          },
+          {
+            "module": "AI Triage (Ollama)",
+            "duration_ms": 202.9999999795109
+          },
+          {
+            "module": "AI Model Integrity Guard",
+            "duration_ms": 109.99999998603016
+          },
+          {
+            "module": "API Patch / Anti-Blinding Detector",
+            "duration_ms": 109.99999998603016
+          },
+          {
+            "module": "Compliance Mapper",
+            "duration_ms": 92.99999999348074
+          },
+          {
+            "module": "Anti-Suspension Heartbeat",
+            "duration_ms": 77.9999999795109
+          }
+        ]
+      },
+      "reconciliation": {
+        "phase_pass_count": true,
+        "phase_failure_count": true,
+        "module_count": true,
+        "unique_module_names": true,
+        "modules_have_checks": true,
+        "no_phase_failures": false,
+        "valid_module_statuses": false,
+        "valid_subcheck_statuses": false,
+        "verifier_passes": true,
+        "all_required_verifiers_present": true
+      },
+      "reconciled": false
+    },
+    "summary_sha256": "d6300e523514231347db266926ea8bc4f3ea8e5bc613e7388c064dccc2fa258b",
+    "listener_action": "Existing signed Ollama tray/daemon chain predates the harness; launch ownership was not established. No stop, unload, rebind or reconfiguration was performed.",
+    "interpretation": "The nine independent verifier challenges passed, including report accounting. The unhealthy-verdict gate correctly remained false because a real module failure was present. The original failure is preserved separately from the Chill-locked profile.",
+    "hosted_failure_relation": "No evidence connects this local listener to the earlier hosted GUI zero-response failure; containment operates without Ollama."
+  },
+  "limits": [
+    "Tests use disposable fake environments and bounded owned children. No actual operator repair, installer or network dependency download was run.",
+    "Process interruption fixtures do not simulate sudden power loss.",
+    "Ambiguous recovery custody remains a visible refusal.",
+    "The separate ee61 Python 3.11 hosted zero-action GUI response failure remains unexplained; local passing drills are diagnostic evidence, not proof of its source cause.",
+    "Component and virtual hardware tests do not establish physical performance on every older computer."
+  ]
+}
