@@ -417,15 +417,15 @@ not grounds to disable a sensor or conceal a coverage gap.
 - Current read-only inventory: **84 capabilities**, **9 native contracts** and
   **75 compatibility adapters**, without duplicate identity; all implementation
   versions report 1.13.0. The exporter starts no module workers.
-- Startup-repair full regression (October 21): **5,228 passed / 25 skipped**,
+- Corrected startup-repair full regression (October 21): **5,230 passed / 25 skipped**,
   clean native/session/SystemExit status, completed unconfigure and atexit;
   1,018 source/lock inputs unchanged, including 1,002 Python files.
 - Current isolated **Chill-locked** selfcheck (October 21): **28 phases passed / 0 failed**.
   Its 84 module rows reconcile to **66 PASS / 18 prerequisite SKIP** results;
   the separate event-pipeline check also passed, as did all nine independent
-  verifier checks. Separate Full-mode diagnostics correctly refused an existing
+  verifier checks. Earlier Full-mode diagnostics correctly refused an existing
   wildcard Ollama listener; that module failure remains recorded. Skips are not
-  live sensor passes. [Startup-repair evidence](analysis/startup-repair-2026-10-21/README.md).
+  live sensor passes. [Corrective startup-repair evidence](analysis/startup-repair-2026-10-21/hosted-followup.json).
 - Native scan-to-containment, detached-engine lifetime, encrypted recovery and
   the regression-run results are recorded with their scopes in the
   [upgrade validation record](analysis/upgrade-20260923/validation.md).

@@ -46,13 +46,22 @@ private transaction evidence before the environment executes. Retry always
 starts in Chill with Ollama blocked. Unknown failures, trust/custody problems,
 low persistent storage and a live dashboard timeout remain visible failures.
 
-The [startup-repair validation](analysis/startup-repair-2026-10-21/README.md)
-passed **5,228 tests / 25 skipped**, with clean native shutdown and an unchanged
+The corrected [startup-repair validation](analysis/startup-repair-2026-10-21/README.md)
+passed **5,230 tests / 25 skipped**, with clean native shutdown and an unchanged
 1,018-file source/lock snapshot. Chill-locked selfcheck passed **28/28 phases**
-and **9/9 independent verifier checks**. Full-mode diagnostics correctly failed
-AI endpoint attestation for an existing wildcard Ollama listener; that finding
-is preserved separately. The observer fixtures now isolate collection to their
+and **9/9 independent verifier checks**. Earlier Full-mode diagnostics correctly
+failed AI endpoint attestation for an existing wildcard Ollama listener; that
+finding is preserved separately. The observer fixtures isolate collection to their
 own temporary directories, retaining the original 30-second deadline.
+
+The first hosted repair run exposed fresh-file ownership assumptions and a
+descendant timeout fixture without its expected PID witness. The
+[repair follow-up](analysis/startup-repair-2026-10-21/README.md#hosted-follow-up-at-3ed14db)
+makes ownership and private ACLs explicit at file creation, verifies fixture
+custody before content checks, and tests native descendant containment against
+an uncontained control. Existing unsafe files remain rejected and unchanged;
+the original deadlines remain. [Corrective evidence](analysis/startup-repair-2026-10-21/hosted-followup.json)
+records the failed hosted revision and the passing frozen local rerun separately.
 
 The [hosted CI follow-up](analysis/ci-scan-followup-2026-10-21/README.md)
 corrects the scheduling fixture's observation phase and inherited coordinator

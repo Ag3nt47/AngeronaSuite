@@ -1,0 +1,677 @@
+{
+  "schema": "angerona.startup-repair-hosted-followup/v1",
+  "created_utc": "2026-10-22T01:04:46.131745+00:00",
+  "prior_local_record": {
+    "path": "verification.json",
+    "sha256": "785b29a2fbbe8587d285463711af1183692dfbcfc3c1aa9811c3c5ce5a6d44b2"
+  },
+  "failed_public_revision": {
+    "head": "3ed14db7d6a68e62fc92f61f5bf998eba9761ea8",
+    "ci": {
+      "id": 39697993480,
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993480"
+    },
+    "ci_nonpython_jobs_passed": 8,
+    "security_run": 39697993504,
+    "security_jobs_passed": 3,
+    "common_failure_groups": {
+      "tests/test_startup_recovery_flow.py": 2,
+      "tests/test_startup_repair_tools.py": 21
+    },
+    "common_failure_nodeids": [
+      "tests/test_startup_recovery_flow.py::test_orphan_witness_with_private_matching_closed_resolution_is_resolved[Verified]",
+      "tests/test_startup_recovery_flow.py::test_orphan_witness_with_private_matching_closed_resolution_is_resolved[RolledBack]",
+      "tests/test_startup_repair_tools.py::test_transaction_stages_first_and_restores_previous_runtime[success]",
+      "tests/test_startup_repair_tools.py::test_transaction_stages_first_and_restores_previous_runtime[candidate-failure]",
+      "tests/test_startup_repair_tools.py::test_transaction_stages_first_and_restores_previous_runtime[refresh-failure]",
+      "tests/test_startup_repair_tools.py::test_transaction_stages_first_and_restores_previous_runtime[recheck-failure]",
+      "tests/test_startup_repair_tools.py::test_missing_trusted_runtime_fails_before_any_existing_venv_move",
+      "tests/test_startup_repair_tools.py::test_active_runtime_refuses_repair_without_staging_or_promotion",
+      "tests/test_startup_repair_tools.py::test_owned_native_command_logs_return_code_and_kills_only_timed_out_descendants",
+      "tests/test_startup_repair_tools.py::test_real_process_exit_at_each_rename_and_refresh_restores_original_before_execution[after-backup]",
+      "tests/test_startup_repair_tools.py::test_real_process_exit_at_each_rename_and_refresh_restores_original_before_execution[after-promotion]",
+      "tests/test_startup_repair_tools.py::test_real_process_exit_at_each_rename_and_refresh_restores_original_before_execution[during-refresh]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[missing-intent]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[corrupt-intent]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[changed-path]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[changed-identity]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[changed-marker]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[missing-marker]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[hardlinked-intent]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[missing-pending]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[missing-pending-and-marker]",
+      "tests/test_startup_repair_tools.py::test_ambiguous_or_tampered_interrupted_repair_refuses_and_preserves_every_environment[foreign-directory]",
+      "tests/test_startup_repair_tools.py::test_repair_holds_canonical_helper_lease_while_candidate_is_mutating"
+    ],
+    "jobs": [
+      {
+        "id": 119559995005,
+        "name": "Python 3.10",
+        "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993480/job/119559995005",
+        "conclusion": "failure",
+        "counts": {
+          "passed": 5218,
+          "skipped": 12,
+          "failed": 23,
+          "errors": 0,
+          "warnings": 0,
+          "seconds": 575.16
+        },
+        "native_exit": [
+          1
+        ],
+        "markers": [
+          {
+            "kind": "session-finish",
+            "monotonic": 816.25,
+            "exitstatus": 1,
+            "testsfailed": 23,
+            "testscollected": 5253
+          },
+          {
+            "kind": "unconfigure-end",
+            "monotonic": 816.468,
+            "completed": true
+          },
+          {
+            "kind": "pytest-system-exit",
+            "monotonic": 816.625,
+            "exit_code": 1,
+            "exit_code_type": "ExitCode"
+          },
+          {
+            "kind": "python-atexit-begin",
+            "monotonic": 816.625
+          },
+          {
+            "kind": "python-atexit-end",
+            "monotonic": 816.625
+          }
+        ],
+        "raw_log_sha256": "59537dc87a439a714d1d10edfebf67cd8e04a9edbb5b73937d5a5b7ed4f2cfc2",
+        "count_reconciliation": true
+      },
+      {
+        "id": 119559994900,
+        "name": "Python 3.11",
+        "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993480/job/119559994900",
+        "conclusion": "failure",
+        "counts": {
+          "passed": 5218,
+          "skipped": 12,
+          "failed": 23,
+          "errors": 0,
+          "warnings": 0,
+          "seconds": 788.95
+        },
+        "native_exit": [
+          1
+        ],
+        "markers": [
+          {
+            "kind": "session-finish",
+            "monotonic": 1061.531,
+            "exitstatus": 1,
+            "testsfailed": 23,
+            "testscollected": 5253
+          },
+          {
+            "kind": "unconfigure-end",
+            "monotonic": 1061.781,
+            "completed": true
+          },
+          {
+            "kind": "pytest-system-exit",
+            "monotonic": 1061.984,
+            "exit_code": 1,
+            "exit_code_type": "ExitCode"
+          },
+          {
+            "kind": "python-atexit-begin",
+            "monotonic": 1061.984
+          },
+          {
+            "kind": "python-atexit-end",
+            "monotonic": 1061.984
+          }
+        ],
+        "raw_log_sha256": "7c0b835b1ddbc01542284d93b9b5d40c14932b5f88a252c17b528a5d081abb45",
+        "count_reconciliation": true
+      },
+      {
+        "id": 119559995200,
+        "name": "Python 3.12",
+        "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993480/job/119559995200",
+        "conclusion": "failure",
+        "counts": {
+          "passed": 5218,
+          "skipped": 12,
+          "failed": 23,
+          "errors": 0,
+          "warnings": 0,
+          "seconds": 630.96
+        },
+        "native_exit": [
+          1
+        ],
+        "markers": [
+          {
+            "kind": "session-finish",
+            "monotonic": 1052.109,
+            "exitstatus": 1,
+            "testsfailed": 23,
+            "testscollected": 5253
+          },
+          {
+            "kind": "unconfigure-end",
+            "monotonic": 1052.375,
+            "completed": true
+          },
+          {
+            "kind": "pytest-system-exit",
+            "monotonic": 1052.562,
+            "exit_code": 1,
+            "exit_code_type": "ExitCode"
+          },
+          {
+            "kind": "python-atexit-begin",
+            "monotonic": 1052.562
+          },
+          {
+            "kind": "python-atexit-end",
+            "monotonic": 1052.562
+          }
+        ],
+        "raw_log_sha256": "7a8cf27bb838de42a428651ad6517c00b501342fd3c66e90ab8d59bb30ad2482",
+        "count_reconciliation": true
+      },
+      {
+        "id": 119559994911,
+        "name": "Python 3.13",
+        "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993480/job/119559994911",
+        "conclusion": "failure",
+        "counts": {
+          "passed": 5218,
+          "skipped": 12,
+          "failed": 23,
+          "errors": 0,
+          "warnings": 29,
+          "seconds": 525.47
+        },
+        "native_exit": [
+          1
+        ],
+        "markers": [
+          {
+            "kind": "session-finish",
+            "monotonic": 782.731182,
+            "exitstatus": 1,
+            "testsfailed": 23,
+            "testscollected": 5253
+          },
+          {
+            "kind": "unconfigure-end",
+            "monotonic": 783.0051687,
+            "completed": true
+          },
+          {
+            "kind": "pytest-system-exit",
+            "monotonic": 783.2179895,
+            "exit_code": 1,
+            "exit_code_type": "ExitCode"
+          },
+          {
+            "kind": "python-atexit-begin",
+            "monotonic": 783.2181959
+          },
+          {
+            "kind": "python-atexit-end",
+            "monotonic": 783.218337
+          }
+        ],
+        "raw_log_sha256": "1b2f8ab38ee254ec1da0620201276ce06e28b9b85644d679b676a172f48a45c9",
+        "count_reconciliation": true
+      }
+    ],
+    "aggregate_sha256": "860137eb6a9dae264d33ddf31630427110d8e9138a97cc04e41e387f275a4033",
+    "qualification": "All failures listed are the same new startup-repair cases. Absence of a GUI failure in this list is not a separately captured per-case GUI pass receipt."
+  },
+  "corrections": {
+    "fresh_private_files": "Create helper lock and durable JSON with explicit current-user owner and protected closed DACL atomically; independently verify custody. Existing file ACL/owner and content are never rewritten to make verification pass.",
+    "fixture_evidence": "Create witness/resolution files with CREATE_NEW and the independently verified private parent security descriptor, then prove private_repair_file before parsing tests. Candidate fixture directories also establish explicit private custody.",
+    "negative_controls": "A real foreign-writer ACL remains rejected and unchanged; a wrong-owner metadata query model is rejected without data or descriptor changes. The latter models owner metadata and is not an elevated OS reproduction.",
+    "timeout_fixture": "Compile a tiny native parent/child before the measured command. An uncontained descendant survives normal parent exit; the actual owned Job retires its witnessed descendant on the unchanged three-second deadline.",
+    "timeout_limit": "The old hosted trace records deadline expiry and a missing child PID witness, without its inner log. The exact phase of that old child before expiry remains unobserved; nested interpreter setup is removed from the fixture.",
+    "boundaries": "No startup authority, existing-file custody, response predicate, deadline, source/MSIX boundary or Chill/AI lock is relaxed."
+  },
+  "full_suite": {
+    "python": "3.12",
+    "passed": 5230,
+    "skipped": 25,
+    "collected": 5255,
+    "failures": 0,
+    "errors": 0,
+    "console_summary": "5230 passed, 25 skipped in 2119.10s (0:35:19)",
+    "supervisor_seconds_including_postrun_source_readback": 2123.094000000041,
+    "native_exit": 0,
+    "session_exit": 0,
+    "system_exit": 0,
+    "unconfigure_completed": true,
+    "both_atexit_markers": true,
+    "stderr_bytes": 0,
+    "sources_unchanged": true,
+    "source_count": 1018,
+    "python_source_count": 1002,
+    "normalization": "CRLF and CR converted to LF; other bytes retained",
+    "selected_regression_groups": {
+      "startup_repair_tools": {
+        "statuses": {
+          "passed": 33
+        },
+        "files": [
+          "tests/test_startup_repair_tools.py"
+        ]
+      },
+      "startup_recovery_flow": {
+        "statuses": {
+          "passed": 54
+        },
+        "files": [
+          "tests/test_startup_recovery_flow.py"
+        ]
+      },
+      "chill": {
+        "statuses": {
+          "passed": 128
+        },
+        "files": [
+          "tests/test_chill_ai_lock.py",
+          "tests/test_chill_live_idle_io.py",
+          "tests/test_chill_mode.py",
+          "tests/test_chill_optional_runtime.py",
+          "tests/test_chill_presentation_budget.py",
+          "tests/test_chill_resilience_restart.py",
+          "tests/test_chill_ui_idle.py",
+          "tests/test_deep_review_round2_semantic_chill.py",
+          "tests/test_headless_chill_runtime.py",
+          "tests/test_recorder_chill_efficiency.py"
+        ]
+      },
+      "performance": {
+        "statuses": {
+          "passed": 98
+        },
+        "files": [
+          "tests/test_adaptation_performance.py",
+          "tests/test_cycle15_performance.py",
+          "tests/test_cycle15_system_pulse_performance.py",
+          "tests/test_cycle19_performance.py",
+          "tests/test_cycle2_round3_performance.py",
+          "tests/test_cycle34_round2_performance.py",
+          "tests/test_cycle34_round3_performance.py",
+          "tests/test_cycle3_round1_performance.py",
+          "tests/test_cycle4_performance_full_sweep.py",
+          "tests/test_cycle4_round1_performance.py",
+          "tests/test_cycle7_round2_performance.py",
+          "tests/test_etw_pid_cache_performance.py",
+          "tests/test_performance_lifecycle.py",
+          "tests/test_round7_performance_boundaries.py",
+          "tests/test_runbook_rag_performance.py",
+          "tests/test_runtime_growth_performance.py",
+          "tests/test_upgrade_console_performance.py",
+          "tests/test_v12_final_performance.py",
+          "tests/test_v12_round2_performance.py"
+        ]
+      },
+      "selfcheck": {
+        "statuses": {
+          "passed": 27
+        },
+        "files": [
+          "tests/test_selfcheck_drill_cleanup.py",
+          "tests/test_selfcheck_policy.py"
+        ]
+      }
+    },
+    "gui_drills": {
+      "count": 2,
+      "required_positive_closures_each": 37,
+      "independent_pre_and_post_os_witness_assertions": "passed",
+      "settlements": [
+        {
+          "pending": 0,
+          "timed_out": false,
+          "queue_drops": 0
+        },
+        {
+          "pending": 0,
+          "timed_out": false,
+          "queue_drops": 0
+        }
+      ],
+      "private_trace_sha256": "e5e451403973f9836f53bdbf4b3a7c503e7f56917d60d1ebfa0c7747b6d310d9"
+    },
+    "evidence_sha256": {
+      ".summary.json": "27bf623c5fcdbe578a9b4e1bd2740c2b9d4584b286c50be8c2b9f17b60b84a98",
+      ".before.json": "7d17da598fd3051a8bc7f890e855b37df940deb621b82a2e6e7ddbd97225e024",
+      ".after.json": "7d17da598fd3051a8bc7f890e855b37df940deb621b82a2e6e7ddbd97225e024",
+      ".trace.jsonl": "46348a8230bcc3acf345ca78325b24a41a056c939a0b2839a54c12d46217a089",
+      ".exit.jsonl": "a9d547aa6b62ecc30dfa36588a225351f64d56675cfbe864f58ced2eaa6a60b5",
+      ".xml": "c5731d39c090b5f594bc6d36c698d86d3c49058dfed40547c39f59d04ad8a37d"
+    }
+  },
+  "selfcheck": {
+    "runtime_mode": "Chill operator AI lock enabled",
+    "status": "passed",
+    "seconds": 30.71799999999348,
+    "native_harness_verdict": 0,
+    "native_scope": "Existing self-check harness uses its established os._exit policy; native zero is its harness verdict, not evidence of normal interpreter shutdown. Independent lifecycle gates establish normal shutdown.",
+    "report": {
+      "run_id": "2ee5664d46794a378847d9a8780ae489",
+      "phases": {
+        "count": 28,
+        "statuses": {
+          "PASS": 28
+        },
+        "rows": [
+          {
+            "phase": "discover modules",
+            "status": "PASS",
+            "duration_ms": 3793.6504000099376
+          },
+          {
+            "phase": "SelfTestRunner over all modules",
+            "status": "PASS",
+            "duration_ms": 1501.6788000357337
+          },
+          {
+            "phase": "Self-test verification \u2014 canaries, inventory coverage and saved report readback",
+            "status": "PASS",
+            "duration_ms": 1.6695000231266022
+          },
+          {
+            "phase": "Self-test performance \u2014 constrained hardware worker budget and completion",
+            "status": "PASS",
+            "duration_ms": 74.98999999370426
+          },
+          {
+            "phase": "build MainWindow",
+            "status": "PASS",
+            "duration_ms": 1555.1941000157967
+          },
+          {
+            "phase": "DashboardCards.refresh",
+            "status": "PASS",
+            "duration_ms": 6.787699996493757
+          },
+          {
+            "phase": "EventsWindow \u2014 Alerts (LOW+)",
+            "status": "PASS",
+            "duration_ms": 218.35110004758462
+          },
+          {
+            "phase": "EventsWindow \u2014 Critical",
+            "status": "PASS",
+            "duration_ms": 83.73989997198805
+          },
+          {
+            "phase": "ModulesStatusWindow",
+            "status": "PASS",
+            "duration_ms": 103.64250000566244
+          },
+          {
+            "phase": "ThreatWindow \u2014 refresh + select + posture lookup",
+            "status": "PASS",
+            "duration_ms": 20.856999966781586
+          },
+          {
+            "phase": "ModuleInspector \u2014 build for first module",
+            "status": "PASS",
+            "duration_ms": 158.39459997368976
+          },
+          {
+            "phase": "process-mitigation self-hardening",
+            "status": "PASS",
+            "duration_ms": 0.48069999320432544
+          },
+          {
+            "phase": "Judgment Gate \u2014 stamp / verify / tamper-detect",
+            "status": "PASS",
+            "duration_ms": 797.953300003428
+          },
+          {
+            "phase": "Ring 1 Driver-Intel Shield (INTL + FIM + shark)",
+            "status": "PASS",
+            "duration_ms": 0.20489998860284686
+          },
+          {
+            "phase": "Timing jitter (os.urandom, anti-TOCTOU)",
+            "status": "PASS",
+            "duration_ms": 0.4760000156238675
+          },
+          {
+            "phase": "Blast-radius tree + Shark-vs-Shield collision view",
+            "status": "PASS",
+            "duration_ms": 13.542199973016977
+          },
+          {
+            "phase": "Unified Red Team Simulation (dialog + engine params)",
+            "status": "PASS",
+            "duration_ms": 16.688500007148832
+          },
+          {
+            "phase": "Red Team drill \u2014 LIVE run (complexity + custom + target)",
+            "status": "PASS",
+            "duration_ms": 10977.318999997806
+          },
+          {
+            "phase": "Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)",
+            "status": "PASS",
+            "duration_ms": 1028.5861999727786
+          },
+          {
+            "phase": "Console cmds + custom library CRUD + two-pane monitor",
+            "status": "PASS",
+            "duration_ms": 58.6403000052087
+          },
+          {
+            "phase": "AI guardrail proxy + hardware-patching layer",
+            "status": "PASS",
+            "duration_ms": 30.013800016604364
+          },
+          {
+            "phase": "Sprint-1 remediations (guardrail token/neutralize + gate TOCTOU)",
+            "status": "PASS",
+            "duration_ms": 859.1030999668874
+          },
+          {
+            "phase": "Vetted remediation (inert path proposals + gated host actions)",
+            "status": "PASS",
+            "duration_ms": 660.9595000045374
+          },
+          {
+            "phase": "Persistence Sweep (autorun classifier + discovery)",
+            "status": "PASS",
+            "duration_ms": 0.1487999688833952
+          },
+          {
+            "phase": "ATT&CK coverage heatmap (honest, cross-checked vs ACTIONS)",
+            "status": "PASS",
+            "duration_ms": 5.256299977190793
+          },
+          {
+            "phase": "Incident correlation (grouping + scoring + window split)",
+            "status": "PASS",
+            "duration_ms": 5.586299987044185
+          },
+          {
+            "phase": "World View \u2192 native Qt flow window (live)",
+            "status": "PASS",
+            "duration_ms": 212.6861999859102
+          },
+          {
+            "phase": "Speed pass (WAL + ledger cap + audit-count cache)",
+            "status": "PASS",
+            "duration_ms": 3616.0378999775276
+          }
+        ]
+      },
+      "modules": {
+        "count": 84,
+        "statuses": {
+          "PASS": 66,
+          "SKIP": 18
+        }
+      },
+      "nonmodule_results": {
+        "count": 1,
+        "statuses": {
+          "PASS": 1
+        }
+      },
+      "module_subchecks": {
+        "count": 558,
+        "statuses": {
+          "PASS": 528,
+          "SKIP": 30
+        },
+        "check_names": {
+          "identity": 84,
+          "self_test_callable": 84,
+          "capability_metadata": 84,
+          "health_contract": 84,
+          "result_contract": 72,
+          "active_test": 84,
+          "health_result_consistency": 66
+        },
+        "minimum_per_module": 5,
+        "maximum_per_module": 7
+      },
+      "verification": {
+        "status": "PASS",
+        "count": 9,
+        "statuses": {
+          "PASS": 9
+        },
+        "duration_ms": 16.00000000325963,
+        "checks": [
+          {
+            "check": "success canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "failure canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "exception canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "malformed-result canary",
+            "status": "PASS",
+            "duration_ms": 0.0
+          },
+          {
+            "check": "timeout canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "disabled skip canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "platform skip canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "corrupt-accounting canary",
+            "status": "PASS",
+            "duration_ms": null
+          },
+          {
+            "check": "report reconciliation",
+            "status": "PASS",
+            "duration_ms": null
+          }
+        ]
+      },
+      "module_metrics": {
+        "elapsed_ms": 1454.0000000270084,
+        "timing_scope": "checks and verification; excludes report I/O and notifications",
+        "module_workers": 4,
+        "worker_budget": "8 logical CPUs; 2545 MiB available RAM; pacing 1x",
+        "module_count": 84,
+        "slowest_modules": [
+          {
+            "module": "Posture Hardening",
+            "duration_ms": 1281.0000000172295
+          },
+          {
+            "module": "Monolithic Packaging",
+            "duration_ms": 766.0000000032596
+          },
+          {
+            "module": "AI Model Integrity Guard",
+            "duration_ms": 438.0000000237487
+          },
+          {
+            "module": "Temporal Tradecraft Correlator",
+            "duration_ms": 358.99999999674037
+          },
+          {
+            "module": "WLAN Monitor",
+            "duration_ms": 202.9999999795109
+          },
+          {
+            "module": "Compliance Mapper",
+            "duration_ms": 78.00000003771856
+          },
+          {
+            "module": "API Patch / Anti-Blinding Detector",
+            "duration_ms": 63.000000023748726
+          },
+          {
+            "module": "Storage Hygiene Enforcer",
+            "duration_ms": 46.999999962281436
+          },
+          {
+            "module": "ETW Core Listener",
+            "duration_ms": 45.999999972991645
+          },
+          {
+            "module": "Driver Provenance Guard",
+            "duration_ms": 32.00000000651926
+          }
+        ]
+      },
+      "reconciliation": {
+        "phase_pass_count": true,
+        "phase_failure_count": true,
+        "module_count": true,
+        "unique_module_names": true,
+        "modules_have_checks": true,
+        "no_phase_failures": true,
+        "valid_module_statuses": true,
+        "valid_subcheck_statuses": true,
+        "verifier_passes": true,
+        "all_required_verifiers_present": true
+      },
+      "reconciled": true
+    },
+    "report_sha256": "ff37e75e6eac860d853bb16065b923c123f49c35c33221c849404818841a87c1",
+    "summary_sha256": "52473b3608d55ce7240b8969db648e13987d2b0238109e04f2a14983e26c794d"
+  },
+  "limits": [
+    "The earlier Full-mode wildcard Ollama listener refusal remains preserved in verification.json; no shared or unowned daemon was stopped or reconfigured.",
+    "The separate historical ee61 Python 3.11 GUI response cause remains unproved.",
+    "Disposable repair fixtures perform no operator runtime replacement or network installation. Process exit fixtures do not establish power-loss durability.",
+    "Component and virtual hardware checks are not whole-host or every-older-computer performance measurements."
+  ]
+}

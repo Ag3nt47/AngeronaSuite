@@ -34,21 +34,34 @@ kernel component is a product capability.
   trust failure, low persistent storage, cancellation and live dashboard
   timeout cannot trigger a repair loop. Settings/evidence are preserved; no
   AI/model tools or Chill unlock. Packaged installs retain installer repair.
-- Frozen startup-repair full suite: 5,228 passed / 25 skipped / 5,253 collected;
+- Corrected frozen startup-repair full suite: 5,230 passed / 25 skipped / 5,255 collected;
   native/session/SystemExit zero, completed unconfigure, both atexit markers,
   empty stderr. All 1,018 source/lock inputs (1,002 Python) unchanged under
   newline-normalized fingerprints. Two actual GUI drills passed the original
   37-positive-closure and independent OS-witness assertions each.
   Chill-locked selfcheck: 28/28 phases, 84 modules (66 PASS/18 SKIP), 558 module
-  subchecks (528 PASS/30 SKIP), nine independent verifiers all PASS. Separate
+  subchecks (528 PASS/30 SKIP), nine independent verifiers all PASS. Earlier
   Full-profile diagnostics correctly refused an existing wildcard Ollama
   listener; its module FAIL and all nine passing verifier checks are retained.
   No unowned daemon was stopped or reconfigured. Structured evidence:
-  analysis/startup-repair-2026-10-21/verification.json.
+  analysis/startup-repair-2026-10-21/hosted-followup.json; prior local and Full
+  diagnostic record: analysis/startup-repair-2026-10-21/verification.json.
 - The inert CI-observer fixture now sets pytest rootdir/confcutdir to its own
   temporary directory. A negative control reproduces ancestor traversal refusal;
   the fixed probe visits only its own directory. Its 30-second deadline and
   native/session/unconfigure/atexit acceptance checks remain unchanged.
+- First published startup-repair revision 3ed14db: all eight non-Python CI jobs
+  and all three security jobs passed, but all four Python versions failed the
+  same 23 new repair cases (5,218 passed / 12 skipped / 5,253 collected each).
+  Native/session/SystemExit one with complete cleanup. Follow-up gives fresh
+  files explicit current-user ownership and a protected private ACL atomically;
+  existing unsafe files remain rejected without rewriting their metadata/data.
+  Python fixtures independently prove private custody before content checks.
+  Native descendant testing retains its three-second deadline and adds an
+  uncontained live-child negative control. Wrong-owner coverage is a qualified
+  metadata-query model, not an elevated OS reproduction. Focused gates:
+  54 flow cases and 33 repair-tool cases passed. Record:
+  analysis/startup-repair-2026-10-21/README.md#hosted-follow-up-at-3ed14db.
 - A documentation-only repetition at ee61f3c passed 11/12 CI jobs and 3/3
   security jobs. Python 3.11 failed one GUI independent OS containment witness:
   its signed report correctly recorded zero response actions and failed

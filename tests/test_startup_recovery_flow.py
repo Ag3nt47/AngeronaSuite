@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -385,15 +386,79 @@ def _orphan_repair_witness(checkout: Path, resolution: bytes | None) -> Path:
     scratch = parent / ("startup-repair." + "a" * 32)
     assert recovery.private_directory(scratch, create=True)
     witness = scratch / "intent.witness.json"
-    witness.write_bytes(b"preserved private orphan intent witness")
-    if os.name != "nt":
-        witness.chmod(0o600)
+    _write_private_orphan_file(witness, b"preserved private orphan intent witness")
     if resolution is not None:
         result = scratch / "resolution.json"
-        result.write_bytes(resolution)
-        if os.name != "nt":
-            result.chmod(0o600)
+        _write_private_orphan_file(result, resolution)
     return scratch
+
+
+def _write_private_orphan_file(path: Path, contents: bytes) -> None:
+    """Create fixture evidence with explicit custody even on elevated runners.
+
+    An elevated Windows token can default new file ownership to Administrators,
+    regardless of its private parent's owner. Copy the verified parent's owner
+    and closed DACL atomically onto this new file; never edit an existing ACL.
+    """
+    assert recovery.private_directory(path.parent, create=False)
+    if os.name == "nt":
+        from ctypes import wintypes as w
+        import msvcrt
+
+        class Attributes(ctypes.Structure):
+            _fields_ = [("size", w.DWORD), ("descriptor", w.LPVOID), ("inherit", w.BOOL)]
+
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        advapi.GetNamedSecurityInfoW.argtypes = [w.LPWSTR, ctypes.c_int, w.DWORD,
+            ctypes.POINTER(w.LPVOID), w.LPVOID, ctypes.POINTER(w.LPVOID), w.LPVOID, ctypes.POINTER(w.LPVOID)]
+        advapi.GetNamedSecurityInfoW.restype = w.DWORD
+        kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD,
+            ctypes.POINTER(Attributes), w.DWORD, w.DWORD, w.HANDLE]
+        kernel.CreateFileW.restype = w.HANDLE
+        kernel.LocalFree.argtypes = [w.LPVOID]
+        kernel.LocalFree.restype = w.LPVOID
+        kernel.CloseHandle.argtypes = [w.HANDLE]
+        kernel.CloseHandle.restype = w.BOOL
+        owner, dacl, descriptor = w.LPVOID(), w.LPVOID(), w.LPVOID()
+        handle = None
+        try:
+            error = advapi.GetNamedSecurityInfoW(str(path.parent), 1, 5,
+                ctypes.byref(owner), None, ctypes.byref(dacl), None, ctypes.byref(descriptor))
+            if error:
+                raise ctypes.WinError(error)
+            assert owner and dacl and descriptor
+            attributes = Attributes(ctypes.sizeof(Attributes), descriptor, False)
+            # GENERIC_WRITE, no sharing, CREATE_NEW, FILE_ATTRIBUTE_NORMAL.
+            handle = kernel.CreateFileW(str(path), 0x40000000, 0, ctypes.byref(attributes), 1, 0x80, None)
+            if handle == w.HANDLE(-1).value:
+                handle = None
+                raise ctypes.WinError(ctypes.get_last_error())
+            fd = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+            handle = None  # The descriptor now owns and closes the OS handle.
+        finally:
+            if handle is not None:
+                kernel.CloseHandle(handle)
+            if descriptor:
+                kernel.LocalFree(descriptor)
+    else:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(contents)
+    assert recovery.private_repair_file(path)
+
+
+def test_private_orphan_fixture_creation_never_changes_existing_evidence(tmp_path):
+    scratch = tmp_path / "private-scratch"
+    assert recovery.private_directory(scratch, create=True)
+    evidence = scratch / "intent.witness.json"
+    _write_private_orphan_file(evidence, b"preserve original evidence")
+    identity = evidence.stat().st_ino
+    with pytest.raises(OSError):
+        _write_private_orphan_file(evidence, b"unwanted replacement")
+    assert evidence.read_bytes() == b"preserve original evidence"
+    assert evidence.stat().st_ino == identity
+    assert recovery.private_repair_file(evidence)
 
 
 @pytest.mark.parametrize("resolution", [

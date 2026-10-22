@@ -29,11 +29,16 @@ function Get-RepairFileSha256([string]$Path) {
     finally { $digest.Dispose(); $stream.Dispose() }
 }
 
+function Get-RepairPathAcl([string]$Path) {
+    $item = Get-Item -LiteralPath $Path -Force
+    return $(if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($Path) }
+        else { [IO.File]::GetAccessControl($Path) }
+    )
+}
+
 function Assert-PrivateRepairCustody([string]$Path, [switch]$AllowInherited) {
     Assert-PlainRepairPath $Path
-    $item = Get-Item -LiteralPath $Path -Force
-    $acl = if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($Path) }
-        else { [IO.File]::GetAccessControl($Path) }
+    $acl = Get-RepairPathAcl $Path
     $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner -or
         (!$AllowInherited -and !$acl.AreAccessRulesProtected)) {
@@ -51,6 +56,31 @@ function Get-CanonicalSourceStartupStorage {
     return Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona\SourceData'
 }
 
+function Open-PrivateRepairFile {
+    param([string]$Path, [IO.FileMode]$Mode = [IO.FileMode]::CreateNew,
+        [IO.FileShare]$Share = [IO.FileShare]::Read)
+    Assert-PlainRepairPath $Path
+    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = [Security.AccessControl.FileSecurity]::new()
+    $acl.SetOwner($owner)
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sid in @($owner.Value, 'S-1-5-18', 'S-1-5-32-544') | Select-Object -Unique) {
+        $identity = [Security.Principal.SecurityIdentifier]::new($sid)
+        [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            $identity, [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.AccessControlType]::Allow))
+    }
+    # Windows elevated tokens can default new file ownership to Administrators
+    # even inside a user-owned directory. Set owner/DACL atomically on creation;
+    # CreateFile ignores this descriptor when opening an existing file.
+    $stream = [IO.FileStream]::new($Path, $Mode,
+        ([Security.AccessControl.FileSystemRights]::Read -bor
+            [Security.AccessControl.FileSystemRights]::Write), $Share, 4096,
+        [IO.FileOptions]::None, $acl)
+    try { Assert-PrivateRepairCustody $Path -AllowInherited; return $stream }
+    catch { $stream.Dispose(); throw }
+}
+
 function Enter-CanonicalSourceHelperLease {
     $storage = [IO.Path]::GetFullPath((Get-CanonicalSourceStartupStorage))
     Assert-PlainRepairPath $storage
@@ -62,8 +92,8 @@ function Enter-CanonicalSourceHelperLease {
     Assert-PrivateRepairCustody $storage -AllowInherited
     $path = Join-Path $storage 'startup-helper.lock'
     Assert-PlainRepairPath $path
-    $lease = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate,
-        [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+    $lease = Open-PrivateRepairFile -Path $path -Mode ([IO.FileMode]::OpenOrCreate) `
+        -Share ([IO.FileShare]::ReadWrite)
     try {
         Assert-PrivateRepairCustody $path -AllowInherited
         $lease.Lock(0, 1)

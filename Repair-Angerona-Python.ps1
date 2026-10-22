@@ -265,8 +265,7 @@ function Write-DurableRepairJson([string]$Path, $Value, [switch]$Replace) {
     Assert-PlainRepairPath $Path
     $temporary = $Path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Compress -Depth 4))
-    $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew,
-        [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $stream = Open-PrivateRepairFile -Path $temporary
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
     finally { $stream.Dispose() }
     if ($Replace -and (Test-Path -LiteralPath $Path)) {

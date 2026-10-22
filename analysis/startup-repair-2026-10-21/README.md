@@ -106,7 +106,7 @@ Exact filesystem latency at the original timeout was not captured; the
 collection fanout mechanism and the corrective boundary were independently
 exercised. These component profiles are not whole-product speed benchmarks.
 
-## Frozen validation
+## First frozen local validation
 
 The complete local Python 3.12 suite passed **5,228 tests / 25 skipped / 5,253
 collected**, with zero failures/errors, in 2,543.25 seconds of pytest time.
@@ -142,3 +142,71 @@ there is no evidence connecting it to the earlier hosted GUI failure.
 the full regression, focused gates, collection-boundary controls and private
 evidence hashes. Selfcheck's existing harness verdict uses its established
 `os._exit` policy; the full regression supplies separate normal-shutdown proof.
+
+## Hosted follow-up at `3ed14db`
+
+The [first published repair run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993480)
+passed all eight non-Python CI jobs, and its
+[three security jobs](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39697993504)
+passed. All four Python versions failed the same **23 new startup-repair
+cases**, each reporting **5,218 passed / 12 skipped / 23 failed / 5,253
+collected**. Native/session/SystemExit were one; unconfigure and both atexit
+markers completed. The failure lists contain neither the earlier GUI witness
+assertion nor a native shutdown crash; that absence is not a separate per-case
+GUI pass receipt.
+
+Ordinary file creation relied on the token's default owner, which can be
+Administrators on an elevated Windows runner despite an explicitly user-owned
+parent. Hosted logs identify custody refusal without recording the original
+owner SIDs; the wrong-owner challenge models that metadata at the query seam.
+Fresh helper locks and
+durable JSON now supply current-user ownership and a protected closed DACL
+atomically at creation, then independently verify custody. Opening an existing
+file preserves its original owner, ACL and contents; verification cannot repair
+unsafe evidence into a passing result. Fixture candidate directories and Python
+witness/resolution files now establish explicit private custody too. Each
+malformed-resolution fixture proves file custody before testing its contents.
+
+The old descendant fixture recorded a three-second deadline expiry followed by
+a missing PID witness. Its inner log was not captured, so its exact phase before
+expiry is unobserved. The replacement compiles a small native parent/child before
+the measured command, avoiding nested interpreter setup. A negative control
+proves its descendant survives a normal uncontained parent exit; the actual
+Angerona Job must retire the witnessed descendant on the unchanged three-second
+deadline. No deadline, admission predicate or ownership check is relaxed.
+
+Focused corrective gates passed **54 startup-flow cases in 23.39 seconds**,
+**33 repair-tool cases in 148.55 seconds**, and the three targeted transaction,
+private-file and native Job cases in 12.27 seconds. Python lint/compilation and
+all four launcher/repair PowerShell parser checks passed. Read-only delta review
+found no security blocker. A real foreign-writer ACL remains rejected and
+unchanged; wrong-owner coverage uses a qualified metadata-query model while
+preserving the real descriptor and bytes. It is not an elevated OS reproduction.
+
+The corrected frozen full regression passed **5,230 tests / 25 skipped / 5,255
+collected** in **2,119.10 seconds** of pytest time. Native/session/SystemExit
+were zero, unconfigure completed, both atexit markers were present and stderr
+was empty. All **1,018 source/lock inputs**, including **1,002 Python files**,
+matched before and after under newline normalization. Supervisor time was
+2,123.094 seconds including postrun source readback. Different run durations do
+not establish a product performance improvement.
+
+The same run passed all 54 startup-flow and 33 repair-tool cases, 128 Chill
+regressions, 98 performance regressions and 27 selfcheck-policy/cleanup cases.
+These named component groups are subsets of the full suite. The actual dashboard
+double-drill call passed in 123.640 seconds; both signed reports verified their
+37 required positive closures and independent pre/post OS witnesses. Both drills
+settled with zero pending work, no timeout and no queue drops.
+
+The dependent **Chill-locked selfcheck** then passed **28/28 phases** in
+30.718 seconds: **84 modules (66 PASS / 18 SKIP)**, **558 subchecks (528 PASS /
+30 SKIP)**, the separate pipeline check and all **nine independent verifiers**,
+including saved-report reconciliation. Its existing native harness verdict is
+distinct from the full suite's independent normal-shutdown proof.
+
+[Corrective verification](hosted-followup.json) preserves the four failed hosted
+jobs and their exit diagnostics separately from this passing frozen rerun. The
+earlier Full-mode wildcard-listener refusal remains in the first verification
+record; no unowned/shared daemon was stopped or reconfigured. The historical
+`ee61f3c` GUI zero-action cause remains unproved. GitHub acceptance of the next
+published revision is checked separately from these offline results.

@@ -57,7 +57,7 @@ function New-VerifiedRepairCandidate($Transaction) {
     if ([IO.File]::ReadAllText((Join-Path $venv 'identity')) -ne 'old-environment') {
         throw 'Old environment moved before candidate verification.'
     }
-    [void][IO.Directory]::CreateDirectory($Transaction.Stage)
+    New-PrivateRepairDirectory $Transaction.Stage
     [IO.File]::WriteAllText((Join-Path $Transaction.Stage 'identity'), 'new-environment')
     if ($env:ANGERONA_TEST_CASE -eq 'candidate-failure') { throw 'Injected candidate verification failure.' }
 }
@@ -251,16 +251,6 @@ if (!$refused) { throw 'Expired overall repair budget was not enforced.' }
 
 
 def test_owned_native_command_logs_return_code_and_kills_only_timed_out_descendants(tmp_path: Path) -> None:
-    grandchild = tmp_path / "grandchild.ps1"
-    grandchild.write_text("Start-Sleep -Seconds 20\n", encoding="utf-8")
-    parent = tmp_path / "parent.ps1"
-    parent.write_text(
-        "$image=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\\v1.0\\powershell.exe'\n"
-        "$child=Start-Process -FilePath $image -WindowStyle Hidden -PassThru -ArgumentList "
-        "@('-NoProfile','-NonInteractive','-File', ('\"' + (Join-Path $env:TEMP 'grandchild.ps1') + '\"'))\n"
-        "[IO.File]::WriteAllText((Join-Path $env:TEMP 'child.pid'), [string]$child.Id)\n"
-        "Start-Sleep -Seconds 20\n", encoding="utf-8",
-    )
     result = _run(r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
 $scratch = $env:ANGERONA_TEST_SCRATCH
@@ -272,10 +262,53 @@ $code = Invoke-OwnedRepairProcess -FilePath $image -Arguments @('-NoProfile','-N
 if ($code -ne 42 -or [IO.File]::ReadAllText((Join-Path $scratch 'success.log')) -notmatch 'owned-runner-ok') {
     throw 'Native command result/log contract failed.'
 }
+$fixture = Join-Path $scratch 'owned-timeout-fixture.exe'
+# Compile before the measured command. A second cold PowerShell interpreter
+# previously consumed its entire three-second budget before writing child.pid.
+Add-Type -OutputAssembly $fixture -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Reflection;
+using System.Threading;
+public static class OwnedTimeoutFixture {
+    public static void Main(string[] args) {
+        if (args[0] == "child") { Thread.Sleep(20000); return; }
+        var start = new ProcessStartInfo(Assembly.GetExecutingAssembly().Location, "child");
+        start.UseShellExecute = false; start.CreateNoWindow = true;
+        using (var child = Process.Start(start)) {
+            File.WriteAllText(args[1], child.Id.ToString());
+            if (args[0] == "negative") return;
+            Thread.Sleep(20000);
+        }
+    }
+}
+'@
+# Negative control: the same descendant survives its normal parent exit when
+# no owned Job is attached. Check its exact fixture image before cleanup.
+$negativePid = Join-Path $scratch 'negative.pid'
+$negativeStart = [Diagnostics.ProcessStartInfo]::new()
+$negativeStart.FileName = $fixture
+$negativeStart.Arguments = 'negative "' + $negativePid + '"'
+$negativeStart.UseShellExecute = $false; $negativeStart.CreateNoWindow = $true
+$negativeParent = [Diagnostics.Process]::Start($negativeStart)
+if (!$negativeParent.WaitForExit(10000) -or $negativeParent.ExitCode -ne 0) { throw 'Negative-control parent failed.' }
+$negativeChild = [Diagnostics.Process]::GetProcessById([int][IO.File]::ReadAllText($negativePid))
+try {
+    if ($negativeChild.HasExited -or $negativeChild.MainModule.FileName -ne $fixture) {
+        throw 'Negative control did not retain its own live descendant.'
+    }
+    if ($negativeChild.WaitForExit(100)) { throw 'Uncontained negative-control descendant unexpectedly exited.' }
+} finally {
+    if (!$negativeChild.HasExited -and $negativeChild.MainModule.FileName -eq $fixture) {
+        $negativeChild.Kill(); [void]$negativeChild.WaitForExit(5000)
+    }
+    $negativeChild.Dispose(); $negativeParent.Dispose()
+}
 $timedOut = $false
 try {
-    [void](Invoke-OwnedRepairProcess -FilePath $image -Arguments @('-NoProfile','-NonInteractive','-File',
-        (Join-Path $scratch 'parent.ps1')) -WorkingDirectory $scratch -Environment $child `
+    [void](Invoke-OwnedRepairProcess -FilePath $fixture -Arguments @('bounded',
+        (Join-Path $scratch 'child.pid')) -WorkingDirectory $scratch -Environment $child `
         -TimeoutSeconds 3 -LogPath (Join-Path $scratch 'timeout.log'))
 } catch { $timedOut = $_.Exception.ToString() -match 'deadline' }
 if (!$timedOut) { throw 'Owned command was not bounded.' }
@@ -504,7 +537,7 @@ else:
 function New-VerifiedRepairCandidate($Transaction) {
     & $env:ANGERONA_TEST_PYTHON '-I' (Join-Path $env:ANGERONA_TEST_SCRATCH 'direct-probe.py')
     if ($LASTEXITCODE -ne 0) { throw 'Direct helper exclusion fixture failed.' }
-    [void][IO.Directory]::CreateDirectory($Transaction.Stage)
+    New-PrivateRepairDirectory $Transaction.Stage
     [IO.File]::WriteAllText((Join-Path $Transaction.Stage 'identity'), 'new-environment')
 }
 $transaction=Invoke-RepairTransaction
@@ -540,3 +573,52 @@ Write-Output $child.PIP_CONFIG_FILE
     safe = configuration.Configuration(isolated=True)
     safe.load()
     assert list(safe.items()) == []
+
+
+def test_private_file_creation_and_existing_wrong_custody_refusal_preserve_owner_and_acl(tmp_path: Path) -> None:
+    result = _run(r"""
+. (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+$private=Join-Path $env:ANGERONA_TEST_SCRATCH 'private-files'
+New-PrivateRepairDirectory $private
+$path=Join-Path $private 'owned-file'
+$stream=Open-PrivateRepairFile $path
+try { $stream.WriteByte(42); $stream.Flush($true) } finally { $stream.Dispose() }
+$user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$actual=[IO.File]::GetAccessControl($path)
+if ($actual.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $user -or !$actual.AreAccessRulesProtected) {
+    throw 'Explicit file creation did not establish current-user private custody.'
+}
+$original=$actual.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+$bad=[IO.File]::GetAccessControl($path)
+[void]$bad.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+    [Security.Principal.SecurityIdentifier]::new('S-1-1-0'),
+    [Security.AccessControl.FileSystemRights]::Write,
+    [Security.AccessControl.AccessControlType]::Allow))
+[IO.File]::SetAccessControl($path,$bad)
+$badSddl=[IO.File]::GetAccessControl($path).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+$refused=$false
+try { $opened=Open-PrivateRepairFile -Path $path -Mode OpenOrCreate; $opened.Dispose() }
+catch { $refused=$_.Exception.Message -match 'unexpected access principal' }
+if (!$refused -or [IO.File]::GetAccessControl($path).GetSecurityDescriptorSddlForm(
+        [Security.AccessControl.AccessControlSections]::All) -cne $badSddl) {
+    throw 'An existing foreign-writer ACL was accepted or silently rewritten.'
+}
+$restore=[Security.AccessControl.FileSecurity]::new()
+$restore.SetSecurityDescriptorSddlForm($original, [Security.AccessControl.AccessControlSections]::Access)
+[IO.File]::SetAccessControl($path,$restore)
+$beforeOwnerCheck=[IO.File]::GetAccessControl($path).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+# Model the exact elevated-token Administrators-owned metadata at the private
+# filesystem query seam. The real existing file descriptor must stay unchanged.
+$wrongOwner=[Security.AccessControl.FileSecurity]::new()
+$wrongOwner.SetSecurityDescriptorSddlForm($beforeOwnerCheck)
+$wrongOwner.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+function Get-RepairPathAcl { return $wrongOwner }
+$refused=$false
+try { $opened=Open-PrivateRepairFile -Path $path -Mode OpenOrCreate; $opened.Dispose() }
+catch { $refused=$_.Exception.Message -match 'private owner custody' }
+if (!$refused) { throw 'Wrong existing ownership was accepted.' }
+$after=[IO.File]::GetAccessControl($path).GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::All)
+if ($after -cne $beforeOwnerCheck) { throw 'Existing descriptor changed during wrong-owner refusal.' }
+if ([IO.File]::ReadAllBytes($path)[0] -ne 42) { throw 'Existing file data changed.' }
+""", tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
