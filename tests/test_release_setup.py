@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -9,26 +10,36 @@ import pytest
 import yaml
 
 from tools.release_artifact_tag import resolve_artifact_tag
+from angerona.core.privilege import trusted_powershell_path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _parse_powershell(source: str) -> subprocess.CompletedProcess[str]:
-    powershell = shutil.which("powershell.exe")
-    assert powershell is not None
+def _parse_powershell_sources(sources: list[str]) -> list[dict]:
+    """Parse each source independently in one child; never execute source text."""
+    if type(sources) is not list or not sources or any(type(item) is not str for item in sources):
+        raise ValueError("PowerShell parser requires a nonempty list of source strings")
+    powershell = str(trusted_powershell_path())
     parser = r"""
-$source = [Console]::In.ReadToEnd()
-$tokens = $null
-$errors = $null
-[void][Management.Automation.Language.Parser]::ParseInput(
-    $source, [ref]$tokens, [ref]$errors)
-if ($errors.Count -ne 0) {
-    [Console]::Error.WriteLine(($errors | Out-String))
-    exit 1
+$ErrorActionPreference = 'Stop'
+$decodedSources = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
+$sources = @($decodedSources)
+$results = @()
+$failed = $false
+for ($index = 0; $index -lt $sources.Count; $index++) {
+    $tokens = $null
+    $errors = $null
+    [void][Management.Automation.Language.Parser]::ParseInput(
+        $sources[$index], [ref]$tokens, [ref]$errors)
+    $messages = @($errors | ForEach-Object { $_.Message })
+    $results += [pscustomobject]@{index = $index; errors = $messages}
+    if ($messages.Count -ne 0) { $failed = $true }
 }
+[Console]::Out.Write((ConvertTo-Json -InputObject $results -Compress -Depth 5))
+if ($failed) { exit 1 }
 """
-    return subprocess.run(
+    result = subprocess.run(
         [
             powershell,
             "-NoProfile",
@@ -38,12 +49,22 @@ if ($errors.Count -ne 0) {
             "-Command",
             parser,
         ],
-        input=source,
+        input=json.dumps(sources, ensure_ascii=True),
         check=False,
         capture_output=True,
         text=True,
         timeout=30,
     )
+    assert result.returncode in (0, 1), result.stderr or result.stdout
+    rows = json.loads(result.stdout.lstrip("\ufeff"))
+    assert type(rows) is list and len(rows) == len(sources), "Incomplete parser result set"
+    for index, row in enumerate(rows):
+        assert (type(row) is dict and set(row) == {"index", "errors"}
+                and type(row["index"]) is int and row["index"] == index
+                and type(row["errors"]) is list
+                and all(type(error) is str for error in row["errors"])), "Invalid indexed parser result"
+    assert result.returncode == int(any(row["errors"] for row in rows)), "Parser result/exit mismatch"
+    return rows
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL semantics are required")
@@ -156,11 +177,10 @@ def test_release_powershell_and_every_workflow_pwsh_block_parse() -> None:
         *blocks,
     ]
     assert len(blocks) >= 10
-    for index, source in enumerate(sources):
-        result = _parse_powershell(source)
-        assert result.returncode == 0, (
-            f"PowerShell source {index} failed parser validation: "
-            f"{result.stderr or result.stdout}"
+    for row in _parse_powershell_sources(sources):
+        assert not row["errors"], (
+            f"PowerShell source {row['index']} failed parser validation: "
+            f"{row['errors']}"
         )
 
 
@@ -578,3 +598,84 @@ def test_batch_launcher_preflights_custody_before_requesting_elevation() -> None
     assert "-Wait -PassThru" in text
     assert "Classic Setup is restricted to a protected legacy migration" in text
     assert "Enterprise clean install requires a separate governed deployment artifact" in text
+
+
+def test_powershell_batch_contract_launches_one_parse_only_child(monkeypatch):
+    sources = [f"$value = 'source-{index}'" for index in range(13)]
+    sources[4] = "Write-Output 'unexecuted $value ; & { arbitrary text }'"
+    sources[8] = "$unicode = '\u2603'"
+    calls = []
+    monkeypatch.setitem(globals(), "trusted_powershell_path", lambda: Path("inert-powershell.exe"))
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        assert json.loads(kwargs["input"]) == sources
+        assert kwargs["timeout"] == 30 and kwargs["text"] is True
+        parser = command[-1]
+        assert "::ParseInput(" in parser
+        assert "Invoke-Expression" not in parser and "ScriptBlock" not in parser
+        assert sources[4] not in parser  # Source is stdin JSON data, never command interpolation.
+        return subprocess.CompletedProcess(command, 0, json.dumps([
+            {"index": index, "errors": []} for index in range(13)
+        ]), "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert _parse_powershell_sources(sources) == [{"index": index, "errors": []} for index in range(13)]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("bad_index", [0, 6, 12])
+def test_powershell_batch_contract_preserves_all_source_error_indexes(monkeypatch, bad_index):
+    sources = [f"$value = {index}" for index in range(13)]
+    rows = [{"index": index, "errors": ["inert parser error"] if index == bad_index else []}
+            for index in range(13)]
+    monkeypatch.setitem(globals(), "trusted_powershell_path", lambda: Path("inert-powershell.exe"))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0], 1, json.dumps(rows), "",
+    ))
+    result = _parse_powershell_sources(sources)
+    assert len(result) == 13 and result[bad_index]["errors"] == ["inert parser error"]
+
+
+@pytest.mark.parametrize("rows,returncode", [
+    ([], 0),
+    ([{"index": 0, "errors": []}], 0),
+    ([{"index": 0, "errors": []}, {"index": 0, "errors": []}], 0),
+    ([{"index": 0, "errors": []}, {"index": True, "errors": []}], 0),
+    ([{"index": 0, "errors": []}, {"index": 1, "errors": "bad"}], 0),
+    ([{"index": 0, "errors": []}, {"index": 1, "errors": [1]}], 1),
+    ([{"index": 0, "errors": []}, {"index": 1, "errors": ["error"]}], 0),
+    ([{"index": 0, "errors": []}, {"index": 1, "errors": []}], 1),
+])
+def test_powershell_batch_contract_rejects_incomplete_or_ambiguous_results(monkeypatch, rows, returncode):
+    monkeypatch.setitem(globals(), "trusted_powershell_path", lambda: Path("inert-powershell.exe"))
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: subprocess.CompletedProcess(
+        args[0], returncode, json.dumps(rows), "",
+    ))
+    with pytest.raises(AssertionError):
+        _parse_powershell_sources(["$a = 1", "$b = 2"])
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell parser is required")
+def test_powershell_batch_native_sources_remain_unexecuted(tmp_path):
+    marker = tmp_path / "must-not-be-created.txt"
+    path_literal = str(marker).replace("'", "''")
+    sources = [
+        f"[IO.File]::WriteAllText('{path_literal}', 'executed')",
+        "if (",
+        "throw 'must remain inert parser data'",
+    ]
+    rows = _parse_powershell_sources(sources)
+    assert rows[0]["errors"] == [] and rows[1]["errors"]
+    assert rows[2]["errors"] == [] and not marker.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell parser is required")
+@pytest.mark.parametrize("source,must_fail", [
+    ("$valid = 7", False),
+    ("if (", True),
+])
+def test_powershell_batch_native_single_source_retains_whole_text(source, must_fail):
+    rows = _parse_powershell_sources([source])
+    assert len(rows) == 1 and rows[0]["index"] == 0
+    assert bool(rows[0]["errors"]) is must_fail

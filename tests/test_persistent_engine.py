@@ -399,3 +399,257 @@ def test_spawn_environment_excludes_credentials_and_python_path(monkeypatch):
     assert "PYTHONPATH" not in environment
     assert "ANGERONA_EXTERNAL_MODULES" not in environment
     assert environment["SYSTEMROOT"] == "C:\\Windows"
+
+
+@pytest.fixture
+def inert_control():
+    control = EngineControl(threading.Event())
+    control.attach(Manager(), EventBus(), SimpleNamespace(eco_mode=False), None)
+    yield control
+    control.close()
+    if control._worker is not None:
+        assert not control._worker.is_alive()
+
+
+def test_control_shutdown_wakes_idle_queue_without_poll_or_receipt_change(inert_control):
+    import queue
+    from angerona.core.engine_control import _STOP_CONTROL_WORKER
+
+    entered = threading.Event()
+    timeouts, markers, executed = [], [], []
+
+    class ObservedQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            timeouts.append(timeout)
+            entered.set()
+            return super().get(block=block, timeout=3.0)
+
+        def put_nowait(self, item):
+            markers.append(item)
+            return super().put_nowait(item)
+
+    control = inert_control
+    control._queue = ObservedQueue(maxsize=16)
+    control._execute = lambda request: executed.append(request)
+    control.ready()
+    assert entered.wait(2.0)
+    control.close()
+    control.close()
+    assert not control._worker.is_alive()
+    assert timeouts == [0.5]  # Product polling and join deadlines are unchanged.
+    assert markers == [_STOP_CONTROL_WORKER]
+    assert executed == [] and control._operations == {}
+    assert control._queue.unfinished_tasks == 0
+
+
+@pytest.mark.parametrize("queued_count", [1, 16])
+def test_control_shutdown_preserves_inflight_and_accepted_queued_receipts(
+    inert_control, queued_count,
+):
+    control = inert_control
+    entered, release = threading.Event(), threading.Event()
+    executed = []
+
+    def execute(request):
+        executed.append(dict(request))
+        entered.set()
+        assert release.wait(4.0)
+        return {"actual_inert_result": True}
+
+    control._execute = execute
+    control.ready()
+    first = control.dispatch({"operation": "module_restart", "name": "Sample sensor"})
+    assert entered.wait(2.0)
+    pending = [control.dispatch({"operation": "module_restart", "name": "Sample sensor"})
+               for _ in range(queued_count)]
+    closer = threading.Thread(target=control.close)
+    closer.start()
+    try:
+        assert control.stop.wait(2.0)
+        # close must release the receipt lock before joining its worker.
+        assert control._lock.acquire(timeout=0.5)
+        try:
+            assert control._operations[first["id"]]["state"] == "running"
+            assert all(control._operations[item["id"]]["state"] == "queued"
+                       for item in pending)
+        finally:
+            control._lock.release()
+    finally:
+        release.set()
+        closer.join(3.0)
+    assert not closer.is_alive() and not control._worker.is_alive()
+    assert len(executed) == 1
+    assert control._operations[first["id"]]["state"] == "completed"
+    assert control._operations[first["id"]]["result"] == {"actual_inert_result": True}
+    assert all(control._operations[item["id"]]["state"] == "queued" for item in pending)
+    assert len(control._operations) == queued_count + 1
+    assert control._queue.qsize() == queued_count + (queued_count < 16)
+    assert control._stop_wake_enqueued is (queued_count < 16)
+    before = control._queue.qsize()
+    control.close()
+    assert control._queue.qsize() == before
+    with pytest.raises(EngineError, match="not ready"):
+        control.dispatch({"operation": "module_restart", "name": "Sample sensor"})
+
+
+def test_control_shutdown_rechecks_admission_after_validation_race(inert_control):
+    control = inert_control
+    validated, release = threading.Event(), threading.Event()
+    original_module = control._module
+    executed, errors, receipts = [], [], []
+
+    def paused_module(name):
+        module = original_module(name)
+        validated.set()
+        assert release.wait(4.0)
+        return module
+
+    control._module = paused_module
+    control._execute = lambda request: executed.append(request)
+    control.ready()
+
+    def dispatch():
+        try:
+            receipts.append(control.dispatch({"operation": "module_restart", "name": "Sample sensor"}))
+        except EngineError as error:
+            errors.append(str(error))
+
+    caller = threading.Thread(target=dispatch)
+    caller.start()
+    try:
+        assert validated.wait(2.0)
+        control.close()
+    finally:
+        release.set()
+        caller.join(3.0)
+    assert not caller.is_alive() and not control._worker.is_alive()
+    assert errors == ["Engine is not ready for control operations"]
+    assert receipts == [] and executed == [] and control._operations == {}
+
+
+def test_control_shutdown_before_ready_does_not_enqueue_marker(inert_control):
+    control = inert_control
+    control.close()
+    control.close()
+    assert control._worker is None
+    assert control._queue.empty() and not control._stop_wake_enqueued
+
+
+def test_control_shutdown_wins_after_dequeue_before_running_transition(inert_control):
+    import queue
+
+    dequeued, release = threading.Event(), threading.Event()
+
+    class PausedReturnQueue(queue.Queue):
+        def get(self, block=True, timeout=None):
+            item = super().get(block=block, timeout=timeout)
+            dequeued.set()
+            assert release.wait(4.0)
+            return item
+
+    control = inert_control
+    control._queue = PausedReturnQueue(maxsize=16)
+    executed = []
+    control._execute = lambda request: executed.append(request)
+    control.ready()
+    receipt = control.dispatch({"operation": "module_restart", "name": "Sample sensor"})
+    assert dequeued.wait(2.0)
+    closer = threading.Thread(target=control.close)
+    closer.start()
+    try:
+        assert control.stop.wait(2.0)
+        with control._lock:
+            assert control._operations[receipt["id"]]["state"] == "queued"
+    finally:
+        release.set()
+        closer.join(3.0)
+    assert not closer.is_alive() and not control._worker.is_alive()
+    assert executed == []
+    assert control._operations[receipt["id"]] == {
+        "id": receipt["id"], "operation": "module_restart", "state": "queued",
+    }
+    # The real dequeued item is balanced; only the unconsumed stop marker
+    # remains in this closed queue, with no operation receipt of its own.
+    assert control._queue.unfinished_tasks == 1 and control._queue.qsize() == 1
+
+
+@pytest.mark.parametrize("already_closed", [False, True])
+def test_control_shutdown_late_ready_never_reports_ready_or_starts_worker(inert_control, already_closed):
+    control = inert_control
+    if already_closed:
+        control.close()
+    else:
+        control.stop.set()
+    control.ready()
+    control.ready()
+    assert control.state == "stopping" and control._worker is None
+    assert control._queue.empty()
+    with pytest.raises(EngineError, match="not ready"):
+        control.dispatch({"operation": "module_restart", "name": "Sample sensor"})
+
+
+def test_control_shutdown_repeated_ready_retains_one_owned_worker(inert_control):
+    control = inert_control
+    control.ready()
+    worker = control._worker
+    control.ready()
+    control.ready()
+    assert control._worker is worker and worker.is_alive()
+    assert control.state == "ready" and not control.stop.is_set()
+    control.close()
+    control.ready()
+    assert control._worker is worker and not worker.is_alive()
+    assert control.state == "stopping"
+
+
+def test_control_shutdown_serializes_ready_start_and_close(inert_control, monkeypatch):
+    control = inert_control
+    starting, release, close_lock_attempt = threading.Event(), threading.Event(), threading.Event()
+    original_thread = threading.Thread
+    errors = []
+
+    class PausedWorkerStart(original_thread):
+        def start(self):
+            if self.name == "EngineControl":
+                starting.set()
+                assert release.wait(4.0)
+            return super().start()
+
+    class ObservedLock:
+        def __init__(self):
+            self.inner = threading.RLock()
+
+        def __enter__(self):
+            if threading.current_thread().name == "close-caller":
+                close_lock_attempt.set()
+            self.inner.acquire()
+            return self
+
+        def __exit__(self, *_args):
+            self.inner.release()
+
+    control._lock = ObservedLock()
+    monkeypatch.setattr(threading, "Thread", PausedWorkerStart)
+
+    def invoke(callback):
+        try:
+            callback()
+        except BaseException as error:
+            errors.append(error)
+
+    starter = original_thread(target=lambda: invoke(control.ready), name="ready-caller")
+    closer = original_thread(target=lambda: invoke(control.close), name="close-caller")
+    starter.start()
+    try:
+        assert starting.wait(2.0)
+        closer.start()
+        assert close_lock_attempt.wait(2.0)
+        assert control._worker is None and not control.stop.is_set()
+    finally:
+        release.set()
+        starter.join(3.0)
+        if closer.ident is not None:
+            closer.join(3.0)
+    assert not starter.is_alive() and not closer.is_alive() and errors == []
+    assert control.state == "stopping" and not control._worker.is_alive()
+    assert control._operations == {}

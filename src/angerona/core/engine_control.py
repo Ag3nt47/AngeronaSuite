@@ -12,6 +12,9 @@ from .engine_transport import EngineError, MAX_RESPONSE, canonical
 
 # No credentials, command strings, arbitrary paths, response capabilities or
 # model-generated configuration can cross this boundary.
+_STOP_CONTROL_WORKER = object()
+
+
 SETTINGS = {
     "eco_mode": (bool, None, None),
     "alert_retention_enabled": (bool, None, None),
@@ -48,6 +51,7 @@ class EngineControl:
         self.manager = self.bus = self.config = self.chill = None
         self._lock = threading.RLock()
         self._queue: queue.Queue = queue.Queue(maxsize=16)
+        self._stop_wake_enqueued = False
         self._operations: OrderedDict[str, dict] = OrderedDict()
         self._worker: threading.Thread | None = None
         self.instance = ""
@@ -60,19 +64,41 @@ class EngineControl:
         self.manager, self.bus, self.config, self.chill = manager, bus, config, chill
 
     def ready(self) -> None:
-        self.state = "ready"
-        self.reason = "Protection engine running independently of its windows"
-        self._worker = threading.Thread(target=self._work, name="EngineControl", daemon=True)
-        self._worker.start()
+        with self._lock:
+            if self.stop.is_set():
+                self.state, self.reason = "stopping", "Protection engine is stopping"
+                return
+            if self._worker is not None:
+                return
+            worker = threading.Thread(target=self._work, name="EngineControl", daemon=True)
+            # Close cannot observe or join an assigned-but-unstarted worker.
+            worker.start()
+            self._worker = worker
+            self.state = "ready"
+            self.reason = "Protection engine running independently of its windows"
 
     def fail(self, reason: str) -> None:
         self.state, self.reason = "failed", _text(reason)
 
     def close(self) -> None:
-        self.state, self.reason = "stopping", "Protection engine is stopping"
-        self.stop.set()
-        if self._worker is not None:
-            self._worker.join(timeout=2.0)
+        with self._lock:
+            self.state, self.reason = "stopping", "Protection engine is stopping"
+            self.stop.set()
+            worker = self._worker
+            if (worker is not None and worker.is_alive()
+                    and not self._stop_wake_enqueued):
+                try:
+                    # Identity-only wakeup, never an admitted operation. Full
+                    # queues already have work to wake get(); do not block or
+                    # evict an accepted request to make room for this marker.
+                    self._queue.put_nowait(_STOP_CONTROL_WORKER)
+                except queue.Full:
+                    pass
+                else:
+                    self._stop_wake_enqueued = True
+        # A running operation needs this same lock to finish its real receipt.
+        if worker is not None:
+            worker.join(timeout=2.0)
         if self.chill is not None:
             self.chill.stop()
 
@@ -210,6 +236,10 @@ class EngineControl:
             raise EngineError("Unknown control operation")
         identity = secrets.token_hex(16)
         with self._lock:
+            # Validation can precede a concurrent close. Admission and the
+            # private stop marker must share this final ready/stop boundary.
+            if self.state != "ready" or self.stop.is_set():
+                raise EngineError("Engine is not ready for control operations")
             if self._queue.full():
                 raise EngineError("Engine operation queue is full")
             # Keep at most 64 receipts; queued/running work is never evicted.
@@ -323,10 +353,20 @@ class EngineControl:
     def _work(self) -> None:
         while not self.stop.is_set():
             try:
-                identity, request = self._queue.get(timeout=0.5)
+                item = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
+            if item is _STOP_CONTROL_WORKER:
+                self._queue.task_done()
+                return
+            identity, request = item
             with self._lock:
+                if self.stop.is_set():
+                    # Close won before this dequeued request started. Preserve
+                    # its existing queued receipt on the now-closed engine;
+                    # never fabricate cancellation or an execution outcome.
+                    self._queue.task_done()
+                    return
                 self._operations[identity]["state"] = "running"
             started = time.monotonic()
             try:
