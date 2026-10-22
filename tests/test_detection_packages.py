@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
+from angerona.core import detection_packages
 from angerona.core.detection_packages import (
     PackageValidationError,
     load_package,
@@ -83,3 +85,28 @@ def test_expired_package_and_failed_fixture_are_rejected(tmp_path):
     path.write_text(json.dumps(seal_package(broken)), encoding="utf-8")
     with pytest.raises(PackageValidationError, match="fixture failed"):
         load_package(path, now=datetime(2030, 1, 1, tzinfo=timezone.utc))
+
+
+@pytest.mark.parametrize("elapsed,accepted", [
+    (0.0, True),
+    (0.099, True),
+    (0.100, True),
+    (0.102, False),
+])
+def test_fixture_performance_budget_boundary_is_enforced(
+    tmp_path, monkeypatch, elapsed, accepted,
+):
+    # Two fixtures and a 50 ms/event limit allow at most 100 ms total. Control
+    # only this module's benchmark samples, leaving the shared time module alone.
+    ticks = iter([0.0, elapsed])
+    monkeypatch.setattr(
+        detection_packages, "time", SimpleNamespace(perf_counter=lambda: next(ticks))
+    )
+    path = tmp_path / "budget.json"
+    path.write_text(json.dumps(seal_package(_package())), encoding="utf-8")
+    now = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    if accepted:
+        assert load_package(path, now=now).package_id.endswith("observation")
+    else:
+        with pytest.raises(PackageValidationError, match="fixture evaluation exceeded budget"):
+            load_package(path, now=now)

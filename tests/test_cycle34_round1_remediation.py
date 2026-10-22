@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from angerona.core import detection_packages
 from angerona.core.detection_evaluation import (
     capture_replay_cohort,
     compare_detection_packages,
@@ -19,6 +20,7 @@ from angerona.core.detection_promotion import (
     PromotionAuthority,
     PromotionError,
     PromotionPolicy,
+    PromotionResult,
     digest_tuning,
 )
 from angerona.core.detection_quality_store import (
@@ -527,7 +529,16 @@ def test_authenticated_v2_registry_divergence_fails_closed_migration(tmp_path):
         )
 
 
-def test_129th_binding_is_rejected_before_state_registry_or_runtime_change(tmp_path):
+def test_129th_binding_is_rejected_before_state_registry_or_runtime_change(
+    tmp_path, monkeypatch,
+):
+    # Exercise capacity with deterministic fixture-benchmark samples. A scheduler
+    # pause while repeatedly validating 128 packages must not select the separate
+    # performance-quarantine path. Every fixture and trust check still executes;
+    # loader budget boundaries are covered in test_detection_packages.py.
+    monkeypatch.setattr(
+        detection_packages, "time", SimpleNamespace(perf_counter=lambda: 0.0)
+    )
     clock = _Clock()
     capability = object()
     registry = DetectionPackageRegistry(
@@ -662,6 +673,52 @@ def test_129th_binding_is_rejected_before_state_registry_or_runtime_change(tmp_p
     assert state_path.read_bytes() == state_before
     assert registry.inventory() == registry_before
     assert runtime.snapshot() == runtime_before
+
+
+@pytest.mark.parametrize("failure", ["fixture-budget", "digest-tamper"])
+def test_denied_promotion_still_reconciles_and_rejects_invalid_active_package(
+    tmp_path, monkeypatch, failure,
+):
+    registry = DetectionPackageRegistry(tmp_path / "registry", require_signed=False)
+    document = _document("org.angerona.reconcile-control", "1.0.0", "control")
+    source = tmp_path / "control.json"
+    source.write_text(json.dumps(document), encoding="utf-8")
+    assert registry.stage(source).ok
+    assert registry.activate(document["id"], document["digest"]).ok
+    bindings = {document["id"]: document["digest"]}
+    runtime = DetectionRuntimeEngine(clock=lambda: 0.0)
+    runtime.sync_active_set_from_registry(
+        registry, expected_bindings=bindings, activation_epoch=1,
+    )
+    refusal = PromotionResult(
+        ok=False, action="promote", package_id=document["id"],
+        target_digest=document["digest"], previous_digest=None,
+        state="rejected", activation_epoch=1, errors=("capacity refusal",),
+    )
+    coordinator = SimpleNamespace(
+        runtime_managed=False,
+        assert_runtime_identity=lambda _runtime: None,
+        authoritative_runtime_bindings=lambda: (tuple(bindings.items()), 1),
+        promote=lambda _receipt: refusal,
+    )
+    service = DetectionForgeService(
+        registry=registry, runtime=runtime, promotion=coordinator,
+    )
+    if failure == "fixture-budget":
+        ticks = iter([0.0, 0.11])
+        monkeypatch.setattr(
+            detection_packages, "time", SimpleNamespace(perf_counter=lambda: next(ticks))
+        )
+    else:
+        stored = next(registry.packages.glob("*.json"))
+        tampered = json.loads(stored.read_text(encoding="utf-8"))
+        tampered["confidence"] = 1
+        stored.write_text(json.dumps(tampered), encoding="utf-8")
+    result = service.promote(object())
+    assert not result.ok and result.state == "runtime-fail-closed"
+    assert result.errors == ("runtime reconciliation failed closed",)
+    assert not runtime.snapshot().active_digests
+    assert registry.inventory()[document["id"]][document["digest"]]["state"] == "quarantined"
 
 
 def _promote(
