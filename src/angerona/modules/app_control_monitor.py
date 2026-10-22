@@ -62,7 +62,8 @@ class WindowsCodeIntegritySource:
 
     def _next(self, query, count: int):
         try:
-            return list(self._api.EvtNext(query, count) or ())
+            # Bound the native wait; timeout remains a collection gap below.
+            return list(self._api.EvtNext(query, count, 500, 0) or ())
         except Exception as exc:
             # ERROR_NO_MORE_ITEMS is normal for a bounded Event Log query.
             args = getattr(exc, "args", ())
