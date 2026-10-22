@@ -49,6 +49,7 @@ MAX_LOCAL_DETAILS: Final = 256
 MAX_COMPONENT_BYTES: Final = 128 * 1024 * 1024
 MAX_TOTAL_COMPONENT_BYTES: Final = 512 * 1024 * 1024
 MAX_COLLECTION_SECONDS: Final = 45.0
+_MAX_COMPONENT_PARENT_DEPTH: Final = 64
 MAX_BASELINE_BYTES: Final = 512 * 1024
 MAX_BASELINE_JSON_DEPTH: Final = 12
 MAX_BASELINE_JSON_NODES: Final = 32_768
@@ -1034,8 +1035,13 @@ def _open_windows_exclusive_lock(path: Path) -> int:
         raise
 
 
-def _open_windows_directory_guard(path: Path) -> int:
-    """Retain one no-delete-share directory handle for enrollment identity proof."""
+def _open_windows_directory_guard(path: Path, *, deny_write: bool = False) -> int:
+    """Retain a directory handle; components additionally deny write sharing.
+
+    Existing enrollment callers retain their read/write sharing policy. A
+    component observation fails closed if its stronger sharing cannot be held.
+    Neither policy makes local user-mode custody immune to an administrator.
+    """
     import ctypes
     import msvcrt
     from ctypes import wintypes
@@ -1057,15 +1063,17 @@ def _open_windows_directory_guard(path: Path) -> int:
     close_handle.restype = wintypes.BOOL
 
     file_read_attributes = 0x00000080
-    share_read_write = 0x00000001 | 0x00000002
+    # FILE_LIST_DIRECTORY makes component opens participate in read sharing.
+    desired_access = file_read_attributes | 0x00000001
+    sharing = 0x00000001 if deny_write else 0x00000001 | 0x00000002
     open_existing = 3
     backup_semantics = 0x02000000
     open_reparse_point = 0x00200000
     invalid_handle = wintypes.HANDLE(-1).value
     handle = create_file(
         os.fspath(path),
-        file_read_attributes,
-        share_read_write,  # Deliberately omit FILE_SHARE_DELETE.
+        desired_access,
+        sharing,  # Always omit FILE_SHARE_DELETE.
         None,
         open_existing,
         backup_semantics | open_reparse_point,
@@ -2670,6 +2678,79 @@ class _CollectionBudget:
     components: int = 0
 
 
+@contextmanager
+def _component_directory_custody(
+    path: Path, budget: _CollectionBudget, monotonic: Callable[[], float],
+) -> Iterator[Callable[[], None]]:
+    """Hold bounded, plain ancestors before addressing a component leaf.
+
+    The fixed-drive gate precedes every path stat/open/resolve. Walk top-down,
+    retain non-reparse handles without write/delete sharing, and revalidate
+    identities before descending. Native calls are synchronous and cannot be
+    preempted by this cooperative deadline. These are point-in-time user-mode
+    checks, not a universal no-egress or privileged-adversary guarantee.
+    """
+    _require_fixed_local_path(path)
+    held: list[tuple[Path, int, os.stat_result]] = []
+
+    def revalidate() -> None:
+        if monotonic() > budget.deadline:
+            raise TimeoutError("collector time budget reached during directory custody")
+        for parent, descriptor, expected in held:
+            named = _safe_directory_stat(parent)
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or stat.S_ISLNK(opened.st_mode)
+                or bool(getattr(opened, "st_file_attributes", 0) & _REPARSE_POINT)
+                or not _same_filesystem_object(expected, named)
+                or not _same_filesystem_object(expected, opened)
+                or not _windows_handle_matches_path(descriptor, str(parent))
+            ):
+                raise OSError("component ancestor custody changed")
+            if monotonic() > budget.deadline:
+                raise TimeoutError("collector time budget reached during directory custody")
+
+    try:
+        if os.name == "nt":
+            parents = tuple(reversed(path.parents))
+            if not path.is_absolute() or not parents or len(parents) > _MAX_COMPONENT_PARENT_DEPTH:
+                raise OSError("component ancestor depth is invalid or exceeds its bound")
+            for parent in parents:
+                revalidate()
+                before = _safe_directory_stat(parent)
+                if monotonic() > budget.deadline:
+                    raise TimeoutError("collector time budget reached during directory custody")
+                descriptor = _open_windows_directory_guard(parent, deny_write=True)
+                held.append((parent, descriptor, before))
+                revalidate()
+        yield revalidate
+    finally:
+        close_error = None
+        for _parent, descriptor, _before in reversed(held):
+            try:
+                os.close(descriptor)
+            except OSError as exc:
+                # Attempt every release even when one handle's close fails.
+                close_error = close_error or exc
+        if close_error is not None:
+            raise close_error
+
+
+def _assert_component_name(path: Path, expected: os.stat_result) -> None:
+    """Recheck the leaf without excluding legitimate hard-linked system DLLs."""
+    named = path.stat(follow_symlinks=False)
+    if (
+        not stat.S_ISREG(named.st_mode)
+        or stat.S_ISLNK(named.st_mode)
+        or bool(getattr(named, "st_file_attributes", 0) & _REPARSE_POINT)
+        or not _same_filesystem_object(expected, named)
+        or named.st_size != expected.st_size
+        or named.st_mtime_ns != expected.st_mtime_ns
+    ):
+        raise OSError("component named leaf changed")
+
+
 def _api_windows_directories() -> tuple[str | None, str | None]:
     if os.name != "nt":
         return None, None
@@ -3056,137 +3137,153 @@ class WindowsAuthExtensionEvidenceProvider:
             )
         path = Path(resolved_path)
         try:
-            before_path = path.stat(follow_symlinks=False)
-            if stat.S_ISLNK(before_path.st_mode) or getattr(
-                before_path, "st_file_attributes", 0
-            ) & _REPARSE_POINT:
-                raise OSError("component path is link or reparse backed")
-            if not stat.S_ISREG(before_path.st_mode):
-                raise OSError("component path is not a regular file")
-            if before_path.st_size > MAX_COMPONENT_BYTES:
-                return (
-                    _unknown_component(
-                        component_token,
-                        path_token=path_token,
-                        status="rejected",
-                        reason="component exceeds per-file hashing bound",
-                    ),
-                    detail,
-                )
-            if budget.total_bytes + before_path.st_size > MAX_TOTAL_COMPONENT_BYTES:
-                return (
-                    _unknown_component(
-                        component_token,
-                        path_token=path_token,
-                        status="rejected",
-                        reason="aggregate component hashing bound reached",
-                    ),
-                    detail,
-                )
-            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
-            descriptor = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
-            try:
-                before = os.fstat(descriptor)
-                if (
-                    not stat.S_ISREG(before.st_mode)
-                    or before.st_dev != before_path.st_dev
-                    or before.st_ino != before_path.st_ino
-                    or before.st_size != before_path.st_size
-                    or not _windows_handle_matches_path(descriptor, resolved_path)
-                ):
-                    raise OSError("component identity changed before hashing")
-                hasher = hashlib.sha256()
-                remaining = before.st_size
-                while remaining:
+            with _component_directory_custody(path, budget, self.monotonic) as revalidate_directories:
+                revalidate_directories()
+                before_path = path.stat(follow_symlinks=False)
+                if stat.S_ISLNK(before_path.st_mode) or getattr(
+                    before_path, "st_file_attributes", 0
+                ) & _REPARSE_POINT:
+                    raise OSError("component path is link or reparse backed")
+                if not stat.S_ISREG(before_path.st_mode):
+                    raise OSError("component path is not a regular file")
+                if before_path.st_size > MAX_COMPONENT_BYTES:
+                    return (
+                        _unknown_component(
+                            component_token,
+                            path_token=path_token,
+                            status="rejected",
+                            reason="component exceeds per-file hashing bound",
+                        ),
+                        detail,
+                    )
+                if budget.total_bytes + before_path.st_size > MAX_TOTAL_COMPONENT_BYTES:
+                    return (
+                        _unknown_component(
+                            component_token,
+                            path_token=path_token,
+                            status="rejected",
+                            reason="aggregate component hashing bound reached",
+                        ),
+                        detail,
+                    )
+                revalidate_directories()
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+                descriptor = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    before = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(before.st_mode)
+                        or bool(getattr(before, "st_file_attributes", 0) & _REPARSE_POINT)
+                        or before.st_dev != before_path.st_dev
+                        or before.st_ino != before_path.st_ino
+                        or before.st_size != before_path.st_size
+                        or before.st_mtime_ns != before_path.st_mtime_ns
+                        or not _windows_handle_matches_path(descriptor, resolved_path)
+                    ):
+                        raise OSError("component identity changed before hashing")
+                    _assert_component_name(path, before)
+                    revalidate_directories()
+                    hasher = hashlib.sha256()
+                    remaining = before.st_size
+                    while remaining:
+                        if self.monotonic() > budget.deadline:
+                            raise TimeoutError("collector time budget reached while hashing")
+                        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                        if not chunk:
+                            raise OSError("component ended before its handle-bound size")
+                        hasher.update(chunk)
+                        remaining -= len(chunk)
+                    after = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(after.st_mode)
+                        or bool(getattr(after, "st_file_attributes", 0) & _REPARSE_POINT)
+                        or before.st_dev != after.st_dev
+                        or before.st_ino != after.st_ino
+                        or before.st_size != after.st_size
+                        or before.st_mtime_ns != after.st_mtime_ns
+                    ):
+                        raise OSError("component changed during hashing")
+                    revalidate_directories()
+                    _assert_component_name(path, before)
+                    owner_token, acl_digest, security_state = _file_security_from_handle(
+                        descriptor, self.privacy_key
+                    )
+                    signature: Mapping[str, str] = {}
+                    revalidate_directories()
+                    if self.signature_probe is not None:
+                        try:
+                            candidate = self.signature_probe(resolved_path, descriptor)
+                            signature = candidate if isinstance(candidate, Mapping) else {}
+                        except Exception:
+                            signature = {"authenticode_state": "error", "catalog_state": "error"}
+                    authenticode = str(signature.get("authenticode_state", "unknown"))
+                    catalog = str(signature.get("catalog_state", "unknown"))
+                    thumbprint = str(signature.get("signer_thumbprint", ""))
+                    version = str(signature.get("file_version", ""))
+                    if authenticode not in {"verified", "unsigned", "invalid", "unknown", "error"}:
+                        authenticode = "error"
+                    if catalog not in {"verified", "not-found", "unknown", "error"}:
+                        catalog = "error"
+                    if thumbprint and not _HEX_64.fullmatch(thumbprint):
+                        thumbprint = ""
+                    if version and not _SAFE_VERSION.fullmatch(version):
+                        version = ""
+                    final = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(final.st_mode)
+                        or bool(getattr(final, "st_file_attributes", 0) & _REPARSE_POINT)
+                        or before.st_dev != final.st_dev
+                        or before.st_ino != final.st_ino
+                        or before.st_size != final.st_size
+                        or before.st_mtime_ns != final.st_mtime_ns
+                        or not _windows_handle_matches_path(descriptor, resolved_path)
+                    ):
+                        raise OSError("component changed during metadata assurance probes")
+                    revalidate_directories()
+                    _assert_component_name(path, before)
                     if self.monotonic() > budget.deadline:
-                        raise TimeoutError("collector time budget reached while hashing")
-                    chunk = os.read(descriptor, min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise OSError("component ended before its handle-bound size")
-                    hasher.update(chunk)
-                    remaining -= len(chunk)
-                after = os.fstat(descriptor)
-                if (
-                    before.st_dev != after.st_dev
-                    or before.st_ino != after.st_ino
-                    or before.st_size != after.st_size
-                    or before.st_mtime_ns != after.st_mtime_ns
-                ):
-                    raise OSError("component changed during hashing")
-                owner_token, acl_digest, security_state = _file_security_from_handle(
-                    descriptor, self.privacy_key
-                )
-                signature: Mapping[str, str] = {}
-                if self.signature_probe is not None:
-                    try:
-                        candidate = self.signature_probe(resolved_path, descriptor)
-                        signature = candidate if isinstance(candidate, Mapping) else {}
-                    except Exception:
-                        signature = {"authenticode_state": "error", "catalog_state": "error"}
-                authenticode = str(signature.get("authenticode_state", "unknown"))
-                catalog = str(signature.get("catalog_state", "unknown"))
-                thumbprint = str(signature.get("signer_thumbprint", ""))
-                version = str(signature.get("file_version", ""))
-                if authenticode not in {"verified", "unsigned", "invalid", "unknown", "error"}:
-                    authenticode = "error"
-                if catalog not in {"verified", "not-found", "unknown", "error"}:
-                    catalog = "error"
-                if thumbprint and not _HEX_64.fullmatch(thumbprint):
-                    thumbprint = ""
-                if version and not _SAFE_VERSION.fullmatch(version):
-                    version = ""
-                final = os.fstat(descriptor)
-                if (
-                    before.st_dev != final.st_dev
-                    or before.st_ino != final.st_ino
-                    or before.st_size != final.st_size
-                    or before.st_mtime_ns != final.st_mtime_ns
-                    or not _windows_handle_matches_path(descriptor, resolved_path)
-                ):
-                    raise OSError("component changed during metadata assurance probes")
-                if self.monotonic() > budget.deadline:
-                    raise TimeoutError("collector time budget reached during assurance probes")
-                signature_complete = authenticode == "verified" or (
-                    authenticode == "unsigned" and catalog == "verified"
-                )
-                evidence_state = (
-                    "complete"
-                    if signature_complete
-                    and catalog in {"verified", "not-found"}
-                    and bool(thumbprint)
-                    and security_state == "observed"
-                    and bool(owner_token)
-                    and bool(acl_digest)
-                    else "partial"
-                )
-                identity = _token(
-                    self.privacy_key,
-                    b"file-identity",
-                    f"{before.st_dev}:{before.st_ino}:{before.st_size}:{before.st_mtime_ns}",
-                    "file",
-                )
-                budget.total_bytes += before.st_size
-                return (
-                    ComponentEvidence(
-                        component_token,
-                        path_token,
-                        "resolved",
-                        "",
-                        hasher.hexdigest(),
-                        before.st_size,
-                        identity,
-                        authenticode,
-                        catalog,
-                        thumbprint,
-                        version,
-                        owner_token,
-                        acl_digest,
-                        evidence_state,
-                    ),
-                    detail,
-                )
-            finally:
-                os.close(descriptor)
+                        raise TimeoutError("collector time budget reached during assurance probes")
+                    signature_complete = authenticode == "verified" or (
+                        authenticode == "unsigned" and catalog == "verified"
+                    )
+                    evidence_state = (
+                        "complete"
+                        if signature_complete
+                        and catalog in {"verified", "not-found"}
+                        and bool(thumbprint)
+                        and security_state == "observed"
+                        and bool(owner_token)
+                        and bool(acl_digest)
+                        else "partial"
+                    )
+                    identity = _token(
+                        self.privacy_key,
+                        b"file-identity",
+                        f"{before.st_dev}:{before.st_ino}:{before.st_size}:{before.st_mtime_ns}",
+                        "file",
+                    )
+                    budget.total_bytes += before.st_size
+                    return (
+                        ComponentEvidence(
+                            component_token,
+                            path_token,
+                            "resolved",
+                            "",
+                            hasher.hexdigest(),
+                            before.st_size,
+                            identity,
+                            authenticode,
+                            catalog,
+                            thumbprint,
+                            version,
+                            owner_token,
+                            acl_digest,
+                            evidence_state,
+                        ),
+                        detail,
+                    )
+                finally:
+                    os.close(descriptor)
         except FileNotFoundError:
             return (
                 _unknown_component(
