@@ -19,7 +19,38 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Current Black Box admission and App Control observation (2026-10-23)
+## Current updater integration and observed host custody hold (2026-10-23)
+
+The register contains **158 unique IDs**. UPD-05 and HOST-03 are appended; all156
+prior issue objects/order remain byte-identical. The maintainer approved merging local a156bdd with GitHub main f848c01 after the guarded publisher refused their 1/1 divergence. Both parent histories and both llms.txt additions are retained; a156bdd was never independently published.
+
+UPD-05 separates canonical inbox PowerShell custody from the strict single-link rule for release archives, checksums, installed installer scripts and state. The exact WinAPI-derived System32 executable may have normal servicing hardlinks; bounded native owner/DACL, non-reparse ancestry and before/after identity checks run without executing PowerShell for its own custody. This is snapshot evidence, not a persistent OS/file lease, signature bootstrap or resistance to a malicious administrator/kernel.
+
+The first seven-suite production gate passed 217 tests; its one private host probe failed an incorrect expectation of acceptance, giving 217 PASS/1 FAIL/0 errors/skips (946ff633). The validator correctly held unsafe host custody. A separate read-only capture gate passed31, including30 CLI cases overlapping the production gate; its native capture retained the hold. These counts are overlapping scopes, not a combined unique total.
+
+HOST-03 remains OPEN_NATIVE_OBSERVED: an applicable Full Control grant to the built-in Users group exists on the OS-volume root. Native snapshot custody is HELD; native_custody_accepted=false. The validator was not relaxed, and no host ACL, trust baseline or alert state was changed. This is a deployment/custody exposure, not evidence of a confirmed compromise.
+
+A first private-only diagnostic exited native3 before collecting tests because
+`tests/conftest.py` was absent and the existing provenance guard refused data
+outside its confined pytest runtime. Both interpreter generations retired
+exactly. Including the full CLI suite loaded the normal fixture; no confinement
+guard or deadline changed. That harness error remains separate from HOST-03.
+
+The fresh seven-production-suite gate plus expected-refusal probe is
+**218 passed/0 failed/errors/skips with exact retirement (a71e22da); native custody remains HELD_UNSAFE_VOLUME_ROOT**. Static/archive/publication proof is
+**separate post-freeze archive and post-commit guarded-publication receipts bind actual reviewed bytes; no future outcome is asserted here**. The earlier217/1 and31 gates
+proved exact interpreter retirement and unchanged tested1860/759e source,
+HEAD/index/runtime/harness; they do not establish host custody acceptance.
+
+Source staging preserves custom bytes/conflicts; the signed packaged helper
+does not reapply custom source into an installed binary. Consent, independent
+installer release authorization, rollback floors, recovery holds and UGCAP
+review remain separate. No UAC/install/restart-health, full86 efficacy, refreshed
+all15 or performance result follows. The a3 Python3.13 45-second preflight cause
+remains UNKNOWN. Historical observations, raw originals and unresolved evidence
+are preserved.
+
+## Prior Black Box admission and App Control observation (2026-10-23)
 
 The register contains **156 unique IDs**. All prior 154 issue objects and order
 remain byte-identical; SIDE-08 and OBS-04 are appended.

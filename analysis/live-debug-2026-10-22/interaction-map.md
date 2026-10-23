@@ -5,7 +5,23 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Current Black Box admission and App Control solo status
+## Current updater integration and native custody hold
+
+Registry158 appends UPD-05/HOST-03 and retains all156 prior raw objects/order.
+The approved merge retains a156bdd/f848c01 histories and both llms.txt additions;
+a156bdd was not independently published.
+
+| Interaction | Reviewed control | Evidence limit |
+| --- | --- | --- |
+| Release helper -> canonical inbox PowerShell -> protected installed installer | Exact System32 path, bounded regular/reparse/native owner/DACL and before/after identity checks permit OS servicing hardlinks only there. Assets and installer scripts retain single-link checks; no self-custody PowerShell child. | UPD-05. Initial217 productionPASS/private acceptance-assumptionFAIL retained. Fresh seven-suite plus expected-refusal gate: 218 passed/0 failed/errors/skips with exact retirement (a71e22da); native custody remains HELD_UNSAFE_VOLUME_ROOT. No persistent file-object lease, UAC/install or restart health. |
+| OS-volume-root custody -> canonical executable validator -> install hold | Native snapshot found an applicable built-in Users Full Control grant; the validator refuses it and native_custody_accepted=false. No host ACL, baseline or validation policy changed. | HOST-03 OPEN_NATIVE_OBSERVED. Separate read-only capture31PASS (30 overlapping CLI cases) proves the refusal, not safe host custody. The first private-only fixture/confinement refusal remains a harness record, not a new product issue. |
+| Custom source -> three-way stage; signed release -> protected packaged install | Preserve custom bytes/conflicts in the source lane; packaged updates retain consent, independent release/rollback authority and recovery holds. | No automatic custom-source transplant, baseline replacement or destructive conflict recovery. Static/archive/publication: separate post-freeze archive and post-commit guarded-publication receipts bind actual reviewed bytes; no future outcome is asserted here. |
+
+A passing expected-refusal control leaves HOST-03 open. The a3 Python3.13
+45-second preflight cause remains UNKNOWN; this work supplies no refreshed
+all15/module-efficacy or performance result.
+
+## Prior Black Box admission and App Control solo status
 
 Registry 156 retains every prior 154 issue object. Black Box admission passed 41
 focused cases on 1857/d68d; App Control/default-admission passed 119 on 1857/0379.

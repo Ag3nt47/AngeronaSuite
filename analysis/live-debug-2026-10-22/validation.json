@@ -6881,7 +6881,7 @@
       "scope": "Six cases overlap the initial 148-test cohort. Product code is unchanged; original test and lint results remain retained. No new physical-host or full-suite claim."
     }
   },
-  "current_state": {
+  "prior_current_state_before_upd05_merge": {
     "source_version": "1.14.0",
     "issue_ids": 156,
     "new_ids": [
@@ -7280,6 +7280,186 @@
         "Private documentation/metadata preparation ran concurrently; observer timings are not a benchmark or GUI-latency measurement."
       ],
       "first_actual_all15_observation": true
+    }
+  },
+  "current_state": {
+    "source_version": "1.14.0",
+    "issue_ids": 158,
+    "new_ids": [
+      "UPD-05",
+      "HOST-03"
+    ],
+    "scope": "Approved merge plus canonical Windows executable compatibility/custody fix accepted by218 focused cases including actual expected native refusal. HOST-03 remains an OPEN_NATIVE_OBSERVED host exposure; no safe-custody or installed-runtime claim.",
+    "merge": {
+      "local_parent": "a156bdd4f12de5f3976013c5d89856d98020dbf2",
+      "remote_parent": "f848c01228f325ed0ca8ffb2091459554036bb4f",
+      "common_base": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+      "divergence_at_hold": "1 local / 1 remote",
+      "maintainer_approval": "Explicit merge, validation and publication approval; retain both histories and llms.txt changes.",
+      "local_a156_independently_published": false,
+      "merged_commit": "Post-commit identity belongs to the separate guarded publication receipt; this source document does not claim its own commit SHA.",
+      "publication": "Actual post-commit identity and publication outcome belong to a separate guarded receipt; this document asserts neither a future commit SHA nor publisher success."
+    },
+    "review": {
+      "finding": "UPD-05",
+      "static_review_sha256": "0e652fc70dc34f631fbf4bb8de664910fb6e6c2c54a84d6816c96278ad6fcbda",
+      "observed_shape": "Canonical Windows-serviced PowerShell regular, non-symlink, st_nlink=2; read-only shape only, no executed install failure.",
+      "change": "UPD-05 separates canonical inbox PowerShell custody from the strict single-link rule for release archives, checksums, installed installer scripts and state. The exact WinAPI-derived System32 executable may have normal servicing hardlinks; bounded native owner/DACL, non-reparse ancestry and before/after identity checks run without executing PowerShell for its own custody. This is snapshot evidence, not a persistent OS/file lease, signature bootstrap or resistance to a malicious administrator/kernel.",
+      "strict_single_link_unchanged": [
+        "release archives",
+        "checksum files",
+        "protected installed installer scripts",
+        "state"
+      ],
+      "authority_unchanged": [
+        "interactive exact-candidate consent",
+        "protected installed installer publisher and threshold release authorization",
+        "rollback floor",
+        "recovery hold",
+        "UGCAP baseline review"
+      ],
+      "source_customizations": "Existing source staging preserves custom bytes/conflicts. The signed packaged helper does not transplant customized source into a signed binary installation.",
+      "host_exposure": "HOST-03 OPEN_NATIVE_OBSERVED: applicable built-in Users Full Control on the OS-volume root; validator correctly holds, no policy or host ACL changes.",
+      "native_custody_accepted": false
+    },
+    "focused_validation": {
+      "state": "ACCEPTED_SCOPED_NATIVE_REFUSAL",
+      "receipt_path": ".tmp/v114-merged-updater-focused-root-gate-r2/run-updates-r1/result.json",
+      "receipt_sha256": "a71e22da5c4e5735c25a2fa5bd0ee4c1732f269b0d283553781cacfd12161e06",
+      "tested_source_entries": 1860,
+      "tested_source_map_sha256": "759e7b92e178ca7f203b9e09bea9e31577f552ffb75e3a606e28745238120692",
+      "head": "a156bdd4f12de5f3976013c5d89856d98020dbf2",
+      "passed": 218,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "junit_seconds": 82.677,
+      "supervisor_seconds": 87.672,
+      "native_exit": 0,
+      "production_suites": 7,
+      "suites": [
+        "tests/test_verified_release_updates.py",
+        "tests/test_github_update_checks.py",
+        "tests/test_github_update_cli.py",
+        "tests/test_update_authority.py",
+        "tests/test_verify_release_upgrade.py",
+        "tests/test_release_upgrade_preservation.py",
+        "tests/test_release_upgrade_diagnostics.py"
+      ],
+      "actual_origin_modules": [
+        "angerona.updater.release_update",
+        "angerona.updater.github_updater",
+        "angerona.core.privilege",
+        "tools.update_angerona"
+      ],
+      "actual_readonly_host_probe_cases": 1,
+      "native_custody_accepted": false,
+      "unsafe_host_still_held": true,
+      "source_head_index_runtime_gate_unchanged": true,
+      "native_retirement": "Both retained interpreter generations same birth/WAIT0/native exit0/all four owned handles closed; normal MainThread/no QApplication/zero widgets.",
+      "limits": "The final218 cohort overlaps the initial217 production passes and corrected31 capture gate. Do not sum these as unique cases. Passing an expected-refusal test does not close HOST-03 or make custody accepted."
+    },
+    "native_readonly_custody_observation": {
+      "state": "OBSERVED_HELD",
+      "issue": "HOST-03",
+      "status": "OPEN_NATIVE_OBSERVED",
+      "native_custody_accepted": false,
+      "custody_outcome": "HELD",
+      "receipt_path": ".tmp/v114-inbox-native-acl-review-root-gate-r2/run-updates-r1/native-root-acl-review.json",
+      "receipt_sha256": "655de2902c9e17fc208c0f4d227c218b56de4d5524d06639f829f116a839e4e7",
+      "capture_gate_sha256": "aa6623e120f401be752bf7cd435a4297ab2d3774c20327729fe48b6b45939105",
+      "public_sanitized_finding": "Applicable Full Control grant to built-in Users on OS-volume root; includes destructive-child/permission/ownership-change rights, not inheritance-only.",
+      "subprocess_launch_forbidden": true,
+      "host_mutations": false,
+      "validator_relaxed": false,
+      "installation": false,
+      "raw_acl_published": false,
+      "limits": "Current native snapshot proves refusal/exposure; no persistent lease, safe host, install, UAC, restart health or actual compromise conclusion.",
+      "final_probe": {
+        "receipt_path": ".tmp/v114-merged-updater-focused-root-gate-r2/run-updates-r1/native-inbox-host-probe.json",
+        "receipt_sha256": "2a68b5b730409b31c512e42cf750050447d3230c7e127e4ffb6f31e19671fdfb",
+        "within_218_cohort": true,
+        "capture_complete": true,
+        "custody_state": "HELD_UNSAFE_VOLUME_ROOT",
+        "native_custody_accepted": false,
+        "canonical_executable_link_count": 2,
+        "file_stat_identity_stable": true,
+        "subprocess_launch_forbidden": true,
+        "host_acl_changed": false,
+        "installation_or_uac_or_network": false
+      }
+    },
+    "offline_validation": {
+      "proof_scope": "Separate post-freeze receipt records Python syntax, scoped lint/docs/secret checks against actual reviewed source; no future result or hash is asserted here."
+    },
+    "archives": {
+      "proof_scope": "Separate post-freeze rebuild/audit receipts bind each actual unsigned archive to reviewed source. Preceding archives retain their original snapshots and do not package the later combined source.",
+      "signed_release_or_installer_proof": false,
+      "activation": false
+    },
+    "publication": {
+      "proof_scope": "Separate post-commit guarded publisher proof must establish canonical origin, public main/current branch/HEAD parity, fast-forward clean state and seven public byte-identical README assets.",
+      "future_commit_or_receipt_sha_asserted": false
+    },
+    "retained_prior_hosted_failure": {
+      "commit": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+      "ci_jobs": "11/12 SUCCESS",
+      "security_jobs": "3/3 SUCCESS",
+      "python_313": "7768 passed/19 skipped/27 setup errors from one 45-second confinement preflight",
+      "cause": "UNKNOWN",
+      "proof_sha256": "048d1771352bf5de19c7489a7c9cf5e080567f1ad7fef28bf89dd3910987a259"
+    },
+    "limits": [
+      "Snapshot path/ACL/identity evidence does not retain an OS executable/file-object lease through UAC and copying, bootstrap publisher trust or resist malicious administrator/kernel changes.",
+      "No live UAC, installation, restart health, signed release, source activation or automatic conflict remediation.",
+      "No new full pytest regression/default selfcheck, all-86 protection, refreshed all-15 observation, performance benchmark, threat/false-positive adjudication or historical timeout cause.",
+      "Raw host evidence stays private; prior 156 issue objects and historical validation are preserved unchanged.",
+      "Code tests, native observation, static checks, archives and publication retain separate source scopes; later receipts bind the actual reviewed bytes.",
+      "HOST-03 remains OPEN_NATIVE_OBSERVED. Validator and host ACL are unchanged; no attempt to make the host or acceptance green by weakening policy."
+    ],
+    "initial_focused_gate": {
+      "receipt_path": ".tmp/v114-merged-updater-focused-root-gate-r1/run-updates-r1/result.json",
+      "receipt_sha256": "946ff63358b84a8a6c67a759a90c5ec1fd83701c6b7aed03ec9e10203ac1a7a3",
+      "source_entries": 1860,
+      "source_map_sha256": "759e7b92e178ca7f203b9e09bea9e31577f552ffb75e3a606e28745238120692",
+      "production_suites": 7,
+      "production_passed": 217,
+      "private_probe_failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "native_exit": 1,
+      "acceptance_complete": false,
+      "scope": "One private host probe incorrectly expected native custody acceptance; all217 production cases passed. Failure retained; host refusal was correct.",
+      "source_head_index_runtime_gate_unchanged": true,
+      "native_retirement": "Both interpreter generations same birth/WAIT0/native1/all4handles closed; normal MainThread/no QApplication/zero widgets."
+    },
+    "private_acl_diagnostic_history": {
+      "first_private_only_refusal": {
+        "receipt_path": ".tmp/v114-inbox-native-acl-review-root-gate-r1/run-updates-r1/result.json",
+        "receipt_sha256": "dbc07741d44cac503ff397ebabc3617087c39f080a382c7c8d4389dcbc832b78",
+        "native_exit": 3,
+        "tests_collected": 0,
+        "cause": "Private-only target did not load tests/conftest.py; provenance guard refused data outside confined pytest runtime before tests.",
+        "retirement": "Both interpreter generations same birth/WAIT0/native3/all4handles closed; normal MainThread/no QApplication/zero widgets.",
+        "source_head_index_runtime_gate_unchanged": true,
+        "confinement_relaxed": false,
+        "extra_product_issue": false
+      },
+      "corrected_capture_gate": {
+        "receipt_path": ".tmp/v114-inbox-native-acl-review-root-gate-r2/run-updates-r1/result.json",
+        "receipt_sha256": "aa6623e120f401be752bf7cd435a4297ab2d3774c20327729fe48b6b45939105",
+        "passed": 31,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "overlapping_cli_cases": 30,
+        "new_readonly_capture_case": 1,
+        "native_exit": 0,
+        "scope": "Full CLI tests load the normal confinement fixture; one native descriptor capture with subprocess.Popen forbidden. No guard/deadline changes.",
+        "retirement": "Both interpreter generations same birth/WAIT0/native0/all4handles closed; normal MainThread/no QApplication/zero widgets.",
+        "source_head_index_runtime_gate_unchanged": true,
+        "counts_are_unique_additional_cases": false
+      }
     }
   }
 }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.14.0 — verified updater integration and native custody
+
+- Integrate the approved a156bdd/f848c01 histories and preserve both llms.txt
+  additions. The local a156bdd checkpoint was not published independently.
+- UPD-05 permits Windows servicing hardlinks only for canonical inbox PowerShell
+  after native owner/DACL, ancestry and file-identity checks. Downloaded files,
+  installed installer scripts and state retain strict single-link validation.
+- Seven updater suites plus an actual read-only refusal check passed218 cases
+  with exact process retirement. HOST-03 remains OPEN_NATIVE_OBSERVED: unsafe
+  OS-volume-root permissions correctly hold installation. No host ACL changed.
+- The detailed review retains the initial217/1 private expectation failure,
+  diagnostic collection refusal, overlapping31-case capture, and a3 Python3.13
+  timeout with cause UNKNOWN. Later archive/publication receipts have separate
+  source scopes. No live UAC/install, source activation or restart health is claimed.
+
 ## 1.14.0 — Black Box admission and App Control observation
 
 - Retain one firewall-detail dialog/query per Black Box tab, focus an existing

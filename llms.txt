@@ -7,6 +7,32 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## v1.14 validation and authority boundaries
 
+- Current registry158 retains all156 prior raw issue objects/order and adds
+  UPD-05/HOST-03. The approved a156bdd/f848c01 merge preserves both histories
+  and llms.txt additions; a156bdd was not independently published.
+- UPD-05 allows servicing hardlinks only for the canonical inbox PowerShell
+  path after native owner/DACL, ancestry and before/after identity checks.
+  Assets, installer scripts and state keep strict single-link validation.
+  These are snapshots, not a persistent lease or signature/bootstrap authority.
+- Seven full updater suites and one actual read-only refusal check passed218
+  (a71e22da), with exact two-generation retirement. Native custody remains
+  HELD_UNSAFE_VOLUME_ROOT; HOST-03 is OPEN_NATIVE_OBSERVED. No ACL was changed.
+  The review retains the initial217/1 private expectation failure, diagnostic
+  collection refusal and overlapping31-case capture; do not sum the cohorts.
+- Archive audits and post-commit publication receipts bind their own reviewed
+  bytes. Source staging preserves custom bytes/conflicts; packaged installation
+  does not transplant custom source into signed binaries. Consent, independent
+  installer/rollback authority, recovery holds and UGCAP review still apply.
+  No live install/restart-health, refreshed all15, performance gain or historical
+  timeout-cause closure is established. Inspect metadata status: exit0 alone
+  does not prove a successful network update check.
+
+- Approved release helper: tools/update_angerona.py shares daily metadata checks;
+  interactive consent binds the exact stable Windows ZIP/checksum asset identity.
+  Only the protected installed installer can authorize installation and request
+  startup. Source main/unsigned candidates stay held; no trust keys or UGCAP
+  baselines are changed. Restart requested is not observed runtime health.
+
 - Frozen full R10 accepted 7,554 passed/0 failed/49 skipped, native 0, with unchanged
   source/runtime/harness and exact clean retirement. Later installer/tooltip source
   passed 141 focused controls plus a default 29-phase isolated selfcheck. These are
@@ -14,7 +40,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Selfcheck reconciled86 module rows (68 passed/18 explicit skips), separate
   pipeline and nine verifiers.13 widget owners/13 readers/8 Python/0 Qt retired.
   Accounting and isolated tests do not prove physical runtime of all 86 sensors.
-- Registry 156 preserves all prior 154 issue objects and order, appending SIDE-08
+- Prior registry 156 preserves all prior 154 issue objects and order, appending SIDE-08
   and OBS-04. Scoped 41/119 gates passed with exact retirement; the real 90.016 s
   App Control solo completed OBSERVED with no events/gaps and policy unknown.
 - Prior registry 154 preserved every prior 151 issue object; GUI-19, SIDE-07 and
@@ -59,7 +85,7 @@ kernel component is a product capability.
 
 ## LATEST (v1.14.0 — Live AI Review and integrated defensive diagnostics, 2026-10-22)
 
-- Latest scoped source: SIDE-08 permits one retained Black Box firewall-detail
+- Prior local scoped source: SIDE-08 permits one retained Black Box firewall-detail
   dialog/query per tab and includes detached busy workers during shutdown.
   Four full suites passed 41/no failures/errors/skips on 1857/d68d, with three
   real-QThread/inert-provider caller controls and exact clean retirement.
@@ -76,7 +102,7 @@ kernel component is a product capability.
   Receipt 8309be1ee34044bd98cf91edd3b62eb2ce22b4d48a220610d78a511576327427.
   No policy/efficacy, full 86, benchmark, historical R5/watchdog cause or whole-
   provider deadline proof follows. PER-07 remains OPEN despite finite 500 ms EvtNext.
-- The preceding a3 checkpoint's unsigned archives retain 1857/60ee; current tested source
+- The preceding a3 checkpoint's unsigned archives retain 1857/60ee; the prior tested source
   is 1857/0379. Earlier 09c7 archives remain historical; unsigned packages do not
   establish release trust or activation authority.
 - Prior hosted snapshot (18:16:30 UTC): prior 36df terminal CI 12/12 plus Security 3/3; all four Python
