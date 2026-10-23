@@ -7609,5 +7609,68 @@
       "Original integration interruption, unexplained rename and earlier timeout causes remain unknown; subsequent passes cannot rewrite those incidents.",
       "Raw host captures remain private. Documentation follows code tests and has separate source scope; future commit and archive/publication proof are not self-referential claims."
     ]
+  },
+  "diagnostic_evidence_followup": {
+    "schema": "angerona.diagnostic-evidence-followup/v1",
+    "source_entries": 1860,
+    "tested_source_sha256": "b696dd5d244c1c3948851676fbf648ddb2f90116b95dbd1ee3c6e3e342d61841",
+    "gate_receipt_sha256": "7a8884ab90b1f30da0cd1a3df70ad9eeec6753aab121417f76cb48c74ad907c9",
+    "suites": 12,
+    "passed": 229,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 1,
+    "skip_reason": "Directory symlink creation unavailable",
+    "junit_seconds": 77.829,
+    "supervisor_seconds": 82.156,
+    "new_cases": {
+      "live_debug": 11,
+      "publication_copy": 22
+    },
+    "first_failed_fixture_cohort": {
+      "passed": 218,
+      "failed": 11,
+      "skipped": 1,
+      "receipt_sha256": "09b407332a0863add4d1b7e759ee1176293ae5d0d960f527f4c007e3c03301aa",
+      "cause": "One new test fixture selected the legitimate initial coverage row before the event; three test wait/selection sites corrected, product unchanged."
+    },
+    "native_retirement": "Both retained interpreter generations same-birth/WAIT0/native0; all4 owned handles closed. MainThread only/no QApplication/zero widgets.",
+    "source_head_index_runtime_gate_unchanged": true,
+    "prior_published_observation": {
+      "commit": "e98ceafce75a99f98276e0002be5fad914de6dc1",
+      "source_sha256": "9b2f9438ff99b0ddd1fad0006cb764966dc9777aee2897628f2a65ca92d12c44",
+      "receipt_sha256": "d46240c351a1fb3ab2b76396dc25475af371e3c86b50f052b504079a01596573",
+      "seconds": 90.28199999999197,
+      "modules": 15,
+      "state": "OBSERVED_WITH_GAPS",
+      "gap_strings": 17,
+      "gap_modules": 9,
+      "events": {
+        "critical": 1,
+        "high": 2,
+        "medium": 2,
+        "low": 10,
+        "info": 60
+      },
+      "crashes": 0,
+      "capture_export_console_drops": 0,
+      "exact_owned_retirement": true
+    },
+    "registry": {
+      "prior": 159,
+      "current": 162,
+      "appended": [
+        "DBG-15",
+        "DBG-16",
+        "HOST-04"
+      ],
+      "prior_objects_and_order_preserved": true
+    },
+    "limits": [
+      "Focused diagnostic scope, not a new full suite or physical protection pass.",
+      "Old e98 observation does not validate the later changed diagnostic source.",
+      "No new publication, package, release, activation, current CI or performance outcome is asserted by this pre-publication record.",
+      "HOST-03 remains held and HOST-04 remains capacity risk. No historical timeout cause is closed."
+    ]
   }
 }

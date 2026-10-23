@@ -168,6 +168,66 @@ def test_all_event_severities_keep_original_provenance_and_redact_secrets(memory
         assert record["advisory_only"] is True
 
 
+@pytest.mark.parametrize("complete", [False, True])
+def test_network_identity_completeness_preserves_boolean_and_original(memory_service, complete):
+    details = {"pid": 42, "process_identity_complete": complete}
+    if complete:
+        details["process_create_time"] = 123.0
+    event = Event("Network Monitor", "Observed connection", Severity.LOW, details=details)
+    memory_service.bus.publish(event)
+    wait_until(lambda: len([r for r in memory_service.recent()["records"]
+                           if r["kind"] == "event"]) == 1)
+    record = next(r for r in memory_service.recent()["records"] if r["kind"] == "event")
+    assert record["kind"] == "event"
+    assert record["details"]["process_identity_complete"] is complete
+    original = memory_service.bus.recent(1)[0]
+    assert original.details["process_identity_complete"] is complete
+    assert original.hmac_sig == record["original_hmac"]
+    if complete:
+        assert record["details"]["process_create_time"] == 123.0
+    else:
+        assert "process_create_time" not in record["details"]
+        assert "process_create_time" not in original.details
+    assert record["omitted_detail_count"] == 0
+    assert record["original_integrity_verified"] is True
+    assert record["advisory_only"] is True
+
+
+def test_network_identity_completeness_absence_is_not_backfilled(memory_service):
+    event = Event("Network Monitor", "Observed connection", Severity.LOW, details={"pid": 42})
+    memory_service.bus.publish(event)
+    wait_until(lambda: len([r for r in memory_service.recent()["records"]
+                           if r["kind"] == "event"]) == 1)
+    record = next(r for r in memory_service.recent()["records"] if r["kind"] == "event")
+    assert record["kind"] == "event"
+    assert record["details"] == {"pid": 42}
+    original = memory_service.bus.recent(1)[0]
+    assert original.details == {"pid": 42}
+    assert original.hmac_sig == record["original_hmac"]
+    assert record["omitted_detail_count"] == 0
+    assert record["original_integrity_verified"] is True
+    assert record["advisory_only"] is True
+
+
+@pytest.mark.parametrize("complete", ["false", "true", 0, 1, 0.0, None, [], {}])
+def test_network_identity_completeness_omits_non_boolean_values(memory_service, complete):
+    event = Event("Network Monitor", "Observed connection", Severity.LOW,
+                  details={"pid": 42, "process_identity_complete": complete})
+    memory_service.bus.publish(event)
+    wait_until(lambda: len([r for r in memory_service.recent()["records"]
+                           if r["kind"] == "event"]) == 1)
+    record = next(r for r in memory_service.recent()["records"] if r["kind"] == "event")
+    assert record["kind"] == "event"
+    assert record["details"] == {"pid": 42}
+    original = memory_service.bus.recent(1)[0]
+    assert original.details["process_identity_complete"] == complete
+    assert type(original.details["process_identity_complete"]) is type(complete)
+    assert original.hmac_sig == record["original_hmac"]
+    assert record["omitted_detail_count"] == 1
+    assert record["original_integrity_verified"] is True
+    assert record["advisory_only"] is True
+
+
 def test_unsigned_unarmed_event_never_claims_integrity(tmp_path):
     service = debug.LiveDebugService(EventBus(), tmp_path)
     record = service._event_view(Event("m", "x"))

@@ -90,6 +90,29 @@ class WindowsRuntimeError(RuntimeError):
     """Raised when the reviewed publication runtime cannot be proven exact."""
 
 
+class _RuntimeCopyError(WindowsRuntimeError):
+    """Sanitized OS codes for copy refusal; the original cause stays private."""
+
+    def __init__(self, error: OSError) -> None:
+        self.errno = self._number(error, "errno")
+        self.winerror = self._number(error, "winerror")
+        codes = [
+            f"{name}={code}"
+            for name, code in (("errno", self.errno), ("winerror", self.winerror))
+            if code is not None
+        ]
+        suffix = " (" + ", ".join(codes) + ")" if codes else ""
+        super().__init__("private publication runtime copy failed" + suffix)
+
+    @staticmethod
+    def _number(error: OSError, name: str) -> int | None:
+        try:
+            value = getattr(error, name, None)
+        except Exception:
+            return None
+        return value if type(value) is int and 0 <= value <= 0xFFFFFFFF else None
+
+
 class _DeleteDispositionError(WindowsRuntimeError):
     """Structured failure from one exact handle-based delete disposition."""
 
@@ -1440,7 +1463,7 @@ def _copy_from_handle(handle: int, destination: Path, record: RuntimeFile) -> st
             target.flush()
             os.fsync(target.fileno())
     except OSError as exc:
-        raise WindowsRuntimeError("private publication runtime copy failed") from exc
+        raise _RuntimeCopyError(exc) from exc
     return digest.hexdigest()
 
 
@@ -1476,7 +1499,7 @@ def _copy_hardlink_group_from_handle(
             target.flush()
             os.fsync(target.fileno())
     except OSError as exc:
-        raise WindowsRuntimeError("private publication runtime copy failed") from exc
+        raise _RuntimeCopyError(exc) from exc
     finally:
         for target in targets:
             target.close()

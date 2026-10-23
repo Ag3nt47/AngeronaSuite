@@ -19,9 +19,33 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Current updater deadline integration (2026-10-23)
+## Current diagnostic evidence follow-up (2026-10-23)
 
-The register contains **159 unique IDs**. UPD-06 is appended; every prior158 issue
+The register contains **162 unique IDs**. DBG-15, DBG-16 and HOST-04 are appended;
+all159 prior issue objects/order are preserved.
+
+- Live Debug now preserves the explicit exact-boolean `process_identity_complete`
+  evidence field; missing/malformed values are omitted rather than inferred.
+  Signed originals, omission counts and advisory-only authority remain intact.
+- Publisher copy failures retain sanitized bounded numeric OS codes and their
+  original private cause. No custody/profile/cleanup enforcement changed.
+- Twelve full diagnostic/publication suites passed229/0/1skip (7a8884ab) on
+  source1860/b696. This is a different cohort from the earlier updater229.
+  The initial218pass/11fail/1skip cohort (09b40733) is retained: the11 failures
+  came from one new fixture selecting initial coverage instead of the event.
+- Current registry162 appends DBG-15, DBG-16 and HOST-04, preserving all159 prior
+  objects/order. Confirmed system-volume ENOSPC blocked one staging attempt;
+  reversible verified cache offload provided limited headroom, not disk health.
+  HOST-03 remains open and native custody remains held. Older waits/CI causes
+  are not explained by this ENOSPC evidence.
+- Prior published e98ceaf completed one passive90.282s/15-module observation
+  (d46240c3):75 events,0 recorded crashes/drops/pending threads,17 gap strings
+  across9 modules, state OBSERVED_WITH_GAPS. This is not a health, protection,
+  performance or live observation claim for the later diagnostic changes.
+
+## Prior updater deadline integration (2026-10-23)
+
+The prior register contained **159 unique IDs**. UPD-06 is appended; every prior158 issue
 object/order remains byte-identical, including HOST-03 OPEN_NATIVE_OBSERVED.
 The maintainer approved the ordinary local5e4/remote14bc merge, retaining both
 histories, native inbox custody and both sides' existing documentation.

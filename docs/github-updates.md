@@ -231,3 +231,12 @@ by a fresh 29-phase module selfcheck. The historical failed full regression rema
 retained; its five failing nodes passed R7, which failed a separate GUI launch
 assertion. Later R10 passed7,554/0/49 for its frozen snapshot. These passes grant no
 update activation or packaged-recovery authority.
+
+## Maintainer publication staging errors
+
+The guarded publisher may report `private publication runtime copy failed` with
+a numeric `errno` and/or `winerror`. These bounded codes distinguish OS failures
+without exposing private filenames or raw error text. For example, confirmed
+`errno=28` indicates ENOSPC; retain the exact private cause and check available
+space before retrying. The code does not relax runtime custody, redirect staging,
+remove user files, approve installation or automatically repair disk space.

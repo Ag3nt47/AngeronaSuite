@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -651,6 +652,154 @@ def test_remote_url_query_rejects_trailing_bytes(
             publisher._single_remote_url(tmp_path, "origin", push=False)
     finally:
         publisher._ACTIVE_GIT_BOUNDARY.reset(token)
+
+
+def _inert_copy_failure(monkeypatch, kind, stage, failure):
+    payload = b"inert pinned source"
+    opened = []
+    counts = {"opens": 0, "reads": 0}
+
+    class Sink:
+        closed = False
+
+        def write(self, chunk):
+            if stage == "write":
+                raise failure
+            return len(chunk)
+
+        def flush(self):
+            if stage == "flush":
+                raise failure
+
+        def fileno(self):
+            return 123  # The inert fsync adapter never touches this descriptor.
+
+        def close(self):
+            self.closed = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    class Destination:
+        def open(self, mode):
+            assert mode == "xb"
+            counts["opens"] += 1
+            if stage == "open" or stage == "second_open" and counts["opens"] == 2:
+                raise failure
+            sink = Sink()
+            opened.append(sink)
+            return sink
+
+    def read(handle, size):
+        assert handle == 99 and size == len(payload)
+        counts["reads"] += 1
+        if stage == "read":
+            raise failure
+        yield payload
+
+    def sync(descriptor):
+        assert descriptor == 123
+        if stage == "fsync":
+            raise failure
+
+    monkeypatch.setattr(windows_runtime, "_read_handle", read)
+    monkeypatch.setattr(windows_runtime, "os", SimpleNamespace(fsync=sync))
+    record = windows_runtime.RuntimeFile(
+        "cmd/git.exe", len(payload), hashlib.sha256(payload).hexdigest()
+    )
+
+    def invoke():
+        if kind == "single":
+            return windows_runtime._copy_from_handle(99, Destination(), record)
+        assert kind == "group"
+        return windows_runtime._copy_hardlink_group_from_handle(
+            99, ((Destination(), record), (Destination(), record))
+        )
+
+    return invoke, opened, counts
+
+
+@pytest.mark.parametrize("kind", ["single", "group"])
+@pytest.mark.parametrize("stage", ["open", "read", "write", "flush", "fsync"])
+def test_runtime_copy_refusal_retains_codes_and_cause_without_host_paths(
+    monkeypatch, kind, stage
+):
+    failure = OSError(28, "RAW_PRIVATE_IO_DETAIL", "Q:/private/operator/cache.bin")
+    failure.winerror = 112
+    invoke, opened, _counts = _inert_copy_failure(monkeypatch, kind, stage, failure)
+
+    with pytest.raises(windows_runtime.WindowsRuntimeError) as caught:
+        invoke()
+
+    error = caught.value
+    assert type(error) is windows_runtime._RuntimeCopyError
+    assert error.errno == 28 and error.winerror == 112
+    assert str(error) == "private publication runtime copy failed (errno=28, winerror=112)"
+    assert "RAW_PRIVATE_IO_DETAIL" not in repr(error)
+    assert failure.filename not in repr(error)
+    assert error.__cause__ is failure
+    assert all(target.closed for target in opened)
+
+
+@pytest.mark.parametrize(
+    "errno_value,winerror_value,expected_errno,expected_winerror",
+    [
+        (True, False, None, None),
+        (-1, 0x100000000, None, None),
+        ("RAW_PRIVATE_IO_DETAIL", "Q:/private/cache.bin", None, None),
+        (float("nan"), float("inf"), None, None),
+        (None, None, None, None),
+        (13, None, 13, None),
+        (None, 112, None, 112),
+        (0xFFFFFFFF, 0, 0xFFFFFFFF, 0),
+    ],
+)
+def test_runtime_copy_diagnostic_accepts_only_bounded_exact_integer_codes(
+    errno_value, winerror_value, expected_errno, expected_winerror
+):
+    failure = OSError("RAW_PRIVATE_IO_DETAIL")
+    failure.errno, failure.winerror = errno_value, winerror_value
+    error = windows_runtime._RuntimeCopyError(failure)
+    assert error.errno == expected_errno and error.winerror == expected_winerror
+    assert "RAW_PRIVATE_IO_DETAIL" not in repr(error)
+    assert "Q:/private" not in repr(error)
+    if expected_errno is None and expected_winerror is None:
+        assert str(error) == "private publication runtime copy failed"
+
+
+def test_runtime_copy_diagnostic_unreadable_attributes_remain_unknown():
+    class HiddenCodes(OSError):
+        def __getattribute__(self, name):
+            if name in {"errno", "winerror"}:
+                raise RuntimeError("RAW_PRIVATE_IO_DETAIL")
+            return super().__getattribute__(name)
+
+    error = windows_runtime._RuntimeCopyError(HiddenCodes("RAW_PRIVATE_IO_DETAIL"))
+    assert error.errno is None and error.winerror is None
+    assert str(error) == "private publication runtime copy failed"
+
+
+@pytest.mark.parametrize("kind", ["single", "group"])
+def test_runtime_copy_preserves_existing_non_os_authority_refusal(monkeypatch, kind):
+    failure = windows_runtime.WindowsRuntimeError("source identity changed")
+    invoke, opened, _counts = _inert_copy_failure(monkeypatch, kind, "read", failure)
+    with pytest.raises(windows_runtime.WindowsRuntimeError) as caught:
+        invoke()
+    assert caught.value is failure
+    assert all(target.closed for target in opened)
+
+
+def test_runtime_group_copy_second_open_failure_closes_prior_destination(monkeypatch):
+    failure = OSError(28, "RAW_PRIVATE_IO_DETAIL", "Q:/private/operator/cache.bin")
+    invoke, opened, counts = _inert_copy_failure(monkeypatch, "group", "second_open", failure)
+    with pytest.raises(windows_runtime._RuntimeCopyError) as caught:
+        invoke()
+    assert caught.value.__cause__ is failure and caught.value.errno == 28
+    assert counts == {"opens": 2, "reads": 0}
+    assert len(opened) == 1 and opened[0].closed
 
 
 def _fixture_runtime_profile(source: Path) -> windows_runtime.RuntimeProfile:

@@ -5,7 +5,20 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Current updater deadline handoff
+## Current diagnostic evidence boundaries
+
+Network Monitor attribution -> authenticated EventBus -> bounded Live Debug view
+now retains the producer’s explicit boolean identity-gap flag. No birth inference
+or response authority is added. Publisher copy OSError -> sanitized numeric code
+keeps OS failure classification visible while its original cause stays private.
+The two paths share diagnostic clarity, not new mutation authority.
+
+Twelve complete diagnostic/publication suites passed229 tests, with0 failures/errors and1 explicit Windows symlink skip (7a8884ab); both native interpreter generations retired cleanly.
+The current162-ID register preserves the prior159 objects. HOST-04 capacity risk
+and HOST-03 unsafe-volume-root custody remain explicit. The separate e98ceaf
+15-module run remains OBSERVED_WITH_GAPS; no broad protection/performance pass.
+
+## Prior updater deadline handoff
 
 Registry159 appends UPD-06 while retaining all158 prior objects/order and HOST-03.
 Checksum and archive share one absolute deadline; handoff clamping prevents

@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.14.0 — clearer live diagnostics
+
+- Live Debug preserves the producer’s explicit `process_identity_complete` boolean
+  in advisory views. Missing or malformed values stay unknown; original signed
+  events and response authorization are unchanged.
+- Publication staging failures expose bounded numeric `errno`/`winerror` codes
+  without printing private filenames or raw OS error text. Copy/custody enforcement
+  and the original private exception cause are retained.
+- Twelve complete diagnostic/publication suites passed229 tests, with0 failures/errors and1 explicit Windows symlink skip (7a8884ab); both native interpreter generations retired cleanly. The initial 11 failures came from one new
+  test fixture selecting the startup coverage row; that failed cohort is retained.
+- The published e98ceaf snapshot completed a separate 90.282-second passive
+  15-module run with no recorded crashes or dropped records and 17 coverage
+  strings across nine modules. It remains OBSERVED_WITH_GAPS, not host assurance.
+- One local publication staging failure was confirmed ENOSPC. Verified reversible
+  cache offload provided limited headroom; disk health and older timeout causes
+  remain open. HOST-03 and its native custody refusal remain unchanged.
+
+
 ## 1.14.0 — updater shared-deadline handoff
 
 - Integrate the approved local5e4e5ba/remote14bc675 histories while retaining

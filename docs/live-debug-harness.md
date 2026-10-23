@@ -478,3 +478,12 @@ preview baselines cannot become passed protection because a process exits 0.
   current fixes remove confirmed repeated per-widget mask work and false
   runtime fingerprints; they do not establish a five-second native Qt stall's
   cause from screenshots alone.
+
+## Process identity evidence in advisory views
+
+Network Monitor may publish `process_identity_complete=false` when a connection
+has no verified process creation time. Live Debug preserves that explicit boolean
+so local AI readers can see the attribution gap. An absent or malformed value is
+omitted; it is never inferred from the PID or converted to true. Check original
+integrity, omitted-detail counts and provenance alongside the field. This field
+grants no response authority and does not identify why attribution was unavailable.

@@ -49,7 +49,8 @@ _SAFE_DETAILS = frozenset({
     "coverage", "coverage_state", "collection_state", "coverage_reason", "surface",
     "source", "status", "action", "outcome", "incident_id", "event_id", "scope",
     "spyware_confirmed", "advisory_only", "unknown", "truncated", "continuity",
-    "process_create_time", "kind", "finding_kind", "observed_severity", "single_rule_host_fallback",
+    "process_create_time", "process_identity_complete", "kind", "finding_kind",
+    "observed_severity", "single_rule_host_fallback",
     "detector_policy", "coverage_diagnostics", "evidence", "expected", "observed", "function",
     "expected_source_file", "expected_source_line", "source_hash", "code_hash", "expected_code_hash",
 })
@@ -759,6 +760,8 @@ class LiveDebugService:
         for key in _SAFE_DETAILS:
             value = details.get(key)
             if value is None:
+                continue
+            if key == "process_identity_complete" and type(value) is not bool:
                 continue
             if type(value) in (bool, int):
                 selected[key] = value

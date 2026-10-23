@@ -7,12 +7,31 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## v1.14 validation and authority boundaries
 
+- Live Debug now preserves the explicit exact-boolean `process_identity_complete`
+  evidence field; missing/malformed values are omitted rather than inferred.
+  Signed originals, omission counts and advisory-only authority remain intact.
+- Publisher copy failures retain sanitized bounded numeric OS codes and their
+  original private cause. No custody/profile/cleanup enforcement changed.
+- Twelve full diagnostic/publication suites passed229/0/1skip (7a8884ab) on
+  source1860/b696. This is a different cohort from the earlier updater229.
+  The initial218pass/11fail/1skip cohort (09b40733) is retained: the11 failures
+  came from one new fixture selecting initial coverage instead of the event.
+- Current registry162 appends DBG-15, DBG-16 and HOST-04, preserving all159 prior
+  objects/order. Confirmed system-volume ENOSPC blocked one staging attempt;
+  reversible verified cache offload provided limited headroom, not disk health.
+  HOST-03 remains open and native custody remains held. Older waits/CI causes
+  are not explained by this ENOSPC evidence.
+- Prior published e98ceaf completed one passive90.282s/15-module observation
+  (d46240c3):75 events,0 recorded crashes/drops/pending threads,17 gap strings
+  across9 modules, state OBSERVED_WITH_GAPS. This is not a health, protection,
+  performance or live observation claim for the later diagnostic changes.
+
 - Update downloads keep checksum/archive transport within one shared absolute
   deadline. Each worker handoff stays within the original scalar budget; invalid
   budgets are rejected before child setup. The combined gate passed229 focused
   checks:228 production cases and one actual native custody-refusal check, with
   no failures/errors/skips and exact two-generation retirement (c87a804c).
-- Current registry159 appends UPD-06 and preserves all158 prior raw issue objects/
+- Prior registry159 appends UPD-06 and preserves all158 prior raw issue objects/
   order. HOST-03 remains OPEN_NATIVE_OBSERVED: the native check correctly returned
   HELD_UNSAFE_VOLUME_ROOT/native_custody_accepted=false, with no host ACL or
   validator relaxation. The11 deterministic deadline additions are included in
