@@ -14,8 +14,11 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Selfcheck reconciled86 module rows (68 passed/18 explicit skips), separate
   pipeline and nine verifiers.13 widget owners/13 readers/8 Python/0 Qt retired.
   Accounting and isolated tests do not prove physical runtime of all 86 sensors.
-- Registry 154 preserves every prior 151 issue object and its order; new GUI-19,
-  SIDE-07 and NEWS-02 passed within the 148-test focused review with exact clean retirement.
+- Registry 156 preserves all prior 154 issue objects and order, appending SIDE-08
+  and OBS-04. Scoped 41/119 gates passed with exact retirement; the real 90.016 s
+  App Control solo completed OBSERVED with no events/gaps and policy unknown.
+- Prior registry 154 preserved every prior 151 issue object; GUI-19, SIDE-07 and
+  NEWS-02 passed within the 148-test focused review with exact clean retirement.
   Historical 151 added GUI-18/UPD-04/TST-39 and retained SCN-04/TST-38 history
   alongside later source and exact-read follow-ups.
   The original Qt1 PASS/6 FAIL
@@ -56,7 +59,38 @@ kernel component is a product capability.
 
 ## LATEST (v1.14.0 — Live AI Review and integrated defensive diagnostics, 2026-10-22)
 
-- Current scoped review: 148 PASS, no failures/errors/skips across six full suites
+- Latest scoped source: SIDE-08 permits one retained Black Box firewall-detail
+  dialog/query per tab and includes detached busy workers during shutdown.
+  Four full suites passed 41/no failures/errors/skips on 1857/d68d, with three
+  real-QThread/inert-provider caller controls and exact clean retirement.
+  OBS-04 adds exact normal App Control admission and truthful pair-plan wording;
+  four full suites passed 119/no failures/errors/skips on 1857/0379. Normal private
+  bus-key bootstrap and production cadence are unchanged. Counts 15/71/105/123
+  describe audited sensor paths/held solos/generated pairs/eligible plan cases.
+- Actual App Control solo:90.016 s OBSERVED, 352 samples,max gap 0.734 s, 44 scheduled
+  cycles, no events or recorded coverage gaps/crashes/overflow/capture/export/
+  console drops/errors/pending threads. Health 100 was available and idle;
+  policy presence is unknown. Both outer generations and retained core proved
+  same birth/WAIT0/native 0 and handle closure; MainThread/noQApp/zero widgets.
+  Source 1857/0379, HEAD a3, index/runtime/external inputs/harness stayed unchanged.
+  Receipt 8309be1ee34044bd98cf91edd3b62eb2ce22b4d48a220610d78a511576327427.
+  No policy/efficacy, full 86, benchmark, historical R5/watchdog cause or whole-
+  provider deadline proof follows. PER-07 remains OPEN despite finite 500 ms EvtNext.
+- The preceding a3 checkpoint's unsigned archives retain 1857/60ee; current tested source
+  is 1857/0379. Earlier 09c7 archives remain historical; unsigned packages do not
+  establish release trust or activation authority.
+- Prior hosted snapshot (18:16:30 UTC): prior 36df terminal CI 12/12 plus Security 3/3; all four Python
+  versions each 7757PASS/19SKIP. Published a3 CI at the retained 18:16:30 UTC snapshot 39999282235 retains Python
+  3.13 failure 7768PASS/19SKIP/27setup errors from one 45 s confinement preflight,
+  cause UNKNOWN; eight advisory markers narrow progress, not root cause.
+  Python 3.10 passed 7795/19;3.11 and 3.12 were still running in the latest reported
+  snapshot. Security 3/3 and 8 non-Python jobs passed. No full-matrix green claim;
+  these hosted revisions do not validate the later 0379 test snapshot.
+- Later terminal a3 CI proof: 11/12 successful, Security 3/3. Python 3.10/3.11/3.12
+  each 7795PASS/19SKIP; Python 3.13 retains 7768PASS/19SKIP/27setup errors from the
+  original one 45 s preflight, cause UNKNOWN. Proof 048d1771352bf5de19c7489a7c9cf5e080567f1ad7fef28bf89dd3910987a259.
+  Terminal success of other jobs does not close that original failure.
+- Prior published review: 148 PASS, no failures/errors/skips across six full suites
   (Black Box responsiveness/shutdown/firewall bounds, QThread close, Spyware news,
   Resolve Center async). Tested code 1857/ae402, HEAD 36df, index/runtime/gate stayed
   unchanged; three actual product origins verified. Both interpreter generations

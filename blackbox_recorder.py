@@ -50,6 +50,7 @@ import sys
 import threading
 import time
 import traceback
+import weakref
 import zipfile
 from collections import deque
 from dataclasses import dataclass, field
@@ -2363,6 +2364,9 @@ class FirewallTab(QWidget):
 
         self._all_rules: list = []
         self._visible_rules: list = []
+        self._detail_dialog: Optional[FirewallRuleDetailDialog] = None
+        # Keep a detached detail query visible to BlackBoxWindow.stop_workers.
+        self._worker: Optional[_FwDetailWorker] = None
         from angerona.gui.async_snapshot import AsyncSnapshot
         self._reader = AsyncSnapshot(
             self, lambda: FirewallTab._read_rules, self._apply_rules,
@@ -2494,7 +2498,33 @@ class FirewallTab(QWidget):
         rule = item.data(Qt.UserRole) if item is not None else None
         if not isinstance(rule, dict):
             return
+        from shiboken6 import isValid
+
+        current = self._detail_dialog
+        if current is not None:
+            if isValid(current) and current.isVisible():
+                current.raise_()
+                current.activateWindow()
+            else:
+                self.status.setText("Previous detail query is finishing; try again shortly.")
+            return
+
         dlg = FirewallRuleDetailDialog(rule, self)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)
+        self._detail_dialog = dlg
+        self._worker = dlg._worker
+        owner_ref, detail_id = weakref.ref(self), id(dlg)
+
+        def release_detail(*_args) -> None:
+            owner = owner_ref()
+            if owner is None or not isValid(owner):
+                return
+            current = owner._detail_dialog
+            if current is not None and id(current) == detail_id:
+                owner._detail_dialog = None
+                owner._worker = None
+
+        dlg.destroyed.connect(release_detail)
         dlg.exec()
 
     def snapshot_text(self) -> str:

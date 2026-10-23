@@ -1,6 +1,35 @@
 # Changelog
 
-## 1.14.0 — focused maintenance review
+## 1.14.0 — Black Box admission and App Control observation
+
+- Retain one firewall-detail dialog/query per Black Box tab, focus an existing
+  dialog, hold replacement while its worker retires, and include detached
+  retained workers during shutdown (SIDE-08). Four focused suites passed 41
+  cases with actual Qt threads and inert providers; no PowerShell query or
+  historical-watchdog cause is established.
+- Admit only the reviewed normal App Control constructor in the isolated
+  observation harness. Exact provider/key/checkpoint/correlator/cadence checks
+  passed within 119 focused tests. Counts are 15 audited sensor paths, 71 held
+  solos, 105 generated pairs and 123 eligible plan cases; plans are not observations.
+- The single real App Control run completed 90.016 seconds as OBSERVED with 352
+  samples, 44 scheduled module cycles and no events or recorded gaps/loss/crashes.
+  Core and outer generations retired exactly. Policy presence and detection
+  efficacy remain unknown; PER-07 whole-provider deadline/cancellation is OPEN.
+
+The 41-case source snapshot is 1857/d68d; the 119-case gate and actual solo use
+1857/0379. Their separate receipts retain exact scope and native retirement.
+The preceding a3 checkpoint's unsigned archives retain the earlier 1857/60ee snapshot,
+not current 0379 source; earlier 09c7 archives remain historical.
+Published 36df CI ultimately passed 12/12 and Security 3/3, with 7757 passes/19 skips
+on each Python version. At the prior 18:16:30 UTC snapshot, published a3 [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235)
+currently retains a Python 3.13 failure:27 setup errors from one 45-second
+preflight timeout, cause UNKNOWN. Python 3.10 passed 7795/19;3.11/3.12 were still
+running in the 18:16:30 UTC snapshot on 23 October. Security 3/3 and eight non-Python jobs
+passed. These hosted runs do not validate the later 0379 test snapshot.
+
+Later terminal a3 proof records **11 of 12 CI jobs passed** and **Security 3/3**. Python 3.10/3.11/3.12 each passed 7795 tests with 19 skips; reported times were 1004.28/1437.24/1409.50 seconds. Python 3.13 retains 7768 passes,19 skips and 27 setup errors from the same single 45-second preflight; its cause remains UNKNOWN. This terminal proof supersedes the earlier partial status without rewriting that snapshot.
+
+## 1.14.0 — prior focused maintenance review
 
 - Replace Resolve Center's empty-list "Secure" claim with neutral wording that
   keeps exposures and protection readiness separate (GUI-19).

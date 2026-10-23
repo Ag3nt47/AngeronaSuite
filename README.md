@@ -239,6 +239,18 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
+Latest maintenance keeps one Black Box firewall-detail query per tab and retains
+busy workers through shutdown. Separate focused gates passed **41** and **119**
+tests with exact clean retirement. A real **90.016-second App Control solo**
+completed as **OBSERVED**, with no events or recorded coverage gaps; policy
+presence and detection efficacy remain unknown. See the
+[156-issue review](analysis/live-debug-2026-10-22/README.md) for the source scopes
+and limits. Published a3 [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235) retains a Python 3.13
+preflight failure; terminal CI passed 11/12 and Security 3/3. Its cause remains
+unknown; no complete CI pass is claimed.
+The preceding a3 checkpoint's unsigned archives retain 1857/60ee; they do not package the
+current tested 1857/0379 source.
+
 v1.14 brings Live AI Review, SpywareGuard, shared scanning and governed module
 controls into one workbench. Daily GitHub checks default off in Settings and
 Full Setup; background manual checks and three-way source staging preserve
@@ -265,7 +277,7 @@ Published [36dfadf](https://github.com/Ag3nt47/AngeronaSuite/commit/36dfadf1052e
 all seven README images byte-identical. Its unsigned archives retain the historical
 09c7 source snapshot; they do not package the next source changes.
 
-This review corrects the Resolve Center empty-state claim, applies a
+The prior 148-case review corrects the Resolve Center empty-state claim, applies a
 nonblocking Black Box detail-dialog close lifecycle, and admits calendar-valid
 dated CISA alerts. The six-suite focused gate passed **148 tests**, with no
 failures, errors or skips, exact retirement and clean Qt shutdown.
@@ -279,7 +291,7 @@ platform skip** and a **29-phase default selfcheck** (68 passed/18 skipped modul
 rows, a separate pipeline and nine verifiers). Its synthetic direct-call Sigma
 benchmark measured **31.8–42.7% lower median wall time**; that is separate from
 dashboard, sensor and whole-product performance. The
-[154-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
+[156-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
 unknown causes and the original R7 findings.
 
 The published [6ead285 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/6ead285f3e4658674600f15fb9f1f4f1f64ac9d3)

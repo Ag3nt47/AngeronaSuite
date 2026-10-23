@@ -42,6 +42,7 @@ AUDITED = {
     "AegisPath Exposure Graph Guard": "angerona.modules.exposure_graph_guard.ExposureGraphGuardModule",
     "Fleet Health Monitor": "angerona.modules.fleet_health_monitor.FleetHealthMonitorModule",
     "LSASS Credential-Access Guard": "angerona.modules.lsass_guard.LsassGuardModule",
+    "App Control Decision Evidence": "angerona.modules.app_control_monitor.AppControlDecisionSensor",
 }
 OFF = (
     "autostart_enabled", "blackbox_enabled", "alert_retention_enabled",
@@ -134,7 +135,7 @@ def make_cases(rows):
     for pair in itertools.combinations(sorted(AUDITED), 2):
         cases.append(dict(id="pair-" + "--".join(map(slug, pair)), mode="modules",
                           modules=list(pair), disposition="ELIGIBLE",
-                          reason="Pair of individually audited sensors; actual interaction observed"))
+                          reason="Pair of individually audited sensors; interaction observation remains pending"))
     cases.extend([
         dict(id="all-eligible", mode="modules", modules=sorted(AUDITED), disposition="ELIGIBLE",
              reason="Only audited sensors together; not all 86 capabilities"),
@@ -363,6 +364,26 @@ def assert_runtime_defaults(manager, selected):
         module = manager.modules["Fleet Health Monitor"]
         if module._fabric is not None or module._tenant_id != "":
             raise ValueError("Fleet monitor must remain unbound in this local observation")
+    if "App Control Decision Evidence" in selected:
+        from angerona.core.app_control_evidence import DecisionCorrelator
+        module = manager.modules["App Control Decision Evidence"]
+        if module._source is not None or module._owns_source is not True:
+            raise ValueError("App Control must retain its unopened native provider")
+        cursor, pending = module._cursor, module._pending
+        if cursor._authority_key is not None:
+            raise ValueError("App Control must use the selected profile bus-key authority")
+        profile = Path(manager.config.data_dir)
+        if (cursor.path != profile / "sensor-cursors" / "app-control.json"
+                or pending.path != profile / "sensor-cursors" / "app-control.pending.json"
+                or pending._cursor is not cursor):
+            raise ValueError("App Control checkpoints must remain in the selected private profile")
+        correlator = module._correlator
+        if (type(correlator) is not DecisionCorrelator
+                or (correlator.ttl_seconds, correlator.max_groups,
+                    correlator.max_signatures, correlator.max_decisions) != (15.0, 256, 64, 8)
+                or correlator._groups or correlator._seen_records
+                or module._POLL_INTERVAL != 2.0):
+            raise ValueError("App Control correlation and poll defaults changed")
     for name, module in manager.modules.items():
         if name not in selected and manager.is_enabled(name):
             raise ValueError("A non-selected module became enabled: " + name)

@@ -5,7 +5,40 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Current cross-component status (focused gate accepted)
+## Current Black Box admission and App Control solo status
+
+Registry 156 retains every prior 154 issue object. Black Box admission passed 41
+focused cases on 1857/d68d; App Control/default-admission passed 119 on 1857/0379.
+Both retain exact two-generation retirement and clean Qt shutdown. The actual
+App Control solo completed 90.016 s as OBSERVED with 352 samples, 44 scheduled cycles,
+no events or recorded gaps/loss/crashes, and exact core/outer retirement.
+Available/idle health 100 leaves policy presence and detection efficacy unknown.
+PER-07 whole-provider deadline/cancellation remains OPEN.
+
+| Interaction | Current safeguard | Evidence limit |
+| --- | --- | --- |
+| Firewall tab -> detail dialog -> query worker -> Black Box shutdown | One dialog/query per tab, identity-checked weak slot cleanup, held replacement during retirement, and detached retained workers discoverable by shutdown. | SIDE-08;41 focused cases, including three actual-QThread/inert-provider caller controls. No host query or historical watchdog cause. |
+| Normal App Control constructor -> private bus key/checkpoints -> native channel -> solo observer | Exact default provider/key/path/correlator/cadence admission; existing private BusAuthority bootstrap, unchanged finite 500 ms EvtNext; generated pair cases remain plans. | OBS-04;119 focused tests plus one actual quiet 90.016 s solo. Counts 15/71/105/123 are plans/admission, not all observed combinations. |
+
+Prior published a3 CI at the retained 18:16:30 UTC snapshot retains Python 3.13's 27 setup errors from one 45 s preflight,
+cause UNKNOWN. Python 3.10 passed 7795/19;3.11/3.12 were pending in the 18:16:30 UTC snapshot on 23 October.
+Security 3/3 and eight non-Python jobs passed. Prior 36df CI is terminal 12/12 plus
+Security 3/3, each Python 7757/19; these are separate source revisions.
+Later terminal a3 proof: 11/12 CI jobs passed, Security 3/3; Python 3.10/3.11/3.12
+each 7795/19, while Python 3.13 retains the original 7768/19/27-setup failure.
+Its 45-second preflight cause remains UNKNOWN.
+
+The separate all-15 run completed 90.328 seconds as OBSERVED_WITH_GAPS, with
+257 heartbeat samples and a maximum observed gap of 1.422 seconds. It retained
+17 gap entries across nine modules and recorded no crashes, errors, drops or
+pending threads. Sysmon's initial cursor gap remains recorded after recovery;
+App Control was available and idle with policy unknown. Exact core/outer
+retirement completed. The other 71 modules stayed held. These observer timings
+include concurrent private documentation work and establish no benchmark or
+GUI-latency result. See the [alert review](README.md) and
+[measured validation](validation.json) for retained exposures and limits.
+
+## Prior cross-component status (148-case checkpoint)
 
 Registry 154 preserves every prior 151 issue object and order. Published
 [36dfadf](https://github.com/Ag3nt47/AngeronaSuite/commit/36dfadf1052e5a2e656afa52376b2f310a092446) and its seven README assets are verified on public

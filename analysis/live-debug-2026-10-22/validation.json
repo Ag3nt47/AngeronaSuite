@@ -6788,7 +6788,7 @@
     "code_test_source_map_sha256": "947be22746d90432e6813c4a0e41f6316a0a645f7f6e089d8b319c1faec0592c",
     "documentation_after_code_tests": "The 1856-entry code-test snapshot precedes these documentation-only edits and the new changelog (1857 entries). Final publication full-map proof belongs to the separate guarded-publication receipt, not a self-referential hash in this document."
   },
-  "current_state": {
+  "prior_current_state_before_blackbox_admission_appcontrol": {
     "source_version": "1.14.0",
     "issue_ids": 154,
     "new_ids": [
@@ -6879,6 +6879,407 @@
       "source_head_index_runtime_gate_unchanged": true,
       "retirement": "Both retained interpreter generations exited 0 with matching birth and signaled handles; all four owned handles closed. MainThread only, no QApplication and zero widgets.",
       "scope": "Six cases overlap the initial 148-test cohort. Product code is unchanged; original test and lint results remain retained. No new physical-host or full-suite claim."
+    }
+  },
+  "current_state": {
+    "source_version": "1.14.0",
+    "issue_ids": 156,
+    "new_ids": [
+      "SIDE-08",
+      "OBS-04"
+    ],
+    "scope": "Four reviewed source/test modifications before documentation; no all-capabilities or host-protection verdict.",
+    "changes": [
+      "Black Box keeps one firewall-detail dialog/query per tab, retains identity-bound slots through retirement and includes detached busy detail workers in shutdown discovery.",
+      "The isolated observation tool admits the exact normal App Control constructor and describes generated pairs as plans."
+    ],
+    "focused_validation": {
+      "blackbox_admission": {
+        "receipt_path": ".tmp/v114-blackbox-detail-admission-focused-root-gate-r1/run-updates-r1/result.json",
+        "receipt_sha256": "961c98e82fa66914c18d33fa96733e5a9ca0e2d8a000c74667ea12128a259818",
+        "source_entries": 1857,
+        "source_map_sha256": "d68d3d67e3407ed6cec1a4e53474e8693befe1576e5db50125929482f206fcd4",
+        "head": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+        "passed": 41,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "junit_seconds": 17.809,
+        "supervisor_seconds": 26.015,
+        "suites": [
+          "tests/test_blackbox_responsiveness.py",
+          "tests/test_blackbox_shutdown.py",
+          "tests/test_blackbox_firewall_bounds.py",
+          "tests/test_qthread_close_lifecycle.py"
+        ],
+        "new_caller_controls": 3,
+        "control_scope": "Actual Qt threads with inert list/detail providers; no physical PowerShell query or historical-watchdog cause.",
+        "source_head_index_runtime_gate_unchanged": true,
+        "native_retirement": "Both interpreter generations same birth/WAIT0/native exit 0/all four handles closed; MainThread/no QApplication/zero widgets."
+      },
+      "app_control_admission": {
+        "receipt_path": ".tmp/v114-app-control-admission-focused-root-gate-r1/run-updates-r1/result.json",
+        "receipt_sha256": "61f01e85211056fc52100baa0606ef4bf957fd2dac8a670f54bb2266f611d8b2",
+        "source_entries": 1857,
+        "source_map_sha256": "0379a0fb809cf41bc52dd508c9dc48e69b33df03ce5541128a9617690905387e",
+        "head": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+        "passed": 119,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "junit_seconds": 11.995,
+        "supervisor_seconds": 16.953,
+        "suites": [
+          "tests/test_observe_module_matrix.py",
+          "tests/test_app_control_next_timeout.py",
+          "tests/test_app_control_monitor.py",
+          "tests/test_app_control_evidence.py"
+        ],
+        "new_constructor_and_refusal_controls": 20,
+        "source_head_index_runtime_gate_unchanged": true,
+        "native_retirement": "Both interpreter generations same birth/WAIT0/native exit 0/all four handles closed; MainThread/no QApplication/zero widgets."
+      },
+      "scope_note": "Separate focused source snapshots; these are not a new complete regression or default selfcheck."
+    },
+    "observation_admission": {
+      "audited_sensor_paths": 15,
+      "held_solos": 71,
+      "generated_pair_plans": 105,
+      "eligible_plan_cases": 123,
+      "all_generated_pairs_observed": false,
+      "app_control_defaults": "Unopened owned native provider; cursor key override=None; cursor/pending paths match the selected private profile and share the same cursor; exact pristine DecisionCorrelator with TTL 15 s and capacities 256/64/8; poll interval 2.0 s unchanged.",
+      "authority": "Existing create-only private BusAuthority bootstrap; no injected provider, alternate key writer or App Control policy deployment.",
+      "per07": "OPEN: finite 500 ms EvtNext does not impose a whole-provider deadline or cancellation guarantee."
+    },
+    "actual_app_control_solo": {
+      "receipt_path": ".tmp/v114-app-control90-observation-preview-r1/run-observe-r1/result.json",
+      "receipt_sha256": "8309be1ee34044bd98cf91edd3b62eb2ce22b4d48a220610d78a511576327427",
+      "case_id": "solo-app-control-decision-evidence",
+      "ordinary_user": true,
+      "execution_complete": true,
+      "state": "OBSERVED",
+      "source_entries": 1857,
+      "source_map_sha256": "0379a0fb809cf41bc52dd508c9dc48e69b33df03ce5541128a9617690905387e",
+      "head": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+      "observation_seconds": 90.016,
+      "total_elapsed_seconds": 97.062,
+      "startup_seconds": 5.39,
+      "samples": 352,
+      "max_heartbeat_gap_seconds": 0.734,
+      "scheduled_module_cycles": 44,
+      "scheduled_cycles_are_detection_count": false,
+      "events": 0,
+      "coverage_gaps": [],
+      "observed_crashes": 0,
+      "event_overflow": 0,
+      "capture_dropped": 0,
+      "export_dropped": 0,
+      "console_dropped": 0,
+      "pending_threads": [],
+      "errors": [],
+      "module_interval_samples": {
+        "completed": 347,
+        "warming": 5,
+        "gaps": 0
+      },
+      "last_health": 100,
+      "last_health_note": "available and idle; policy presence is unknown",
+      "policy_presence_proved": false,
+      "detection_efficacy_proved": false,
+      "core_retirement": "Same retained query/synchronize handle proves same native generation, WAIT0/native exit 0 and handle closure; no original inner Popen-handle closure claim.",
+      "outer_retirement": "Both retained interpreter generations same birth/WAIT0/native exit 0; all four owned handles closed.",
+      "normal_shutdown": "MainThread only; no QApplication; zero top-level widgets.",
+      "source_head_index_runtime_external_harness_unchanged": true,
+      "all_owned_git_children_retired": true,
+      "raw_capture_published": false,
+      "private_capture_sha256": "27b9857e32eea09521dda1f82b2c99f6f0b06c63b683b8651e55e6e98823d62d",
+      "limits": "One quiet actual solo, not all 86 protection, GUI responsiveness, a benchmark, historical incident cause or PER-07 closure."
+    },
+    "prior_full_green_ci": {
+      "commit": "36dfadf1052e5a2e656afa52376b2f310a092446",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972951",
+      "security_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972961",
+      "ci_jobs": "12/12 SUCCESS",
+      "security_jobs": "3/3 SUCCESS",
+      "python_versions": [
+        "3.10",
+        "3.11",
+        "3.12",
+        "3.13"
+      ],
+      "each_python_passed": 7757,
+      "each_python_skipped": 19,
+      "scope": "Later terminal status of the prior publication; the earlier 17:33 snapshot remains historical."
+    },
+    "limits": [
+      "PER-07 whole-provider deadline/cancellation remains OPEN; idle availability and 44 scheduled cycles do not establish detection efficacy or App Control policy presence.",
+      "No alert adjudication, suppression, trust-baseline replacement, host response mutation, signed release or source activation.",
+      "No new full pytest regression/default selfcheck, all 86 sensor runtime proof, GUI responsiveness benchmark or historical R5/watchdog cause.",
+      "Raw host captures stay private. Documentation lies outside the completed source snapshots; later static/package/publication receipts retain their own byte scope.",
+      "Any later CI diagnostic candidate or changed-source test belongs to a separate reviewed scope; none is included here."
+    ],
+    "preceding_published_unsigned_archive": {
+      "commit": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+      "source_entries": 1857,
+      "source_snapshot": "1857/60ee",
+      "scope": "The preceding a3 checkpoint's unsigned development archives retain their earlier 1857/60ee snapshot; they do not package current tested source 1857/0379. Older 09c7 archives remain historical.",
+      "source_map_sha256": "60ee56427b37eeca86200a8304b6bb4a3b479869760293e04e76640bef26313a"
+    },
+    "prior_hosted_ci_snapshot_18_16_30": {
+      "captured_as_reported_utc": "2026-10-23 18:16:30 UTC",
+      "commit": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235",
+      "python_313": {
+        "status": "TERMINAL FAILURE",
+        "job_id": "120570849762",
+        "passed": 7768,
+        "skipped": 19,
+        "setup_errors": 27,
+        "warnings": 29,
+        "collected": 7814,
+        "pytest_seconds": 725.26,
+        "pytest_exit": 1,
+        "failure": "One 45-second confinement preflight timeout cascaded into 27 setup errors.",
+        "cause": "UNKNOWN",
+        "advisory_markers": 8,
+        "last_retained_advisory_stage": "initial-guard-get-item",
+        "trace_limit": "Narrows a progress interval; does not identify the blocked operation or prove clock stability.",
+        "frozen_job_path": ".tmp/v114-a3c3-ci-monitor-20261023-r1/job-120570849762.json",
+        "frozen_job_sha256": "357c43f702196f402848509dfa149596510ce80bf3d8111d63679144f1550f25",
+        "decoded_log_sha256": "fc4533be65262f3f6b9a9da3a31bd74d66c60e50caa2cd9680eb7ace06dedc46"
+      },
+      "python_310": {
+        "status": "TERMINAL SUCCESS as reported",
+        "passed": 7795,
+        "skipped": 19,
+        "collected": 7814,
+        "pytest_seconds": 1004.28
+      },
+      "python_311": "RUNNING at captured snapshot",
+      "python_312": "RUNNING at captured snapshot",
+      "security": "TERMINAL SUCCESS 3/3 as reported",
+      "non_python_ci": "8/8 SUCCESS as reported",
+      "full_matrix_success_claimed": false,
+      "scope": "Hosted a3 does not validate the later 0379 test snapshot."
+    },
+    "hosted_ci_terminal": {
+      "commit": "a3c3fc44e0a8e95413ef1c118a558e06358fe281",
+      "reported_terminal_utc": "2026-10-23 18:22:21 UTC",
+      "ci_workflow_updated_at": "2026-10-23T18:22:22Z",
+      "proof_path": ".tmp/v114-a3c3-ci-monitor-20261023-r1/terminal-proof.json",
+      "proof_sha256": "048d1771352bf5de19c7489a7c9cf5e080567f1ad7fef28bf89dd3910987a259",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235",
+      "security_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282189",
+      "ci_jobs": {
+        "total": 12,
+        "success": 11,
+        "failure": 1
+      },
+      "security_jobs": {
+        "total": 3,
+        "success": 3
+      },
+      "python": [
+        {
+          "version": "3.10",
+          "job_id": "120570849734",
+          "status": "success",
+          "passed": 7795,
+          "skipped": 19,
+          "warnings": 0,
+          "setup_errors": 0,
+          "ordinary_failed": 0,
+          "collected": 7814,
+          "pytest_exit": 0,
+          "reported_seconds": "1004.28"
+        },
+        {
+          "version": "3.11",
+          "job_id": "120570849748",
+          "status": "success",
+          "passed": 7795,
+          "skipped": 19,
+          "warnings": 0,
+          "setup_errors": 0,
+          "ordinary_failed": 0,
+          "collected": 7814,
+          "pytest_exit": 0,
+          "reported_seconds": "1437.24"
+        },
+        {
+          "version": "3.12",
+          "job_id": "120570849737",
+          "status": "success",
+          "passed": 7795,
+          "skipped": 19,
+          "warnings": 0,
+          "setup_errors": 0,
+          "ordinary_failed": 0,
+          "collected": 7814,
+          "pytest_exit": 0,
+          "reported_seconds": "1409.50"
+        },
+        {
+          "version": "3.13",
+          "job_id": "120570849762",
+          "status": "failure",
+          "passed": 7768,
+          "skipped": 19,
+          "warnings": 29,
+          "setup_errors": 27,
+          "ordinary_failed": 0,
+          "collected": 7814,
+          "pytest_exit": 1,
+          "reported_seconds": "725.26"
+        }
+      ],
+      "failed_preflight": {
+        "configured_timeout_seconds": 45,
+        "setup_error_cascade": 27,
+        "cause": "UNKNOWN",
+        "last_retained_advisory_stage": "initial-guard-get-item",
+        "clock_stability": "UNPROVED",
+        "retirement_proven": true,
+        "original_native_exit_after_cleanup": 1,
+        "process_and_stdio_handles_closed": true,
+        "limit": "No progress after the last marker is proven; the interval includes the prior writer return, Get-Item and the next marker writer. No operation-specific cause or diagnostic-candidate acceptance follows."
+      },
+      "scope": "Published a3 terminal CI does not validate the later 0379 test snapshot. The prior 18:16:30 partial snapshot remains historical; no private CI candidate is included."
+    },
+    "all15_pre_admission_tooling_failure": {
+      "path": ".tmp/v114-all15-90-observation-preview-r1/pre-admission-failure.json",
+      "sha256": "0cc24cc23bb6a18c4fb8fa8c04c3a9a52b62128d9d24266f994bbce7957daf9f",
+      "scope": "Private preparation/dispatch sequence, not a product issue or actual module observation.",
+      "cause": "Managed review tool reached its 30-second limit before release metadata completed; dependent launcher had not checked that result.",
+      "observed_refusal": "Unchanged launcher refused held plan at line 21 with exit 1 before any sensor core started.",
+      "sensor_core_started": false,
+      "cleanup_failure_retried": false,
+      "correction": "Parent split bounded metadata review from batched 32 source-hash reads, verified all 1857 files and released the separately checked first actual observation.",
+      "preserved": true
+    },
+    "additional_all15_observation": {
+      "receipt_path": ".tmp/v114-all15-90-observation-preview-r1/run-observe-r1/result.json",
+      "receipt_sha256": "6145a7dbe30fee8c5665a6b137f6f71486141d40b7b4c4fd9d1545ed3eaad159",
+      "case_id": "all-eligible",
+      "admitted_workers": 15,
+      "other_modules_held": 71,
+      "execution_complete": true,
+      "state": "OBSERVED_WITH_GAPS",
+      "source_entries": 1857,
+      "source_map_sha256": "0379a0fb809cf41bc52dd508c9dc48e69b33df03ce5541128a9617690905387e",
+      "observation_seconds": 90.328,
+      "total_elapsed_seconds": 114.484,
+      "startup_seconds": 6.578,
+      "samples": 257,
+      "max_heartbeat_gap_seconds": 1.422,
+      "retained_gap_strings": 17,
+      "modules_with_recorded_gaps": 9,
+      "persistent_gap_categories": [
+        {
+          "module": "AegisPath",
+          "health": 20,
+          "category": "No graph provisioned"
+        },
+        {
+          "module": "Fleet Health",
+          "health": 35,
+          "category": "Unbound"
+        },
+        {
+          "module": "Identity Session",
+          "health": 70,
+          "category": "Awaiting structured evidence"
+        },
+        {
+          "module": "Immutable Recovery",
+          "health": 15,
+          "category": "Unprovisioned"
+        },
+        {
+          "module": "LSASS",
+          "health": 70,
+          "category": "Readability gap"
+        },
+        {
+          "module": "Process Monitor",
+          "health": 70,
+          "category": "Identity gap"
+        },
+        {
+          "module": "Self-Integrity",
+          "health": 60,
+          "category": "Unapproved TOFU baseline"
+        },
+        {
+          "module": "SpywareGuard",
+          "health": 85,
+          "category": "Preview"
+        }
+      ],
+      "sysmon_transient_gap": {
+        "gap_samples": 7,
+        "first_elapsed_seconds": 1.141,
+        "last_elapsed_seconds": 3.328,
+        "reason": "No prior durable cursor",
+        "final_health": 100
+      },
+      "app_control": {
+        "scheduled_ticks": 35,
+        "health": 100,
+        "note": "available and idle; policy presence is unknown",
+        "policy_presence_proved": false
+      },
+      "scheduled_cycles_are_scan_or_detection_counts": false,
+      "observed_crashes": 0,
+      "all_module_event_overflow": 0,
+      "capture_dropped": 0,
+      "export_dropped": 0,
+      "console_dropped": 0,
+      "errors": [],
+      "pending_threads": [],
+      "exported_event_aggregates": {
+        "total": 117,
+        "severity": {
+          "critical": 1,
+          "high": 2,
+          "medium": 2,
+          "low": 12,
+          "info": 100
+        },
+        "original_integrity_verified_true_at_export": 117,
+        "response_authorized": {
+          "explicit_false": 7,
+          "absent": 110,
+          "true": 0
+        },
+        "absent_authorization_is_false": false,
+        "spyware_event_count": 3,
+        "review_scope": "Parent reviewed all 17 non-Info events and aggregated all 117; public data contains no host IPs/PIDs/raw values.",
+        "alert_adjudication": false,
+        "suppression": false,
+        "remediation": false,
+        "spyware_flags": {
+          "records": 3,
+          "active_attack_false_count": 3,
+          "spyware_confirmed_false_count": 3
+        }
+      },
+      "core_and_outer_retirement": "Retained core same native generation/WAIT0/native exit0/query handle closed; both outer generations same birth/WAIT0/native exit0/all four handles closed.",
+      "normal_shutdown": "MainThread only; no QApplication; zero widgets.",
+      "source_head_index_runtime_external_harness_unchanged": true,
+      "all_owned_git_children_retired": true,
+      "raw_capture_published": false,
+      "private_capture_sha256": "d3cb499cf81c01c78d789bb5691a595a62fe9d7a866311aee2a177a461369959",
+      "private_capture_bytes": 84437,
+      "private_capture_frames": 128,
+      "pre_admission_failure_preserved_separately": true,
+      "limits": [
+        "Observed default workers only; gaps do not become passed protection, and the other 71 modules remain held.",
+        "No all 86, policy-presence, detection-efficacy, alert-adjudication, suppression, response action or historical-cause conclusion.",
+        "PER-07 whole-provider deadline/cancellation remains OPEN.",
+        "Private documentation/metadata preparation ran concurrently; observer timings are not a benchmark or GUI-latency measurement."
+      ],
+      "first_actual_all15_observation": true
     }
   }
 }

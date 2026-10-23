@@ -75,6 +75,13 @@ its process creation time, then connect. Disconnect when finished. Its original
 out-of-band recorder remains independent, so a failed live connection does not
 replace the existing crash and watchdog views.
 
+Black Box keeps one firewall-detail dialog/query per tab. Reopening focuses
+the existing visible dialog; while a closing query retires, another query stays
+held. Completed dialogs are deleted, and retained detached workers remain
+visible to shutdown. The 41-case lifecycle/admission gate uses actual Qt threads
+and inert providers; it does not establish a live PowerShell query or the cause
+of a historical watchdog incident.
+
 Programmatic readers keep `connect()`, `read()` and `close()` on their reader
 worker. `cancel()` only signals pending I/O cancellation and returns without
 waiting or closing handles. On disconnect, the UI requests cancellation; the
@@ -382,9 +389,19 @@ Inspect the private plan, then choose exact eligible cases with repeated
 `--case solo-network-monitor`, `--case raw-scanner` and `--case all-eligible`
 select a control, one sensor, the independent scanner and the audited set.
 `--duration` accepts 5–3,600 seconds per case. Each run uses new private data;
-existing profiles are never overwritten. Only 14 reviewed default sensor paths
-are currently eligible; the other 72 modules remain held pending active-path
-review. A bulk-start button does not change this diagnostic eligibility.
+existing profiles are never overwritten. Only 15 reviewed default sensor paths
+are currently eligible; the other 71 modules remain held pending active-path
+review. The generated 105 pair definitions and 123 eligible cases are plans, not
+completed observations. A bulk-start button does not change this eligibility.
+
+App Control is admitted only with its unopened owned native provider, selected
+private-profile checkpoint paths/default bus-key authority, pristine normal
+correlator (15 s, 256 groups, 64 signatures, 8 decisions) and unchanged 2 s poll. The
+existing create-only EventBus bootstrap supplies the private-profile key; there
+is no injected provider or alternate key. Its actual 90.016 s solo completed
+OBSERVED with no events or recorded coverage gaps; available/idle status leaves
+policy presence and detection efficacy unknown. PER-07 stays OPEN: finite 500 ms
+EvtNext waits do not establish a whole-provider deadline or cancellation guarantee.
 
 The harness checks a bounded manifest of all first-party Python source before
 and after each case. Changed helpers, additions and deletions invalidate the

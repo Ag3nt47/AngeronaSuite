@@ -46,10 +46,12 @@ def test_plan_covers_all_solos_but_only_exact_audited_runtime():
     solos = [case for case in cases if case["id"].startswith("solo-")]
     assert len(solos) == 86
     assert {case["modules"][0] for case in solos if case["disposition"] == "ELIGIBLE"} == set(matrix.AUDITED)
-    assert len(matrix.AUDITED) == 14  # Explicit reviewed identities; never inferred from metadata.
-    assert sum(case["disposition"] == "HELD" for case in solos) == 72
-    assert len([case for case in cases if case["id"].startswith("pair-")]) == 91
-    assert len([case for case in cases if case["disposition"] == "ELIGIBLE"]) == 108
+    assert len(matrix.AUDITED) == 15  # Explicit reviewed identities; never inferred from metadata.
+    assert matrix.AUDITED["App Control Decision Evidence"] == (
+        "angerona.modules.app_control_monitor.AppControlDecisionSensor")
+    assert sum(case["disposition"] == "HELD" for case in solos) == 71
+    assert len([case for case in cases if case["id"].startswith("pair-")]) == 105
+    assert len([case for case in cases if case["disposition"] == "ELIGIBLE"]) == 123
     assert next(case for case in cases if case["id"] == "all-86-runtime")["disposition"] == "HELD"
     assert next(case for case in cases if case["id"] == "offline-all-selftests")["disposition"] == "HELD"
     for case in cases:
@@ -332,6 +334,99 @@ def test_injected_exposure_provider_and_bound_fleet_are_not_audited_defaults(mon
     modules[selected[1]]._fabric = object()
     with pytest.raises(ValueError, match="remain unbound"):
         matrix.assert_runtime_defaults(manager, selected)
+
+
+@pytest.fixture
+def app_control_observation(tmp_path, monkeypatch):
+    from angerona.core import data_paths
+    from angerona.modules.app_control_monitor import AppControlDecisionSensor
+
+    profile = tmp_path / "selected-profile"
+    monkeypatch.setattr(data_paths, "data_dir", lambda: profile)
+    module = AppControlDecisionSensor()
+    selected = [module.name]
+    modules = {row["name"]: SimpleNamespace() for row in rows()}
+    modules[module.name] = module
+    manager = SimpleNamespace(
+        modules=modules, config=SimpleNamespace(**safe_config(selected), data_dir=profile),
+        is_enabled=lambda name: name in selected)
+    return SimpleNamespace(module=module, manager=manager, selected=selected, profile=profile)
+
+
+def test_app_control_real_constructor_defaults_are_admitted_without_starting(app_control_observation):
+    from angerona.core.app_control_evidence import DecisionCorrelator
+    fixture = app_control_observation
+    module = fixture.module
+    assert type(module).__module__ + "." + type(module).__name__ == matrix.AUDITED[module.name]
+    matrix.assert_runtime_defaults(fixture.manager, fixture.selected)
+    assert module._source is None and module._owns_source is True
+    assert module._thread is None
+    assert module._cursor._authority_key is None
+    assert module._cursor.path == fixture.profile / "sensor-cursors" / "app-control.json"
+    assert module._pending.path == fixture.profile / "sensor-cursors" / "app-control.pending.json"
+    assert module._pending._cursor is module._cursor
+    assert type(module._correlator) is DecisionCorrelator
+    assert not fixture.profile.exists()  # Admission creates no checkpoint or authority key.
+
+
+@pytest.mark.parametrize("options,reason", [
+    ({"source": object()}, "unopened native provider"),
+    ({"cursor_key": b"x" * 32}, "bus-key authority"),
+    ({"correlation_ttl": 1.0}, "correlation and poll defaults"),
+])
+def test_app_control_injected_constructor_options_are_not_audited_defaults(
+        app_control_observation, options, reason):
+    from angerona.modules.app_control_monitor import AppControlDecisionSensor
+    fixture = app_control_observation
+    fixture.manager.modules[fixture.module.name] = AppControlDecisionSensor(
+        data_root=fixture.profile, **options)
+    with pytest.raises(ValueError, match=reason):
+        matrix.assert_runtime_defaults(fixture.manager, fixture.selected)
+
+
+@pytest.mark.parametrize("target,attribute,value,reason", [
+    ("module", "_source", object(), "unopened native provider"),
+    ("module", "_owns_source", False, "unopened native provider"),
+    ("module", "_owns_source", 1, "unopened native provider"),
+    ("cursor", "_authority_key", b"x" * 32, "bus-key authority"),
+    ("pending", "_cursor", object(), "selected private profile"),
+    ("correlator", "ttl_seconds", 16.0, "correlation and poll defaults"),
+    ("correlator", "max_groups", 257, "correlation and poll defaults"),
+    ("correlator", "max_signatures", 65, "correlation and poll defaults"),
+    ("correlator", "max_decisions", 9, "correlation and poll defaults"),
+    ("correlator", "_groups", {"injected": object()}, "correlation and poll defaults"),
+    ("correlator", "_seen_records", {1: "injected"}, "correlation and poll defaults"),
+    ("module", "_POLL_INTERVAL", 0.1, "correlation and poll defaults"),
+])
+def test_app_control_prestart_provider_key_and_correlation_changes_are_refused(
+        app_control_observation, target, attribute, value, reason):
+    fixture = app_control_observation
+    targets = {"module": fixture.module, "cursor": fixture.module._cursor,
+               "pending": fixture.module._pending, "correlator": fixture.module._correlator}
+    setattr(targets[target], attribute, value)
+    with pytest.raises(ValueError, match=reason):
+        matrix.assert_runtime_defaults(fixture.manager, fixture.selected)
+
+
+@pytest.mark.parametrize("target", ["cursor", "pending", "config"])
+def test_app_control_checkpoint_paths_must_match_the_selected_profile(app_control_observation, target):
+    fixture = app_control_observation
+    if target == "config":
+        fixture.manager.config.data_dir = fixture.profile / "different-selection"
+    else:
+        checkpoint = fixture.module._cursor if target == "cursor" else fixture.module._pending
+        checkpoint.path = fixture.profile.parent / "other-profile" / "sensor-cursors" / checkpoint.path.name
+    with pytest.raises(ValueError, match="selected private profile"):
+        matrix.assert_runtime_defaults(fixture.manager, fixture.selected)
+
+
+def test_app_control_correlator_lookalike_is_not_the_reviewed_constructor(app_control_observation):
+    fixture = app_control_observation
+    fixture.module._correlator = SimpleNamespace(
+        ttl_seconds=15.0, max_groups=256, max_signatures=64, max_decisions=8,
+        _groups={}, _seen_records={})
+    with pytest.raises(ValueError, match="correlation and poll defaults"):
+        matrix.assert_runtime_defaults(fixture.manager, fixture.selected)
 
 
 class InertClock:

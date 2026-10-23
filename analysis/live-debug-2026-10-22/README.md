@@ -19,9 +19,55 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Current scoped review (2026-10-23; focused gate accepted)
+## Current Black Box admission and App Control observation (2026-10-23)
 
-The register now contains **154 unique IDs**. All prior 151 issue objects and
+The register contains **156 unique IDs**. All prior 154 issue objects and order
+remain byte-identical; SIDE-08 and OBS-04 are appended.
+
+| ID | Source change | Scoped evidence |
+| --- | --- | --- |
+| SIDE-08 | Keep one firewall-detail dialog/query per Black Box tab; focus the existing dialog, hold replacement while its worker retires, delete completed dialogs, and retain detached workers for shutdown discovery. | Four full suites passed 41 cases on 1857/d68d with exact clean retirement; three new controls use actual Qt threads and inert providers. No measured host leak, PowerShell query or historical-watchdog cause is proved. |
+| OBS-04 | Admit only the reviewed normal App Control constructor; bind unopened owned provider, private-profile checkpoints/default key, pristine bounded correlator and cadence. Pair descriptions identify plans rather than claiming observations. | Four full suites passed 119 cases on 1857/0379 with exact retirement. Audited/held/pair/eligible-plan counts are 15/71/105/123; this admits no other held module. |
+
+The separately executed ordinary-user App Control solo completed **90.016 seconds**
+as **OBSERVED**, with **352 samples**, maximum heartbeat gap **0.734 seconds** and
+**44 scheduled module cycles**, not 44 detections. Total elapsed time was 97.062
+seconds, including 5.390 seconds startup. No events, recorded coverage gaps,
+crashes, overflow, capture/export/console loss, errors or pending threads were
+reported. Interval accounting recorded 347 completed samples, five warming
+samples and zero gap samples. Health 100 meant "available and idle; policy
+presence is unknown"; no policy-presence or detection-efficacy conclusion follows.
+
+The retained core and both outer interpreter generations proved same generation,
+WAIT0/native exit 0 and required handle closure. Shutdown recorded MainThread,
+no QApplication and zero widgets. Source 1857/0379, HEAD a3, index, runtime,
+external inputs and frozen harness stayed unchanged; all owned Git children
+retired. Receipt 8309be1e is distinct from the 41/119 test receipts. The raw capture
+remains private. This is one quiet solo, not GUI responsiveness, all 86 protection,
+a benchmark or historical R5/watchdog cause. PER-07 whole-provider deadline and
+cancellation remain OPEN; finite 500 ms EvtNext alone does not bound a complete poll.
+
+The additional actual **all 15 admitted-worker** run completed **90.328 seconds** as **OBSERVED_WITH_GAPS**: 257 samples, maximum heartbeat gap 1.422 s, 17 retained gap strings across nine modules, and no recorded crashes, module overflow, capture/export/console loss, errors or pending threads. Eight modules retained unprovisioned, permission/identity, approval or preview gaps; Sysmon had seven transient gap samples (1.141–3.328 s) before finishing at health 100. App Control recorded 35 scheduled ticks and available/idle health 100 with policy unknown. Scheduled cycles are not scan/detection counts; the other 71 modules remain held. All 117 exported events had original integrity verified at export: 1 Critical,2 High,2 Medium,12 Low and100 Info. Response authorization was explicitly false for 7 events and absent for 110, with no true value; absent is not false. No alert was adjudicated, suppressed or remediated. Source1857/0379 and source/HEAD/index/runtime/external/harness pins stayed unchanged, and exact core/outer retirement completed. A separately retained pre-admission tooling timeout correctly refused the held plan before any sensor core started; it was not a cleanup-failure retry. Raw captures remain private. Concurrent private documentation preparation and these observer timings establish no benchmark, GUI-latency, full86 protection or PER-07 deadline proof.
+
+Published 36df later finished [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972951)
+12/12 and [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972961)3/3;
+each Python version passed 7757 with 19 skips. At the prior 18:16:30 UTC
+snapshot, published a3
+[CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235) retains Python 3.13 failure:
+7768 passed/19 skipped/27 setup errors from one 45-second confinement preflight,
+with 29 warnings and 7814 collected cases. The advisory trace narrows progress;
+its cause remains UNKNOWN. Python 3.10 passed 7795/19;3.11 and 3.12 were still running
+in the 18:16:30 UTC snapshot on 23 October. Security 3/3 and eight non-Python jobs passed.
+The published CI revision does not prove the later 0379 test snapshot.
+
+Later terminal a3 proof records **11 of 12 CI jobs passed** and **Security 3/3**. Python 3.10/3.11/3.12 each passed 7795 tests with 19 skips; reported times were 1004.28/1437.24/1409.50 seconds. Python 3.13 retains 7768 passes,19 skips and 27 setup errors from the same single 45-second preflight; its cause remains UNKNOWN. This terminal proof supersedes the earlier partial status without rewriting that snapshot.
+The preceding a3 checkpoint's unsigned archives retain 1857/60ee, separate from the current
+0379 tested source. Earlier 09c7 archives remain historical; no signed
+release, host mutation, alert adjudication or baseline replacement is implied.
+
+## Prior 148-case scoped review (2026-10-23; focused gate accepted)
+
+At that prior checkpoint the register contained **154 unique IDs**. All prior 151 issue objects and
 order remain intact; GUI-19, SIDE-07 and NEWS-02 are appended below.
 
 | ID | Scoped source change | Acceptance state |
@@ -304,6 +350,8 @@ separate evidence boundaries.
 | GUI-19 | Empty Resolve Center inferred Secure posture solely from no active HIGH/CRITICAL rows | Neutral source wording keeps exposures/readiness separate; focused 148 accepted. |
 | SIDE-07 | Black Box detail-dialog close can synchronously wait on a custom worker that quit() does not terminate | Applied nonblocking lifecycle; six actual-QThread/inert-query controls passed within focused 148. Not a cause conclusion for the historical watchdog incident. |
 | NEWS-02 | CISA's dated alerts fail a single-slug article-path matcher | Applied calendar-valid dated-alert syntax; 32 offline controls passed within focused 148. Existing URL, freshness and advisory-only boundaries remain; browser 403 and stale September publication provide no live-feed proof. |
+| SIDE-08 | Reopening a retiring firewall detail could admit another query; detached busy detail workers could evade shutdown child discovery | One retained dialog/query per tab, matched weak slot cleanup and retained shutdown discovery passed 41 focused cases with actual Qt threads/inert providers; no physical query or historical-cause proof. |
+| OBS-04 | Pair plans claimed observations; the normal App Control constructor was not yet admitted | Exact defaults passed 119 focused cases; actual 90.016 s solo OBSERVED with no events/gaps and policy unknown. Fifteen audited paths/71 held solos/105 pair plans/123 eligible plans; PER-07 OPEN. |
 
 
 ## Testing loop

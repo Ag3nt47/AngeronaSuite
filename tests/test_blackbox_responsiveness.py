@@ -255,6 +255,173 @@ def test_firewall_detail_completed_query_preserves_result_display(monkeypatch):
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
+@pytest.fixture
+def firewall_detail_case(monkeypatch):
+    app = blackbox.QApplication.instance() or blackbox.QApplication([])
+    state = SimpleNamespace(
+        app=app, entered=threading.Event(), release=threading.Event(),
+        workers=[], dialogs=[], beats=[], close_ready_only=False, guard_fired=False,
+    )
+
+    class InertDetailWorker(blackbox._FwDetailWorker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            state.workers.append(self)
+
+        def run(self):
+            state.entered.set()
+            state.release.wait(5)
+            self.done.emit({"description": "inert detail", "program": "C:/inert/detail.exe"})
+
+    class ShutdownOwner(blackbox.QMainWindow):
+        stop_workers = blackbox.BlackBoxWindow.stop_workers
+
+    inert_rules = [
+        {"name": identity, "rule_id": identity, "direction": "Inbound",
+         "action": "Block", "proto": "", "port": ""}
+        for identity in ("one", "two")
+    ]
+    monkeypatch.setattr(blackbox.FirewallTab, "_read_rules",
+                        staticmethod(lambda: [dict(rule) for rule in inert_rules]))
+    monkeypatch.setattr(blackbox, "_FwDetailWorker", InertDetailWorker)
+    state.window = ShutdownOwner()
+    state.window._closing = False
+    state.window._shutdown_threads = None
+    state.tab = blackbox.FirewallTab()
+    state.window.setCentralWidget(state.tab)
+    state.tab._apply_rules(inert_rules)
+    state.tab.table.sortItems(0, Qt.AscendingOrder)
+    tab_ref = weakref.ref(state.tab)
+
+    def dismiss_visible():
+        state.beats.append(1)
+        tab = tab_ref()
+        if tab is None or not isValid(tab):
+            return
+        for dialog in tab.findChildren(blackbox.FirewallRuleDetailDialog):
+            if not dialog.isVisible():
+                continue
+            if state.close_ready_only and (dialog._worker.isRunning() or
+                                          not dialog.btn_copy.isEnabled()):
+                continue
+            state.dialogs.append(weakref.ref(dialog))
+            dialog.reject()
+
+    def retired():
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        return bool(state.dialogs) and all(
+            ref() is None or not isValid(ref()) for ref in state.dialogs)
+
+    def interrupt_modal():
+        state.guard_fired = True
+        tab = tab_ref()
+        if tab is not None and isValid(tab):
+            for dialog in tab.findChildren(blackbox.FirewallRuleDetailDialog):
+                dialog.hide()
+
+    state.guard = QTimer()
+    state.guard.setInterval(2000)
+    state.guard.timeout.connect(interrupt_modal)
+    state.guard.start()
+    state.timer = QTimer()
+    state.timer.setInterval(5)
+    state.timer.timeout.connect(dismiss_visible)
+    state.retired = retired
+    try:
+        yield state
+    finally:
+        state.timer.stop()
+        state.guard.stop()
+        state.release.set()
+        for worker in state.workers:
+            assert worker.wait(2000)
+        for ref in state.dialogs:
+            dialog = ref()
+            if dialog is not None and isValid(dialog):
+                dialog.close()
+        if isValid(state.tab):
+            state.tab._reader.close()
+        state.window.deleteLater()
+        for worker in state.workers:
+            worker.deleteLater()
+        app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_firewall_detail_clicks_share_admission_until_retirement(firewall_detail_case):
+    case = firewall_detail_case
+    tab, reader = case.tab, case.tab._reader
+    previous_status = tab.status.text()
+    visible_requests = []
+
+    def repeat_visible():
+        case.timer.start()
+        current = getattr(tab, "_detail_dialog", None)
+        visible_requests.append(current is not None and current.isVisible())
+        tab._on_rule_clicked(1, 0)
+
+    # A request while the first dialog is visible must focus it, not recurse.
+    QTimer.singleShot(0, repeat_visible)
+    tab._on_rule_clicked(0, 0)
+    assert not case.guard_fired and visible_requests == [True] and case.entered.wait(2)
+    assert len(case.workers) == 1
+    worker, dialog = case.workers[0], tab._detail_dialog
+    assert worker.isRunning() and not case.release.is_set()
+    assert isValid(dialog) and dialog.parent() is None and not dialog.isVisible()
+    assert tab._worker is worker
+    for _ in range(10):
+        tab._on_rule_clicked(1, 0)
+    assert len(case.workers) == 1 and tab.status.text() != previous_status
+    beats = len(case.beats)
+    pump_until(case.app, lambda: len(case.beats) >= beats + 3)
+    assert worker.isRunning() and tab._reader is reader
+
+    case.release.set()
+    pump_until(case.app, case.retired)
+    assert not isValid(dialog) and tab._detail_dialog is None and tab._worker is None
+    tab._on_rule_clicked(1, 0)
+    assert not case.guard_fired
+    pump_until(case.app, case.retired)
+    assert [worker._rule_id for worker in case.workers] == ["one", "two"]
+    assert tab._detail_dialog is None and tab._worker is None and tab._reader is reader
+
+
+def test_firewall_detail_detached_worker_remains_in_blackbox_shutdown(firewall_detail_case):
+    case = firewall_detail_case
+    case.timer.start()
+    case.tab._on_rule_clicked(0, 0)
+    assert not case.guard_fired and case.entered.wait(2)
+    worker, dialog = case.workers[0], case.tab._detail_dialog
+    assert dialog.parent() is None and worker.isRunning()
+    assert dialog not in case.window.findChildren(blackbox.QWidget)
+    assert not case.window.stop_workers(timeout_ms=0)
+    assert worker in case.window._shutdown_threads
+
+    # Parent destruction must not invalidate the detached draining owner, and
+    # its eventual destroyed callback must tolerate the deleted tab wrapper.
+    case.tab.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    assert not isValid(case.tab) and isValid(dialog) and worker.isRunning()
+    case.release.set()
+    pump_until(case.app, case.retired)
+    assert not isValid(dialog) and not worker.isRunning()
+    assert case.window.stop_workers(timeout_ms=0)
+    assert worker in case.window._shutdown_threads
+
+
+def test_firewall_detail_completed_query_deletes_parent_owned_dialog(firewall_detail_case):
+    case = firewall_detail_case
+    case.release.set()
+    case.close_ready_only = True
+    case.timer.start()
+    case.tab._on_rule_clicked(0, 0)
+    assert not case.guard_fired
+    pump_until(case.app, case.retired)
+    assert len(case.workers) == 1 and not case.workers[0].isRunning()
+    assert case.dialogs and case.tab.findChildren(blackbox.FirewallRuleDetailDialog) == []
+    assert case.tab._detail_dialog is None and case.tab._worker is None
+
+
 def test_firewall_failure_preserves_prior_snapshot(monkeypatch):
     app = blackbox.QApplication.instance() or blackbox.QApplication([])
     def failed():
@@ -312,8 +479,18 @@ def test_firewall_duplicate_names_keep_exact_identity_when_sorted(monkeypatch):
     app = blackbox.QApplication.instance() or blackbox.QApplication([])
     tab = blackbox.FirewallTab()
     shown = []
-    monkeypatch.setattr(blackbox, "FirewallRuleDetailDialog",
-                        lambda rule, parent: SimpleNamespace(exec=lambda: shown.append(rule["rule_id"])))
+    class DetailDialog(blackbox.QDialog):
+        def __init__(self, rule, parent):
+            super().__init__(parent)
+            self._worker = None
+            self._rule_id = rule["rule_id"]
+
+        def exec(self):
+            shown.append(self._rule_id)
+            self.deleteLater()
+            return 0
+
+    monkeypatch.setattr(blackbox, "FirewallRuleDetailDialog", DetailDialog)
     try:
         tab._apply_rules([{"name": "same", "rule_id": identity, "direction": "In",
                            "action": action, "proto": "", "port": ""}
