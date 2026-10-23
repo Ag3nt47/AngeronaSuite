@@ -239,7 +239,19 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
-Latest maintenance integrates the consent-bound release helper and accepts normal
+Update downloads now share one consistent time budget for checksum and archive
+transfers. Rounded timeout handoffs stay within that budget, and invalid budgets
+remain blocked. The combined update passed **229 focused checks**: **228 production
+cases and one actual Windows custody-refusal check**, with exact process retirement.
+The permission check correctly held installation on the observed host;
+**HOST-03 remains open** and no host permissions changed.
+
+This improves download handoff without establishing a live installation or
+restart-health result. See the [update guide](docs/github-updates.md) and the
+[issue review](analysis/live-debug-2026-10-22/README.md) for scope and retained gaps.
+Archive audits and guarded-publication receipts identify their actual revision.
+
+The prior maintenance checkpoint integrates the consent-bound release helper and accepts normal
 Windows servicing hardlinks only after canonical-path and native custody checks.
 Downloaded assets and installed authority files retain strict single-link checks.
 Seven updater suites and a read-only native refusal check passed **218 tests**,
@@ -248,7 +260,7 @@ permissions correctly hold installation on the observed host.
 
 Source staging preserves custom edits and conflicts. Packaged installation keeps
 its separate signed-release authority; no live install or restart-health result
-is established. The [158-issue review](analysis/live-debug-2026-10-22/README.md)
+is established. The [159-issue review](analysis/live-debug-2026-10-22/README.md)
 retains failed checks, coverage gaps and the source scopes of each result. Archive
 audits and guarded-publication receipts identify their exact reviewed revision.
 
@@ -257,7 +269,7 @@ busy workers through shutdown. Separate focused gates passed **41** and **119**
 tests with exact clean retirement. A real **90.016-second App Control solo**
 completed as **OBSERVED**, with no events or recorded coverage gaps; policy
 presence and detection efficacy remain unknown. See the
-[158-issue review](analysis/live-debug-2026-10-22/README.md) for the source scopes
+[159-issue review](analysis/live-debug-2026-10-22/README.md) for the source scopes
 and limits. Published a3 [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235) retains a Python 3.13
 preflight failure; terminal CI passed 11/12 and Security 3/3. Its cause remains
 unknown; no complete CI pass is claimed.
@@ -304,7 +316,7 @@ platform skip** and a **29-phase default selfcheck** (68 passed/18 skipped modul
 rows, a separate pipeline and nine verifiers). Its synthetic direct-call Sigma
 benchmark measured **31.8–42.7% lower median wall time**; that is separate from
 dashboard, sensor and whole-product performance. The
-[158-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
+[159-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
 unknown causes and the original R7 findings.
 
 The published [6ead285 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/6ead285f3e4658674600f15fb9f1f4f1f64ac9d3)

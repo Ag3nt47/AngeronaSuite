@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.14.0 — updater shared-deadline handoff
+
+- Integrate the approved local5e4e5ba/remote14bc675 histories while retaining
+  native inbox custody and HOST-03. UPD-06 clamps each transport handoff to the
+  original scalar budget and rejects invalid worker budgets before child setup.
+- The checksum and archive still share one absolute deadline; it is not reset
+  per asset. Eleven deterministic cases cover rounding, elapsed/expired budget
+  and malformed worker-budget rejection. Combined validation: 229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips.
+- The merged guide preserves remote historical CI/rerun claims and its unexplained
+  staging-rename refusal. These are separate from the fresh combined-source gate.
+  The earlier integration supervisor did not produce clean completion evidence;
+  recovered exact source/index evidence is retained separately.
+- HOST-03 remains open; the native validator and host ACL are unchanged. This
+  does not bound metadata/filesystem/installer runtime, establish native install
+  or restart health, close old timeout causes, or assert publication/CI success.
+
 ## 1.14.0 — verified updater integration and native custody
 
 - Integrate the approved a156bdd/f848c01 histories and preserve both llms.txt

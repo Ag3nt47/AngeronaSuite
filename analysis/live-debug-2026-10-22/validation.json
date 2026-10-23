@@ -7282,7 +7282,7 @@
       "first_actual_all15_observation": true
     }
   },
-  "current_state": {
+  "prior_current_state_before_upd06_deadline_merge": {
     "source_version": "1.14.0",
     "issue_ids": 158,
     "new_ids": [
@@ -7461,5 +7461,153 @@
         "counts_are_unique_additional_cases": false
       }
     }
+  },
+  "current_state": {
+    "source_version": "1.14.0",
+    "issue_ids": 159,
+    "new_ids": [
+      "UPD-06"
+    ],
+    "scope": "Approved deadline-clamp merge accepted by229 focused checks:228 production cases plus one actual correct native custody refusal. All158 prior issue objects/history and HOST-03 held state remain unchanged.",
+    "merge": {
+      "local_parent": "5e4e5bacffa0ef2830d07b3204a231dc72654951",
+      "remote_parent": "14bc67539a7eaf07d143988dc9509eabef29ab1c",
+      "common_base": "f848c01228f325ed0ca8ffb2091459554036bb4f",
+      "maintainer_approval": "Explicit ordinary merge, validation and publication authorization; preserve both histories and reviewed local native custody.",
+      "source_sha256_at_gate": "6457a9532ed0fc83a9c7a68e2c19877789c1846ed4dcfe08cc439c84675ae3e0",
+      "post_commit_proof": "Actual merged commit and publication outcome belong to a separate guarded post-commit receipt; no future SHA or success is asserted."
+    },
+    "mechanics": {
+      "scalar_budget": "Exact int/float, finite, positive and within original ceiling before multiprocessing setup.",
+      "handoff": "min(original seconds, shared absolute deadline minus monotonic time); expiry still refuses before transport.",
+      "shared_deadline_reset_per_asset": false,
+      "new_deterministic_cases": 11,
+      "authority_unchanged": [
+        "native inbox executable custody",
+        "single-link release assets/installed authority files",
+        "interactive consent",
+        "independent installed-installer release and rollback authorization",
+        "recovery holds",
+        "UGCAP baseline review"
+      ]
+    },
+    "focused_validation": {
+      "state": "ACCEPTED_SCOPED_NATIVE_REFUSAL",
+      "receipt_path": ".tmp/v114-deadline-merged-focused-root-gate-r1/run-updates-r1/result.json",
+      "receipt_sha256": "c87a804c1cdc0ab94aed79078dfa0a5ca09b46a70d7aebd8eab0926a8197246e",
+      "passed": 229,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "production_cases": 228,
+      "actual_native_host_refusal_cases": 1,
+      "source_entries": 1860,
+      "source_map_sha256": "6457a9532ed0fc83a9c7a68e2c19877789c1846ed4dcfe08cc439c84675ae3e0",
+      "head": "5e4e5bacffa0ef2830d07b3204a231dc72654951",
+      "junit_seconds_reported": "237.570",
+      "supervisor_seconds": 409.2810000000027,
+      "acceptance_complete": true,
+      "native_exit": 0,
+      "actual_origin_modules": [
+        "angerona.updater.release_update",
+        "angerona.updater.github_updater",
+        "angerona.core.privilege",
+        "tools.update_angerona"
+      ],
+      "normal_exit": "MainThread only; no QApplication and zero top-level widgets.",
+      "native_retirement": "Both retained interpreter generations same birth/WAIT0/native exit0; actual/redirector observer, actual termination and Popen handles all closed.",
+      "production_suites": 7,
+      "suites": [
+        {
+          "path": "tests/test_verified_release_updates.py",
+          "cases": 114,
+          "new_deterministic_budget_cases": 11
+        },
+        {
+          "path": "tests/test_github_update_checks.py",
+          "cases": 28
+        },
+        {
+          "path": "tests/test_github_update_cli.py",
+          "cases": 30
+        },
+        {
+          "path": "tests/test_update_authority.py",
+          "cases": 18
+        },
+        {
+          "path": "tests/test_verify_release_upgrade.py",
+          "cases": 3
+        },
+        {
+          "path": "tests/test_release_upgrade_preservation.py",
+          "cases": 27
+        },
+        {
+          "path": "tests/test_release_upgrade_diagnostics.py",
+          "cases": 8
+        }
+      ],
+      "junit_sha256": "6eab6f61f8bc419e755356ab2f03a419e44cd2518f28cc3495b4e90f02e59d89",
+      "plan_sha256": "651e8c91fac68c750a88e8cdeb097879cb71a2596562a2ab941244b6de24e35b",
+      "cohorts_overlap_with_prior_gates": true,
+      "scope_note": "228 production regressions plus1actual native-refusal case; do not sum with preceding218/31 cohorts. Not a full regression/default selfcheck or performance measurement.",
+      "source_head_index_runtime_gate_unchanged": true,
+      "actual_verdict": true,
+      "actual_origin_exitstatus": 0
+    },
+    "native_host_refusal": {
+      "state": "OBSERVED_HELD",
+      "probe_path": ".tmp/v114-deadline-merged-focused-root-gate-r1/run-updates-r1/native-inbox-host-probe.json",
+      "probe_sha256": "2a68b5b730409b31c512e42cf750050447d3230c7e127e4ffb6f31e19671fdfb",
+      "within_229_cohort": true,
+      "capture_complete": true,
+      "custody_state": "HELD_UNSAFE_VOLUME_ROOT",
+      "native_custody_accepted": false,
+      "canonical_executable_links": 2,
+      "file_stat_identity_stable": true,
+      "subprocess_launch_forbidden": true,
+      "host_acl_changed": false,
+      "installation_or_uac_or_network": false,
+      "issue_status": "HOST-03 OPEN_NATIVE_OBSERVED",
+      "validator_relaxed": false,
+      "raw_host_capture_published": false,
+      "limits": "An actual expected-refusal pass proves the current unsafe-custody hold, not safe host custody, installation, persistent file-object lease or administrator/kernel resistance."
+    },
+    "integration_recovery": {
+      "original_supervisor_complete": false,
+      "original_retirement_postexit_image_query": "Failed; no clean original acceptance or native-retirement proof.",
+      "initial_wait_cause": "UNKNOWN",
+      "recovered_measurement_path": ".tmp/v114-deadline-divergence-review-20261023-r1/integration-r1/index-measurement.json",
+      "recovered_measurement_sha256": "133381272005bb59ee49f8ce2ea63cb66c695e10c17e5cd9650b287bb09f28e2",
+      "recovered_exact_staged_paths": [
+        "docs/github-updates.md",
+        "src/angerona/updater/release_update.py",
+        "tests/test_verified_release_updates.py"
+      ],
+      "recovered_source_sha256": "6457a9532ed0fc83a9c7a68e2c19877789c1846ed4dcfe08cc439c84675ae3e0",
+      "recovery_observation_does_not_supply_missing_retirement": true,
+      "extra_issue_id": false
+    },
+    "reported_remote_history": {
+      "source": "Exact remote docs/github-updates.md paragraph from14bc675; retained byte-for-byte in the merged operator guide.",
+      "historical_helper_commit": "f848c01228f325ed0ca8ffb2091459554036bb4f",
+      "reported_ci": "First Python3.10 run6 failed/7859 passed/19 skipped; reported follow-up focused139 pass.",
+      "reported_rename_failure": "First focused attempt observed one unexplained Windows staging-rename permission failure, followed by reported exact-case/full-focused reruns. Cause remains UNKNOWN; permission/rename behavior not relaxed.",
+      "independently_reverified_in_this_docs_proposal": false,
+      "current_combined_ci_proof": false
+    },
+    "separate_evidence": {
+      "offline": "Post-freeze syntax/scoped lint/docs/secret receipts bind actual reviewed bytes; no future outcome is asserted here.",
+      "archives": "Rebuild/audit receipts bind actual combined source; all preceding unsigned archives retain their original snapshots.",
+      "publication": "Post-commit guarded publisher must prove canonical origin/default main/current branch/HEAD, fast-forward clean state and public exact README assets."
+    },
+    "limits": [
+      "Transport-handoff scalar budget does not newly bound metadata discovery, hashing, filesystem staging/rename, installer/UAC runtime or whole providers.",
+      "HOST-03 remains open; no host ACL repair, baseline replacement, alert suppression or validation policy relaxation.",
+      "No payload networking, live UAC/install/restart health, trusted activation, fresh all15/full86 efficacy or performance result.",
+      "Original integration interruption, unexplained rename and earlier timeout causes remain unknown; subsequent passes cannot rewrite those incidents.",
+      "Raw host captures remain private. Documentation follows code tests and has separate source scope; future commit and archive/publication proof are not self-referential claims."
+    ]
   }
 }

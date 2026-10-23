@@ -7,7 +7,27 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## v1.14 validation and authority boundaries
 
-- Current registry158 retains all156 prior raw issue objects/order and adds
+- Update downloads keep checksum/archive transport within one shared absolute
+  deadline. Each worker handoff stays within the original scalar budget; invalid
+  budgets are rejected before child setup. The combined gate passed229 focused
+  checks:228 production cases and one actual native custody-refusal check, with
+  no failures/errors/skips and exact two-generation retirement (c87a804c).
+- Current registry159 appends UPD-06 and preserves all158 prior raw issue objects/
+  order. HOST-03 remains OPEN_NATIVE_OBSERVED: the native check correctly returned
+  HELD_UNSAFE_VOLUME_ROOT/native_custody_accepted=false, with no host ACL or
+  validator relaxation. The11 deterministic deadline additions are included in
+  the114 release-helper cases; the seven full production suites total228.
+- This transport-handoff bound does not add deadlines for metadata, hashing,
+  filesystem staging/rename, installer/UAC runtime or entire providers. No payload
+  networking, live install/restart health, source activation, refreshed all15 or
+  performance gain is established. Historical rename/timeout causes stay UNKNOWN.
+- The first integration supervisor lacks a clean completion/native-retirement
+  acceptance; separately recovered exact source/index evidence does not repair
+  that missing proof. The successful fresh gate has its own frozen source scope.
+  Post-freeze build/audit and post-commit guarded-publication receipts bind their
+  actual reviewed bytes; no current publication or CI success is asserted here.
+
+- Prior registry158 retains all156 prior raw issue objects/order and adds
   UPD-05/HOST-03. The approved a156bdd/f848c01 merge preserves both histories
   and llms.txt additions; a156bdd was not independently published.
 - UPD-05 allows servicing hardlinks only for the canonical inbox PowerShell

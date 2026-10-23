@@ -19,7 +19,34 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Current updater integration and observed host custody hold (2026-10-23)
+## Current updater deadline integration (2026-10-23)
+
+The register contains **159 unique IDs**. UPD-06 is appended; every prior158 issue
+object/order remains byte-identical, including HOST-03 OPEN_NATIVE_OBSERVED.
+The maintainer approved the ordinary local5e4/remote14bc merge, retaining both
+histories, native inbox custody and both sides' existing documentation.
+
+UPD-06 clamps transport handoff to the original scalar budget and rejects invalid
+direct worker budgets before child setup. Checksum and archive retain one shared
+absolute deadline; it is not renewed per asset. Eleven deterministic additions
+cover 900-second/subsecond rounding, elapsed/expired budget and invalid handoff.
+Fresh seven-suite and actual native-refusal gate: **229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips**.
+
+HOST-03 remains open; custody refusal is not a healthy-host result. No host ACL,
+validator policy, alert or baseline changed. The original integration supervisor
+completed the reviewed merge but did not produce a final clean acceptance receipt;
+its post-exit image query failed. Recovered exact staged/source/index evidence is
+separate and cannot supply missing native retirement proof. The initial wait
+cause remains UNKNOWN.
+
+The merged guide preserves the remote f848 CI and focused-rerun paragraph,
+including the unexplained staging-rename refusal, as reported historical evidence.
+It does not prove current CI. This change establishes no metadata/filesystem/
+installer/provider deadline, live UAC/install/restart health, signed activation,
+refreshed all15 or performance result. Build/audit and post-commit publication
+proof belong to separate receipts for the actual reviewed bytes.
+
+## Prior updater integration and observed host custody hold (2026-10-23)
 
 The register contains **158 unique IDs**. UPD-05 and HOST-03 are appended; all156
 prior issue objects/order remain byte-identical. The maintainer approved merging local a156bdd with GitHub main f848c01 after the guarded publisher refused their 1/1 divergence. Both parent histories and both llms.txt additions are retained; a156bdd was never independently published.

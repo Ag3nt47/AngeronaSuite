@@ -5,7 +5,21 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Current updater integration and native custody hold
+## Current updater deadline handoff
+
+Registry159 appends UPD-06 while retaining all158 prior objects/order and HOST-03.
+Checksum and archive share one absolute deadline; handoff clamping prevents
+rounding above the original budget, and invalid worker budgets are refused before
+child setup. Fresh combined gate/native refusal: **229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips**.
+
+The transport budget does not bound metadata, hashing, filesystem stage/rename,
+privileged installer execution or entire providers. Existing custody and release
+authority are unchanged; HOST-03 remains OPEN_NATIVE_OBSERVED. A passing refusal
+is not safe-host proof. The first merge supervisor's incomplete acceptance and
+separate recovered index/source evidence remain distinct. Remote historical CI/
+rename wording and old unknown timeout causes are preserved.
+
+## Prior updater integration and native custody hold
 
 Registry158 appends UPD-05/HOST-03 and retains all156 prior raw objects/order.
 The approved merge retains a156bdd/f848c01 histories and both llms.txt additions;

@@ -172,6 +172,35 @@ check succeeded and the next invocation reused its daily result; no stable
 release was published to offer. No live installation or restart-health result
 is claimed.
 
+The first full Python 3.10 CI run of helper commit
+`f848c01228f325ed0ca8ffb2091459554036bb4f` reported **6 failed, 7,859 passed and
+19 skipped**. All six failures exposed a floating-point timeout handoff of
+`900.0000000000002` seconds. The handoff now clamps remaining time to the
+original approved budget, and networking workers reject invalid budgets before
+creating a child. Deterministic regressions cover both 900-second and
+0.1-second rounding, elapsed budget reduction and shared-deadline expiry.
+The follow-up focused gate passed **139 tests**. Its first attempt also observed
+one unexplained Windows staging-rename permission failure; that exact case and
+the complete focused gate passed reruns. No permission or rename behavior was
+relaxed. Full CI results must be checked for the follow-up commit separately.
+
+### Shared transport deadline follow-up (UPD-06)
+
+The checksum and archive share one absolute transport deadline. Each handoff
+is clamped to the original scalar budget, preventing floating-point subtraction
+from passing a slightly larger value to the worker. Invalid direct worker budgets
+are rejected before multiprocessing setup. The merge retains canonical inbox
+custody checks, strict single-link assets and HOST-03's unsafe-host hold.
+
+Current combined-source tests and fresh native refusal: **229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips**.
+The eleven deterministic additions exercise budget handoff with inert transports;
+they do not establish payload networking, installation or healthy host custody.
+The historical paragraph above is retained as reported remote evidence; it is
+not a current combined-revision CI result. Its unexplained rename refusal remains
+unresolved. This change adds no deadline for metadata, hashing, filesystem
+staging/rename, privileged installer runtime or entire providers. Actual archive
+audits and guarded-publication proof remain separate source-bound receipts.
+
 **Activation: HELD.** Checking, preparing and reviewing a stage do not install it.
 
 Static validation checks candidate hashes, Python syntax, required entry
