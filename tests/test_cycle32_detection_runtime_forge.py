@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
+from angerona.core import detection_evaluation as evaluation
 from angerona.core.detection_evaluation import (
     CohortLoss,
     capture_replay_cohort,
@@ -376,6 +378,9 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
     tmp_path, monkeypatch,
 ):
     clock = lambda: 1002.0
+    # Exercise registry/runtime reconciliation independently of host scheduling.
+    # Only the two prerequisite replay comparisons use deterministic elapsed time.
+    replay_clock = SimpleNamespace(perf_counter=lambda: 0.0)
     registry = DetectionPackageRegistry(tmp_path / "registry", require_signed=False)
     input_authority = QualityInputAuthority(b"i" * 32, clock=clock)
     quality = DetectionQualityStore(
@@ -417,9 +422,12 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
         captured_at=1000.0,
     )
     tuning = digest_tuning({"threshold": 7})
-    initial_comparison = compare_detection_packages(
-        initial_cohort, active=None, candidate=active, evaluated_at=1001.0,
-    )
+    with monkeypatch.context() as replay_timing:
+        replay_timing.setattr(evaluation, "time", replay_clock)
+        initial_comparison = compare_detection_packages(
+            initial_cohort, active=None, candidate=active, evaluated_at=1001.0,
+        )
+    assert initial_comparison.complete, initial_comparison.reasons
     initial_attestation = input_authority.issue(
         initial_comparison,
         package_id=active.package_id,
@@ -470,9 +478,12 @@ def test_registry_transition_sync_failure_clears_retired_active_rules(
         high_water=2,
         captured_at=1000.0,
     )
-    comparison = compare_detection_packages(
-        cohort, active=active, candidate=candidate, evaluated_at=1001.0
-    )
+    with monkeypatch.context() as replay_timing:
+        replay_timing.setattr(evaluation, "time", replay_clock)
+        comparison = compare_detection_packages(
+            cohort, active=active, candidate=candidate, evaluated_at=1001.0
+        )
+    assert comparison.complete, comparison.reasons
     attestation = input_authority.issue(
         comparison,
         package_id=candidate.package_id,

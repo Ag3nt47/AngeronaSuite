@@ -170,6 +170,131 @@ def _witness_runtime_snapshot(combat, bus) -> dict:
     return snapshots
 
 
+def _response_failure_diagnostic(combat, bus) -> dict:
+    """Failure-only memory view; no host reads, authority or causal conclusion."""
+    messages = {
+        "combat journal custody is unavailable": "journal_custody_unavailable",
+        "combat journal custody was lost during the transaction": "journal_custody_lost",
+        "combat journal identity changed during the transaction": "journal_identity_changed",
+        "combat journal object is unsafe": "journal_object_unsafe",
+        "combat journal is unreadable": "journal_unreadable",
+        "combat journal changed while being read": "journal_changed_during_read",
+        "combat journal append failed": "journal_append_failed",
+        "combat journal append was incomplete": "journal_append_incomplete",
+        "combat journal changed during append": "journal_changed_during_append",
+        "combat journal record schema is invalid": "journal_record_schema_invalid",
+        "combat journal has an incomplete terminal line": "journal_terminal_incomplete",
+        "combat journal interior checkpoint changed": "journal_interior_changed",
+        "combat journal terminal checkpoint changed": "journal_terminal_changed",
+        "combat journal transaction verification failed": "journal_transaction_verification_failed",
+        "combat journal checkpoint is unavailable": "journal_checkpoint_unavailable",
+        "combat journal terminal capacity reservation is unavailable": "journal_capacity_unavailable",
+        "combat journal byte budget exceeded": "journal_byte_budget",
+        "combat journal record budget exceeded": "journal_record_budget",
+        "combat journal key custody failed": "journal_key_custody_failed",
+        "combat journal key is unreadable": "journal_key_unreadable",
+        "recovery rollback anchor is unavailable": "recovery_anchor_unavailable",
+        "recovery rollback anchor did not advance": "recovery_anchor_not_advanced",
+        "combat journal rollback or incomplete anchor transaction detected": "recovery_rollback_detected",
+    }
+    exception_types = {
+        "JournalIntegrityError", "PermissionError", "FileNotFoundError", "FileExistsError",
+        "OSError", "RuntimeError", "ValueError", "TypeError", "TimeoutError",
+    }
+
+    def safe_error(value):
+        result = {"code": "unavailable", "exception_type": "unavailable"}
+        if type(value) is not str:
+            return result
+        if not value:
+            result["code"] = "none"
+            return result
+        if len(value) > 1024:
+            result["code"] = "oversized_redacted"
+            return result
+        kind, separator, message = value.partition(": ")
+        if separator and kind in exception_types:
+            result["exception_type"] = kind
+        else:
+            message = value
+        result["code"] = messages.get(message, "other_redacted")
+        if message.startswith("commit failed: "):
+            kind = message.removeprefix("commit failed: ")
+            if kind in exception_types:
+                result.update(code="commit_failed", exception_type=kind)
+        for prefix, code in (
+            ("journal schema failure at line ", "journal_schema_line"),
+            ("journal integrity failure at line ", "journal_integrity_line"),
+            ("broken journal record at line ", "journal_broken_record_line"),
+            ("unsigned journal tail at line ", "journal_unsigned_tail_line"),
+            ("journal resource/schema limit at line ", "journal_resource_line"),
+        ):
+            if message.startswith(prefix):
+                line = message[len(prefix):]
+                if line.isascii() and line.isdecimal() and len(line) <= 5 and 0 < int(line) <= 32768:
+                    result.update(code=code, line=int(line))
+        return result
+
+    result = {
+        "schema": "angerona.gui-live-response-failure-diagnostic.v1",
+        "diagnostic_only": True, "cause_established": False,
+        "current_store_error": safe_error(getattr(combat, "_journal_error", None)),
+        "journal_cache": {"state": "busy_or_unavailable"},
+        "retained_event_window": {"state": "unavailable", "limit": 128, "run_bound": False},
+    }
+    try:
+        lock = getattr(combat, "_receipt_lock", None)
+        acquired = lock is not None and lock.acquire(blocking=False)
+        if acquired:
+            try:
+                records = getattr(combat, "_journal_cache_records", None)
+                if type(records) is list:
+                    rows = []
+                    for record in records[-32:]:
+                        if type(record) is not dict:
+                            continue
+                        def fixed(value, choices):
+                            return value if type(value) is str and len(value) <= 64 and value in choices else "other"
+                        rows.append({
+                            "phase": fixed(record.get("record_type"), {"intent", "commit", "failure", "orphan", "undo_intent", "undo_commit", "undo_failure"}),
+                            "action": fixed(record.get("action"), {"quarantine_file", "terminate_process", "suspend_process", "isolate_program", "block_remote_ip", "isolate_host", "activate_honeypots"}),
+                            "error": safe_error(record.get("error")),
+                        })
+                    result["journal_cache"] = {
+                        "state": "memory_view_unverified", "limit": 32,
+                        "rows": rows, "older_rows_omitted": max(0, len(records) - 32),
+                    }
+                else:
+                    result["journal_cache"] = {"state": "cache_unavailable"}
+            finally:
+                lock.release()
+    except Exception:
+        result["journal_cache"] = {"state": "snapshot_unavailable"}
+    try:
+        events = bus.recent(128)
+        if type(events) is not list:
+            raise TypeError("unsupported diagnostic event view")
+        reasons = {"windows_sharing_conflict", "marker_custody_handoff_failed", "marker_mutation_or_terminal_failed"}
+        counts = {}
+        for event in events[:128]:
+            if getattr(event, "module", None) != "Adversary Combat":
+                continue
+            details = getattr(event, "details", None)
+            reason = details.get("response_failure_reason") if type(details) is dict else None
+            if type(reason) is str and len(reason) <= 64 and reason in reasons:
+                counts[reason] = counts.get(reason, 0) + 1
+        result["retained_event_window"] = {
+            "state": "memory_view_unverified", "limit": 128,
+            "rows_sampled": min(128, len(events)), "limit_reached": len(events) >= 128,
+            "failure_counts": counts, "run_bound": False,
+        }
+    except Exception:
+        pass
+    return result
+
+
+
+
 def _os_witness_failure_summary(
     witness: dict, *, phase: str, run_index: int, expected_markers: int,
     require_process: bool, require_digest: bool, report: dict,
@@ -337,6 +462,74 @@ def test_witness_failure_summary_keeps_reasons_without_private_values() -> None:
         "private-parent", "private-quarantine", "private-error", "private-token",
         "private-report", "private-reason", "private-code", "76543", "123456.789",
     ))
+
+
+def test_response_failure_diagnostic_redacts_private_values_without_host_reads() -> None:
+    from types import SimpleNamespace
+
+    private = "private-path-key-token"
+    io_calls = []
+    def forbidden(*_args, **_kwargs):
+        io_calls.append("journal_io")
+        raise AssertionError("diagnostics attempted host or journal I/O")
+
+    combat = SimpleNamespace(
+        _journal_error="combat journal custody is unavailable",
+        _receipt_lock=threading.Lock(),
+        _journal_cache_records=[
+            {"record_type": "failure", "action": "quarantine_file", "target": private,
+             "error": "JournalIntegrityError: combat journal custody is unavailable"},
+            {"record_type": private, "action": private, "error": "PermissionError: " + private},
+        ],
+        _read_journal=forbidden, list_actions=forbidden,
+    )
+    class Bus:
+        def recent(self, limit):
+            assert limit == 128
+            return [
+                SimpleNamespace(module="Adversary Combat", details={
+                    "response_failure_reason": "marker_custody_handoff_failed", "path": private}),
+                SimpleNamespace(module="Adversary Combat", details={
+                    "response_failure_reason": private}),
+            ]
+
+    result = _response_failure_diagnostic(combat, Bus())
+    assert io_calls == [], "swallowed exceptions must not hide attempted journal I/O"
+    assert result["cause_established"] is False
+    assert result["current_store_error"]["code"] == "journal_custody_unavailable"
+    assert result["journal_cache"]["rows"][0] == {
+        "phase": "failure", "action": "quarantine_file",
+        "error": {"code": "journal_custody_unavailable", "exception_type": "JournalIntegrityError"},
+    }
+    assert result["journal_cache"]["rows"][1]["error"] == {
+        "code": "other_redacted", "exception_type": "PermissionError",
+    }
+    assert result["retained_event_window"]["failure_counts"] == {"marker_custody_handoff_failed": 1}
+    assert result["retained_event_window"]["run_bound"] is False
+    assert private not in json.dumps(result)
+
+
+def test_response_failure_diagnostic_bounds_cache_and_never_waits_for_receipt_lock() -> None:
+    from types import SimpleNamespace
+
+    class Bus:
+        def recent(self, limit):
+            assert limit == 128
+            return []
+
+    lock = threading.Lock()
+    combat = SimpleNamespace(_journal_error="secret" * 1000, _receipt_lock=lock,
+                             _journal_cache_records=[{}] * 100)
+    with lock:
+        result = _response_failure_diagnostic(combat, Bus())
+    assert result["journal_cache"]["state"] == "busy_or_unavailable"
+    assert result["current_store_error"]["code"] == "oversized_redacted"
+    result = _response_failure_diagnostic(combat, Bus())
+    assert len(result["journal_cache"]["rows"]) == 32
+    assert result["journal_cache"]["older_rows_omitted"] == 68
+    assert "secret" not in json.dumps(result)
+
+
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows response clickthrough")
@@ -590,6 +783,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
     app = _app()
     window = MainWindow(bus, recorder, manager, config)
+    pulse_card = window.system_pulse
+    pulse_worker = pulse_card._sample_worker
+    instructor_state = window._fi_coaching_worker
+    instructor_worker = window._fi_worker
     trace("mainwindow_constructed")
     window.show()
     app.processEvents()
@@ -926,6 +1123,13 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                         detail = json.loads(diagnostic)
                         detail["runtime_at_settlement"] = settlement_runtime.get(handoff.run_id, {})
                         detail["runtime_at_assertion"] = _witness_runtime_snapshot(combat, bus)
+                        try:
+                            detail["response_failure_diagnostic"] = _response_failure_diagnostic(combat, bus)
+                        except Exception:
+                            detail["response_failure_diagnostic"] = {
+                                "schema": "angerona.gui-live-response-failure-diagnostic.v1",
+                                "available": False, "cause_established": False,
+                            }
                         diagnostic = json.dumps(detail, sort_keys=True)
                         print("ANGERONA_GUI_OS_WITNESS_FAILURE " + diagnostic, flush=True)
                         trace("os_witness_rejected", summary=json.loads(diagnostic))
@@ -948,21 +1152,59 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             modal_timer.stop()
     finally:
         trace("cleanup_start")
-        # A failed assertion can leave preparation holding the manager and
-        # recorder. Cancel and let that worker release its exact lease/watches
-        # before their fixtures are stopped or closed.
-        preparing = getattr(window, "_sim_launch_job", None)
-        if preparing is not None:
-            window._cancel_simulation_launch()
-            cleanup_deadline = time.monotonic() + 30.0
-            while preparing.thread.is_alive() and time.monotonic() < cleanup_deadline:
-                app.processEvents()
-                preparing.thread.join(timeout=0.05)
-            assert not preparing.thread.is_alive(), "Simulation preparation did not retire"
-            window._poll_simulation_launch()
-        if window.red_team_engine.is_running:
-            window.red_team_engine.stop_and_clean()
-        manager.stop_all()
+        cleanup_deadline = time.monotonic() + 30.0
+        cleanup_errors: list[str] = []
+        # These are the exact worker generations created by this window. A
+        # replacement is never granted shutdown authority by a retained test.
+        for label, still_owned, close in (
+            (
+                "System Pulse",
+                lambda: window.system_pulse is pulse_card
+                and pulse_card._sample_worker is pulse_worker,
+                pulse_card.shutdown,
+            ),
+            (
+                "Flight Instructor",
+                lambda: window._fi_coaching_worker is instructor_state
+                and window._fi_worker is instructor_worker
+                and instructor_state.thread is instructor_worker,
+                window._close_flight_instructor,
+            ),
+        ):
+            try:
+                assert still_owned(), f"GUI-owned {label} generation changed"
+                close()
+            except Exception as error:
+                cleanup_errors.append(f"{label} close: {type(error).__name__}")
+        try:
+            # A failed assertion can leave preparation holding the manager and
+            # recorder. Cancel and let that worker release its exact lease/watches
+            # before their fixtures are stopped or closed.
+            preparing = getattr(window, "_sim_launch_job", None)
+            if preparing is not None:
+                window._cancel_simulation_launch()
+                while preparing.thread.is_alive() and time.monotonic() < cleanup_deadline:
+                    app.processEvents()
+                    preparing.thread.join(timeout=0.05)
+                assert not preparing.thread.is_alive(), "Simulation preparation did not retire"
+                window._poll_simulation_launch()
+            if window.red_team_engine.is_running:
+                window.red_team_engine.stop_and_clean()
+            manager.stop_all()
+        finally:
+            # Both captured threads get a bounded join even if earlier cleanup
+            # fails; their combined wait shares the original 30-second budget.
+            for label, worker in (
+                ("System Pulse", pulse_worker),
+                ("Flight Instructor", instructor_worker),
+            ):
+                try:
+                    worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+                    assert not worker.is_alive(), f"GUI-owned {label} worker did not retire"
+                except Exception as error:
+                    cleanup_errors.append(f"{label} join: {type(error).__name__}")
+            if not instructor_state.retired.is_set():
+                cleanup_errors.append("Flight Instructor state did not retire")
         for name in ("timer", "_chill_maintenance_timer", "_adaptation_timer", "_beat_timer"):
             timer = getattr(window, name, None)
             if timer is not None:
@@ -974,4 +1216,5 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         window.hide()
         recorder.close()
         app.processEvents()
+        assert not cleanup_errors, cleanup_errors
         trace("cleanup_done")

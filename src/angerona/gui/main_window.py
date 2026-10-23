@@ -63,6 +63,105 @@ from angerona.shark.shark_attack import SharkAttackEngine
 from angerona.shark.red_team import RedTeamEngine, REDTEAM_STAGE_CATEGORY
 from angerona.updater.github_updater import check_for_updates
 
+class _FlightInstructorQueue:
+    """One retained plain-Python coach; closing never waits for native work."""
+
+    _STOP = object()
+
+    def __init__(self, narrate) -> None:
+        self._narrate = narrate
+        self._lock = threading.Lock()
+        self._requests = queue.Queue(maxsize=8)
+        self._ready: list[str] = []
+        self.closed = threading.Event()
+        self.active = threading.Event()
+        self.retired = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run, name="FlightInstructorWorker", daemon=True)
+        self.thread.start()
+
+    def submit(self, raw_line: str) -> bool:
+        with self._lock:
+            if self.closed.is_set():
+                return False
+            try:
+                self._requests.put_nowait(raw_line)
+            except queue.Full:
+                # Coaching is advisory; keep the original newest-stage policy.
+                try:
+                    self._requests.get_nowait()
+                    self._requests.task_done()
+                except queue.Empty:
+                    pass
+                self._requests.put_nowait(raw_line)
+            return True
+
+    def close(self, *_args) -> None:
+        with self._lock:
+            if self.closed.is_set():
+                return
+            self.closed.set()
+            self._ready.clear()
+            while True:
+                try:
+                    self._requests.get_nowait()
+                    self._requests.task_done()
+                except queue.Empty:
+                    break
+            # Admission and cancellation use the same lock: no new coaching
+            # can replace this single wakeup or begin after close wins it.
+            self._requests.put_nowait(self._STOP)
+
+    def take_ready(self) -> list[str]:
+        with self._lock:
+            if self.closed.is_set():
+                return []
+            ready, self._ready = self._ready, []
+            return ready
+
+    def _run(self) -> None:
+        try:
+            while True:
+                raw_line = self._requests.get()
+                try:
+                    with self._lock:
+                        if raw_line is self._STOP:
+                            return
+                        if self.closed.is_set():
+                            continue
+                        # This is the admission point for one in-flight call.
+                        # Close cancels queued work but cannot preempt that call.
+                        self.active.set()
+                    try:
+                        try:
+                            coaching = self._narrate(raw_line)
+                        except Exception as exc:
+                            coaching = f"\U0001F393 (Flight Instructor error) {exc}"
+                        with self._lock:
+                            if coaching and not self.closed.is_set():
+                                # No Qt object crosses this boundary. A stalled UI
+                                # retains at most eight explanatory coaching lines.
+                                self._ready.append(coaching)
+                                if len(self._ready) > 8:
+                                    del self._ready[0]
+                    finally:
+                        self.active.clear()
+                finally:
+                    self._requests.task_done()
+        finally:
+            self.close()
+            with self._lock:
+                # If a callback failed outside its ordinary Exception contract,
+                # consume the owned wakeup even though this worker is exiting.
+                while True:
+                    try:
+                        self._requests.get_nowait()
+                        self._requests.task_done()
+                    except queue.Empty:
+                        break
+            self.retired.set()
+
+
 class _NoAnim:
     """No-op stand-in for the removed shark/sword animations. Absorbs any
     start()/stop()/set_active()/setGeometry()/etc. call so existing call sites
@@ -775,10 +874,7 @@ class MainWindow(QMainWindow):
         self._fi_enabled = True            # analogy coaching ON by default
         # Serialize and bound local-model coaching. A thread per narration line
         # could create hundreds of concurrent Ollama calls during Extreme drills.
-        self._fi_queue: queue.Queue[str] = queue.Queue(maxsize=8)
-        self._fi_worker = threading.Thread(
-            target=self._fi_worker_loop, name="FlightInstructorWorker", daemon=True)
-        self._fi_worker.start()
+        self._init_flight_instructor_worker()
         self._flow_writer = AsyncSnapshot(
             self, self._prepare_flow_write, lambda _result: None,
             name="FlowMetricsWriter",
@@ -2689,43 +2785,42 @@ class MainWindow(QMainWindow):
         except ValueError:
             pass  # combo box only ever offers valid values
 
-    def _fi_narrate_async(self, raw_line: str) -> None:
-        """Process one coaching line on the single bounded worker."""
-        try:
-            coaching = self.flight_instructor.narrate_event(raw_line)
-        except Exception as exc:
-            coaching = f"\U0001F393 (Flight Instructor error) {exc}"
-        if coaching:
-            self._fi_coaching.emit(coaching)   # → right (Flight Instructor) pane
+    def _init_flight_instructor_worker(self) -> None:
+        state = _FlightInstructorQueue(self.flight_instructor.narrate_event)
+        self._fi_coaching_worker = state
+        self._fi_worker = state.thread
+        # The worker retains only its plain narrator/config and queue state.
+        # Window destruction closes admission without retaining this Qt owner.
+        self.destroyed.connect(state.close)
+        QApplication.instance().aboutToQuit.connect(self._close_flight_instructor)
+        self._fi_delivery_timer = QTimer(self)
+        self._fi_delivery_timer.setInterval(250)
+        self._fi_delivery_timer.timeout.connect(self._drain_flight_instructor_coaching)
+        self._fi_delivery_timer.start()
 
-    def _fi_worker_loop(self) -> None:
-        """Drain coaching requests with exactly one local-model worker."""
-        while True:
-            raw_line = self._fi_queue.get()
-            try:
-                self._fi_narrate_async(raw_line)
-            finally:
-                self._fi_queue.task_done()
+    def _close_flight_instructor(self) -> None:
+        """Refuse new/queued coaching without joining on the GUI thread."""
+        self._fi_enabled = False
+        state = getattr(self, "_fi_coaching_worker", None)
+        if state is not None:
+            state.close()
+        timer = getattr(self, "_fi_delivery_timer", None)
+        if timer is not None:
+            timer.stop()
+
+    def _drain_flight_instructor_coaching(self) -> None:
+        state = self._fi_coaching_worker
+        for coaching in state.take_ready():
+            if state.closed.is_set():
+                break
+            self._fi_coaching.emit(coaching)
 
     def _on_shark_narration(self, msg: str) -> None:
         """Called from the engine's background thread — never touch widgets
         here directly, only emit the signal that queues onto the GUI thread."""
         self._shark_narration.emit(msg)
         if self._fi_enabled:
-            try:
-                self._fi_queue.put_nowait(msg)
-            except queue.Full:
-                # Coaching is explanatory, so coalesce toward the newest stage.
-                # Raw drill telemetry above is never dropped.
-                try:
-                    self._fi_queue.get_nowait()
-                    self._fi_queue.task_done()
-                except queue.Empty:
-                    pass
-                try:
-                    self._fi_queue.put_nowait(msg)
-                except queue.Full:
-                    pass
+            self._fi_coaching_worker.submit(msg)
 
     def _shark_check_done(self) -> None:
         if self.shark_engine.is_running:
@@ -5705,6 +5800,7 @@ class MainWindow(QMainWindow):
         monitor = getattr(self, "_responsiveness_monitor", None)
         if monitor is not None:
             monitor.close()
+        self._close_flight_instructor()
         self._aria_voice_stop = True
         try:
             voice = getattr(self, "aria_voice", None)
