@@ -246,28 +246,44 @@ local customizations and explicit conflicts. The frozen full R10 regression
 passed **7,554 tests with 49 skips and no failures**, with unchanged source,
 runtime and harness, exact native retirement and MainThread-only shutdown.
 
-The latest follow-up adds immutable Sigma runtime plans and atomic durable
-exporter batches. It passed **255 tests with one POSIX-fork platform skip**,
-followed by a **29-phase default selfcheck** accounting for 86 module rows
-(68 passed/18 explicit skips), a separate pipeline and nine verifiers.
-A separate synthetic Sigma benchmark measured **31.8–42.7% lower median wall
-time** in direct-call cases; this is not an end-to-end dashboard or sensor result.
-The [148-issue review](analysis/live-debug-2026-10-22/README.md) preserves original
-failed gates, unknown causes, deployment gaps and an open registry-view candidate.
+The current maintenance review removes repeated reads of shared HKCU Run/RunOnce
+keys, keeps CVE analyses attached to the exact current record and request, and
+retains workers while their completion state is unavailable. Source-conflict
+staging gains explicit same-choice recovery after process interruption, with
+changed or unowned candidates held for review. These changes do not authorize
+source activation or clear existing security findings.
 
-The published [28f4b29 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/28f4b29d362c858c81e89bdac8aba2f73d51b280)
-finished [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290954) with
-**11 of 12 jobs passing**; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290546)
-passed all three. Python 3.11–3.13 each passed **7,625 tests with 19 skips**.
-Python 3.10 retained **7,598 passes, 19 skips and 27 setup errors** from one
-45-second preflight timeout; its cause remains unknown. Eight later local
-workflow-policy and argument-preservation checks passed, requesting the 25
-slowest phases of at least one second. These are separate source checks, not a
-newer hosted CI pass.
-Source activation remains held until independently trusted release, recovery
-and runtime checks are available. Durable installer crash reconciliation,
-restart health and signed deployment remain separate gates.
-See the [update guide](docs/github-updates.md) and [validation evidence](analysis/live-debug-2026-10-22/validation.json).
+Checkpoint validation: the initial **214-test cohort** and final **54-test
+follow-up** each passed without failures, errors or skips; their scopes overlap.
+The final source passed **1,152 Python 3.10 AST checks** and a **29-phase default
+selfcheck** (68 passed/18 explicit skipped module rows, a separate pipeline and
+nine verifiers), with exact native retirement. Fresh pair observation: **90.140 seconds, OBSERVED_WITH_GAPS**; 352 status/
+heartbeat samples, no observed module crashes or recorded capture/export/console
+loss, and exact generation retirement. Recovery remained unprovisioned and
+SpywareGuard in preview; all four exported events had response_authorized=false.
+The next guarded publication will carry this checkpoint; source publication
+grants no activation authority.
+
+The preceding Sigma/exporter follow-up passed **255 tests with one POSIX-fork
+platform skip** and a **29-phase default selfcheck** (68 passed/18 skipped module
+rows, a separate pipeline and nine verifiers). Its synthetic direct-call Sigma
+benchmark measured **31.8–42.7% lower median wall time**; that is separate from
+dashboard, sensor and whole-product performance. The
+[151-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
+unknown causes and the original R7 findings.
+
+The published [6ead285 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/6ead285f3e4658674600f15fb9f1f4f1f64ac9d3)
+finished [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39979165038) with
+**11 of 12 jobs passing** and [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39979165167)
+with all three passing. Python 3.10, 3.12 and 3.13 each passed **7,706 tests with
+19 skips**. Python 3.11 recorded **7,679 passes, 19 skips and 27 setup errors**
+from one 45-second release preflight timeout; its cause remains unknown.
+Additional bounded fixture tracing preserves the checks and deadlines and does
+not establish a cause or a later hosted pass.
+
+Source activation, signed deployment, restart health and sudden-power-loss
+recovery remain separate gates. See the [update guide](docs/github-updates.md),
+[changelog](CHANGELOG.md) and [validation evidence](analysis/live-debug-2026-10-22/validation.json).
 
 The [SpywareGuard, UGCAP and Enclave Mesh review](analysis/spyware-enclave-2026-10-21/README.md)
 records the preceding feature checks, adversarial fixes and remaining coverage limits.

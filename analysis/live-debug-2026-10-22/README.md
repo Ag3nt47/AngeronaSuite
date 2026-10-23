@@ -21,49 +21,93 @@ providers' active-path, cancellation, executable, storage and offline limits.
 
 ## Current source and hosted CI evidence (2026-10-23)
 
-Published [28f4b29](https://github.com/Ag3nt47/AngeronaSuite/commit/28f4b29d362c858c81e89bdac8aba2f73d51b280)
-completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290954)
-with 11 successful jobs and one failed Python 3.10 job; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290546)
-passed all three. Python 3.11–3.13 each recorded 7,625 passes/19 skips across
-7,644 cases/native 0. Python 3.10 retained 7,598 passes, 19 skips and 27 setup
-errors/native 1, cascading from one 45-second confinement preflight. Its untimed
-confinement-done marker follows WriteAllText but precedes Flush-return/Exit;
-it cannot distinguish a long later hang from near-deadline completion. Cause
-remains unknown. New advisory clock markers do not reconstruct old chronology.
+The current source checkpoint covers shared-HKCU collection (SCN-04),
+record-bound CVE freshness and worker lifetime (GUI-18), source-conflict
+interruption recovery (UPD-04), and lossless diagnostic receipt review (TST-39).
+The initial **214-test cohort** and final **54-test follow-up** each passed with
+zero failures, errors or skips; the cohorts overlap. Final source also passed
+**1,152 Python 3.10 AST checks** and a **29-phase default selfcheck**. Its 86 module
+rows reconcile as 68 PASS/18 explicit SKIP, with a separate passing pipeline and
+nine verifiers. Both supervised interpreter generations retired with native exit
+0, all four handles closed; MainThread only, no QApplication and zero top-level
+widgets.
+The fresh Recovery/SpywareGuard pair observation completed for **90.140 seconds**
+with **352 status/heartbeat samples** and a maximum heartbeat gap of about
+0.797 seconds. Its state is **OBSERVED_WITH_GAPS**: the isolated recovery profile
+remained unprovisioned (health 15) and SpywareGuard remained preview (health 85).
+Neither module crashed or reported overflow; no capture/export/console drops,
+errors or pending threads were recorded. The admitted core query handle and both
+outer generations proved retirement with native exit 0 and closed handles.
+Shutdown recorded MainThread only, no QApplication and zero top-level widgets.
+The next guarded publication will carry the short [changelog](../../CHANGELOG.md).
 
-The 12-path source follow-up passed 255 tests/one POSIX-fork platform skip and
-a fresh default 29-phase selfcheck on source 1,856/7cff. Both accepted gates
-preserved source/HEAD/indices/runtime/harness and retired both exact generations
-with native 0/four handles closed, MainThread only, no QApplication/zero widgets.
-Selfcheck reconciled 68 passed/18 skipped module rows, separate pipeline and nine
-verifiers; 13 widget owners, 13 readers and eight Python workers retired.
-A separate audit closed all 21 real PowerShell generations (19 expected exit 0/
-two intentional exit 99); 14 inert controls and ten mock receipts stay separate.
-Later, one workflow edit passed eight local workflow-policy and
-argument-preservation checks against complete source d64bd; that gate is separate
-from the earlier 7cff source checks.
+The pair exported four events: one critical recovery exposure, one medium
+Run-persistence observation and two low service-path exposures. Every exported
+event had response_authorized=false; the three Spyware events separately had
+active_attack=false and spyware_confirmed=false. No threat/false-positive
+adjudication, suppression or remediation followed. Each module had 18 scheduled
+cycles, not 18 proven scans: the capture lacks per-source scan-completion counters
+or timestamps. Active findings imply that the persistence collector returned,
+without establishing completed-scan counts or full surface coverage. The single
+current Run observation versus two R7 records is current source behavior only;
+it does not prove historical physical-key or account identity. This two-module,
+ordinary-user observation does not measure GUI responsiveness or all sensors.
 
-PER-13 records immutable Sigma plans and a scoped synthetic direct-call benchmark.
-PER-14 records atomic FULL exporter batches and COMMIT-count contracts, not
-elapsed-time or power-loss evidence. Exact receipts, limits and private rejected
-or failed proposal histories are retained in validation.
+The 214-case gate covered the first updater revision. Later source review found
+a POSIX candidate-open availability gap; no host hang or activation bypass was
+demonstrated. The final 54-case gate covers the hardened updater and an immediate-
+close neighbor. POSIX retry opens require nonblocking/no-follow flags and check
+the acquired descriptor before stream construction. Three inert flag/ordering/
+ownership controls do not establish physical FIFO/device efficacy, universal
+I/O deadlines or protection against privileged namespace races. Recovery remains
+limited to process interruption, with no source activation or power-loss claim.
 
-R7 observed the earlier published 1,854/fabb snapshot for 90.204 seconds: 347
-repeated status/heartbeat views and 18 scheduled cycles per module, not 18 full
-persistence scans. Core and both outer generations retired/exit 0; four outer
-handles and the retained core query handle closed. Original launcher Popen
-closure is not claimed. Coverage gaps and five response-ineligible events remain.
-The recovery finding is explained by a fresh isolated unprovisioned profile;
-two services are distinct lexical exposures. Two exported Run views may alias
-(SCN-04, OPEN); physical aliasing, duplicate defect and benignity remain unproved.
-Exact-target queries are unexecuted at the triage cutoff. Nested export fields
-are source/id/command; top-level omission counts do not measure nested loss.
-No confirmed spyware or supported false positive was adjudicated. R7 is a
-nonreproduction of R5, not causal closure or live proof for the later revision.
+Published [6ead285](https://github.com/Ag3nt47/AngeronaSuite/commit/6ead285f3e4658674600f15fb9f1f4f1f64ac9d3)
+completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39979165038)
+with 11 of 12 jobs passing and [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39979165167)
+with 3 of 3 passing. Python 3.10/3.12/3.13 each recorded 7706 PASS/19 SKIP;
+Python 3.11 recorded 7679 PASS/19 SKIP/27 setup errors from one 45-second
+confinement preflight timeout. Exact retirement was retained; the cause remains
+UNKNOWN. The last advisory stage cannot identify a specific blocked operation,
+and clock stability remains unproven. New fixed-label operation tracing is
+bounded to 64 operation markers plus one explicit limit marker; fixed coarse
+stages are separate. Checks/order and 45-second/10-second deadlines remain,
+and tracing may itself affect timing.
 
-The register has 148 unique IDs; all prior 144 issue objects/order are preserved.
-These scoped gates establish no new hosted full pass, all-module physical
-coverage, independent authority deployment, signed release or trusted activation.
+The preceding source gate passed 255 tests/one POSIX-fork skip and default 29;
+a later one-workflow gate passed 8 local checks. Their exact source snapshots,
+native retirement, 68 PASS/18 SKIP module accounting, separate pipeline and 9 verifiers
+remain recorded below. PER-13's synthetic Sigma benchmark and PER-14's atomic
+COMMIT-count contract are scoped evidence, not dashboard, whole-product or
+power-loss results. Earlier 28f4 CI 11/12 and all original failed histories remain
+in the validation record; a newer source change does not rewrite their causes.
+
+R7 observed the earlier 1854/fabb source for 90.204 seconds: 347 repeated
+status/heartbeat views and 18 scheduled cycles per module, not 18 full persistence
+scans. Core and both outer generations retired/exit 0; original launcher Popen
+closure is not claimed. Its five response-ineligible findings remain:
+a fresh unprovisioned recovery profile, two Run records, and two distinct lexical
+service exposures. No confirmed spyware or supported false positive was
+adjudicated. The original physical Run-key identity, historic user SID equality
+and benignity remain unproved. The independently source-confirmed repeated
+shared-key collection policy is a separate follow-up, not incident adjudication.
+The original triage cutoff had unexecuted exact queries; top-level omission
+counts do not establish nested export completeness. A later four-target read
+matched both Run command records and both distinct service command records;
+the two current service configurations were disabled. It did not establish
+physical aliasing, historical account identity, benignity or threat. The query
+child exited 0 and its admitted handle signaled retirement, but the supervisor
+failed a post-exit image query with WinError 31 before recording terminal native
+exit/birth proof. That owner gate remains failed. A future observer correction
+passed six inert FakeAPI controls only. Separate precision corrections retain
+exact generation strings from the immutable original; they supply no new
+observation or retroactive native proof. R7 does not validate this later source
+revision or establish the cause of the earlier R5 observer failure.
+
+The register has 151 unique IDs, preserving all prior 148 IDs/order and the
+original SCN-04/TST-38 evidence as history. Independent
+witness/backup administration, signed deployment and trusted activation remain
+separate evidence boundaries.
 
 ## Issue map
 
@@ -216,7 +260,11 @@ coverage, independent authority deployment, signed release or trusted activation
 | PER-13 | Sigma runtime reconstructs immutable field and condition decisions for each active and shadow evaluation | Applied per-binding immutable runtime plans retain genuine per-event digest/canonical verification, unchanged public matching/evaluation and unchanged grammar/admission. The 17-file ROOT gate passed 255 tests with one POSIX-fork platform skip, followed by a fresh 29-phase selfcheck with exact retirement. A separate accepted synthetic direct-call benchmark recorded 108 rows/188928 genuine verified evaluations and full vector/hit parity; median wall time was 31.8425–42.7175% lower across nine cases. CPU samples are 15.625ms-quantized and zero samples are not zero cost. No GUI, end-to-end sensor or whole-product speed improvement is established. |
 | PER-14 | Exporters perform separate durable enqueue commits for a cohort that can share one atomic transaction | Applied exporters use at most 100 items per atomic FULL commit before cursor advancement. Canonical payload limits are 256KiB each/25MiB total, not a RAM bound. Fallback is restricted to OutboxFull; authorization, conflict and commit failures do not enter that fallback. Existing single enqueue, acknowledgement and transport contracts remain. The 17-file ROOT gate passed 255 tests with one POSIX-fork skip and a fresh 29-phase selfcheck, with exact retirement. The batch contract compares three single COMMITs with one batch COMMIT; it is not elapsed-time, throughput or abrupt-power-loss evidence. |
 | TST-38 | Private pair-observation state and fallible identity sidecar handling can leave core lifetime evidence unadmitted | R5 aborted after 0.578 seconds with ambiguous private-read/sidecar EngineError and missing historical core native retirement proof. A private observer successor creates protected run state, retains the core handle before fallible sidecar work and records nonraising stage diagnostics. R7 observed the earlier 1854/fabb snapshot for 90.204 seconds with 347 repeated status/heartbeat views and 18 scheduled cycles per module, not 18 full persistence scans. Core and both outer generations retired/exit 0; four outer handles and the retained core query handle closed. Original launcher Popen closure is not claimed. Coverage gaps and five response-ineligible events remain; no confirmed spyware or supported false positive was adjudicated. R7 is a nonreproduction, not R5 causal closure or live proof of the later 1856 revision; this is diagnostic-harness evidence, not a product protection upgrade. |
-| SCN-04 | Two exported Windows Run registry views share a value and command, suggesting a possible presentation duplicate | OPEN candidate only. The exported view identifiers differ while the observed value/command match; physical registry aliasing, a collector deduplication defect and benignity are unproven. Exact-target host queries remain preparation-only at this review cutoff. Exported nested evidence contains source/id/command; top-level omission counts do not measure nested loss, and redaction/length limits can affect comparison. The two services are distinct lexical configuration exposures, not duplicate or exploitation proof. No finding was suppressed, allowlisted, remediated or classified as a confirmed threat or supported false positive. |
+| SCN-04 | Historical R7 Run-view alias remains unadjudicated; independent source review confirms repeated reads of shared HKCU Run/RunOnce keys | Read shared user keys once while retaining separate HKLM views and coverage gaps; initial 214 controls passed. Later four-target reads match R7 commands but do not prove historical identity or benignity; their supervisor gate failed. No finding suppression. |
+| GUI-18 | Same-CVE inputs or reversed batch/detail completions can reuse stale analysis; unknown worker state could bypass close deferral | Full-row/request identity, indexed matching rows, conservative valid-worker lifetime and startup cleanup passed in the initial 214-test cohort; default 29 also passed. |
+| UPD-04 | An interrupted conflict resolution can leave candidate bytes without a committed resolution index | Same-choice reconciliation and POSIX pre-stream descriptor checks passed the final 54-test follow-up and default 29; changed/unowned states stay held. Process interruption only; no power-loss or universal device deadline. |
+| TST-39 | Floating-point JSON review can round 64-bit native clock or generation values | Preserve exact integer lexemes/decimal strings before parsing; originals stay untouched and corrections remain advisory. No new observation or clock-stability proof. |
+
 
 ## Testing loop
 

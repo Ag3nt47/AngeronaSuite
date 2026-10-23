@@ -17,8 +17,11 @@ records staged/executed/verified as separate states.
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import math
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -38,6 +41,81 @@ from angerona.gui.animations import begin_loading, finish_loading
 _AUTO_REFRESH_MS = 60_000   # re-read upstream_threats.json every 60 s
 _MAX_REMEDIATION_CELL = 120 # truncate remediation text in the table cell
 _NOT_APPLICABLE_TTL_SECONDS = 30 * 24 * 60 * 60
+_MAX_ANALYSIS_RECORD_BYTES = 256 * 1024
+_MAX_ANALYSIS_RECORD_NODES = 4096
+_MAX_ANALYSIS_RECORD_DEPTH = 16
+
+
+@dataclass(frozen=True, slots=True)
+class _AnalysisRequest:
+    """An accepted row snapshot and its dashboard-local request order."""
+
+    cve: str
+    identity: str
+    number: int
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.cve, self.identity
+
+
+def _analysis_record_bytes(record: dict) -> bytes:
+    """Bound and serialize supported JSON rows for all advisor/display fields.
+
+    The identity is freshness bookkeeping, not authorization or attestation.
+    Host facts and model selection remain owned by the existing advisor.
+    """
+    if type(record) is not dict:
+        raise ValueError("CVE analysis requires a JSON object")
+    nodes = 0
+    text_bytes = 0
+
+    def check(value, depth: int) -> None:
+        nonlocal nodes, text_bytes
+        nodes += 1
+        if nodes > _MAX_ANALYSIS_RECORD_NODES or depth > _MAX_ANALYSIS_RECORD_DEPTH:
+            raise ValueError("CVE analysis record exceeds its structural limit")
+        kind = type(value)
+        if kind is str:
+            if len(value) > _MAX_ANALYSIS_RECORD_BYTES - text_bytes:
+                raise ValueError("CVE analysis record exceeds its byte limit")
+            text_bytes += len(value.encode("utf-8"))
+            if text_bytes > _MAX_ANALYSIS_RECORD_BYTES:
+                raise ValueError("CVE analysis record exceeds its byte limit")
+        elif kind is int:
+            if value.bit_length() > 4096:
+                raise ValueError("CVE analysis record contains an oversized integer")
+        elif kind is float:
+            if not math.isfinite(value):
+                raise ValueError("CVE analysis record contains a non-finite number")
+        elif kind is dict:
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise ValueError("CVE analysis record contains a non-string key")
+                check(key, depth + 1)
+                check(item, depth + 1)
+        elif kind is list:
+            for item in value:
+                check(item, depth + 1)
+        elif value is not None and kind is not bool:
+            raise ValueError("CVE analysis record contains an unsupported value")
+
+    check(record, 0)
+    encoded = json.dumps(
+        record, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False,
+    ).encode("utf-8")
+    if len(encoded) > _MAX_ANALYSIS_RECORD_BYTES:
+        raise ValueError("CVE analysis record exceeds its byte limit")
+    return encoded
+
+
+def _analysis_identity(record: dict) -> str:
+    return hashlib.sha256(_analysis_record_bytes(record)).hexdigest()
+
+
+def _analysis_snapshot(record: dict) -> tuple[dict, str]:
+    encoded = _analysis_record_bytes(record)
+    return json.loads(encoded), hashlib.sha256(encoded).hexdigest()
 
 
 def _repo_root() -> Path:
@@ -82,18 +160,21 @@ def _proposal_result_copy(cve: str, result: dict) -> tuple[str, str, bool]:
 
 class _FixWorker(QThread):
     """Runs local-AI fix analysis over a list of (cve, rec) off the GUI thread."""
-    result = Signal(str, dict)     # cve, analysis
+    result = Signal(str, dict)     # cve, analysis (single detail request)
+    result_for_request = Signal(object, str, dict)  # accepted batch request, cve, analysis
     done = Signal(int, int)        # analyzed, fixes_found
 
     def __init__(self, items: list, parent=None) -> None:
         super().__init__(parent)
         self._items = items
+        self._requests: tuple[_AnalysisRequest, ...] | None = None
+        self._startup_failed = False
 
     def run(self) -> None:
         from angerona.core import cve_fix_advisor
         analyzed = 0
         fixes = 0
-        for cve, rec in self._items:
+        for index, (cve, rec) in enumerate(self._items):
             if self.isInterruptionRequested():
                 break
             try:
@@ -104,7 +185,10 @@ class _FixWorker(QThread):
             if analysis.get("fix_available"):
                 fixes += 1
             analyzed += 1
-            self.result.emit(cve, analysis)
+            if self._requests is None:
+                self.result.emit(cve, analysis)
+            else:
+                self.result_for_request.emit(self._requests[index], cve, analysis)
         self.done.emit(analyzed, fixes)
 
 
@@ -137,10 +221,21 @@ class ThreatIntelDashboard(QDialog):
         self._intl = intl_module
         self._cve_analysis_dlg: CveAnalysisWindow | None = None
         self._staged: list = []
-        self._fix_cache: dict[str, dict] = {}    # cve → analysis result
+        self._fix_cache: dict[tuple[str, str], tuple[_AnalysisRequest, dict]] = {}
+        self._analysis_requests: dict[tuple[str, str], _AnalysisRequest] = {}
+        self._analysis_number = 0
+        self._row_recs: dict[str, dict] = {}
+        self._analysis_rows: dict[str, tuple[dict, ...]] = {}
+        self._analysis_items: dict[str, list[QTableWidgetItem]] = {}
         self._worker: _FixWorker | None = None
         self._detail_workers: dict[str, _FixWorker] = {}
         self._loading_token: str | None = None
+        self._batch_retiring: _FixWorker | None = None
+        self._batch_startup_cleanup_errors: tuple[str, ...] = ()
+        self._batch_retire_timer = QTimer(self)
+        self._batch_retire_timer.setSingleShot(True)
+        self._batch_retire_timer.setInterval(100)
+        self._batch_retire_timer.timeout.connect(self._retry_batch_retirement)
         self.setWindowTitle("🛡  Threat Intelligence — CISA KEV Matches")
         self.setMinimumSize(1040, 560)
         self.resize(1240, 660)
@@ -269,8 +364,22 @@ class ThreatIntelDashboard(QDialog):
         data = _load_threats()
         matches = data.get("matches", [])
         generated = data.get("generated", "")
-        self._row_recs: dict[str, dict] = {}
+        self._row_recs = {}
+        row_groups: dict[str, list[dict]] = {}
+        for rec in matches:
+            cve = rec.get("cve") or "—"
+            self._row_recs[cve] = rec
+            row_groups.setdefault(cve, []).append(rec)
+        self._analysis_rows = {cve: tuple(records) for cve, records in row_groups.items()}
+        self._analysis_items = {}
         self._matches = matches
+        for key, request in tuple(self._analysis_requests.items()):
+            if not self._request_is_current(request):
+                self._analysis_requests.pop(key, None)
+                self._fix_cache.pop(key, None)
+        for key, (request, _analysis) in tuple(self._fix_cache.items()):
+            if not self._request_is_current(request):
+                self._fix_cache.pop(key, None)
         ignore_data = cve_ignore.load()
 
         self._ts_label.setText(f"Last sync: {generated or '—'}")
@@ -288,7 +397,6 @@ class ThreatIntelDashboard(QDialog):
         for row, rec in enumerate(matches):
             cve = rec.get("cve") or "—"
             ignored = cve_ignore.is_ignored(cve, ignore_data)
-            self._row_recs[cve] = rec
 
             def _item(text, color=None, dim=False):
                 it = QTableWidgetItem(str(text or "—"))
@@ -307,6 +415,7 @@ class ThreatIntelDashboard(QDialog):
             cve_item = _item(cve, "#38bdf8", ignored)
             cve_item.setData(Qt.UserRole, (cve, rec))
             self._table.setItem(row, self._C_CVE, cve_item)
+            self._analysis_items.setdefault(cve, []).append(cve_item)
             self._table.setItem(row, self._C_VENDOR, _item(rec.get("vendor") or "", dim=ignored))
             self._table.setItem(row, self._C_PROD,   _item(rec.get("product") or "", dim=ignored))
             self._table.setItem(row, self._C_MITRE,  _item(rec.get("mitre") or "", dim=ignored))
@@ -346,7 +455,7 @@ class ThreatIntelDashboard(QDialog):
         """Fix column: represent staged, executed, and verified states distinctly."""
         from angerona.core import cve_fix_advisor
         applied = cve_fix_advisor.applied_state(cve)
-        analysis = self._fix_cache.get(cve)
+        analysis = self._cached_analysis(cve, rec)
         if (applied and applied.get("executed") and applied.get("verified")
                 and not applied.get("reverted")):
             btn = self._mini_btn("↩ Stage rollback", "#7c2d12", "#fdba74",
@@ -368,7 +477,8 @@ class ThreatIntelDashboard(QDialog):
             it.setFlags(Qt.ItemFlag.ItemIsEnabled); self._table.setItem(row, self._C_FIX, it); return
         if analysis.get("fix_available"):
             btn = self._mini_btn("📋 Stage proposal", "#14532d", "#86efac",
-                                  lambda: self._apply_fix(cve, analysis))
+                                  lambda: self._apply_fix(
+                                      cve, self._cached_analysis(cve, rec) or {}))
             self._table.setCellWidget(row, self._C_FIX, self._wrap(btn))
         else:
             self._table.removeCellWidget(row, self._C_FIX)
@@ -457,30 +567,141 @@ class ThreatIntelDashboard(QDialog):
                 "Start Ollama (ollama serve) and pick a model, or use '🌐 Consult AI' for an "
                 "online analysis on demand.")
             return
-        active = [(m.get("cve"), m) for m in getattr(self, "_matches", [])
+        active = [m for m in getattr(self, "_matches", [])
                   if m.get("cve") and not cve_ignore.is_ignored(m.get("cve"))]
         if not active:
             QMessageBox.information(self, "Nothing to analyze",
                                     "There are no active (non-ignored) CVEs to analyze.")
             return
-        if self._worker and self._worker.isRunning():
+        if self._worker is not None:
             QMessageBox.information(self, "Busy", "Fix analysis is already running.")
             return
-        self._footer.setText(f"🔎  Analyzing {len(active)} CVE(s) with local AI…")
-        self._loading_token = begin_loading(
-            f"Analyzing {len(active)} vulnerability record(s)…"
-        )
-        self._worker = _FixWorker(active, self)
-        self._worker.result.connect(self._on_fix_result)
-        self._worker.done.connect(self._on_fix_done)
-        worker = self._worker
-        worker.finished.connect(lambda: self._release_batch_worker(worker))
-        self._worker.start()
+        items = []
+        identities = []
+        seen = set()
+        try:
+            for rec in active:
+                cve = rec["cve"]
+                record, identity = _analysis_snapshot(rec)
+                key = (cve, identity)
+                if key not in seen and self._record_matches(cve, identity):
+                    items.append((cve, record))
+                    identities.append(identity)
+                    seen.add(key)
+        except (TypeError, ValueError, OverflowError) as exc:
+            QMessageBox.warning(self, "Record not analyzed", str(exc))
+            return
+        if not items:
+            return
+        previous = {(cve, identity): (
+            self._analysis_requests.get((cve, identity)),
+            self._fix_cache.get((cve, identity)),
+        ) for (cve, _record), identity in zip(items, identities)}
+        worker = _FixWorker(items, self)
+        self._worker = worker
+        requests = []
+        loading_token = None
+        previous_loading = self._loading_token
+        start_attempted = False
+        try:
+            # Install exact ownership cleanup before any fallible UI/start work.
+            worker.finished.connect(lambda: self._release_batch_worker(worker))
+            worker.result_for_request.connect(self._on_fix_result)
+            for (cve, _record), identity in zip(items, identities):
+                requests.append(self._accept_analysis_request(cve, identity))
+            accepted = tuple(requests)
+            worker._requests = accepted
+            worker.done.connect(
+                lambda analyzed, fixes: self._on_fix_done(worker, accepted, analyzed, fixes)
+            )
+            for request in accepted:
+                self._refresh_analysis_cell(request)
+            self._footer.setText(f"🔎  Analyzing {len(items)} CVE(s) with local AI…")
+            loading_token = begin_loading(
+                f"Analyzing {len(items)} vulnerability record(s)…"
+            )
+            self._loading_token = loading_token
+            start_attempted = True
+            worker.start()
+        except BaseException:
+            worker._startup_failed = True
+            cleanup_errors = []
+            if loading_token is not None:
+                try:
+                    finish_loading(loading_token)
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(type(cleanup_error).__name__)
+                if self._loading_token == loading_token:
+                    self._loading_token = previous_loading
+            try:
+                self._restore_failed_batch_requests(tuple(requests), previous)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(type(cleanup_error).__name__)
+            if start_attempted:
+                try:
+                    worker.requestInterruption()
+                except BaseException as cleanup_error:
+                    cleanup_errors.append(type(cleanup_error).__name__)
+            try:
+                self._footer.setText(
+                    "AI analysis did not start successfully. Wait for any active "
+                    "analysis to finish before retrying."
+                )
+                self._footer.setStyleSheet("color:#f59e0b; font-size:11px;")
+            except BaseException as cleanup_error:
+                cleanup_errors.append(type(cleanup_error).__name__)
+            try:
+                self._release_batch_worker(worker)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(type(cleanup_error).__name__)
+            self._batch_startup_cleanup_errors = tuple(cleanup_errors)
+            raise
+
+    def _restore_failed_batch_requests(self, requests: tuple, previous: dict) -> None:
+        refresh = []
+        for request in requests:
+            if self._analysis_requests.get(request.key) != request:
+                continue  # Reentrant newer work still owns this exact row.
+            old_request, old_cache = previous[request.key]
+            if old_request is not None and self._record_matches(
+                    old_request.cve, old_request.identity):
+                self._analysis_requests[request.key] = old_request
+                if old_cache is not None and old_cache[0] == old_request:
+                    self._fix_cache[request.key] = old_cache
+                else:
+                    self._fix_cache.pop(request.key, None)
+            else:
+                self._analysis_requests.pop(request.key, None)
+                self._fix_cache.pop(request.key, None)
+            refresh.append(request)
+        # Restore every owned state entry before any fallible UI refresh.
+        for request in refresh:
+            self._refresh_analysis_cell(request)
 
     def _release_batch_worker(self, worker: _FixWorker) -> None:
+        if isValid(worker):
+            try:
+                running = worker.isRunning()
+            except Exception:
+                running = True  # State is unknown; keep its exact owner.
+            if running:
+                self._batch_retiring = worker
+                if not self._batch_retire_timer.isActive():
+                    self._batch_retire_timer.start()
+                return
+        if self._batch_retiring is worker:
+            self._batch_retiring = None
+            self._batch_retire_timer.stop()
         if self._worker is worker:
             self._worker = None
-        worker.deleteLater()
+        if isValid(worker):
+            worker.deleteLater()
+
+    def _retry_batch_retirement(self) -> None:
+        # Observe retirement only; this never retries analysis or starts work.
+        worker = self._batch_retiring
+        if worker is not None:
+            self._release_batch_worker(worker)
 
     def _start_detail_analysis(
         self,
@@ -511,9 +732,15 @@ class ThreatIntelDashboard(QDialog):
                 pass
             self._detail_workers.pop(cve, None)
 
-        # CVE records originate as JSON. Copy the row before leaving the Qt
-        # thread so a refresh cannot alter the worker's accepted input.
-        record = dict(rec)
+        # Bind a deep, bounded JSON snapshot before leaving the Qt thread.
+        try:
+            record, identity = _analysis_snapshot(rec)
+        except (TypeError, ValueError, OverflowError) as exc:
+            refuse(f"This vulnerability record cannot be analyzed: {exc}")
+            return None
+        if not self._record_matches(cve, identity):
+            refuse("This vulnerability record changed; refresh the detail view before analyzing.")
+            return None
         admission = detail_analysis_admission()
         reservation = admission.reserve()
         if reservation is None:
@@ -531,10 +758,12 @@ class ThreatIntelDashboard(QDialog):
             admission.abandon(reservation)
             raise
         self._detail_workers[cve] = worker
+        request = self._accept_analysis_request(cve, identity)
 
         def handle_result(returned_cve: str, analysis: dict) -> None:
             if (returned_cve == cve and isValid(self)
-                    and (callback_owner is None or isValid(callback_owner))):
+                    and (callback_owner is None or isValid(callback_owner))
+                    and self._on_fix_result(request, returned_cve, analysis)):
                 on_result(analysis)
 
         def handle_finished() -> None:
@@ -547,6 +776,7 @@ class ThreatIntelDashboard(QDialog):
                 reservation, worker,
                 lambda: self._release_detail_worker(cve, worker),
             )
+            self._refresh_analysis_cell(request)
             worker.result.connect(handle_result)
             if on_finished is not None:
                 worker.finished.connect(handle_finished)
@@ -564,28 +794,109 @@ class ThreatIntelDashboard(QDialog):
         if isValid(worker):
             worker.deleteLater()
 
-    def _on_fix_result(self, cve: str, analysis: dict) -> None:
-        self._fix_cache[cve] = analysis
-        # refresh just the affected row's Fix cell
-        row = self._row_for_cve(cve)
-        rec = getattr(self, "_row_recs", {}).get(cve)
-        if row >= 0 and isinstance(rec, dict):
-            self._set_fix_cell(row, cve, rec, False)
+    def _current_analysis_record(self, cve: str, identity: str) -> dict | None:
+        # Reload builds this cohort once; ordinary lookups never scan _matches.
+        # Rehash only this CVE's records so in-place mutations remain visible.
+        for rec in self._analysis_rows.get(cve, ()):
+            try:
+                if _analysis_identity(rec) == identity:
+                    return rec
+            except (TypeError, ValueError, OverflowError):
+                continue
+        return None
 
-    def _row_for_cve(self, cve: str) -> int:
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, self._C_CVE)
-            if item is not None and item.text() == cve:
-                return row
-        return -1
+    def _record_matches(self, cve: str, identity: str) -> bool:
+        return self._current_analysis_record(cve, identity) is not None
 
-    def _on_fix_done(self, analyzed: int, fixes: int) -> None:
+    def _request_is_current(self, request: _AnalysisRequest) -> bool:
+        return (self._analysis_requests.get(request.key) == request
+                and self._record_matches(request.cve, request.identity))
+
+    def _accept_analysis_request(self, cve: str, identity: str) -> _AnalysisRequest:
+        self._analysis_number += 1
+        request = _AnalysisRequest(cve, identity, self._analysis_number)
+        self._analysis_requests[request.key] = request
+        self._fix_cache.pop(request.key, None)
+        return request
+
+    def _refresh_analysis_cell(self, request: _AnalysisRequest) -> None:
+        rec = self._current_analysis_record(request.cve, request.identity)
+        if rec is not None:
+            sorting = self._table.isSortingEnabled()
+            self._table.setSortingEnabled(False)
+            try:
+                for row in self._rows_for_cve(request.cve, request.identity):
+                    self._set_fix_cell(row, request.cve, rec, False)
+            finally:
+                self._table.setSortingEnabled(sorting)
+
+    def _cached_analysis(self, cve: str, rec: dict | None = None) -> dict | None:
+        if rec is None:
+            rec = self._row_recs.get(cve)
+        if not isinstance(rec, dict):
+            return None
+        try:
+            key = (cve, _analysis_identity(rec))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        cached = self._fix_cache.get(key)
+        if cached is None:
+            return None
+        request, analysis = cached
+        if not self._request_is_current(request):
+            self._fix_cache.pop(key, None)
+            return None
+        return analysis
+
+    def _on_fix_result(
+        self, request: _AnalysisRequest, cve: str, analysis: dict,
+    ) -> bool:
+        if (not isValid(self) or cve != request.cve
+                or not self._request_is_current(request)):
+            return False
+        self._fix_cache[request.key] = (request, analysis)
+        self._refresh_analysis_cell(request)
+        return True
+
+    def _rows_for_cve(self, cve: str, identity: str | None = None):
+        for item in self._analysis_items.get(cve, ()):
+            if not isValid(item) or item.text() != cve:
+                continue
+            if identity is not None:
+                try:
+                    _cve, record = item.data(Qt.UserRole)
+                    row_identity = _analysis_identity(record)
+                except (TypeError, ValueError, OverflowError):
+                    continue
+                if row_identity != identity:
+                    continue
+            yield item.row()
+
+    def _row_for_cve(self, cve: str, identity: str | None = None) -> int:
+        return next(self._rows_for_cve(cve, identity), -1)
+
+    def _on_fix_done(
+        self, worker: _FixWorker, requests: tuple[_AnalysisRequest, ...],
+        analyzed: int, _fixes: int,
+    ) -> None:
+        if (not isValid(self) or self._worker is not worker
+                or worker._startup_failed):
+            return
         finish_loading(self._loading_token)
         self._loading_token = None
+        current = [analysis for request in requests
+                   if self._request_is_current(request)
+                   and (analysis := self._cached_analysis(
+                       request.cve, self._current_analysis_record(
+                           request.cve, request.identity))) is not None]
+        fixes = sum(bool(analysis.get("fix_available")) for analysis in current)
+        discarded = max(0, analyzed - len(current))
         self._footer.setText(
-            f"✅  AI analysis complete: {analyzed} analyzed, {fixes} with a potential fix (❗). "
+            f"AI analysis complete: {analyzed} analyzed, {len(current)} current, "
+            f"{fixes} with a potential fix (❗); {discarded} superseded result(s) discarded. "
             "Stage a proposal for review where available; no-fix CVEs remain active.")
-        self._footer.setStyleSheet("color:#22c55e; font-size:11px;")
+        color = "#f59e0b" if discarded else "#22c55e"
+        self._footer.setStyleSheet(f"color:{color}; font-size:11px;")
 
     def closeEvent(self, event) -> None:  # noqa: N802
         """Let a running batch analysis finish without destroying its QThread."""
@@ -742,7 +1053,6 @@ class ThreatIntelDashboard(QDialog):
                                 and applied.get("verified") and not applied.get("reverted")))
 
         def _render_analysis(a: dict):
-            self._fix_cache[cve] = a
             if a.get("fix_available"):
                 fix_box.setText(f"❗ <b>Potential fix available</b> (confidence "
                                 f"{a.get('confidence',0):.0%}). {a.get('summary','')}")
@@ -755,8 +1065,9 @@ class ThreatIntelDashboard(QDialog):
                                       "border-radius:5px; padding:6px 8px; color:#cbd5e1;")
                 apply1.setEnabled(False)
 
-        if cve in self._fix_cache:
-            _render_analysis(self._fix_cache[cve])
+        cached = self._cached_analysis(cve, rec)
+        if cached is not None:
+            _render_analysis(cached)
 
         def _analysis_done() -> None:
             analyze1.setEnabled(True)
@@ -764,6 +1075,7 @@ class ThreatIntelDashboard(QDialog):
         def _do_analyze() -> None:
             fix_box.setText("🔎 Analyzing with local AI…")
             analyze1.setEnabled(False)
+            apply1.setEnabled(False)
             def _analysis_refused(message: str) -> None:
                 fix_box.setText(message)
                 analyze1.setEnabled(True)
@@ -779,8 +1091,8 @@ class ThreatIntelDashboard(QDialog):
                 lambda: setattr(dlg, "_analysis_worker", None)
             )
         analyze1.clicked.connect(_do_analyze)
-        apply1.clicked.connect(lambda: (self._apply_fix(cve, self._fix_cache.get(cve, {})),
-                                        dlg.accept()))
+        apply1.clicked.connect(lambda: (
+            self._apply_fix(cve, self._cached_analysis(cve, rec) or {}), dlg.accept()))
         revert1.clicked.connect(lambda: (self._revert_fix(cve), dlg.accept()))
         def _mark_not_applicable():
             if self._toggle_ignore(cve, True):

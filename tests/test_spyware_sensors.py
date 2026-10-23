@@ -215,14 +215,58 @@ class FakeRegistry:
         return r'C:\Program Files\Example\helper.dll', 1
 
 
-def test_registry_collects_hkcu_hklm_both_views_and_runonce(monkeypatch):
+def test_registry_collects_shared_hkcu_both_hklm_views_and_runonce(monkeypatch):
     registry = FakeRegistry()
     monkeypatch.setattr(sensors, "winreg", registry)
     records, coverage = sensors._collect_run(8)
-    assert coverage == {"status": "complete", "detail": "", "count": 8}
+    assert coverage == {"status": "complete", "detail": "", "count": 6}
     assert {r["registry_view"] for r in records} == {"32", "64"}
     assert {r["registry_key"].split("\\")[0] for r in records} == {"HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE"}
-    assert sum(r["registry_key"].endswith("RunOnce") for r in records) == 4
+    assert sum(r["registry_key"].endswith("RunOnce") for r in records) == 3
+
+def test_shared_run_entry_does_not_spend_machine_view_budget(monkeypatch):
+    class Registry(FakeRegistry):
+        def QueryInfoKey(self, key):
+            return (0, 0 if key.path.endswith("RunOnce") else 1, 0)
+
+        def EnumValue(self, key, index):
+            if key.hive == self.HKEY_CURRENT_USER:
+                return "fixture", "powershell.exe -EncodedCommand SQBFAFgA", 1
+            return "fixture", rf'C:\Fixtures\machine-{key.view}\agent.exe', 1
+
+    monkeypatch.setattr(sensors, "winreg", Registry())
+    records, coverage = sensors._collect_run(3)
+    assert coverage == {"status": "complete", "detail": "", "count": 3}
+    user_records = [r for r in records if r["registry_key"].startswith("HKEY_CURRENT_USER\\")]
+    machine_records = [r for r in records if r["registry_key"].startswith("HKEY_LOCAL_MACHINE\\")]
+    assert len(user_records) == 1
+    assert user_records[0]["id"] == "HKEY_CURRENT_USER:32:Run:fixture"
+    assert {r["registry_view"] for r in machine_records} == {"32", "64"}
+    assert len({r["command"] for r in machine_records}) == 2
+    finding, = sensors.analyze_persistence(records)
+    assert finding["kind"] == "persistence_encoded_execution"
+    assert finding["response_authorized"] is False
+
+
+@pytest.mark.parametrize("error_type,status", [
+    (FileNotFoundError, "complete"),
+    (PermissionError, "access_denied"),
+])
+def test_shared_run_unavailable_preserves_machine_views_and_gaps(monkeypatch, error_type, status):
+    class Registry(FakeRegistry):
+        def OpenKey(self, hive, path, reserved, access):
+            if hive == self.HKEY_CURRENT_USER:
+                raise error_type("fixture unavailable")
+            return super().OpenKey(hive, path, reserved, access)
+
+    monkeypatch.setattr(sensors, "winreg", Registry())
+    records, coverage = sensors._collect_run(6)
+    assert len(records) == 4
+    assert coverage["count"] == 4
+    assert coverage["status"] == status
+    assert {r["registry_view"] for r in records} == {"32", "64"}
+    assert all(r["registry_key"].startswith("HKEY_LOCAL_MACHINE\\") for r in records)
+
 
 
 def test_registry_bound_and_denial_are_never_clean(monkeypatch):

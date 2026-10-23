@@ -9,10 +9,12 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 import shiboken6
 from PySide6.QtCore import QCoreApplication, QEvent, QThread, Qt, Signal
 from PySide6.QtWidgets import QApplication, QDialog
 
+from angerona.gui import thread_lifecycle as lifecycle
 from angerona.gui.thread_lifecycle import defer_close_until_threads
 
 
@@ -229,3 +231,47 @@ def test_analysis_result_precedes_native_thread_completion_without_shadowing() -
     while not native_finished.is_set() and time.monotonic() < deadline:
         app.processEvents()
     assert native_finished.is_set()
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError])
+def test_valid_unknown_worker_state_is_retained_until_wrapper_is_deleted(error_type):
+    app = QApplication.instance() or QApplication([])
+
+    class UnknownState(QThread):
+        def isRunning(self):
+            raise error_type("inert unavailable worker state")
+
+    worker = UnknownState()
+    try:
+        assert app is not None and shiboken6.isValid(worker)
+        assert lifecycle._is_running(worker)
+    finally:
+        shiboken6.delete(worker)
+    assert not shiboken6.isValid(worker)
+    assert not lifecycle._is_running(worker)
+
+
+def test_inactive_and_deleted_worker_wrappers_do_not_defer_close():
+    app = QApplication.instance() or QApplication([])
+    worker = QThread()
+    try:
+        assert app is not None and shiboken6.isValid(worker)
+        assert not lifecycle._is_running(None)
+        assert not lifecycle._is_running(worker)
+    finally:
+        shiboken6.delete(worker)
+    assert not lifecycle._is_running(worker)
+
+
+def test_worker_deleted_during_failed_state_query_is_not_retained():
+    app = QApplication.instance() or QApplication([])
+
+    class DeletedDuringQuery(QThread):
+        def isRunning(self):
+            shiboken6.delete(self)
+            raise RuntimeError("inert wrapper deleted during query")
+
+    worker = DeletedDuringQuery()
+    assert app is not None and shiboken6.isValid(worker)
+    assert not lifecycle._is_running(worker)
+    assert not shiboken6.isValid(worker)

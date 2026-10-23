@@ -576,8 +576,116 @@ def _resolution_index(stage: Path, manifest_digest: str) -> dict:
     return value
 
 
+def _resolution_file_identity(info: os.stat_result) -> dict:
+    """Keep exact OS object IDs; POSIX ctime is not a creation timestamp."""
+    birth = getattr(info, "st_birthtime_ns", None)
+    if birth is None and os.name == "nt":
+        birth = info.st_ctime_ns  # Python 3.10/3.11 expose Windows creation time here.
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or getattr(info, "st_file_attributes", 0) & 0x400
+            or type(info.st_dev) is not int or info.st_dev < 0
+            or type(info.st_ino) is not int or info.st_ino <= 0
+            or (birth is not None and (type(birth) is not int or birth <= 0))
+            or (os.name == "nt" and birth is None)):
+        raise SourceStageError("conflict candidate object identity is unavailable or unsafe")
+    # Decimal strings preserve 64/128-bit IDs when a review tool reads the JSON.
+    return {"device": str(info.st_dev), "inode": str(info.st_ino),
+            "birth_ns": None if birth is None else str(birth)}
+
+
+def _named_resolution_file(handle, target: Path) -> os.stat_result:
+    opened = os.fstat(handle.fileno())
+    named = target.lstat()
+    if _resolution_file_identity(opened) != _resolution_file_identity(named):
+        raise SourceStageError("conflict candidate is not the recorded named object")
+    return opened
+
+
+def _read_resolution_intent(path: Path, expected: dict) -> dict | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    _resolution_file_identity(info)
+    if not 1 <= info.st_size <= 4096:
+        raise SourceStageError("conflict resolution intent exceeds byte limit")
+    with path.open("rb") as handle:
+        before = _named_resolution_file(handle, path)
+        raw = handle.read(4097)
+        after = _named_resolution_file(handle, path)
+    if (len(raw) != before.st_size or len(raw) > 4096
+            or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)):
+        raise SourceStageError("conflict resolution intent changed during read")
+    value = _json(raw, 4096)
+    identity = value.get("candidate_identity")
+    if value != dict(expected, candidate_identity=identity):
+        raise SourceStageError("conflict resolution intent differs from the recorded choice or manifest")
+    if identity is not None:
+        if (not isinstance(identity, dict) or set(identity) != {"device", "inode", "birth_ns"}
+                or any(not isinstance(identity[key], str) or not re.fullmatch(r"0|[1-9][0-9]{0,38}", identity[key])
+                       for key in ("device", "inode"))
+                or identity["inode"] == "0"
+                or (identity["birth_ns"] is not None and (
+                    not isinstance(identity["birth_ns"], str)
+                    or not re.fullmatch(r"[1-9][0-9]{0,38}", identity["birth_ns"])))
+                or (os.name == "nt" and identity["birth_ns"] is None)
+                or expected["sha256"] is None):
+            raise SourceStageError("conflict resolution intent has an invalid candidate identity")
+    return value
+
+
+def _verify_resolution_candidate(handle, target: Path, intent: dict, data: bytes) -> None:
+    before = _named_resolution_file(handle, target)
+    if (_resolution_file_identity(before) != intent["candidate_identity"]
+            or before.st_size != len(data) or before.st_size > MAX_FILE_BYTES):
+        raise SourceStageError("conflict candidate differs from its recorded object or size")
+    handle.seek(0)
+    actual = handle.read(len(data) + 1)
+    after = _named_resolution_file(handle, target)
+    if (actual != data or _resolution_file_identity(after) != intent["candidate_identity"]
+            or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)):
+        raise SourceStageError("conflict candidate bytes changed or are incomplete")
+
+
+def _verify_recorded_resolution_candidate(target: Path, intent: dict, data: bytes) -> None:
+    """Constrain POSIX leaf races before descriptor wrapping or candidate reads.
+
+    This is no general device-I/O deadline or isolation from same-user/admin writers.
+    """
+    if os.name == "nt":
+        with target.open("rb") as handle:
+            _verify_resolution_candidate(handle, target, intent, data)
+        return
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if (os.name != "posix" or type(nonblock) is not int or not nonblock
+            or type(nofollow) is not int or not nofollow):
+        raise SourceStageError("safe nonblocking no-follow conflict candidate open is unavailable")
+    if _resolution_file_identity(target.lstat()) != intent["candidate_identity"]:
+        raise SourceStageError("conflict candidate differs from its recorded object")
+
+    def open_recorded(name, flags):
+        descriptor = os.open(name, flags | nonblock | nofollow)
+        try:
+            # Reject a raced FIFO/special/replaced object before fdopen or read.
+            if _resolution_file_identity(os.fstat(descriptor)) != intent["candidate_identity"]:
+                raise SourceStageError("conflict candidate differs from its recorded object")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor  # io.open owns and closes it after the opener returns.
+
+    with io.open(target, "rb", opener=open_recorded) as handle:
+        _verify_resolution_candidate(handle, target, intent, data)
+
+
 def resolve_source_conflict(stage: Path, manifest_digest: str, path: str, choice: str) -> dict:
-    """Explicitly choose one retained side, or deletion, without changing the original."""
+    """Choose a retained side; retry only the same recorded choice after interruption.
+
+    Recovery checks a completed candidate's recorded OS identity and exact bytes.
+    Unrecorded, partial, missing or replaced objects stay held. This does not promise
+    power-loss durability or authority to activate the candidate.
+    """
     stage = _safe_state_root(stage)
     path = safe_relative(path)
     if choice not in {"user", "upstream", "base", "delete"}:
@@ -588,29 +696,62 @@ def resolve_source_conflict(stage: Path, manifest_digest: str, path: str, choice
         if len(records) != 1 or records[0].get("action") != "conflict":
             raise SourceStageError("path is not an original unresolved conflict")
         index = _resolution_index(stage, manifest_digest)
-        if path in index["files"]:
-            raise SourceStageError("conflict already has an explicit resolution")
         record = records[0]
         data = None if choice == "delete" else _read_blob(stage, record[choice])
+        resolution = {"choice": choice, "sha256": _digest(data)}
         root = _safe_state_root(stage / "candidate")
         target = root.joinpath(*PurePosixPath(path).parts)
         for parent in reversed(target.parent.parents):
             if parent == root or root in parent.parents:
                 _safe_state_root(parent)
         _safe_state_root(target.parent)
-        if target.exists() or target.is_symlink():
-            raise SourceStageError("conflict target unexpectedly exists")
-        if data is not None:
-            with target.open("xb") as handle:
+        intents = _safe_state_root(stage / "resolution-intents")
+        intent_path = intents / (hashlib.sha256(path.encode("utf-8")).hexdigest() + ".json")
+        expected = {"schema": "angerona.source-resolution-intent/v1", "manifest_sha256": manifest_digest,
+                    "path": path, **resolution, "size": None if data is None else len(data)}
+        intent = _read_resolution_intent(intent_path, expected)
+        if path in index["files"] and (intent is None or index["files"][path] != resolution):
+            raise SourceStageError("conflict already has a different or legacy explicit resolution")
+        if path in index["files"] and data is not None and intent["candidate_identity"] is None:
+            raise SourceStageError("committed conflict resolution has no recorded object ownership")
+        try:
+            named = target.lstat()
+            present = True
+        except FileNotFoundError:
+            present = False
+        if intent is None:
+            if present:
+                raise SourceStageError("conflict target unexpectedly exists without a recorded intent")
+            intent = dict(expected, candidate_identity=None)
+            _write_json(intent_path, intent)
+        if data is None:
+            if present:
+                raise SourceStageError("deleted conflict target unexpectedly exists")
+        elif intent["candidate_identity"] is None:
+            if present:
+                raise SourceStageError("conflict target exists without recorded object ownership")
+            with target.open("x+b") as handle:
+                # Checkpoint ownership before writing. An interruption before this
+                # checkpoint deliberately leaves an unowned object held for review.
+                info = _named_resolution_file(handle, target)
+                intent = dict(expected, candidate_identity=_resolution_file_identity(info))
+                _write_json(intent_path, intent)
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-        resolution = {"choice": choice, "sha256": _digest(data)}
-        index["files"][path] = resolution
-        _write_json(stage / "resolutions.json", index)
-        # Original manifest and every retained side remain byte-identical.
+                _verify_resolution_candidate(handle, target, intent, data)
+        else:
+            if not present:
+                raise SourceStageError("recorded conflict candidate is missing")
+            if _resolution_file_identity(named) != intent["candidate_identity"]:
+                raise SourceStageError("conflict candidate differs from its recorded object")
+            _verify_recorded_resolution_candidate(target, intent, data)
+        if path not in index["files"]:
+            index["files"][path] = resolution
+            _write_json(stage / "resolutions.json", index)
+        # Original manifest and every retained side remain byte-identical. The
+        # existing index is the commit record; retained intents permit safe retry.
         return dict(path=path, **resolution)
-
 
 def validate_source_candidate(stage: Path, manifest_digest: str) -> dict:
     """Check preserved hashes and Python syntax without executing candidate code.

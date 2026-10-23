@@ -291,6 +291,8 @@ def test_per_row_cve_analysis_is_owned_nonblocking_and_close_safe(
     review = _AnalysisReviewDialog(dashboard)
     review.show()
     main_thread_ids = (threading.get_ident(), threading.get_native_id())
+    dashboard._row_recs["CVE-2026-1234"] = {"cve": "CVE-2026-1234"}
+    dashboard._analysis_rows["CVE-2026-1234"] = (dashboard._row_recs["CVE-2026-1234"],)
     worker = dashboard._start_detail_analysis(
         "CVE-2026-1234",
         {"cve": "CVE-2026-1234"},

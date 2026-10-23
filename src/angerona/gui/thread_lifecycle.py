@@ -15,6 +15,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from PySide6.QtCore import QTimer
+from shiboken6 import isValid
 
 
 _RETRY_INTERVAL_MS = 100
@@ -23,12 +24,14 @@ _DEFERRED_OWNERS: dict[int, Any] = {}
 
 
 def _is_running(worker: Any) -> bool:
-    if worker is None:
+    if worker is None or not isValid(worker):
         return False
     try:
         return bool(worker.isRunning())
-    except RuntimeError:
-        return False
+    except Exception:
+        # A valid wrapper with unreadable state still owns possible live work.
+        # Recheck validity in case it was deleted during the failed query.
+        return isValid(worker)
 
 
 def _running_workers(owner: Any) -> list[Any]:

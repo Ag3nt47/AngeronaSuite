@@ -1,6 +1,6 @@
 # Live debug harness for local AI review
 
-Updated 22 October 2026. Angerona v1.14.0 development feature.
+Updated 23 October 2026. Angerona v1.14.0 development feature.
 
 Angerona can expose a bounded, read-only stream of its running alerts and
 diagnostics to a separate local reader. A developer or an authorized AI coding
@@ -32,6 +32,13 @@ The client verifies the server PID. Optional process creation time checking
 adds protection against PID reuse. A reader with a different Windows user token
 cannot gain access merely by knowing the pipe name. Access denial remains an
 explicit error; do not relax the endpoint ACL to make a connection work.
+
+Read native diagnostic receipts with an integer-aware JSON reader, or preserve
+64-bit process-generation and clock values as exact decimal strings before any
+floating-point parser. Converting an already rounded number to a string cannot
+restore exact identity. Keep authenticated originals byte-identical; record
+corrections in separate advisory artifacts with provenance. Exact integer
+storage does not establish clock stability, process retirement or authority.
 
 From the repository root, replace `12345` with the confirmed Angerona PID:
 

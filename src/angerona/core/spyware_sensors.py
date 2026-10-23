@@ -289,7 +289,12 @@ def _collect_run(limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     records: list[dict[str, Any]] = []
     status = _coverage("complete")
     for hive_name in ("HKEY_CURRENT_USER", "HKEY_LOCAL_MACHINE"):
-        for view_name, view in (("32", winreg.KEY_WOW64_32KEY), ("64", winreg.KEY_WOW64_64KEY)):
+        # HKCU Run/RunOnce inherit shared HKCU\SOFTWARE semantics: WOW64
+        # flags select the same key. Keep the first existing record identity.
+        views = (("32", winreg.KEY_WOW64_32KEY),)
+        if hive_name == "HKEY_LOCAL_MACHINE":
+            views += (("64", winreg.KEY_WOW64_64KEY),)
+        for view_name, view in views:
             for name in ("Run", "RunOnce"):
                 key_name = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\" + name
                 try:

@@ -5672,7 +5672,7 @@
     "root_head": "943fb9a63139d96e344da5cb21562bbd6833b4e7",
     "scope": "Historical active state superseded by actual terminal result; see current_full_regression for exact frozen snapshot."
   },
-  "current_state": {
+  "prior_current_state_before_6ead_maintenance": {
     "source_version": "1.14.0",
     "head_at_source_validation": "28f4b29d362c858c81e89bdac8aba2f73d51b280",
     "source_entries": 1856,
@@ -6603,5 +6603,189 @@
       "existing_manual_sha256": "20e4f2f1f4f29977498bc9dd50e93c98ad4bf033b97e6fffd84e6441f743999f",
       "private_appendix": "HELD_UNAPPLIED_UNRENDERED; no new manual acceptance."
     }
+  },
+  "post_6ead_source_followup": {
+    "post_test_formatting": {
+      "scope": "After functional gates and fresh observation, remove exactly one trailing blank LF from tests/test_source_update_staging.py. No product source changed.",
+      "test_before_sha256": "e5f958521565236adae2c291337994f863cde5c5a22e690723f6a7d03511551f",
+      "test_after_sha256": "13bd4f29319c1841851a6b1aa870fd98043980a211828bdcacd91a3128f0d40e",
+      "full_ast_including_locations_identical": true,
+      "ast_reconciliation_receipt_sha256": "00bbe719c1fdf0a0eeca9002634085758e4f582a57a5352875ceaca940b80ffd",
+      "syntax_accounting": "1151 unchanged file results reused plus one freshly parsed file; 1152 validated files, no broad reparse or functional-test rerun.",
+      "code_map_after_formatting_sha256": "674172f6473ec3af6c459a6b1cc1aba7d8a0994bcc8b6d7c76090eef94d77159",
+      "original_gate_scope": "Original214/54/default29/observation receipts retain their exact source identities. Syntax-equivalent test formatting does not overwrite those original receipts.",
+      "rejected_offline_attempt": "First final-offline attempt stopped at git diff --check for the extra blank EOF line, before Ruff/documentation/secret checks. Original failure retained; whitespace gate unchanged."
+    },
+    "state": "SOURCE_TESTED_AND_PAIR_OBSERVED_WITH_GAPS_READY_FOR_GUARDED_PUBLICATION",
+    "date": "2026-10-23",
+    "issue_ids": {
+      "retained_prior": 148,
+      "current": 151,
+      "added": [
+        "GUI-18",
+        "UPD-04",
+        "TST-39"
+      ],
+      "SCN04": "Original record text/status retained as history; source collector policy independently confirmed.",
+      "TST38": "Original text/status retained; later exact-query supervisor failure and inert correction appended separately."
+    },
+    "first_focused_gate": {
+      "result": "214 PASS / 0 FAIL / 0 ERROR / 0 SKIP",
+      "receipt_sha256": "5f64584cca70fc0680e328c71cda77b41fb2cf906f50240f5f8339bb103236b9",
+      "source_entries": 1856,
+      "scope": "First seven-file cohort, including first updater revision; final POSIX candidate-open hardening is later and is not proved by this gate.",
+      "supervised_seconds_approx": 108.359,
+      "junit_seconds_approx": 101.963,
+      "native": "Actual and venv generations retired with native exit 0; process/stdio handles closed; unchanged source/HEAD/index/runtime/gate.",
+      "normal_atexit": "MainThread only; no QApplication; zero widgets.",
+      "precision": "Receipt read through an integer-aware lexical adapter; two unsafe integer tokens retained as exact strings in memory. Native original was not rewritten."
+    },
+    "final_validation": {
+      "focused": {
+        "result": "54 PASS / 0 FAIL / 0 ERROR / 0 SKIP",
+        "receipt_sha256": "ba5d58f0e64743e4aa225a2a6c065ee84d46bbf231f61e049163eb065f8bac29",
+        "scope": "Final updater full-file controls and exact held-worker immediate-close neighbor. Overlaps the initial 214-case cohort; do not sum as unique tests.",
+        "supervised_seconds_approx": 32.063,
+        "junit_seconds_approx": 27.73,
+        "native": "Both interpreter generations retired: native exit 0 / WAIT0; all four handles closed. MainThread only, no QApplication, zero widgets.",
+        "unchanged": "Source/HEAD/index/runtime/gate unchanged during the run."
+      },
+      "ast": {
+        "result": "1152 Python 3.10 AST checks passed / 0 failures",
+        "receipt_sha256": "210cb6b0efecb0f18100bfa1715c10fd80774f91f1a1246f337a96e371bdc2e6",
+        "scope": "Source-bound syntax checks, no product imports or source caches. Separate from pytest totals."
+      },
+      "default_selfcheck": {
+        "result": "29 PASS / 0 FAIL",
+        "receipt_sha256": "e1e5abeedbd0075056fbac26234abaf060f12c7f5a959b9063fa00902d8fa9a9",
+        "supervised_seconds_approx": 63.125,
+        "module_rows": {
+          "total": 86,
+          "passed": 68,
+          "explicit_skipped": 18
+        },
+        "pipeline": "PASS, separate from module rows",
+        "verifiers": 9,
+        "retired": "13 widget owners, 13 readers, 8 Python workers, 0 Qt workers",
+        "redteam": "30 inert marker steps across two phases; not closure of the comprehensive 80-step campaign or hostile-adversary efficacy.",
+        "native": "Both interpreter generations retired: native exit 0 / WAIT0; all four handles closed. MainThread only, no QApplication, zero widgets.",
+        "unchanged": "Source/HEAD/index/runtime/gate unchanged during the run."
+      },
+      "fresh_observation": {
+        "result": "OBSERVED_WITH_GAPS",
+        "receipt_sha256": "6089e2cc36932dc26b9d82eac44174bdac9043eefa4e3cbe60affc3088524bc4",
+        "observation_seconds_approx": 90.14,
+        "status_heartbeat_samples": 352,
+        "maximum_heartbeat_gap_seconds_approx": 0.797,
+        "scheduled_cycles_per_module": 18,
+        "scan_completion": "Scheduled cycles are not completed scans. Per-source completion timestamps/counters are absent from the capture; active findings imply the persistence collector returned, not a scan count or full surface coverage.",
+        "modules": {
+          "recovery": {
+            "health": 15,
+            "scope": "Isolated unprovisioned evidence/backup/drill profile"
+          },
+          "spyware": {
+            "health": 85,
+            "scope": "Preview; per-source/adapter coverage remains limited"
+          }
+        },
+        "events": {
+          "count": 4,
+          "severity_and_category": "One critical recovery exposure; one medium Run-persistence observation; two low service-path exposures.",
+          "spyware_event_count": 3,
+          "eligibility": "No response_eligible field was exported; response_authorized=false is not a separate eligibility finding.",
+          "each_exported_event_response_authorized": false,
+          "each_spyware_active_attack": false,
+          "each_spyware_spyware_confirmed": false
+        },
+        "loss_and_errors": "Neither module reported a crash/overflow; no capture/export/console drops, errors or pending threads recorded; clean shutdown.",
+        "retirement": "Retained core QUERY|SYNCHRONIZE handle proved the same generation, WAIT0/native exit 0, then closed. Both outer generations native exit 0; all four outer handles closed. MainThread only, no QApplication and zero top-level widgets.",
+        "retirement_limit": "Original launcher Popen handle closure is not claimed.",
+        "unchanged": "Code source 1856/947be, HEAD/index/runtime/external inputs/frozen harness unchanged; all owned Git children retired.",
+        "limits": "Ordinary-user two-module observation, without GUI/Qt responsiveness or all-sensor/host-security verdict. No threat/false-positive adjudication, suppression or remediation. Single current Run observation versus two R7 records does not establish historical physical-key/account identity."
+      },
+      "publication": "Prepared for the next guarded publication; this record does not assert a later public head or hosted-CI result.",
+      "source_identity_at_code_validation": {
+        "source_entries": 1856,
+        "map_sha256": "947be22746d90432e6813c4a0e41f6316a0a645f7f6e089d8b319c1faec0592c",
+        "scope": "Code snapshot at the final focused, AST and default-selfcheck validations. Later documentation-only edits and the new changelog yield 1857 source entries; the guarded publisher records the complete publication map separately."
+      }
+    },
+    "changes": {
+      "SCN04": "Read shared HKCU Run/RunOnce once; separate HKLM views, findings and coverage gaps remain.",
+      "GUI18": "Bind accepted full-row identity and request sequence to cache/results/proposals; preserve duplicate rows and conservative Qt lifetime.",
+      "UPD04": "Same explicit choice reconciles only verified owned staged bytes. The later source-confirmed POSIX lstat/open availability gap is hardened with required nonblocking/no-follow flags and descriptor checks before stream construction; final 54-case follow-up and default 29 accepted. No observed host hang/activation bypass, physical FIFO/device efficacy, universal I/O deadline or power-loss claim.",
+      "TST37": "Fixed-label initial-guard operation tracing: at most 64 operation markers plus one limit, with fixed coarse stage markers separate; unchanged checks/order/45-second execution and 10-second cleanup deadlines. Advisory tracing can perturb timing and does not establish a cause.",
+      "TST39": "Lossless review of native integer values; separate advisory corrections; authenticated originals unchanged."
+    },
+    "published_6ead": {
+      "head": "6ead285f3e4658674600f15fb9f1f4f1f64ac9d3",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39979165038",
+      "security_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39979165167",
+      "CI": "11/12 successful",
+      "Security": "3/3 successful",
+      "Python310_312_313": "7706 PASS / 19 SKIP each",
+      "Python311": "7679 PASS / 19 SKIP / 27 SETUP ERRORS from one 45-second confinement preflight timeout",
+      "cause": "UNKNOWN",
+      "terminal_proof_sha256": "b3397f1d3c17361531b65fbbdb90c8ab855a7d0a16de0b3a8524ceeb8ef25de3"
+    },
+    "precision_correction": {
+      "failure_summary_sha256": "932844b561b13c81297634a77de356bef3fa70f6106c89b4be4b5ccb5abddd45",
+      "unsafe_clock_fields": 5,
+      "process_birth_integers_copied": false,
+      "raw_logs_and_verdicts": "Unchanged; no new native observation or process query.",
+      "rule": "Decode integer values losslessly before any floating-point parser; use integer-aware readers or exact decimal strings. Never reinterpret an already rounded number as exact identity.",
+      "clock_stability": "UNPROVED",
+      "separate_four_target_generation_summary": "A separate advisory summary corrected birth-value interpretation from retained raw decimal lexemes. This is distinct from the five CI clock-field corrections; no raw receipt rewrite or new native observation."
+    },
+    "boundaries": [
+      "Original R7 records remain unadjudicated; no supported false positive, benignity or confirmed spyware conclusion.",
+      "Fresh pair observation covers only its tested code snapshot and retains explicit recovery/preview gaps; prior R7 and other historical results remain separate. No all-sensor green claim.",
+      "Conflict recovery addresses process interruption, not sudden power loss; unsafe/unowned states remain held.",
+      "Activation, external authority deployment, signing and trusted installer acceptance remain separate gates."
+    ],
+    "four_target_followup": {
+      "corrected_summary_sha256": "d57ae98cd951df2e0798a23a908434b40b00fd9e52d3d6148aec3bf32d44fbb3",
+      "query_receipt_sha256": "085d98e342cc3eba14ee65af602bf24259b655d40ee757548699d1db59a1e56a",
+      "original_owner_sha256": "330a5187686c2af64bc6654d4d2841809cae5ace5b3353b348da12d35f909503",
+      "operations": "Four exact read-only targets: both Run commands and both distinct service commands match their respective R7 records. Both current service configurations are disabled.",
+      "owner_gate": "FAILED: post-exit image query WinError 31 before the terminal native-proof dictionary was populated.",
+      "measured": "Query child Popen exit 0; original admitted creation-handle WAIT0; process and stdio handles closed.",
+      "unmeasured": "No terminal native exit-code measurement or terminal birth-equality proof. Do not infer these from Popen/WAIT0 or rerun to overwrite the failure.",
+      "future_observer_control": {
+        "receipt_sha256": "51577c627a33212f6e0e604c79440e106f0303d66ebd98eedd7d81d2cf21e165",
+        "result": "6 inert FakeAPI controls passed; no real Win32 queries, spawned children or host-target reads.",
+        "limits": "Private correction only; no retroactive native proof or new host observation."
+      },
+      "precision": "Separate advisory summary preserves the exact raw generation lexemes as decimal strings before floating-point parsing; original owner bytes and failed verdict remain unchanged.",
+      "limits": "No physical-key alias, historical account identity, benignity or threat adjudication; no suppression, allowlist, host remediation or additional target query."
+    }
+  },
+  "current_state": {
+    "source_version": "1.14.0",
+    "head_at_first_focused_gate": "6ead285f3e4658674600f15fb9f1f4f1f64ac9d3",
+    "source_entries_at_first_gate": 1856,
+    "planned_entries_with_new_changelog": 1857,
+    "issue_ids": 151,
+    "prior148_ids_and_order_retained": true,
+    "new_ids": [
+      "GUI-18",
+      "UPD-04",
+      "TST-39"
+    ],
+    "latest_completed_hosted_full": "Exact 6ead: CI 11/12 and Security 3/3; Python 3.10/3.12/3.13 each 7706 PASS/19 SKIP; Python 3.11 7679 PASS/19 SKIP/27 SETUP ERRORS.",
+    "first_focused_gate": "214 PASS with exact retirement; first updater revision only.",
+    "final_source_gate": "54 PASS with exact retirement; final updater and held-worker immediate-close neighbor, overlapping initial 214 cohort.",
+    "default_selfcheck": "29 PASS; module rows 68 PASS/18 explicit SKIP, separate pipeline and nine verifiers; exact retirement.",
+    "fresh_observation": "90.140-second two-module observation accepted as OBSERVED_WITH_GAPS: 352 status/heartbeat samples, 18 scheduled cycles each (not scan counts), four exported events with response_authorized=false; exact core/outer retirement.",
+    "SCN04": "Shared-key source policy corrected; four exact reads completed, but their owner gate failed before terminal native proof. Original physical/account identity and benignity remain unproved.",
+    "original_timeout_cause": "UNKNOWN",
+    "source_activation": "ALWAYS HELD",
+    "new_hosted_ci": "NOT_PROVED",
+    "scope": "Current reviewed code checkpoint with focused/default validation and a fresh two-module observation retaining coverage gaps; documentation/new changelog follow afterward. Guarded publication and later hosted CI require separate receipts. Historical evidence remains under prior keys.",
+    "ast": "1152 Python 3.10 AST checks passed; syntax only, not pytest.",
+    "next_publication": "Prepared for guarded publication; public-head proof and later hosted CI are separate receipts.",
+    "code_test_source_map_sha256": "947be22746d90432e6813c4a0e41f6316a0a645f7f6e089d8b319c1faec0592c",
+    "documentation_after_code_tests": "The 1856-entry code-test snapshot precedes these documentation-only edits and the new changelog (1857 entries). Final publication full-map proof belongs to the separate guarded-publication receipt, not a self-referential hash in this document."
   }
 }

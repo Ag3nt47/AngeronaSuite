@@ -1,7 +1,7 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.14.0
-Date: 2026-10-22
+Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
@@ -14,7 +14,8 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Selfcheck reconciled86 module rows (68 passed/18 explicit skips), separate
   pipeline and nine verifiers.13 widget owners/13 readers/8 Python/0 Qt retired.
   Accounting and isolated tests do not prove physical runtime of all 86 sensors.
-- Registry 148 preserves all prior 144 IDs and adds PER-13/PER-14/TST-38/SCN-04.
+- Registry 151 preserves all prior 148 IDs/order, adds GUI-18/UPD-04/TST-39 and
+  retains SCN-04/TST-38 history alongside later source and exact-read follow-ups.
   The original Qt1 PASS/6 FAIL
   became 7 PASS after six literal-tooltip guards. This is formatting proof, not
   HTTP/file/script execution or security authority. Installer27 controls include
@@ -52,6 +53,40 @@ response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
 ## LATEST (v1.14.0 — Live AI Review and integrated defensive diagnostics, 2026-10-22)
+
+- Current maintenance: initial 214 tests and final 54-test follow-up passed
+  without failures/errors/skips; scopes overlap. Final source: 1152 Python 3.10
+  AST checks and default 29 phases passed; module rows 68 PASS/18 explicit SKIP,
+  separate pipeline/nine verifiers, exact retirement. Fresh pair observation:
+  90.140 seconds, OBSERVED_WITH_GAPS, 352 status/heartbeat samples, exact retirement.
+  Eighteen scheduled cycles per module are not eighteen scans. All four exported
+  events had response_authorized=false; all three Spyware events separately had
+  active_attack=false and spyware_confirmed=false. No threat/false-positive
+  adjudication. Prepared for next guarded publication.
+- Shared HKCU Run/RunOnce keys are read once; separate HKLM views and denied/
+  missing coverage remain. This source defect does not adjudicate the two R7
+  records' historical physical identity, account identity, benignity or threat.
+- CVE cache/results/proposal clicks bind full accepted row identity and request
+  order, including distinct duplicate rows. Existing shared two-detail admission
+  and per-window batch limits remain; live/unknown Qt workers retain ownership
+  through close and async drain. A row identity grants no execution authority.
+- Conflict staging can reconcile a verified owned candidate after interruption
+  only on the same explicit side/deletion choice. Modified/replaced/missing,
+  partial or unowned candidates stay held. POSIX retry opens require nonblocking/
+  no-follow flags and pre-stream descriptor checks; no universal device deadline
+  is established. No power-loss, privileged-attacker
+  immunity, automatic conflict overwrite or source activation is established.
+- Exact 6ead hosted CI finished 11/12 and Security 3/3: Python 3.10/3.12/3.13 each
+  7706 PASS/19 SKIP; Python 3.11 7679 PASS/19 SKIP/27 setup errors from one 45-second
+  preflight timeout, cause UNKNOWN. New fixed-label tracing allows 64 operation
+  markers plus one limit marker; fixed coarse stages are separate. Checks, order
+  and deadlines remain unchanged.
+- Native process-generation and clock integers must be read losslessly: use an
+  integer-aware JSON reader or preserve exact decimal strings before floating-
+  point parsing. Never stringify an already rounded number as exact identity.
+  Preserve authenticated originals byte-for-byte; corrected summaries are
+  separate advisory artifacts. Exact integers do not prove clock stability,
+  process retirement or response authority. See docs/live-debug-harness.md.
 
 - Current Windows-target discovery: 86 capabilities, 13 native operational
   declarations and 73 explicit compatibility adapters. Process Monitor and
@@ -1490,8 +1525,10 @@ kernel component is a product capability.
 - Recorder handoff: 22.306 -> 15.925 us/event (28.6% faster).
 - Capability summary: 43.324 -> 1.508 us/call (96.5% faster).
 - Stable Module Inspector tick: 13.458 -> 0.474 ms (96.5% faster).
-- Batched durable commits, immutable compiled Sigma plans, and a global per-CVE
-  detail-worker cap are proposed, not shipped.
+- At this historical Cycle 25 cutoff, batched commits, compiled Sigma plans and
+  a global detail-worker cap were deferred. v1.14 now has compiled runtime plans,
+  atomic exporter batches and application-wide two-detail admission; current row
+  freshness/lifetime validation is recorded in the latest checkpoint above.
 - Authoritative serial release evidence, including the 3 final-performance
   tests: 1,811 passed / 6 expected host-platform skips / 0 failed. The added
   tests and their surrounding performance/reliability group also passed a
@@ -1838,8 +1875,9 @@ See `analysis/loop/cycle24/prior_findings.md` and
 - Cycle 25 capability summary: 43.324 to 1.508 us/call (96.5% faster).
 - Cycle 25 unchanged Module Inspector tick: 13.458 to 0.474 ms (96.5%
   faster).
-- Proposed only: batched durable commits, immutable compiled Sigma plans, and a
-  global per-CVE detail-worker cap.
+- Historical Cycle 25 deferrals: batched commits, compiled Sigma plans and global
+  detail admission. Their v1.14 implementations and scoped acceptance are recorded
+  above; historical measurements do not validate later row-freshness changes.
 - Historical Cycle 24 evidence follows.
 
 - Personal Sentinel canonical unsigned-state reuse: 30.2-39.0% lower measured

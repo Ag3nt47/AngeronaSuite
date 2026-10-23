@@ -889,13 +889,48 @@
       "id": "TST-38",
       "cause_or_observation": "Private pair-observation state and fallible identity sidecar handling can leave core lifetime evidence unadmitted",
       "result_and_limits": "R5 aborted after 0.578 seconds with ambiguous private-read/sidecar EngineError and missing historical core native retirement proof. A private observer successor creates protected run state, retains the core handle before fallible sidecar work and records nonraising stage diagnostics. R7 observed the earlier 1854/fabb snapshot for 90.204 seconds with 347 repeated status/heartbeat views and 18 scheduled cycles per module, not 18 full persistence scans. Core and both outer generations retired/exit 0; four outer handles and the retained core query handle closed. Original launcher Popen closure is not claimed. Coverage gaps and five response-ineligible events remain; no confirmed spyware or supported false positive was adjudicated. R7 is a nonreproduction, not R5 causal closure or live proof of the later 1856 revision; this is diagnostic-harness evidence, not a product protection upgrade.",
-      "status": "private-observer-r7-completed-with-gaps-r5-cause-and-missing-proof-retained"
+      "status": "private-observer-r7-completed-with-gaps-r5-cause-and-missing-proof-retained",
+      "followup_2026_10_23": {
+        "four_target_query": "Four exact read-only target operations completed: two Run values and two distinct service configurations matched their respective R7 command records; both service configurations were disabled.",
+        "owner_result": "FAILED: a post-exit image query returned WinError 31 before the terminal native-proof dictionary was populated. Query child Popen exit 0, admitted creation-handle WAIT0 and closed process/stdio handles do not supply the missing terminal native exit/birth measurements.",
+        "future_correction": "A separate private observer correction passed six inert FakeAPI controls only; no real Win32 query, spawned child or host-target query. No rerun or retroactive native proof.",
+        "precision": "The corrected advisory summary preserves exact raw generation lexemes as decimal strings before floating-point parsing; the immutable owner and its failed verdict are unchanged.",
+        "limits": "Historical physical Run-key/account identity and benignity remain unproved. No threat/false-positive adjudication, host mutation or finding suppression.",
+        "fresh_pair_observation": "Separate fresh two-module observation completed for 90.140 seconds as OBSERVED_WITH_GAPS, with 352 status/heartbeat samples, no recorded module crashes or capture/export/console drops, and exact core/outer retirement. Recovery remained unprovisioned and SpywareGuard preview. Eighteen scheduled cycles per module do not establish scan-completion counts; no original failure was overwritten."
+      }
     },
     {
       "id": "SCN-04",
       "cause_or_observation": "Two exported Windows Run registry views share a value and command, suggesting a possible presentation duplicate",
       "result_and_limits": "OPEN candidate only. The exported view identifiers differ while the observed value/command match; physical registry aliasing, a collector deduplication defect and benignity are unproven. Exact-target host queries remain preparation-only at this review cutoff. Exported nested evidence contains source/id/command; top-level omission counts do not measure nested loss, and redaction/length limits can affect comparison. The two services are distinct lexical configuration exposures, not duplicate or exploitation proof. No finding was suppressed, allowlisted, remediated or classified as a confirmed threat or supported false positive.",
-      "status": "open-potential-run-view-alias-exact-host-queries-unexecuted-no-confirmed-defect"
+      "status": "source-policy-fixed-focused214-default29-accepted-original-r7-identity-open",
+      "historical_status_before_followup": "open-potential-run-view-alias-exact-host-queries-unexecuted-no-confirmed-defect",
+      "followup_2026_10_23": {
+        "date": "2026-10-23",
+        "source_finding": "Independent source review confirms HKCU Run and RunOnce are shared keys but were read under both WOW64 view flags. The corrected collector reads these user keys once through its existing first-view identity; distinct HKLM views and missing/denied coverage remain.",
+        "validation": "Initial seven-file source cohort: 214 PASS, no failures/errors/skips, exact native retirement. Final-source default selfcheck: 29 PASS; 68 PASS/18 explicit SKIP module rows plus separate pipeline and nine verifiers.",
+        "historical_limits": "This source-policy defect does not establish original R7 physical-key identity, historical SID equality, benignity or a false positive. Both original records remain unadjudicated; no suppression, trust or response authority is granted.",
+        "four_target_read": "Later exact read-only operations matched both Run command records and both distinct service command records from R7; both current service configurations were disabled. This does not prove physical aliasing, historical account identity, benignity or threat. The query child retired, but its owner gate failed before terminal native exit/birth proof; no finding was suppressed or remediated.",
+        "fresh_pair_observation": "At the tested code snapshot, the 90.140-second pair observation emitted one current Run observation rather than the two R7 records. This is current source behavior, not proof of historical physical-key/account identity or benignity; all four exported events had response_authorized=false."
+      }
+    },
+    {
+      "id": "GUI-18",
+      "cause_or_observation": "Same-CVE row changes and reversed batch/detail completion can reuse or overwrite stale analysis; valid unknown worker state could bypass deferred close.",
+      "result_and_limits": "Full accepted JSON row identity and monotonic request order bind batch/detail results, cache reads and proposal clicks. Indexed CVE cohorts preserve distinct duplicate rows without rescanning unrelated records. Existing two-detail admission and one-batch limit remain. Startup failures restore only still-owned prior entries; valid unknown workers stay owned through initial close and every asynchronous drain, with existing 100 ms retirement checks. The first seven-file cohort passed 214 tests with exact native retirement; final-source default selfcheck passed 29 phases. These are controlled source/UI lifetime results, not physical sensor efficacy or execution authority.",
+      "status": "focused214-default29-accepted-lifetime-and-freshness-scoped"
+    },
+    {
+      "id": "UPD-04",
+      "cause_or_observation": "An interrupted source-conflict resolution can leave candidate bytes before the resolution index commits; review then found a POSIX lstat-to-open FIFO blocking race in the new retry path.",
+      "result_and_limits": "A bounded intent binds pinned manifest, explicit side/deletion choice, preserved bytes and owned object identity. Same-choice retry may finish metadata only after verifying that exact object and content; changed, partial, replaced, missing or unowned candidates remain held. The first updater revision passed within the 214-case source cohort. Later review found a source-reachable same-user availability gap before descriptor validation; no host hang or activation bypass was demonstrated. Final hardening requires nonzero POSIX nonblocking/no-follow open flags and pre-stream descriptor validation. The updater full file and one held-worker close neighbor passed 54 tests; final-source default selfcheck passed 29 phases, with exact native retirement. Three added safe-open controls are inert flag/ordering/ownership checks, not physical FIFO/device tests; Windows behavior is retained. No universal I/O deadline or immutable ancestor-handle guarantee is claimed. This is staging-only process-interruption reconciliation, not sudden-power-loss recovery, immunity to privileged namespace races, or source activation.",
+      "status": "final-posix-open-hardening-focused54-default29-accepted-process-interruption-only"
+    },
+    {
+      "id": "TST-39",
+      "cause_or_observation": "Ordinary floating-point JSON review can round 64-bit native clock or process-generation integers.",
+      "result_and_limits": "The 6ead advisory failure summary was corrected from retained original JSON integer lexemes: five unsafe FILETIME clock fields are now exact decimal strings. No process-birth integer was copied into those CI summaries. A separate four-target-query advisory summary corrected rounded birth interpretation from the retained exact raw owner lexemes, using decimal strings; its failed owner verdict and missing terminal native proof remain unchanged. Original logs, CI verdicts/counts and retirement conclusions were not rewritten. Future native receipt readers must preserve exact integer values before floating-point parsing, using integer-aware decoding or decimal strings. Already rounded numbers cannot be repaired by string conversion. Corrections remain separate advisory artifacts and establish no new observation, clock stability, process authority or protective capability.",
+      "status": "advisory-summary-precision-corrected-originals-retained-no-new-observation"
     }
   ],
   "preserved_uncertainty": [
@@ -905,5 +940,5 @@
     "Eight module-health gaps remain in the instrumented all-eligible case; corrected classifications do not certify every diagnostic severity.",
     "Observer stage maxima need not be from one iteration and cannot attribute historical Qt stalls."
   ],
-  "review_status": "148 reviewed issues: all prior 144 objects/order preserved. Applied Sigma/exporter/timing source passed255 tests/one POSIX-fork skip and fresh default29; later workflow passed8 local checks with exact source/native retirement evidence. R7 prior-revision observation completed with gaps; SCN-04 remains an OPEN unproven view-alias candidate and exact queries were unexecuted. Published28f4 CI11/12 plus Security3/3 and all earlier failed histories remain; no new hosted full pass or deployment authority claimed."
+  "review_status": "151 reviewed IDs: all prior 148 IDs/order retained; SCN-04 and TST-38 keep original evidence with appended follow-ups. Initial seven-file source cohort 214 PASS; final updater/neighbor follow-up 54 PASS, cohorts overlap. The tested code snapshot also passed 1152 AST checks and default 29 with exact retirement. Fresh pair observation completed for 90.140 seconds as OBSERVED_WITH_GAPS, with 352 status/heartbeat samples and four exported events with response_authorized=false. The separate four-target query completed its read-only operations, but its supervisor failed before terminal native proof. Guarded publication remains a separate receipt. Exact 6ead CI 11/12 plus Security 3/3 is historical; its Python 3.11 timeout cause and original R7 threat/identity questions are unresolved."
 }

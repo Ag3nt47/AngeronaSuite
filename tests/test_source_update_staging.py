@@ -7,6 +7,7 @@ import stat
 import zipfile
 from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -220,3 +221,318 @@ def test_entire_deleted_tracked_directory_remains_deleted(tmp_path, monkeypatch)
     manifest = json.loads((state / result.stage_id / "manifest.json").read_bytes())
     record = next(row for row in manifest["files"] if row["path"] == "removed/subdirectory/file.py")
     assert record["user"] is None and record["candidate"] is None and record["action"] == "preserved"
+
+
+def _resolution_recovery_fixture(tmp_path, monkeypatch, *, user_content=b"local chosen bytes"):
+    name = "custom/conflict.txt"
+    base = {name: b"base chosen bytes"}
+    user = {} if user_content is None else {name: user_content}
+    incoming = {name: b"upstream chosen bytes"}
+    source, state, archives, compare = fixture(tmp_path, monkeypatch, base, user, incoming)
+    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare,
+                                         download=archives.__getitem__)
+    root = state / result.stage_id
+    originals = (stage.snapshot_local(source, tuple(sorted(user))), (root / "manifest.json").read_bytes(),
+                 {p.name: p.read_bytes() for p in (root / "preserved-blobs").iterdir()})
+    return source, root, result, name, originals
+
+
+def _assert_resolution_originals(source, root, originals):
+    original, manifest, blobs = originals
+    assert stage.snapshot_local(source, tuple(sorted(original))) == original
+    assert (root / "manifest.json").read_bytes() == manifest
+    assert {p.name: p.read_bytes() for p in (root / "preserved-blobs").iterdir()} == blobs
+
+
+def _interrupt_resolution_index(monkeypatch):
+    write = stage._write_json
+    calls = []
+
+    def fail_once(path, value, **kwargs):
+        if path.name == "resolutions.json":
+            calls.append(dict(value["files"]))
+            if len(calls) == 1:
+                raise OSError("inert interrupted resolution-index commit")
+        return write(path, value, **kwargs)
+
+    monkeypatch.setattr(stage, "_write_json", fail_once)
+    return calls
+
+
+@pytest.mark.parametrize("choice", ["base", "user", "upstream", "delete"])
+def test_resolution_retry_reconciles_fsynced_candidate_after_index_failure(tmp_path, monkeypatch, choice):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    calls = _interrupt_resolution_index(monkeypatch)
+    fsynced = set()
+    real_os = stage.os
+
+    class RecordingOS:
+        def __getattr__(self, attribute):
+            return getattr(real_os, attribute)
+
+        def fsync(self, descriptor):
+            real_os.fsync(descriptor)
+            info = real_os.fstat(descriptor)
+            fsynced.add((info.st_dev, info.st_ino))
+
+    monkeypatch.setattr(stage, "os", RecordingOS())
+    with pytest.raises(OSError, match="interrupted resolution-index"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, choice)
+    target = root / "candidate" / name
+    intent_path = root / "resolution-intents" / (hashlib.sha256(name.encode()).hexdigest() + ".json")
+    intent_before = intent_path.read_bytes()
+    intent = json.loads(intent_before)
+    assert intent["manifest_sha256"] == result.manifest_sha256 and intent["choice"] == choice
+    assert not (root / "resolutions.json").exists()
+    if choice == "delete":
+        assert not target.exists() and intent["candidate_identity"] is None
+    else:
+        info = target.stat()
+        assert (info.st_dev, info.st_ino) in fsynced
+        assert intent["candidate_identity"]["inode"] == str(info.st_ino)
+        assert hashlib.sha256(target.read_bytes()).hexdigest() == intent["sha256"]
+    _assert_resolution_originals(source, root, originals)
+    recovered = stage.resolve_source_conflict(root, result.manifest_sha256, name, choice)
+    assert recovered == {"path": name, "choice": choice, "sha256": intent["sha256"]}
+    assert stage.resolve_source_conflict(root, result.manifest_sha256, name, choice) == recovered
+    assert len(calls) == 2  # The second retry verifies, without rewriting a committed index.
+    assert intent_path.read_bytes() == intent_before
+    checked = stage.validate_source_candidate(root, result.manifest_sha256)
+    assert checked["static_checks"] == "passed" and checked["activation"] == "held"
+    _assert_resolution_originals(source, root, originals)
+
+
+def test_resolution_retry_preserves_selected_absent_side(tmp_path, monkeypatch):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch, user_content=None)
+    _interrupt_resolution_index(monkeypatch)
+    with pytest.raises(OSError, match="interrupted resolution-index"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert stage.resolve_source_conflict(root, result.manifest_sha256, name, "user") == {
+        "path": name, "choice": "user", "sha256": None}
+    assert not (root / "candidate" / name).exists()
+    assert stage.validate_source_candidate(root, result.manifest_sha256)["static_checks"] == "passed"
+    _assert_resolution_originals(source, root, originals)
+
+
+def test_resolution_retry_refuses_changed_explicit_choice(tmp_path, monkeypatch):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    _interrupt_resolution_index(monkeypatch)
+    with pytest.raises(OSError):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    candidate = (root / "candidate" / name).read_bytes()
+    with pytest.raises(stage.SourceStageError, match="recorded choice or manifest"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "upstream")
+    assert (root / "candidate" / name).read_bytes() == candidate
+    assert not (root / "resolutions.json").exists()
+    _assert_resolution_originals(source, root, originals)
+
+
+@pytest.mark.parametrize("change", ["modified", "same-content-replacement", "missing"])
+def test_resolution_retry_holds_modified_replaced_or_missing_owned_candidate(tmp_path, monkeypatch, change):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    _interrupt_resolution_index(monkeypatch)
+    with pytest.raises(OSError):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    target = root / "candidate" / name
+    chosen = target.read_bytes()
+    if change == "modified":
+        target.write_bytes(b"unexpected changed bytes")
+    else:
+        target.replace(tmp_path / "retained-original-candidate")
+        if change == "same-content-replacement":
+            target.write_bytes(chosen)
+    unexpected = target.read_bytes() if target.exists() else None
+    with pytest.raises(stage.SourceStageError, match="conflict candidate"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert (target.read_bytes() if target.exists() else None) == unexpected
+    assert not (root / "resolutions.json").exists()
+    if change != "modified":
+        assert (tmp_path / "retained-original-candidate").read_bytes() == chosen
+    _assert_resolution_originals(source, root, originals)
+
+
+@pytest.mark.parametrize("failure", ["planned-intent", "created-identity"])
+def test_resolution_retry_holds_unowned_or_partial_candidate_without_overwrite(tmp_path, monkeypatch, failure):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    write = stage._write_json
+    target = root / "candidate" / name
+
+    def interrupt(path, value, **kwargs):
+        if path.parent.name == "resolution-intents" and value["candidate_identity"] is not None:
+            if failure == "created-identity":
+                write(path, value, **kwargs)
+            raise OSError("inert interruption before candidate content write")
+        return write(path, value, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stage, "_write_json", interrupt)
+        with pytest.raises(OSError, match="before candidate content write"):
+            stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert target.read_bytes() == b""
+    if failure == "created-identity":
+        target.write_bytes(b"local")  # A prefix of the selected side is still not a complete candidate.
+    before = target.read_bytes()
+    with pytest.raises(stage.SourceStageError, match="ownership|recorded object or size"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert target.read_bytes() == before and not (root / "resolutions.json").exists()
+    _assert_resolution_originals(source, root, originals)
+
+
+def test_resolution_retry_can_resume_planned_intent_before_candidate_create(tmp_path, monkeypatch):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    write = stage._write_json
+
+    def interrupt(path, value, **kwargs):
+        write(path, value, **kwargs)
+        if path.parent.name == "resolution-intents":
+            raise OSError("inert interruption after planned intent commit")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stage, "_write_json", interrupt)
+        with pytest.raises(OSError, match="after planned intent"):
+            stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert not (root / "candidate" / name).exists()
+    stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert stage.validate_source_candidate(root, result.manifest_sha256)["activation"] == "held"
+    _assert_resolution_originals(source, root, originals)
+
+
+def test_resolution_retry_rechecks_pinned_manifest_before_reconciling(tmp_path, monkeypatch):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    _interrupt_resolution_index(monkeypatch)
+    with pytest.raises(OSError):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    target = root / "candidate" / name
+    candidate = target.read_bytes()
+    (root / "manifest.json").write_bytes(originals[1] + b" ")
+    with pytest.raises(stage.SourceStageError, match="manifest digest mismatch"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert target.read_bytes() == candidate and not (root / "resolutions.json").exists()
+    assert stage.snapshot_local(source, tuple(sorted(originals[0]))) == originals[0]
+    assert {p.name: p.read_bytes() for p in (root / "preserved-blobs").iterdir()} == originals[2]
+
+
+def _forbid_resolution_candidate_open(monkeypatch, target):
+    safe_root = stage._safe_state_root
+
+    class OpenObservedPath(type(target)):
+        def open(self, *args, **kwargs):
+            if self == target:
+                pytest.fail("an unsafe or unowned candidate must be refused before opening")
+            return super().open(*args, **kwargs)
+
+    def observed_root(path):
+        return OpenObservedPath(safe_root(path))
+
+    monkeypatch.setattr(stage, "_safe_state_root", observed_root)
+
+
+@pytest.mark.parametrize("replacement", ["same-content-file", "directory"])
+def test_resolution_retry_rejects_unsafe_or_replaced_name_before_candidate_open(tmp_path, monkeypatch, replacement):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    _interrupt_resolution_index(monkeypatch)
+    with pytest.raises(OSError):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    target = root / "candidate" / name
+    chosen = target.read_bytes()
+    target.replace(tmp_path / "retained-original-candidate")
+    if replacement == "same-content-file":
+        target.write_bytes(chosen)
+    else:
+        target.mkdir()
+    _forbid_resolution_candidate_open(monkeypatch, target)
+    with pytest.raises(stage.SourceStageError, match="conflict candidate"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert not (root / "resolutions.json").exists()
+    assert (tmp_path / "retained-original-candidate").read_bytes() == chosen
+    if replacement == "same-content-file":
+        assert target.read_bytes() == chosen
+    else:
+        assert target.is_dir()
+    _assert_resolution_originals(source, root, originals)
+
+
+def test_committed_resolution_cannot_recreate_candidate_from_planned_only_intent(tmp_path, monkeypatch):
+    source, root, result, name, originals = _resolution_recovery_fixture(tmp_path, monkeypatch)
+    stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    index_before = (root / "resolutions.json").read_bytes()
+    target = root / "candidate" / name
+    chosen = target.read_bytes()
+    target.replace(tmp_path / "retained-original-candidate")
+    intent_path = root / "resolution-intents" / (hashlib.sha256(name.encode()).hexdigest() + ".json")
+    intent = json.loads(intent_path.read_bytes())
+    intent["candidate_identity"] = None  # Inertly inconsistent committed/planned metadata.
+    stage._write_json(intent_path, intent)
+    _forbid_resolution_candidate_open(monkeypatch, target)
+    with pytest.raises(stage.SourceStageError, match="committed conflict resolution"):
+        stage.resolve_source_conflict(root, result.manifest_sha256, name, "user")
+    assert not target.exists() and (root / "resolutions.json").read_bytes() == index_before
+    assert (tmp_path / "retained-original-candidate").read_bytes() == chosen
+    _assert_resolution_originals(source, root, originals)
+
+
+@pytest.mark.parametrize("replacement", ["fifo", "symlink", "different-regular-file"])
+def test_posix_recorded_candidate_open_refuses_post_lstat_replacement_before_fdopen(monkeypatch, replacement):
+    # Inert kernel-contract control: no FIFO, device or symlink is opened.
+    real_os, real_io = stage.os, stage.io
+    events, acquired, closed = [], [], []
+    original = SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_nlink=1,
+                               st_dev=7, st_ino=11, st_birthtime_ns=None)
+    replaced = SimpleNamespace(st_mode=(stat.S_IFIFO if replacement == "fifo" else stat.S_IFREG) | 0o600,
+                               st_nlink=1, st_dev=7, st_ino=12, st_birthtime_ns=None)
+    intent = {"candidate_identity": {"device": "7", "inode": "11", "birth_ns": None}}
+
+    class NamedCandidate:
+        def __fspath__(self):
+            return "inert-candidate"
+
+        def lstat(self):
+            events.append("lstat")
+            return original
+
+    class PosixOS:
+        name = "posix"
+        O_NONBLOCK = getattr(real_os, "O_NONBLOCK", 0x04000000)
+        O_NOFOLLOW = getattr(real_os, "O_NOFOLLOW", 0x08000000)
+
+        def __getattr__(self, attribute):
+            return getattr(real_os, attribute)
+
+        def open(self, name, flags):
+            assert events == ["lstat", "stream-request"]
+            events.append("replacement-after-lstat")
+            assert flags & self.O_NONBLOCK and flags & self.O_NOFOLLOW
+            if replacement == "symlink":
+                raise OSError("inert O_NOFOLLOW symlink refusal")
+            acquired.append(29)
+            return 29  # Inert owned-descriptor token; never passed to the real OS.
+
+        def fstat(self, descriptor):
+            assert descriptor == 29
+            events.append("fstat")
+            return replaced
+
+        def close(self, descriptor):
+            assert descriptor == 29
+            events.append("close")
+            closed.append(descriptor)
+
+    class UnopenedIO:
+        def __getattr__(self, attribute):
+            return getattr(real_io, attribute)
+
+        def open(self, target, mode, *, opener):
+            assert mode == "rb"
+            events.append("stream-request")
+            opener(real_os.fspath(target), real_os.O_RDONLY)
+            events.append("fdopen")
+            pytest.fail("raced objects must be refused before stream construction or read")
+
+    monkeypatch.setattr(stage, "os", PosixOS())
+    monkeypatch.setattr(stage, "io", UnopenedIO())
+    with pytest.raises(OSError if replacement == "symlink" else stage.SourceStageError):
+        stage._verify_recorded_resolution_candidate(NamedCandidate(), intent, b"chosen bytes")
+    assert "replacement-after-lstat" in events and "fdopen" not in events
+    assert acquired == closed == ([] if replacement == "symlink" else [29])
+    if replacement != "symlink":
+        assert events[-2:] == ["fstat", "close"]

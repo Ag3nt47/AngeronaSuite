@@ -40,13 +40,28 @@ function Write-FixtureStage([string]$Stage) {
     [Console]::Error.Flush()
 }
 Write-FixtureStage 'harness-entry'
+$script:initialGuardTrace = $true
+$script:initialGuardTraceCount = 0
+function Write-InitialGuardStage([string]$Stage) {
+    if (-not $script:initialGuardTrace) { return }
+    # A finite startup-only trace; never emit fixture paths or skip a guard.
+    if ($script:initialGuardTraceCount -lt 64) {
+        $script:initialGuardTraceCount += 1
+        Write-FixtureStage ('initial-guard-' + $Stage)
+    } elseif ($script:initialGuardTraceCount -eq 64) {
+        $script:initialGuardTraceCount += 1
+        Write-FixtureStage 'initial-guard-trace-limit'
+    }
+}
 function Assert-LocalCanonicalFixturePath([string]$Path) {
+    Write-InitialGuardStage 'normalize'
     $full = [IO.Path]::GetFullPath($Path)
     if ($Path -notmatch '^[A-Za-z]:\\' -or $Path.Contains('/') -or
             -not $Path.TrimEnd('\').Equals($full.TrimEnd('\'),
                 [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Fixture paths must be normalized absolute local-drive paths.'
     }
+    Write-InitialGuardStage 'components'
     foreach ($component in $full.Substring(3).Split('\')) {
         if ($component -eq '') { continue }
         if ($component -in @('.', '..') -or $component -match '[~:*?<>|"\x00-\x1f]' -or
@@ -55,7 +70,9 @@ function Assert-LocalCanonicalFixturePath([string]$Path) {
             throw 'Fixture alias, device or ambiguous component refused.'
         }
     }
+    Write-InitialGuardStage 'drive-info'
     $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($full))
+    Write-InitialGuardStage 'drive-type'
     if ($drive.DriveType -notin @([IO.DriveType]::Fixed,
             [IO.DriveType]::Removable, [IO.DriveType]::Ram)) {
         throw 'Network, unknown and unsupported fixture volumes are forbidden.'
@@ -65,6 +82,7 @@ function Assert-LocalCanonicalFixturePath([string]$Path) {
     # denial is an error; only a genuinely absent path component is skipped.
     while ($null -ne $current -and $current -ne '') {
         $exists = $true
+        Write-InitialGuardStage 'attributes'
         try { $attributes = [IO.File]::GetAttributes($current) }
         catch [IO.FileNotFoundException] { $exists = $false }
         catch [IO.DirectoryNotFoundException] { $exists = $false }
@@ -72,23 +90,30 @@ function Assert-LocalCanonicalFixturePath([string]$Path) {
             if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                 throw "Fixture reparse point refused: $current"
             }
+            Write-InitialGuardStage 'get-item'
             $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            Write-InitialGuardStage 'link-type'
             if (($item.PSObject.Properties.Name -contains 'LinkType') -and
                     -not [string]::IsNullOrEmpty([string]$item.LinkType)) {
                 throw "Fixture linked object refused: $current"
             }
+            Write-InitialGuardStage 'convert-path'
             $resolved = Convert-Path -LiteralPath $current -ErrorAction Stop
+            Write-InitialGuardStage 'canonical-compare'
             if (-not $resolved.TrimEnd('\').Equals($current.TrimEnd('\'),
                     [StringComparison]::OrdinalIgnoreCase)) {
                 throw "Fixture resolved-path alias refused: $current"
             }
         }
+        Write-InitialGuardStage 'parent-name'
         $current = [IO.Path]::GetDirectoryName($current)
     }
+    Write-InitialGuardStage 'complete'
 }
 $fixture = $env:ANGERONA_TEST_FIXTURE
 Write-FixtureStage 'initial-path-guard'
 Assert-LocalCanonicalFixturePath $fixture
+Write-FixtureStage 'initial-root-guard-done'
 $fixture = [IO.Path]::GetFullPath($fixture)
 $fixturePrefix = $fixture.TrimEnd('\') + '\'
 function Assert-FixturePath([string]$Path) {
@@ -99,12 +124,19 @@ function Assert-FixturePath([string]$Path) {
         throw "Fixture operation escaped its owned root: $full"
     }
 }
+Write-FixtureStage 'initial-fence-guard'
 Assert-FixturePath $fixture
+Write-FixtureStage 'initial-fence-guard-done'
+Write-FixtureStage 'initial-version-check'
 if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1) {
     throw 'This fixture explicitly targets Windows PowerShell 5.1.'
 }
+Write-FixtureStage 'initial-release-join'
 $release = Join-Path $fixture 'parent-release.marker'
+Write-FixtureStage 'initial-release-guard'
 Assert-FixturePath $release
+Write-FixtureStage 'initial-release-guard-done'
+$script:initialGuardTrace = $false
 $releaseWait = [Diagnostics.Stopwatch]::StartNew()
 Write-FixtureStage 'parent-admission-wait'
 while (-not [IO.File]::Exists($release)) {
