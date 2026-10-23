@@ -224,6 +224,65 @@ def _acquire_single_instance():
 CHART_WINDOW = 120          # rolling samples kept on the telemetry graphs
 STATUS_POLL_GRACE_S = 2 * HEALTH_POLL_S
 MAX_STATUS_BYTES = 4 * 1024 * 1024
+MAX_SELFTEST_BYTES = 4 * 1024 * 1024
+MAX_DIAGNOSTIC_READ_BYTES = 64 * 1024
+
+
+class _DiagnosticTooLarge(ValueError):
+    """A complete diagnostic cannot be read within its independent byte cap."""
+
+
+def _read_diagnostic_bytes(path: Path, max_bytes: int) -> bytearray:
+    """Read through EOF in small requests, or reject cap-plus-one evidence.
+
+    Never parse a prefix after a read failure or assume st_size describes a
+    pseudo-file. The handle and any partial bytes stay local to this read.
+    """
+    raw = bytearray()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(min(MAX_DIAGNOSTIC_READ_BYTES, max_bytes + 1 - len(raw)))
+            if not chunk:
+                return raw
+            raw.extend(chunk)
+            if len(raw) > max_bytes:
+                raise _DiagnosticTooLarge("Diagnostic exceeds its byte review limit")
+
+
+def _read_selftest_report() -> Tuple[List[Dict], Dict, str]:
+    """Read advisory history separately from current process health evidence."""
+    try:
+        raw = _read_diagnostic_bytes(SELFTEST_FAILURES, MAX_SELFTEST_BYTES)
+        # Preserve the historical reader's UTF-8 replacement policy.
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except FileNotFoundError:
+        return [], {}, "Unavailable: historical report is missing; current module health is separate."
+    except _DiagnosticTooLarge:
+        return [], {}, (
+            f"Unavailable: historical report exceeds the {MAX_SELFTEST_BYTES}-byte review limit; "
+            "source evidence is retained."
+        )
+    except OSError:
+        return [], {}, "Unavailable: historical report could not be read; current module health is separate."
+    except (ValueError, RecursionError):
+        return [], {}, "Unavailable: historical report is invalid or incomplete; current module health is separate."
+    try:
+        rows = data.get("failures") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            return [], {}, "Unavailable: historical report schema is unsupported; current module health is separate."
+        failures = _selftest_failures(data)
+        out = [{"name": str(row.get("module") or row.get("name") or "?")[:200],
+                "detail": str(row.get("detail", ""))[:2000],
+                "src": "selftest (historical)"} for row in failures[:500]]
+    except (ValueError, RecursionError):
+        return [], {}, "Unavailable: historical rows could not be rendered; current module health is separate."
+    note = f"Loaded historical report: {len(failures)} failure record(s)"
+    if len(failures) > 500:
+        note += "; showing the first 500"
+    if len(rows) != len(failures):
+        note += f"; {len(rows) - len(failures)} malformed row(s) omitted (incomplete evidence)"
+    note += ". Advisory history does not establish current module health."
+    return out, data if isinstance(data, dict) else {}, note
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -583,18 +642,19 @@ class LogTailWorker(QThread):
                 self.msleep(100)
 
     def _emit_selftest(self) -> None:
-        try:
-            data = json.loads(SELFTEST_FAILURES.read_text("utf-8", "replace"))
-        except (OSError, json.JSONDecodeError):
-            return
-        fails = _selftest_failures(data)
+        fails, meta, note = _read_selftest_report()
         if not fails:
+            self._emit_text(
+                "selftest_failures.json",
+                "Historical self-test evidence (diagnostic only): " + note,
+            )
             return
-        meta = data if isinstance(data, dict) else {}
-        lines = [f"selftest: {meta.get('failed', len(fails))} failed / "
-                 f"{meta.get('passed', '?')} passed  (gen {meta.get('generated', '?')})"]
-        for f in fails:
-            lines.append(f"  ✗ {f.get('module', '?')}: {f.get('detail', '')}")
+        failed = str(meta.get("failed", len(fails)))[:200]
+        passed = str(meta.get("passed", "?"))[:200]
+        generated = str(meta.get("generated", "?"))[:200]
+        lines = [f"Historical selftest: {failed} failed / {passed} passed (gen {generated})", note]
+        for row in fails:
+            lines.append(f"  ✗ {row['name']}: {row['detail']}")
         self._emit_text("selftest_failures.json", "\n".join(lines))
 
 
@@ -697,7 +757,9 @@ class SuiteHealthWorker(QThread):
         # Historical reports may still help, but stale status from a previous
         # process must never be presented as a current module failure.
         current = snapshot if info["bus_fresh"] and info["state"] != "DEAD" else {}
-        info["failed"] = self._failed_modules(current)
+        historical, _meta, history_note = _read_selftest_report()
+        info["failed"] = historical + self._failed_modules(current)
+        info["selftest_history_note"] = history_note
         counts = current.get("counts", {})
         info["counts"] = counts if isinstance(counts, dict) else {}
         info["recovery_note"] = self._recovery_note(current)
@@ -814,28 +876,17 @@ class SuiteHealthWorker(QThread):
         try:
             path = cls._pick_status()
             if path:
-                with path.open("rb") as handle:
-                    raw = handle.read(MAX_STATUS_BYTES + 1)
-                if len(raw) <= MAX_STATUS_BYTES:
-                    data = json.loads(raw)
-                    return data if isinstance(data, dict) else {}
+                raw = _read_diagnostic_bytes(path, MAX_STATUS_BYTES)
+                data = json.loads(raw)
+                return data if isinstance(data, dict) else {}
         except (OSError, ValueError, UnicodeError, RecursionError):
             pass
         return {}
 
     @staticmethod
     def _failed_modules(snapshot: Dict) -> List[Dict]:
+        """Collect only current, process-bound module failures from the caller."""
         out: List[Dict] = []
-        # selftest failures
-        try:
-            if SELFTEST_FAILURES.exists():
-                d = json.loads(SELFTEST_FAILURES.read_text("utf-8", "replace"))
-                for f in _selftest_failures(d)[:500]:
-                    out.append({"name": str(f.get("module") or f.get("name") or "?")[:200],
-                                "detail": str(f.get("detail", ""))[:2000],
-                                "src": "selftest (historical)"})
-        except (OSError, ValueError, RecursionError):
-            pass
         modules = snapshot.get("modules", [])
         if isinstance(modules, list):
             for module in modules[:500]:
@@ -1566,10 +1617,14 @@ class HealthTab(QWidget):
             "Local status snapshots are advisory. Counters describe observed activity; "
             "quiet or stale diagnostics alone cannot establish a deadlock.")
         self.res_lbl = QLabel("Resources: —")
+        self.history_lbl = QLabel("Self-test history: not yet observed")
+        self.history_lbl.setTextFormat(Qt.PlainText)
+        self.history_lbl.setWordWrap(True)
         self.recovery_lbl = QLabel("Self-healing: —")
         self.recovery_lbl.setTextFormat(Qt.PlainText)
         self.recovery_lbl.setWordWrap(True)
-        for w in (self.state_lbl, self.pid_lbl, self.bus_lbl, self.recovery_lbl, self.res_lbl):
+        for w in (self.state_lbl, self.pid_lbl, self.bus_lbl, self.history_lbl,
+                  self.recovery_lbl, self.res_lbl):
             root.addWidget(w)
 
         root.addWidget(section_label("RECENTLY FAILED MODULES"))
@@ -1608,6 +1663,8 @@ class HealthTab(QWidget):
         bus_color = AMBER if warnings or bus_state == "STALE" else (
             GREEN if bus_state == "ACTIVE" else DIM)
         self.bus_lbl.setStyleSheet(f"color:{bus_color};")
+        self.history_lbl.setText(
+            f"Self-test history: {h.get('selftest_history_note', 'Not observed; evidence unavailable')}")
         self.recovery_lbl.setText(
             f"Self-healing: {h.get('recovery_note', 'No current recovery report')}")
 
@@ -1626,6 +1683,7 @@ class HealthTab(QWidget):
             return "no health sample yet"
         lines = [f"PID   : {h.get('pid')}", f"STATE : {h.get('state')}"]
         lines.append(self.bus_lbl.text())
+        lines.append(self.history_lbl.text())
         lines.append(self.recovery_lbl.text())
         for f in h.get("failed", []):
             lines.append(f"  ✗ {f['name']}: {f['detail']}  [{f['src']}]")
