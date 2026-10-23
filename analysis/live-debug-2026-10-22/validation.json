@@ -2,7 +2,7 @@
   "schema": "angerona.validation-progress.v1",
   "version": "1.14.0",
   "date": "2026-10-22",
-  "status": "Source-validation evidence:139 issue IDs; full R10 accepted7,554/0/49 and later141/default29 accepted with exact retirement. Preceding checkpoint15 CI12/Security3 is historical evidence. Markdown operator/AI guide is current; optional DOCX appendix held. No post-doc package build, later-head CI or signed deployment claimed.",
+  "status": "142 issue IDs: c3 published hosted CI failed the same six tests on each Python3.10–3.13 run (7612 passed/19 skipped); CI8/12 and Security3/3. Applied five-file repair accepted238 focused controls and fresh default29 with exact retirement. Original failures and unknown Python3.13 witness startup cause retained; upcoming repair publication and hosted CI unproved.",
   "raw_host_captures_published": false,
   "publication": {
     "state": "Preceding maintenance checkpoint15/e715 was published and its exact CI12/Security3 passed. These are historical checkpoint facts, not a current-main or later-head CI claim.",
@@ -5351,7 +5351,7 @@
     "after_minutes": 60,
     "scope": "One-line GitHub Actions Python matrix executor allowance; product deadlines unchanged. Static workflow validation and R7 workflow tests passed. No new publication or product speed claim."
   },
-  "full_regression_next_state": "Full R10 accepted exact HEAD943/source1852 snapshot. Later installer/tooltip source1853/HEAD e715 passed141 focused controls and fresh29-phase default selfcheck. Broader1.14 publication, package/new manual/trusted activation remain pending; no new full-after-these-changes claim.",
+  "full_regression_next_state": "Published c3 hosted full matrix completed failed: each Python3.10–3.13 recorded7612 passed/6 failed/19 skipped/native1. Applied five-file follow-up passed238 focused controls and fresh default29; these scoped source gates do not replace the original full result or establish a later hosted matrix. Historical R10 acceptance is retained for its own frozen cutoff.",
   "queued_spyware_research": {
     "state": "QUEUED_DESIGNS_NOT_IMPLEMENTED",
     "provenance": "Parent-forwarded primary-source review; no additional independent validation claimed by this documentation task.",
@@ -5673,24 +5673,21 @@
     "scope": "Historical active state superseded by actual terminal result; see current_full_regression for exact frozen snapshot."
   },
   "current_state": {
-    "root_head": "e7154f45403fab584e4fdbce5f8ffb06d9f37d69",
-    "root_namespace": 1853,
-    "issue_ids": 139,
-    "original_137_ids_preserved": true,
-    "latest_completed_full": "R10:7,554 passed,0 failed,49 skipped; native0 and strict acceptance true for the exact source snapshot. Later installer/tooltip work has separate141/default29 acceptance.",
-    "latest_module_selfcheck": "Final default isolated-profile 29 phases passed/native 0 on source 1853/HEAD e715;86 module rows 68PASS18 SKIP plus separate pipeline/nine verifiers. Not physical all 86 runtime proof.",
-    "daily_update_settings_validation": "179 passed,1 optional native-8.3 skip; default OFF and activation always HELD.",
-    "installer": "Preservation source applied;27 confined controls accepted/21 actual child receipts reviewed, fresh29-phase selfcheck passed. Durable crash/restart/trusted deployment still open.",
-    "manual": "Existing master unchanged; historical54-page QA. Optional DOCX appendix held after renderer handshaking failure before source open. Current operator/AI update guide is docs/github-updates.md; no new DOCX delivery claimed.",
-    "source_activation": "ALWAYS HELD",
-    "package": "No fresh post-documentation package build claimed by this source-validation snapshot. Build may follow reviewed docs; signing and clean-VM acceptance remain separate.",
-    "root_namespace_at_accepted_r10_snapshot": 1852,
-    "tooltip": "Applied six-sink literal-format fix: original one-pass/six-failure baseline became seven passes within final141 accepted controls, followed by a fresh29-phase selfcheck.",
-    "root_namespace_scope": "Actual final3-path application; accepted full R10 remains HEAD 943/source 1852 before these product changes.",
-    "scope": "Pre-release source-validation snapshot, not a live global main/app-state assertion. Later documentation, manual/package or guarded publication outcomes are recorded separately.",
     "source_version": "1.14.0",
-    "preceding_public_checkpoint": 15,
-    "preceding_public_code_version": "1.13 repair checkpoint"
+    "source_head_at_applied_repair": "c3b73e0583c338fa45b764a6c5849142ff5cbc2e",
+    "root_namespace": 1853,
+    "source_after_five_file_application_sha256": "1679a6ebff860e434abc1685c5446ae3f4ec259eedd9d771d511ba7938f43d52",
+    "issue_ids": 142,
+    "prior_139_issue_objects_and_order_preserved": true,
+    "latest_completed_hosted_full": "Published c3: same six failures,7612 passes,19 skips/7637 cases/native1 in each Python3.10–3.13 job; CI8/12 and Security3/3.",
+    "latest_accepted_source_gate": "238 focused controls across eight files/0 failed/0 skipped/native0; separate fresh default29 selfcheck accepted.",
+    "latest_module_selfcheck": "29 phases PASS,0 FAIL/native0;86 module rows68PASS18 explicit optional/platform SKIP, plus separate pipeline PASS and nine verifiers. Not physical all86 runtime evidence.",
+    "next_repair_publication_sha": "UNKNOWN; no commit or publication result is supplied by these source gates.",
+    "next_repair_hosted_ci": "PENDING_NOT_PROVED",
+    "original_python313_witness_startup_cause": "UNKNOWN; original missing header-drip started event did not retain the underlying OSError.",
+    "historical_last_accepted_full": "Frozen R10 accepted7554/0/49 for its own snapshot; later141/default29 acceptance is separate.",
+    "source_activation": "ALWAYS HELD",
+    "scope": "Actual c3 hosted failure history plus accepted follow-up source validation. This record does not assert current global main, a new hosted pass, signed installation, independent witness deployment, all-module physical efficacy or a performance improvement."
   },
   "public_requests_audit_backport": {
     "issue": "TST-30",
@@ -5861,5 +5858,186 @@
       "docx_delivered": false,
       "historical_54_page_render_is_new_chapter_qa": false
     }
-  ]
+  ],
+  "pre_c3_source_validation_state": {
+    "root_head": "e7154f45403fab584e4fdbce5f8ffb06d9f37d69",
+    "root_namespace": 1853,
+    "issue_ids": 139,
+    "original_137_ids_preserved": true,
+    "latest_completed_full": "R10:7,554 passed,0 failed,49 skipped; native0 and strict acceptance true for the exact source snapshot. Later installer/tooltip work has separate141/default29 acceptance.",
+    "latest_module_selfcheck": "Final default isolated-profile 29 phases passed/native 0 on source 1853/HEAD e715;86 module rows 68PASS18 SKIP plus separate pipeline/nine verifiers. Not physical all 86 runtime proof.",
+    "daily_update_settings_validation": "179 passed,1 optional native-8.3 skip; default OFF and activation always HELD.",
+    "installer": "Preservation source applied;27 confined controls accepted/21 actual child receipts reviewed, fresh29-phase selfcheck passed. Durable crash/restart/trusted deployment still open.",
+    "manual": "Existing master unchanged; historical54-page QA. Optional DOCX appendix held after renderer handshaking failure before source open. Current operator/AI update guide is docs/github-updates.md; no new DOCX delivery claimed.",
+    "source_activation": "ALWAYS HELD",
+    "package": "No fresh post-documentation package build claimed by this source-validation snapshot. Build may follow reviewed docs; signing and clean-VM acceptance remain separate.",
+    "root_namespace_at_accepted_r10_snapshot": 1852,
+    "tooltip": "Applied six-sink literal-format fix: original one-pass/six-failure baseline became seven passes within final141 accepted controls, followed by a fresh29-phase selfcheck.",
+    "root_namespace_scope": "Actual final3-path application; accepted full R10 remains HEAD 943/source 1852 before these product changes.",
+    "scope": "Pre-release source-validation snapshot, not a live global main/app-state assertion. Later documentation, manual/package or guarded publication outcomes are recorded separately.",
+    "source_version": "1.14.0",
+    "preceding_public_checkpoint": 15,
+    "preceding_public_code_version": "1.13 repair checkpoint"
+  },
+  "pre_c3_full_regression_next_state": "Full R10 accepted exact HEAD943/source1852 snapshot. Later installer/tooltip source1853/HEAD e715 passed141 focused controls and fresh29-phase default selfcheck. Broader1.14 publication, package/new manual/trusted activation remain pending; no new full-after-these-changes claim.",
+  "c3_hosted_ci_and_source_repair": {
+    "state": "PUBLISHED_EXACT_HEAD_HOSTED_CI_FAILED_ORIGINAL_RESULT_RETAINED",
+    "commit": "c3b73e0583c338fa45b764a6c5849142ff5cbc2e",
+    "ci": {
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424262",
+      "result": "failure",
+      "successful_jobs": 8,
+      "failed_jobs": 4,
+      "total_jobs": 12
+    },
+    "security": {
+      "url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424183",
+      "result": "success",
+      "successful_jobs": 3,
+      "total_jobs": 3
+    },
+    "python_matrix": [
+      {
+        "python": "3.10",
+        "passed": 7612,
+        "failed": 6,
+        "skipped": 19,
+        "collected": 7637,
+        "native_exit": 1,
+        "seconds": 1338.16
+      },
+      {
+        "python": "3.11",
+        "passed": 7612,
+        "failed": 6,
+        "skipped": 19,
+        "collected": 7637,
+        "native_exit": 1,
+        "seconds": 1390.96
+      },
+      {
+        "python": "3.12",
+        "passed": 7612,
+        "failed": 6,
+        "skipped": 19,
+        "collected": 7637,
+        "native_exit": 1,
+        "seconds": 1441.42
+      },
+      {
+        "python": "3.13",
+        "passed": 7612,
+        "failed": 6,
+        "skipped": 19,
+        "collected": 7637,
+        "native_exit": 1,
+        "seconds": 1045.03
+      }
+    ],
+    "same_six_failure_nodes": [
+      "tests/test_observe_module_matrix.py::test_hidden_child_requires_explicit_run_before_any_preparation",
+      "tests/test_safe_response_session.py::test_read_only_session_is_approved_expiring_idempotent_and_persistent",
+      "tests/test_safe_response_session.py::test_session_rejects_shell_fields_scope_escape_expiry_and_tampering",
+      "tests/test_safe_response_session.py::test_active_session_rechecks_credential_revocation_before_query",
+      "tests/test_safe_response_session.py::test_legacy_saved_label_approvals_remain_history_without_execution_authority",
+      "tests/test_ugcap_witness.py::test_actual_private_mtls_pin_before_request_and_native_shutdown"
+    ],
+    "source_repair": {
+      "state": "APPLIED_FOCUSED238_AND_FRESH_DEFAULT29_ACCEPTED_NEW_PUBLICATION_AND_CI_PENDING",
+      "files": [
+        "tools/observe_module_matrix.py",
+        "tests/test_observe_module_matrix.py",
+        "tests/test_ugcap_witness.py",
+        "src/angerona/core/safe_response_session.py",
+        "tests/test_safe_response_session.py"
+      ],
+      "application_result_sha256": "b8923a7bca8e4162e3f89f7c3b36a26d171c8357595253c1fb464971cd9eeaf8",
+      "source_entries": 1853,
+      "source_after_sha256": "1679a6ebff860e434abc1685c5446ae3f4ec259eedd9d771d511ba7938f43d52",
+      "repair_commit": "NOT_YET_KNOWN",
+      "repair_hosted_ci": "NOT_YET_RUN",
+      "focused_acceptance": {
+        "state": "ACCEPTED_FOCUSED_EIGHT_FILE_ROOT_GATE",
+        "result_sha256": "8c2719503c5cb9d0bff36ab8985289e38c4582951cc1fedf07abb603460695f9",
+        "passed": 238,
+        "failed": 0,
+        "skipped": 0,
+        "collected": 238,
+        "native_exit": 0,
+        "acceptance_complete": true,
+        "seconds": 67.968,
+        "junit_seconds": 64.223,
+        "actual_module_origins": [
+          "tools.observe_module_matrix",
+          "angerona.core.safe_response_session",
+          "angerona.core.engine_transport",
+          "angerona.core.persistent_engine",
+          "angerona.core.response_broker",
+          "angerona.core.ugcap_witness"
+        ],
+        "source_head_logical_and_physical_index_runtime_harness_unchanged": true,
+        "two_same_generation_wait_object_0": true,
+        "both_native_exit_codes": [
+          0,
+          0
+        ],
+        "four_handles_closed": true,
+        "threads_at_atexit": [
+          "MainThread"
+        ],
+        "qapplication_none": true,
+        "top_level_widgets": 0,
+        "scope": "Eight-file regression scope for the applied five-file source/test repair; not a complete hosted matrix or a product-performance benchmark."
+      },
+      "default_selfcheck": {
+        "state": "ACCEPTED_FRESH_DEFAULT_ISOLATED_PROFILE_SELFCHECK",
+        "result_sha256": "970abb044990e3caf2573e10bd795d51502b001c929b5f7cccdb0ca1649c3256",
+        "passed_phases": 29,
+        "failed_phases": 0,
+        "native_exit": 0,
+        "acceptance_complete": true,
+        "seconds": 36.265,
+        "module_rows": 86,
+        "module_passed": 68,
+        "module_skipped": 18,
+        "separate_event_pipeline": "PASS",
+        "verifiers": 9,
+        "teardown": {
+          "widget_owners": 13,
+          "readers": 13,
+          "python_workers": 8,
+          "qt_workers": 0
+        },
+        "source_head_logical_and_physical_index_runtime_harness_unchanged": true,
+        "two_same_generation_wait_object_0": true,
+        "both_native_exit_codes": [
+          0,
+          0
+        ],
+        "four_handles_closed": true,
+        "threads_at_atexit": [
+          "MainThread"
+        ],
+        "qapplication_none": true,
+        "top_level_widgets": 0,
+        "scope": "Isolated default profile; explicit optional/platform skips remain visible. The separate pipeline is not a 69th module pass, and this is not active physical runtime proof for all 86 capabilities."
+      }
+    },
+    "cause_boundary": {
+      "TST-34": "Hidden-child no-run refusal was reached after resolving a nonexistent venv interpreter; source ordering proven.",
+      "AUTH-06": "Strict owner checks rejected persisted fresh response-session files; creator now binds the private-file owner to the token user. Legacy saved labels remain history without execution authority.",
+      "TST-35": "Python 3.10–3.12 witnessed ordinary fixture writes violating strict private ownership; Python 3.13 original header-drip readiness failure remains unexplained because its underlying OSError was not recorded."
+    },
+    "terminal_proof_sha256": "5284555faf1049256af64735b952ea8719aa95c408737646589ad9980f4cada9",
+    "failure_receipt_sha256": {
+      "failure-evidence-313.json": "5fc8b5c87dc7bae603d455c15319a010a31b1a270bf38f793ee771e946a20358",
+      "failure-evidence-remaining.json": "832f406fcc0f8e90a667be02683ba2bc9b33144ab0f54b093bb8af502ab29138"
+    },
+    "limits": "This preserves actual hosted failure history. No later local result, fixture correction, Security success, or new CI run replaces the original c3 failures. No product speedup, signed activation, independent authority deployment, or physical all-module efficacy is claimed.",
+    "issue_ids": [
+      "TST-34",
+      "AUTH-06",
+      "TST-35"
+    ]
+  }
 }

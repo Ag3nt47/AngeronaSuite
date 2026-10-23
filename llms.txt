@@ -14,7 +14,8 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Selfcheck reconciled86 module rows (68 passed/18 explicit skips), separate
   pipeline and nine verifiers.13 widget owners/13 readers/8 Python/0 Qt retired.
   Accounting and isolated tests do not prove physical runtime of all 86 sensors.
-- Registry 139 preserves all prior 138 IDs plus GUI-17. The original Qt1 PASS/6 FAIL
+- Registry 142 preserves all prior 139 IDs and adds TST-34/AUTH-06/TST-35.
+  The original Qt1 PASS/6 FAIL
   became 7 PASS after six literal-tooltip guards. This is formatting proof, not
   HTTP/file/script execution or security authority. Installer27 controls include
   21 actual native child receipts and six inert cases; durable crash/restart

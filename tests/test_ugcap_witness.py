@@ -420,6 +420,16 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
     from angerona.core.engine_transport import create_private_file
     from tools.ugcap_witness_server import WitnessHTTPServer, handler_for
 
+    def write_private(path, data):
+        descriptor = create_private_file(path)
+        try:
+            stream = os.fdopen(descriptor, "wb")
+        except BaseException:
+            os.close(descriptor)
+            raise
+        with stream:
+            stream.write(data)
+
     folder = witness.authority.path.parent
     ca_key = ec.generate_private_key(ec.SECP256R1())
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Inert local witness CA")])
@@ -442,18 +452,15 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
                 x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
         cert = builder.sign(ca_key, hashes.SHA256())
         cert_path, key_path = folder / (name + ".pem"), folder / (name + "-key.pem")
-        cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-        descriptor = create_private_file(key_path)
-        import os
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                           serialization.NoEncryption()))
+        write_private(cert_path, cert.public_bytes(serialization.Encoding.PEM))
+        write_private(key_path, key.private_bytes(serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
         return cert, cert_path, key_path
 
     server_cert, server_path, server_key = certificate("server", ExtendedKeyUsageOID.SERVER_AUTH, ip=True)
     _client_cert, client_path, client_key = certificate("client", ExtendedKeyUsageOID.CLIENT_AUTH)
     ca_path = folder / "ca.pem"
-    ca_path.write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+    write_private(ca_path, ca.public_bytes(serialization.Encoding.PEM))
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(server_path, server_key)
@@ -468,6 +475,7 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
         signer=witness.host, authority_verifier=witness.remote.public_verifier(), clock=lambda: NOW,
         client_certificate_path=str(client_path), client_key_path=str(client_key), ca_bundle_path=str(ca_path))
     drip_thread = None
+    drip_socket = None
     stop_drip = threading.Event()
     try:
         bad_pin = WitnessClient(certificate_sha256="f" * 64, **kwargs)
@@ -479,22 +487,36 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
         assert client.exchange(observation(), heartbeat=True).status == "matched"
         # An authorized peer drips an unfinished request line faster than the
         # per-recv timeout. Shutdown still drains it at the total deadline.
+        # Complete bounded client setup before measuring the drip worker's
+        # first-byte readiness; setup failures must reach the test directly.
+        drip_context = ssl.create_default_context(cafile=str(ca_path))
+        drip_context.load_cert_chain(str(client_path), str(client_key))
+        drip_raw = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
+        try:
+            drip_socket = drip_context.wrap_socket(drip_raw, server_hostname="127.0.0.1")
+        except BaseException:
+            drip_raw.close()
+            raise
         started = threading.Event()
+        drip_failure = []
+
         def drip():
-            context = ssl.create_default_context(cafile=str(ca_path))
-            context.load_cert_chain(str(client_path), str(client_key))
+            phase = "first-byte"
             try:
-                with socket.create_connection(("127.0.0.1", server.server_port), timeout=2) as raw:
-                    with context.wrap_socket(raw, server_hostname="127.0.0.1") as secured:
-                        secured.sendall(b"P")
-                        started.set()
-                        while not stop_drip.wait(.05):
-                            secured.sendall(b"x")
-            except OSError:
-                pass
+                with drip_socket as secured:
+                    secured.sendall(b"P")
+                    started.set()
+                    phase = "dripping"
+                    while not stop_drip.wait(.05):
+                        secured.sendall(b"x")
+            except OSError as exc:
+                drip_failure.append({"phase": phase, "type": type(exc).__name__,
+                                     "errno": exc.errno, "winerror": getattr(exc, "winerror", None)})
+
         drip_thread = threading.Thread(target=drip, name="InertWitnessHeaderDrip")
         drip_thread.start()
-        assert started.wait(3)
+        assert started.wait(3), {"failure": drip_failure, "worker_alive": drip_thread.is_alive(),
+                                "server_alive": thread.is_alive()}
     finally:
         import time
         closing = time.monotonic()
@@ -502,8 +524,11 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
         server.server_close()
         thread.join(3)
         stop_drip.set()
-        if drip_thread is not None:
+        if drip_thread is not None and drip_thread.ident is not None:
             drip_thread.join(3)
+        if drip_socket is not None and (
+                drip_thread is None or drip_thread.ident is None or not drip_thread.is_alive()):
+            drip_socket.close()
         assert time.monotonic() - closing < 5
     assert not thread.is_alive()
     assert drip_thread is None or not drip_thread.is_alive()
@@ -514,12 +539,10 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
     from tools import ugcap_witness_server as cli
     host_public = folder / "enrolled-host-public.pem"
     authority_private = folder / "authority-private.pem"
-    host_public.write_bytes(witness.host.public_verifier()._public_key.public_bytes(
+    write_private(host_public, witness.host.public_verifier()._public_key.public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo))
-    descriptor = create_private_file(authority_private)
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(witness.remote._private_key.private_bytes(serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    write_private(authority_private, witness.remote._private_key.private_bytes(serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     stopped = []
     class InertServer:
         def __init__(self, *args, tls_context):

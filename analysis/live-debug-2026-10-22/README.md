@@ -19,36 +19,39 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Source-validation cutoff before release preparation (2026-10-23)
+## Current source and hosted CI evidence (2026-10-23)
 
-Frozen full R10 accepted 7,554/0/49 across 7,603 cases/native 0 for unchanged
-HEAD 943/source 1,852/index/runtime/harness. Both exact generations retired, four
-handles closed, MainThread/no QApplication/zero widgets; all 26 origins loaded.
-The canonical two-launch GUI case passed. Timing is not a product benchmark.
+Published v1.14 commit [c3b73e0](https://github.com/Ag3nt47/AngeronaSuite/commit/c3b73e0583c338fa45b764a6c5849142ff5cbc2e)
+completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424262)
+with eight successful jobs and four failed Python jobs. Every Python 3.10–3.13
+job recorded 7,612 passes, six failures and 19 skips across 7,637 cases/native 1.
+[Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424183)
+passed all three jobs; that does not make CI green. The six node failures belong
+to three families: hidden-child guard ordering (TST-34), response-session private
+file ownership and its legacy fixture (AUTH-06), and witness fixture custody
+(TST-35). The original Python 3.13 header-drip startup cause remains unknown:
+its underlying OSError was not recorded. No later result overwrites this history.
 
-Later corrected source 1,853/HEAD e715 passed 141 controls (27 installer/26 page/
-67 news/3 release/18 authority) and fresh default 29-phase selfcheck. Original Qt
-formatting baseline 1 PASS/6 FAIL became sevenPASS.21 actual PS5.1 receipts closed
-without handle gaps; six inert failure controls are not physical-process proof.
-The selfcheck reconciled86 module rows 68PASS18 SKIP plus separate pipeline/nine
-verifiers;13 widgets/13 readers/8 Python/0 Qt retired. Its isolated profile is
-not all 86-module physical runtime evidence. Later focused acceptance is separate
-from the earlier full snapshot. Registry:139 IDs, all prior 138 plus GUI-17.
+The applied five-file follow-up passed 238 controls across eight test files
+(64.223 seconds JUnit/67.968 outer), then a fresh default 29-phase selfcheck
+(36.265 seconds outer). Both accepted gates preserved the 1,853-entry source,
+HEAD, logical and physical index, runtime and harness. Each retired both exact
+process generations with native 0 and four closed handles, MainThread only,
+no QApplication and zero widgets. The selfcheck reconciled 68 passed and 18
+explicitly skipped module rows, plus a separate passing pipeline and nine
+verifiers; 13 widget owners, 13 readers and eight Python workers retired.
+These are scoped source checks, not a new hosted full-matrix pass, all-module
+physical runtime evidence or a speed benchmark. At this source-validation cutoff,
+no follow-up publication SHA or hosted CI result was claimed.
 
-The preceding checkpoint 15/e715 was published and root-integrated without
-working-source edits.
-It was a public v1.13 test repair. Its 25-control
-gate, exact CI 12/12 and Security 3/3 passed; every Python run 6131/18/native 0.
-Historical CI 14 lexical failures and original a74 GUI/Forge causes remain.
-
-Historical R7 (7489/1/49), R6c (7451/5/49), selected baselines, rejected73/Dummy
-and public five-pass/worker-residue gates remain linked below and in validation.
-R7’s actual pacing/refusal/capture and old C0/Pulse causes are not retroactively
-closed. Daily/setup179 plus one optional skip leaves activation ALWAYS HELD.
-Installer preservation27 accepted still leaves durable crash/restart/deployment
-trust open. The Markdown update guide is current; the optional DOCX appendix remains held.
-No fresh post-doc package build is claimed by this validation snapshot.
-External priority/TempGuard policy is context, not starvation/deletion cause.
+The earlier frozen full R10 accepted 7,554/0/49 across 7,603 cases for its own
+source cutoff; later installer/tooltip work separately passed 141 controls and
+a default 29-phase selfcheck. Original R7/R6c/CI 14/a74 failures, unknown causes
+and deployment gaps remain preserved below and in validation. Registry: 142
+unique IDs, with all prior 139 objects and their order retained. Daily checks
+default OFF, and source activation remains ALWAYS HELD. No independent witness
+deployment, signed installation, new DOCX acceptance or performance improvement
+is established by these regression results.
 
 ## Issue map
 
@@ -193,6 +196,9 @@ External priority/TempGuard policy is context, not starvation/deletion cause.
 | UPD-03 | Packaged installer cleanup can discard previous payload backups after a failed restoration | Original source could discard previous payload after failed restoration; no observed host data-loss incident was attributed. Reviewed preservation source passed 27 confined controls within accepted 141, native 0 with exact retirement. Twenty-one actual PS5.1 child receipts were reviewed:19 normal0/two intentional abrupt99, all process/stdio handles closed/no gaps; six inert failure controls are not physical-process proof. Earlier R3/R4/R5 plans remain historical. Durable crash reconciliation, forward file-object leases, administrator/ACL/disk-full races, restart health and trusted activation/signing remain open. Source-stage activation is separate. |
 | TST-33 | Foreign Qt-thread identity observation leaves a Dummy bookkeeping object in a rejected gate journal | The first selected successor passed 73 assertions/native 0 but acceptance rejected MainThread+Dummy-2. CPython foreign-thread Dummy bookkeeping and actual QThread.wait do not prove a live OS thread or leak. The applied identity-observer correction passed 73/native 0 with MainThread-only retirement under unchanged strict criteria; the original rejected journal remains, without filtering. |
 | GUI-17 | External plain summaries can become Qt tooltip markup after entity decoding | Original Qt baseline passed one canary and failed six formatting controls: four image-format interpretations and two entity-text redecodes. Six external tooltip sinks now escape literal text through trusted Qt wrapping. All seven controls passed in the accepted 141-case installer/page/news/release/authority gate, native 0 with exact clean retirement. Runtime HTTP/file/script execution or response/trust authority was not proved. Full R10 predates this correction; its coverage is separate. |
+| TST-34 | Hidden-child no-run refusal occurs after resolving a nonexistent venv interpreter | All four c3 hosted Python jobs failed the same hidden-child refusal test. Source ordering reached strict interpreter resolution before the explicit no-run guard. The applied guard now rejects the hidden child before runtime preparation; explicit missing-venv controls retain that boundary. The eight-file ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck, with unchanged inputs and exact retirement. This scoped result does not replace the original c3 failures or establish a new hosted-matrix pass. |
+| AUTH-06 | Fresh response-session files can receive a Windows default owner that fails strict token-user custody | Four safe-response-session tests failed in every c3 hosted Python job. The source repair creates new private files through the existing strict creator with token-user ownership; owner verification is not relaxed. The legacy saved-label fixture now uses the same strict private-file creation while its labels remain history without execution authority. The eight-file ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck, including the authority and revocation boundaries, with exact retirement. No host-compromise incident or later hosted-CI success is inferred. |
+| TST-35 | Witness integration fixture uses ordinary writes for files governed by strict private custody; original Python 3.13 drip startup cause is unknown | The c3 witness test failed on all four hosted Python versions. Python 3.10–3.12 retained an owner rejection for an ordinarily written fixture public key; fixture public keys, certificates and CA material now use strict private creation. Python 3.13 instead lacked the header-drip started event and its underlying OSError was not recorded, so that original startup cause remains unknown. The focused ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck with exact retirement. Later fixture acceptance does not causally explain or overwrite the original Python 3.13 failure, deploy an independent witness, or prove a new hosted-matrix pass. |
 
 ## Testing loop
 

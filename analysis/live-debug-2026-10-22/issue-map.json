@@ -842,6 +842,24 @@
       "cause_or_observation": "External plain summaries can become Qt tooltip markup after entity decoding",
       "result_and_limits": "Original Qt baseline passed one canary and failed six formatting controls: four image-format interpretations and two entity-text redecodes. Six external tooltip sinks now escape literal text through trusted Qt wrapping. All seven controls passed in the accepted 141-case installer/page/news/release/authority gate, native 0 with exact clean retirement. Runtime HTTP/file/script execution or response/trust authority was not proved. Full R10 predates this correction; its coverage is separate.",
       "status": "applied-original1pass6fail-to-sevenpass-combined141-accepted"
+    },
+    {
+      "id": "TST-34",
+      "cause_or_observation": "Hidden-child no-run refusal occurs after resolving a nonexistent venv interpreter",
+      "result_and_limits": "All four c3 hosted Python jobs failed the same hidden-child refusal test. Source ordering reached strict interpreter resolution before the explicit no-run guard. The applied guard now rejects the hidden child before runtime preparation; explicit missing-venv controls retain that boundary. The eight-file ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck, with unchanged inputs and exact retirement. This scoped result does not replace the original c3 failures or establish a new hosted-matrix pass.",
+      "status": "applied-focused238-default29-accepted-original-c3-failure-retained"
+    },
+    {
+      "id": "AUTH-06",
+      "cause_or_observation": "Fresh response-session files can receive a Windows default owner that fails strict token-user custody",
+      "result_and_limits": "Four safe-response-session tests failed in every c3 hosted Python job. The source repair creates new private files through the existing strict creator with token-user ownership; owner verification is not relaxed. The legacy saved-label fixture now uses the same strict private-file creation while its labels remain history without execution authority. The eight-file ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck, including the authority and revocation boundaries, with exact retirement. No host-compromise incident or later hosted-CI success is inferred.",
+      "status": "strict-token-user-private-file-creation-focused238-default29-accepted"
+    },
+    {
+      "id": "TST-35",
+      "cause_or_observation": "Witness integration fixture uses ordinary writes for files governed by strict private custody; original Python 3.13 drip startup cause is unknown",
+      "result_and_limits": "The c3 witness test failed on all four hosted Python versions. Python 3.10–3.12 retained an owner rejection for an ordinarily written fixture public key; fixture public keys, certificates and CA material now use strict private creation. Python 3.13 instead lacked the header-drip started event and its underlying OSError was not recorded, so that original startup cause remains unknown. The focused ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck with exact retirement. Later fixture acceptance does not causally explain or overwrite the original Python 3.13 failure, deploy an independent witness, or prove a new hosted-matrix pass.",
+      "status": "fixture-custody-corrected-focused238-default29-original313-cause-unknown"
     }
   ],
   "preserved_uncertainty": [
@@ -851,5 +869,5 @@
     "Eight module-health gaps remain in the instrumented all-eligible case; corrected classifications do not certify every diagnostic severity.",
     "Observer stage maxima need not be from one iteration and cannot attribute historical Qt stalls."
   ],
-  "review_status": "139 reviewed issues: fullR10 and later141/default29 accepted with exact retirement; original failures and explicit deployment gaps retained. Preceding CI15 is historical, not proof for a later publication head. Markdown operator/AI guide is current; optional DOCX appendix has no render/delivery acceptance."
+  "review_status": "142 reviewed issues: all prior 139 objects and their order preserved. Published c3 hosted CI retained six failures in each Python 3.10–3.13 job (7612 passed/19 skipped), CI8/12 and Security3/3. Applied five-file follow-up accepted238 focused controls plus fresh default29 with exact retirement; new publication and its hosted CI remain unproved. Original Python3.13 witness startup cause and deployment gaps remain open."
 }

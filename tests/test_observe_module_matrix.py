@@ -278,15 +278,21 @@ def test_supervisor_pending_exit_aborts_without_process_termination(tmp_path, mo
     assert any("no forced termination" in error for error in report["errors"])
 
 
-def test_hidden_child_requires_explicit_run_before_any_preparation(monkeypatch):
+def test_hidden_child_requires_explicit_run_before_any_preparation(monkeypatch, tmp_path):
     import os
     if os.name != "nt":
         pytest.skip("Windows matrix CLI")
-    repo = ROOT
-    with pytest.raises(ValueError, match="requires explicit --run"):
-        matrix.main(["--repo", str(repo), "--python", str(repo / "venv/Scripts/python.exe"),
-                     "--run-id", "no-child-created", "--child", "control"])
-    assert not (ROOT / ".tmp/module-observation-matrix/run-no-child-created").exists()
+    repo = tmp_path / "missing-checkout"
+
+    def reject_preparation(*_args, **_kwargs):
+        raise AssertionError("child rejection must precede path resolution")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(matrix.Path, "resolve", reject_preparation)
+        with pytest.raises(ValueError, match="requires explicit --run"):
+            matrix.main(["--repo", str(repo), "--python", str(repo / "venv/Scripts/python.exe"),
+                         "--run-id", "no-child-created", "--child", "control"])
+    assert not (repo / ".tmp/module-observation-matrix/run-no-child-created").exists()
 
 
 def test_venv_launcher_exit_does_not_prove_actual_core_exit(monkeypatch):

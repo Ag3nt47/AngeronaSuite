@@ -250,17 +250,21 @@ Later installer and tooltip changes passed **141 focused controls**, followed
 by a **29-phase default selfcheck** accounting for 86 module rows (68 passed,
 18 explicit skips), a separate pipeline and nine verifiers. These are separate
 validation scopes; the isolated selfcheck does not prove live coverage of every
-module. The [139-issue review](analysis/live-debug-2026-10-22/README.md) preserves
+module. The [142-issue review](analysis/live-debug-2026-10-22/README.md) preserves
 original failed gates, unknown historical causes and deployment gaps. Timings
 are not whole-product benchmarks, and simulated responses are not native
 detection efficacy.
 
-The preceding [e7154f4 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/e7154f45403fab584e4fdbce5f8ffb06d9f37d69)
-passed its own CI 12/Security 3; that historical CI does not validate a later
-publication head. Source staging grants no installation authority: activation
-remains held until independently trusted release, recovery and runtime checks
-are available. Installer preservation has confined acceptance; durable crash
-reconciliation, restart health and signed deployment remain separate gates.
+The published [c3b73e0 v1.14 snapshot](https://github.com/Ag3nt47/AngeronaSuite/commit/c3b73e0583c338fa45b764a6c5849142ff5cbc2e)
+finished [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424262) with
+**8 of 12 jobs passing**: each Python 3.10–3.13 job retained **6 failures,
+7,612 passes and 19 skips**. [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424183)
+passed all three jobs. The five-file follow-up passed **238 focused controls**
+and a fresh **29-phase default selfcheck**. These scoped results preserve the
+original hosted failures and do not establish a hosted CI pass for the follow-up.
+Source activation remains held until independently trusted release, recovery
+and runtime checks are available. Durable installer crash reconciliation,
+restart health and signed deployment remain separate gates.
 See the [update guide](docs/github-updates.md) and [validation evidence](analysis/live-debug-2026-10-22/validation.json).
 
 The [SpywareGuard, UGCAP and Enclave Mesh review](analysis/spyware-enclave-2026-10-21/README.md)

@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -537,21 +538,32 @@ class SafeResponseSessionManager:
         })
         if len(encoded) > MAX_STATE_BYTES:
             raise ValueError("response session state exceeds 16 MiB")
+        from angerona.core.engine_transport import create_private_file, verify_private
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self._path.with_suffix(
-            self._path.suffix + f".{os.getpid()}.tmp"
+            self._path.suffix + f".{os.getpid()}.{secrets.token_hex(8)}.tmp"
         )
+        descriptor = create_private_file(temporary)
         try:
-            with open(temporary, "xb") as stream:
+            try:
+                stream = os.fdopen(descriptor, "wb")
+            except BaseException:
+                os.close(descriptor)
+                raise
+            with stream:
                 stream.write(encoded)
                 stream.flush()
                 os.fsync(stream.fileno())
-            replace_with_retry(temporary, self._path)
-        finally:
+            verify_private(temporary)
             try:
-                temporary.unlink()
+                self._path.lstat()
             except FileNotFoundError:
                 pass
+            else:
+                verify_private(self._path)
+            replace_with_retry(temporary, self._path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def _verify_chain(
         self, session_id: str, transcript: tuple[TranscriptEvent, ...] | list[TranscriptEvent],

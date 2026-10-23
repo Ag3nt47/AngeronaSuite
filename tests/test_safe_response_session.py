@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import os
 from dataclasses import replace
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -7,6 +8,7 @@ from angerona.core.approval_identity import ApprovalIdentityVerifier, PrincipalC
 import pytest
 import threading
 
+from angerona.core.engine_transport import create_private_file, verify_private
 from angerona.core.response_broker import (
     ResponseBroker, ResponseOperation, ResponseProposal,
 )
@@ -75,6 +77,7 @@ def test_read_only_session_is_approved_expiring_idempotent_and_persistent(tmp_pa
     )
     spec = _spec()
     manager.create(spec)
+    verify_private(path)
     with pytest.raises(PermissionError, match="1 approval"):
         manager.open(spec.session_id)
     manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
@@ -88,6 +91,7 @@ def test_read_only_session_is_approved_expiring_idempotent_and_persistent(tmp_pa
     )
     assert replay["replayed"] and same == event and len(calls) == 1
     receipt = manager.close_session(spec.session_id)
+    verify_private(path)
     assert manager.verify_receipt(receipt)
     assert manager.transcript(spec.session_id) == (event,)
 
@@ -246,8 +250,11 @@ def test_legacy_saved_label_approvals_remain_history_without_execution_authority
     spec = _spec()
     records = {spec.session_id: dict(spec=asdict(spec), state="active",
                 approvals=["analyst-002", "analyst-003"], transcript=[])}
-    path.write_text(json.dumps(dict(schema_version=1, records=records,
-        hmac=hmac.new(b"s" * 32, _canonical(records), hashlib.sha256).hexdigest())), encoding="utf-8")
+    encoded = json.dumps(dict(schema_version=1, records=records,
+        hmac=hmac.new(b"s" * 32, _canonical(records), hashlib.sha256).hexdigest())).encode("utf-8")
+    with os.fdopen(create_private_file(path), "wb") as stream:
+        stream.write(encoded)
+    verify_private(path)
     manager = SafeResponseSessionManager(path, b"s" * 32, broker, (_query(calls),), clock=lambda: 110)
     assert manager._records[spec.session_id]["legacy_approval_labels"] == ["analyst-002", "analyst-003"]
     with pytest.raises(PermissionError, match="authenticated approvals"):
@@ -291,3 +298,98 @@ def test_revoked_credential_discards_inflight_query_result(tmp_path):
     assert manager.transcript(spec.session_id)[0].outcome == "discarded-approval-revoked"
     manager.close()
     broker.close()
+
+
+def test_session_exclusive_temp_collision_preserves_existing_file(tmp_path, monkeypatch):
+    import angerona.core.safe_response_session as session_module
+
+    broker = _broker(tmp_path, [])
+    path = tmp_path / "sessions" / "sessions.json"
+    manager = SafeResponseSessionManager(
+        path, b"s" * 32, broker, (_query([]),), clock=lambda: 110,
+    )
+    monkeypatch.setattr(session_module.secrets, "token_hex", lambda _size: "c" * 16)
+    temporary = path.with_suffix(path.suffix + f".{os.getpid()}." + "c" * 16 + ".tmp")
+    with os.fdopen(create_private_file(temporary), "wb") as stream:
+        stream.write(b"pre-existing temporary bytes")
+    try:
+        with pytest.raises(FileExistsError):
+            manager.create(_spec())
+        assert temporary.read_bytes() == b"pre-existing temporary bytes"
+        verify_private(temporary)
+        assert not path.exists()
+        with pytest.raises(PermissionError, match="degraded"):
+            manager.open("session-001")
+    finally:
+        manager.close()
+        broker.close()
+
+
+def test_session_save_rejects_existing_destination_outside_private_boundary(tmp_path, monkeypatch):
+    import angerona.core.engine_transport as transport
+
+    broker = _broker(tmp_path, [])
+    path = tmp_path / "sessions" / "sessions.json"
+    manager = SafeResponseSessionManager(
+        path, b"s" * 32, broker, (_query([]),), clock=lambda: 110,
+    )
+    spec = _spec()
+    manager.create(spec)
+    original = path.read_bytes()
+    entries = {candidate.name for candidate in path.parent.iterdir()}
+    verify = transport.verify_private
+
+    def reject_destination(candidate, *, directory=False):
+        if candidate == path and not directory:
+            raise transport.EngineError("Inert foreign destination owner")
+        verify(candidate, directory=directory)
+
+    monkeypatch.setattr(transport, "verify_private", reject_destination)
+    try:
+        with pytest.raises(transport.EngineError, match="foreign destination owner"):
+            manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
+        assert path.read_bytes() == original
+        assert {candidate.name for candidate in path.parent.iterdir()} == entries
+        with pytest.raises(PermissionError, match="degraded"):
+            manager.open(spec.session_id)
+    finally:
+        manager.close()
+        broker.close()
+
+
+def test_session_fdopen_failure_closes_descriptor_and_removes_owned_temp(tmp_path, monkeypatch):
+    import angerona.core.engine_transport as transport
+    import angerona.core.safe_response_session as session_module
+
+    broker = _broker(tmp_path, [])
+    path = tmp_path / "sessions" / "sessions.json"
+    manager = SafeResponseSessionManager(
+        path, b"s" * 32, broker, (_query([]),), clock=lambda: 110,
+    )
+    create = transport.create_private_file
+    allocated = []
+
+    def capture_create(candidate):
+        descriptor = create(candidate)
+        allocated.append((candidate, descriptor))
+        return descriptor
+
+    def reject_fdopen(_descriptor, _mode):
+        raise OSError("Inert fdopen failure before descriptor handoff")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(transport, "create_private_file", capture_create)
+            patch.setattr(session_module.os, "fdopen", reject_fdopen)
+            with pytest.raises(OSError, match="before descriptor handoff"):
+                manager.create(_spec())
+        assert len(allocated) == 1
+        temporary, descriptor = allocated[0]
+        assert not temporary.exists() and not path.exists()
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+        with pytest.raises(PermissionError, match="degraded"):
+            manager.open("session-001")
+    finally:
+        manager.close()
+        broker.close()

@@ -884,6 +884,8 @@ def main(argv=None):
         raise ValueError("This harness currently supports Windows source observation only")
     if not args.repo.is_absolute() or not args.python.is_absolute():
         raise ValueError("--repo and --python must be explicit absolute paths")
+    if args.child and (not args.run or not re.fullmatch(r"[a-z0-9-]{1,150}", args.child)):
+        raise ValueError("Child mode requires explicit --run and a fixed case ID")
     repo = args.repo.resolve(strict=True)
     script = Path(__file__).resolve(strict=True)
     if (not script.is_relative_to(repo) or not (repo / "src" / "angerona").is_dir()
@@ -894,8 +896,6 @@ def main(argv=None):
         raise ValueError("Invalid bounded run ID")
     if not 5 <= args.duration <= 3600 or not 1 <= args.max_cases <= 128:
         raise ValueError("Duration/case count exceeds reviewed limits")
-    if args.child and (not args.run or not re.fullmatch(r"[a-z0-9-]{1,150}", args.child)):
-        raise ValueError("Child mode requires explicit --run and a fixed case ID")
     sys.dont_write_bytecode = True
     sys.path[:0] = [str(repo / "src"), str(repo)]
     from angerona.core.privilege import is_admin
