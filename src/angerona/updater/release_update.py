@@ -455,6 +455,12 @@ def _fetch_worker(url: str, target: str, expected: int, maximum: int, seconds: f
 
 def fetch_release_file(url: str, target: Path, expected: int, maximum: int, seconds: float) -> None:
     """Bound DNS, redirects and slow response bodies with an owned process."""
+    if (
+        type(seconds) not in (int, float)
+        or not math.isfinite(seconds)
+        or not 0 < seconds <= DOWNLOAD_SECONDS
+    ):
+        raise ValueError("The release download deadline is invalid.")
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(
@@ -563,7 +569,9 @@ def download_release(
             (candidate.checksum, MAX_CHECKSUM_BYTES),
             (candidate.archive, MAX_ARCHIVE_BYTES),
         ):
-            remaining = deadline - time.monotonic()
+            # Floating-point deadline subtraction can exceed the original
+            # budget by an ULP even when the monotonic clock has not advanced.
+            remaining = min(seconds, deadline - time.monotonic())
             if remaining <= 0:
                 raise ReleaseUpdateError("The release download deadline expired.")
             transport(candidate.url(asset), pending / asset.name, asset.size, maximum, remaining)

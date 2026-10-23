@@ -9,6 +9,7 @@ import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -65,6 +66,75 @@ def staged(tmp_path, *, action="install"):
         selected, approval, tmp_path / "stages", fetch=lambda _: metadata(), transport=transport
     )
     return downloaded, approval
+
+
+@pytest.mark.parametrize("start,budget", [(1234.56789, 900), (0.2, 0.1)])
+def test_download_budget_clamps_rounding_overshoot_without_resetting_deadline(
+    tmp_path, monkeypatch, start, budget
+):
+    # These clocks reproduce the production failure on IEEE-754 doubles.
+    assert (start + budget) - start > budget
+    ticks = iter([start, start, start + budget / 2])
+    monkeypatch.setattr(updates, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    budgets = []
+
+    def bounded_transport(url, target, expected, maximum, seconds):
+        assert 0 < seconds <= budget <= updates.DOWNLOAD_SECONDS
+        budgets.append(seconds)
+        transport(url, target, expected, maximum, seconds)
+
+    selected = candidate()
+    download = updates.download_release(
+        selected,
+        updates.approve_release(selected, action="download", accepted=True),
+        tmp_path,
+        fetch=lambda _: metadata(),
+        transport=bounded_transport,
+        seconds=budget,
+    )
+    assert download.archive.read_bytes() == ARCHIVE
+    assert budgets[0] == budget
+    assert budgets[1] == pytest.approx(budget / 2)
+
+
+def test_download_expired_shared_deadline_does_not_start_second_asset(tmp_path, monkeypatch):
+    ticks = iter([100.0, 100.0, 101.0])
+    monkeypatch.setattr(updates, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    requested = []
+
+    def bounded_transport(url, target, expected, maximum, seconds):
+        requested.append(url)
+        transport(url, target, expected, maximum, seconds)
+
+    selected = candidate()
+    with pytest.raises(updates.ReleaseUpdateError, match="deadline expired"):
+        updates.download_release(
+            selected,
+            updates.approve_release(selected, action="download", accepted=True),
+            tmp_path,
+            fetch=lambda _: metadata(),
+            transport=bounded_transport,
+            seconds=1,
+        )
+    assert len(requested) == 1 and requested[0].endswith(".sha256")
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "seconds", [None, False, True, 0, -1, float("nan"), float("inf"), 900.0000000000002]
+)
+def test_network_worker_rejects_invalid_budget_before_child_creation(
+    tmp_path, monkeypatch, seconds
+):
+    monkeypatch.setattr(
+        updates.multiprocessing,
+        "get_context",
+        lambda *_: pytest.fail("Invalid budgets cannot start a networking child"),
+    )
+    with pytest.raises(ValueError, match="deadline is invalid"):
+        updates.fetch_release_file(
+            "https://github.com/unused", tmp_path / "unused.zip", 1, 1, seconds
+        )
 
 
 def test_only_fixed_canonical_signed_asset_urls_and_identity_are_used():

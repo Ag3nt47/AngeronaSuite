@@ -137,6 +137,18 @@ check succeeded and the next invocation reused its daily result; no stable
 release was published to offer. No live installation or restart-health result
 is claimed.
 
+The first full Python 3.10 CI run of helper commit
+`f848c01228f325ed0ca8ffb2091459554036bb4f` reported **6 failed, 7,859 passed and
+19 skipped**. All six failures exposed a floating-point timeout handoff of
+`900.0000000000002` seconds. The handoff now clamps remaining time to the
+original approved budget, and networking workers reject invalid budgets before
+creating a child. Deterministic regressions cover both 900-second and
+0.1-second rounding, elapsed budget reduction and shared-deadline expiry.
+The follow-up focused gate passed **139 tests**. Its first attempt also observed
+one unexplained Windows staging-rename permission failure; that exact case and
+the complete focused gate passed reruns. No permission or rename behavior was
+relaxed. Full CI results must be checked for the follow-up commit separately.
+
 **Activation: HELD.** Checking, preparing and reviewing a stage do not install it.
 
 Static validation checks candidate hashes, Python syntax, required entry
