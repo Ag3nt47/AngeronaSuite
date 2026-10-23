@@ -44,6 +44,7 @@ import uuid
 
 from angerona import __version__
 from angerona.core.durable_outbox import (
+    MAX_ENQUEUE_BATCH_ITEMS,
     DurableOutbox,
     OutboxFull,
     load_or_create_outbox_key,
@@ -333,21 +334,34 @@ class SIEMForwarderModule(BaseModule):
             max_bytes=128 * 1024 * 1024,
         )
 
+    def _stage_outbox_chunk(self, entries) -> int:
+        try:
+            return self._outbox.enqueue_many(entries)
+        except OutboxFull:
+            # The atomic batch rolled back. Preserve per-item progress when
+            # retained dead letters or bytes leave only part of a chunk free.
+            return sum(int(self._outbox.enqueue(item_id, payload, now=stamp))
+                       for item_id, payload, stamp in entries)
+
     def _stage_bus_delta(self) -> int:
         if self._bus is None or self._outbox is None:
             return 0
         revision, events, overflow = self.read_bus_events()
         staged = 0
+        pending = []
         for ev in events:
             if int(getattr(ev, "severity", Severity.INFO)) < int(self.min_sev):
                 continue
             if getattr(ev, "module", "") == self.NAME:
                 continue
-            staged += int(self._outbox.enqueue(
+            pending.append((
                 self._stable_event_id(ev),
                 {"cef": self._format_event(ev)},
-                now=float(getattr(ev, "ts", time.time())),
+                float(getattr(ev, "ts", time.time())),
             ))
+            if len(pending) == MAX_ENQUEUE_BATCH_ITEMS:
+                staged += self._stage_outbox_chunk(pending)
+                pending.clear()
         if overflow:
             gap = Event(
                 self.NAME,
@@ -360,11 +374,14 @@ class SIEMForwarderModule(BaseModule):
                     "response_authorized": False,
                 },
             )
-            staged += int(self._outbox.enqueue(
+            pending.append((
                 f"siem-gap-{revision}",
                 {"cef": self._format_event(gap), "ingress_gap": True},
-                now=gap.ts,
+                gap.ts,
             ))
+        if pending:
+            staged += self._stage_outbox_chunk(pending)
+        if overflow:
             self._ingress_gaps += 1
             self.set_health(
                 45,

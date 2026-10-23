@@ -21,7 +21,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 
-from angerona.core.sigma_engine import match
+from angerona.core.sigma_engine import _RuntimeSigmaPlan, match
 
 MAX_PACKAGE_BYTES = 256 * 1024
 MAX_SELECTIONS = 32
@@ -236,6 +236,14 @@ class DetectionPackage:
         try:
             candidate = _event(event) if isinstance(event, Mapping) else event
             return bool(match({"detection": self.document["logic"]["detection"]}, candidate))
+        except Exception:
+            return False
+
+    def _evaluate_runtime_plan(self, plan: _RuntimeSigmaPlan, event: Any) -> bool:
+        """Evaluate only a bound runtime plan after the runtime verifies its rule."""
+        try:
+            candidate = _event(event) if isinstance(event, Mapping) else event
+            return bool(plan.matches(candidate))
         except Exception:
             return False
 

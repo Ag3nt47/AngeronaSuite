@@ -68,7 +68,7 @@ jobs:
           ANGERONA_PYTEST_EXIT_PATH: ${{ runner.temp }}/angerona-pytest-exit.jsonl
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
-          python -X faulthandler -m tools.ci_pytest -q -p tools.pytest_execution_trace
+          python -X faulthandler -m tools.ci_pytest -q -p tools.pytest_execution_trace --durations=25 --durations-min=1.0
           $pytestExit = $LASTEXITCODE
           Write-Host "Pytest native process exit code: $pytestExit"
           try {

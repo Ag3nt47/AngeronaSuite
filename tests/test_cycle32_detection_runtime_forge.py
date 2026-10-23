@@ -345,18 +345,18 @@ def test_inflight_active_process_serializes_before_any_shadow_work(tmp_path, mon
     active_started = threading.Event()
     shadow_started = threading.Event()
     release_active = threading.Event()
-    original = DetectionPackage.evaluate
+    original = DetectionPackage._evaluate_runtime_plan
 
-    def blocking_evaluate(self, event):
+    def blocking_evaluate(self, plan, event):
         command = str(event.get("cmdline", ""))
         if "active-block" in command:
             active_started.set()
             assert release_active.wait(5)
         elif "shadow-block" in command:
             shadow_started.set()
-        return original(self, event)
+        return original(self, plan, event)
 
-    monkeypatch.setattr(DetectionPackage, "evaluate", blocking_evaluate)
+    monkeypatch.setattr(DetectionPackage, "_evaluate_runtime_plan", blocking_evaluate)
     assert engine.submit(
         _event("active-inflight", "tool suspicious active-block"),
         include_shadow=False,

@@ -2,7 +2,7 @@
   "schema": "angerona.validation-progress.v1",
   "version": "1.14.0",
   "date": "2026-10-22",
-  "status": "144 issue IDs: published434 finishedCI11/12 andSecurity3/3;Python3.13 retained one failure and27 setup errors. Applied fixture follow-up accepted71 focused controls and fresh default29 with exact retirement;21 unique real PowerShell generations audited separately from ten inert controls. Original timeout and older c3 startup causes remain unknown; no new hosted pass claimed.",
+  "status": "148 issue IDs with all prior144 objects/order preserved. Applied source accepted255 tests/one POSIX-fork skip and fresh default29 on7cff; later workflow8 accepted complete1856/d64bd. R7 prior1854 observation completed with gaps; SCN-04 remains OPEN/unproven. Published28f4 CI11/12/Security3/3 and unknown timeout causes remain; no newer hosted full pass or deployment claim.",
   "raw_host_captures_published": false,
   "publication": {
     "state": "Preceding maintenance checkpoint15/e715 was published and its exact CI12/Security3 passed. These are historical checkpoint facts, not a current-main or later-head CI claim.",
@@ -5351,7 +5351,7 @@
     "after_minutes": 60,
     "scope": "One-line GitHub Actions Python matrix executor allowance; product deadlines unchanged. Static workflow validation and R7 workflow tests passed. No new publication or product speed claim."
   },
-  "full_regression_next_state": "Published434 terminalCI remains failed onlyPython3.13: one test failure plus27 cascading setup errors,7593 passed/19 skipped. Three other Python versions each7621 passed/19 skipped. Later scoped fixture71/default29 acceptance and exact retirement do not replace that failed hosted history, prove its original timeout cause or establish a later full hosted pass.",
+  "full_regression_next_state": "Latest reviewed published28f4 CI remains11/12:Python3.10 had7598 passes/19 skips/27 setup errors from an unknown45-second preflight timeout;Python3.11–3.13 each7625/19 passed. Later scoped source255/1 plus default29 and separate workflow8 gates are accepted at their own source cutoffs, not a new full hosted regression or causal timeout repair.",
   "queued_spyware_research": {
     "state": "QUEUED_DESIGNS_NOT_IMPLEMENTED",
     "provenance": "Parent-forwarded primary-source review; no additional independent validation claimed by this documentation task.",
@@ -5674,21 +5674,30 @@
   },
   "current_state": {
     "source_version": "1.14.0",
-    "source_head_at_fixture_followup": "43417d51df89b740d8a7b085517cb3ba2afc7236",
-    "root_namespace": 1854,
-    "source_after_release_diagnostics_application_sha256": "b10e1abaf02ffbc92754ad6369045e09de6ea9949af82a27932e5d8edae48093",
-    "issue_ids": 144,
-    "prior_142_issue_objects_and_order_preserved": true,
-    "latest_completed_hosted_full": "434:CI11/12 andSecurity3/3;Python3.10–3.12 each7621PASS19SKIP/native0;3.13 oneFAIL7593PASS19SKIP27SETUPERRORS/native1.",
-    "latest_focused_source_gate": "71PASS0FAIL0SKIP/native0; strict witness40 plus original release27 plus four new inert diagnostic controls.",
-    "latest_module_selfcheck": "Fresh default29PASS0FAIL/native0;86 module rows68PASS18SKIP plus separatePipelinePASS and nine verifiers. Not all86 physical runtime proof.",
-    "native_powershell_receipts": "21 unique real generations retired/handles+stdio closed:19 expected0 and two intentional99. Ten inert controls separate; seven retained mock receipts are not physical proof.",
-    "original_release_timeout_cause": "UNKNOWN; passing later controls is a nonreproduction, and new output markers do not reconstruct discarded original output.",
-    "older_c3_witness_startup_cause": "UNKNOWN;434 Missing Authority Key Identifier evidence is not retroactive proof.",
+    "head_at_source_validation": "28f4b29d362c858c81e89bdac8aba2f73d51b280",
+    "source_entries": 1856,
+    "source_before_documentation_sha256": "d64bd3358d8ebe56dd3887464cf20e8aea9b5ae4011926719acabe7fc890426b",
+    "issue_ids": 148,
+    "prior144_issue_objects_and_order_preserved": true,
+    "new_ids": [
+      "PER-13",
+      "PER-14",
+      "TST-38",
+      "SCN-04"
+    ],
+    "latest_completed_hosted_full": "28f4:CI11/12 plusSecurity3/3. Python3.11–3.13 each7625PASS19SKIP/native0;Python3.10 7598PASS19SKIP27SETUPERRORS/native1.",
+    "source_gate_cutoff": "12-path source7cff:255PASS1POSIX-forkSKIP/native0 and fresh default29 accepted.",
+    "workflow_gate_cutoff": "Later one-workflow source1856/d64bd:8PASS0FAIL0SKIP/native0; source/indices/runtime stable.",
+    "module_selfcheck": "68 modulePASS18 moduleSKIP=86 plus separate pipelinePASS/nine verifiers;13widget owners13readers8Python0Qt retired. No all86 physical runtime proof.",
+    "performance": "Sigma synthetic direct-call median wall31.8425–42.7175% lower; no GUI/end-to-end claim. Exporter COMMIT-count contract has no latency/throughput/power-loss metric.",
+    "R7_cutoff": "Prior1854/fabb isolated pair90.204s with gaps and5 response-ineligible events; not live validation of later1856 source.",
+    "SCN04": "OPEN potential Run-view alias; physical alias/dedup defect/benignity and exact target queries unproved at triage cutoff.",
+    "original_timeout_cause": "UNKNOWN; untimed old marker and later successful gates do not prove cause. Clock stability/producer chronology remain unproved.",
+    "older_c3_startup_cause": "UNKNOWN; later434 certificate evidence is not retroactive proof.",
     "source_activation": "ALWAYS HELD",
-    "new_publication_sha": "UNKNOWN_NOT_SUPPLIED",
+    "new_publication_sha": "NOT_SUPPLIED_BY_THESE_SOURCE_GATES",
     "new_hosted_ci": "NOT_PROVED",
-    "scope": "Actual434 hosted failure history plus accepted scoped fixture follow-up. No current global-main assertion, new full hosted pass, installer-defect attribution, independent authority deployment or signed activation."
+    "scope": "Dated reviewed source/observation evidence, not a current global-main assertion or new signed/deployed protection claim."
   },
   "public_requests_audit_backport": {
     "issue": "TST-30",
@@ -6239,6 +6248,360 @@
       "retained_inert_receipts": 7,
       "inert_receipts_are_native_process_proof": false,
       "scope": "Two unchanged abrupt-interruption tests intentionally require exit99. Some inert failure controls deliberately produce no receipt. Historical timeout cause remains UNKNOWN."
+    }
+  },
+  "post_28f4_source_followup": {
+    "state": "APPLIED_SOURCE_FOCUSED255_DEFAULT29_AND_LATER_WORKFLOW8_ACCEPTED",
+    "issue_ids_added": [
+      "PER-13",
+      "PER-14",
+      "TST-38",
+      "SCN-04"
+    ],
+    "source_application": {
+      "result_sha256": "1893935a71a1b554cfb45540351f049cf4f8f3ef2cdd3c135d8de80f6c462021",
+      "before_entries": 1854,
+      "after_entries": 1856,
+      "source_after_sha256": "7cff545a46a77682616d5ab1ae69580958fd575cc26124bdaac7a594d33c7b2b",
+      "existing_modified": 10,
+      "new_added": 2,
+      "unrelated_changes": 0,
+      "head_index_runtime_unchanged": true,
+      "static_result_sha256": "4eae6c51b9ced2a06d356f2f0a16b6b6807a606c20b355a688407d57da09dd5b",
+      "python310_ast_files": 12,
+      "static_source_imports": false,
+      "static_tests_run": false
+    },
+    "published_hosted_ci": {
+      "head": "28f4b29d362c858c81e89bdac8aba2f73d51b280",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290954",
+      "ci_conclusion": "failure",
+      "ci_successful_jobs": 11,
+      "ci_failed_jobs": 1,
+      "security_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290546",
+      "security_successful_jobs": 3,
+      "python_matrix": [
+        {
+          "python": "3.10",
+          "passed": 7598,
+          "failed": 0,
+          "setup_errors": 27,
+          "skipped": 19,
+          "collected": 7644,
+          "native_exit": 1,
+          "seconds": 787.79
+        },
+        {
+          "python": "3.11",
+          "passed": 7625,
+          "failed": 0,
+          "setup_errors": 0,
+          "skipped": 19,
+          "collected": 7644,
+          "native_exit": 0,
+          "seconds": 1377.6
+        },
+        {
+          "python": "3.12",
+          "passed": 7625,
+          "failed": 0,
+          "setup_errors": 0,
+          "skipped": 19,
+          "collected": 7644,
+          "native_exit": 0,
+          "seconds": 1327.55
+        },
+        {
+          "python": "3.13",
+          "passed": 7625,
+          "failed": 0,
+          "setup_errors": 0,
+          "skipped": 19,
+          "collected": 7644,
+          "native_exit": 0,
+          "seconds": 1156.74
+        }
+      ],
+      "terminal_proof_sha256": "5584137952b86dd10fb3334cc6fdf1bbf4696fa01329f1372bc22610952e3f20"
+    },
+    "focused": {
+      "result_sha256": "8bd0de53b85856244f442476690bc1c8fbe8703f820db5724d7d510229211351",
+      "passed": 255,
+      "failed": 0,
+      "skipped": 1,
+      "collected": 256,
+      "native_exit": 0,
+      "acceptance": true,
+      "junit_seconds": 292.027,
+      "console_seconds": 296.76,
+      "outer_seconds": 351.296,
+      "clock_values_are_distinct": true,
+      "skip_node": "tests/test_cycle34_round3_detection.py::test_forked_coordinator_cannot_use_or_unlock_parent_owner_lease",
+      "skip_reason": "POSIX fork semantics required",
+      "actual_root_origins": [
+        "angerona.core.sigma_engine",
+        "angerona.core.detection_packages",
+        "angerona.modules.detection_runtime",
+        "angerona.core.durable_outbox",
+        "angerona.modules.siem_forwarder",
+        "angerona.modules.remote_bridge"
+      ],
+      "source_head_index_runtime_harness_unchanged": true,
+      "both_generations_wait0_exit0": true,
+      "four_handles_closed": true,
+      "normal_atexit_threads": [
+        "MainThread"
+      ],
+      "qapplication_none": true,
+      "top_level_widgets": 0,
+      "scope": "17-file selected ROOT gate on source7cff, not a complete new regression or performance benchmark."
+    },
+    "default_selfcheck": {
+      "result_sha256": "265c8287d2ca0292943d2e7e1f43015ea94f9983f9b84f1b69ee29adee8b48d4",
+      "passed_phases": 29,
+      "failed_phases": 0,
+      "native_exit": 0,
+      "acceptance": true,
+      "outer_seconds": 140.203,
+      "module_rows": 86,
+      "module_pass": 68,
+      "module_skip": 18,
+      "separate_pipeline": "PASS",
+      "verifiers": 9,
+      "retired_widget_owners": 13,
+      "retired_readers": 13,
+      "retired_python_workers": 8,
+      "retired_qt_workers": 0,
+      "source_head_index_runtime_harness_unchanged": true,
+      "both_generations_wait0_exit0": true,
+      "four_handles_closed": true,
+      "normal_atexit_threads": [
+        "MainThread"
+      ],
+      "qapplication_none": true,
+      "top_level_widgets": 0,
+      "scope": "Fresh default isolated profile on source7cff; separate pipeline is not a69th module pass or all86 physical runtime proof."
+    },
+    "native_powershell_audit": {
+      "summary_sha256": "d7be2530c8fc495e906b83b705c03adf8a26086c24fa2f754a5d2530ac1a0565",
+      "unique_actual_generations": 21,
+      "all_wait0_and_handles_stdio_closed": true,
+      "expected_exit0": 19,
+      "intentional_exit99": 2,
+      "inert_controls": 14,
+      "retained_mock_receipts": 10,
+      "parent_wall_rows_available": true,
+      "parent_clock_stability": "UNPROVED",
+      "success_producer_stderr_retained": false,
+      "producer_chronology_claimed": false
+    },
+    "Sigma": {
+      "benchmark_summary_sha256": "9d6fbdcbeccabb54fcd8f4dbef103fb074ba14c7057322bcb614635415c88bf8",
+      "benchmark_result_sha256": "84d1a17b91d5e3f8f0bff07d397773071e417b84f2f6cdd669371d4329e5747c",
+      "rows": 108,
+      "genuine_verified_evaluations": 188928,
+      "vector_and_hit_parity": true,
+      "synthetic_direct_call_cases": 9,
+      "median_wall_reduction_percent": [
+        31.8425,
+        42.7175
+      ],
+      "thread_cpu_quantum_ms": 15.625,
+      "zero_cpu_sample_means_zero_cost": false,
+      "initial_32_rule_bind_wall_ms": 7.773,
+      "historical_interpreted_bind_baseline_available": false,
+      "per_event_verification_public_match_evaluate_admission_unchanged": true,
+      "scope": "Private synthetic direct-call comparison, not GUI/end-to-end sensor or whole-product performance."
+    },
+    "exporter": {
+      "maximum_batch_items": 100,
+      "maximum_canonical_payload_bytes_each": 262144,
+      "maximum_canonical_payload_bytes_total": 26214400,
+      "payload_limits_are_ram_bound": false,
+      "atomic_full_commit_before_cursor": true,
+      "fallback_only": "OutboxFull",
+      "authorization_conflict_commit_error_fallback": false,
+      "single_enqueue_ack_transport_unchanged": true,
+      "commit_contract": "Three single COMMITs compared with one atomic batch COMMIT.",
+      "elapsed_throughput_or_abrupt_power_loss_proof": false,
+      "scope": "Actual selected contract tests; no measured exporter speedup claimed."
+    },
+    "private_proposal_history": {
+      "Sigma_R1": {
+        "passed": 156,
+        "failed": 1,
+        "skipped": 1,
+        "native_exit": 1,
+        "acceptance": false,
+        "cause": "Depth6 fixture refused before compilation; original retained."
+      },
+      "Sigma_R2": {
+        "passed": 158,
+        "failed": 0,
+        "skipped": 1,
+        "total": 159,
+        "native_exit": 0,
+        "acceptance": true,
+        "change": "Fixture corrected to depth5 and explicit depth6 refusal added; existing limit retained."
+      },
+      "exporter_R1": {
+        "executed": false,
+        "state": "Blocked before reviewed R2; no fabricated test verdict."
+      },
+      "timing_R1": {
+        "executed": false,
+        "state": "Global-clock monkeypatch caught in review; R2 uses local SimpleNamespace."
+      }
+    },
+    "TST37_timing_followup": {
+      "new_issue_id": false,
+      "original_first_probe": "confinement-paths",
+      "original_native_wait_seconds": 45,
+      "owned_cleanup_wait_seconds": 10,
+      "setup_error_cascade": 27,
+      "old_stage": "confinement-done",
+      "old_marker_precision": "After WriteAllText, before Flush-return/Environment.Exit; untimed. It cannot prove a long post-script hang rather than near-deadline completion.",
+      "original_timeout_cause": "UNKNOWN",
+      "new_advisory_capture": "First/last retained2KiB marker tails; observed later marker proves the preceding Flush returned, not Exit entry/native finalization.",
+      "parent_wall_samples_available": true,
+      "producer_parent_clock_stability": "UNPROVED",
+      "success_producer_stderr_retained": false,
+      "successful_producer_chronology_claimed": false
+    },
+    "workflow": {
+      "application_result_sha256": "ef3a26f3176aa871277b838b6fc319d9e5a502957b5236a441702c5a7c30452d",
+      "application_utility_sha256": "05d78b7cbee4bb83bd3f4272b3dd941cbca8beb05855bee810ff0513a463e25f",
+      "target_before_sha256": "0bbcc037654d28557901ff4b903aba57b632e008e928455402f258288a79d62e",
+      "target_after_sha256": "6cf7a8abeae9a35f447ddd5e03e8e1bf8e56ef2c0d2acddee0294ed1cee7551c",
+      "owned_readonly_git_commands": 4,
+      "owned_git_generations_wait0_exit0_closed": true,
+      "immediate_CAS_full_source_inventory_claim": false,
+      "later_full_gate": {
+        "result_sha256": "3171036d1680576bd8054a298e6993bc7d8123ccd25f46737fb5c0f0005eaf31",
+        "passed": 8,
+        "failed": 0,
+        "skipped": 0,
+        "native_exit": 0,
+        "acceptance": true,
+        "junit_seconds": 15.44,
+        "outer_seconds": 46.141,
+        "source_entries": 1856,
+        "source_sha256": "d64bd3358d8ebe56dd3887464cf20e8aea9b5ae4011926719acabe7fc890426b",
+        "source_head_logical_and_physical_index_runtime_gate_unchanged": true,
+        "both_generations_wait0_exit0": true,
+        "four_handles_closed": true,
+        "threads_at_atexit": [
+          "MainThread"
+        ],
+        "qapplication_none": true,
+        "top_level_widgets": 0,
+        "actual_validator_origin": "tools.validate_workflow_policy",
+        "runner_main_target_witnessed": true
+      },
+      "duration_reporting": {
+        "top_phases": 25,
+        "minimum_phase_seconds": 1,
+        "partial_timeline_only": true,
+        "new_remote_timing_output_claimed": false
+      }
+    },
+    "private_workflow_application_R1": {
+      "utility_sha256": "de429b0d47c61da7f10d8aac7992f35e4e3e36f0dfff65273b438b1b7ab406d4",
+      "failure_receipt_sha256": "66a1e25aff01b4e892271414950082f11414333c4ec59cb2951fa80755266f51",
+      "control_proof_sha256": "c7837fe9685971a12faaae4ed4fe6ab6c2c92070d71ce372c78c89e026902863",
+      "native_exit": 1,
+      "seconds": 3.002,
+      "state": "PREWRITE_REFUSED",
+      "mutation_attempted": false,
+      "application_directory_absent": true,
+      "runtime_pins_matched": 10,
+      "frozen_pins_matched": 43,
+      "first_readonly_git_wait_row_durably_retained": false,
+      "precision": "Close() returned before erroneous _closed metadata access; this control-flow fact is not a retained per-Git WAIT receipt.",
+      "source_unchanged": true,
+      "R2": "Explicitly released one-property correction to installed .closed; actual CAS/later8 gate recorded separately.",
+      "new_product_issue_id": false
+    },
+    "R7_observation": {
+      "summary_sha256": "c0bd53d907ce1388abd2db4003803ea69e07d143ab184e3f7e2d25a676c04846",
+      "status": "EXECUTION_COMPLETE_OBSERVED_WITH_GAPS",
+      "revision": "28f4b29d362c858c81e89bdac8aba2f73d51b280",
+      "source_entries": 1854,
+      "source_sha256": "fabb2ee2af63d156073acd4868c2eb0920a35312bfe5908b7652e53a292b2bea",
+      "requested_seconds": 90,
+      "actual_seconds": 90.204,
+      "status_or_heartbeat_views": 347,
+      "scheduled_cycles_each": 18,
+      "full_persistence_scan_count": "NOT_SEPARATELY_MEASURED",
+      "validates_later1856_revision": false,
+      "core_admitted_same_retained_handle_wait0_exit0": true,
+      "both_outer_generations_wait0_exit0": true,
+      "four_outer_handles_closed": true,
+      "core_query_handle_closed": true,
+      "original_launcher_popen_handle_closure_claimed": false,
+      "threads_at_atexit": [
+        "MainThread"
+      ],
+      "qapplication_none": true,
+      "top_level_widgets": 0,
+      "coverage_gaps_remain": true,
+      "capture_dropped": 0,
+      "export_dropped": 0,
+      "event_count": 5,
+      "event_severities": {
+        "critical": 1,
+        "medium": 2,
+        "low": 2
+      },
+      "all_response_authorized_false": true,
+      "confirmed_threat_or_supported_false_positive_adjudication": false,
+      "R5": {
+        "actual_failure_seconds": 0.578,
+        "state": "FAILED",
+        "cause": "UNKNOWN; original private-read versus wrapper-sidecar EngineError ambiguity remains.",
+        "historical_core_native_retirement_proof": "UNPROVED",
+        "later_single_pid_absence_repairs_historical_wait_proof": false
+      },
+      "scope": "One prior-revision isolated pair run, not GUI/Black Box/scanner/full-suite efficacy or a causal closure of R5."
+    },
+    "R7_triage": {
+      "map_sha256": "73cbc83ca01dd9c5a87316fd2e5f27e7501e65207726608738b714f8ab22c0b8",
+      "query_plan_sha256": "077ec2bce2597428ad3758f541ab11e4af83927382860874df4f010cb434d767",
+      "recovery": "Explained fresh isolated unprovisioned deployment exposure, not an intrusion conclusion.",
+      "run_pair": "Equal exported value/command across views; physical alias/duplicate defect/benignity remain UNPROVEN.",
+      "services": "Two distinct lexical exposures; permissions/signatures/exploitability not established.",
+      "host_queries_executed_at_triage_cutoff": false,
+      "nested_export_fields": [
+        "source",
+        "id",
+        "command"
+      ],
+      "top_level_omission_count": 27,
+      "nested_loss_measured_by_that_count": false,
+      "export_id_command_limit": 512,
+      "redaction_can_change_text": true,
+      "SCN04": "OPEN candidate only; no suppression/allowlist/remediation or false-positive verdict."
+    },
+    "limits": "Original c3/434/28f4 and R5 failures stay intact. Source gates are distinct cutoffs; no new full hosted CI, all-module physical runtime, end-to-end performance, independent authority deployment, signed release, new Word render or trusted activation claim.",
+    "word_operator_cleanup": {
+      "receipt_sha256": "91b29f93a4dd8209e83dc4ecfe77c652a481f36a248bb5f5fb24f35f6d2a5856",
+      "authorization": "User reported Word was not in use; exact previously observed generation was revalidated.",
+      "graceful_close_requested": false,
+      "retained_handle_operator_termination": true,
+      "wait_object_0": true,
+      "intentional_native_exit": 1,
+      "ordinary_success_exit_zero": false,
+      "retained_handle_closed": true,
+      "preserved_source_entries": 1854,
+      "preserved_source_sha256": "fabb2ee2af63d156073acd4868c2eb0920a35312bfe5908b7652e53a292b2bea",
+      "preserved_head": "28f4b29d362c858c81e89bdac8aba2f73d51b280",
+      "source_head_index_runtime_unchanged": true,
+      "historical_renderer_ownership": "UNPROVED",
+      "COM_or_new_Word_activation": false,
+      "documents_opened_or_saved": false,
+      "new_render_or_visual_QA": false,
+      "existing_manual_sha256": "20e4f2f1f4f29977498bc9dd50e93c98ad4bf033b97e6fffd84e6441f743999f",
+      "private_appendix": "HELD_UNAPPLIED_UNRENDERED; no new manual acceptance."
     }
   }
 }

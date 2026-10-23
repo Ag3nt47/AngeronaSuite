@@ -193,15 +193,15 @@ def test_payload_authenticated_legacy_rows_receive_one_time_state_signature(
 
 
 def test_siem_cursor_advances_only_after_full_durable_stage(tmp_path, monkeypatch) -> None:
-    bus = EventBus(ring_size=20)
+    bus = EventBus(ring_size=200)
     module = SIEMForwarderModule()
     module.bind(bus)
     module.min_sev = Severity.INFO
     module._outbox = DurableOutbox(tmp_path / "siem.sqlite3", b"s" * 32)
-    for index in range(3):
+    for index in range(103):
         bus.publish(Event("sensor", f"event-{index}", Severity.HIGH, 100.0 + index, {}))
 
-    original_enqueue = module._outbox.enqueue
+    original_enqueue_many = module._outbox.enqueue_many
     calls = 0
 
     def fail_second(*args, **kwargs):
@@ -209,17 +209,18 @@ def test_siem_cursor_advances_only_after_full_durable_stage(tmp_path, monkeypatc
         calls += 1
         if calls == 2:
             raise OSError("injected durable write failure")
-        return original_enqueue(*args, **kwargs)
+        return original_enqueue_many(*args, **kwargs)
 
-    monkeypatch.setattr(module._outbox, "enqueue", fail_second)
+    monkeypatch.setattr(module._outbox, "enqueue_many", fail_second)
     with pytest.raises(OSError, match="injected"):
         module._stage_bus_delta()
     assert module._bus_revision == 0
+    assert module._outbox.stats().pending == 100
 
-    monkeypatch.setattr(module._outbox, "enqueue", original_enqueue)
-    assert module._stage_bus_delta() == 2  # event 0 is an idempotent replay
+    monkeypatch.setattr(module._outbox, "enqueue_many", original_enqueue_many)
+    assert module._stage_bus_delta() == 3  # first chunk is an idempotent replay
     assert module._bus_revision == bus.revision()
-    assert module._outbox.stats().pending == 3
+    assert module._outbox.stats().pending == 103
     module._outbox.close()
 
 

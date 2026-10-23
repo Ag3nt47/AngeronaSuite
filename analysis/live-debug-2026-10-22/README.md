@@ -21,39 +21,49 @@ providers' active-path, cancellation, executable, storage and offline limits.
 
 ## Current source and hosted CI evidence (2026-10-23)
 
-Published [43417d5](https://github.com/Ag3nt47/AngeronaSuite/commit/43417d51df89b740d8a7b085517cb3ba2afc7236)
-completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683336)
-with 11 successful jobs and one failed Python 3.13 job; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683286)
-passed all three. Python 3.10–3.12 each recorded 7,621 passes/19 skips across
-7,640 cases/native 0. Python 3.13 retained one failure, 7,593 passes, 19 skips
-and 27 setup errors/native 1. Security success does not make CI green.
+Published [28f4b29](https://github.com/Ag3nt47/AngeronaSuite/commit/28f4b29d362c858c81e89bdac8aba2f73d51b280)
+completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290954)
+with 11 successful jobs and one failed Python 3.10 job; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290546)
+passed all three. Python 3.11–3.13 each recorded 7,625 passes/19 skips across
+7,644 cases/native 0. Python 3.10 retained 7,598 passes, 19 skips and 27 setup
+errors/native 1, cascading from one 45-second confinement preflight. Its untimed
+confinement-done marker follows WriteAllText but precedes Flush-return/Exit;
+it cannot distinguish a long later hang from near-deadline completion. Cause
+remains unknown. New advisory clock markers do not reconstruct old chronology.
 
-The explicit TLS error proves the 434 witness fixture lacked an Authority Key
-Identifier (TST-36). Its standards-compliant correction passed 40 local Python
-3.12 controls with strict verification. This does not explain c3’s older
-swallowed witness startup failure; that original cause remains unknown.
-The 27 release setup errors cascade from one initial 45-second confinement
-preflight timeout. Its original output was discarded, so the underlying timeout
-cause remains unknown (TST-37). The helper now retains bounded failure output
-and advisory stage/retirement details without changing waits, retry/skip policy
-or the product installer. New markers do not recover old output or prove cause.
+The 12-path source follow-up passed 255 tests/one POSIX-fork platform skip and
+a fresh default 29-phase selfcheck on source 1,856/7cff. Both accepted gates
+preserved source/HEAD/indices/runtime/harness and retired both exact generations
+with native 0/four handles closed, MainThread only, no QApplication/zero widgets.
+Selfcheck reconciled 68 passed/18 skipped module rows, separate pipeline and nine
+verifiers; 13 widget owners, 13 readers and eight Python workers retired.
+A separate audit closed all 21 real PowerShell generations (19 expected exit 0/
+two intentional exit 99); 14 inert controls and ten mock receipts stay separate.
+Later, one workflow edit passed eight local workflow-policy and
+argument-preservation checks against complete source d64bd; that gate is separate
+from the earlier 7cff source checks.
 
-The joint ROOT gate passed 71 controls/no skips/native 0 (87.930 seconds JUnit/
-91.391 outer), followed by a fresh default 29-phase selfcheck (34.953 seconds).
-Both preserved source 1,854/HEAD 434, logical and physical indices, runtime and
-harness; both exact process generations retired/native 0 with four handles closed,
-MainThread only, no QApplication and zero widgets. Selfcheck accounted for 68
-passed and 18 skipped module rows, plus a separate passing pipeline/nine verifiers;
-13 widget owners, 13 readers and eight Python workers retired. The native receipt
-audit proved 21 unique real PowerShell generations retired with handles/stdio
-closed: 19 expected exit 0 and two intentional exit 99. Ten inert controls remain
-separate, including all four new cases; seven mock receipts are not native proof.
+PER-13 records immutable Sigma plans and a scoped synthetic direct-call benchmark.
+PER-14 records atomic FULL exporter batches and COMMIT-count contracts, not
+elapsed-time or power-loss evidence. Exact receipts, limits and private rejected
+or failed proposal histories are retained in validation.
 
-All prior 142 issue objects/order remain; the two new entries bring the register
-to 144. These source gates are a nonreproduction of the original timeout, not
-a causal repair or a new hosted CI pass. Original c3/R7/R6c failure history and
-deployment gaps remain preserved. No signed deployment, independent witness
-deployment or trusted activation is established by this source-validation cutoff.
+R7 observed the earlier published 1,854/fabb snapshot for 90.204 seconds: 347
+repeated status/heartbeat views and 18 scheduled cycles per module, not 18 full
+persistence scans. Core and both outer generations retired/exit 0; four outer
+handles and the retained core query handle closed. Original launcher Popen
+closure is not claimed. Coverage gaps and five response-ineligible events remain.
+The recovery finding is explained by a fresh isolated unprovisioned profile;
+two services are distinct lexical exposures. Two exported Run views may alias
+(SCN-04, OPEN); physical aliasing, duplicate defect and benignity remain unproved.
+Exact-target queries are unexecuted at the triage cutoff. Nested export fields
+are source/id/command; top-level omission counts do not measure nested loss.
+No confirmed spyware or supported false positive was adjudicated. R7 is a
+nonreproduction of R5, not causal closure or live proof for the later revision.
+
+The register has 148 unique IDs; all prior 144 issue objects/order are preserved.
+These scoped gates establish no new hosted full pass, all-module physical
+coverage, independent authority deployment, signed release or trusted activation.
 
 ## Issue map
 
@@ -203,6 +213,10 @@ deployment or trusted activation is established by this source-validation cutoff
 | TST-35 | Witness integration fixture uses ordinary writes for files governed by strict private custody; original Python 3.13 drip startup cause is unknown | The c3 witness test failed on all four hosted Python versions. Python 3.10–3.12 retained an owner rejection for an ordinarily written fixture public key; fixture public keys, certificates and CA material now use strict private creation. Python 3.13 instead lacked the header-drip started event and its underlying OSError was not recorded, so that original startup cause remains unknown. The focused ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck with exact retirement. Later fixture acceptance does not causally explain or overwrite the original Python 3.13 failure, deploy an independent witness, or prove a new hosted-matrix pass. |
 | TST-36 | Strict TLS verification rejects the witness fixture certificate for a missing Authority Key Identifier | Published 434 failed the witness test on Python 3.13 with an explicit Missing Authority Key Identifier error. The fixture now supplies CA Subject Key Identifier/critical Key Usage and leaf Authority Key Identifiers, with strict verification explicitly enabled on every supported Python version. The applied fixture passed 40 local Python 3.12 controls with strict verification. The joint changed-source gate then passed 71 controls/no skips/native 0 and a fresh default 29-phase selfcheck, with unchanged inputs and exact retirement. These scoped results do not establish a later hosted 3.13 pass or explain c3’s older swallowed startup failure, whose cause stays unknown. |
 | TST-37 | Release-fixture timeout handling discards output from the initial confinement preflight | Published 434 Python 3.13 retained 27 setup errors cascading from one 45-second confinement-paths PowerShell timeout. After the primary failure, stdout/stderr reads were skipped and temporary streams closed, leaving the original output unavailable. A later cleanup return code 1 is not the primary timeout cause. The applied helper captures failure-only bounded 2 KiB tails with explicit truncation/read faults, advisory stage and native phase/elapsed/retirement details, preserving the primary error, 45-second wait and 10-second cleanup; no retries, skips or product-installer changes. The joint gate passed 71 controls and a fresh default 29-phase selfcheck with exact retirement. A separate audit proved 21 unique real PowerShell generations retired with handles/stdio closed: 19 expected exit 0 and two intentional exit 99. Ten inert controls remain separate, including all four new cases; seven retained mock receipts are not native-process proof. Original timeout cause remains unknown after this nonreproduction, no product-installer defect is proved, and new markers are not retroactive causal evidence. |
+| PER-13 | Sigma runtime reconstructs immutable field and condition decisions for each active and shadow evaluation | Applied per-binding immutable runtime plans retain genuine per-event digest/canonical verification, unchanged public matching/evaluation and unchanged grammar/admission. The 17-file ROOT gate passed 255 tests with one POSIX-fork platform skip, followed by a fresh 29-phase selfcheck with exact retirement. A separate accepted synthetic direct-call benchmark recorded 108 rows/188928 genuine verified evaluations and full vector/hit parity; median wall time was 31.8425–42.7175% lower across nine cases. CPU samples are 15.625ms-quantized and zero samples are not zero cost. No GUI, end-to-end sensor or whole-product speed improvement is established. |
+| PER-14 | Exporters perform separate durable enqueue commits for a cohort that can share one atomic transaction | Applied exporters use at most 100 items per atomic FULL commit before cursor advancement. Canonical payload limits are 256KiB each/25MiB total, not a RAM bound. Fallback is restricted to OutboxFull; authorization, conflict and commit failures do not enter that fallback. Existing single enqueue, acknowledgement and transport contracts remain. The 17-file ROOT gate passed 255 tests with one POSIX-fork skip and a fresh 29-phase selfcheck, with exact retirement. The batch contract compares three single COMMITs with one batch COMMIT; it is not elapsed-time, throughput or abrupt-power-loss evidence. |
+| TST-38 | Private pair-observation state and fallible identity sidecar handling can leave core lifetime evidence unadmitted | R5 aborted after 0.578 seconds with ambiguous private-read/sidecar EngineError and missing historical core native retirement proof. A private observer successor creates protected run state, retains the core handle before fallible sidecar work and records nonraising stage diagnostics. R7 observed the earlier 1854/fabb snapshot for 90.204 seconds with 347 repeated status/heartbeat views and 18 scheduled cycles per module, not 18 full persistence scans. Core and both outer generations retired/exit 0; four outer handles and the retained core query handle closed. Original launcher Popen closure is not claimed. Coverage gaps and five response-ineligible events remain; no confirmed spyware or supported false positive was adjudicated. R7 is a nonreproduction, not R5 causal closure or live proof of the later 1856 revision; this is diagnostic-harness evidence, not a product protection upgrade. |
+| SCN-04 | Two exported Windows Run registry views share a value and command, suggesting a possible presentation duplicate | OPEN candidate only. The exported view identifiers differ while the observed value/command match; physical registry aliasing, a collector deduplication defect and benignity are unproven. Exact-target host queries remain preparation-only at this review cutoff. Exported nested evidence contains source/id/command; top-level omission counts do not measure nested loss, and redaction/length limits can affect comparison. The two services are distinct lexical configuration exposures, not duplicate or exploitation proof. No finding was suppressed, allowlisted, remediated or classified as a confirmed threat or supported false positive. |
 
 ## Testing loop
 

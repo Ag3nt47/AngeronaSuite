@@ -398,6 +398,146 @@ def _eval_condition(cond: str, results: dict, sels: dict) -> bool:
     return results.get(cond, False)
 
 
+@dataclass(frozen=True, slots=True)
+class _RuntimeSigmaField:
+    field: str
+    modifier: str
+    expected: tuple[str, ...]
+
+    def matches(self, fields: dict) -> bool:
+        value = fields.get(self.field)
+        actual = ("" if value is None else str(value)).lower()
+        if self.modifier == "contains":
+            return any(expected in actual for expected in self.expected)
+        if self.modifier == "startswith":
+            return any(actual.startswith(expected) for expected in self.expected)
+        if self.modifier == "endswith":
+            return any(actual.endswith(expected) for expected in self.expected)
+        return actual in self.expected
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeSigmaCondition:
+    operation: str
+    selectors: tuple[int, ...] = ()
+    children: tuple[_RuntimeSigmaCondition, ...] = ()
+
+    def matches(self, results: tuple[bool, ...]) -> bool:
+        if self.operation == "all":
+            return all(results[index] for index in self.selectors)
+        if self.operation == "any":
+            return any(results[index] for index in self.selectors)
+        if self.operation == "and":
+            return all(child.matches(results) for child in self.children)
+        if self.operation == "or":
+            return any(child.matches(results) for child in self.children)
+        return False
+
+
+@dataclass(frozen=True, slots=True)
+class _RuntimeSigmaPlan:
+    """Owned, immutable runtime data; never a trust or admission authority.
+
+    Only the package runtime binds these plans, after bounded JSON validation.
+    Public match retains its defensive validation on every call. A plan
+    neither retains caller containers nor generates or executes Python code.
+    """
+
+    selections: tuple[tuple[tuple[_RuntimeSigmaField, ...], ...], ...]
+    condition: _RuntimeSigmaCondition
+    negate: int | None = None
+
+    def matches(self, event) -> bool:
+        try:
+            fields = event_fields(event)
+            results = tuple(
+                any(all(field.matches(fields) for field in branch) for branch in selection)
+                for selection in self.selections
+            )
+            base = self.condition.matches(results)
+            return base and (self.negate is None or not results[self.negate])
+        except Exception:
+            return False
+
+
+def _runtime_condition(cond: str, names: tuple[str, ...]) -> _RuntimeSigmaCondition:
+    # Preserve _eval_condition's actual whitespace behavior, rather than using
+    # the admission check's normalized spelling to silently add new matches.
+    if not cond:
+        return _RuntimeSigmaCondition("any", tuple(range(len(names))))
+    if cond in {"all of them", "1 of them", "any of them"}:
+        selected = tuple(index for index, name in enumerate(names) if not name.startswith("_"))
+        if not selected:
+            return _RuntimeSigmaCondition("false")
+        return _RuntimeSigmaCondition("all" if cond == "all of them" else "any", selected)
+    pattern = re.fullmatch(r"(all|1) of ([a-z_][a-z0-9_-]*)\*", cond)
+    if pattern:
+        selected = tuple(
+            index for index, name in enumerate(names) if name.startswith(pattern.group(2))
+        )
+        if not selected:
+            return _RuntimeSigmaCondition("false")
+        return _RuntimeSigmaCondition("all" if pattern.group(1) == "all" else "any", selected)
+    if " or " in cond:
+        return _RuntimeSigmaCondition("or", children=tuple(
+            _runtime_condition(part.strip(), names) for part in cond.split(" or ")
+        ))
+    if " and " in cond:
+        return _RuntimeSigmaCondition("and", children=tuple(
+            _runtime_condition(part.strip(), names) for part in cond.split(" and ")
+        ))
+    if cond not in names:
+        return _RuntimeSigmaCondition("false")
+    return _RuntimeSigmaCondition("any", (names.index(cond),))
+
+
+def _compile_runtime_plan(detection: dict) -> _RuntimeSigmaPlan:
+    """Compile one owned, package-validated detection without widening support.
+
+    Package schema accepts some shapes that the defensive matcher refuses,
+    including null/float values, dotted/numeric selectors, wildcard literals,
+    mixed expressions, and case collisions. They remain inert false plans;
+    compilation must not turn them into binding failures or new detections.
+    The package schema excludes regular expressions and chained modifiers.
+    """
+    supported, _code, _reason = _rule_supported(
+        {"detection": detection}, require_rule_envelope=False
+    )
+    if not supported:
+        return _RuntimeSigmaPlan((), _RuntimeSigmaCondition("false"))
+    names = tuple(str(name).lower() for name in detection if name != "condition")
+    compiled = []
+    for name, selection in detection.items():
+        if name == "condition":
+            continue
+        branches = []
+        for branch in (selection if isinstance(selection, list) else [selection]):
+            fields = []
+            for key, expected in branch.items():
+                parts = key.split("|")
+                modifier = parts[1] if len(parts) == 2 else ""
+                if modifier.lower() == "re":
+                    # This private runtime compiler does not expand the package
+                    # schema or the separately supported public regex matcher.
+                    return _RuntimeSigmaPlan((), _RuntimeSigmaCondition("false"))
+                values = expected if isinstance(expected, list) else [expected]
+                fields.append(_RuntimeSigmaField(
+                    parts[0], modifier,
+                    tuple(("" if value is None else str(value)).lower() for value in values),
+                ))
+            branches.append(tuple(fields))
+        compiled.append(tuple(branches))
+    condition = str(detection.get("condition", "")).strip().lower()
+    negate = None
+    if " and not " in condition:
+        condition, _, negated = condition.partition(" and not ")
+        # _rule_supported has already proved that this selector exists.
+        negate = names.index(negated.strip())
+    return _RuntimeSigmaPlan(
+        tuple(compiled), _runtime_condition(condition.strip(), names), negate
+    )
+
+
 class SigmaSet:
     """A loaded set of admitted subset rules that can be evaluated locally."""
 

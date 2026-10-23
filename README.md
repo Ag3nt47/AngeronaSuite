@@ -246,26 +246,26 @@ local customizations and explicit conflicts. The frozen full R10 regression
 passed **7,554 tests with 49 skips and no failures**, with unchanged source,
 runtime and harness, exact native retirement and MainThread-only shutdown.
 
-Later installer and tooltip changes passed **141 focused controls**, followed
-by a **29-phase default selfcheck** accounting for 86 module rows (68 passed,
-18 explicit skips), a separate pipeline and nine verifiers. These are separate
-validation scopes; the isolated selfcheck does not prove live coverage of every
-module. The [144-issue review](analysis/live-debug-2026-10-22/README.md) preserves
-original failed gates, unknown historical causes and deployment gaps. Timings
-are not whole-product benchmarks, and simulated responses are not native
-detection efficacy.
+The latest follow-up adds immutable Sigma runtime plans and atomic durable
+exporter batches. It passed **255 tests with one POSIX-fork platform skip**,
+followed by a **29-phase default selfcheck** accounting for 86 module rows
+(68 passed/18 explicit skips), a separate pipeline and nine verifiers.
+A separate synthetic Sigma benchmark measured **31.8–42.7% lower median wall
+time** in direct-call cases; this is not an end-to-end dashboard or sensor result.
+The [148-issue review](analysis/live-debug-2026-10-22/README.md) preserves original
+failed gates, unknown causes, deployment gaps and an open registry-view candidate.
 
-The published [43417d5 follow-up](https://github.com/Ag3nt47/AngeronaSuite/commit/43417d51df89b740d8a7b085517cb3ba2afc7236)
-finished [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683336) with
-**11 of 12 jobs passing**; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683286)
-passed all three. Python 3.10–3.12 each passed **7,621 tests with 19 skips**.
-Python 3.13 retained **1 failure, 7,593 passes, 19 skips and 27 setup errors**:
-a strict certificate-fixture rejection and one confinement-preflight timeout
-cascading through setup. The joint fixture follow-up passed **71 controls** and
-a fresh **29-phase default selfcheck**, with exact retirement. The original
-timeout cause remains unknown; these source checks do not establish a new hosted
-CI pass. Source activation remains held until independently trusted release,
-recovery and runtime checks are available. Durable installer crash reconciliation,
+The published [28f4b29 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/28f4b29d362c858c81e89bdac8aba2f73d51b280)
+finished [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290954) with
+**11 of 12 jobs passing**; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39963290546)
+passed all three. Python 3.11–3.13 each passed **7,625 tests with 19 skips**.
+Python 3.10 retained **7,598 passes, 19 skips and 27 setup errors** from one
+45-second preflight timeout; its cause remains unknown. Eight later local
+workflow-policy and argument-preservation checks passed, requesting the 25
+slowest phases of at least one second. These are separate source checks, not a
+newer hosted CI pass.
+Source activation remains held until independently trusted release, recovery
+and runtime checks are available. Durable installer crash reconciliation,
 restart health and signed deployment remain separate gates.
 See the [update guide](docs/github-updates.md) and [validation evidence](analysis/live-debug-2026-10-22/validation.json).
 

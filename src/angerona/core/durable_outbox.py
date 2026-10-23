@@ -20,10 +20,11 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 
 MAX_ITEM_BYTES = 256 * 1024
+MAX_ENQUEUE_BATCH_ITEMS = 100
 _STATE_SIGNATURE_SCHEMA = "angerona.durable-outbox-state/v1"
 _ROW_COLUMNS = (
     "item_id,payload_json,payload_sha256,signature,state,attempts,"
@@ -597,6 +598,108 @@ class DurableOutbox:
                 self._db.commit()
                 self._mark_database_trusted_locked()
                 return True
+            except Exception:
+                self._db.rollback()
+                raise
+
+    def enqueue_many(
+        self,
+        entries: Sequence[tuple[str, Mapping[str, Any], float | None]],
+    ) -> int:
+        """Commit at most 100 timestamped entries atomically; return new IDs.
+
+        Exact payload replays retain their original timestamp and delivery state,
+        as with enqueue(). Conflicting IDs refuse the entire batch. Callers may
+        chunk a larger delta, but must not advance its cursor until every chunk
+        and any mandatory ingress-gap receipt have committed.
+        """
+        if not isinstance(entries, Sequence):
+            raise TypeError("outbox batch must be a bounded sequence")
+        if len(entries) > MAX_ENQUEUE_BATCH_ITEMS:
+            raise ValueError("outbox batch exceeds 100 entries")
+        prepared: dict[str, _VerifiedRow] = {}
+        for index, (item_id, payload, now) in enumerate(entries):
+            if index >= MAX_ENQUEUE_BATCH_ITEMS:
+                raise ValueError("outbox batch exceeds 100 entries")
+            identifier = str(item_id).strip()
+            if not identifier or len(identifier) > 160:
+                raise ValueError("outbox item ID is empty or oversized")
+            if not isinstance(payload, Mapping):
+                raise TypeError("outbox payload must be a mapping")
+            encoded = _canonical(dict(payload))
+            if len(encoded) > MAX_ITEM_BYTES:
+                raise ValueError("outbox item exceeds 256 KiB")
+            serialized = encoded.decode("utf-8")
+            stamp = time.time() if now is None else float(now)
+            digest = hashlib.sha256(encoded).hexdigest()
+            unsigned = _VerifiedRow(
+                item_id=identifier,
+                payload_json=serialized,
+                payload_sha256=digest,
+                payload_signature=self._signature(identifier, serialized, stamp),
+                state="pending",
+                attempts=0,
+                next_attempt=0.0,
+                lease_owner="",
+                lease_until=0.0,
+                last_error="",
+                created_at=stamp,
+                size_bytes=len(encoded),
+                state_signature="",
+                payload=json.loads(serialized),
+            )
+            row = replace(unsigned, state_signature=self._state_signature(unsigned))
+            previous = prepared.get(identifier)
+            if previous is not None:
+                if not hmac.compare_digest(previous.payload_json, serialized):
+                    raise ValueError("outbox item ID conflicts with another payload")
+                continue
+            prepared[identifier] = row
+        if not prepared:
+            return 0
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                self._verify_if_database_changed_locked()
+                additions: list[_VerifiedRow] = []
+                for identifier, row in prepared.items():
+                    existing = self._db.execute(
+                        f"SELECT {_ROW_COLUMNS} FROM durable_outbox WHERE item_id=?",
+                        (identifier,),
+                    ).fetchone()
+                    if existing is not None:
+                        verified = self._verify_row(existing)
+                        if not hmac.compare_digest(verified.payload_json, row.payload_json):
+                            raise ValueError("outbox item ID conflicts with another payload")
+                    else:
+                        additions.append(row)
+                if additions:
+                    self._prune_tombstones_locked()
+                    count, retained_bytes = self._db.execute(
+                        "SELECT COUNT(*),COALESCE(SUM(size_bytes),0) FROM durable_outbox "
+                        "WHERE state!='delivered'"
+                    ).fetchone()
+                    added_bytes = sum(row.size_bytes for row in additions)
+                    if (int(count) + len(additions) > self.max_items
+                            or int(retained_bytes) + added_bytes > self.max_bytes):
+                        raise OutboxFull("outbox pending/dead-letter capacity is exhausted")
+                    self._db.executemany(
+                        "INSERT INTO durable_outbox("
+                        "item_id,payload_json,payload_sha256,signature,state,attempts,"
+                        "next_attempt,lease_owner,lease_until,last_error,created_at,"
+                        "size_bytes,state_signature) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        [
+                            (row.item_id, row.payload_json, row.payload_sha256,
+                             row.payload_signature, row.state, row.attempts,
+                             row.next_attempt, row.lease_owner, row.lease_until,
+                             row.last_error, row.created_at, row.size_bytes,
+                             row.state_signature)
+                            for row in additions
+                        ],
+                    )
+                self._db.commit()
+                self._mark_database_trusted_locked()
+                return len(additions)
             except Exception:
                 self._db.rollback()
                 raise

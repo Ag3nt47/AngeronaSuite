@@ -28,9 +28,15 @@ _FAILURE_STREAM_BYTES = 2048
 
 HARNESS = r"""
 $ErrorActionPreference = 'Stop'
+$script:fixtureClock = [Diagnostics.Stopwatch]::StartNew()
 # Fixed advisory markers only; no approval, mutation or timing authority.
 function Write-FixtureStage([string]$Stage) {
     [Console]::Error.WriteLine('ANGERONA_FIXTURE_STAGE=' + $Stage)
+    [Console]::Error.Flush()
+    # A present clock proves the existing stage Flush returned, not process exit.
+    $elapsed = ($script:fixtureClock.ElapsedMilliseconds).ToString([Globalization.CultureInfo]::InvariantCulture)
+    $utc = ([DateTime]::UtcNow.ToFileTimeUtc()).ToString([Globalization.CultureInfo]::InvariantCulture)
+    [Console]::Error.WriteLine('ANGERONA_FIXTURE_CLOCK=' + $Stage + '|' + $elapsed + '|' + $utc)
     [Console]::Error.Flush()
 }
 Write-FixtureStage 'harness-entry'
@@ -520,6 +526,45 @@ def _write_native_retirement(fixture: Path, proof: dict) -> None:
     _assert_local_canonical_path(evidence, fence=fixture)
 
 
+def _advisory_utc_filetime() -> int | None:
+    """Optional diagnostic wall clock; never interrupt an owned cleanup."""
+    try:
+        nanoseconds = time.time_ns()
+        if type(nanoseconds) is not int or nanoseconds < 0:
+            return None
+        filetime = nanoseconds // 100 + 116444736000000000
+        return filetime if filetime <= 9_999_999_999_999_999_999 else None
+    except BaseException:
+        return None
+
+
+def _retained_fixture_clocks(text: str) -> dict:
+    """Parse bounded stream-tail evidence; never infer complete history."""
+    rows, malformed = [], 0
+    for line in text.splitlines():
+        if not line.startswith("ANGERONA_FIXTURE_CLOCK="):
+            continue
+        match = re.fullmatch(
+            r"ANGERONA_FIXTURE_CLOCK=([a-z0-9-]{1,80})\|([0-9]{1,8})\|([0-9]{1,19})", line,
+        )
+        if match is None:
+            malformed += 1
+            continue
+        rows.append({"stage": match[1], "elapsed_ms": int(match[2]),
+                     "utc_filetime_100ns": int(match[3])})
+    return {
+        "history": "retained stream tail only; earlier samples and gaps unproved",
+        "parsed_retained_samples": len(rows), "malformed_retained_samples": malformed,
+        "first_retained": rows[0] if rows else None,
+        "last_retained": rows[-1] if rows else None,
+        "retained_elapsed_nondecreasing": all(a["elapsed_ms"] <= b["elapsed_ms"]
+            for a, b in zip(rows, rows[1:])) if len(rows) > 1 else None,
+        "retained_wall_nondecreasing": all(a["utc_filetime_100ns"] <= b["utc_filetime_100ns"]
+            for a, b in zip(rows, rows[1:])) if len(rows) > 1 else None,
+        "authority": "advisory only; no clock stability or process-exit proof",
+    }
+
+
 def _capture_failure_stream(stream, *, limit: int = _FAILURE_STREAM_BYTES) -> dict:
     """Read only a bounded tail of our own regular temporary file."""
     if stream is None:
@@ -543,6 +588,7 @@ def _capture_failure_stream(stream, *, limit: int = _FAILURE_STREAM_BYTES) -> di
             "grew_during_read": grew, "sha256": hashlib.sha256(raw).hexdigest(),
             "encoding": "utf-8-replace", "text": text,
             "last_advisory_stage": stages[-1] if stages else None,
+            "retained_clocks": _retained_fixture_clocks(text),
         }
     except BaseException as error:
         return {"state": "unavailable", "retained_bytes": 0, "limit_bytes": limit,
@@ -557,6 +603,7 @@ def _surface_failure_evidence(primary: BaseException, proof: dict, fixture: Path
             "kind": "angerona.owned-ps5-failure.v1", "failure_phase": proof["failure_phase"],
             "primary_error": _bounded_native_error(primary)[:256], "elapsed_seconds": proof["elapsed_seconds"],
             "native_execution_wait_seconds": proof["native_execution_wait_seconds"],
+            "parent_clock": proof.get("parent_clock", {}),
             "retirement_proven": proof["retirement_proven"], "wait_status": proof["wait_status"],
             "native_exit_after_cleanup": proof["native_exit"],
             "owned_termination_requested": proof["owned_termination_requested"],
@@ -571,7 +618,7 @@ def _surface_failure_evidence(primary: BaseException, proof: dict, fixture: Path
             row = capture.get(name, {})
             summary["capture"][name] = {key: row.get(key) for key in (
                 "state", "observed_total_bytes", "retained_bytes", "limit_bytes",
-                "truncated", "last_advisory_stage")}
+                "truncated", "last_advisory_stage", "retained_clocks")}
             summary["capture"][name]["text_tail"] = row.get("text", "")[-256:]
             summary["capture"][name]["read_error"] = row.get("read_error", "")[:256]
         note = "ANGERONA_OWNED_PS5_FAILURE=" + json.dumps(summary, sort_keys=True, ensure_ascii=True)
@@ -593,7 +640,9 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
     close attempt before the bounded durable receipt and any explicit rethrow.
     """
     started = time.monotonic()
+    started_utc = _advisory_utc_filetime()
     execution_wait_started = None
+    execution_wait_utc = None
     executable = Path(command[0])
     _assert_local_canonical_path(tmp_path)
     release = fixture / "parent-release.marker"
@@ -649,9 +698,11 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
         proof.update(admission_state="admitted", admission_completed=True)
         phase = "native_execution_wait"
         execution_wait_started = time.monotonic()
+        execution_wait_utc = _advisory_utc_filetime()
         process.wait(timeout=45)
     except BaseException as error:
         primary, failure_phase = error, phase
+    wait_finished_utc = _advisory_utc_filetime() if execution_wait_started is not None else None
     execution_wait_seconds = (max(0.0, time.monotonic() - execution_wait_started)
                               if execution_wait_started is not None else None)
     if process is not None:
@@ -741,6 +792,17 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
         primary_error=_bounded_native_error(primary) if primary is not None else "none",
         elapsed_seconds=max(0.0, time.monotonic() - started),
         native_execution_wait_seconds=execution_wait_seconds,
+        parent_clock={
+            "utc_unit": "Windows FILETIME 100ns since 1601 UTC; advisory wall clock",
+            "run_start": started_utc, "wait_start": execution_wait_utc,
+            "wait_finished_before_cleanup": wait_finished_utc,
+            "wall_samples_available": all(value is not None for value in
+                (started_utc, execution_wait_utc, wait_finished_utc)),
+            "wall_minus_monotonic_seconds":
+                (wait_finished_utc - execution_wait_utc) / 10_000_000 - execution_wait_seconds
+                if execution_wait_utc is not None and wait_finished_utc is not None else None,
+            "stability": "UNPROVED; samples do not establish absence of clock jumps",
+        },
         closed_handles={"process": proof["handle_closed"], "stdio": proof["stdio_closed"]},
     )
     try:

@@ -872,6 +872,30 @@
       "cause_or_observation": "Release-fixture timeout handling discards output from the initial confinement preflight",
       "result_and_limits": "Published 434 Python 3.13 retained 27 setup errors cascading from one 45-second confinement-paths PowerShell timeout. After the primary failure, stdout/stderr reads were skipped and temporary streams closed, leaving the original output unavailable. A later cleanup return code 1 is not the primary timeout cause. The applied helper captures failure-only bounded 2 KiB tails with explicit truncation/read faults, advisory stage and native phase/elapsed/retirement details, preserving the primary error, 45-second wait and 10-second cleanup; no retries, skips or product-installer changes. The joint gate passed 71 controls and a fresh default 29-phase selfcheck with exact retirement. A separate audit proved 21 unique real PowerShell generations retired with handles/stdio closed: 19 expected exit 0 and two intentional exit 99. Ten inert controls remain separate, including all four new cases; seven retained mock receipts are not native-process proof. Original timeout cause remains unknown after this nonreproduction, no product-installer defect is proved, and new markers are not retroactive causal evidence.",
       "status": "diagnostic-loss-fixed-joint71-default29-accepted-original-timeout-cause-unknown"
+    },
+    {
+      "id": "PER-13",
+      "cause_or_observation": "Sigma runtime reconstructs immutable field and condition decisions for each active and shadow evaluation",
+      "result_and_limits": "Applied per-binding immutable runtime plans retain genuine per-event digest/canonical verification, unchanged public matching/evaluation and unchanged grammar/admission. The 17-file ROOT gate passed 255 tests with one POSIX-fork platform skip, followed by a fresh 29-phase selfcheck with exact retirement. A separate accepted synthetic direct-call benchmark recorded 108 rows/188928 genuine verified evaluations and full vector/hit parity; median wall time was 31.8425–42.7175% lower across nine cases. CPU samples are 15.625ms-quantized and zero samples are not zero cost. No GUI, end-to-end sensor or whole-product speed improvement is established.",
+      "status": "applied-selected255-default29-accepted-synthetic-benchmark-scoped"
+    },
+    {
+      "id": "PER-14",
+      "cause_or_observation": "Exporters perform separate durable enqueue commits for a cohort that can share one atomic transaction",
+      "result_and_limits": "Applied exporters use at most 100 items per atomic FULL commit before cursor advancement. Canonical payload limits are 256KiB each/25MiB total, not a RAM bound. Fallback is restricted to OutboxFull; authorization, conflict and commit failures do not enter that fallback. Existing single enqueue, acknowledgement and transport contracts remain. The 17-file ROOT gate passed 255 tests with one POSIX-fork skip and a fresh 29-phase selfcheck, with exact retirement. The batch contract compares three single COMMITs with one batch COMMIT; it is not elapsed-time, throughput or abrupt-power-loss evidence.",
+      "status": "applied-atomic-full-batching-selected255-default29-accepted-no-speed-metric"
+    },
+    {
+      "id": "TST-38",
+      "cause_or_observation": "Private pair-observation state and fallible identity sidecar handling can leave core lifetime evidence unadmitted",
+      "result_and_limits": "R5 aborted after 0.578 seconds with ambiguous private-read/sidecar EngineError and missing historical core native retirement proof. A private observer successor creates protected run state, retains the core handle before fallible sidecar work and records nonraising stage diagnostics. R7 observed the earlier 1854/fabb snapshot for 90.204 seconds with 347 repeated status/heartbeat views and 18 scheduled cycles per module, not 18 full persistence scans. Core and both outer generations retired/exit 0; four outer handles and the retained core query handle closed. Original launcher Popen closure is not claimed. Coverage gaps and five response-ineligible events remain; no confirmed spyware or supported false positive was adjudicated. R7 is a nonreproduction, not R5 causal closure or live proof of the later 1856 revision; this is diagnostic-harness evidence, not a product protection upgrade.",
+      "status": "private-observer-r7-completed-with-gaps-r5-cause-and-missing-proof-retained"
+    },
+    {
+      "id": "SCN-04",
+      "cause_or_observation": "Two exported Windows Run registry views share a value and command, suggesting a possible presentation duplicate",
+      "result_and_limits": "OPEN candidate only. The exported view identifiers differ while the observed value/command match; physical registry aliasing, a collector deduplication defect and benignity are unproven. Exact-target host queries remain preparation-only at this review cutoff. Exported nested evidence contains source/id/command; top-level omission counts do not measure nested loss, and redaction/length limits can affect comparison. The two services are distinct lexical configuration exposures, not duplicate or exploitation proof. No finding was suppressed, allowlisted, remediated or classified as a confirmed threat or supported false positive.",
+      "status": "open-potential-run-view-alias-exact-host-queries-unexecuted-no-confirmed-defect"
     }
   ],
   "preserved_uncertainty": [
@@ -881,5 +905,5 @@
     "Eight module-health gaps remain in the instrumented all-eligible case; corrected classifications do not certify every diagnostic severity.",
     "Observer stage maxima need not be from one iteration and cannot attribute historical Qt stalls."
   ],
-  "review_status": "144 reviewed issues: all prior 142 objects/order preserved. Published434 retained CI11/12 plus Security3/3, with one failed Python3.13 job and27 cascading setup errors. Joint changed-source71/default29 accepted with exact retirement;21 real PowerShell generations audited separately from ten inert controls. Original release timeout and older c3 startup causes stay unknown; no new hosted pass or deployment authority claimed."
+  "review_status": "148 reviewed issues: all prior 144 objects/order preserved. Applied Sigma/exporter/timing source passed255 tests/one POSIX-fork skip and fresh default29; later workflow passed8 local checks with exact source/native retirement evidence. R7 prior-revision observation completed with gaps; SCN-04 remains an OPEN unproven view-alias candidate and exact queries were unexecuted. Published28f4 CI11/12 plus Security3/3 and all earlier failed histories remain; no new hosted full pass or deployment authority claimed."
 }

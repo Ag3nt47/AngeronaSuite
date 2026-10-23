@@ -24,6 +24,7 @@ from angerona.core.detection_packages import (
 )
 from angerona.core.detection_registry import DetectionPackageRegistry
 from angerona.core.eventbus import Event, Severity
+from angerona.core.sigma_engine import _RuntimeSigmaPlan, _compile_runtime_plan
 from angerona.core.module_base import BaseModule
 
 MAX_RUNTIME_EVENT_BYTES = 256 * 1024
@@ -217,6 +218,7 @@ class _RuntimeRule:
     package_id: str
     package_digest: str
     document_json: str
+    plan: _RuntimeSigmaPlan
     severity: Severity
     max_eval_ms: float
     max_events_per_second: int
@@ -238,6 +240,7 @@ def _bind_rule(package: DetectionPackage) -> _RuntimeRule:
         document_json = _canonical(_safe_value(dict(package.document)))
         document = json.loads(document_json)
         validate_package(document)
+        plan = _compile_runtime_plan(document["logic"]["detection"])
     except Exception as exc:
         raise DetectionRuntimeError(f"runtime rule binding failed: {exc}") from exc
     snapshot = DetectionPackage(document)
@@ -247,6 +250,7 @@ def _bind_rule(package: DetectionPackage) -> _RuntimeRule:
         package_id=snapshot.package_id,
         package_digest=str(document["digest"]),
         document_json=document_json,
+        plan=plan,
         severity=_SEVERITIES[str(document["severity"])],
         max_eval_ms=float(performance["max_eval_ms"]),
         max_events_per_second=int(performance["max_events_per_second"]),
@@ -1121,7 +1125,7 @@ class DetectionRuntimeEngine:
                         ) * 1000.0
                     if event_decode_error is not None:
                         raise event_decode_error
-                    matched = bool(rule.package.evaluate(event_fields))
+                    matched = bool(rule.package._evaluate_runtime_plan(rule.plan, event_fields))
                     evaluated = True
                 except Exception:
                     with self._lock:
@@ -1214,7 +1218,7 @@ class DetectionRuntimeEngine:
                         ) * 1000.0
                     if event_decode_error is not None:
                         raise event_decode_error
-                    matched = bool(rule.package.evaluate(event_fields))
+                    matched = bool(rule.package._evaluate_runtime_plan(rule.plan, event_fields))
                     disposition = "matched" if matched else "not-matched"
                     evaluated = True
                 except Exception:

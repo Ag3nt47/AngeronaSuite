@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Optional
 
 from angerona.core.durable_outbox import (
+    MAX_ENQUEUE_BATCH_ITEMS,
     DurableOutbox,
     OutboxFull,
     load_or_create_outbox_key,
@@ -476,18 +477,31 @@ class RemoteBridge(BaseModule):
         event_id = hashlib.sha256(stable_source).hexdigest()
         return event_id, {**core, "event_id": event_id}
 
+    def _stage_sender_chunk(self, entries) -> int:
+        try:
+            return self._sender_outbox.enqueue_many(entries)
+        except OutboxFull:
+            # The atomic batch rolled back. Preserve per-item progress when
+            # retained dead letters or bytes leave only part of a chunk free.
+            return sum(int(self._sender_outbox.enqueue(item_id, payload, now=stamp))
+                       for item_id, payload, stamp in entries)
+
     def _stage_sender_delta(self) -> tuple[int, bool]:
         if self._bus is None or self._sender_outbox is None:
             return 0, False
         revision, batch, overflow = self.read_bus_events(priority=True)
         staged = 0
+        pending = []
         for ev in batch:
             if ev.severity < _FORWARD_MIN or ev.module == self.name:
                 continue
             event_id, document = self._event_document(ev)
-            staged += int(self._sender_outbox.enqueue(
-                f"rbrg-{event_id}", {"event": document}, now=float(ev.ts)
+            pending.append((
+                f"rbrg-{event_id}", {"event": document}, float(ev.ts)
             ))
+            if len(pending) == MAX_ENQUEUE_BATCH_ITEMS:
+                staged += self._stage_sender_chunk(pending)
+                pending.clear()
         if overflow:
             gap = Event(
                 "Remote Bridge Ingress",
@@ -500,9 +514,11 @@ class RemoteBridge(BaseModule):
                 },
             )
             gap_id, gap_document = self._event_document(gap)
-            staged += int(self._sender_outbox.enqueue(
-                f"rbrg-gap-{revision}-{gap_id[:24]}", {"event": gap_document}, now=gap.ts
+            pending.append((
+                f"rbrg-gap-{revision}-{gap_id[:24]}", {"event": gap_document}, gap.ts
             ))
+        if pending:
+            staged += self._stage_sender_chunk(pending)
         # Every retained event and any mandatory gap receipt are durable. An
         # enqueue failure exits before this cursor commit and replays the delta.
         self.commit_bus_cursor(revision, priority=True)
