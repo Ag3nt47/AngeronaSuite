@@ -7,6 +7,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## v1.14 validation and authority boundaries
 
+- Approved release helper: tools/update_angerona.py shares daily metadata checks;
+  interactive consent binds the exact stable Windows ZIP/checksum asset identity.
+  Only the protected installed installer can authorize installation and request
+  startup. Source main/unsigned candidates stay held; no trust keys or UGCAP
+  baselines are changed. Restart requested is not observed runtime health.
+
 - Frozen full R10 accepted 7,554 passed/0 failed/49 skipped, native 0, with unchanged
   source/runtime/harness and exact clean retirement. Later installer/tooltip source
   passed 141 focused controls plus a default 29-phase isolated selfcheck. These are

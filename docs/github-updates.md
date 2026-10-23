@@ -67,6 +67,76 @@ later review. Use `--help` for the explicit `--resolve`, `--choose` and
 
 ## Installation remains a separate boundary
 
+### Approved verified-release helper
+
+For an existing protected Windows installation, the source tooling now includes
+an interactive release updater. Run it from an installed Angerona development
+environment, with the suite closed before requesting installation:
+
+```powershell
+python tools/update_angerona.py --check-only
+python tools/update_angerona.py --check-now --json
+python tools/update_angerona.py --download
+python tools/update_angerona.py --install
+```
+
+The helper shares the app's daily attempt record and manual retry floor.
+Noninteractive and JSON invocations only check; they cannot approve an update.
+Interactive download or installation requires an explicit decision after the
+release tag, asset IDs, size and exact candidate identity are displayed.
+
+It selects only a newer stable `Angerona-vMAJOR.MINOR.PATCH-win64.zip` and its
+adjacent `.sha256` file from the canonical repository. Source archives,
+prereleases and `-unsigned` build artifacts are ineligible. The observed asset
+identity is checked again before downloading. Downloads use bounded private
+staging, byte/size/checksum checks and an owned networking worker with a deadline.
+The archive must have a GitHub SHA-256 metadata digest, so the approved identity
+pins its bytes even if a release asset is later replaced. Older assets without
+that digest are held.
+Neither GitHub metadata nor the checksum establishes publisher trust.
+
+Installation uses only the already-installed protected
+`Program Files\Angerona\Install-Angerona-Release.ps1`. Its custody preflight runs
+before an elevation request. The existing publisher-signature, threshold release
+authorization and rollback-floor verification remain the installation authority;
+no script from the downloaded archive is executed by the helper. Missing trusted
+installation files hold the operation and direct first installs to the signed
+MSIX. Source staging still cannot activate an update.
+
+The comparison version normally comes from protected installed release metadata.
+If it is unavailable, the helper labels its source-version comparison as advisory
+and holds installation. An operator who knows the installed version may supply
+`--installed-version 1.14.0`; this only selects candidates and cannot bypass the
+protected installer's independent rollback checks.
+
+Installed executable candidates are verified by exact path, PID and creation
+time. A running or uninspectable candidate holds installation; nothing is killed
+by name or memory use. Quit the suite and its installed components normally.
+Same-user installation attempts share a lease. A pending, unknown or failed
+privileged installation is retained and holds later attempts for explicit
+recovery review. A nonzero installer exit can follow partial file changes; it
+does not prove that retrying is safe. Do not clear that state to force a retry.
+
+On successful installation the protected installer requests Angerona startup.
+The helper reports `restart_requested` and `runtime_health=unverified`; it does
+not claim that the restarted suite is healthy. No updater task or service is
+registered. Use the existing daily setting while the app is open, or schedule
+`--check-only` externally if checks are needed while it is closed.
+
+Pushing ordinary source changes makes them discoverable. End-user installation
+requires publishing the verified stable release assets through the existing
+release process. It does not apply an arbitrary `main` push to Angerona.
+
+The October 23 helper review passed **128 focused tests** covering release
+selection, approval binding, bounded download adapters, installer custody,
+running-component holds and recovery receipts. The existing settings,
+controller, setup, source-staging and update-authority regression gate passed
+**120 tests with one optional native-8.3 skip**. Installer, UAC and process
+adapters were inert in these tests. A separate metadata-only public GitHub
+check succeeded and the next invocation reused its daily result; no stable
+release was published to offer. No live installation or restart-health result
+is claimed.
+
 **Activation: HELD.** Checking, preparing and reviewing a stage do not install it.
 
 Static validation checks candidate hashes, Python syntax, required entry
