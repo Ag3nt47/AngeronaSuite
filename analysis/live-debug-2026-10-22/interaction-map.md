@@ -5,7 +5,25 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Current cross-component status
+## Current cross-component status (focused gate accepted)
+
+Registry 154 preserves every prior 151 issue object and order. Published
+[36dfadf](https://github.com/Ag3nt47/AngeronaSuite/commit/36dfadf1052e5a2e656afa52376b2f310a092446) and its seven README assets are verified on public
+main. Unsigned archives retain historical source snapshot 09c7; they do not
+package the next changed source. Exact 36df [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972951) and
+[Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972961) at 17:33 UTC on 2026-10-23 recorded
+Security 3/3 and eight non-Python CI jobs passed; four Python jobs still running.
+The six-suite local gate passed 148/no failures/errors/skips on unchanged code
+1857/ae402, HEAD/index/runtime/gate, with exact two-generation retirement and
+MainThread/no QApplication/zero widgets. It is not a full regression/selfcheck.
+
+| Interaction | Source boundary and current scope | Evidence state |
+| --- | --- | --- |
+| Active-alert count -> Resolve Center wording -> composite posture | An empty active HIGH/CRITICAL list cannot prove Secure posture. Applied neutral wording retains exposure and readiness review. | GUI-19; focused 148 accepted. |
+| Black Box detail close -> GUI thread -> custom worker lifetime | QThread.wait(1000) can block Qt while a custom ten-second check_output continues despite quit(). Applied asynchronous owner retention/detachment covers dialog result and cached delete-on-close lifetime. | SIDE-07; six actual-QThread/inert-query controls passed within focused 148. No historical watchdog-cause attribution. |
+| Official CISA link -> article-route admission -> news banner | Applied dated alerts require a calendar-valid ASCII YYYY/MM/DD prefix; existing undated categories, host/HTTPS/traversal checks, publication freshness and advisory-only output remain. | NEWS-02; 32 offline controls passed within focused 148. The September 8 official bulletin is outside 30 days, and browser 403 establishes no live-feed availability. |
+
+## Historical cross-component status (pre-36df checkpoints)
 
 Frozen full R10 accepted 7,554/0/49/native 0 for unchanged HEAD 943/source 1,852.
 Later source 1,853/HEAD e715 passed 141 focused installer/page/news/release/authority

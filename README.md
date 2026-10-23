@@ -246,7 +246,7 @@ local customizations and explicit conflicts. The frozen full R10 regression
 passed **7,554 tests with 49 skips and no failures**, with unchanged source,
 runtime and harness, exact native retirement and MainThread-only shutdown.
 
-The current maintenance review removes repeated reads of shared HKCU Run/RunOnce
+The published 36df maintenance checkpoint removes repeated reads of shared HKCU Run/RunOnce
 keys, keeps CVE analyses attached to the exact current record and request, and
 retains workers while their completion state is unavailable. Source-conflict
 staging gains explicit same-choice recovery after process interruption, with
@@ -261,15 +261,25 @@ nine verifiers), with exact native retirement. Fresh pair observation: **90.140 
 heartbeat samples, no observed module crashes or recorded capture/export/console
 loss, and exact generation retirement. Recovery remained unprovisioned and
 SpywareGuard in preview; all four exported events had response_authorized=false.
-The next guarded publication will carry this checkpoint; source publication
-grants no activation authority.
+Published [36dfadf](https://github.com/Ag3nt47/AngeronaSuite/commit/36dfadf1052e5a2e656afa52376b2f310a092446) is verified on public main with
+all seven README images byte-identical. Its unsigned archives retain the historical
+09c7 source snapshot; they do not package the next source changes.
+
+This review corrects the Resolve Center empty-state claim, applies a
+nonblocking Black Box detail-dialog close lifecycle, and admits calendar-valid
+dated CISA alerts. The six-suite focused gate passed **148 tests**, with no
+failures, errors or skips, exact retirement and clean Qt shutdown.
+[Exact 36df CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972951) and [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972961)
+at 17:33 UTC on 23 October: Security 3/3 and eight non-Python CI jobs passed;
+four Python jobs remained running. These are separate from the focused local gate.
+Source publication grants no activation authority.
 
 The preceding Sigma/exporter follow-up passed **255 tests with one POSIX-fork
 platform skip** and a **29-phase default selfcheck** (68 passed/18 skipped module
 rows, a separate pipeline and nine verifiers). Its synthetic direct-call Sigma
 benchmark measured **31.8–42.7% lower median wall time**; that is separate from
 dashboard, sensor and whole-product performance. The
-[151-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
+[154-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
 unknown causes and the original R7 findings.
 
 The published [6ead285 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/6ead285f3e4658674600f15fb9f1f4f1f64ac9d3)

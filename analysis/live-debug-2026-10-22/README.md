@@ -19,9 +19,45 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Current source and hosted CI evidence (2026-10-23)
+## Current scoped review (2026-10-23; focused gate accepted)
 
-The current source checkpoint covers shared-HKCU collection (SCN-04),
+The register now contains **154 unique IDs**. All prior 151 issue objects and
+order remain intact; GUI-19, SIDE-07 and NEWS-02 are appended below.
+
+| ID | Scoped source change | Acceptance state |
+| --- | --- | --- |
+| GUI-19 | Resolve Center says no active HIGH/CRITICAL threats remain, rather than inferring Secure posture; exposures and readiness still require review. | Source applied; six-suite 148-test focused gate passed. |
+| SIDE-07 | Black Box detail-dialog close can block Qt in QThread.wait(1000), while its custom worker can remain inside a ten-second check_output after quit(). The applied source retains/detaches the owner through asynchronous retirement and preserves the result across close/accept/reject/Escape/done and cached WA_DeleteOnClose. | Source applied; six actual-QThread controls passed within focused 148. This is not an identified cause of the historical five-second watchdog incident. |
+| NEWS-02 | CISA dated alerts gain a calendar-valid ASCII YYYY/MM/DD prefix; existing undated categories and URL/freshness/advisory-only boundaries remain. | Source applied; 32 offline controls passed within focused 148. No live-feed availability claim. |
+
+Completed checkpoint [36dfadf](https://github.com/Ag3nt47/AngeronaSuite/commit/36dfadf1052e5a2e656afa52376b2f310a092446) was verified on public main
+with all seven README assets byte-identical. Its unsigned wheel, sdist and source
+ZIP retain the historical 09c7 source snapshot; they do not package these next
+source changes. Exact-head [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972951) and [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972961)
+at 17:33 UTC on 23 October showed Security 3/3 and eight non-Python CI jobs
+passed; four Python jobs were still running.
+
+The official [8 September CISA bulletin](https://content.govdelivery.com/accounts/USDHSCISA/bulletins/428fa64)
+links the [dated alert](https://www.cisa.gov/news-events/alerts/2026/09/08/cisa-adds-four-known-exploited-vulnerabilities-catalog).
+Browser access returned 403, so source syntax evidence does not prove that the
+live feed is available. That publication is outside the current 30-day window;
+route admission does not make it fresh. No actor/IoC rules or response authority
+are added. Earlier passes below retain their original scope.
+
+The six full suites cover Black Box responsiveness, shutdown and firewall bounds, QThread close lifetime, Spyware news and Resolve Center asynchronous presentation. All 148 tests passed with no failures, errors or skips (22.112 seconds JUnit; 28.953 seconds supervised). Complete source 1857/ae402, HEAD 36df, index, runtime and gate were unchanged; three actual product origins were verified. Both interpreter generations proved the same birth, WAIT0, native exit 0 and four closed handles. Normal shutdown recorded MainThread only, no QApplication and zero top-level widgets.
+The six new Black Box controls use actual QThreads with inert query results; they do not execute PowerShell or prove host protection. The 32 new CISA cases are offline. These results do not establish a full regression, selfcheck, physical-host endurance, signed release or historical stall cause.
+
+A later lint scan found six F821 reports in the new test callbacks: they
+referenced an outer dialog cell deliberately deleted for the lifetime test.
+Checked weak references preserve that test without retaining the owner. The
+six affected cases passed separately (4.233 seconds JUnit; 12.313 supervised),
+with exact clean retirement on source 1857/fd9e. They overlap the initial 148
+cases; product code is unchanged. The first lint failure and original test
+receipt remain retained in the validation record.
+
+## Published 36df source and historical hosted CI evidence (2026-10-23)
+
+The published 36df source checkpoint covers shared-HKCU collection (SCN-04),
 record-bound CVE freshness and worker lifetime (GUI-18), source-conflict
 interruption recovery (UPD-04), and lossless diagnostic receipt review (TST-39).
 The initial **214-test cohort** and final **54-test follow-up** each passed with
@@ -39,7 +75,8 @@ Neither module crashed or reported overflow; no capture/export/console drops,
 errors or pending threads were recorded. The admitted core query handle and both
 outer generations proved retirement with native exit 0 and closed handles.
 Shutdown recorded MainThread only, no QApplication and zero top-level widgets.
-The next guarded publication will carry the short [changelog](../../CHANGELOG.md).
+The guarded 36df publication completed; its separate proof retains public-main
+and README asset verification alongside the short [changelog](../../CHANGELOG.md).
 
 The pair exported four events: one critical recovery exposure, one medium
 Run-persistence observation and two low service-path exposures. Every exported
@@ -104,7 +141,7 @@ exact generation strings from the immutable original; they supply no new
 observation or retroactive native proof. R7 does not validate this later source
 revision or establish the cause of the earlier R5 observer failure.
 
-The register has 151 unique IDs, preserving all prior 148 IDs/order and the
+At that checkpoint the register had 151 unique IDs, preserving all prior 148 IDs/order and the
 original SCN-04/TST-38 evidence as history. Independent
 witness/backup administration, signed deployment and trusted activation remain
 separate evidence boundaries.
@@ -264,6 +301,9 @@ separate evidence boundaries.
 | GUI-18 | Same-CVE inputs or reversed batch/detail completions can reuse stale analysis; unknown worker state could bypass close deferral | Full-row/request identity, indexed matching rows, conservative valid-worker lifetime and startup cleanup passed in the initial 214-test cohort; default 29 also passed. |
 | UPD-04 | An interrupted conflict resolution can leave candidate bytes without a committed resolution index | Same-choice reconciliation and POSIX pre-stream descriptor checks passed the final 54-test follow-up and default 29; changed/unowned states stay held. Process interruption only; no power-loss or universal device deadline. |
 | TST-39 | Floating-point JSON review can round 64-bit native clock or generation values | Preserve exact integer lexemes/decimal strings before parsing; originals stay untouched and corrections remain advisory. No new observation or clock-stability proof. |
+| GUI-19 | Empty Resolve Center inferred Secure posture solely from no active HIGH/CRITICAL rows | Neutral source wording keeps exposures/readiness separate; focused 148 accepted. |
+| SIDE-07 | Black Box detail-dialog close can synchronously wait on a custom worker that quit() does not terminate | Applied nonblocking lifecycle; six actual-QThread/inert-query controls passed within focused 148. Not a cause conclusion for the historical watchdog incident. |
+| NEWS-02 | CISA's dated alerts fail a single-slug article-path matcher | Applied calendar-valid dated-alert syntax; 32 offline controls passed within focused 148. Existing URL, freshness and advisory-only boundaries remain; browser 403 and stale September publication provide no live-feed proof. |
 
 
 ## Testing loop

@@ -146,6 +146,14 @@ def safe_news_article_url(url: str, source_name: str) -> str:
         article = re.fullmatch(r"/\d{4}/\d{2}/[^/]+/?", decoded)
     else:
         article = re.fullmatch(r"/news-events/(?:cybersecurity-advisories|alerts|analysis-reports)/[^/]+/?", decoded)
+        if article is None:
+            article = re.fullmatch(
+                r"/news-events/alerts/([0-9]{4})/([0-9]{2})/([0-9]{2})/[^/]+/?", decoded)
+            if article is not None:
+                try:
+                    datetime(int(article[1]), int(article[2]), int(article[3]))
+                except ValueError:
+                    article = None
     if article is None:
         raise ValueError("news link is not an official article path")
     return urlunsplit(("https", host, path, "", ""))

@@ -1,4 +1,4 @@
-"""resolve_center.py — one place to clear the threat level back to Secure.
+"""resolve_center.py — review unresolved active HIGH/CRITICAL threats.
 
 Opened from the dashboard Threat-level box. Lists the CRITICAL / HIGH alerts
 currently driving the threat level and lets the operator address each one
@@ -12,8 +12,9 @@ directly:
     EXCLUDED from the threat level — the way to clear false positives. Every
     ignore is revertable from the "Ignored" viewer.
 
-When the list is empty the posture is Secure. Read side only; ignoring writes to
-shared_logs/alert_acks.json via core.alert_ack.
+When this list is empty, no unresolved active HIGH/CRITICAL threats are shown.
+Exposures and protection readiness may still need review. Read side only;
+ignoring writes to shared_logs/alert_acks.json via core.alert_ack.
 """
 from __future__ import annotations
 
@@ -335,7 +336,8 @@ class ResolveCenter(QDialog):
         self._head.setText(f"🛠  Resolve Center — threat level: {snapshot.label}")
         self._head.setStyleSheet(f"color:{snapshot.color};")
         if not rows:
-            self._sub.setText("✅  Nothing left to resolve — the posture is Secure.")
+            self._sub.setText("✅  No active HIGH/CRITICAL threats to resolve. "
+                              "Exposures and protection readiness may still need review.")
         else:
             self._sub.setText(f"{len(rows)} unresolved CRITICAL/HIGH alert(s). Open Detail to "
                               "Allow / Block / Research / Apply fix, or Ignore a false positive "

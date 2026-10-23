@@ -87,6 +87,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QAction,
+    QCloseEvent,
     QColor,
     QFont,
     QIcon,
@@ -2069,6 +2070,7 @@ class FirewallRuleDetailDialog(QDialog):
         self.setStyleSheet(f"background:{BG}; color:{TEXT};")
         self._program = ""
         self._worker: Optional[_FwDetailWorker] = None
+        self._pending_result: Optional[int] = None
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
@@ -2192,10 +2194,55 @@ class FirewallRuleDetailDialog(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Error", f"Could not open location:\n{exc}")
 
+    def _defer_close(self, event) -> bool:
+        from angerona.gui.thread_lifecycle import defer_close_until_threads
+
+        return defer_close_until_threads(self, event, (self._worker,))
+
+    def exec(self) -> int:
+        # Qt caches this flag before its modal loop and would otherwise delete
+        # the hidden dialog while its detail query is still running.
+        delete_on_close = self.testAttribute(Qt.WA_DeleteOnClose)
+        if delete_on_close:
+            self.setAttribute(Qt.WA_DeleteOnClose, False)
+        try:
+            return super().exec()
+        finally:
+            if delete_on_close:
+                self.setAttribute(Qt.WA_DeleteOnClose, True)
+                if self._pending_result is None:
+                    self.deleteLater()
+
+    def done(self, result: int) -> None:
+        # accept(), reject() and Escape can bypass closeEvent. Keep their first
+        # result across hide()/exec() return and finish only after native exit.
+        if self._pending_result is None:
+            self._pending_result = int(result)
+        self.setResult(self._pending_result)
+        if self._defer_close(QCloseEvent()):
+            return
+        result, self._pending_result = self._pending_result, None
+        super().done(result)
+
+    def accept(self) -> None:
+        self.done(QDialog.Accepted)
+
+    def reject(self) -> None:
+        self.done(QDialog.Rejected)
+
     def closeEvent(self, event) -> None:
-        if self._worker and self._worker.isRunning():
-            self._worker.quit()
-            self._worker.wait(1000)
+        pending = self._pending_result
+        if pending is None and self.isVisible():
+            self.setResult(QDialog.Rejected)
+        if self._defer_close(event):
+            if pending is None:
+                self._pending_result = int(QDialog.Rejected)
+            return
+        if pending is not None:
+            self._pending_result = None
+            super().done(pending)
+            event.accept()
+            return
         super().closeEvent(event)
 
 

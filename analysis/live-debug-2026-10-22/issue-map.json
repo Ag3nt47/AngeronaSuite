@@ -931,6 +931,42 @@
       "cause_or_observation": "Ordinary floating-point JSON review can round 64-bit native clock or process-generation integers.",
       "result_and_limits": "The 6ead advisory failure summary was corrected from retained original JSON integer lexemes: five unsafe FILETIME clock fields are now exact decimal strings. No process-birth integer was copied into those CI summaries. A separate four-target-query advisory summary corrected rounded birth interpretation from the retained exact raw owner lexemes, using decimal strings; its failed owner verdict and missing terminal native proof remain unchanged. Original logs, CI verdicts/counts and retirement conclusions were not rewritten. Future native receipt readers must preserve exact integer values before floating-point parsing, using integer-aware decoding or decimal strings. Already rounded numbers cannot be repaired by string conversion. Corrections remain separate advisory artifacts and establish no new observation, clock stability, process authority or protective capability.",
       "status": "advisory-summary-precision-corrected-originals-retained-no-new-observation"
+    },
+    {
+      "id": "GUI-19",
+      "cause_or_observation": "Resolve Center inferred Secure posture from the absence of active HIGH/CRITICAL rows, although exposures or protection-readiness gaps can remain.",
+      "result_and_limits": "Applied neutral empty-state wording states that no active HIGH/CRITICAL threats remain and keeps exposure/readiness review visible. Threat classification, scoring, response authorization and baselines are unchanged. The six-suite focused gate passed 148 tests with no failures/errors/skips, unchanged tested code 1857/ae402 and exact clean interpreter retirement. This is scoped presentation validation, not proof of Secure posture or physical protection; no historical event is dismissed or adjudicated.",
+      "status": "focused148-accepted-presentation-scope"
+    },
+    {
+      "id": "SIDE-07",
+      "cause_or_observation": "Black Box detail-dialog close synchronously calls QThread.wait(1000) on the GUI thread while its custom worker may remain inside a ten-second check_output; quit() does not terminate that custom run.",
+      "result_and_limits": "Applied asynchronous close handling retains and detaches the busy worker owner, preserves the dialog result, and covers close/accept/reject/Escape/done plus cached WA_DeleteOnClose across exec. The query body, displayed evidence and shared close helper are unchanged. All six new held-thread controls passed inside the six-suite 148-pass focused gate, with no failures/errors/skips, unchanged tested source and exact two-generation native retirement. The controls use actual QThreads with inert query results, not PowerShell execution, network requests or physical-host protection proof. This source availability/lifetime risk is not the identified cause of the historical five-second watchdog incident.",
+      "status": "focused148-accepted-actual-qthread-inert-query-controls",
+      "test_fixture_followup": {
+        "initial_lint_failure_sha256": "b0e1724fac5e27b12e366a19b7edee93fbd231f95d8397f30490cd25f86baa08",
+        "initial_ruff_stdout_sha256": "081e238e221852e13baeb811bcae70aced0b7de6f6054bfa6e67bc398c350172",
+        "initial_lint": "Six F821 reports from test callbacks referencing an outer dialog cell later deleted; one fixture cause, not six product defects.",
+        "correction": "Callbacks dereference a checked weak reference in their own stack; the owner-retention assertion has no strong callback owner.",
+        "corrected_test_sha256": "52e99f743165465b37d6c70d0a248c40660b685f5f090ec70552a82411fd3f84",
+        "tested_source_map_sha256": "fd9e860cf3d846a20ab8554da5986cd8c6af1124d5159a20c29e8e3fbaa7f5e1",
+        "followup_receipt_sha256": "ecbccf03be3d9f768cd76f69e56d37b407637ce7786a3156aa334471bf4acc37",
+        "passed": 6,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0,
+        "junit_seconds": 4.233,
+        "supervisor_seconds": 12.313,
+        "source_head_index_runtime_gate_unchanged": true,
+        "retirement": "Both retained interpreter generations exited 0 with matching birth and signaled handles; all four owned handles closed. MainThread only, no QApplication and zero widgets.",
+        "scope": "Six cases overlap the initial 148-test cohort. Product code is unchanged; original test and lint results remain retained. No new physical-host or full-suite claim."
+      }
+    },
+    {
+      "id": "NEWS-02",
+      "cause_or_observation": "CISA official alerts can use YYYY/MM/DD before the article slug, but the article policy admitted only a single slug. The official 2026-09-08 bulletin links a dated alert.",
+      "result_and_limits": "Applied fallback admits ASCII zero-padded calendar-valid dates for alerts only, retaining all existing undated alert/advisory/report paths and HTTPS/exact-host/port/traversal/query/fragment checks. Publication-time freshness, network opt-in and advisory-only output are unchanged. All 32 new offline regression cases passed within the six-suite 148-test focused gate, with no failures/errors/skips, unchanged tested source and exact clean interpreter retirement. The official bulletin https://content.govdelivery.com/accounts/USDHSCISA/bulletins/428fa64 links https://www.cisa.gov/news-events/alerts/2026/09/08/cisa-adds-four-known-exploited-vulnerabilities-catalog . Browser access returned 403; no live-feed availability is proved, and September 8 is outside the current 30-day freshness window. No actor/IoC or response authority is added.",
+      "status": "focused148-accepted-offline-routes-no-live-feed-proof"
     }
   ],
   "preserved_uncertainty": [
@@ -940,5 +976,6 @@
     "Eight module-health gaps remain in the instrumented all-eligible case; corrected classifications do not certify every diagnostic severity.",
     "Observer stage maxima need not be from one iteration and cannot attribute historical Qt stalls."
   ],
-  "review_status": "151 reviewed IDs: all prior 148 IDs/order retained; SCN-04 and TST-38 keep original evidence with appended follow-ups. Initial seven-file source cohort 214 PASS; final updater/neighbor follow-up 54 PASS, cohorts overlap. The tested code snapshot also passed 1152 AST checks and default 29 with exact retirement. Fresh pair observation completed for 90.140 seconds as OBSERVED_WITH_GAPS, with 352 status/heartbeat samples and four exported events with response_authorized=false. The separate four-target query completed its read-only operations, but its supervisor failed before terminal native proof. Guarded publication remains a separate receipt. Exact 6ead CI 11/12 plus Security 3/3 is historical; its Python 3.11 timeout cause and original R7 threat/identity questions are unresolved."
+  "historical_review_status_before_gui19_side07_news02": "151 reviewed IDs: all prior 148 IDs/order retained; SCN-04 and TST-38 keep original evidence with appended follow-ups. Initial seven-file source cohort 214 PASS; final updater/neighbor follow-up 54 PASS, cohorts overlap. The tested code snapshot also passed 1152 AST checks and default 29 with exact retirement. Fresh pair observation completed for 90.140 seconds as OBSERVED_WITH_GAPS, with 352 status/heartbeat samples and four exported events with response_authorized=false. The separate four-target query completed its read-only operations, but its supervisor failed before terminal native proof. Guarded publication remains a separate receipt. Exact 6ead CI 11/12 plus Security 3/3 is historical; its Python 3.11 timeout cause and original R7 threat/identity questions are unresolved.",
+  "review_status": "154 reviewed IDs: all prior 151 issue objects/order retained byte-for-byte. GUI-19, SIDE-07 and NEWS-02 passed the six-full-suite focused gate: 148 PASS, no failures/errors/skips, 22.112 seconds JUnit and 28.953 supervised. Tested source 1857/ae402c7c46fe9038b0d3d481964a985e0127d52a81ac1f00ce4dd66707733618 and HEAD 36df/index/runtime/gate were unchanged; three actual product origins verified. Both interpreter generations proved same birth, WAIT0, native exit 0 and all four handles closed; MainThread/no QApplication/zero widgets. Receipt e885fab3862f3442d15d8d9d85d4f9aa4950286c2bcf3598929eccd5c5ebd0e6. Six new Black Box controls use actual QThreads with inert query results, and 32 CISA controls are offline; no PowerShell/network/physical-protection/full-regression/selfcheck/signed-release proof. Published 36dfadf1052e5a2e656afa52376b2f310a092446 public main/assets remain separately verified; unsigned 09c7 archives are historical, not packages of changed 1857/ae402 source. At 17:33 UTC on 2026-10-23, exact 36df Security passed 3/3 and all eight non-Python CI jobs were green; four Python CI jobs were still running. CISA 403/freshness and historical incident uncertainties remain."
 }

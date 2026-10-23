@@ -14,8 +14,10 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Selfcheck reconciled86 module rows (68 passed/18 explicit skips), separate
   pipeline and nine verifiers.13 widget owners/13 readers/8 Python/0 Qt retired.
   Accounting and isolated tests do not prove physical runtime of all 86 sensors.
-- Registry 151 preserves all prior 148 IDs/order, adds GUI-18/UPD-04/TST-39 and
-  retains SCN-04/TST-38 history alongside later source and exact-read follow-ups.
+- Registry 154 preserves every prior 151 issue object and its order; new GUI-19,
+  SIDE-07 and NEWS-02 passed within the 148-test focused review with exact clean retirement.
+  Historical 151 added GUI-18/UPD-04/TST-39 and retained SCN-04/TST-38 history
+  alongside later source and exact-read follow-ups.
   The original Qt1 PASS/6 FAIL
   became 7 PASS after six literal-tooltip guards. This is formatting proof, not
   HTTP/file/script execution or security authority. Installer27 controls include
@@ -54,7 +56,26 @@ kernel component is a product capability.
 
 ## LATEST (v1.14.0 — Live AI Review and integrated defensive diagnostics, 2026-10-22)
 
-- Current maintenance: initial 214 tests and final 54-test follow-up passed
+- Current scoped review: 148 PASS, no failures/errors/skips across six full suites
+  (Black Box responsiveness/shutdown/firewall bounds, QThread close, Spyware news,
+  Resolve Center async). Tested code 1857/ae402, HEAD 36df, index/runtime/gate stayed
+  unchanged; three actual product origins verified. Both interpreter generations
+  proved same birth/WAIT0/native 0/four handles closed; MainThread/no QApplication/
+  zero widgets. Receipt e885fab3862f3442d15d8d9d85d4f9aa4950286c2bcf3598929eccd5c5ebd0e6.
+  GUI-19 uses neutral empty Resolve wording without changing threat scoring.
+  SIDE-07 preserves detail-dialog owner/result through asynchronous close; six
+  controls use actual QThreads with inert queries, not PowerShell/host protection.
+  NEWS-02 admits calendar-valid dated CISA alerts with 32 new offline controls;
+  URL safety, freshness, opt-in and advisory-only boundaries remain. Browser 403
+  and the stale September 8 bulletin do not prove live-feed availability.
+  This focused gate is not a full regression, selfcheck, physical-host endurance,
+  signed release or identification of a historical watchdog cause.
+- Test-fixture follow-up: the initial lint scan found six F821 reports from
+  callbacks referencing a later-deleted dialog cell. Checked weak references
+  preserve the owner-retention test. The six affected cases passed separately
+  with exact clean retirement (ecbccf03 receipt); they overlap the initial 148
+  and change no product code. Original runtime and failed lint evidence remain.
+- Published 36df maintenance: initial 214 tests and final 54-test follow-up passed
   without failures/errors/skips; scopes overlap. Final source: 1152 Python 3.10
   AST checks and default 29 phases passed; module rows 68 PASS/18 explicit SKIP,
   separate pipeline/nine verifiers, exact retirement. Fresh pair observation:
@@ -62,7 +83,12 @@ kernel component is a product capability.
   Eighteen scheduled cycles per module are not eighteen scans. All four exported
   events had response_authorized=false; all three Spyware events separately had
   active_attack=false and spyware_confirmed=false. No threat/false-positive
-  adjudication. Prepared for next guarded publication.
+  adjudication. Published 36dfadf1052e5a2e656afa52376b2f310a092446 is verified on
+  public main, with seven README assets public and byte-identical. The unsigned
+  archives retain source snapshot 09c7b02f45d395823f931071757a123e85e6a28258e35b6a3ae5fd9489e744af;
+  they are not packages of the changed 1857/ae402 source. Exact 36df CI 39994972951 and
+  Security 39994972961 at 17:33 UTC on 2026-10-23 recorded Security 3/3 and all eight
+  non-Python CI jobs passed; four Python CI jobs were still running.
 - Shared HKCU Run/RunOnce keys are read once; separate HKLM views and denied/
   missing coverage remain. This source defect does not adjudicate the two R7
   records' historical physical identity, account identity, benignity or threat.

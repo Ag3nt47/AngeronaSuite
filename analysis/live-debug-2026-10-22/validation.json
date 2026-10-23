@@ -6761,7 +6761,7 @@
       "limits": "No physical-key alias, historical account identity, benignity or threat adjudication; no suppression, allowlist, host remediation or additional target query."
     }
   },
-  "current_state": {
+  "prior_current_state_before_blackbox_news_followup": {
     "source_version": "1.14.0",
     "head_at_first_focused_gate": "6ead285f3e4658674600f15fb9f1f4f1f64ac9d3",
     "source_entries_at_first_gate": 1856,
@@ -6787,5 +6787,98 @@
     "next_publication": "Prepared for guarded publication; public-head proof and later hosted CI are separate receipts.",
     "code_test_source_map_sha256": "947be22746d90432e6813c4a0e41f6316a0a645f7f6e089d8b319c1faec0592c",
     "documentation_after_code_tests": "The 1856-entry code-test snapshot precedes these documentation-only edits and the new changelog (1857 entries). Final publication full-map proof belongs to the separate guarded-publication receipt, not a self-referential hash in this document."
+  },
+  "current_state": {
+    "source_version": "1.14.0",
+    "issue_ids": 154,
+    "new_ids": [
+      "GUI-19",
+      "SIDE-07",
+      "NEWS-02"
+    ],
+    "tested_code_snapshot": {
+      "source_entries": 1857,
+      "source_map_sha256": "ae402c7c46fe9038b0d3d481964a985e0127d52a81ac1f00ce4dd66707733618",
+      "head": "36dfadf1052e5a2e656afa52376b2f310a092446",
+      "modified_python_files": 5
+    },
+    "changes": [
+      "Resolve Center describes absence of unresolved active HIGH/CRITICAL threats without asserting overall secure posture.",
+      "Black Box detail dialogs defer native worker teardown across close, accept, reject, Escape and modal done; first result and delete-on-close lifetime are preserved.",
+      "CISA dated alert routes require ASCII zero-padded calendar-valid dates while existing source, HTTPS, traversal, freshness and advisory-only boundaries remain."
+    ],
+    "focused_validation": {
+      "receipt_sha256": "e885fab3862f3442d15d8d9d85d4f9aa4950286c2bcf3598929eccd5c5ebd0e6",
+      "passed": 148,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "junit_seconds": 22.112,
+      "supervisor_seconds": 28.953,
+      "suites": [
+        "tests/test_blackbox_responsiveness.py",
+        "tests/test_blackbox_shutdown.py",
+        "tests/test_blackbox_firewall_bounds.py",
+        "tests/test_qthread_close_lifecycle.py",
+        "tests/test_spyware_news.py",
+        "tests/test_resolve_center_async.py"
+      ],
+      "actual_product_origins": [
+        "blackbox_recorder.py",
+        "src/angerona/core/spyware_news.py",
+        "src/angerona/gui/resolve_center.py"
+      ],
+      "source_head_index_runtime_gate_unchanged": true,
+      "new_controls": {
+        "blackbox_real_qthread_with_inert_query_results": 6,
+        "cisa_offline_route_and_feed_cases": 32
+      },
+      "native_retirement": "Both retained interpreter generations: same generation, signaled process handles, native exit 0; all four owned handles closed. Normal MainThread exit, no QApplication and zero top-level widgets."
+    },
+    "prior_checkpoint": {
+      "published_commit": "36dfadf1052e5a2e656afa52376b2f310a092446",
+      "publication_proof_sha256": "59b10e73f075d4911e77a32f6ea49e8792de5b5f054060c2d46266d467984fd9",
+      "branch_default_main_head_equal": true,
+      "fast_forward_clean_at_publication": true,
+      "public_readme_images_equal": 7,
+      "archived_source_map_sha256": "09c7b02f45d395823f931071757a123e85e6a28258e35b6a3ae5fd9489e744af",
+      "archive_audit_sha256": "09d8bb2e15c519ba979562aaa8ab8e814e2707ccf7848ef7259ddc6a5eebe26e",
+      "artifact_association_sha256": "4cb78cdcee3c46f24c627f05aa340d7c2b52ef087636f0fcf2638f4bf7b132fd",
+      "archive_scope": "Unsigned development archives belong to the preceding 09c7 snapshot; they do not package this later changed source."
+    },
+    "hosted_ci_snapshot": {
+      "commit": "36dfadf1052e5a2e656afa52376b2f310a092446",
+      "captured_as_reported_utc": "2026-10-23 17:33 UTC",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972951",
+      "security_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39994972961",
+      "security": "TERMINAL SUCCESS 3/3",
+      "ci_non_python": "8/8 SUCCESS",
+      "ci_python": "4 jobs still in Test; no terminal result claimed"
+    },
+    "limits": [
+      "Controlled Qt/inert query and offline parser regressions do not establish live PowerShell collection, physical sensor efficacy or adversarial resistance.",
+      "CISA browser requests returned 403 during research; live feed availability remains unproved. The September 8 example remains expired under the existing 30-day publication window.",
+      "Historical GUI stall causes and earlier hosted timeouts remain unchanged. No alert suppression, confirmed spyware adjudication, trust-baseline replacement, host mutation or source activation.",
+      "No fresh full pytest suite or default selfcheck is claimed for these five changed files.",
+      "Subsequent static, package and publication proof belongs to separate receipts; documentation itself is outside the completed focused-test source snapshot."
+    ],
+    "test_fixture_followup": {
+      "initial_lint_failure_sha256": "b0e1724fac5e27b12e366a19b7edee93fbd231f95d8397f30490cd25f86baa08",
+      "initial_ruff_stdout_sha256": "081e238e221852e13baeb811bcae70aced0b7de6f6054bfa6e67bc398c350172",
+      "initial_lint": "Six F821 reports from test callbacks referencing an outer dialog cell later deleted; one fixture cause, not six product defects.",
+      "correction": "Callbacks dereference a checked weak reference in their own stack; the owner-retention assertion has no strong callback owner.",
+      "corrected_test_sha256": "52e99f743165465b37d6c70d0a248c40660b685f5f090ec70552a82411fd3f84",
+      "tested_source_map_sha256": "fd9e860cf3d846a20ab8554da5986cd8c6af1124d5159a20c29e8e3fbaa7f5e1",
+      "followup_receipt_sha256": "ecbccf03be3d9f768cd76f69e56d37b407637ce7786a3156aa334471bf4acc37",
+      "passed": 6,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "junit_seconds": 4.233,
+      "supervisor_seconds": 12.313,
+      "source_head_index_runtime_gate_unchanged": true,
+      "retirement": "Both retained interpreter generations exited 0 with matching birth and signaled handles; all four owned handles closed. MainThread only, no QApplication and zero widgets.",
+      "scope": "Six cases overlap the initial 148-test cohort. Product code is unchanged; original test and lint results remain retained. No new physical-host or full-suite claim."
+    }
   }
 }

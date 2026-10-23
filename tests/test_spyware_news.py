@@ -140,6 +140,68 @@ def test_article_syntax_validation_never_resolves_dns(monkeypatch):
         news.safe_news_article_url(ARTICLE, "untrusted")
 
 
+@pytest.mark.parametrize("path", [
+    "/news-events/alerts/2026/09/08/cisa-adds-four-known-exploited-vulnerabilities-catalog",
+    "/news-events/alerts/2024/02/29/leap-day-vulnerability/",
+    "/news-events/alerts/undated-vulnerability",
+    "/news-events/cybersecurity-advisories/aa26-example/",
+    "/news-events/analysis-reports/ar26-example",
+])
+def test_cisa_accepts_dated_alerts_and_existing_undated_categories_without_dns(path, monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("link validation resolved DNS"))
+    url = "https://www.cisa.gov" + path
+    assert news.safe_news_article_url(url, "cisa") == url
+
+
+@pytest.mark.parametrize("date", [
+    "0000/01/01", "1900/02/29", "2025/02/29", "2026/02/30", "2026/00/01",
+    "2026/13/01", "2026/09/00", "2026/09/31", "2026/9/08", "2026/09/8",
+    "２０２６/09/08",
+])
+def test_cisa_dated_alert_requires_a_canonical_valid_calendar_date(date):
+    url = f"https://www.cisa.gov/news-events/alerts/{date}/vulnerability"
+    with pytest.raises(ValueError):
+        news.safe_news_article_url(url, "cisa")
+    assert not news.parse_news_feed(rss(rss_item(link=url)), source_name="cisa", now=NOW)
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.cisa.gov/news-events/cybersecurity-advisories/2026/09/08/vulnerability",
+    "https://www.cisa.gov/news-events/analysis-reports/2026/09/08/vulnerability",
+    "https://www.cisa.gov/news-events/other/2026/09/08/vulnerability",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08//vulnerability",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/vulnerability/extra",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/../vulnerability",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/%252e%252e/vulnerability",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/vulnerability%5cother",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/%00vulnerability",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/vulnerability?redirect=https://evil.example",
+    "https://www.cisa.gov/news-events/alerts/2026/09/08/vulnerability#token",
+    "http://www.cisa.gov/news-events/alerts/2026/09/08/vulnerability",
+    "https://evil.cisa.gov/news-events/alerts/2026/09/08/vulnerability",
+    "https://www.cisa.gov:444/news-events/alerts/2026/09/08/vulnerability",
+])
+def test_cisa_dated_alert_preserves_category_path_and_https_boundaries(url):
+    with pytest.raises(ValueError):
+        news.safe_news_article_url(url, "cisa")
+    assert not news.parse_news_feed(rss(rss_item(link=url)), source_name="cisa", now=NOW)
+
+
+def test_cisa_dated_alert_feed_keeps_publication_freshness_and_advisory_only(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("feed parser resolved DNS"))
+    monkeypatch.setattr(news, "_fetch_https_report", lambda *_a, **_k: pytest.fail("feed parser fetched"))
+    url = "https://www.cisa.gov/news-events/alerts/2026/09/08/cisa-adds-four-known-exploited-vulnerabilities-catalog"
+    published = datetime(2026, 9, 8, 12, tzinfo=timezone.utc).timestamp()
+    title = "CISA Adds Four Known Exploited Vulnerabilities to Catalog"
+    raw = rss(rss_item(title=title, link=url, stamp=published))
+    rows = news.parse_news_feed(raw, source_name="cisa", now=published + 86400)
+    assert rows == [{"title": title, "url": url, "published": published, "source": "cisa",
+                     "verified_at": published + 86400, "summary": "", "advisory_only": True}]
+    assert news.parse_news_feed(raw, source_name="cisa", now=published + news.MAX_NEWS_AGE + 1) == []
+    assert news.parse_news_feed(raw, source_name="cisa", now=published - 1) == []
+
+
 def test_citizen_lab_current_root_slug_articles_are_accepted_without_navigation_endpoints(monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("link validation resolved DNS"))
     article = "https://citizenlab.ca/the-secrets-of-a-us-spyware-king/"

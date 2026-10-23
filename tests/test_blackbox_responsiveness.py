@@ -1,10 +1,15 @@
+import gc
 import json
 import threading
 import time
+import weakref
 from contextlib import nullcontext
 from types import SimpleNamespace
 
+import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QTimer, Qt
+from PySide6.QtGui import QKeyEvent
+from shiboken6 import isValid
 
 import blackbox_recorder as blackbox
 
@@ -117,6 +122,137 @@ def test_firewall_refresh_keeps_qt_alive_and_coalesces_clicks(monkeypatch):
         timer.stop()
         tab._reader.close()
         tab.close()
+
+
+@pytest.mark.parametrize("completion, expected", [
+    ("title_close", 0), ("close_button", 1), ("reject", 0),
+    ("escape", 0), ("custom_done", 23),
+])
+def test_firewall_detail_completion_keeps_owner_until_native_exit(
+        monkeypatch, completion, expected):
+    app = blackbox.QApplication.instance() or blackbox.QApplication([])
+    entered, release = threading.Event(), threading.Event()
+    completed, close_elapsed, beats, guard_fired = [], [], [], []
+
+    class HeldDetailWorker(blackbox._FwDetailWorker):
+        def run(self):
+            entered.set()
+            release.wait(5)
+            self.done.emit({"description": "inert held detail"})
+
+    monkeypatch.setattr(blackbox, "_FwDetailWorker", HeldDetailWorker)
+    parent = blackbox.QWidget()
+    dialog = blackbox.FirewallRuleDetailDialog({"rule_id": "inert-rule"}, parent)
+    dialog.setAttribute(Qt.WA_DeleteOnClose)
+    dialog.finished.connect(completed.append)
+    worker = dialog._worker
+    dialog_ref = weakref.ref(dialog)
+    modal_guard = QTimer()
+    modal_guard.setSingleShot(True)
+    def guard_modal():
+        guard_fired.append(True)
+        current = dialog_ref()
+        if current is not None and isValid(current):
+            current.hide()
+    modal_guard.timeout.connect(guard_modal)
+    timer = QTimer()
+    timer.setInterval(5)
+    timer.timeout.connect(lambda: beats.append(1))
+    timer.start()
+
+    def request_completion():
+        current = dialog_ref()
+        assert current is not None and isValid(current)
+        started = time.monotonic()
+        if completion == "title_close":
+            current.close()
+        elif completion == "close_button":
+            next(button for button in current.findChildren(blackbox.QPushButton)
+                 if button.text() == "Close").click()
+        elif completion == "reject":
+            current.reject()
+        elif completion == "escape":
+            QCoreApplication.sendEvent(
+                current, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        else:
+            current.done(23)
+        close_elapsed.append(time.monotonic() - started)
+
+    try:
+        assert entered.wait(2)
+        # Exercise exec()'s cached delete-on-close flag, not just QWidget.close().
+        modal_guard.start(2000)
+        QTimer.singleShot(0, request_completion)
+        observed_result = dialog.exec()
+        modal_guard.stop()
+        assert not guard_fired and observed_result == expected
+        assert close_elapsed and close_elapsed[0] < 0.5
+        assert worker.isRunning() and not release.is_set()
+        assert isValid(dialog) and not dialog.isVisible()
+        assert dialog.parent() is None
+        assert completed == []
+        dialog.reject()  # A late second request must preserve the first result.
+        assert dialog.result() == expected
+
+        parent.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert not isValid(parent) and isValid(dialog)
+        owner = weakref.ref(dialog)
+        del dialog
+        gc.collect()
+        assert owner() is not None and isValid(owner())
+        pump_until(app, lambda: len(beats) >= 3)
+        assert worker.isRunning() and completed == []
+
+        release.set()
+        pump_until(app, lambda: not worker.isRunning())
+        pump_until(app, lambda: completed == [expected])
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        assert owner() is None or not isValid(owner())
+    finally:
+        release.set()
+        timer.stop()
+        modal_guard.stop()
+        assert worker.wait(2000)
+        worker.deleteLater()
+        if isValid(parent):
+            parent.deleteLater()
+        remaining = locals().get("dialog")
+        if remaining is None and "owner" in locals():
+            remaining = owner()
+        if remaining is not None and isValid(remaining):
+            remaining.close()
+            remaining.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+
+def test_firewall_detail_completed_query_preserves_result_display(monkeypatch):
+    app = blackbox.QApplication.instance() or blackbox.QApplication([])
+    program = "C:/inert/detail.exe"
+
+    class ReadyDetailWorker(blackbox._FwDetailWorker):
+        def run(self):
+            self.done.emit({"description": "inert description", "program": program})
+
+    monkeypatch.setattr(blackbox, "_FwDetailWorker", ReadyDetailWorker)
+    dialog = blackbox.FirewallRuleDetailDialog({"rule_id": "inert-rule"})
+    worker = dialog._worker
+    completed = []
+    dialog.finished.connect(completed.append)
+    dialog.show()
+    try:
+        pump_until(app, lambda: not worker.isRunning() and dialog.btn_copy.isEnabled())
+        assert dialog._program == program and dialog.btn_open.isEnabled()
+        assert "inert description" in [label.text() for label in dialog.findChildren(blackbox.QLabel)]
+        assert dialog._loading.isHidden() and dialog._prog_box.isVisible()
+        dialog.accept()
+        assert completed == [1] and dialog.result() == 1
+    finally:
+        assert worker.wait(2000)
+        dialog.close()
+        dialog.deleteLater()
+        worker.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
 
 
 def test_firewall_failure_preserves_prior_snapshot(monkeypatch):
