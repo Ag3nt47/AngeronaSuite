@@ -76,29 +76,56 @@ def run_module_selftest(mod, timeout: float = 15.0) -> tuple[bool, str]:
 
 
 def _bounded_call(callback, permits, timeout: float, *, name: str):
-    """Return without abandoning an unlimited number of blocked callbacks."""
+    """Account the absolute budget without abandoning unlimited callbacks.
+
+    Native code holding the GIL can delay this coordinator; it cannot be
+    preempted here. Completion after the deadline never becomes success merely
+    because startup or the coordinator resumed late.
+    """
+    deadline = time.monotonic() + timeout
     if not permits.acquire(blocking=False):
         return False, "a previous call is still running", None
-    completed = threading.Event()
-    result: dict = {}
+    try:
+        completed = threading.Event()
+        result: dict = {}
 
-    def work():
-        try:
-            result["value"] = callback()
-        except BaseException as exc:
-            result["error"] = f"{type(exc).__name__}: {exc}"
-        finally:
-            permits.release()
-            completed.set()
+        def work():
+            try:
+                try:
+                    result["value"] = callback()
+                finally:
+                    # Stamp callback completion before formatting a raised error.
+                    result["finished_at"] = time.monotonic()
+            except BaseException as exc:
+                # A failed formatter must never erase the callback failure or
+                # escape this worker with an apparently successful empty result.
+                result["error"] = "callback failed; exception message unavailable"
+                try:
+                    result["error"] = f"{type(exc).__name__}: {exc}"
+                except BaseException:
+                    pass
+            finally:
+                permits.release()
+                completed.set()
 
-    worker = threading.Thread(target=work, name=name, daemon=True)
+        worker = threading.Thread(target=work, name=name, daemon=True)
+    except BaseException:
+        # No start has been invoked: this path still owns the acquired lease.
+        permits.release()
+        raise
     try:
         worker.start()
     except Exception:
         permits.release()
         raise
-    if not completed.wait(timeout):
+    remaining = max(0.0, deadline - time.monotonic())
+    if not completed.wait(remaining) and not completed.is_set():
         return False, f"timed out after {timeout:g}s; the call is still running", None
+    if result["finished_at"] > deadline:
+        error = f"timed out after {timeout:g}s; the call finished after its deadline"
+        if "error" in result:
+            error += f"; original error: {result['error']}"
+        return False, error, None
     if "error" in result:
         return False, result["error"], None
     return True, "", result.get("value")
