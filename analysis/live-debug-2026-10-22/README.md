@@ -1,5 +1,12 @@
 # Live debugging and screenshot issue review
 
+Latest process-inventory review: [interaction and CPU map](process-inventory-performance.md)
+and [sanitized evidence](process-inventory-evidence.json). Fourteen complete
+regression suites passed 452 tests; all 29 isolated self-check phases passed.
+The fresh 90.437-second, 15-module observation retained 17 coverage gaps. It
+does not demonstrate lower CPU use. The issue registry now has 164 IDs and
+preserves every earlier issue object and unresolved host finding.
+
 This review follows the reported runtime-tamper alerts, persistence findings,
 Black Box diagnostics and five-second GUI heartbeat delays. The scope includes
 the new opt-in [live debug harness](../../docs/live-debug-harness.md), its
@@ -19,9 +26,9 @@ cross-component failure paths, safeguards and the staged observation matrix.
 The [additional sensor review](additional-sensor-review.md) records six held
 providers' active-path, cancellation, executable, storage and offline limits.
 
-## Current diagnostic evidence follow-up (2026-10-23)
+## Prior diagnostic evidence follow-up (2026-10-23)
 
-The register contains **162 unique IDs**. DBG-15, DBG-16 and HOST-04 are appended;
+The prior register contained **162 unique IDs**. DBG-15, DBG-16 and HOST-04 are appended;
 all159 prior issue objects/order are preserved.
 
 - Live Debug now preserves the explicit exact-boolean `process_identity_complete`
@@ -33,7 +40,7 @@ all159 prior issue objects/order are preserved.
   source1860/b696. This is a different cohort from the earlier updater229.
   The initial218pass/11fail/1skip cohort (09b40733) is retained: the11 failures
   came from one new fixture selecting initial coverage instead of the event.
-- Current registry162 appends DBG-15, DBG-16 and HOST-04, preserving all159 prior
+- Prior registry162 appended DBG-15, DBG-16 and HOST-04, preserving all159 prior
   objects/order. Confirmed system-volume ENOSPC blocked one staging attempt;
   reversible verified cache offload provided limited headroom, not disk health.
   HOST-03 remains open and native custody remains held. Older waits/CI causes

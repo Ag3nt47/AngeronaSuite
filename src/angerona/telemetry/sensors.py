@@ -163,8 +163,8 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
 
     Cached for a short window (``ANGERONA_SENSOR_CACHE_TTL``, default 1.5 s) so
     concurrent sensor threads share one enumeration instead of each running
-    their own. Pass ``max_age=0`` to force a fresh scan. Cached psutil Process
-    objects contribute PIDs only: metadata comes from independent fresh objects.
+    their own. Pass ``max_age=0`` to force a fresh scan. The public PID table
+    supplies IDs only: metadata comes from independent fresh Process objects.
     A second birth/image read brackets the scan-local Windows parent map. These
     are coherent observations, not an atomic snapshot or response authority.
     """
@@ -192,9 +192,9 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
             attrs = ["pid", "name", "exe", "username", "cmdline", "create_time"]
             if not _WINDOWS_PROCESS_MAP:
                 attrs.append("ppid")
-            # Iteration may reuse psutil's lifetime-cached objects. Do not read
-            # their .info, birth, image, ppid or is_running() identity cache.
-            for p in psutil.process_iter():
+            # Enumerate IDs without creating psutil's lifetime-cached Process
+            # objects; neither metadata pass may reuse those identity caches.
+            for pid in psutil.pids():
                 enumerated += 1
                 if enumerated > _MAX_PROCESS_ROWS:
                     enumeration_complete = False
@@ -202,7 +202,6 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
                     error = "process inventory exceeded the bounded row limit"
                     break
                 try:
-                    pid = p.pid
                     if type(pid) is not int or pid < 0:
                         raise ValueError("invalid enumerated PID")
                     info = psutil.Process(pid).as_dict(attrs=attrs, ad_value=None)

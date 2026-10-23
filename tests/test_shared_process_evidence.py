@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from angerona.telemetry import sensors
@@ -27,11 +25,12 @@ def _install_rows(monkeypatch, rows, *, after=None, iterator=None):
             source = after if after is not None and len(attrs) == 3 else by_pid
             return {field: source[self.pid].get(field) for field in attrs}
 
-    def process_iter():
+    def pids():
         enumerations.append(True)
-        return iterator() if iterator is not None else iter(SimpleNamespace(pid=row["pid"]) for row in rows)
+        return iterator() if iterator is not None else [row["pid"] for row in rows]
 
-    monkeypatch.setattr(psutil, "process_iter", process_iter)
+    monkeypatch.setattr(psutil, "pids", pids)
+    monkeypatch.setattr(psutil, "process_iter", lambda: pytest.fail("cached enumeration used"))
     monkeypatch.setattr(psutil, "Process", Process)
     monkeypatch.setattr(psutil, "_ppid_map", lambda: {row["pid"]: row["ppid"] for row in rows}, raising=False)
     return reads, enumerations
@@ -52,7 +51,7 @@ def test_private_legacy_rows_cannot_poison_cached_evidence(monkeypatch):
 
 def test_partial_enumeration_keeps_visible_evidence_and_loss(monkeypatch):
     def rows():
-        yield SimpleNamespace(pid=123)
+        yield 123
         raise PermissionError("fixture denied remaining processes")
 
     _install_rows(monkeypatch, [_row()], iterator=rows)

@@ -32,10 +32,15 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
+Shared process scanning now avoids unused cached iterator objects while preserving
+fresh identity checks. **452 regression tests and all 29 isolated self-check phases
+passed**. A fresh 15-module observation retained 17 coverage gaps; it did not
+demonstrate a CPU reduction. See the [performance interaction map](analysis/live-debug-2026-10-22/process-inventory-performance.md).
+
 Live AI Review now retains explicit process-identity gaps, and publisher staging
 errors show sanitized numeric OS codes. These diagnostic improvements passed
 **229 tests across 12 complete suites**, with **one explicit Windows symlink skip**.
-See the [162-issue review](analysis/live-debug-2026-10-22/README.md) for scope and
+See the [164-issue review](analysis/live-debug-2026-10-22/README.md) for scope and
 retained coverage gaps; this is separate from the updater validation below.
 
 **Also in the [v1.14 security integration scope](docs/releases/v1.14-security-integration.md):**
@@ -266,7 +271,7 @@ permissions correctly hold installation on the observed host.
 
 Source staging preserves custom edits and conflicts. Packaged installation keeps
 its separate signed-release authority; no live install or restart-health result
-is established. The [162-issue review](analysis/live-debug-2026-10-22/README.md)
+is established. The [164-issue review](analysis/live-debug-2026-10-22/README.md)
 retains failed checks, coverage gaps and the source scopes of each result. Archive
 audits and guarded-publication receipts identify their exact reviewed revision.
 
@@ -275,7 +280,7 @@ busy workers through shutdown. Separate focused gates passed **41** and **119**
 tests with exact clean retirement. A real **90.016-second App Control solo**
 completed as **OBSERVED**, with no events or recorded coverage gaps; policy
 presence and detection efficacy remain unknown. See the
-[162-issue review](analysis/live-debug-2026-10-22/README.md) for the source scopes
+[164-issue review](analysis/live-debug-2026-10-22/README.md) for the source scopes
 and limits. Published a3 [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39999282235) retains a Python 3.13
 preflight failure; terminal CI passed 11/12 and Security 3/3. Its cause remains
 unknown; no complete CI pass is claimed.
@@ -322,7 +327,7 @@ platform skip** and a **29-phase default selfcheck** (68 passed/18 skipped modul
 rows, a separate pipeline and nine verifiers). Its synthetic direct-call Sigma
 benchmark measured **31.8–42.7% lower median wall time**; that is separate from
 dashboard, sensor and whole-product performance. The
-[162-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
+[164-issue review](analysis/live-debug-2026-10-22/README.md) preserves failed gates,
 unknown causes and the original R7 findings.
 
 The published [6ead285 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/6ead285f3e4658674600f15fb9f1f4f1f64ac9d3)

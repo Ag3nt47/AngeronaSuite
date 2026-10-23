@@ -38,23 +38,11 @@ def install(monkeypatch, rows, *, after=None, parents=None, map_hook=None, itera
                 raise result
             return {key: result.get(key) for key in attrs}
 
-    def process_iter():
+    def pids():
         calls["iteration"] += 1
         if iterator is not None:
             return iterator()
-        # These simulate stale process_iter objects; touching their metadata
-        # would regress the separate fresh-object admission contract.
-        class Cached:
-            def __init__(self, pid):
-                self.pid = pid
-
-            @property
-            def info(self):
-                pytest.fail("cached process metadata must never be consumed")
-
-            def is_running(self):
-                pytest.fail("cached identity comparison must never be consumed")
-        return iter(Cached(item["pid"]) for item in rows)
+        return [item["pid"] for item in rows]
 
     def parent_map():
         calls["maps"] += 1
@@ -62,7 +50,10 @@ def install(monkeypatch, rows, *, after=None, parents=None, map_hook=None, itera
             map_hook()
         return {item["pid"]: item["ppid"] for item in rows} if parents is None else parents
 
-    adapter = SimpleNamespace(Process=Process, process_iter=process_iter, _ppid_map=parent_map)
+    adapter = SimpleNamespace(
+        Process=Process, pids=pids, _ppid_map=parent_map,
+        process_iter=lambda: pytest.fail("cached enumeration used"),
+    )
     monkeypatch.setitem(sys.modules, "psutil", adapter)
     return calls, adapter
 
@@ -154,7 +145,7 @@ def test_missing_pid_in_map_is_unknown_instead_of_invented_parent(monkeypatch):
 
 def test_partial_enumeration_preserves_rows_and_explicit_loss(monkeypatch):
     def iterator():
-        yield SimpleNamespace(pid=731)
+        yield 731
         raise PermissionError("fixture remaining table denied")
     calls, _adapter = install(monkeypatch, [row()], iterator=iterator)
     receipt = sensors.process_snapshot(max_age=0)
@@ -226,7 +217,8 @@ def test_fresh_objects_defeat_actual_psutil_denied_fast_birth_cache(monkeypatch,
     assert cached._ident == (731, None)
     state.update(birth=new_birth, image="C:/new.exe", parent=5)
     assert cached.is_running()  # The old cached PID-only comparison is weak.
-    monkeypatch.setattr(psutil, "process_iter", lambda: iter([cached]))
+    monkeypatch.setattr(psutil, "pids", lambda: [731])
+    monkeypatch.setattr(psutil, "process_iter", lambda: pytest.fail("cached enumeration used"))
     monkeypatch.setattr(psutil, "_ppid_map", lambda: {731: 5}, raising=False)
     receipt = sensors.process_snapshot(max_age=0)
     assert receipt.complete and receipt.processes[0]["create_time"] == new_birth
@@ -274,7 +266,8 @@ def test_portable_same_birth_cached_exe_is_bypassed_by_fresh_objects(monkeypatch
     assert cached.create_time() == 100.0 and cached.exe() == "/fixture/old.exe"
     state["image"] = "/fixture/new.exe"
     assert cached.is_running() and cached.exe() == "/fixture/old.exe"
-    monkeypatch.setattr(psutil, "process_iter", lambda: iter([cached]))
+    monkeypatch.setattr(psutil, "pids", lambda: [731])
+    monkeypatch.setattr(psutil, "process_iter", lambda: pytest.fail("cached enumeration used"))
     receipt = sensors.process_snapshot(max_age=0)
     assert receipt.complete and receipt.processes[0]["create_time"] == 100.0
     assert receipt.processes[0]["exe"] == "/fixture/new.exe"
@@ -285,7 +278,7 @@ def test_portable_same_birth_cached_exe_is_bypassed_by_fresh_objects(monkeypatch
 
 @pytest.mark.parametrize("pid", [True, -1, "731", None])
 def test_invalid_iterator_pid_is_loss_without_opening_a_process(monkeypatch, pid):
-    calls, _adapter = install(monkeypatch, [row()], iterator=lambda: iter([SimpleNamespace(pid=pid)]))
+    calls, _adapter = install(monkeypatch, [row()], iterator=lambda: iter([pid]))
     receipt = sensors.process_snapshot(max_age=0)
     assert not calls["reads"] and calls["maps"] == 0
     assert receipt.skipped == 1 and not receipt.enumeration_complete and receipt.error

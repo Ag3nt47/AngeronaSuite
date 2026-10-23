@@ -174,7 +174,7 @@ def sensor_clock(monkeypatch):
 
     def processes():
         calls["process"] += 1
-        return [SimpleNamespace(pid=7)]
+        return [7]
 
     class Process:
         def __init__(self, pid):
@@ -194,7 +194,8 @@ def sensor_clock(monkeypatch):
         monotonic=lambda: clock[0], time=lambda: clock[1],
     ))
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
-        process_iter=processes, Process=Process, _ppid_map=lambda: {7: 1},
+        pids=processes, Process=Process, _ppid_map=lambda: {7: 1},
+        process_iter=lambda: pytest.fail("cached enumeration used"),
         net_connections=connections,
     ))
     return clock, calls

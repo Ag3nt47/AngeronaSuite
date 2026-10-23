@@ -5,7 +5,7 @@ wide black-spy **SpywareGuard** button in the dashboard's top-right controls.
 It opens one dedicated window and preserves local drafts when hidden. It combines
 host audits, spyware-relevant sensor events, reviewed research indicators,
 containment receipts, an inert sandbox and optional emergency notifications.
-It ships with v1.13.0 as a preview capability.
+It is included in v1.14.0 as a preview capability.
 
 ## Dashboard and first-rule lockdown
 

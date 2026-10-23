@@ -2,7 +2,6 @@
 from dataclasses import replace
 import threading
 import time
-from types import SimpleNamespace
 
 import pytest
 
@@ -115,17 +114,26 @@ def test_actual_native_denied_or_partial_receipt_cannot_grant_readiness(monkeypa
     module._angerona_origin = "builtin"
     readiness = VerifiedReadiness(manager)
     readiness.register(module)
-    monkeypatch.setattr(psutil, "pids", lambda: [])
     monkeypatch.setattr(sensors, "_proc_cache", (0.0, None))
     calls = []
 
     def enumerate_processes():
         calls.append(True)
         if partial:
-            yield SimpleNamespace(pid=701)
+            yield 701
         raise PermissionError("inert remaining process table denied")
 
-    monkeypatch.setattr(psutil, "process_iter", enumerate_processes)
+    startup_boundary_pending = True
+
+    def pids():
+        nonlocal startup_boundary_pending
+        if startup_boundary_pending:
+            startup_boundary_pending = False
+            return []
+        return enumerate_processes()
+
+    monkeypatch.setattr(psutil, "pids", pids)
+    monkeypatch.setattr(psutil, "process_iter", lambda: pytest.fail("cached enumeration used"))
 
     class Process:
         def __init__(self, pid):

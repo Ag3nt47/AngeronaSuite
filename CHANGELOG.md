@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.14.0 — shared process inventory and measured worker CPU
+
+- Enumerate public PIDs without unused cached iterator objects. Keep both fresh
+  identity passes, parent-map bracket, collection bounds and 1.5-second freshness.
+- Fourteen complete suites passed 452 tests with no failures, errors or skips.
+  The default isolated self-check passed all 29 phases and reconciled 86 module
+  rows: 68 passed and 18 explicitly skipped.
+- A fresh 90.437-second run of 15 audited modules retired cleanly with 17 coverage
+  gaps and no recorded errors or capture/export drops. Observed CPU was 55.59375
+  seconds versus the earlier 52.46875; no speed gain is demonstrated.
+- Add the sanitized worker CPU and interaction map. Preserve two optional
+  profiler failures before scanning, all 162 earlier issue objects, open host
+  findings and unknown historical causes. SpywareGuard’s guide now names its
+  inclusion in v1.14.0. Current CI/publication require separate receipts.
+
 ## 1.14.0 — clearer live diagnostics
 
 - Live Debug preserves the producer’s explicit `process_identity_complete` boolean

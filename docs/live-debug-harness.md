@@ -154,6 +154,16 @@ give a reader response authority. `status()` exposes `enabled`, `running`,
 `endpoint`, `pid`, `birth`, `run_id`, `cursor`, `first_seq`, `queue_dropped`,
 `client_count`, `error`, `transport`, `history_size` and `queued`.
 
+## Process inventory and worker CPU evidence
+
+The [process-inventory interaction map](../analysis/live-debug-2026-10-22/process-inventory-performance.md)
+records the shared collector, exact primary-worker CPU attribution, focused
+regressions, fresh observation and explicit measurement gaps. Its sanitized
+JSON links source scopes to private-receipt digests without publishing host
+process rows. Compare like-for-like CPU fields and keep failed diagnostic
+setups separate from actual scanner calls. The latest observation did not
+demonstrate lower CPU use.
+
 ## Review and improvement loop
 
 ### Offline case summary for AI review

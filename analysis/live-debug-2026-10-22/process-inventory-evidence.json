@@ -1,0 +1,302 @@
+{
+  "schema": "angerona.sanitized-process-inventory-review/v1",
+  "version": "1.14.0",
+  "date": "2026-10-23",
+  "scope": "One six-file PID-enumeration change; ordinary-user isolated fixtures and fifteen audited modules; raw host captures remain private",
+  "tested_source": {
+    "entries": 1861,
+    "sha256": "4d8e33a4b90db667acf042e2052eb449e3d909e3a6114368d17c462e12e14a40",
+    "baseline_head": "bc59ef9996163b01892b5294d4daa306f725616c",
+    "documentation_added_after_observation": true,
+    "files": [
+      {
+        "path": "src/angerona/telemetry/sensors.py",
+        "sha256": "74b24d3ceed5c1c27b9ff111284616f63060ae7a122fd5fd6a9b144963672eee"
+      },
+      {
+        "path": "tests/test_process_snapshot_fresh_inventory.py",
+        "sha256": "5beb512a94746eb7f59ec6b994f29dc7feb520bf2e5dbe5320dfd63e5fca7d44"
+      },
+      {
+        "path": "tests/test_shared_process_evidence.py",
+        "sha256": "6a6338cfc7c6d43621f01c700962a9994c6b9ba7cbb9374be2a1028da72ac92b"
+      },
+      {
+        "path": "tests/test_module_poll_efficiency.py",
+        "sha256": "4f33ab75f4e6c55d93ac615745fb9c0a525ed7a98d11a3291aa60f49b84126d2"
+      },
+      {
+        "path": "tests/test_process_monitor_coverage.py",
+        "sha256": "4b53c3eb9ea3fc3f8cc120462d4bbe79864395e715f13bc88187b5031ea464ac"
+      },
+      {
+        "path": "tests/test_process_pid_inventory.py",
+        "sha256": "b3f8ef459a5adaa7b42ea7a65b83efb300133ad589ec5f91e84f2dbfa809ec1c"
+      }
+    ]
+  },
+  "regression": {
+    "full_suites": 14,
+    "passed": 452,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "receipt_sha256": "0be00435003b39f2ba2564dc13f2f329b4736caeb2cbe59a92320c3ea2b5c626"
+  },
+  "selfcheck": {
+    "phases_passed": 29,
+    "phases_failed": 0,
+    "module_rows": 86,
+    "module_passed": 68,
+    "module_skipped": 18,
+    "pipeline_separate": true,
+    "controlled_verification_checks": 8,
+    "receipt_sha256": "09bdb248211f2485e3f588761e82ede1af7a229dce1292f09626e494faaab238"
+  },
+  "observations": [
+    {
+      "label": "baseline",
+      "source_sha256": "5b17c0475ad709da3e4cca5765aa94290e7a804f6dc8483ae3e3cc5e509ffca1",
+      "seconds": 90.21899999999732,
+      "observation_process_cpu_seconds": 52.46875,
+      "coverage_gap_strings": 17,
+      "receipt_sha256": "67ab9a1ce4bd0f91535f6bac1c34aa5be84564e3e1886add880b31e609553a28",
+      "workers": [
+        {
+          "module": "AegisPath Exposure Graph Guard",
+          "interval_seconds": 90.17200000000594,
+          "cpu_seconds": 0.015625
+        },
+        {
+          "module": "App Control Decision Evidence",
+          "interval_seconds": 90.13999999999942,
+          "cpu_seconds": 0.140625
+        },
+        {
+          "module": "C2 Beacon Detector",
+          "interval_seconds": 90.125,
+          "cpu_seconds": 0.234375
+        },
+        {
+          "module": "Deterministic Fast-Path Interceptor",
+          "interval_seconds": 90.07799999999406,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "Evidence Lattice Fusion",
+          "interval_seconds": 90.06200000000536,
+          "cpu_seconds": 0.015625
+        },
+        {
+          "module": "Fleet Health Monitor",
+          "interval_seconds": 90.06200000000536,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "Identity Session Guard",
+          "interval_seconds": 90,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "Immutable Recovery Assurance Guard",
+          "interval_seconds": 90,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "In-Memory Flight Cache",
+          "interval_seconds": 89.96899999999732,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "LSASS Credential-Access Guard",
+          "interval_seconds": 89.96899999999732,
+          "cpu_seconds": 23.5625
+        },
+        {
+          "module": "Network Monitor",
+          "interval_seconds": 89.90600000000268,
+          "cpu_seconds": 0.296875
+        },
+        {
+          "module": "Process Monitor",
+          "interval_seconds": 89.90600000000268,
+          "cpu_seconds": 24.515625
+        },
+        {
+          "module": "Self-Integrity Monitor",
+          "interval_seconds": 89.90600000000268,
+          "cpu_seconds": 0.25
+        },
+        {
+          "module": "SpywareGuard",
+          "interval_seconds": 89.88999999999942,
+          "cpu_seconds": 1.515625
+        },
+        {
+          "module": "Sysmon Event Bridge",
+          "interval_seconds": 89.81200000000536,
+          "cpu_seconds": 0.078125
+        }
+      ]
+    },
+    {
+      "label": "reviewed PID enumeration",
+      "source_sha256": "4d8e33a4b90db667acf042e2052eb449e3d909e3a6114368d17c462e12e14a40",
+      "seconds": 90.43700000000536,
+      "observation_process_cpu_seconds": 55.59375,
+      "state": "OBSERVED_WITH_GAPS",
+      "coverage_gap_strings": 17,
+      "recorded_errors": 0,
+      "capture_dropped": 0,
+      "export_dropped": 0,
+      "pending_threads": 0,
+      "clean_shutdown": true,
+      "receipt_sha256": "05b8160d13377bb84d2b370bb7db0cf5fd73bd68e6c0b91b812028137f76f51c",
+      "ownership_sha256": "070c62757a54b55fc089f4f0e85c5164412421e839527372609a582302e42fcb",
+      "primary_worker_profile_complete": true,
+      "query_handles_opened": 16,
+      "query_handles_closed": 16,
+      "profile_gaps": 0,
+      "workers": [
+        {
+          "module": "AegisPath Exposure Graph Guard",
+          "interval_seconds": 90.10899999999674,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "App Control Decision Evidence",
+          "interval_seconds": 90.10899999999674,
+          "cpu_seconds": 0.203125
+        },
+        {
+          "module": "C2 Beacon Detector",
+          "interval_seconds": 90.10899999999674,
+          "cpu_seconds": 0.265625
+        },
+        {
+          "module": "Deterministic Fast-Path Interceptor",
+          "interval_seconds": 90.09399999999732,
+          "cpu_seconds": 0.015625
+        },
+        {
+          "module": "Evidence Lattice Fusion",
+          "interval_seconds": 90.09399999999732,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "Fleet Health Monitor",
+          "interval_seconds": 90.04700000000594,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "Identity Session Guard",
+          "interval_seconds": 90.09400000001187,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "Immutable Recovery Assurance Guard",
+          "interval_seconds": 90.09400000001187,
+          "cpu_seconds": 0.015625
+        },
+        {
+          "module": "In-Memory Flight Cache",
+          "interval_seconds": 90.125,
+          "cpu_seconds": 0
+        },
+        {
+          "module": "LSASS Credential-Access Guard",
+          "interval_seconds": 90.17200000000594,
+          "cpu_seconds": 27.78125
+        },
+        {
+          "module": "Network Monitor",
+          "interval_seconds": 90.23500000000058,
+          "cpu_seconds": 0.40625
+        },
+        {
+          "module": "Process Monitor",
+          "interval_seconds": 90.23500000000058,
+          "cpu_seconds": 22.734375
+        },
+        {
+          "module": "Self-Integrity Monitor",
+          "interval_seconds": 90.28200000000652,
+          "cpu_seconds": 0.375
+        },
+        {
+          "module": "SpywareGuard",
+          "interval_seconds": 90.3130000000092,
+          "cpu_seconds": 1.90625
+        },
+        {
+          "module": "Sysmon Event Bridge",
+          "interval_seconds": 90.32800000000861,
+          "cpu_seconds": 0.15625
+        }
+      ]
+    }
+  ],
+  "controls": {
+    "self_only_socket_queries": 53,
+    "query_wall_ns": 168973100,
+    "query_cpu_ns": 109375000,
+    "self_query_receipt_sha256": "41b1a9f815489cdc8ae882ee926553f5805f32b8f52227c2f9b8067feeb08ed6",
+    "snapshot_calls": 9,
+    "snapshot_refresh_receipts": 8,
+    "snapshot_reuses": 1,
+    "snapshot_receipt_sha256": "1c348701e03f4dfb94558f75a282f5bf8e0f926832e0def55b180c866c44af17",
+    "fastpath_fixture_cohorts": 26,
+    "fastpath_signed_fixtures": 563,
+    "fastpath_receipt_sha256": "c475a2ae8cfafaf5a911541950803c340d4722dc3354aff5eec9f0b0860dcf10"
+  },
+  "profiler": {
+    "status": "DEFERRED",
+    "attempts": 2,
+    "process_snapshot_calls_admitted": 0,
+    "first_failure": "Legacy profile-hook check did not match Python3.12 cProfile",
+    "second_failure": "Monitoring event-mask mismatch; idle cleanup unproved before exact process retirement",
+    "native_exit_codes": [
+      1,
+      1
+    ],
+    "exact_owned_process_retirement_verified": true,
+    "receipt_sha256s": [
+      "408b7e89f42e8765fec6d39ac4579aa55d8e84915646156811ff263acefb99f7",
+      "1f07f277ed0c5b2801986173e589af441c5a2e9291d0d09ab683e052759a8c00"
+    ],
+    "collection_cost_or_cause_inferred": false
+  },
+  "prior_published_ci": {
+    "head": "bc59ef9996163b01892b5294d4daa306f725616c",
+    "ci_successful_jobs": 12,
+    "security_successful_jobs": 3,
+    "python_versions": [
+      "3.10",
+      "3.11",
+      "3.12",
+      "3.13"
+    ],
+    "per_python": {
+      "passed": 7965,
+      "skipped": 19,
+      "failed": 0
+    },
+    "receipt_sha256": "1a957851b2f7c26ae08197b78f67a0f7a9358a3079ac16259d5ca8616a841d59",
+    "current_candidate_ci_claimed": false
+  },
+  "preserved_invariants": [
+    "Two independent fresh Process metadata passes and birth/image comparison",
+    "Parent-map bracket, lock, collection bounds and start timestamp",
+    "1.5-second cache freshness; no completion redating or TTL expansion",
+    "Explicit access-denied, vanished-PID and identity gaps",
+    "No iterator fallback or cached Process.info trust"
+  ],
+  "limits": [
+    "No demonstrated CPU reduction; later observation consumed more CPU, and runs were uncontrolled",
+    "Worker CPU intervals differ; helper threads and unaligned CPU remain unattributed",
+    "Query-handle closure does not alone prove worker retirement",
+    "No physical protection, all86 native sensors, GUI soak, network enforcement or historical cause closure",
+    "HOST-03 custody refusal and HOST-04 volatile capacity risk remain open",
+    "New publication, release trust and activation need their separate evidence"
+  ]
+}
