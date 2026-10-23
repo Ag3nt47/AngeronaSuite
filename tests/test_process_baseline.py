@@ -57,11 +57,18 @@ def _signed_process_event(authority: BusAuthority, executable: Path) -> Event:
     return dataclasses.replace(event, hmac_sig=authority.sign(event))
 
 
-def _wait_for(learner: ProcessBaselineLearner, accepted: int) -> dict:
+def _wait_for(
+    learner: ProcessBaselineLearner,
+    accepted: int,
+    *,
+    persisted: threading.Event | None = None,
+) -> dict:
     deadline = time.monotonic() + 3.0
     while time.monotonic() < deadline:
         snapshot = learner.snapshot()
-        if snapshot["metrics"]["accepted"] >= accepted:
+        if snapshot["metrics"]["accepted"] >= accepted and (
+            persisted is None or persisted.is_set()
+        ):
             return snapshot
         time.sleep(0.01)
     raise AssertionError(f"learner did not reach {accepted} observations")
@@ -407,7 +414,7 @@ def test_malformed_assessor_output_fails_closed_without_killing_worker(tmp_path)
     assert learner.stop()
 
 
-def test_authenticated_but_inconsistent_candidate_state_is_rejected(tmp_path) -> None:
+def test_authenticated_but_inconsistent_candidate_state_is_rejected(tmp_path, monkeypatch) -> None:
     authority = BusAuthority(b"i" * 32)
     executable = tmp_path / "state.exe"
     executable.write_bytes(b"state")
@@ -417,9 +424,21 @@ def test_authenticated_but_inconsistent_candidate_state_is_rejected(tmp_path) ->
         enabled=True,
         assessor=_assessment,
     )
+    persisted = threading.Event()
+    write = learner._write
+
+    def observed_write() -> bool:
+        written = write()
+        if written:
+            persisted.set()
+        return written
+
+    # Acceptance precedes disk persistence; prepare the signed-state fixture
+    # after its real write, without spending the bounded stop on in-flight I/O.
+    monkeypatch.setattr(learner, "_write", observed_write)
     learner.start()
     assert learner.submit_event(_signed_process_event(authority, executable))
-    _wait_for(learner, 1)
+    _wait_for(learner, 1, persisted=persisted)
     assert learner.stop()
 
     raw = json.loads(learner.path.read_text(encoding="utf-8"))
