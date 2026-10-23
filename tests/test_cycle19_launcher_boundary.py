@@ -60,7 +60,7 @@ def test_canonical_launcher_refuses_an_unreviewed_existing_venv_before_launch():
         "sys.version_info[:2] == (3, 12) and "
         "sysconfig.get_platform() == 'win-amd64'"
     )
-    pip_gate = supervisor.index("m.version('pip') == '26.2.1'")
+    pip_gate = supervisor.index("m.version('pip') == '26.2.2'")
     dependency_preflight = supervisor.index("Join-Path $Root 'tools\\source_trust_preflight.py'")
     launch = supervisor.index("return Invoke-SourceStartupAssistant")
 
@@ -89,7 +89,7 @@ def test_source_python_repair_is_confirmed_bounded_and_hash_locked():
     assert repair.rindex("requirements-bootstrap-pip.txt") < repair.rindex(
         "requirements-release-hashed.txt"
     )
-    assert "m.version('pip') == '26.2.1'" in repair
+    assert "m.version('pip') == '26.2.2'" in repair
     assert "venv.incompatible.repair.$id" in repair
     assert "Remove-OwnedRepairDirectory" in repair
     assert "Move-Item -LiteralPath $intent.Backup -Destination $venv" in repair

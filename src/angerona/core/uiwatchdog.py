@@ -7,8 +7,9 @@ the UI is (or is about to be) "Not Responding", so the watchdog appends the
 actionable GUI-thread stack and a compact list of other live threads. Best-effort;
 never raises into the app.
 
-This is a diagnostic aid: it does not try to unstick the UI, it documents the
-cause so the offending blocking call can be moved off the GUI thread.
+This is a diagnostic aid: it does not try to unstick the UI. A sampled Python
+stack supplies context, but cannot by itself identify a native Qt wait, CPU
+contention, host suspension, or a deadlock.
 """
 from __future__ import annotations
 
@@ -74,19 +75,26 @@ class UiWatchdog:
 
     def _run(self) -> None:
         while not self._stop.wait(1.0):
-            age = time.monotonic() - self._last_beat
+            last_beat = self._last_beat
             now = time.monotonic()
+            age = now - last_beat
             if (age >= self.stall_seconds
-                    and self._last_beat != self._logged_for
+                    and last_beat != self._logged_for
                     and now - self._last_dump_at >= self._MIN_DUMP_INTERVAL):
-                self._logged_for = self._last_beat      # don't spam the same stall
-                self._last_dump_at = now
-                self._dump(age)
+                if self._dump(age, expected_beat=last_beat):
+                    self._logged_for = last_beat      # don't spam the same stall
+                    self._last_dump_at = now
 
-    def _dump(self, age: float) -> None:
+    def _dump(self, age: float, *, expected_beat: float | None = None) -> bool:
         try:
+            if expected_beat is not None and self._last_beat != expected_beat:
+                return False
             names = {t.ident: t.name for t in threading.enumerate()}
             frames = sys._current_frames()
+            # The GUI can recover between the age check and frame sampling.
+            # Do not blame its new callback for a delay that has already ended.
+            if expected_beat is not None and self._last_beat != expected_beat:
+                return False
             try:
                 if self.log_path.stat().st_size >= self._MAX_LOG_BYTES:
                     rotated = self.log_path.with_suffix(self.log_path.suffix + ".1")
@@ -98,8 +106,10 @@ class UiWatchdog:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write("\n" + "=" * 72 + "\n")
                 f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] UI NOT RESPONDING — GUI "
-                        f"thread stalled ~{age:.1f}s (threshold {self.stall_seconds:.0f}s)\n")
-                f.write("The MainThread stack below is the call that is blocking the UI.\n")
+                        f"heartbeat delayed ~{age:.1f}s (threshold {self.stall_seconds:.0f}s)\n")
+                f.write("Sampled MainThread stack: a slow Python/native call, CPU contention, "
+                        "or system sleep can delay the heartbeat. This sample alone does "
+                        "not identify the blocking call or establish a lock cycle.\n")
                 f.write("-" * 72 + "\n")
                 # Dump only the actionable GUI stack. Writing every sleeping
                 # module stack held the GIL and amplified the stall being observed.
@@ -110,5 +120,6 @@ class UiWatchdog:
                     traceback.print_stack(frame, file=f)
                 others = sorted(n for tid, n in names.items() if tid != main.ident)
                 f.write(f"\nOther live threads ({len(others)}): {', '.join(others)}\n")
+            return True
         except Exception:
-            pass
+            return False

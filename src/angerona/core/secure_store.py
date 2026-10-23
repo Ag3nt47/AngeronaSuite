@@ -51,6 +51,7 @@ _NON_ENVIRONMENT_SECRETS = frozenset({
     # they must never become ambient child-process authority.
     "ANGERONA_RECOVERY_DRILL_ENCRYPTION_KEY",
     "ANGERONA_RECOVERY_DRILL_AUDIT_KEY",
+    "ANGERONA_UGCAP_WITNESS_PRIVATE_KEY",
 })
 _MAX_LEGACY_ENV_BYTES = 1024 * 1024
 

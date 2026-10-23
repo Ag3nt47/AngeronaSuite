@@ -18,7 +18,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QGridLayout, QHBoxLayout, QLabel, QLayout, QMainWindow, QMenu, QMessageBox,
+    QApplication, QDialog, QGridLayout, QHBoxLayout, QLabel, QLayout, QMainWindow, QMenu, QMessageBox,
     QPushButton, QScrollArea, QSizePolicy, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -61,7 +61,8 @@ from angerona.gui.theme import build_qss, clamp_scale
 from angerona.gui.threat_intel_page import ThreatIntelDashboard
 from angerona.shark.shark_attack import SharkAttackEngine
 from angerona.shark.red_team import RedTeamEngine, REDTEAM_STAGE_CATEGORY
-from angerona.updater.github_updater import check_for_updates
+from shiboken6 import isValid
+
 
 class _FlightInstructorQueue:
     """One retained plain-Python coach; closing never waits for native work."""
@@ -323,6 +324,13 @@ class MainWindow(QMainWindow):
         self._adaptation_dialog = None
         self._adaptation_poll_active = threading.Event()
         self._adaptation_poll_done.connect(self._on_adaptation_poll_done)
+        # The dedicated workspace is created on demand rather than adding its
+        # entire widget tree to the first dashboard paint.
+        self.spyware_guard = None
+        self.spyware_guard_page = None
+        self._spyware_guard_dialog = None
+        self._spyware_guard_ui_closed = False
+        QApplication.instance().aboutToQuit.connect(self._close_spyware_guard_window)
 
         self.setWindowTitle("Angerona — Security Suite")
         # Custom shield icon (assets/icons/angerona.ico) — falls back to the
@@ -520,6 +528,24 @@ class MainWindow(QMainWindow):
         self.threat_intel_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 self.threat_intel_btn, self._open_threat_intel, "#60a5fa"))
+        self._spyware_guard_btn = HeaderActionButton(
+            "SPYWAREGUARD",
+            "spyware",
+            "SpywareGuard — Surveillanceware Defense",
+            "Opens the dedicated spyware dashboard, recent hits and isolations, "
+            "official research headlines, sandbox rehearsals and policy settings.",
+        )
+        self._spyware_guard_btn.setObjectName("SpywareGuardShortcut")
+        # Black artwork needs a light surface in both light and dark themes.
+        self._spyware_guard_btn.setStyleSheet(
+            "QPushButton { background:#e2e8f0; color:#000000; font-weight:800; "
+            "border:2px solid #94a3b8; border-radius:6px; padding:7px 12px; } "
+            "QPushButton:hover { background:#ffffff; border-color:#64748b; } "
+            "QPushButton:disabled { background:#94a3b8; color:#334155; }"
+        )
+        self._spyware_guard_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self._spyware_guard_btn, self._open_spyware_guard, "#94a3b8"))
         self._threat_intel_dlg: ThreatIntelDashboard | None = None
         self._intl_alert_pulse = False   # toggled each tick when alert is pending
         forensics_btn = HeaderActionButton(
@@ -598,6 +624,7 @@ class MainWindow(QMainWindow):
         rl.addStretch(1)
         rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
         rl.addWidget(self.threat_intel_btn)
+        rl.addWidget(self._spyware_guard_btn)
         rl.addWidget(forensics_btn)
         rl.addWidget(operations_btn)
         rl.addWidget(console_btn); rl.addWidget(setup_btn); rl.addWidget(self._help_btn)
@@ -620,6 +647,7 @@ class MainWindow(QMainWindow):
             worldview_btn,
             attack_heatmap_btn,
             self.threat_intel_btn,
+            self._spyware_guard_btn,
             forensics_btn,
             operations_btn,
             console_btn,
@@ -657,15 +685,12 @@ class MainWindow(QMainWindow):
         # scanning together without blocking the dashboard thread.
         self.soar_panel = SoarPanel(bus, manager)
         self.scan_center = ScanCenterPanel(bus=bus)
-        self.spyware_guard = SpywareGuardPage(manager, config, bus)
-        self.spyware_guard.settings_requested.connect(self._show_settings)
         self.ugcap_page = UGCAPPage(manager, config, bus)
         self.ugcap_page.lock_state_changed.connect(self._set_ugcap_workspace_locked)
         self._right_tabs = QTabWidget()
         self._right_tabs.addTab(self.alerts_panel, "Live Alerts")
         self._right_tabs.addTab(self.soar_panel, "SOAR Queue")
         self._right_tabs.addTab(self.scan_center, "🛡 Scan Center")
-        self._right_tabs.addTab(self.spyware_guard, "SpywareGuard")
         self._right_tabs.addTab(self.ugcap_page, "UGCAP")
         from angerona.gui.context_info import attach_context_info
         self._dashboard_info = attach_context_info(
@@ -915,6 +940,14 @@ class MainWindow(QMainWindow):
         self._adaptation_timer = QTimer(self)
         self._adaptation_timer.timeout.connect(self._poll_adaptation_context)
         self._adaptation_timer.start(15_000)
+        from angerona.core.data_paths import project_root
+        from angerona.gui.update_controller import UpdateController
+        self._update_controller = UpdateController(self.config, project_root(), self)
+        self._update_prompt_revision = ""
+        self._update_controller.update_available.connect(self._on_daily_update_report)
+        self._update_controller.status_changed.connect(self._on_update_status)
+        self._update_controller.candidate_ready.connect(self._on_source_candidate_ready)
+        QApplication.instance().aboutToQuit.connect(self._update_controller.close)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.
@@ -989,33 +1022,90 @@ class MainWindow(QMainWindow):
                 pass
 
     def _update_header_button_modes(self) -> None:
-        """Keep the top row readable at every practical window width.
-
-        Navigation destinations become icon-only before Qt has any reason to
-        crop their labels. Primary operational actions retain text on a normal
-        desktop width and collapse only on smaller windows.
-        """
+        """Allocate bounded button widths to the current header row budget."""
         width = max(1, self.width())
         scale = max(0.75, min(1.35, getattr(self, "_ui_scale", 1.0)))
-        icon_extent = round(34 * scale)
-        # Destination icons retain accessible names and definition tooltips.
-        # Primary labels stay visible while their row has sufficient room.
+        icon_extent = max(32, min(64, round(28 + width * 0.011)))
+        gap = max(3, min(10, round(width / 180)))
+        primary = list(getattr(self, "_header_primary_buttons", ()))
+        navigation = list(getattr(self, "_header_nav_buttons", ()))
+        stop = getattr(self, "_header_stop_button", None)
+        if stop is not None:
+            navigation.append(stop)
+        spy = getattr(self, "_spyware_guard_btn", None)
         nav_compact = width < 2600 * scale
         primary_compact = width < 1100 * scale
         stop_compact = width < 1100 * scale
-        for button in getattr(self, "_header_nav_buttons", ()):
-            button.set_compact(nav_compact, icon_extent)
-        for button in getattr(self, "_header_primary_buttons", ()):
+        for button in navigation:
+            compact = stop_compact if button is stop else nav_compact
+            if button is spy:
+                compact = width < 850 * scale
+            button.set_compact(compact, icon_extent)
+        for button in primary:
             button.set_compact(primary_compact, icon_extent)
+        for group in getattr(self, "_header_groups", ())[::2]:
+            layout = group.layout()
+            if layout is not None and layout.spacing() != gap:
+                layout.setSpacing(gap)
+
+        growth = max(0.90, min(1.20, width / 1800))
+
+        def allocate(buttons, budget):
+            if not buttons:
+                return
+            minima, desired = [], []
+            for button in buttons:
+                # Stylesheet/font changes may otherwise leave a stale hint.
+                button.ensurePolished()
+                if button.is_compact():
+                    minimum = 48 if button is spy else 32
+                    preferred = round(icon_extent * 1.55) if button is spy else icon_extent
+                else:
+                    minimum = 96 if button is spy else 64
+                    preferred = round(button.sizeHint().width() * growth)
+                    if button is spy:
+                        preferred += 20
+                minima.append(minimum)
+                limit = 380 if button in navigation and button is not spy else 400
+                desired.append(max(minimum, min(limit, preferred)))
+            if spy in buttons:
+                # Preserve the wider SpywareGuard destination at every shared
+                # budget ratio, including long labels and high-DPI fonts.
+                peers = [want for button, want in zip(buttons, desired)
+                         if button in navigation and button is not spy]
+                index = buttons.index(spy)
+                desired[index] = min(400, max(desired[index], max(peers, default=0) + 20))
+            # All allocated widths include a click target. Only spare space
+            # shrinks; semantic labels elide through HeaderActionButton.
+            available = max(sum(minima), int(budget) - gap * (len(buttons) - 1))
+            spare = sum(want - minimum for want, minimum in zip(desired, minima))
+            ratio = min(1.0, max(0, available - sum(minima)) / max(1, spare))
+            for button, minimum, preferred in zip(buttons, minima, desired):
+                button.set_responsive_width(minimum + int((preferred - minimum) * ratio))
+                height = max(32, round(32 * scale))
+                if button.minimumHeight() != height:
+                    button.setMinimumHeight(height)
+
+        # Leave room for viewport margins, inter-group spacing and, on a
+        # single-row desktop, the centered brand. Stacked rows get independent
+        # budgets so the right-side destinations remain reachable at 480 px.
+        row_budget = max(408, width - 80)
+        if width < 850 * scale:
+            allocate(primary, row_budget)
+            allocate(navigation, row_budget)
+        else:
+            if width >= 1650 * scale:
+                groups = getattr(self, "_header_groups", ())
+                brand_width = (groups[1].minimumSizeHint().width()
+                               if len(groups) > 1 else 0)
+                row_budget -= max(180, round(180 * scale), brand_width)
+            allocate(primary + navigation, row_budget - gap)
         for indicator in (
             getattr(self, "run_spinner", None),
             getattr(self, "loading_indicator", None),
         ):
             if indicator is not None:
                 indicator.set_compact(width < 700, icon_extent)
-        stop = getattr(self, "_header_stop_button", None)
-        if stop is not None:
-            stop.set_compact(stop_compact, icon_extent)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         # Coalesce a drag burst. Reapplying a stylesheet to all table items on
@@ -1055,6 +1145,18 @@ class MainWindow(QMainWindow):
                 layout.addWidget(left, 1, 0, 1, 3, Qt.AlignLeft)
                 layout.addWidget(right, 2, 0, 1, 3, Qt.AlignLeft)
             self._header_layout_mode = mode
+
+        # Width constraints changed below nested QWidget layout boundaries.
+        # Explicitly refresh their cached hints before the grid assigns space;
+        # otherwise a compact group's old width can survive a label-mode
+        # transition and Qt places wider children on the former icon slots.
+        for group in self._header_groups:
+            group_layout = group.layout()
+            if group_layout is not None:
+                group_layout.invalidate()
+            group.updateGeometry()
+        self._header_layout.invalidate()
+        self._header_layout.activate()
 
         narrow = width < 1000 * scale
         orientation = Qt.Vertical if narrow else Qt.Horizontal
@@ -1810,6 +1912,52 @@ class MainWindow(QMainWindow):
         self._threat_intel_dlg.show()
         self._threat_intel_dlg.raise_()
         self._threat_intel_dlg.activateWindow()
+
+    def _open_spyware_guard(self):
+        """Open one reusable workspace without starting or enabling a module."""
+        if (getattr(self, "_spyware_guard_ui_closed", False)
+                or getattr(self.manager, "ugcap_paused", False)
+                or getattr(self, "_ugcap_workspace_locked", False)):
+            return None
+        dialog = self._spyware_guard_dialog
+        if dialog is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Angerona — SpywareGuard")
+            dialog.setWindowIcon(self._spyware_guard_btn.icon())
+            dialog.setModal(False)
+            dialog.setMinimumSize(560, 420)
+            dialog.resize(1080, 780)
+            layout = QVBoxLayout(dialog)
+            layout.setContentsMargins(6, 6, 6, 6)
+            page = SpywareGuardPage(self.manager, self.config, self.bus, dialog)
+            page.settings_requested.connect(self._show_settings)
+            layout.addWidget(page)
+            self.spyware_guard = self.spyware_guard_page = page
+            self._spyware_guard_dialog = dialog
+        # QDialog's normal close hides the workspace. Its child receives
+        # hideEvent (pausing presentation), so reopening preserves edits and
+        # never leaves SpywareGuardPage's permanent shutdown flag set.
+        if dialog.isMinimized():
+            dialog.showNormal()
+        else:
+            dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _close_spyware_guard_window(self) -> None:
+        """Retire UI-owned timers and detail windows during suite shutdown."""
+        self._spyware_guard_ui_closed = True
+        dialog = getattr(self, "_spyware_guard_dialog", None)
+        if dialog is None:
+            return
+        page = getattr(self, "spyware_guard_page", None)
+        if page is not None:
+            page.hide()
+            page.close()
+        # Shutdown cannot wait for the cosmetic reverse-close animation.
+        setattr(dialog, "_angerona_close_bypass", True)
+        dialog.close()
 
     # ── Chill Mode (network-first, all-day low-impact monitoring) ────────────
     # Compatibility alias retained for the startup loader and older tests.
@@ -4993,7 +5141,10 @@ class MainWindow(QMainWindow):
             dlg = SetupWizard(self.config,
                               apply_theme_fn=getattr(self, "_apply_theme", None),
                               trust_running_fn=_trust, parent=self)
-            dlg.exec()
+            if dlg.exec() and isValid(self):
+                controller = getattr(self, "_update_controller", None)
+                if controller is not None:
+                    controller.preferences_changed()
         except Exception as exc:
             try:
                 QMessageBox.warning(self, "Setup", f"Setup wizard unavailable: {exc}")
@@ -5250,6 +5401,55 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _update_message(self, title: str, text: str, *, question: bool = False) -> bool:
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setTextFormat(Qt.PlainText)
+        box.setText(text)
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No if question else QMessageBox.Ok)
+        if question:
+            box.setDefaultButton(QMessageBox.No)
+        try:
+            return box.exec() == QMessageBox.Yes
+        except RuntimeError:
+            return False
+
+    def _on_update_status(self, message: str) -> None:
+        if isValid(self):
+            self.statusBar().showMessage(message[:4096], 15000)
+
+    def _on_daily_update_report(self, report) -> None:
+        if not isValid(self):
+            return
+        controller = self._update_controller
+        if not controller.prompt_eligible(report) or not report.available:
+            return
+        key = report.remote_revision if report.source_status == "different" else report.release_tag
+        if key == self._update_prompt_revision and not controller.manual_report(report):
+            return
+        self._update_prompt_revision = key
+        if report.source_status == "different":
+            if self._update_message("Angerona source update available",
+                    report.summary() + "\n\nDownload an isolated candidate and preserve local edits for review? "
+                    "Your running installation stays unchanged. Conflicts block activation.", question=True):
+                if isValid(self) and controller.prompt_eligible(report):
+                    controller.download_source_candidate(report.remote_revision)
+        else:
+            self._update_message("Angerona release available", report.summary() + "\n\n" + report.release_url
+                                 + "\nInstallation requires the existing signed-release verification workflow.")
+
+    def _on_source_candidate_ready(self, value: dict) -> None:
+        if not isValid(self) or not self._update_controller.alive():
+            return
+        if not value.get("ok"):
+            self._update_message("Source candidate held", "The original installation is unchanged.\n\n" + str(value.get("error", "Preparation failed."))[:2048])
+            return
+        result = value["result"]
+        path = self.config.data_dir / "github-updates" / "stages" / result.stage_id
+        self._update_message("Source candidate prepared",
+            f"Status: {result.status}\nPreserved changes: {result.preserved_changes}\nConflicts: {len(result.conflicts)}\n\n"
+            + str(path) + "\n\n" + result.message)
+
     def _open_settings(self) -> None:
         self._show_settings()
 
@@ -5262,7 +5462,7 @@ class MainWindow(QMainWindow):
         # button does nothing". The traceback also lands in the console for triage.
         try:
             dlg = SettingsDialog(self.config,
-                                 lambda: check_for_updates(self.config.github_repo),
+                                 self._update_controller,
                                  self.apply_theme, self,
                                  initial_tab=initial_tab,
                                  process_baseline=self.process_baseline)
@@ -5272,6 +5472,7 @@ class MainWindow(QMainWindow):
                 self._apply_voice_settings_live()
                 self._apply_aria_control_settings_live()
                 self._apply_dashboard_mode_live()
+                self._update_controller.preferences_changed()
         except Exception as exc:
             import traceback
             tb = traceback.format_exc()
@@ -5417,6 +5618,7 @@ class MainWindow(QMainWindow):
                     widget.setEnabled(False)
                     tabs.setTabEnabled(index, False)
             for widget in [getattr(self, "modules_panel", None), getattr(self, "console", None),
+                           getattr(self, "_spyware_guard_dialog", None),
                            *getattr(self, "_header_primary_buttons", []),
                            *(button for button in getattr(self, "_header_nav_buttons", [])
                              if button not in {getattr(self, "_settings_btn", None),
@@ -5432,6 +5634,10 @@ class MainWindow(QMainWindow):
                 if index >= 0:
                     tabs.setTabEnabled(index, enabled)
             self._ugcap_widget_states = []
+
+        controller = getattr(self, "_holographic_orb", None)
+        if controller is not None:
+            controller.sync_security_gate()
 
     def _claim_self_test(self) -> bool:
         """Single-flight gate; button invocations occur on the GUI thread."""
@@ -5793,6 +5999,11 @@ class MainWindow(QMainWindow):
 
     def _terminate(self) -> None:
         """Best-effort graceful cleanup, then an unconditional hard exit."""
+        update_controller = getattr(self, "_update_controller", None)
+        if update_controller is not None:
+            update_controller.close()
+        self._close_flight_instructor()
+        self._close_spyware_guard_window()
         self._simulation_closing = True
         preparing = getattr(self, "_sim_launch_job", None)
         if preparing is not None:
@@ -5800,7 +6011,6 @@ class MainWindow(QMainWindow):
         monitor = getattr(self, "_responsiveness_monitor", None)
         if monitor is not None:
             monitor.close()
-        self._close_flight_instructor()
         self._aria_voice_stop = True
         try:
             voice = getattr(self, "aria_voice", None)

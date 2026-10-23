@@ -33,6 +33,9 @@ from collections import deque
 from typing import Dict, Optional, Set, Tuple
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.spyware_sensors import (
+    _execution_host, _execution_paths, analyze_persistence,
+)
 
 try:
     import winreg  # type: ignore
@@ -57,13 +60,10 @@ if winreg is not None:
         (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon", "HKLM\\Winlogon", "T1547.004"),
     ]
 
-# Substrings that make an autorun entry suspicious wherever it points/runs.
-_BAD_PATH_HINTS = ("\\appdata\\", "\\temp\\", "\\downloads\\", "\\public\\",
-                   "\\programdata\\", "\\users\\public\\", "%temp%", "%appdata%")
-_BAD_CMD_HINTS = ("powershell", "-enc", "-encodedcommand", "-w hidden", "-windowstyle hidden",
-                  "mshta", "rundll32", "regsvr32", "wscript", "cscript", "certutil",
-                  "bitsadmin", "frombase64string", "iex", "invoke-expression", "curl ", "wget ")
+_PROFILE_PATH_HINTS = ("\\appdata\\", "\\programdata\\", "%appdata%", "%localappdata%")
 _SUBPROCESS_FLAGS = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+_POWERSHELL = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"),
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 _MAX_STARTUP_HASH_BYTES = 512 * 1024 * 1024
 _HASH_CHUNK_BYTES = 1024 * 1024
 _MAX_REPORTED_CHANGES = 10_000
@@ -73,6 +73,7 @@ _MAX_RECORD_BYTES = 64 * 1024
 
 _SCHEDULED_TASK_QUERY = r"""
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $rows = @(Get-ScheduledTask | Select-Object -First 5001 | ForEach-Object {
   [pscustomobject]@{
     id = "$($_.TaskPath)$($_.TaskName)"
@@ -92,6 +93,7 @@ if ($json.Length -gt 8388608) { throw 'scheduled-task inventory exceeds bound' }
 
 _WMI_QUERY = r"""
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 $filters = @(Get-CimInstance -Namespace root/subscription -ClassName __EventFilter | Select-Object Name,Query,QueryLanguage,EventNamespace)
 $consumers = @(Get-CimInstance -Namespace root/subscription -ClassName __EventConsumer | Select-Object __CLASS,Name,CommandLineTemplate,ExecutablePath,ScriptText,ScriptingEngine,Destination,Filename)
 $bindings = @(Get-CimInstance -Namespace root/subscription -ClassName __FilterToConsumerBinding | Select-Object Filter,Consumer)
@@ -108,7 +110,7 @@ class PersistenceSweepModule(BaseModule):
                   "services, scheduled tasks, WMI subscriptions, startup folders); "
                   "flags new and suspicious entries.")
     category = "Persistence"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = ("windows",)
     capability_mode = "detect"
     capability_inputs = (
@@ -180,6 +182,43 @@ class PersistenceSweepModule(BaseModule):
         return True
 
     # ── Pure classifier (unit-testable, no I/O) ──────────────────────────────
+    @staticmethod
+    def _execution_records(surface: str, entry: str, value: str) -> list[dict]:
+        """Extract execution fields, excluding task names/descriptions and metadata."""
+        decoded = None
+        if (value or "").lstrip().startswith("{"):
+            try:
+                decoded = json.loads(value)
+            except (TypeError, ValueError):
+                pass
+        source = {"Service": "windows.services", "ScheduledTask": "windows.task",
+                  "WMISubscription": "windows.wmi"}.get(surface, "windows.run")
+        if isinstance(decoded, dict):
+            if "value" in decoded:
+                commands = [(str(decoded.get("value") or ""), "")]
+            elif surface == "Service":
+                commands = [(str(decoded.get("binpath") or ""), "")]
+            elif surface == "ScheduledTask":
+                actions = decoded.get("actions", [])
+                actions = [actions] if isinstance(actions, dict) else actions
+                commands = []
+                if isinstance(actions, list):
+                    for action in actions[:128]:
+                        if isinstance(action, dict) and action.get("Execute"):
+                            executable = str(action["Execute"]).strip().strip('"')
+                            commands.append((f'"{executable}" ' + str(action.get("Arguments") or ""), ""))
+            elif surface == "WMISubscription":
+                commands = [(str(decoded.get("CommandLineTemplate") or decoded.get("ExecutablePath") or ""),
+                             str(decoded.get("ScriptText") or ""))]
+            elif surface.startswith("Startup\\"):
+                commands = [(str(decoded.get("path") or ""), "")]
+            else:
+                commands = []
+        else:
+            commands = [(value or "", "")]
+        return [{"source": source, "id": entry, "command": command, "script": script}
+                for command, script in commands]
+
     def _classify(self, surface: str, entry: str, value: str, mitre: str) -> Tuple[Severity, str]:
         """Return (severity, reason) for a NEW persistence entry. Pure — used by
         self_test so the harness can verify logic without touching the host."""
@@ -209,13 +248,28 @@ class PersistenceSweepModule(BaseModule):
             )
             if val not in allowed:
                 return (Severity.CRITICAL, f"Winlogon persistence hijack ({entry}={value}) [{mitre}]")
-        hay = v + " " + e
-        if any(h in hay for h in _BAD_CMD_HINTS):
-            return (Severity.CRITICAL,
-                    f"New persistence entry launches a script/LOLBin: {surface}\\{entry} → {value} [{mitre}]")
-        if any(h in v for h in _BAD_PATH_HINTS):
-            return (Severity.HIGH,
-                    f"New persistence entry runs from a user-writable path: {surface}\\{entry} → {value} [{mitre}]")
+        records = self._execution_records(surface, entry, value)
+        findings = analyze_persistence(records)
+        eligible = [finding for finding in findings if finding.get("response_eligible") is not False]
+        if eligible:
+            strongest = max(eligible, key=lambda finding: finding["severity"] == "high")
+            severity = Severity.CRITICAL if strongest["severity"] == "high" else Severity.HIGH
+            return (severity, f"New persistence entry: {strongest['reason']} "
+                    f"{surface}\\{entry} → {value} [{mitre}]")
+        if findings:
+            return (Severity.LOW, f"New persistence configuration exposure: {findings[0]['reason']} "
+                    f"{surface}\\{entry} → {value} [{mitre}]")
+        # A host name, a task description, and AppData installation alone do
+        # not establish malicious execution or actual writable permissions.
+        for record in records:
+            executable, targets = _execution_paths(record["command"])
+            if _execution_host(executable):
+                return (Severity.MEDIUM, f"New persistence entry uses an execution host; review required: "
+                        f"{surface}\\{entry} → {value} [{mitre}]")
+            if any(hint in target.lower() for target in (executable, *targets)
+                   for hint in _PROFILE_PATH_HINTS):
+                return (Severity.MEDIUM, f"New persistence entry uses a user-profile/shared-data location; "
+                        f"permissions and operator review required: {surface}\\{entry} → {value} [{mitre}]")
         return (Severity.MEDIUM,
                 f"New persistence entry: {surface}\\{entry} → {value or '(name-only)'} [{mitre}]")
 
@@ -404,7 +458,7 @@ class PersistenceSweepModule(BaseModule):
 
     def _collect_scheduled(self) -> None:
         out = self._run([
-            "powershell", "-NoProfile", "-NonInteractive", "-Command",
+            _POWERSHELL, "-NoProfile", "-NonInteractive", "-Command",
             _SCHEDULED_TASK_QUERY,
         ])
         if out is None:
@@ -441,7 +495,7 @@ class PersistenceSweepModule(BaseModule):
 
     def _collect_wmi(self) -> None:
         out = self._run([
-            "powershell", "-NoProfile", "-NonInteractive", "-Command", _WMI_QUERY
+            _POWERSHELL, "-NoProfile", "-NonInteractive", "-Command", _WMI_QUERY
         ])
         if out is None:
             self._surface_unknown(
@@ -490,7 +544,7 @@ class PersistenceSweepModule(BaseModule):
     def _run(self, cmd) -> Optional[str]:
         self._last_command_error = ""
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=20,
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=20,
                                creationflags=_SUBPROCESS_FLAGS)
             if r.returncode != 0:
                 self._last_command_error = (
@@ -580,6 +634,10 @@ class PersistenceSweepModule(BaseModule):
             Severity.MEDIUM,
             finding_code="persistence.baseline.unreviewed",
             baseline_trust="unreviewed",
+            disposition="exposure",
+            finding_kind="exposure",
+            active_attack=False,
+            response_authority="observe-only",
             coverage=self.coverage_snapshot(),
             response_authorized=False,
         )
@@ -647,6 +705,11 @@ class PersistenceSweepModule(BaseModule):
                         "UNKNOWN and were not compared as empty.",
                         Severity.HIGH,
                         finding_code="persistence.collector.incomplete",
+                        schema="angerona.persistence-coverage.v1",
+                        disposition="health",
+                        active_attack=False,
+                        response_authority="observe-only",
+                        collection_complete=False,
                         coverage=self.coverage_snapshot(),
                         response_authorized=False,
                     )
@@ -685,6 +748,9 @@ class PersistenceSweepModule(BaseModule):
                             previous_value=base.get(entry, "")[:8192],
                             value=val[:8192],
                             mitre=self._mitre(surface, entry),
+                            **({"disposition": "exposure", "finding_kind": "exposure",
+                                "active_attack": False, "response_authority": "observe-only"}
+                               if sev < Severity.HIGH else {}),
                             response_authorized=False,
                         )
                 for entry in removed:

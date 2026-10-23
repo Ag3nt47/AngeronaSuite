@@ -12,6 +12,7 @@ from dataclasses import replace
 import pytest
 from PySide6.QtGui import QColor
 
+from angerona import __version__
 from angerona.core.eventbus import EventBus
 from angerona.core.exposure_graph import (
     Applicability,
@@ -592,7 +593,7 @@ def test_native_guard_reports_unavailable_stale_truncated_and_healthy_states() -
         and not event.details.get("enforcement_performed")
         for event in bus.recent()
     )
-    assert module.version == "1.13.0"
+    assert module.version == __version__
     assert module.capability_mode == "observe"
     assert module.egress == "none"
 

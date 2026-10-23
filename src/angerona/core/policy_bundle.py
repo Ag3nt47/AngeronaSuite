@@ -12,6 +12,10 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from typing import Any, Mapping, Sequence
 
+from angerona.core.approval_identity import (
+    ApprovalIdentityVerifier, PrincipalCredential, SignedPrincipalProof, independent_principals,
+)
+
 try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -43,6 +47,7 @@ class RolloutState(str, Enum):
 class PolicyApproval:
     approver_id: str
     signature: str
+    principal_proof: SignedPrincipalProof | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -52,6 +57,11 @@ class PolicyApproval:
             or not _SIGNATURE.fullmatch(self.signature)
         ):
             raise ValueError("policy approval identity or signature is invalid")
+        if self.principal_proof is not None:
+            if (not isinstance(self.principal_proof, SignedPrincipalProof)
+                    or self.principal_proof.credential_id != self.approver_id
+                    or self.principal_proof.signature != self.signature):
+                raise ValueError("policy approval must match its authenticated credential proof")
 
 
 @dataclass(frozen=True)
@@ -115,7 +125,7 @@ class PolicyBundle:
             or not set(self.locked_keys) <= set(keys)
         ):
             raise ValueError("only supplied settings may be locked")
-        if any(not isinstance(item, PolicyApproval) for item in self.approvals):
+        if len(self.approvals) > 128 or any(not isinstance(item, PolicyApproval) for item in self.approvals):
             raise ValueError("policy approvals must use the typed schema")
         if not isinstance(self.signature, str) or len(self.signature) > 128:
             raise ValueError("policy publisher signature is invalid")
@@ -196,7 +206,7 @@ def _unb64(value: str, expected_size: int) -> bytes:
 def verify_bundle(
     bundle: PolicyBundle,
     trusted_publishers: Mapping[str, bytes],
-    trusted_approvers: Mapping[str, bytes],
+    trusted_approvers: Mapping[str, bytes | PrincipalCredential],
     *,
     now: float | None = None,
 ) -> tuple[bool, str]:
@@ -221,19 +231,29 @@ def verify_bundle(
         if len(identities) < 2:
             return False, "high-impact policy requires two distinct approvals"
         body = bundle.approval_body()
-        valid: set[str] = set()
+        # Independent labels are insufficient: one key under aliases or keys
+        # rotated for the same authenticated issuer/subject are one approver.
+        valid = []
+        unbound = False
         for approval in bundle.approvals:
-            public = trusted_approvers.get(approval.approver_id)
-            if not isinstance(public, bytes) or len(public) != 32:
+            credential = trusted_approvers.get(approval.approver_id)
+            if isinstance(credential, bytes):
+                unbound = True  # Legacy public-key labels are advisory only.
+                continue
+            if (not isinstance(credential, PrincipalCredential) or not credential.enabled
+                    or (credential.expires_at and stamp >= credential.expires_at)):
+                continue
+            if approval.principal_proof is None:
+                unbound = True
                 continue
             try:
-                Ed25519PublicKey.from_public_bytes(public).verify(
-                    _unb64(approval.signature, 64), body
-                )
-                valid.add(approval.approver_id)
+                verifier = ApprovalIdentityVerifier([credential])
+                valid.append(verifier.verify(approval.principal_proof, hashlib.sha256(body).hexdigest(), now=stamp))
             except Exception:
                 continue
-        if len(valid) < 2:
+        if len(independent_principals(valid)) < 2:
+            if unbound:
+                return False, "high-impact authenticated approver subject bindings unavailable"
             return False, "high-impact approvals are invalid or untrusted"
     return True, "verified"
 
@@ -287,7 +307,7 @@ class PolicyManager:
     def __init__(
         self,
         trusted_publishers: Mapping[str, bytes],
-        trusted_approvers: Mapping[str, bytes] | None = None,
+        trusted_approvers: Mapping[str, bytes | PrincipalCredential] | None = None,
     ) -> None:
         self.publishers = dict(trusted_publishers)
         self.approvers = dict(trusted_approvers or {})
@@ -310,6 +330,7 @@ class PolicyManager:
             bundle
             for bundle in self._good.values()
             if bundle.channel == channel and bundle.expires_at > stamp
+            and verify_bundle(bundle, self.publishers, self.approvers, now=stamp)[0]
         ]
         # Expired new input never overwrites _good; if stored LKG later expires,
         # fail closed to no policy instead of continuing stale authorization.

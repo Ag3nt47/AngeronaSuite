@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import ipaddress
+import math
 import os
 import platform
 import re
@@ -1098,6 +1099,24 @@ class SecurityScanCenter:
     def _endpoint(endpoint: object) -> tuple[str, int]:
         if not endpoint:
             return "", 0
+        if isinstance(endpoint, str):
+            # Shared telemetry retains a compact address:port representation.
+            # Split from the right for IPv6, and accept its bracketed form too.
+            if len(endpoint) > 128:
+                return "", 0
+            if endpoint.startswith("["):
+                closing = endpoint.find("]")
+                if closing <= 1 or endpoint[closing + 1:closing + 2] != ":":
+                    return "", 0
+                host, raw_port = endpoint[1:closing], endpoint[closing + 2:]
+            else:
+                host, separator, raw_port = endpoint.rpartition(":")
+                if not separator or "[" in host or "]" in host:
+                    return "", 0
+            if not host or not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5:
+                return "", 0
+            port = int(raw_port)
+            return (host, port) if 0 < port <= 65535 else ("", 0)
         if hasattr(endpoint, "ip") and hasattr(endpoint, "port"):
             return str(endpoint.ip), int(endpoint.port)
         try:
@@ -1130,14 +1149,32 @@ class SecurityScanCenter:
         """Passively inventory this host's listening sockets; no packets are sent."""
         operation = "listening_exposure_audit"
         started = self._wall_clock()
+        deadline = self._monotonic() + self.max_duration_seconds
+        if self._cancelled(cancellation):
+            return self._result(operation, started, status="cancelled", supported=True,
+                                executed=False, summary="Listener audit canceled before collection.")
         psutil = self._psutil_module()
         if psutil is None:
             return self._result(
                 operation, started, status="unsupported", supported=False, executed=False,
                 summary="Listening-port audit requires psutil; no network activity was attempted.",
             )
+        receipt = None
+        reuse_age = 1.5
         try:
-            connections = tuple(islice(psutil.net_connections(kind="inet"), MAX_CONNECTIONS))
+            if self._psutil is None:
+                from angerona.telemetry import sensors
+
+                # Honor cache disabling/shorter operator TTLs, with a hard
+                # 1.5-second reuse ceiling for this on-demand advisory audit.
+                configured = float(sensors._CACHE_TTL)
+                reuse_age = min(1.5, max(0.0, configured)) if math.isfinite(configured) else 0.0
+                receipt = sensors.connection_snapshot(max_age=reuse_age)
+                connections = receipt.connections[:MAX_CONNECTIONS]
+            else:
+                # Keep the explicit provider seam independent for embedded
+                # callers/tests; it never populates the production sensor cache.
+                connections = tuple(islice(psutil.net_connections(kind="inet"), MAX_CONNECTIONS))
         except Exception as exc:
             return self._result(
                 operation, started, status="error", supported=True, executed=True,
@@ -1147,8 +1184,7 @@ class SecurityScanCenter:
         findings: list[ScanFinding] = []
         listeners = 0
         all_interfaces = 0
-        deadline = self._monotonic() + self.max_duration_seconds
-        timed_out = False
+        timed_out = self._monotonic() >= deadline
         process_cache: dict[int, str] = {}
         listen_constant = str(getattr(psutil, "CONN_LISTEN", "LISTEN")).casefold()
         for connection in connections:
@@ -1157,16 +1193,17 @@ class SecurityScanCenter:
             if self._monotonic() >= deadline:
                 timed_out = True
                 break
-            if str(getattr(connection, "status", "")).casefold() not in {"listen", listen_constant}:
+            row = connection.get if isinstance(connection, Mapping) else lambda key, default=None: getattr(connection, key, default)
+            if str(row("status", "")).casefold() not in {"listen", listen_constant}:
                 continue
-            host, port = self._endpoint(getattr(connection, "laddr", ()))
+            host, port = self._endpoint(row("laddr", ()))
             if not 0 < port <= 65535:
                 continue
             scope = self._bind_scope(host)
             listeners += 1
             if scope == "all-interfaces":
                 all_interfaces += 1
-            pid = getattr(connection, "pid", None)
+            pid = row("pid", None)
             process_name = "unknown"
             if isinstance(pid, int) and pid > 0:
                 if pid not in process_cache and len(process_cache) < 128:
@@ -1203,13 +1240,45 @@ class SecurityScanCenter:
                     ScanProgress("listeners", listeners, MAX_CONNECTIONS, "Passive local inventory"),
                 )
         cancelled = self._cancelled(cancellation)
+        timed_out = timed_out or self._monotonic() >= deadline
+        coverage_complete = True
+        source_metrics: dict[str, object] = {}
+        source_errors: list[str] = []
+        if receipt is not None:
+            try:
+                collected_at = float(receipt.collected_at)
+                if not math.isfinite(collected_at) or collected_at <= 0:
+                    raise ValueError("invalid source timestamp")
+                age = self._wall_clock() - collected_at
+                age_valid = math.isfinite(age) and 0 <= age <= 1.5
+            except (TypeError, ValueError, OverflowError):
+                collected_at = None
+                age, age_valid = None, False
+            source_complete = receipt.complete is True and not receipt.error
+            coverage_complete = source_complete and age_valid
+            source_metrics = {
+                "inventory_source": "shared-connection-snapshot",
+                "source_complete": source_complete,
+                "source_enumerated": receipt.enumerated, "source_skipped": receipt.skipped,
+                "source_collected_at": collected_at,
+                "source_age_seconds": age if age is not None and math.isfinite(age) else None,
+                "source_reuse_limit_seconds": reuse_age,
+                "source_age_valid": age_valid,
+            }
+            if not source_complete:
+                source_errors.append("listener-inventory:incomplete-source")
+            if not age_valid:
+                source_errors.append("listener-inventory:source-age-unverified")
         status = (
             "cancelled" if cancelled else "limited"
-            if len(connections) >= MAX_CONNECTIONS or timed_out else "completed"
+            if len(connections) >= MAX_CONNECTIONS or timed_out else
+            ("limited" if connections else "error") if not coverage_complete else "completed"
         )
         return self._result(
             operation, started, status=status, supported=True, executed=True,
             summary=(
+                ("Partial or unverified listener evidence. " if not coverage_complete else "")
+                +
                 f"Reviewed {listeners} listening socket(s); {all_interfaces} bind to all interfaces. "
                 "No packets were captured or transmitted."
             ),
@@ -1222,7 +1291,9 @@ class SecurityScanCenter:
                 "finding_limit": MAX_FINDINGS,
                 "duration_limit_seconds": self.max_duration_seconds,
                 "timed_out": timed_out,
+                **source_metrics,
             },
+            errors=source_errors,
         )
 
     def summarize_network_posture(

@@ -198,6 +198,22 @@ def test_sanitized_environment_keeps_model_storage_but_no_secrets(tmp_path, monk
         assert name not in environment
 
 
+@pytest.mark.parametrize(("requested", "expected"), [
+    ("0", "0"), ("false", "0"), (" True ", "1"), ("1", "1"),
+    ("", None), ("cpu", None), ("0; untrusted", None), ("/tmp/library", None),
+])
+def test_compute_override_cannot_change_launch_trust_or_network_policy(monkeypatch, requested, expected):
+    monkeypatch.setenv("OLLAMA_VULKAN", requested)
+    monkeypatch.setenv("OLLAMA_LLM_LIBRARY", "/untrusted/library")
+    monkeypatch.setenv("OLLAMA_HOST", "0.0.0.0:11434")
+    monkeypatch.setenv("OLLAMA_NO_CLOUD", "0")
+    environment = lifecycle._startup_environment("http://127.0.0.1:11434")
+    assert environment.get("OLLAMA_VULKAN") == expected
+    assert "OLLAMA_LLM_LIBRARY" not in environment
+    assert environment["OLLAMA_HOST"] == "http://127.0.0.1:11434"
+    assert environment["OLLAMA_NO_CLOUD"] == "1"
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable custody semantics")
 def test_windows_launch_holds_executable_and_parent_custody(tmp_path, monkeypatch):
     from angerona.core import privilege

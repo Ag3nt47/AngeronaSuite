@@ -58,7 +58,7 @@ public static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(stri
         if (-not $parentItem.PSIsContainer -or ($parentItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
             throw 'VMware installation contains a redirected directory. Repair VMware first.'
         }
-        $guard = [Angerona.SetupDirectoryCustody]::CreateFileW($parentPath, 0x80, 3, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
+        $guard = [Angerona.SetupDirectoryCustody]::CreateFileW($parentPath, 0x81, 3, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
         if ($guard.IsInvalid) { $guard.Dispose(); throw 'Cannot retain VMware directory custody.' }
         $directoryGuards.Add($guard)
         $parentItem = Get-Item -LiteralPath $parentPath -Force

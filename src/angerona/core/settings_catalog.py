@@ -20,8 +20,8 @@ AREAS = (
         "Local model, appearance, motion, integrity and updates.",
         ("ollama", "model", "theme", "appearance", "dashboard", "flow",
          "local soc", "animation", "motion",
-         "orb", "update", "github", "integrity"),
-        "Local configuration", False,
+         "orb", "update", "github", "daily", "source update", "preserve edits", "integrity"),
+        "Local configuration; optional daily GitHub metadata checks", False,
     ),
     SettingsArea(
         "system", "System",

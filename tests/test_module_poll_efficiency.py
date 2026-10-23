@@ -35,13 +35,14 @@ def _poll(monkeypatch, snapshots, *, initial=(), capability=None):
     def processes(*_args, **_kwargs):
         nonlocal calls
         calls += 1
-        return next(pending)
+        rows = next(pending)
+        return sensors.ProcessSnapshot(tuple(rows), time.time(), True, len(rows), 0)
 
     def sleep(_seconds, **_kwargs):
         if calls == len(snapshots):
             module.stop()
 
-    monkeypatch.setattr(process_monitor, "list_processes", processes)
+    monkeypatch.setattr(process_monitor, "process_snapshot", processes)
     monkeypatch.setattr(module, "sleep", sleep)
     module.run()
     return module, list(reversed(bus.recent(100)))
@@ -171,9 +172,17 @@ def sensor_clock(monkeypatch):
     clock = [100.0, 1_700_000_000.0]
     calls = {"process": 0, "connection": 0}
 
-    def processes(_attributes):
+    def processes():
         calls["process"] += 1
-        return [SimpleNamespace(info=_process(birth=float(calls["process"])))]
+        return [SimpleNamespace(pid=7)]
+
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def as_dict(self, *, attrs, ad_value):
+            row = _process(self.pid, birth=float(calls["process"]))
+            return {field: row.get(field) for field in attrs}
 
     def connections(**_kwargs):
         calls["connection"] += 1
@@ -185,7 +194,8 @@ def sensor_clock(monkeypatch):
         monotonic=lambda: clock[0], time=lambda: clock[1],
     ))
     monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
-        process_iter=processes, net_connections=connections,
+        process_iter=processes, Process=Process, _ppid_map=lambda: {7: 1},
+        net_connections=connections,
     ))
     return clock, calls
 

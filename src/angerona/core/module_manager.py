@@ -156,7 +156,11 @@ class ModuleManager:
             self.bus.require_mesh()
         self._optional_enabled: dict[str, bool] = {}
         self._kernel_installed: bool | None = None
-        self.assurance_receipt_broker = AssuranceReceiptBroker(lambda: self.modules)
+        from angerona.core import attack_coverage
+        self.verified_readiness = attack_coverage.bind_manager(self)
+        self.assurance_receipt_broker = AssuranceReceiptBroker(
+            lambda: self.modules, on_verified=self.verified_readiness.observe_assurance,
+        )
         self.discovery_errors: List[str] = []
         # Enterprise extension inventory. Built-ins inherit the release trust
         # boundary; external modules are recorded only after their detached
@@ -281,6 +285,7 @@ class ModuleManager:
                 ),
                 "publisher": manifest.publisher if manifest is not None else "Angerona",
             }
+            self.verified_readiness.register(inst)
 
     def _construct_module(self, cls: type) -> BaseModule:
         """Construct one module and bind application-owned security services.
@@ -833,7 +838,18 @@ class ModuleManager:
                 time.sleep(min_settle)
         return skipped
 
-    def set_enabled(self, name: str, enabled: bool) -> None:
+    def set_enabled(
+        self, name: str, enabled: bool, *,
+        start_admission: Callable[[BaseModule], bool] | None = None,
+    ) -> None:
+        """Persist selection, optionally veto startup after the save completes.
+
+        The callback runs under the lifecycle lock and must be a quick policy
+        check. It cannot grant startup authority, change required-guard selection,
+        or stop an already-running worker merely by returning False.
+        This revalidates admission; it does not make external policy setters
+        atomic with the whole start call or preempt an entered native operation.
+        """
         with self._module_control_lock:
             mod = self.modules.get(name)
             if not mod:
@@ -845,12 +861,22 @@ class ModuleManager:
                 mod.status = "unavailable"
                 mod.set_health(0, platform.reason)
                 return
+            generation = self._control_generation
             self.config.module_states[name] = enabled
             self.config.save()
             effective = self.is_enabled(name)
             if has_optional_policy(mod):
                 self._optional_enabled[name] = effective
             if effective and not self._shutdown and self._ugcap_allows(mod):
+                if start_admission is not None:
+                    if start_admission(mod) is not True:
+                        return
+                    # A veto callback cannot override manager authority, even
+                    # if its own execution changes a policy or registration.
+                    if (self._shutdown or generation != self._control_generation
+                            or self.modules.get(name) is not mod
+                            or not self.is_enabled(name) or not self._ugcap_allows(mod)):
+                        return
                 mod.start()
             else:
                 mod.stop()

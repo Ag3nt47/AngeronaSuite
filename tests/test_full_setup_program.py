@@ -75,6 +75,7 @@ def test_setup_profiles_never_enable_egress_or_local_listeners() -> None:
         "ebpf_enabled",
         "spyware_network_enabled",
         "spyware_beacon_enabled",
+        "live_debug_enabled",
     }
     for profile in SETUP_PROFILES.values():
         assert not any(bool(profile.get(key, False)) for key in forbidden)
@@ -211,10 +212,11 @@ def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> Non
         "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
         "spyware_research_urls",
     }
+    from angerona.core.ugcap_witness import WITNESS_DEFAULTS
     assert {field.key for field in ugcap.fields} == {
         "ugcap_enabled", "ugcap_cadence_hours", "ugcap_vault_path", "ugcap_key_name",
         "ugcap_lockdown",
-    }
+    } | WITNESS_DEFAULTS.keys()
     defaults = _default_values()
     assert defaults["spyware_research_urls"] == []
     assert defaults["spyware_auto_contain"] is defaults["ugcap_lockdown"] is True
@@ -318,7 +320,7 @@ def test_runtime_exposes_full_setup_but_migration_wrapper_never_launches_it() ->
     assert "CreateAppDir=no" in installer
     assert "Install-Angerona-Release.ps1" in installer
     assert '"--setup" in sys.argv' in entrypoint
-    assert 'arg not in {"--setup", "--chill"}' in entrypoint
+    assert 'arg not in {"--setup", "--chill", "--live-debug"}' in entrypoint
 
 
 @pytest.mark.skipif(os.environ.get("CI_NO_QT") == "1", reason="Qt disabled by runner")
@@ -330,6 +332,10 @@ def test_full_setup_dialog_constructs_without_writing(tmp_path, monkeypatch) -> 
     app = QApplication.instance() or QApplication([])
     cfg = Config(data_dir=tmp_path, spyware_research_urls=[
         "https://example.org/" + ("a" * 1900) + str(index) for index in range(32)])
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    cfg.ugcap_witness_authority_public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
     dialog = SetupWizard(cfg)
     try:
         assert dialog.windowTitle() == "Angerona — Full Setup"
@@ -337,8 +343,20 @@ def test_full_setup_dialog_constructs_without_writing(tmp_path, monkeypatch) -> 
         staged, secrets, providers = dialog._staged()
         assert staged["spyware_research_urls"] == cfg.spyware_research_urls
         assert staged["ugcap_key_name"] == cfg.ugcap_key_name
+        assert staged["ugcap_witness_authority_public_key"] == cfg.ugcap_witness_authority_public_key.strip()
+        assert not staged["identity_session_collection_enabled"]
+        assert not staged["browser_extension_inventory_enabled"]
         assert not secrets and not providers
         assert not (tmp_path / "settings.json").exists()
     finally:
         dialog.close()
         app.processEvents()
+
+
+def test_witness_setup_rejects_enabled_missing_or_untrusted_enrollment():
+    values = _default_values()
+    values["ugcap_witness_enabled"] = True
+    assert any("witness enrollment" in error for error in validate_setup(values))
+    values["ugcap_witness_enabled"] = False
+    values["ugcap_witness_endpoint"] = "https://public.example/v1/ugcap-witness"
+    assert any("witness enrollment" in error for error in validate_setup(values))

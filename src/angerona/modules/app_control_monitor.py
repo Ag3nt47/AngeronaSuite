@@ -62,7 +62,6 @@ class WindowsCodeIntegritySource:
 
     def _next(self, query, count: int):
         try:
-            # Bound the native wait; timeout remains a collection gap below.
             return list(self._api.EvtNext(query, count, 500, 0) or ())
         except Exception as exc:
             # ERROR_NO_MORE_ITEMS is normal for a bounded Event Log query.
@@ -413,7 +412,7 @@ class AppControlDecisionSensor(BaseModule):
         "their signature evidence by ActivityID without changing App Control policy."
     )
     category = "Integrity"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
     supported_platforms = frozenset({"windows"})
     capability_mode = "observe"
@@ -866,12 +865,24 @@ class AppControlDecisionSensor(BaseModule):
                     self.poll_once()
                 except Exception as exc:
                     self.set_health(25, f"Code Integrity channel blind: {type(exc).__name__}")
+                    native_error = getattr(exc, "winerror", None)
                     self.emit(
                         f"App Control evidence unavailable: {type(exc).__name__}",
                         Severity.HIGH,
+                        schema="angerona.app-control-collection-health.v1",
+                        finding_code="app_control.collection.failed",
+                        source_channel=_CHANNEL,
                         disposition="health",
                         sensor_state="blind",
+                        collector_status="unknown",
+                        health_percent=25,
+                        collection_complete=False,
+                        observation_only=True,
+                        enforcement_performed=False,
                         response_authorized=False,
+                        response_authority="observe-only",
+                        failure_type=type(exc).__name__,
+                        native_error_code=native_error if native_error is None or type(native_error) is int else -1,
                     )
                 self.sleep(self._POLL_INTERVAL)
         finally:

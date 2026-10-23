@@ -1171,7 +1171,108 @@ class AdversaryCombat(BaseModule):
         "isolates, and activates honeypots with undo receipts."
     )
     category = "Response"
-    version = "1.13.0"
+    version = "1.14.0"
+    supported_platforms = ('windows',)
+    capability_mode = 'respond'
+    maturity_channel = 'preview'
+    platform_requirements = ('Windows process and firewall APIs; administrator rights are required for protected host '
+     'mutations',
+     'Protected local data/key custody and authenticated action journal are required before '
+     'mutation; failures hold response',
+     'Armed local EventBus provides event authentication; unarmed test/compatibility bus skips '
+     'HMAC verification',
+     'Existing policy and exact per-event response contract/identity checks remain the '
+     'execution authority',
+     'Windows termination retains the exact PID/birth/image handle with a bounded lifetime; '
+     'rechecks follow intent and dispatch; no PID fallback')
+    capability_inputs = ('local EventBus events with explicit response_authorized and exact typed action/target '
+     'contract',
+     'current saved/environment standing response policy and event disposition',
+     'fresh process/file/firewall target identity and postcondition observations',
+     'protected HMAC action journal, secure recovery checkpoint and local witness',
+     'separately authorized undo/recovery requests and optional Smart Deception sibling',
+     'retained Windows process-handle custody with native birth/image identity and terminal '
+     'proof')
+    capability_outputs = ('policy-gated exact process suspend/terminate, file quarantine and firewall '
+     'block/isolation effects',
+     'conditional Smart Deception module activation',
+     'HMAC-chained durable intent/commit/failure/undo/recovery receipts with exact '
+     'postconditions',
+     'response readiness, queue-loss, recovery-required and action-outcome EventBus events')
+    capability_permissions = ('event.subscribe',
+     'event.emit',
+     'process-metadata-read',
+     'process-suspend',
+     'process-terminate',
+     'file-content-read',
+     'file-quarantine-and-restore',
+     'firewall-policy-read-write',
+     'host-network-isolate',
+     'sibling-deception-start-stop',
+     'protected-journal-and-key-read-write',
+     'protected-recovery-checkpoint-read-write')
+    high_risk_permissions = ('process-suspend',
+     'process-terminate',
+     'file-quarantine-and-restore',
+     'firewall-policy-read-write',
+     'host-network-isolate',
+     'sibling-deception-start-stop',
+     'protected-journal-and-key-read-write',
+     'protected-recovery-checkpoint-read-write')
+    data_classes = ('security-finding',
+     'process-identity',
+     'file-path-and-content-hash',
+     'quarantined-artifact-bytes',
+     'remote-IP-and-firewall-rule',
+     'response-decision-and-receipt',
+     'recovery-authorization',
+     'local-authentication-key-material')
+    egress = 'none'
+    retention = ('queue2048/dedup8192 in memory; local HMAC journal max32MiB/32768 records saturates to '
+     'held response; plaintext quarantine and recovery state persist until governed '
+     'undo/review')
+    response_authority = 'typed-response'
+    capability_dependencies = ('local EventBus',
+     'psutil for process actions',
+     'Windows firewall provider',
+     'protected local data and secure store',
+     'Smart Deception (optional delegated activation)')
+    capability_conflicts = ()
+    restart_policy = ('bounded-three-attempt-backoff-quarantine; authority/journal holds wait for explicit '
+     'recovery')
+    loss_behavior = ('queue overflow is counted/reported; stale startup requests discarded; journal saturation '
+     'or uncertain mutation opens recovery circuit; no success inferred')
+    resource_budget = {'throttle_min': 1.0,
+     'throttle_max': 8.0,
+     'startup_cycle_timeout_seconds': 30.0,
+     'worker_model': 'single-lifecycle-response-worker-with-bounded-2048-event-priority-queue',
+     'event_delivery': 'inline-bounded-admission; no historical replay; '
+                       'durable-receipt-only-success'}
+    settings_schema = {'type': 'object',
+     'additionalProperties': False,
+     'description': 'Existing Config fields; matching uppercase ANGERONA_ environment '
+                    'variables take precedence. Declarations do not authorize execution.',
+     'properties': {'adversary_combat_enabled': {'type': 'boolean', 'default': True},
+                    'adversary_combat_mode': {'type': 'string',
+                                              'enum': ['contain', 'aggressive', 'maximum'],
+                                              'default': 'maximum'},
+                    'adversary_combat_min_severity': {'type': 'string',
+                                                      'enum': ['LOW',
+                                                               'MEDIUM',
+                                                               'HIGH',
+                                                               'CRITICAL'],
+                                                      'default': 'LOW'},
+                    'adversary_combat_block_network': {'type': 'boolean', 'default': True},
+                    'adversary_combat_quarantine_files': {'type': 'boolean', 'default': True},
+                    'adversary_combat_process_action': {'type': 'string',
+                                                        'enum': ['suspend', 'terminate'],
+                                                        'default': 'terminate'},
+                    'adversary_combat_isolate_host': {'type': 'boolean', 'default': True},
+                    'adversary_combat_activate_honeypots': {'type': 'boolean', 'default': True},
+                    'adversary_combat_isolation_threshold': {'type': 'integer',
+                                                             'minimum': 1,
+                                                             'maximum': 100,
+                                                             'default': 3}}}
     enabled_by_default = True
 
     def __init__(

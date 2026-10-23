@@ -126,15 +126,15 @@ def test_process_sensor_fetches_expensive_fields_only_for_new_pids(
     parent = FakeProcess(10, 1, "parent.exe")
     child = FakeProcess(11, 10, "child.exe")
     rows = [parent]
-    requested_attrs: list[tuple[str, ...]] = []
+    enumerations: list[bool] = []
 
-    def process_iter(attrs, ad_value=None):
-        requested_attrs.append(tuple(attrs))
-        return list(rows)
+    def pids():
+        enumerations.append(True)
+        return [process.info["pid"] for process in rows]
 
     by_pid = {10: parent, 11: child}
     fake_psutil = SimpleNamespace(
-        process_iter=process_iter,
+        pids=pids,
         Process=lambda pid: by_pid[pid],
         NoSuchProcess=NoSuchProcess,
         AccessDenied=AccessDenied,
@@ -146,7 +146,7 @@ def test_process_sensor_fetches_expensive_fields_only_for_new_pids(
     rows.append(child)
     frames = list(sensor.poll())
 
-    assert requested_attrs == [("pid",), ("pid",)]
+    assert len(enumerations) == 2
     assert "exe" not in parent.calls and "cmdline" not in parent.calls
     assert "exe" in child.calls and "cmdline" in child.calls
     record = json.loads(frames[0])

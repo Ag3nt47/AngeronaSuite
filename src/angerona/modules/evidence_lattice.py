@@ -261,7 +261,7 @@ class EvidenceLatticeModule(BaseModule):
         "finding and exact-target containment authority for live PIDs/IPs."
     )
     category = "Detection"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
 
     def __init__(self) -> None:

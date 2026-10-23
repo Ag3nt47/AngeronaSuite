@@ -211,7 +211,7 @@ class KernelBridgeModule(BaseModule):
     CODE = "KRNL"
     NAME = "Kernel Sensor Bridge"
     name = "Kernel Sensor Bridge"
-    version = "1.13.0"
+    version = "1.14.0"
     description = (
         "Reads process-creation and image-load events from the AngeronaSensor.sys "
         "kernel driver ring buffer via DeviceIoControl.  Provides tamper-resistant "

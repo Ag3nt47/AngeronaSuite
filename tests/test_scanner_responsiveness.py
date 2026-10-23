@@ -1,4 +1,6 @@
 import threading
+import json
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -92,13 +94,110 @@ def test_tiny_interval_is_bounded(host_factory):
 def test_backpressure_avoids_enrichment_and_keeps_baseline(monkeypatch):
     import psutil
     rows = []
-    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: rows)
+    monkeypatch.setattr(psutil, "pids", lambda: rows)
+    monkeypatch.setattr(psutil, "Process", lambda *args: pytest.fail("shed telemetry queried process metadata"))
     sensor = scanner.RawProcessSensor()
     assert list(sensor.poll()) == []
-    rows.append(SimpleNamespace(info={"pid": 123}))
-    # This process deliberately has no exe/cmdline/oneshot methods.
+    rows.append(123)
     assert len(list(sensor.poll(enrich=False))) == 1
     assert list(sensor.poll()) == []
+
+
+class _ProcessFixture:
+    def __init__(self, pid, *, label="fixture.exe", exe_error=None, command_error=None):
+        self.pid, self.label = pid, label
+        self.exe_error, self.command_error = exe_error, command_error
+
+    def oneshot(self):
+        return nullcontext()
+
+    def ppid(self):
+        return 0
+
+    def name(self):
+        return self.label
+
+    def exe(self):
+        if self.exe_error:
+            raise self.exe_error
+        return "C:/fixture/" + self.label
+
+    def cmdline(self):
+        if self.command_error:
+            raise self.command_error
+        return [self.label, "--safe"]
+
+
+def test_pid_diff_never_builds_process_objects_for_baseline_or_unchanged_rows(monkeypatch):
+    import psutil
+    pids = [100, 200]
+    calls = []
+    monkeypatch.setattr(psutil, "pids", lambda: list(pids))
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **k: pytest.fail("full Process.info inventory"))
+    def process(pid):
+        calls.append(pid)
+        return _ProcessFixture(pid)
+    monkeypatch.setattr(psutil, "Process", process)
+    sensor = scanner.RawProcessSensor()
+    assert list(sensor.poll()) == []
+    assert list(sensor.poll()) == []
+    assert calls == []
+    pids.extend([202, 201])
+    frames = list(sensor.poll())
+    assert calls == [201, 202]
+    assert [json.loads(frame)["pid"] for frame in frames] == [201, 202]
+    assert list(sensor.poll()) == []
+
+
+def test_disappeared_addition_is_observed_again_with_fresh_process_identity(monkeypatch):
+    import psutil
+    pids = [100]
+    calls = []
+    monkeypatch.setattr(psutil, "pids", lambda: list(pids))
+    def process(pid):
+        calls.append(pid)
+        if len(calls) == 1:
+            raise psutil.NoSuchProcess(pid)
+        return _ProcessFixture(pid, label="replacement.exe")
+    monkeypatch.setattr(psutil, "Process", process)
+    sensor = scanner.RawProcessSensor()
+    assert list(sensor.poll()) == []
+    pids.append(200)
+    assert list(sensor.poll()) == []
+    assert 200 not in sensor._known
+    frame, = sensor.poll()
+    assert calls == [200, 200]
+    record = scanner.ipc_ring.decode_sensor_payload(scanner.SENSOR_PROC, frame)
+    assert record["pid"] == 200 and record["name"] == "replacement.exe"
+
+
+def test_new_process_denied_or_exited_evidence_is_not_fabricated_clean(monkeypatch):
+    import psutil
+    pids = [100]
+    monkeypatch.setattr(psutil, "pids", lambda: list(pids))
+    monkeypatch.setattr(psutil, "Process", lambda pid: _ProcessFixture(pid,
+        exe_error=psutil.AccessDenied(pid), command_error=psutil.NoSuchProcess(pid)))
+    sensor = scanner.RawProcessSensor()
+    assert list(sensor.poll()) == []
+    pids.append(200)
+    frame, = sensor.poll()
+    record = scanner.ipc_ring.decode_sensor_payload(scanner.SENSOR_PROC, frame)
+    assert record["location_status"] == "access_denied"
+    assert record["command_line_status"] == "process_exited"
+    assert record["exe"] == record["cmdline"] == ""
+
+
+def test_failed_pid_inventory_preserves_last_observation_and_raises(monkeypatch):
+    import psutil
+    monkeypatch.setattr(psutil, "pids", lambda: [100])
+    sensor = scanner.RawProcessSensor()
+    assert list(sensor.poll()) == []
+    def unavailable():
+        raise OSError("PID inventory unavailable")
+    monkeypatch.setattr(psutil, "pids", unavailable)
+    with pytest.raises(OSError, match="inventory unavailable"):
+        sensor.poll()
+    assert sensor._known == {100}
 
 
 def test_yara_inventory_yields_during_discovery_without_changing_selection(tmp_path):

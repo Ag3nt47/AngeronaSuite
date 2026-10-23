@@ -25,6 +25,7 @@ MAX_EVENT_SKEW_SECONDS: Final = 5 * 60
 MAX_ASSOCIATIONS: Final = 4096
 _KINDS = frozenset({
     "logon_session",
+    "authentication_attempt",
     "session_end",
     "device_code_flow",
     "new_device",
@@ -137,7 +138,7 @@ class IdentitySessionEvidence:
         source = _bounded_ref(self.source_ref, "source_ref")
         process = _bounded_ref(self.process_ref, "process_ref")
         if self.kind in {
-            "logon_session", "device_code_flow", "new_device", "privilege_change"
+            "logon_session", "authentication_attempt", "device_code_flow", "new_device", "privilege_change"
         } and not principal:
             raise IdentitySessionError("principal_ref is required for this evidence kind")
         if self.kind in {"logon_session", "session_end"} and not (luid or session):
@@ -258,6 +259,7 @@ class IdentitySessionAnalytics:
         if evidence_grade not in {
             "broker-provenanced",
             "schema-admitted-local",
+            "native-os-event-log",
             "unprovenanced",
             # Migration-only grades from the pre-provenance implementation.
             "authenticated-bus",
@@ -319,6 +321,8 @@ class IdentitySessionAnalytics:
 
     @staticmethod
     def _grade(rows: tuple[TokenizedSessionEvent, ...]) -> str:
+        if rows and all(item.evidence_grade == "native-os-event-log" for item in rows):
+            return "native-os-event-log"
         if rows and all(item.evidence_grade == "broker-provenanced" for item in rows):
             return "broker-provenanced"
         if rows and all(

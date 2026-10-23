@@ -169,6 +169,12 @@ class AdaptationWorkbench(QDialog):
         self.tabs.addTab(self._build_sandbox_tab(), "Sandbox")
         self.tabs.addTab(self._build_automation_tab(), "Automation")
         self.tabs.addTab(self._build_activity_tab(), "Activity")
+        from angerona.gui.recovery_panel import RecoveryPanel
+        self.recovery_panel = RecoveryPanel(getattr(parent, "manager", None), self)
+        self.tabs.addTab(self.recovery_panel, "Independent Recovery")
+        from angerona.gui.prevention_panel import PreventionPanel
+        self.prevention_panel = PreventionPanel(getattr(parent, "manager", None), self)
+        self.tabs.addTab(self.prevention_panel, "Windows Prevention")
         root.addWidget(self.tabs, 1)
 
         footer = QHBoxLayout()

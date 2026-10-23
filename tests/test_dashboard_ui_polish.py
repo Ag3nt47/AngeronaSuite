@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QApplication,
@@ -436,6 +436,80 @@ def test_reveal_overlay_ignores_events_after_animation_teardown() -> None:
     overlay._animation = DeletedAnimation()
     assert overlay._animation_busy() is True
     parent.close()
+
+
+def test_explicit_reveal_preserves_security_prompt_opt_out() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    target = QDialog(parent)
+    target.setProperty("_angerona_no_reveal", True)
+
+    def show_prompt():
+        target.show()
+        return target
+
+    try:
+        assert overlay.reveal(parent, show_prompt)
+        app.processEvents()
+        assert target.isVisible()
+        assert target.mask().isEmpty()
+        assert overlay._target is None
+        assert not overlay._armed
+    finally:
+        overlay.shutdown()
+        target.close()
+        parent.close()
+
+
+def test_deleted_destination_releases_next_queued_window() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    overlay.enable_global_windows()
+    first, second = QDialog(parent), QDialog(parent)
+    first.resize(340, 220)
+    second.resize(360, 240)
+    try:
+        first.show()
+        second.show()
+        assert overlay._target is first
+        first.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        QTest.qWait(30)
+        assert overlay._target is second
+        assert overlay._mode == "opening"
+        assert not second.mask().isEmpty()
+    finally:
+        overlay.shutdown()
+        second.close()
+        parent.close()
+        app.processEvents()
+
+
+def test_shutdown_cancels_queued_reveal_and_restores_window() -> None:
+    app = _app()
+    parent = QWidget()
+    parent.show()
+    overlay = PanelRevealOverlay(parent)
+    target = QDialog(parent)
+    target.resize(340, 220)
+    try:
+        assert overlay.reveal(parent, target.show)
+        assert overlay._reveal_start_timer.isActive()
+        overlay.shutdown()
+        app.processEvents()
+        assert not overlay._reveal_start_timer.isActive()
+        assert not overlay._pending_start_timer.isActive()
+        assert overlay._target is None
+        assert overlay._frame is None
+        assert target.mask().isEmpty()
+        assert not overlay.reveal(parent, lambda: None)
+    finally:
+        target.close()
+        parent.close()
 
 
 def test_system_pulse_card_and_human_readable_units() -> None:

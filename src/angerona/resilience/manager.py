@@ -144,8 +144,8 @@ def _pythonw() -> str:
     return exe
 
 
-def _cmdline_probe(*needles: str) -> Callable[[], bool]:
-    return cached_cmdline_probe(*needles)
+def _cmdline_probe(*needles: str, expected_argv=None) -> Callable[[], bool]:
+    return cached_cmdline_probe(*needles, expected_argv=expected_argv)
 
 
 class ResilienceManager:
@@ -252,7 +252,7 @@ class ResilienceManager:
         ).strip().lower() not in ("0", "false", "no", "off")
         if bb is not None and blackbox_enabled:
             self._sup.add("blackbox", [pyw, str(bb)], window="hidden",
-                          running_probe=_cmdline_probe("blackbox_recorder.py"))
+                          running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)]))
 
         # 4) Themed monitor windows (present a component's status; lean readers).
         if self.with_ui:
@@ -260,7 +260,8 @@ class ResilienceManager:
                           [pyw, "-m", "angerona.resilience.status_ui", "watchdog",
                            "--title", "Angerona - Watchdog"],
                           window="hidden",
-                          running_probe=_cmdline_probe("status_ui", "watchdog"))
+                          running_probe=_cmdline_probe("status_ui", "watchdog",
+                              expected_argv=[pyw, "-m", "angerona.resilience.status_ui", "watchdog"]))
             # Telemetry Scanner monitor window. The scanner PROCESS itself runs
             # headless (ANGERONA_SCANNER_UI=0) for reliability — its old inline
             # QApplication was heavy and flaky and pushed it into SAFE_MODE. So the
@@ -272,7 +273,8 @@ class ResilienceManager:
                           [pyw, "-m", "angerona.resilience.status_ui", "scanner",
                            "--title", "Angerona - Telemetry Scanner"],
                           window="hidden",
-                          running_probe=_cmdline_probe("status_ui", "scanner"))
+                          running_probe=_cmdline_probe("status_ui", "scanner",
+                              expected_argv=[pyw, "-m", "angerona.resilience.status_ui", "scanner"]))
 
         self._sup.start()          # adopt-if-alive: never double-spawns
 

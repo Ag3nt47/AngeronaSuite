@@ -124,13 +124,17 @@ class Config:
     data_dir: Path = field(default_factory=_data_dir)
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3"
-    github_repo: str = "your-user/Angerona"   # set to your repo for auto-update
+    github_repo: str = "Ag3nt47/AngeronaSuite"  # canonical update source
+    github_daily_check_enabled: bool = False  # opt-in public GitHub metadata; never auto-installs
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
     autostart_enabled: bool = True              # platform-native per-user logon startup
     eco_mode: bool = True                        # start in network-first Chill Mode for all-day low-impact protection
     blackbox_enabled: bool = True                # auto-launch the decoupled Black Box diagnostic recorder at startup
+    live_debug_enabled: bool = False             # opt-in same-user, outbound-only diagnostic pipe
+    identity_session_collection_enabled: bool = False  # read-only Windows Security channel
+    browser_extension_inventory_enabled: bool = False  # manifest metadata only; no browser contents
     alert_retention_enabled: bool = True         # disposable runtime-alert archives only
     alert_retention_days: int = 30
     alert_retention_max_mib: int = 256
@@ -247,6 +251,15 @@ class Config:
     ugcap_vault_path: str = ""
     ugcap_key_name: str = "Angerona.UGCAP.v1"
     ugcap_lockdown: bool = True
+    ugcap_witness_enabled: bool = False
+    ugcap_witness_endpoint: str = ""
+    ugcap_witness_certificate_sha256: str = ""
+    ugcap_witness_authority_public_key: str = ""
+    ugcap_witness_installation_id: str = ""
+    ugcap_witness_client_id: str = ""
+    ugcap_witness_client_certificate_path: str = ""
+    ugcap_witness_client_key_path: str = ""
+    ugcap_witness_ca_bundle_path: str = ""
 
     # ── Adversary Combat standing authority ────────────────────────────────
     # Maximum mode is deliberately availability-aggressive: detections are
@@ -482,6 +495,10 @@ class Config:
                 cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
                 cfg.ollama_model = data.get("ollama_model", cfg.ollama_model)
                 cfg.github_repo = data.get("github_repo", cfg.github_repo)
+                if cfg.github_repo == "your-user/Angerona":
+                    cfg.github_repo = "Ag3nt47/AngeronaSuite"
+                cfg.github_daily_check_enabled = _bool_setting(
+                    data, "github_daily_check_enabled", cfg.github_daily_check_enabled)
                 cfg.theme = data.get("theme", cfg.theme)
                 cfg.accent = data.get("accent", cfg.accent)
                 cfg.module_states = data.get("module_states", {})
@@ -490,6 +507,12 @@ class Config:
                 cfg.eco_mode = _bool_setting(data, "eco_mode", cfg.eco_mode)
                 cfg.blackbox_enabled = _bool_setting(
                     data, "blackbox_enabled", cfg.blackbox_enabled)
+                cfg.live_debug_enabled = _bool_setting(
+                    data, "live_debug_enabled", cfg.live_debug_enabled)
+                cfg.identity_session_collection_enabled = _bool_setting(
+                    data, "identity_session_collection_enabled", cfg.identity_session_collection_enabled)
+                cfg.browser_extension_inventory_enabled = _bool_setting(
+                    data, "browser_extension_inventory_enabled", cfg.browser_extension_inventory_enabled)
                 from angerona.core.alert_retention import RetentionPolicy
                 retention = RetentionPolicy.from_config(data)
                 cfg.alert_retention_enabled = retention.enabled
@@ -627,6 +650,17 @@ class Config:
                 key_name = _bounded_setting(data.get("ugcap_key_name"), "Angerona.UGCAP.v1", 120)
                 cfg.ugcap_key_name = (key_name if re.fullmatch(r"Angerona\.UGCAP\.[A-Za-z0-9_-]{1,96}", key_name)
                                      else "Angerona.UGCAP.v1")
+                from angerona.core.ugcap_witness import WITNESS_DEFAULTS, validate_settings
+                witness = {name: data.get(name, default) for name, default in WITNESS_DEFAULTS.items()}
+                try:
+                    witness = validate_settings(witness)
+                except (ValueError, RuntimeError, UnicodeError):
+                    witness = dict(WITNESS_DEFAULTS)
+                    # A malformed opted-in enrollment must stay held, rather
+                    # than silently falling back to local-only verification.
+                    witness["ugcap_witness_enabled"] = data.get("ugcap_witness_enabled") is True
+                for name, value in witness.items():
+                    setattr(cfg, name, value)
                 cfg.aria_enabled = _bool_setting(
                     data, "aria_enabled", cfg.aria_enabled)
                 cfg.perf_governor_enabled = _bool_setting(
@@ -911,12 +945,16 @@ class Config:
                     "ollama_host": self.ollama_host,
                     "ollama_model": self.ollama_model,
                     "github_repo": self.github_repo,
+                    "github_daily_check_enabled": self.github_daily_check_enabled,
                     "theme": self.theme,
                     "accent": self.accent,
                     "module_states":     self.module_states,
                     "autostart_enabled": self.autostart_enabled,
                     "eco_mode":          self.eco_mode,
                     "blackbox_enabled":  self.blackbox_enabled,
+                    "live_debug_enabled": self.live_debug_enabled,
+                    "identity_session_collection_enabled": self.identity_session_collection_enabled,
+                    "browser_extension_inventory_enabled": self.browser_extension_inventory_enabled,
                     "alert_retention_enabled": self.alert_retention_enabled,
                     "alert_retention_days": self.alert_retention_days,
                     "alert_retention_max_mib": self.alert_retention_max_mib,
@@ -965,6 +1003,10 @@ class Config:
                     "ugcap_vault_path": self.ugcap_vault_path,
                     "ugcap_key_name": self.ugcap_key_name,
                     "ugcap_lockdown": self.ugcap_lockdown,
+                    **{name: getattr(self, name) for name in (
+                        "ugcap_witness_enabled", "ugcap_witness_endpoint", "ugcap_witness_certificate_sha256",
+                        "ugcap_witness_authority_public_key", "ugcap_witness_installation_id", "ugcap_witness_client_id",
+                        "ugcap_witness_client_certificate_path", "ugcap_witness_client_key_path", "ugcap_witness_ca_bundle_path")},
                     "aria_enabled":          self.aria_enabled,
                     "perf_governor_enabled": self.perf_governor_enabled,
                     "aria_persona":          self.aria_persona,

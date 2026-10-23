@@ -85,11 +85,11 @@
       "version": "3.0"
     },
     {
-      "filename": "certifi-2026.6.17-py3-none-any.whl",
+      "filename": "certifi-2026.10.19-py3-none-any.whl",
       "name": "certifi",
-      "sha256": "2227dcbaafe0d2f59279d1762ddddc37783ed4354594f194ffc31d20f41fc3db",
-      "size": 133289,
-      "version": "2026.6.17"
+      "sha256": "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b",
+      "size": 136464,
+      "version": "2026.10.19"
     },
     {
       "filename": "charset_normalizer-3.4.7-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl",
@@ -148,11 +148,11 @@
       "version": "26.2"
     },
     {
-      "filename": "pip-26.2.1-py3-none-any.whl",
+      "filename": "pip-26.2.2-py3-none-any.whl",
       "name": "pip",
-      "sha256": "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e",
-      "size": 1816632,
-      "version": "26.2.1"
+      "sha256": "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70",
+      "size": 1819850,
+      "version": "26.2.2"
     },
     {
       "filename": "six-1.17.0-py2.py3-none-any.whl",

@@ -52,6 +52,23 @@ def test_process_evidence_context_exposes_location_parent_and_command_line() -> 
     assert context["source"] == "scanner · process_creation"
 
 
+def test_runtime_code_origin_is_visible_without_becoming_a_response_artifact() -> None:
+    event = Event("Self-Integrity Monitor", "Runtime code changed", Severity.CRITICAL,
+                  details={"tamper": True, "source_file": r"D:\suite\core\guard.py",
+                           "source_line": 97})
+    context = _event_evidence_context(event)
+    assert r"D:\suite\core\guard.py:97" in context["location"]
+    assert "Code origin:" in context["location"]
+    assert "not a file-tamper finding" in context["location"]
+    assert _event_artifact_paths(event) == []
+    app = _app()
+    dialog = AlertDetailDialog(event)
+    assert dialog.findChild(QLineEdit, "alertEvidenceLocation").text() == context["location"]
+    dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
+
+
 def test_scanner_command_line_keeps_context_but_redacts_inline_secrets() -> None:
     rendered = _redact_command_line(
         [

@@ -268,11 +268,13 @@ def test_per_row_cve_analysis_is_owned_nonblocking_and_close_safe(
     _app()
     entered = threading.Event()
     release = threading.Event()
-    analysis_threads: list[threading.Thread] = []
+    analysis_thread_ids: list[tuple[int, int]] = []
     results: list[dict] = []
 
     def blocking_analysis(rec: dict) -> dict:
-        analysis_threads.append(threading.current_thread())
+        # QThread is created by Qt. current_thread() would register a
+        # persistent CPython DummyThread just to observe its identity.
+        analysis_thread_ids.append((threading.get_ident(), threading.get_native_id()))
         entered.set()
         assert release.wait(5.0)
         return {
@@ -288,7 +290,7 @@ def test_per_row_cve_analysis_is_owned_nonblocking_and_close_safe(
     dashboard._timer.stop()
     review = _AnalysisReviewDialog(dashboard)
     review.show()
-    main_thread = threading.current_thread()
+    main_thread_ids = (threading.get_ident(), threading.get_native_id())
     worker = dashboard._start_detail_analysis(
         "CVE-2026-1234",
         {"cve": "CVE-2026-1234"},
@@ -298,10 +300,12 @@ def test_per_row_cve_analysis_is_owned_nonblocking_and_close_safe(
     review._analysis_worker = worker
     from angerona.gui.cve_detail_admission import detail_analysis_admission
 
-    assert worker.parent() is detail_analysis_admission()
+    admission = detail_analysis_admission()
+    assert worker.parent() is admission
     assert entered.wait(2.0)
-    assert len(analysis_threads) == 1
-    assert analysis_threads[0] is not main_thread
+    assert len(analysis_thread_ids) == 1
+    assert analysis_thread_ids[0][0] != main_thread_ids[0]
+    assert analysis_thread_ids[0][1] != main_thread_ids[1]
 
     # Both close paths hide immediately but retain the owned QThread until its
     # bounded advisor call returns; no GUI-thread wait or processEvents shim is used.
@@ -313,7 +317,10 @@ def test_per_row_cve_analysis_is_owned_nonblocking_and_close_safe(
 
     release.set()
     assert worker.wait(5_000)
+    assert not worker.isRunning()
     _pump_events(12)
+    assert admission.active_count == 0
+    assert "CVE-2026-1234" not in dashboard._detail_workers
     assert results == [{
         "cve": "CVE-2026-1234",
         "fix_available": False,

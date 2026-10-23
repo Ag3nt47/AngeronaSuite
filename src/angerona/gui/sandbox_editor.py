@@ -71,8 +71,11 @@ class PythonHighlighter(QSyntaxHighlighter):
             return f
 
         kw_fmt = fmt("#38bdf8", bold=True)
-        for kw in self._KEYWORDS:
-            self._rules.append((QRegularExpression(rf"\b{kw}\b"), kw_fmt))
+        # Every keyword has the same format, so scan each block once. Keep the
+        # alternation noncapturing: highlightBlock reserves capture 1 for a
+        # rule's selected span (such as a def/class name).
+        keywords = r"\b(?:" + "|".join(self._KEYWORDS) + r")\b"
+        self._rules.append((QRegularExpression(keywords), kw_fmt))
 
         self._rules.append((QRegularExpression(r"\bdef\s+(\w+)"), fmt("#c084fc", bold=True)))
         self._rules.append((QRegularExpression(r"\bclass\s+(\w+)"), fmt("#f59e0b", bold=True)))

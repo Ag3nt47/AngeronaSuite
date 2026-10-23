@@ -100,6 +100,7 @@ class UGCAPPage(QWidget):
         self._build_settings_tab()
         self._build_readiness_tab()
         self._build_limits_tab()
+        self._build_witness_tab()
         self._update_availability()
 
     def _module(self):
@@ -236,6 +237,88 @@ class UGCAPPage(QWidget):
         details.setPlainText(_LIMITS)
         self.tabs.addTab(details, "How it works / Limits")
 
+    def _build_witness_tab(self):
+        from angerona.core.ugcap_witness import WITNESS_DEFAULTS
+
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(_label("A separately administered witness must be deployed and enrolled first. "
+            "It receives only vault/baseline IDs and audit hashes. Enabling this option requires a fresh "
+            "matching witness checkpoint before UGCAP opens its workspace gate. An unavailable or "
+            "conflicting witness keeps the opted-in gate held. No remote witness is deployed by this panel."))
+        self.witness_enabled = QCheckBox("Require the separately enrolled UGCAP witness")
+        self.witness_enabled.setChecked(bool(getattr(self.config, "ugcap_witness_enabled", False)))
+        layout.addWidget(self.witness_enabled)
+        self.witness_fields = {}
+        form = QFormLayout()
+        labels = {
+            "ugcap_witness_endpoint": "Private HTTPS URL (/v1/ugcap-witness)",
+            "ugcap_witness_certificate_sha256": "Witness TLS certificate SHA-256",
+            "ugcap_witness_authority_public_key": "Witness Ed25519 PUBLIC key (PEM)",
+            "ugcap_witness_installation_id": "Enrolled installation ID (32 hex)",
+            "ugcap_witness_client_id": "Enrolled client ID (32 hex)",
+            "ugcap_witness_client_certificate_path": "Local mTLS client certificate path",
+            "ugcap_witness_client_key_path": "Protected local mTLS private-key path",
+            "ugcap_witness_ca_bundle_path": "Optional enrolled CA bundle path",
+        }
+        for name, default in WITNESS_DEFAULTS.items():
+            if name == "ugcap_witness_enabled":
+                continue
+            if name.endswith("public_key"):
+                field = QPlainTextEdit(_text(getattr(self.config, name, default), 2048))
+                field.setMaximumHeight(85)
+                field.setPlaceholderText("-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----")
+            else:
+                field = QLineEdit(_text(getattr(self.config, name, default), 1024))
+                field.setMaxLength(1024)
+            self.witness_fields[name] = field
+            form.addRow(labels[name] + ":", field)
+        layout.addLayout(form)
+        actions = QHBoxLayout()
+        self.witness_apply = QPushButton("Apply witness enrollment")
+        self.witness_apply.clicked.connect(self._save_witness_settings)
+        actions.addWidget(self.witness_apply)
+        self.witness_key_button = QPushButton("Provision / show host public key")
+        self.witness_key_button.clicked.connect(lambda: self._witness_command("queue_provision_witness_key"))
+        actions.addWidget(self.witness_key_button)
+        self.witness_probe = QPushButton("Check witness now")
+        self.witness_probe.clicked.connect(lambda: self._witness_command("queue_probe_witness"))
+        actions.addWidget(self.witness_probe)
+        layout.addLayout(actions)
+        self.witness_status = _label("Deployment required · local audit authenticity alone has no external rollback witness.")
+        layout.addWidget(self.witness_status)
+        layout.addWidget(_label("Host PUBLIC enrollment key (copy to the separate witness administrator):"))
+        self.witness_host_public_key = QPlainTextEdit()
+        self.witness_host_public_key.setReadOnly(True)
+        self.witness_host_public_key.setMaximumHeight(85)
+        layout.addWidget(self.witness_host_public_key)
+        self.witness_details = QPlainTextEdit()
+        self.witness_details.setReadOnly(True)
+        self.witness_details.setPlaceholderText("Public host enrollment key, vault/baseline IDs, checkpoint and cached witness status.")
+        layout.addWidget(self.witness_details)
+        layout.addWidget(_label("The host signing private key is provisioned only by the explicit button, in the OS "
+            "credential store, and is never displayed. Give the public key and verified vault/baseline IDs to "
+            "the separate witness administrator. This client cannot reset the remote head or change its enrollment. "
+            "Restoring the entire witness appliance or compromising the signing host requires additional independent "
+            "hardware/custody controls; this feature does not prove protection against those conditions."))
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        self.tabs.addTab(scroll, "Independent Witness")
+
+    def _save_witness_settings(self):
+        settings = {name: (field.toPlainText().strip() if isinstance(field, QPlainTextEdit)
+                           else field.text().strip()) for name, field in self.witness_fields.items()}
+        settings["ugcap_witness_enabled"] = self.witness_enabled.isChecked()
+        result = self._command("configure_settings", **settings)
+        self.witness_status.setText("Witness enrollment queued; review the worker result." if
+            isinstance(result, dict) and result.get("queued") else
+            "Witness enrollment was not queued. Check the explicit endpoint, keys, pins and identities.")
+
+    def _witness_command(self, method):
+        self.witness_status.setText("Witness worker action queued." if self._command(method) else
+                                    "Witness worker action was not queued.")
+
     def _update_gate_banner(self):
         self.gate_status.setText(
             "Workspace locked · complete the authorized UGCAP challenge to review recovery. "
@@ -247,7 +330,8 @@ class UGCAPPage(QWidget):
     def _update_availability(self):
         available = self._module() is not None
         for button in (self.verify_button, self.initialize_button, self.lock_button,
-                       self.provision_button, self.apply_settings_button):
+                       self.provision_button, self.apply_settings_button, self.witness_apply,
+                       self.witness_key_button, self.witness_probe):
             button.setEnabled(available)
         if not available:
             self.status.setText("UGCAP Integrity Guard is unavailable. Settings cannot activate a missing engine.")
@@ -499,6 +583,15 @@ class UGCAPPage(QWidget):
             self.lock_state_changed.emit(workspace_locked)
         report = snapshot.get("report", snapshot.get("last_report", {}))
         self._apply_report(report)
+        witness = snapshot.get("witness", {})
+        if isinstance(witness, dict):
+            self.witness_status.setText("Witness: " + _text(witness.get("status", "deployment-required"), 200)
+                + " · " + _text(witness.get("assurance", "local-chain-only"), 200))
+        self.witness_details.setPlainText(_pretty({"witness": witness,
+            "checkpoint": report.get("witness_checkpoint") if isinstance(report, dict) else None}))
+        public_key = _text(snapshot.get("witness_host_public_key", ""), 2048)
+        if self.witness_host_public_key.toPlainText() != public_key:
+            self.witness_host_public_key.setPlainText(public_key)
         settings = snapshot.get("settings")
         if isinstance(settings, dict):
             if self._pending_settings and all(settings.get(key) == value for key, value in self._pending_settings.items()):

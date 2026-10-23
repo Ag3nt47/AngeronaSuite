@@ -1,0 +1,12 @@
+[
+  {
+    "id": "LD-RT-04",
+    "title": "Black Box can attribute another profile's process to its recorder",
+    "severity": "LOW",
+    "component": "blackbox_recorder.py:367",
+    "status": "MITIGATED",
+    "recommendation": "Bind recorder OS observations to an explicitly handed-off PID and creation time or a freshly verified exact-profile runtime record. Preserve one process generation across all views and exports; show UNKNOWN when identity is missing, stale or ambiguous. Keep the recorder read-only.",
+    "disposition": "SIDE-04 rejects ambiguity among independent matching cores instead of choosing by RSS; 64 affected regressions passed. Exact automatic single-core/profile ownership remains advisory; explicit Live AI Review binds PID and creation time.",
+    "original_status": "OPEN at the time of the read-only handoff"
+  }
+]

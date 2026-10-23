@@ -48,7 +48,7 @@ class AITriageModule(BaseModule):
     watchdog_work_budget_seconds = 300.0
     description = "Explains and scores serious events using a local LLM (Ollama)."
     category = "AI"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "detect"
     # Restarting prepares the service, but cannot install or approve a model.

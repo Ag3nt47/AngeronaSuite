@@ -122,7 +122,8 @@ def test_old_startup_requests_expire_without_mutation(combat, monkeypatch, expir
             for key in module._startup_admitted_at:
                 module._startup_admitted_at[key] -= 60
         release.set()
-        wait_for(lambda: module.response_snapshot()["counts"].get("startup_expired") == 1)
+        wait_for(lambda: module.response_snapshot()["counts"].get("startup_expired") == 1
+                 and module._queue.unfinished_tasks == 0)
         assert not handled
         assert not module._startup_admitted_at
         diagnostics = [event for event in bus.recent(10)
@@ -357,3 +358,39 @@ def test_admission_bookkeeping_precedes_queue_visibility(combat, monkeypatch):
     module._queue.task_done()
     module._forget_unhandled_submission(event)
     assert not module._admitted_identities
+
+
+def test_expiration_counter_can_precede_diagnostic_publication(combat, monkeypatch):
+    module, bus = combat
+    entered, publish = threading.Event(), threading.Event()
+    emit = module.emit
+    handled = []
+    monkeypatch.setattr(module, "_handle", handled.append)
+
+    def delayed_emit(message, *args, **kwargs):
+        if "discarded startup" in message:
+            entered.set()
+            assert publish.wait(3), "fixture diagnostic publication was not released"
+        return emit(message, *args, **kwargs)
+
+    monkeypatch.setattr(module, "emit", delayed_emit)
+    worker, release = start_blocked(module, monkeypatch)
+    try:
+        bus.publish(request("expired ordering probe"))
+        with module._admission_lock:
+            for key in module._startup_admitted_at:
+                module._startup_admitted_at[key] -= 60
+        release.set()
+        assert entered.wait(2)
+        assert module.response_snapshot()["counts"].get("startup_expired") == 1
+        assert not [e for e in bus.recent(10) if "discarded startup" in e.message]
+        assert not handled
+        publish.set()
+        wait_for(lambda: module._queue.unfinished_tasks == 0)
+        diagnostics = [e for e in bus.recent(10) if "discarded startup" in e.message]
+        assert len(diagnostics) == 1
+        assert diagnostics[0].details["response_authorized"] is False
+        assert not module._seen
+    finally:
+        publish.set()
+        stop(module, worker, release)

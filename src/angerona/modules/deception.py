@@ -76,7 +76,7 @@ class DeceptionModule(BaseModule):
         "dynamically re-stages traps; audited reads need an external OS source."
     )
     category = "Deception"
-    version = "1.13.0"
+    version = "1.14.0"
 
     def __init__(self) -> None:
         super().__init__()

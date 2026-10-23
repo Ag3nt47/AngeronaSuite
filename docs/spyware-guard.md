@@ -1,7 +1,8 @@
 # SpywareGuard: surveillanceware defense preview
 
 SpywareGuard is Angerona's newest feature under active development. Open the
-**SpywareGuard** tab beside Live Alerts, SOAR Queue and Scan Center. It combines
+wide black-spy **SpywareGuard** button in the dashboard's top-right controls.
+It opens one dedicated window and preserves local drafts when hidden. It combines
 host audits, spyware-relevant sensor events, reviewed research indicators,
 containment receipts, an inert sandbox and optional emergency notifications.
 It ships with v1.13.0 as a preview capability.
@@ -22,7 +23,7 @@ observation's original severity and stating that spyware identity is unproved.
 
 This availability-aggressive policy can interrupt legitimate software or
 network access on a heuristic false positive. Change **Single-rule containment**
-in this tab's Settings. Adversary Combat's separately configured authority,
+in this window's Settings. Adversary Combat's separately configured authority,
 platform, protected-process and exact-object checks still apply. Full host
 isolation requires its Maximum policy. Unelevated source runs retain their
 Observe/development boundary; a request cannot grant missing OS authority.
@@ -30,6 +31,12 @@ Observe/development boundary; a request cannot grant missing OS authority.
 Research mentions, unreviewed indicators, CVEs, remote observations, malformed
 telemetry, health-only events and sandbox rehearsals do not acquire local
 response authority. A country, company name or family profile is not a rule.
+Unquoted service paths alone are configuration exposures for review; they do
+not establish that a writable prefix was exploited and cannot request host
+isolation. Persistence analysis uses executable and script targets rather than
+task descriptions, names or log/output arguments. Unsupported interpreter
+syntax reports partial analysis instead of a clean verdict. Eligible local
+execution findings retain the single-rule containment policy above.
 
 ## What is collected
 
@@ -83,10 +90,20 @@ activate executable rules. Angerona's existing DetectionForge governed rule
 workflow remains the route for reviewed package activation.
 
 The top news strip uses official Citizen Lab, Project Zero and CISA bulletins.
-It shows the publication date, source link, refresh state and only supported
-recent items. Old, missing, future-dated or failed feed data is not presented
-as fresh news. News is advisory and cannot authorize response. Refresh is
-asynchronous and uses the same explicit network opt-in.
+It shows publication dates, bounded summaries and per-source refresh/failure
+state. Select a headline to inspect cached details, then explicitly open its
+validated source link. Downloads run on the research worker ahead of queued
+report ingestion; Qt never downloads the article.
+
+Three bundled primary-source briefs, reviewed on **22 October 2026**, populate
+the banner offline. They are labelled **REFERENCE**, with fixed publication and
+review dates; they are never presented as a live check. Retained downloaded
+headlines remain inspectable when downloads are disabled, with their age and
+cached status visible. Old, missing, future-dated or failed feed data is not
+presented as fresh news. News is advisory and cannot authorize response.
+Refresh is asynchronous and uses the same explicit network opt-in.
+Citizen Lab's bounded official homepage research cards are used because its
+generic RSS stream omitted the reviewed recent research reports.
 Project Zero uses its bounded recent-post index because its complete archive
 feed exceeds the download budget; its day-only dates are represented in UTC.
 An unavailable or denied source stays a visible retrieval failure.

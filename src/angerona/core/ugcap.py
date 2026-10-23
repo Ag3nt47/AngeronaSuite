@@ -446,7 +446,7 @@ class UGCAPVault:
         except (OSError, ValueError, TypeError, KeyError, AttributeError, InvalidTag) as exc:
             raise VaultAuthenticationError("encrypted vault audit failed authentication") from exc
 
-    def _audit_append(self, key: bytearray, generation: str, action: str, details: dict, *, initial: bool = False) -> None:
+    def _audit_append(self, key: bytearray, generation: str, action: str, details: dict, *, initial: bool = False) -> list[dict]:
         records = [] if initial else self._audit_load(key, generation)
         if len(records) >= MAX_AUDIT_RECORDS:
             raise UGCAPError("vault audit capacity reached; explicit migration is required")
@@ -464,6 +464,7 @@ class UGCAPVault:
         if not initial and sum(item.stat().st_size for item in self._audit_paths()) + len(envelope) > MAX_AUDIT_BYTES:
             raise UGCAPError("vault audit exceeded its total byte budget")
         self._write_exclusive(path, envelope)
+        return [*records, row]
 
     def initialize(self, passcode: str | bytes | bytearray) -> dict:
         with self._operation():
@@ -631,7 +632,7 @@ class UGCAPVault:
                 changed = any(report["changes"][name] for name in ("added", "missing", "modified"))
                 report["status"] = "incomplete" if not report["coverage"]["complete"] else "drift" if changed else "verified"
                 try:
-                    self._audit_append(key, header["generation"], "verified", {"report_id": report["report_id"],
+                    audit_records = self._audit_append(key, header["generation"], "verified", {"report_id": report["report_id"],
                                        "status": report["status"], "diff_blake3": self._hash(_canonical(report["changes"]))})
                     report["audit"] = {"recorded": True, "rollback_proof": False}
                 except (OSError, UGCAPError) as exc:
@@ -643,6 +644,16 @@ class UGCAPVault:
                 if report["status"] == "verified":
                     manifest = {path: {"blake3": row["blake3"], "size": row["size"]} for path, row in files.items()}
                     report["source_manifest_digest"] = self._hash(_canonical(manifest))
+                    # Public, bounded hashes only. No file paths, source, vault
+                    # passcodes or hardware material crosses the witness wire.
+                    report["witness_checkpoint"] = {
+                        "vault_id": header["generation"],
+                        "baseline_id": report["source_manifest_digest"],
+                        "chain_length": len(audit_records),
+                        "chain_hash": audit_records[-1]["digest"],
+                        "anchors": [{"length": row["sequence"] + 1, "hash": row["digest"]}
+                                    for row in audit_records[-128:]],
+                    }
                     report["verified_files"] = {path: row["blake3"] for path, row in files.items()}
                     report["verification_receipt"] = {
                         "generation": header["generation"], "report_id": report["report_id"],

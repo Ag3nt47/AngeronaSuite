@@ -1,3 +1,9 @@
+import base64
+import hashlib
+from dataclasses import replace
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from angerona.core.approval_identity import ApprovalIdentityVerifier, PrincipalCredential, SignedPrincipalProof
 import pytest
 import threading
 
@@ -7,6 +13,16 @@ from angerona.core.response_broker import (
 from angerona.core.safe_response_session import (
     ReadOnlyQuery, ResponseSessionSpec, SafeResponseSessionManager,
 )
+
+
+def _private(alias):
+    return Ed25519PrivateKey.from_private_bytes(hashlib.sha256(("inert-test:" + alias).encode()).digest())
+
+
+def _proof(broker, digest, alias):
+    record = broker._identity_verifier.credentials[alias]
+    unsigned = SignedPrincipalProof.unsigned(record, digest, 100, 1000, "1" * 32)
+    return replace(unsigned, signature=base64.urlsafe_b64encode(_private(alias).sign(unsigned.signing_bytes())).decode().rstrip("="))
 
 
 def _query(calls):
@@ -21,8 +37,14 @@ def _query(calls):
     )
 
 
-def _broker(calls):
-    broker = ResponseBroker(b"k" * 32, clock=lambda: 110)
+def _broker(tmp_path, calls):
+    records = []
+    for alias in ("analyst-001", "analyst-002", "analyst-003"):
+        public = _private(alias).public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        records.append(PrincipalCredential(alias, "fixture-issuer", alias, public))
+    broker = ResponseBroker(b"k" * 32, clock=lambda: 110,
+        identity_verifier=ApprovalIdentityVerifier(records, clock=lambda: 110),
+        state_path=tmp_path / "broker" / "state.json")
 
     def validate(arguments):
         if set(arguments) != {"reason"}:
@@ -32,6 +54,7 @@ def _broker(calls):
         "endpoint.isolate", "high", "Isolate endpoint",
         "Restore prior network policy", validate,
         lambda arguments: calls.append(arguments) or {"isolated": True},
+        verify_outcome=lambda arguments, result: arguments in calls and result.get("isolated") is True,
     ))
     return broker
 
@@ -45,8 +68,8 @@ def _spec(*, response=(), expires=200):
 
 def test_read_only_session_is_approved_expiring_idempotent_and_persistent(tmp_path):
     calls = []
-    broker = _broker([])
-    path = tmp_path / "sessions.json"
+    broker = _broker(tmp_path, [])
+    path = tmp_path / "sessions" / "sessions.json"
     manager = SafeResponseSessionManager(
         path, b"s" * 32, broker, (_query(calls),), clock=lambda: 110,
     )
@@ -54,7 +77,7 @@ def test_read_only_session_is_approved_expiring_idempotent_and_persistent(tmp_pa
     manager.create(spec)
     with pytest.raises(PermissionError, match="1 approval"):
         manager.open(spec.session_id)
-    manager.approve(spec.session_id, "analyst-002")
+    manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
     manager.open(spec.session_id)
     result, event = manager.query(
         spec.session_id, "request-001", "process.snapshot", {"limit": 5},
@@ -68,6 +91,7 @@ def test_read_only_session_is_approved_expiring_idempotent_and_persistent(tmp_pa
     assert manager.verify_receipt(receipt)
     assert manager.transcript(spec.session_id) == (event,)
 
+    manager.close()
     restored = SafeResponseSessionManager(
         path, b"s" * 32, broker, (_query([]),), clock=lambda: 110,
     )
@@ -76,24 +100,24 @@ def test_read_only_session_is_approved_expiring_idempotent_and_persistent(tmp_pa
 
 def test_change_session_needs_session_and_operation_approvals(tmp_path):
     query_calls, response_calls = [], []
-    broker = _broker(response_calls)
+    broker = _broker(tmp_path, response_calls)
     manager = SafeResponseSessionManager(
-        tmp_path / "sessions.json", b"s" * 32, broker,
+        tmp_path / "sessions" / "sessions.json", b"s" * 32, broker,
         (_query(query_calls),), clock=lambda: 110,
     )
     spec = _spec(response=("endpoint.isolate",))
     manager.create(spec)
-    manager.approve(spec.session_id, "analyst-002")
+    manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
     with pytest.raises(PermissionError, match="2 approval"):
         manager.open(spec.session_id)
-    manager.approve(spec.session_id, "analyst-003")
+    manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-003"))
     manager.open(spec.session_id)
     proposal = ResponseProposal(
         "proposal-001", "endpoint.isolate", {"reason": "confirmed"},
         "device-001", "analyst-001", 100, 200, False,
     )
-    broker.approve(proposal, "analyst-002")
-    broker.approve(proposal, "analyst-003")
+    broker.approve(proposal, _proof(broker, proposal.digest, "analyst-002"))
+    broker.approve(proposal, _proof(broker, proposal.digest, "analyst-003"))
     receipt, event = manager.execute_response(spec.session_id, proposal)
     assert receipt.executed and event.host_changed
     assert response_calls == [{"reason": "confirmed"}]
@@ -101,8 +125,8 @@ def test_change_session_needs_session_and_operation_approvals(tmp_path):
 
 def test_session_rejects_shell_fields_scope_escape_expiry_and_tampering(tmp_path):
     calls = []
-    broker = _broker([])
-    path = tmp_path / "sessions.json"
+    broker = _broker(tmp_path, [])
+    path = tmp_path / "sessions" / "sessions.json"
     manager = SafeResponseSessionManager(
         path, b"s" * 32, broker, (_query(calls),), clock=lambda: 110,
     )
@@ -113,7 +137,7 @@ def test_session_rejects_shell_fields_scope_escape_expiry_and_tampering(tmp_path
         )
     spec = _spec()
     manager.create(spec)
-    manager.approve(spec.session_id, "analyst-002")
+    manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
     manager.open(spec.session_id)
     with pytest.raises(ValueError, match="executable"):
         manager.query(
@@ -126,18 +150,19 @@ def test_session_rejects_shell_fields_scope_escape_expiry_and_tampering(tmp_path
         )
     raw = path.read_text(encoding="utf-8")
     path.write_text(raw.replace('"active"', '"closed"'), encoding="utf-8")
+    manager.close()
     with pytest.raises(ValueError, match="authentication"):
         SafeResponseSessionManager(
             path, b"s" * 32, broker, (_query([]),), clock=lambda: 110,
         )
 
-    expiring_path = tmp_path / "expiring.json"
+    expiring_path = tmp_path / "expiring" / "sessions.json"
     expired = SafeResponseSessionManager(
         expiring_path, b"s" * 32, broker, (_query([]),), clock=lambda: 201,
     )
     expired.create(_spec(expires=200))
     with pytest.raises(PermissionError, match="approvable"):
-        expired.approve("session-001", "analyst-002")
+        expired.approve("session-001", _proof(broker, _spec(expires=200).digest, "analyst-002"))
 
 
 def test_slow_query_does_not_hold_session_lock_and_closed_result_is_discarded(tmp_path):
@@ -147,20 +172,20 @@ def test_slow_query_does_not_hold_session_lock_and_closed_result_is_discarded(tm
 
     def handler(_target, _parameters):
         started.set()
-        assert release.wait(2)
+        assert release.wait(10)
         return {"items": []}
 
     query = ReadOnlyQuery(
         "process.snapshot", "Bounded process query",
         lambda _parameters: None, handler,
     )
-    broker = _broker([])
+    broker = _broker(tmp_path, [])
     manager = SafeResponseSessionManager(
-        tmp_path / "sessions.json", b"s" * 32, broker, (query,),
+        tmp_path / "sessions" / "sessions.json", b"s" * 32, broker, (query,),
         clock=lambda: 110,
     )
     manager.create(_spec())
-    manager.approve("session-001", "analyst-002")
+    manager.approve("session-001", _proof(broker, _spec().digest, "analyst-002"))
     manager.open("session-001")
 
     def run_query():
@@ -173,12 +198,96 @@ def test_slow_query_does_not_hold_session_lock_and_closed_result_is_discarded(tm
 
     thread = threading.Thread(target=run_query)
     thread.start()
-    assert started.wait(1)
-    receipt = manager.close_session("session-001")
-    assert receipt.state == "closed"
-    release.set()
-    thread.join(2)
+    try:
+        assert started.wait(5)
+        receipt = manager.close_session("session-001")
+        assert receipt.state == "closed"
+    finally:
+        release.set()
+        thread.join(5)
     assert not thread.is_alive()
     assert len(outcomes) == 1
     assert isinstance(outcomes[0], PermissionError)
     assert manager.transcript("session-001")[0].outcome == "discarded-closed"
+
+
+def test_active_session_rechecks_credential_revocation_before_query(tmp_path):
+    calls = []
+    broker = _broker(tmp_path, [])
+    manager = SafeResponseSessionManager(tmp_path / "sessions" / "state.json", b"s" * 32,
+                                        broker, (_query(calls),), clock=lambda: 110)
+    spec = _spec()
+    manager.create(spec)
+    manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
+    manager.open(spec.session_id)
+    broker.revoke_credential("analyst-002")
+    with pytest.raises(PermissionError, match="approvals"):
+        manager.query(spec.session_id, "request-001", "process.snapshot", {"limit": 1})
+    assert calls == []
+    manager.revoke_approvals(spec.session_id)
+    manager.close()
+    restored = SafeResponseSessionManager(tmp_path / "sessions" / "state.json", b"s" * 32,
+                                         broker, (_query(calls),), clock=lambda: 110)
+    with pytest.raises(PermissionError, match="not active"):
+        restored.query(spec.session_id, "request-002", "process.snapshot", {"limit": 1})
+    restored.close()
+    broker.close()
+
+
+def test_legacy_saved_label_approvals_remain_history_without_execution_authority(tmp_path):
+    import json
+    import hmac
+    from dataclasses import asdict
+    from angerona.core.safe_response_session import _canonical
+    from angerona.core.engine_transport import private_directory
+    calls = []
+    broker = _broker(tmp_path, [])
+    path = private_directory(tmp_path / "sessions") / "legacy.json"
+    spec = _spec()
+    records = {spec.session_id: dict(spec=asdict(spec), state="active",
+                approvals=["analyst-002", "analyst-003"], transcript=[])}
+    path.write_text(json.dumps(dict(schema_version=1, records=records,
+        hmac=hmac.new(b"s" * 32, _canonical(records), hashlib.sha256).hexdigest())), encoding="utf-8")
+    manager = SafeResponseSessionManager(path, b"s" * 32, broker, (_query(calls),), clock=lambda: 110)
+    assert manager._records[spec.session_id]["legacy_approval_labels"] == ["analyst-002", "analyst-003"]
+    with pytest.raises(PermissionError, match="authenticated approvals"):
+        manager.query(spec.session_id, "request-001", "process.snapshot", {"limit": 1})
+    assert calls == []
+    manager.close()
+    broker.close()
+
+
+def test_revoked_credential_discards_inflight_query_result(tmp_path):
+    entered, release = threading.Event(), threading.Event()
+    broker = _broker(tmp_path, [])
+    def handler(_target, _parameters):
+        entered.set()
+        if not release.wait(10):
+            raise TimeoutError("inert test barrier")
+        return {"private_result": "must not be released"}
+    query = ReadOnlyQuery("process.snapshot", "Read bounded process metadata", lambda _args: None, handler)
+    manager = SafeResponseSessionManager(tmp_path / "sessions" / "state.json", b"s" * 32,
+                                         broker, (query,), clock=lambda: 110)
+    spec = _spec()
+    manager.create(spec)
+    manager.approve(spec.session_id, _proof(broker, spec.digest, "analyst-002"))
+    manager.open(spec.session_id)
+    outcomes = []
+    def run_query():
+        try:
+            outcomes.append(manager.query(spec.session_id, "request-001", "process.snapshot", {}))
+        except BaseException as error:
+            outcomes.append(error)
+    worker = threading.Thread(target=run_query)
+    worker.start()
+    try:
+        assert entered.wait(5)
+        broker.revoke_credential("analyst-002")
+    finally:
+        release.set()
+        worker.join(10)
+    assert not worker.is_alive()
+    assert len(outcomes) == 1 and isinstance(outcomes[0], PermissionError)
+    assert manager.transcript(spec.session_id)[0].outcome == "discarded-approval-revoked"
+    manager.close()
+    broker.close()

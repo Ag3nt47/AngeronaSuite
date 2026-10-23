@@ -150,6 +150,9 @@ class EngineConsole(QMainWindow):
         self.response = QLabel()
         self.response.setWordWrap(True)
         layout.addWidget(self.response)
+        self.operator_auth = QLabel("Independent operator approvals: unavailable until an authenticated protected backend is provisioned.")
+        self.operator_auth.setWordWrap(True)
+        layout.addWidget(self.operator_auth)
         controls = QHBoxLayout()
         self.connect_button = QPushButton("Start / reconnect")
         self.connect_button.clicked.connect(lambda: self._submit("connect"))
@@ -273,6 +276,7 @@ class EngineConsole(QMainWindow):
             self.banner.setText("Protection status unknown — " + frame["error"])
             self.banner.setStyleSheet("color: #d97d22; font-weight: 600")
             self._set_controls(False)
+            self.operator_auth.setText("Independent operator approvals: status unknown while the engine is disconnected.")
             return
         status = frame["status"]
         self.banner.setText(f"Engine: {status['state']} · {status['mode']} · {status['enabled_count']} enabled modules · "
@@ -292,6 +296,10 @@ class EngineConsole(QMainWindow):
         self.response.setText("Automatic defense: " + str(response.get("state", "unknown")) +
                               " — " + str(response.get("reason", "")) +
                               ". Ollama is optional.")
+        authentication = status.get("operator_auth", {})
+        self.operator_auth.setText("Independent operator approvals: " + str(authentication.get("state", "unavailable")) +
+            " — " + str(authentication.get("reason", "Authenticated operator backend is not provisioned")) +
+            ". Same-user engine connection credentials are not proof of a separate human operator.")
         selected = None
         if self.modules.currentRow() >= 0:
             selected = self.modules.item(self.modules.currentRow(), 0).text()

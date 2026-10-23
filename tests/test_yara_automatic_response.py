@@ -45,6 +45,31 @@ def _setup(tmp_path):
     return bus, detector, scanner, combat
 
 
+def _windows_cache_tokens(monkeypatch, usn):
+    """Exercise Windows cache policy without replacing real descriptors or YARA."""
+    from angerona.modules import yara_scanner
+    from angerona.modules.file_integrity import FileIntegrityModule
+
+    # Keep pathlib's and the rest of the process's actual OS module unchanged.
+    monkeypatch.setattr(yara_scanner, "os", SimpleNamespace(**dict(vars(os), name="nt")))
+    monkeypatch.setattr(FileIntegrityModule, "_handle_change_token", staticmethod(lambda _fd: 123))
+    monkeypatch.setattr(FileIntegrityModule, "_handle_usn", staticmethod(usn))
+
+
+class _CountedNativeScanner:
+    def __init__(self, scanner, after_scan=None):
+        self._scanner = scanner
+        self._after_scan = after_scan
+        self.calls = 0
+
+    def scan(self, content):
+        self.calls += 1
+        result = self._scanner.scan(content)
+        if self._after_scan is not None:
+            self._after_scan()
+        return result
+
+
 @pytest.mark.parametrize("archive", [False, True])
 def test_real_scan_drives_signed_containment_and_undo(tmp_path, monkeypatch, archive):
     bus, detector, scanner, combat = _setup(tmp_path)
@@ -194,8 +219,10 @@ def test_bus_resigning_does_not_forge_native_producer_receipt(tmp_path):
     assert detector.verify_detection_event(real)
 
 
-def test_unchanged_file_avoids_repeat_content_reads_and_rules_invalidate_cache(tmp_path):
+def test_unchanged_file_avoids_repeat_content_reads_and_rules_invalidate_cache(tmp_path, monkeypatch):
     _bus, detector, scanner, _combat = _setup(tmp_path)
+    usn = [101]
+    _windows_cache_tokens(monkeypatch, lambda _fd: usn[0])
     path = tmp_path / "document.txt"
     path.write_bytes(b"ordinary text")
     class Counter:
@@ -211,6 +238,7 @@ def test_unchanged_file_avoids_repeat_content_reads_and_rules_invalidate_cache(t
     assert detector._scan_file(other, path) == "scanned", detector.last_error
     assert other.calls == 1
     path.write_bytes(b"changed text")
+    usn[0] = 102
     assert detector._scan_file(counted, path) == "scanned", detector.last_error
     assert counted.calls == 2
 
@@ -225,6 +253,124 @@ def test_restoring_mtime_cannot_hide_new_content_from_scan_cache(tmp_path):
     os.utime(path, ns=(prior.st_atime_ns, prior.st_mtime_ns))
     assert detector._scan_file(scanner, path) == "scanned", detector.last_error
     assert detector.verify_detection_event(bus.recent(1)[0])
+
+
+def test_advancing_usn_rescans_restored_mtime_with_constant_change_time(tmp_path, monkeypatch):
+    bus, detector, scanner, _combat = _setup(tmp_path)
+    usn = [101]
+    _windows_cache_tokens(monkeypatch, lambda _fd: usn[0])
+    counted = _CountedNativeScanner(scanner)
+    path = tmp_path / "constant-change-time.txt"
+    path.write_bytes(b"x" * len(MARKER))
+    prior = path.stat()
+
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 1 and not bus.recent(10)
+    assert detector._scan_cache
+    path.write_bytes(MARKER)
+    os.utime(path, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+    usn[0] = 102
+
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 2
+    events = bus.recent(10)
+    assert len(events) == 1
+    event = events[0]
+    assert bus.verify(event) and detector.verify_detection_event(event)
+    assert event.details["observed_content_sha256"] == hashlib.sha256(MARKER).hexdigest()
+    assert event.details["rule"] == "EICAR_Test_File"
+    assert event.details["scan_complete"] is True
+    assert event.details["response_authorized"] is False
+
+
+@pytest.mark.parametrize("unavailable", [None, 0, -1, True, "101", 101.0, 1 << 63])
+def test_unavailable_usn_rescans_restored_mtime_without_cache(
+    tmp_path, monkeypatch, unavailable,
+):
+    bus, detector, scanner, _combat = _setup(tmp_path)
+    _windows_cache_tokens(monkeypatch, lambda _fd: unavailable)
+    counted = _CountedNativeScanner(scanner)
+    path = tmp_path / "unavailable-usn.txt"
+    path.write_bytes(b"x" * len(MARKER))
+    prior = path.stat()
+
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 1 and not detector._scan_cache
+    assert not bus.recent(10)
+    path.write_bytes(MARKER)
+    os.utime(path, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 2 and not detector._scan_cache
+    events = bus.recent(10)
+    assert len(events) == 1
+    event = events[0]
+    assert bus.verify(event) and detector.verify_detection_event(event)
+    assert event.details["observed_content_sha256"] == hashlib.sha256(MARKER).hexdigest()
+    assert event.details["rule"] == "EICAR_Test_File"
+    assert event.details["scan_complete"] is True
+    assert event.details["response_authorized"] is False
+
+
+def test_unavailable_usn_removes_a_previous_complete_cache_entry(tmp_path, monkeypatch):
+    bus, detector, scanner, _combat = _setup(tmp_path)
+    usn = [101]
+    _windows_cache_tokens(monkeypatch, lambda _fd: usn[0])
+    counted = _CountedNativeScanner(scanner)
+    path = tmp_path / "lost-usn.txt"
+    path.write_bytes(b"ordinary text")
+
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 1 and detector._scan_cache
+    usn[0] = None
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 2 and not detector._scan_cache
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 3 and not detector._scan_cache
+    assert not bus.recent(10) and not detector._detection_receipts
+
+
+@pytest.mark.parametrize("initial,final", [(101, 102), (101, None), (None, 101)])
+def test_usn_instability_before_cache_reuse_refuses_scan(
+    tmp_path, monkeypatch, initial, final,
+):
+    bus, detector, scanner, _combat = _setup(tmp_path)
+    samples = iter((101, 101, 101, initial, final))
+    _windows_cache_tokens(monkeypatch, lambda _fd: next(samples))
+    counted = _CountedNativeScanner(scanner)
+    path = tmp_path / "unstable-before-scan.txt"
+    path.write_bytes(b"x" * len(MARKER))
+    prior = path.stat()
+    assert detector._scan_file(counted, path) == "scanned", detector.last_error
+    assert counted.calls == 1 and detector._scan_cache
+    path.write_bytes(MARKER)
+    os.utime(path, ns=(prior.st_atime_ns, prior.st_mtime_ns))
+
+    assert detector._scan_file(counted, path) == "failed"
+    assert "changed before" in detector.last_error
+    assert counted.calls == 1
+    assert not bus.recent(10) and not detector._detection_receipts
+    assert not detector._scan_cache
+
+
+@pytest.mark.parametrize(
+    "initial,final", [(101, 102), (101, None), (101, 0), (101, "bad"), (None, 101)],
+)
+def test_usn_instability_during_native_scan_refuses_receipt_and_cache(
+    tmp_path, monkeypatch, initial, final,
+):
+    bus, detector, scanner, _combat = _setup(tmp_path)
+    usn = [initial]
+    _windows_cache_tokens(monkeypatch, lambda _fd: usn[0])
+    counted = _CountedNativeScanner(scanner, lambda: usn.__setitem__(0, final))
+    path = tmp_path / "unstable-during-scan.txt"
+    path.write_bytes(MARKER)
+
+    assert detector._scan_file(counted, path) == "failed"
+    assert "changed during" in detector.last_error
+    assert counted.calls == 1
+    assert not bus.recent(10) and not detector._detection_receipts
+    assert not detector._scan_cache
 
 
 def test_registered_driver_probe_uses_actual_bundled_signature(tmp_path):

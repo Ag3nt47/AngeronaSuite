@@ -24,6 +24,7 @@ import math
 import threading
 import time
 import webbrowser
+from html import escape
 from typing import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -397,12 +398,17 @@ class AttackHeatmapWindow(QDialog):
         self._cov_hdr = QLabel("Coverage…")
         self._cov_hdr.setStyleSheet("color:#e2e8f0; font:9pt 'Segoe UI' bold; padding:4px 2px;")
         lay.addWidget(self._cov_hdr)
-        lay.addWidget(QLabel("Honest Detect / Simulate / Remediate matrix — gaps are shown, not hidden. "
-                             "The Remediate column is cross-checked against the real vetted-action allow-list."))
+        explanation = QLabel(
+            "Declared capabilities stay separate from live readiness: declared → collecting → "
+            "detection-tested → response-verified. Proof expires; stopped/degraded sensors withdraw readiness. "
+            "Practice tests cover inert markers/processes only, not the real exploit or every response action.")
+        explanation.setWordWrap(True)
+        lay.addWidget(explanation)
         self._cov_tbl = QTableWidget()
-        self._cov_tbl.setColumnCount(6)
+        self._cov_tbl.setColumnCount(7)
         self._cov_tbl.setHorizontalHeaderLabels(
-            ["Technique", "Tactic", "Detect", "Simulate", "Remediate", "Status"])
+            ["Technique", "Tactic", "Declared detect", "Declared simulate", "Declared response",
+             "Live readiness", "Dated evidence / gaps"])
         self._cov_tbl.setEditTriggers(QTableWidget.NoEditTriggers)
         self._cov_tbl.setAlternatingRowColors(True)
         self._cov_tbl.verticalHeader().setVisible(False)
@@ -414,45 +420,68 @@ class AttackHeatmapWindow(QDialog):
         return w
 
     def _refresh_coverage(self) -> None:
-        # COVERAGE and the vetted remediation ACTIONS allow-list are static for
-        # the lifetime of the process. Building this table once avoids replacing
-        # 108 QTableWidgetItems on every five-second live-heat refresh.
-        if getattr(self, "_coverage_populated", False):
-            return
         try:
             from angerona.core import attack_coverage as cov
         except Exception:
             return
-        s = cov.summary()
-        self._cov_hdr.setText(
-            f"Coverage: {s['covered']}/{s['techniques']} techniques covered "
-            f"({s['coverage_pct']}%)   ·   Detect {s['detect']}   ·   "
-            f"Simulate {s['simulate']}   ·   Remediate {s['remediate']}")
+        # Only cached immutable evidence and bounded scalar lifecycle fields are
+        # read here. No sensor method, host scan, source read, or receipt check.
+        manager = getattr(self.parent(), "manager", None)
+        snapshot = cov.readiness_snapshot(manager)
+        readiness = {r["tid"]: r for r in snapshot["techniques"]}
+        collecting = sum(bool(r["collecting"]) for r in readiness.values())
+        tested = sum(r["stage"] in {"detection-tested", "response-verified"} for r in readiness.values())
+        responded = sum(r["stage"] == "response-verified" for r in readiness.values())
+        heading = (f"Mapped techniques: {len(cov.COVERAGE)} · Collecting {collecting} · "
+                   f"Detection-tested {tested} · Response-verified {responded} · "
+                   "Dated proof and gaps below; hover for full scope")
+        if not snapshot.get("available"):
+            heading += " · Unavailable: " + str(snapshot.get("reason", "unknown"))
+        if self._cov_hdr.text() != heading:
+            self._cov_hdr.setText(heading)
         valid = cov._valid_action_keys()
         rows = cov.COVERAGE
+        presentations = []
+        colors = {"declared": "#94a3b8", "collecting": "#38bdf8",
+                  "detection-tested": "#fbbf24", "response-verified": "#22c55e"}
+        for t in rows:
+            state = readiness.get(t.tid, {"stage": "declared", "gaps": [
+                str(snapshot.get("reason", "readiness unavailable"))]})
+            evidence = state.get("evidence") or {}
+            proof = (f"{evidence.get('observed_at')} → {evidence.get('expires_at')} · "
+                     f"response expires {evidence.get('response_expires_at')} · "
+                     f"{evidence.get('source_identity')} generation {evidence.get('generation')} · "
+                     f"{evidence.get('scope')} · {evidence.get('outcome')} · "
+                     f"{evidence.get('reason')}") if evidence else "No verified test"
+            gaps = "; ".join(state.get("gaps", ()))
+            details = f"{proof}\n{gaps}" if gaps else proof
+            cells = (f"{t.tid}  {t.name}", t.tactic, ", ".join(t.detect) or "·",
+                     ", ".join(t.simulate) or "·",
+                     ", ".join(k for k in t.remediate if k in valid) or "·",
+                     state["stage"], details)
+            presentations.append((t.tid, cells))
+        fingerprint = tuple(presentations)
+        if fingerprint == getattr(self, "_coverage_presentation", None):
+            return
+        header = self._cov_tbl.horizontalHeader()
+        sort_column, sort_order = header.sortIndicatorSection(), header.sortIndicatorOrder()
         self._cov_tbl.setSortingEnabled(False)
         self._cov_tbl.setRowCount(len(rows))
-        for i, t in enumerate(rows):
-            rem_ok = [k for k in t.remediate if k in valid]
-            covered = bool(t.detect) or bool(rem_ok)
-            cells = [
-                f"{t.tid}  {t.name}", t.tactic,
-                ", ".join(t.detect) or "·",
-                ", ".join(t.simulate) or "·",
-                ", ".join(rem_ok) or "·",
-                "✓ covered" if covered else "✗ GAP",
-            ]
+        for i, (tid, cells) in enumerate(presentations):
             for c, txt in enumerate(cells):
                 it = _SortableItem(txt)
+                it.setToolTip(cells[6])
                 if c == 0:
-                    it.setData(Qt.UserRole, t.tid)
+                    it.setData(Qt.UserRole, tid)
                 if c == 5:
-                    it.setForeground(QColor("#22c55e" if covered else "#ef4444"))
+                    it.setForeground(QColor(colors.get(txt, "#94a3b8")))
                 elif c in (2, 3, 4) and txt == "·":
                     it.setForeground(QColor("#475569"))
                 self._cov_tbl.setItem(i, c, it)
         self._cov_tbl.setSortingEnabled(True)
-        self._coverage_populated = True
+        if sort_column >= 0:
+            self._cov_tbl.sortItems(sort_column, sort_order)
+        self._coverage_presentation = fingerprint
 
     def _on_coverage_double(self, row: int, _column: int) -> None:
         item = self._cov_tbl.item(row, 0)
@@ -552,6 +581,7 @@ class AttackHeatmapWindow(QDialog):
     # ── Refresh ──────────────────────────────────────────────────────────────
     def _refresh(self) -> None:
         tracker = get_tracker()
+        self._refresh_coverage()
         if tracker is None:
             self._stats_lbl.setText("No tracker — start the application first")
             return
@@ -593,7 +623,6 @@ class AttackHeatmapWindow(QDialog):
             f"Hottest: {top_tid} ({top_lbl})  |  Updated: {snap.get('generated', '—')}{actor_sfx}")
 
         self._refresh_top(snap)
-        self._refresh_coverage()
 
     # ── Cell click detail ────────────────────────────────────────────────────
     def _on_cell_clicked(self, tid: str) -> None:
@@ -622,9 +651,17 @@ class AttackHeatmapWindow(QDialog):
                 d = ", ".join(match.detect) or "·"
                 s = ", ".join(match.simulate) or "·"
                 r = ", ".join(k for k in match.remediate if k in valid) or "·"
-                cov_line = (f"<span style='color:#a7f3d0'>Detect:</span> {d} &nbsp; "
-                            f"<span style='color:#93c5fd'>Simulate:</span> {s} &nbsp; "
-                            f"<span style='color:#fca5a5'>Remediate:</span> {r}")
+                cov_line = (f"<span style='color:#a7f3d0'>Declared detect:</span> {d} &nbsp; "
+                            f"<span style='color:#93c5fd'>Declared simulate:</span> {s} &nbsp; "
+                            f"<span style='color:#fca5a5'>Declared response:</span> {r}")
+                readiness = cov.readiness_snapshot(getattr(self.parent(), "manager", None))
+                state = next((v for v in readiness["techniques"] if v["tid"] == match.tid), {})
+                cov_line += ("<br><b>Live readiness:</b> " + escape(state.get("stage", "declared"))
+                             + "<br>" + escape("; ".join(state.get("gaps", ()))))
+                evidence = state.get("evidence")
+                if evidence:
+                    cov_line += ("<br>" + escape(f"{evidence['observed_at']} → {evidence['expires_at']}"
+                                                 f" · {evidence['scope']}"))
         except Exception:
             pass
 
@@ -699,8 +736,8 @@ class AttackHeatmapWindow(QDialog):
             lines.append(f"Posture: {summ.get('techniques_active',0)} active technique(s) across "
                          f"{summ.get('tactics_active',0)} tactic(s). Hottest: {top}.")
         if cov_pct is not None:
-            lines.append(f"Detection coverage sits at {cov_pct}% of the mapped techniques "
-                         "(see the Coverage tab for the exact gaps).")
+            lines.append(f"Fresh, scoped detection tests exist for {cov_pct}% of mapped techniques. "
+                         "Configured declarations do not establish working coverage; see dated proof and gaps.")
         return " ".join(lines)
 
     def _ollama_posture(self, snap: dict) -> str | None:

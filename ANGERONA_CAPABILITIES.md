@@ -1,12 +1,28 @@
 # Angerona Capabilities
 
-Current status: **v1.13.0**. This is a present-tense capability and boundary
+Current development version: **v1.14.0**. This is a present-tense capability and boundary
 summary. Operating detail is in the [Master Manual](Angerona_Master_Manual.docx);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
 
-The newest active-development preview combines
+The v1.14.0 update adds [Live AI Review](docs/live-debug-harness.md), a bounded
+read-only local alert/error stream for authorised AI-assisted debugging,
+SpywareGuard's dedicated top-right window, responsive header controls and
+governed bulk module startup. The [interaction map](analysis/live-debug-2026-10-22/interaction-map.md)
+records shared dependencies, fixes and unresolved observations.
+
+All nine requested upgrades are part of the
+[v1.14 integration and acceptance register](docs/releases/v1.14-security-integration.md).
+Their current implementation includes expiring four-stage readiness, an enrolled
+independent-witness protocol, an isolated diagnostic response service,
+authenticated operator approval contracts, opt-in native identity/browser
+collectors, staged Windows prevention, isolated recovery and exact-payload
+holdout evaluation. Deployment and efficacy remain separate acceptance gates:
+the native process-bound egress adapter, independent authorities and signed
+installed-service deployment are not supplied by passing source tests.
+
+The active-development integrity preview combines
 [UGCAP and the rotating Enclave Mesh](docs/ugcap-enclave-mesh.md): explicit
 offline baseline enrollment, Windows TPM key proof, BLAKE3 source verification,
 reviewed recovery and authenticated local producer/handler traffic. Its own tab
@@ -29,6 +45,13 @@ their own choosing. [Contributing](CONTRIBUTING.md) and
 [Writing modules](docs/writing-modules.md) explain the extension contracts.
 Intentional source changes require a reviewed new UGCAP baseline; an existing
 baseline is never silently replaced or updated to accept drift.
+When an independent witness is required, changed vault/baseline identities also
+need separately reviewed witness enrollment or reconciliation. The **UGCAP >
+Independent Witness** tab uses a private-PKI/mTLS endpoint ending in
+`/v1/ugcap-witness`, an exact TLS certificate pin and authority Ed25519 public
+PEM, with separate host/witness signing roles. The panel deploys no external
+witness; disabling the gate or deleting/resetting its retained state cannot
+establish freshness.
 
 ## Core proposition
 
@@ -81,10 +104,14 @@ The current security model separates four kinds of claims:
 - Contract fields cover implementation version, platform, mode, permissions,
   inputs/outputs, egress, retention, response authority, dependencies,
   conflicts, settings, self-test, restart/loss behavior, and resource budget.
-- The historical 84-capability inventory contained **9 native contracts** and
-  **75 compatibility adapters**; SpywareGuard and UGCAP are subsequent additions.
+- The current inventory contains **13 native declarations** and **73 explicit
+  compatibility adapters**. Process Monitor and Adversary Combat now declare
+  their actual platforms, budgets, inputs, retention and response boundaries.
+  The historical 84-capability inventory had 9 native contracts and 75 adapters;
+  SpywareGuard and UGCAP added capabilities. Declaration completeness creates
+  no new authority or collection, detection or response evidence.
   Compatibility metadata gaps remain visible and lower assurance
-  even though every shipped built-in module now carries the v1.13.0 release
+  even though every shipped built-in module now carries the v1.14.0 release
   implementation label. A shared version does not imply equal platform support,
   evidence completeness, response authority, or independent efficacy.
 - Capability Center and Module Inspector provide search, filter, typed sorting,
@@ -273,6 +300,30 @@ Angerona host
 - Remote-session anti-lockout uses fresh bounded SSH/current-session evidence,
   Windows Terminal Services enumeration, and common third-party remote-control
   agent process checks. Unknown or failed evidence cannot authorize a mutation.
+- **Windows Prevention** adds bounded background inspection and staged plans
+  for the fixed native Logon audit subcategory, with a durable authenticated
+  prior-state journal, exact separately approved restore and independent
+  native readback. The protected backend requires two independently enrolled
+  operator proofs and a single-use capability. The source UI and diagnostic
+  service have no mutation consumer; apply remains held without deployment.
+  HVCI, driver blocking, LSA, App Control and Secure Boot have compatibility and
+  recovery guidance, not deployed writers or inferred runtime enforcement.
+- **Independent Recovery** imports explicitly selected authenticated encrypted
+  archives and enrolled signed backup-copy statements through **Adaptation >
+  Independent Recovery**. Its running guard and an open UGCAP workspace gate
+  are required. Enroll an independently trusted 32-byte Ed25519 public key as
+  base64 and select the local ciphertext and signed statement explicitly.
+  Original 32-byte encryption/audit keys or existing protected OS-store keys
+  unlock a fresh private extraction and byte reread; no replacement keys are
+  generated. The revision is the signer's association with that tested archive,
+  not proof of a Git checkout or full-system reconstruction. Checked age and
+  measured duration remain separate observations.
+- Recovery keeps up to **16** private decrypted test directories for rechecks;
+  capacity requires operator review without automatic deletion. Recurrence is
+  opt-in at **1–720 hours** on the existing guard worker, needs reusable protected
+  keys and resets when the worker/process stops. One-shot unlock material is
+  never retained for scheduling. Local drills do not establish physical
+  separation, host-loss survival or independently administered backup custody.
 
 ## Governed defensive response
 
@@ -294,6 +345,16 @@ Angerona host
   **Process Egress Lease Guard** is observe-only. Socket enforcement requires a
   separately privileged injected connection-admission adapter and a retained
   OS process/executable identity lease.
+- Enrolled issuer/subject/key proofs bind high-impact broker, policy and safe
+  session approvals to the exact operation. Labels alone cannot authorize
+  these operations, aliases count once, and revocation/freshness are checked
+  before execution. Not every existing critical settings or baseline-change
+  call site is connected to these contracts yet.
+- The isolated Windows response-service transport authenticates native pipe
+  users and verifies the actual signed installed service before sending data.
+  Its shipped operations are status, operator-proof checking and candidate
+  inspection. It exposes no host-mutation endpoint; signed frozen deployment,
+  publisher pins and protected enrolled state remain prerequisites.
 
 ## Release and supply-chain trust
 
@@ -431,6 +492,16 @@ not grounds to disable a sensor or conceal a coverage gap.
 
 ## Validation snapshot
 
+- The current v1.14 [issue register](analysis/live-debug-2026-10-22/README.md)
+  records independently retested witness, recovery, readiness, pipe lifecycle
+  and approval boundaries.
+  The earlier broad snapshot (5,991 passed / 5 failed / 32 skipped) ran while
+  source changed; exact-node rechecks passed but do not make it current-tree
+  proof. A 29-phase selfcheck accounted for 86 modules and exited normally before
+  the last small fixes. The first frozen-tree full run was aborted at a legacy
+  recovery fixture that did not terminate. Its corrected-fixture full rerun,
+  refreshed selfcheck and longer observations remain pending in the
+  [validation record](analysis/live-debug-2026-10-22/validation.json).
 - Local complete regression (October 21, commit `306911a`): **5,107 passed / 25 skipped /
   0 failures or errors**, 2,639.339 seconds in JUnit. All 994 Python source
   files matched before and after; original containment and sandbox deadline

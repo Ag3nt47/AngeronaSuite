@@ -136,7 +136,20 @@ def test_c10_threat_dependency_closure_and_unknown_acl_are_fail_closed(
     expected = "angerona.core.threat:is_active_threat"
     engine = SelfIntegrityEngine()
     assert expected in engine._targets
-    assert engine.arm() == engine.expected_count == 19
+    assert {
+        "angerona.core.process_allowlist:_hash_identity",
+        "angerona.core.process_allowlist:_open_hash_stream",
+        "angerona.core.process_allowlist:_open_sealed",
+        "angerona.core.executable_trust:_open_windows_sealed",
+        "angerona.core.executable_trust:_open_posix_sealed",
+        "angerona.core.process_allowlist:_hold_plain_directories",
+        "angerona.core.process_allowlist:_hold_plain_directories.__wrapped__",
+        "angerona.core.process_allowlist:_validate_regular_file",
+        "angerona.core.source_sandbox:_validate_chain",
+        "angerona.core.source_sandbox:_chain",
+        "angerona.core.source_sandbox:_is_link_or_reparse",
+    } <= set(engine._targets)
+    assert engine.arm() == engine.expected_count == 31
     monkeypatch.setattr(threat_module, "is_active_threat", lambda _event: False)
     assert any(expected in finding for finding in engine.check())
 

@@ -1390,7 +1390,7 @@ class DetectionRuntimeModule(BaseModule):
         "an alert-inert, loss-visible shadow lane for DetectionForge validation."
     )
     category = "Detection"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset({"windows", "linux", "macos"})
     capability_mode = "detect"
     maturity_channel = "preview"

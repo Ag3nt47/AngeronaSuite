@@ -27,7 +27,8 @@ import weakref
 from pathlib import Path
 from urllib.parse import quote
 
-from PySide6.QtCore import QEvent, QRegularExpression, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRegularExpression, Qt, QTimer, Signal, Slot
+from shiboken6 import isValid
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QKeySequence,
                            QPainter, QPalette,
                            QRegularExpressionValidator, QShortcut, QTextCursor,
@@ -82,7 +83,7 @@ from angerona.core.capability_assurance import assess_capability, cached_declara
 from angerona.core.eventbus import Severity
 from angerona.core.module_usage import module_counts
 from angerona.core.threat import (
-    active_threat_events, event_disposition, threat_label, threat_label_from_active,
+    active_threat_events, event_disposition, threat_label_from_active,
 )
 from angerona.gui.animations import begin_loading, finish_loading
 from angerona.gui.alert_preview import AlertPreview
@@ -1848,6 +1849,146 @@ class EventsWindow(QDialog):
 
 
 # ── Modules status drill-down window ──────────────────────────────────────────
+def _module_bulk_start_active(manager) -> bool:
+    job = getattr(manager, "_modules_turn_all_on_job", None)
+    return bool(job is not None and job.thread.is_alive())
+
+
+class _ModuleEnableAllJob:
+    """Detached, cancelable startup; Qt only polls the bounded progress tuple."""
+
+    _USER_ONLY_AI = frozenset({
+        "AI Triage (Ollama)", "Speculative Triage Pre-Warm",
+        "Scheduled AI Security Briefing", "Smart Deception",
+    })
+
+    def __init__(self, manager, modules) -> None:
+        self.manager = manager
+        critical = getattr(manager, "_NO_STAGGER", ())
+        self.modules = tuple(sorted(modules, key=lambda item: (item[0] not in critical, item[0])))
+        self.generation = getattr(manager, "_control_generation", None)
+        self.selected = {name: manager.module_usage(name).selected for name, _ in self.modules}
+        self.cancel = threading.Event()
+        self.progress = (0, len(self.modules), "Preparing…", {}, (), False)
+        self.thread = threading.Thread(target=self._run, name="ModulesTurnAllOn", daemon=True)
+
+    def _hold_reason(self, name, module, *, after_save=False) -> str:
+        from angerona.core.chill_mode import CHILL_PAUSED_MODULES, chill_ai_blocked
+
+        manager = self.manager
+        if self.cancel.is_set():
+            return "Canceled; remaining modules were left unchanged."
+        if (getattr(manager, "_shutdown", False)
+                or getattr(manager, "_control_generation", None) != self.generation):
+            return "Module lifecycle changed or the manager is shutting down."
+        if manager.modules.get(name) is not module:
+            return "The registered module changed after this request."
+        if getattr(manager, "ugcap_paused", False):
+            return "UGCAP verification is required before module startup."
+        usage = manager.module_usage(name)
+        if not usage.eligible:
+            return str(usage.reason)
+        expected_selection = True if after_save else self.selected[name]
+        if usage.selected != expected_selection:
+            return "Module selection changed after this request."
+        config = manager.config
+        if (name in CHILL_PAUSED_MODULES
+                and (getattr(module, "_chill_paused", False)
+                     or bool(getattr(config, "runtime_chill_active", getattr(config, "eco_mode", False))))):
+            return "Chill keeps this deep scanner paused; select Full to wake it."
+        if name in self._USER_ONLY_AI and chill_ai_blocked(config):
+            return "Local AI remains off until the operator selects Full."
+        return ""
+
+    def _run(self) -> None:
+        from collections import deque
+
+        counts: dict[str, int] = {}
+        records = deque(maxlen=512)
+        completed = 0
+
+        def publish(message, *, done=False):
+            self.progress = (completed, len(self.modules), message[:300],
+                             dict(counts), tuple(records), done)
+
+        try:
+            for name, module in self.modules:
+                if self.cancel.is_set():
+                    break
+                publish(f"Checking {name}…")
+                outcome, detail = "failed", "Startup did not complete."
+                try:
+                    # Recheck the exact registered object and every policy at
+                    # admission, under the same RLock used by set_enabled().
+                    with self.manager._module_control_lock:
+                        reason = self._hold_reason(name, module)
+                        if reason:
+                            outcome, detail = "held", reason
+                        elif (self.manager.is_enabled(name)
+                              and getattr(module, "status", "") == "running"):
+                            outcome, detail = "already on", "Already running."
+                        else:
+                            admission_reason = ""
+                            lifecycle_serial = getattr(module, "_lifecycle_serial", None)
+
+                            def admit(current):
+                                nonlocal admission_reason
+                                if getattr(module, "_lifecycle_serial", None) != lifecycle_serial:
+                                    admission_reason = "Module lifecycle changed while selection was being saved."
+                                else:
+                                    admission_reason = self._hold_reason(name, module, after_save=True)
+                                return current is module and not admission_reason
+
+                            self.manager.set_enabled(name, True, start_admission=admit)
+                            reason = admission_reason or self._hold_reason(name, module, after_save=True)
+                            if reason:
+                                outcome, detail = "held", reason
+                            else:
+                                status = getattr(module, "status", "unknown")
+                                outcome = ("running" if status == "running" else "pending"
+                                           if status in {"starting", "restarting"} else "failed")
+                                detail = f"Startup requested; current status: {status}."
+                    if outcome in {"running", "pending"} and name not in getattr(self.manager, "_NO_STAGGER", ()):
+                        waiter = getattr(module, "wait_for_first_cycle", None)
+                        if callable(waiter):
+                            from angerona.core.eco_wakeup import EcoWakeupWorker
+
+                            timeout = float(getattr(module, "eco_cycle_timeout",
+                                            EcoWakeupWorker._CYCLE_TIMEOUTS.get(name, 30.0)))
+                            timeout = timeout if 0.1 <= timeout <= 180 else 30.0
+                            deadline = time.monotonic() + timeout
+                            publish(f"Waiting for {name}'s first cycle…")
+                            ready = False
+                            while not self.cancel.is_set() and time.monotonic() < deadline:
+                                if (getattr(self.manager, "_shutdown", False)
+                                        or getattr(self.manager, "_control_generation", None) != self.generation):
+                                    break
+                                status = getattr(module, "status", "")
+                                if status not in {"running", "starting", "restarting"}:
+                                    break
+                                if status != "running":
+                                    self.cancel.wait(0.1)
+                                elif waiter(timeout=min(0.1, max(0, deadline - time.monotonic()))):
+                                    ready = True
+                                    outcome = "running"
+                                    break
+                            if not ready:
+                                outcome = ("pending" if getattr(module, "status", "")
+                                           in {"running", "starting", "restarting"} else "failed")
+                                detail = "First cycle is not confirmed; inspect current health and evidence."
+                        # Adjacent setup work remains staggered off Qt.
+                        self.cancel.wait(0.1)
+                except Exception as exc:
+                    outcome, detail = "failed", f"{type(exc).__name__}: {exc}"
+                completed += 1
+                counts[outcome] = counts.get(outcome, 0) + 1
+                records.append((str(name)[:160], outcome, " ".join(str(detail).split())[:500]))
+                publish(f"Reviewed {name}.")
+        finally:
+            publish("Canceled; remaining modules were left unchanged." if self.cancel.is_set()
+                    else "Finished reviewing all modules.", done=True)
+
+
 class ModulesStatusWindow(QDialog):
     """Searchable Capability Center for every discovered module contract."""
 
@@ -1922,7 +2063,31 @@ class ModulesStatusWindow(QDialog):
         self.table.customContextMenuRequested.connect(self._context_menu)
         root.addWidget(self.table)
 
+        self.bulk_status = QLabel(
+            "Start eligible modules with current settings. Chill, integrity holds and separate consent stay in force."
+        )
+        self.bulk_status.setWordWrap(True)
+        self.bulk_status.setTextFormat(Qt.PlainText)
+        root.addWidget(self.bulk_status)
+        self.bulk_details = QPlainTextEdit()
+        self.bulk_details.setReadOnly(True)
+        self.bulk_details.setMaximumHeight(120)
+        self.bulk_details.hide()
+        root.addWidget(self.bulk_details)
         row = QHBoxLayout()
+        self.turn_all_on_btn = QPushButton("Turn all on")
+        self.turn_all_on_btn.setObjectName("modulesTurnAllOn")
+        self.turn_all_on_btn.setToolTip(
+            "Review every module, including filtered rows, and start those allowed by current policy. "
+            "Items requiring setup or separate consent remain held."
+        )
+        self.turn_all_on_btn.setEnabled(
+            callable(getattr(manager, "module_usage", None))
+            and callable(getattr(manager, "set_enabled", None))
+            and getattr(manager, "_module_control_lock", None) is not None
+        )
+        self.turn_all_on_btn.clicked.connect(self._turn_all_on)
+        row.addWidget(self.turn_all_on_btn)
         refresh = QPushButton("Refresh")
         refresh.clicked.connect(self._refresh)
         close = QPushButton("Close")
@@ -1935,8 +2100,68 @@ class ModulesStatusWindow(QDialog):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
         self._timer.start(1500)
+        self._bulk_job = None
+        self._last_bulk_progress = None
+        self._bulk_timer = QTimer(self)
+        self._bulk_timer.setInterval(100)
+        self._bulk_timer.timeout.connect(self._poll_turn_all_on)
         self._last_snapshot = None
         self._refresh()
+
+    def _turn_all_on(self) -> None:
+        job = getattr(self.manager, "_modules_turn_all_on_job", None)
+        if job is None or not job.thread.is_alive():
+            try:
+                job = _ModuleEnableAllJob(self.manager, tuple(self.manager.modules.items()))
+                self.manager._modules_turn_all_on_job = job
+                job.thread.start()
+            except Exception as exc:
+                self.bulk_status.setText(f"Could not start module review: {type(exc).__name__}: {exc}")
+                return
+        self._bulk_job = job
+        self._last_bulk_progress = None
+        # The detached job holds no QWidget. Destruction/cancel never joins a
+        # config-save or native startup call on the GUI thread.
+        self.destroyed.connect(lambda *_args: job.cancel.set())
+        self.turn_all_on_btn.setEnabled(False)
+        self._bulk_timer.start()
+        self._poll_turn_all_on()
+
+    def _poll_turn_all_on(self) -> None:
+        job = self._bulk_job
+        if job is None:
+            return
+        progress = job.progress
+        if progress is self._last_bulk_progress:
+            return
+        self._last_bulk_progress = progress
+        completed, total, message, counts, records, done = progress
+        status = "Canceled" if job.cancel.is_set() else "Complete" if done else "Working"
+        totals = " · ".join(f"{counts.get(kind, 0)} {kind}" for kind in
+                            ("running", "already on", "held", "pending", "failed"))
+        self.bulk_status.setText(f"{status}: {completed}/{total} · {totals}\n{message}")
+        self.bulk_details.setPlainText("\n".join(f"{name}: {outcome} — {detail}"
+                                               for name, outcome, detail in records))
+        self.bulk_details.setVisible(bool(records))
+        if completed > len(records):
+            self.bulk_details.appendPlainText(f"Earlier {completed - len(records)} results omitted from this bounded view.")
+        if done:
+            self._bulk_timer.stop()
+            self.turn_all_on_btn.setEnabled(True)
+            self._refresh()
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        self._timer.stop()
+        self._bulk_timer.stop()
+        if self._bulk_job is not None:
+            self._bulk_job.cancel.set()
+        super().closeEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().showEvent(event)
+        self._timer.start(1500)
+        if self._bulk_job is not None and self._bulk_job.thread.is_alive():
+            self._bulk_timer.start()
 
     def _refresh(self) -> None:
         mods = sorted(self.manager.modules.items())
@@ -2078,10 +2303,15 @@ class ModulesStatusWindow(QDialog):
         restart_action = menu.addAction("Restart module")
         enabled = self.manager.is_enabled(module.name)
         toggle_action = menu.addAction("Disable" if enabled else "Enable")
+        bulk_active = _module_bulk_start_active(self.manager)
+        toggle_action.setEnabled(not bulk_active)
+        restart_action.setEnabled(not bulk_active)
         menu.addSeparator()
         copy_action = menu.addAction("Copy capability ID")
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
-        if selected == inspect_action:
+        if selected in {toggle_action, restart_action} and _module_bulk_start_active(self.manager):
+            self.bulk_status.setText("Bulk module startup is active. Close its window to cancel remaining starts, or wait for it to finish.")
+        elif selected == inspect_action:
             self._open_module(item.row(), 0)
         elif selected == assurance_action:
             self._open_module(item.row(), 3)
@@ -2188,11 +2418,10 @@ class ThreatWindow(QDialog):
             self.setStyleSheet(parent.styleSheet())
         root = QVBoxLayout(self)
 
-        label, color = threat_label(self.bus.recent(200))
         root.addWidget(FuturisticHeader(
-            f"Threat level: {label}",
+            "Threat evidence review",
             "Only the HIGH / CRITICAL events driving posture are shown; select one to inspect or stage a fix",
-            color,
+            "#94a3b8",
             self,
         ))
 
@@ -2242,18 +2471,49 @@ class ThreatWindow(QDialog):
         self._action_done.connect(self._on_action_done)
         self._selected_mitre = ""
         self._busy = False
+        self._threat_snapshot = []
+        self._threat_reader = AsyncSnapshot(
+            self, self._prepare_threat_snapshot, self._apply_threat_snapshot,
+            name="ThreatWindowReader", status=self._threat_read_status,
+        )
         self._refresh()
 
     # ── data ─────────────────────────────────────────────────────────────────
     def _threats(self) -> list:
-        evs = active_threat_events(self.bus.recent(300))
-        evs.sort(key=lambda e: getattr(e, "ts", 0), reverse=True)
-        return evs
+        return list(self._threat_snapshot)
+
+    def _prepare_threat_snapshot(self):
+        bus = self.bus
+
+        def read():
+            events = active_threat_events(bus.recent(300))
+            events.sort(key=lambda event: getattr(event, "ts", 0), reverse=True)
+            return events, threat_label_from_active(events)
+
+        return read
+
+    def _threat_read_status(self, state) -> None:
+        if self._busy:
+            return
+        if state == "updating":
+            self.status_lbl.setText("Reviewing current threat evidence…")
+        elif state == "unavailable":
+            self.status_lbl.setText("Threat evidence is unavailable; previous results are retained.")
+
+    def _apply_threat_snapshot(self, snapshot) -> None:
+        if not self._accept_async_results:
+            return
+        events, (label, _color) = snapshot
+        self._threat_snapshot = events
+        self._selected_mitre = ""
+        self.apply_btn.setEnabled(False)
+        _fill_event_table(self.table, events)
+        self.status_lbl.setText(f"Threat level: {label} · {len(events)} active findings in this snapshot.")
+        if not events:
+            self.detail.setPlainText("No active HIGH/CRITICAL findings in the completed snapshot.")
 
     def _refresh(self) -> None:
-        _fill_event_table(self.table, self._threats())
-        if self.table.rowCount() == 0:
-            self.detail.setPlainText("No active HIGH/CRITICAL threats. You're clear.")
+        self._threat_reader.request(invalidate=True)
 
     def _posture(self):
         """Find the Posture Hardening module by capability (name-independent)."""
@@ -2330,6 +2590,7 @@ class ThreatWindow(QDialog):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        self._threat_reader.close()
         super().closeEvent(event)
 
     def _attempt_fix(self) -> None:
@@ -3279,7 +3540,9 @@ class ModulesPanel(QFrame):
             return
         requested = item.checkState() == Qt.Checked
         try:
-            if requested != bool(self.manager.is_enabled(name)):
+            if _module_bulk_start_active(self.manager):
+                self.table.setToolTip("Bulk module startup is active; wait for it to finish or close its window to cancel remaining starts.")
+            elif requested != bool(self.manager.is_enabled(name)):
                 self.manager.set_enabled(name, requested)
         except Exception as exc:
             self.table.setToolTip(f"Module toggle failed ({type(exc).__name__}); state refreshed.")
@@ -4087,10 +4350,16 @@ class ModuleInspector(QDialog):
         return self.manager.is_enabled(self.module.name)
 
     def _toggle(self) -> None:
+        if _module_bulk_start_active(self.manager):
+            self.test_lbl.setText("Bulk module startup is active. Wait for it to finish or close its window to cancel remaining starts.")
+            return
         self.manager.set_enabled(self.module.name, not self._enabled())
         self._refresh()
 
     def _restart(self) -> None:
+        if _module_bulk_start_active(self.manager):
+            self.test_lbl.setText("Bulk module startup is active. Restart is held until the current startup finishes.")
+            return
         self.module.stop()
         self.module.start()
         self._refresh()
@@ -4523,6 +4792,16 @@ def _event_evidence_context(event) -> dict[str, str]:
     paths = _event_artifact_paths(event)
     location = "  ·  ".join(paths)
     location_status = str(details.get("location_status") or "unavailable")
+    # A runtime-code finding can identify its source origin without supplying a
+    # malicious file. Display that provenance without making the source file a
+    # quarantine/allow target in _event_artifact_paths.
+    source_file = details.get("source_file")
+    if not location and isinstance(source_file, str) and source_file.strip():
+        origin = source_file.strip()[:4096]
+        source_line = details.get("source_line")
+        if type(source_line) is int and 0 < source_line <= 0x7FFFFFFF:
+            origin += f":{source_line}"
+        location = f"Code origin: {origin} (source metadata; not a file-tamper finding)"
     if not location:
         location = f"Unavailable ({location_status.replace('_', ' ')})"
 
@@ -7947,11 +8226,19 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self._accept_async_results = False
+        reader = getattr(self, "_update_check_reader", None)
+        if reader is not None:
+            reader.close()
+        self._detach_update_controller()
         self._detach_combat_parent_signal()
         super().done(result)
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        reader = getattr(self, "_update_check_reader", None)
+        if reader is not None:
+            reader.close()
+        self._detach_update_controller()
         self._detach_combat_parent_signal()
         super().closeEvent(event)
 
@@ -8066,7 +8353,8 @@ class SettingsDialog(QDialog):
                      "_alert_analysis_cloud_chk",
                      "_aria_push_chk", "_aria_inbox_chk", "_aria_egress_chk",
                      "_aria_awareness_chk", "_aria_always_listen_chk",
-                     "_aria_hands_chk", "_teams_chk", "_teams_skip_chk", "_mob_chk"):
+                     "_aria_hands_chk", "_teams_chk", "_teams_skip_chk", "_mob_chk",
+                     "_github_daily_check"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
@@ -8415,13 +8703,35 @@ class SettingsDialog(QDialog):
         lay.addWidget(self._section("Updates"))
         repo_row = QHBoxLayout()
         repo_row.addWidget(QLabel("GitHub repo:"))
-        self._github_repo = QLineEdit(self._cfg.github_repo)
+        self._github_repo = QLineEdit("Ag3nt47/AngeronaSuite")
+        self._github_repo.setReadOnly(True)
         repo_row.addWidget(self._github_repo)
         self._btn_check = QPushButton("Check now")
         self._btn_check.clicked.connect(self._on_check_updates)
         repo_row.addWidget(self._btn_check)
         lay.addLayout(repo_row)
-
+        self._github_daily_check = QCheckBox("Check GitHub for updates once a day while Angerona is open (network)")
+        self._github_daily_check.setChecked(bool(getattr(self._cfg, "github_daily_check_enabled", False)))
+        self._github_daily_check.setToolTip("Optional public GitHub metadata only. Prompts before downloading an isolated source candidate and preserves user edits. Static checks do not establish runtime health; activation remains held for a separate reviewed phase.")
+        lay.addWidget(self._github_daily_check)
+        self._update_status = QLabel("Update status has not been checked. Downloads preserve the running installation.")
+        self._update_status.setTextFormat(Qt.PlainText)
+        self._update_status.setWordWrap(True)
+        lay.addWidget(self._update_status)
+        from angerona.gui.async_snapshot import AsyncSnapshot
+        self._shared_update_controller = None
+        self._update_check_reader = None
+        from angerona.gui.update_controller import UpdateController
+        if isinstance(self._check_updates, UpdateController):
+            self._shared_update_controller = self._check_updates
+            self._shared_update_controller.report_ready.connect(self._apply_update_check)
+            self._shared_update_controller.status_changed.connect(self._shared_update_status)
+            self._shared_update_controller.check_busy_changed.connect(self._shared_update_busy)
+            self._github_daily_check.toggled.connect(self._on_daily_update_staged)
+        else:
+            self._update_check_reader = AsyncSnapshot(
+                self, self._prepare_update_check, self._apply_update_check,
+                name="Settings GitHub Update Check", status=self._update_check_status)
         lay.addStretch()
         return w
 
@@ -9011,6 +9321,61 @@ class SettingsDialog(QDialog):
         bb_note.setWordWrap(True); bb_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(bb_note)
 
+        lay.addWidget(self._section("Identity and browser sensor inputs"))
+        self._identity_session_collection_chk = QCheckBox(
+            "Collect Windows session security events after restart (read-only)"
+        )
+        self._identity_session_collection_chk.setChecked(
+            getattr(self._cfg, "identity_session_collection_enabled", False))
+        self._identity_session_collection_chk.setEnabled(_platform_sys.platform.startswith("win"))
+        lay.addWidget(self._identity_session_collection_chk)
+        self._browser_extension_inventory_chk = QCheckBox(
+            "Inventory current-user Chromium extension manifests after restart"
+        )
+        self._browser_extension_inventory_chk.setChecked(
+            getattr(self._cfg, "browser_extension_inventory_enabled", False))
+        self._browser_extension_inventory_chk.setEnabled(_platform_sys.platform.startswith("win"))
+        lay.addWidget(self._browser_extension_inventory_chk)
+        identity_note = QLabel(
+            "Identity Session Guard must be enabled. Session collection reads bounded Windows "
+            "Security events and reports access or continuity gaps. Extension inventory reads "
+            "manifest IDs, versions and permissions only. It does not read credentials, "
+            "history, cookies or page contents. Unsupported sources remain coverage gaps."
+        )
+        identity_note.setWordWrap(True)
+        lay.addWidget(identity_note)
+
+        lay.addWidget(self._section("Live AI debug and evidence review"))
+        self._live_debug_chk = QCheckBox(
+            "Enable same-user live diagnostic sharing after restart"
+        )
+        self._live_debug_chk.setChecked(getattr(self._cfg, "live_debug_enabled", False))
+        self._live_debug_chk.setEnabled(_platform_sys.platform.startswith("win"))
+        lay.addWidget(self._live_debug_chk)
+        debug_note = QLabel(
+            "Windows: shares redacted alert/error copies over an outbound-only local pipe. "
+            "Black Box's Live AI Review tab and tools/live_debug.py can connect using the "
+            "process ID below. Source launches can also use --live-debug for one session. "
+            "Review labels never approve files or change protection. Free-text redaction "
+            "is best effort; inspect captures before sharing them with an external AI."
+        )
+        debug_note.setWordWrap(True)
+        lay.addWidget(debug_note)
+        self._live_debug_status = QLabel()
+        self._live_debug_status.setTextFormat(Qt.PlainText)
+        self._live_debug_status.setWordWrap(True)
+        lay.addWidget(self._live_debug_status)
+        debug_buttons = QHBoxLayout()
+        debug_refresh = QPushButton("Refresh connection status")
+        debug_refresh.clicked.connect(self._refresh_live_debug_status)
+        debug_copy = QPushButton("Copy AI reader command")
+        debug_copy.clicked.connect(self._copy_live_debug_command)
+        debug_buttons.addWidget(debug_refresh)
+        debug_buttons.addWidget(debug_copy)
+        debug_buttons.addStretch()
+        lay.addLayout(debug_buttons)
+        self._refresh_live_debug_status()
+
         lay.addWidget(self._section("Deception data boundary"))
         self._deception_user_folders_chk = QCheckBox(
             "Place hidden honeytokens in my Desktop/Documents/AppData (advanced opt-in)"
@@ -9059,6 +9424,33 @@ class SettingsDialog(QDialog):
 
         lay.addStretch()
         return w
+
+    def _live_debug_snapshot(self) -> dict:
+        manager = getattr(self.parent(), "manager", None)
+        service = getattr(manager, "live_debug_service", None)
+        return service.status() if service is not None else {}
+
+    def _refresh_live_debug_status(self) -> None:
+        import os
+        status = self._live_debug_snapshot()
+        state = "running" if status.get("running") else "disabled or unavailable"
+        self._live_debug_status.setText(
+            f"This Angerona process: PID {os.getpid()}. Reader: {state}. "
+            f"Queue drops: {status.get('queue_dropped', 0)}. "
+            f"{status.get('error', '')}"
+        )
+
+    def _copy_live_debug_command(self) -> None:
+        import os
+        import sys
+        from angerona.core.data_paths import resource_root
+        quote = lambda value: "'" + str(value).replace("'", "''") + "'"
+        script = resource_root() / "tools" / "live_debug.py"
+        command = f"& {quote(sys.executable)} {quote(script)} --pid {os.getpid()} --follow"
+        birth = self._live_debug_snapshot().get("birth")
+        if type(birth) in (int, float) and birth > 0:
+            command += f" --birth {birth}"
+        QApplication.clipboard().setText(command)
 
     def _alert_retention_controls(self) -> QWidget:
         from angerona.core.alert_retention import RetentionPolicy
@@ -10518,11 +10910,66 @@ class SettingsDialog(QDialog):
             self._autostart_status.setStyleSheet("color: #f59e0b; font-size: 11px;")
 
     def _on_check_updates(self) -> None:
-        if callable(self._check_updates):
+        controller = self._shared_update_controller
+        if controller is not None:
+            controller.check_now()
+        else:
+            self._update_check_reader.request()
+
+    @Slot(bool)
+    def _on_daily_update_staged(self, enabled: bool) -> None:
+        controller = self._shared_update_controller
+        if controller is not None:
+            controller.set_daily_preference(enabled)
+
+    def _detach_update_controller(self) -> None:
+        controller = getattr(self, "_shared_update_controller", None)
+        self._shared_update_controller = None
+        if controller is not None and controller.alive():
+            for signal, receiver in ((controller.report_ready, self._apply_update_check),
+                                     (controller.status_changed, self._shared_update_status),
+                                     (controller.check_busy_changed, self._shared_update_busy)):
+                try:
+                    signal.disconnect(receiver)
+                except (RuntimeError, TypeError):
+                    pass
+            controller.preferences_changed(check_due=False)
+
+    @Slot(str)
+    def _shared_update_status(self, message: str) -> None:
+        if not isValid(self) or not self._accept_async_results:
+            return
+        self._update_status.setText(message[:4096])
+        controller = self._shared_update_controller
+        if controller is not None and controller.alive():
+            self._btn_check.setEnabled(not controller._check.busy)
+
+    @Slot(bool)
+    def _shared_update_busy(self, busy: bool) -> None:
+        if isValid(self) and self._accept_async_results:
+            self._btn_check.setEnabled(not busy)
+
+    def _prepare_update_check(self):
+        check = self._check_updates
+        def read():
             try:
-                self._check_updates()
+                return check() if callable(check) else "Update checker is unavailable."
             except Exception as exc:
-                QMessageBox.warning(self, "Update check failed", str(exc))
+                return f"Update check failed ({type(exc).__name__}); update status is unknown."
+        return read
+
+    @Slot(object)
+    def _apply_update_check(self, report) -> None:
+        if not isValid(self) or not self._accept_async_results:
+            return
+        self._update_status.setText((report.summary() if hasattr(report, "summary") else str(report))[:4096])
+
+    def _update_check_status(self, status: str) -> None:
+        self._btn_check.setEnabled(status != "updating")
+        if status == "updating":
+            self._update_status.setText("Checking canonical GitHub metadata in the background…")
+        elif status == "unavailable":
+            self._update_status.setText("Update check failed; update status is unknown.")
 
     def _mark_api_keys_dirty(self, _text: str = "") -> None:
         self._api_keys_dirty = True
@@ -10703,6 +11150,7 @@ class SettingsDialog(QDialog):
         candidate.ollama_host = self._ollama_host.text().strip()
         candidate.ollama_model = self._ollama_model.text().strip()
         candidate.github_repo = self._github_repo.text().strip()
+        candidate.github_daily_check_enabled = self._github_daily_check.isChecked()
         theme_key = self._theme_combo.currentData() or self._theme_combo.currentText()
         candidate.theme = theme_key or candidate.theme
         scale = self._ui_scale_combo.currentData()
@@ -10759,6 +11207,9 @@ class SettingsDialog(QDialog):
         candidate.autostart_enabled = self._autostart_chk.isChecked()
         candidate.eco_mode = self._eco_chk.isChecked()
         candidate.blackbox_enabled = self._blackbox_chk.isChecked()
+        candidate.live_debug_enabled = self._live_debug_chk.isChecked()
+        candidate.identity_session_collection_enabled = self._identity_session_collection_chk.isChecked()
+        candidate.browser_extension_inventory_enabled = self._browser_extension_inventory_chk.isChecked()
         candidate.alert_retention_enabled = self._alert_retention_chk.isChecked()
         candidate.alert_retention_days = self._alert_retention_days.value()
         candidate.alert_retention_max_mib = self._alert_retention_mib.value()

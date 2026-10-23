@@ -4,17 +4,20 @@
 blackbox_recorder.py  —  Project Angerona "Black Box" out-of-band diagnostic recorder
 =====================================================================================
 
-A COMPLETELY DECOUPLED, STRICTLY READ-ONLY flight recorder for the Angerona
-security suite.  It survives a fatal deadlock of the main suite because it shares
-*nothing* with it: no IPC socket, no EventBus subscription, no shared mutex.  It
-only ever *reads* diagnostic files from disk and queries the OS via ``psutil``.
+A STRICTLY READ-ONLY flight recorder for the Angerona security suite. Its
+independent log and OS readers survive a main-suite deadlock without sharing an
+EventBus subscription, control socket, or mutex. The optional Live AI Review
+pane can also receive a one-way diagnostic stream; losing that connection never
+stops the independent recorder.
 
 Design contract (do not violate)
 --------------------------------
   • READ-ONLY.  Nothing here writes to, signals, or commands the Angerona process.
     The only files this program writes are its own exports under ``archive/`` and
     the diagnostic bundles it produces — never anything Angerona reads.
-  • ZERO-INTERFERENCE.  No IPC (loopback :65432 is never touched).  No EventBus.
+  • ZERO-INTERFERENCE. No control IPC (loopback :65432 is never touched). No
+    EventBus. The optional Live AI Review client only receives an outbound
+    diagnostic pipe; the independent flight recorder never depends on it.
   • LOW OVERHEAD.  Logs, host telemetry and health continue in the background.
     Detailed thread, memory and resource inspectors run only while their tab is
     visible. Log readers consume appended bytes rather than whole files.
@@ -71,7 +74,9 @@ try:
 except Exception:
     _HAS_CHARTS = False
 from PySide6.QtCore import (
+    QCoreApplication,
     QDateTime,
+    QEvent,
     QObject,
     QPointF,
     Qt,
@@ -366,8 +371,12 @@ PLAIN_ENGLISH: List[Tuple[re.Pattern, str]] = [
      "The local database is busy or contended — two things tried to write the flight recorder at once."),
     (re.compile(r"json\.decoder\.JSONDecodeError|Expecting value"),
      "A data file was read while it was half-written. Usually harmless and transient."),
-    (re.compile(r"deadlock|Thread.*blocked|acquire.*Lock|NOT RESPONDING", re.I),
-     "Two parts of the program are waiting on each other, or the UI thread is stuck — a freeze/deadlock."),
+    (re.compile(r"NOT RESPONDING", re.I),
+     "The GUI heartbeat arrived late. A slow call, CPU contention, or system sleep may "
+     "be responsible; the sampled stack does not prove a deadlock."),
+    (re.compile(r"Thread.*blocked|acquire.*Lock|\bdeadlock\b", re.I),
+     "A thread may be waiting for a lock. Compare multiple thread samples to determine "
+     "whether the program is deadlocked."),
     (re.compile(r"QThread|Qt|PySide"),
      "A GUI (Qt/PySide6) error — often a widget touched from a background thread instead of the main thread."),
 ]
@@ -417,7 +426,12 @@ def _is_angerona_core(name: str, cmdline: List[str]) -> bool:
 
 
 def find_angerona_pid() -> Optional[int]:
-    """Read-only discovery of core processes, preferring a venv launcher's child."""
+    """Discover one unambiguous core, excluding its venv launcher parent.
+
+    Memory consumption cannot identify which data profile a core belongs to.
+    Multiple independent cores therefore leave process inspection unavailable;
+    the explicitly PID/birth-bound Live AI Review remains a separate reader.
+    """
     candidates = {}
     try:
         # Command lines and memory counters are expensive on Windows. Query
@@ -438,20 +452,19 @@ def find_angerona_pid() -> Optional[int]:
                     command = [] if name == "angerona.exe" else proc.cmdline()
                 if not _is_angerona_core(name, command):
                     continue
-                memory = info.get("memory_info") or proc.memory_info()
                 parent = info.get("ppid")
                 if parent is None:
                     parent = proc.ppid()
-                candidates[info["pid"]] = (parent, memory.rss if memory else 0)
+                candidates[info["pid"]] = parent
             except (psutil.Error, OSError, TypeError, ValueError, AttributeError):
                 continue
     except (psutil.Error, OSError):
         pass
     # Windows venv launchers repeat the exact command line in a child. Exclude
     # only parents with another matching core child, not unrelated helpers.
-    parents = {parent for parent, _rss in candidates.values() if parent in candidates}
+    parents = {parent for parent in candidates.values() if parent in candidates}
     cores = [pid for pid in candidates if pid not in parents]
-    return max(cores, key=lambda pid: candidates[pid][1]) if cores else None
+    return cores[0] if len(cores) == 1 else None
 
 
 def _finite_number(value) -> Optional[float]:
@@ -584,8 +597,13 @@ class LogTailWorker(QThread):
         (CRASH_LOG, "crash.log (repo)"),
         (DATA_CRASH_LOG, "crash.log (data)"),
         (RUNTIME_ALERTS, "runtime_alerts.log"),
+        (DIAG_DIR / "resilience_scanner_crash.log", "resilience_scanner_crash.log"),
+        (DIAG_DIR / "resilience_watchdog_crash.log", "resilience_watchdog_crash.log"),
+        (DIAG_DIR / "blackbox_startup.log", "blackbox_startup.log"),
+        (DATA_DIR / "blackbox_startup.log", "blackbox_startup.log (fallback)"),
+        (DIAG_DIR / "blackbox_not_responding.log", "blackbox_not_responding.log"),
     )
-    _SNAP_DIRS = (CRASH_SNAP_DIR, DATA_CRASH_SNAP_DIR)
+    _SNAP_DIRS = tuple(dict.fromkeys((CRASH_SNAP_DIR, DATA_CRASH_SNAP_DIR)))
 
     def run(self) -> None:  # noqa: D401 — QThread entry point
         # Prime offsets so we start near the tail of pre-existing (huge) logs.
@@ -666,9 +684,11 @@ class HostTelemetryWorker(QThread):
     def __init__(self) -> None:
         super().__init__()
         self._running = True
+        self._stopped = threading.Event()
 
     def stop(self) -> None:
         self._running = False
+        self._stopped.set()
 
     def run(self) -> None:
         # Prime cpu_percent (first call always returns 0.0).
@@ -676,8 +696,7 @@ class HostTelemetryWorker(QThread):
         last_io = psutil.disk_io_counters()
         last_t = time.time()
         while self._running:
-            time.sleep(HOST_POLL_S)
-            if not self._running:
+            if self._stopped.wait(HOST_POLL_S):
                 break
             try:
                 per_core = psutil.cpu_percent(percpu=True)
@@ -728,7 +747,7 @@ class SuiteHealthWorker(QThread):
                 self.msleep(100)
 
     def _collect(self) -> Dict:
-        info: Dict = {"pid": find_angerona_pid(), "state": "DEAD", "cpu": 0.0,
+        info: Dict = {"pid": find_angerona_pid(), "state": "UNKNOWN", "cpu": 0.0,
                       "rss": 0, "create_time": None}
         if info["pid"]:
             try:
@@ -861,12 +880,11 @@ class SuiteHealthWorker(QThread):
         """Return the newest status file from the configured diagnostic paths."""
         best: Optional[Path] = None
         best_ts = -1.0
-        for p in (STATUS_JSON, DATA_STATUS_JSON):
+        for p in dict.fromkeys((STATUS_JSON, DATA_STATUS_JSON)):
             try:
-                if p.exists():
-                    ts = p.stat().st_mtime
-                    if ts > best_ts:
-                        best_ts, best = ts, p
+                ts = p.stat().st_mtime
+                if ts > best_ts:
+                    best_ts, best = ts, p
             except OSError:
                 continue
         return best
@@ -980,7 +998,7 @@ class ThreadStateWorker(_VisibleInspectorWorker):
         # Fallback: OS thread table for the Angerona PID.
         pid = find_angerona_pid()
         if not pid:
-            return [], "no Angerona PID found"
+            return [], "Angerona PID unavailable or ambiguous"
         try:
             p = psutil.Process(pid)
             status = p.status()
@@ -1034,7 +1052,7 @@ class MemoryProfilerWorker(_VisibleInspectorWorker):
 
         pid = find_angerona_pid()
         if not pid:
-            return [], "no Angerona PID found"
+            return [], "Angerona PID unavailable or ambiguous"
         try:
             p = psutil.Process(pid)
             agg: Dict[str, List[int]] = {}
@@ -2442,11 +2460,17 @@ class FirewallTab(QWidget):
 #  Main window
 # ─────────────────────────────────────────────────────────────────────────────
 class BlackBoxWindow(QMainWindow):
+    close_completed = Signal()
     def __init__(self) -> None:
         super().__init__()
+        self._closing = False
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(make_icon())
         self.resize(1180, 820)
+        self._shutdown_threads = None
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.setInterval(50)
+        self._shutdown_timer.timeout.connect(self._finish_close)
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -2488,6 +2512,9 @@ class BlackBoxWindow(QMainWindow):
         self.tabs.addTab(self.tab_config,   "6 · Config Drift")
         self.tabs.addTab(self.tab_soar,     "7 · SOAR Events")
         self.tabs.addTab(self.tab_firewall, "8 · Firewall Rules")
+        from angerona.gui.live_debug_panel import LiveDebugPanel
+        self.tab_live_debug = LiveDebugPanel(self)
+        self.tabs.addTab(self.tab_live_debug, "9 · Live AI Review")
         outer.addWidget(self.tabs, 1)
 
         # footer actions
@@ -2506,12 +2533,17 @@ class BlackBoxWindow(QMainWindow):
         self.btn_archive.clicked.connect(self.on_archive_clear)
         self.btn_sandbox.clicked.connect(self.on_launch_sandbox)
 
-        self._start_workers()
-        self.tabs.currentChanged.connect(self._sync_inspectors)
-        self._sync_inspectors()
+        try:
+            self._start_workers()
+            self.tabs.currentChanged.connect(self._sync_inspectors)
+            self._sync_inspectors()
+        except BaseException:
+            # A partial start must not drop a running QThread's Python owner.
+            self.stop_workers(timeout_ms=None)
+            raise
 
     def _sync_inspectors(self, *_args) -> None:
-        visible = self.isVisible() and not self.isMinimized()
+        visible = not self._closing and self.isVisible() and not self.isMinimized()
         for worker_name, tab_name in (("w_thread", "tab_threads"),
                                      ("w_mem", "tab_mem"),
                                      ("w_config", "tab_config")):
@@ -2556,14 +2588,77 @@ class BlackBoxWindow(QMainWindow):
                   self.w_thread, self.w_mem, self.w_config):
             w.start()
 
-    def stop_workers(self) -> None:
-        for w in (self.w_log, self.w_host, self.w_health,
-                  self.w_thread, self.w_mem, self.w_config):
-            try:
-                w.stop()
-                w.wait(2000)
-            except Exception:
-                pass
+    def stop_workers(self, timeout_ms: int | None = 2000) -> bool:
+        """Stop every owner first, then join against one shared deadline.
+
+        A zero timeout is a nonblocking progress check for normal window close.
+        The entry point uses None after its event loop exits: native reads cannot
+        be safely preempted, and their QThread wrappers must remain owned until
+        completion. No worker is terminated or discarded on a timeout.
+        """
+        if self._shutdown_threads is None:
+            self._closing = True
+            threads = []
+            for name in ("w_log", "w_host", "w_health", "w_thread", "w_mem", "w_config"):
+                worker = getattr(self, name, None)
+                if worker is not None:
+                    worker.stop()
+                    threads.append(worker)
+            # Snapshot readers and optional detail/AI workers are owned by child
+            # views, rather than the six always-present recorder attributes.
+            from angerona.gui.async_snapshot import AsyncSnapshot
+            for view in (self, *self.findChildren(QWidget)):
+                reader = getattr(view, "_reader", None)
+                if isinstance(reader, AsyncSnapshot):
+                    reader.close()
+                    if reader.thread is not None:
+                        threads.append(reader.thread)
+                worker = getattr(view, "_worker", None)
+                if isinstance(worker, QThread):
+                    worker.requestInterruption()
+                    threads.append(worker)
+            debug_panel = getattr(self, "tab_live_debug", None)
+            if debug_panel is not None:
+                debug_panel.stop_workers(timeout_ms=0)
+                threads.extend(debug_panel._workers)
+            # Preserve ownership even when a bounded caller needs to return.
+            self._shutdown_threads = tuple(dict.fromkeys(threads))
+            overlay = getattr(self, "_angerona_window_reveal", None)
+            if overlay is not None:
+                overlay.shutdown()
+        deadline = None if timeout_ms is None else time.monotonic() + max(0, timeout_ms) / 1000
+        stopped = True
+        for worker in self._shutdown_threads:
+            remaining = None if deadline is None else max(0, deadline - time.monotonic())
+            if isinstance(worker, QThread):
+                if remaining is None:
+                    worker.wait()
+                else:
+                    worker.wait(max(0, int(remaining * 1000)))
+                stopped = not worker.isRunning() and stopped
+            else:
+                worker.join(remaining)
+                stopped = not worker.is_alive() and stopped
+        return stopped
+
+    def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        if not self.stop_workers(timeout_ms=0):
+            # Keep the native widget/worker owners alive without blocking Qt.
+            self.status_chip.setText("Stopping readers… waiting for active reads")
+            self.centralWidget().setEnabled(False)
+            self._shutdown_timer.start()
+            event.ignore()
+            return
+        self._shutdown_timer.stop()
+        super().closeEvent(event)
+        if event.isAccepted() and not getattr(self, "_close_completed_emitted", False):
+            self._close_completed_emitted = True
+            self.close_completed.emit()
+
+    def _finish_close(self) -> None:
+        if self.stop_workers(timeout_ms=0):
+            self._shutdown_timer.stop()
+            self.close()
 
     # -- footer actions -----------------------------------------------------
     @Slot()
@@ -2634,6 +2729,9 @@ class BlackBoxWindow(QMainWindow):
             z.writestr("soar_events.txt",     self.tab_soar.snapshot_text())
             z.writestr("firewall_rules.txt",  self.tab_firewall.snapshot_text())
             z.writestr("console_tail.txt",    self.tab_logs.snapshot_text())
+            debug_panel = getattr(self, "tab_live_debug", None)
+            if debug_panel is not None:
+                z.writestr("live_ai_review.json", debug_panel.snapshot_text())
             z.writestr("manifest.json", json.dumps(manifest, indent=2))
 
     @Slot()
@@ -2709,6 +2807,7 @@ def main() -> None:
     except Exception:
         _crash_log = DATA_DIR / "blackbox_startup.log"
 
+    app = win = ui_watchdog = beat_timer = None
     try:
         app = QApplication(sys.argv)
         app.setApplicationName(APP_NAME)
@@ -2723,6 +2822,12 @@ def main() -> None:
         )
         ui_watchdog.start()
         win = BlackBoxWindow()
+        # Reverse-close animations hide the window before its final close.
+        # Closing an already hidden widget need not emit lastWindowClosed, so
+        # quitOnLastWindowClosed alone can leave a fully drained recorder alive.
+        # Only the standalone entry point owns exiting this application loop.
+        win.close_completed.connect(lambda: app.exit(0))
+        app.aboutToQuit.connect(lambda: win.stop_workers(timeout_ms=0))
         beat_timer = QTimer()
         beat_timer.timeout.connect(ui_watchdog.beat)
         beat_timer.start(1000)
@@ -2744,8 +2849,6 @@ def main() -> None:
             win.showMinimized()
 
         exit_code = app.exec()
-        ui_watchdog.stop()
-        sys.exit(exit_code)
     except Exception:
         import datetime
         msg = f"[{datetime.datetime.now().isoformat()}] BLACKBOX STARTUP CRASH\n{traceback.format_exc()}\n"
@@ -2755,6 +2858,23 @@ def main() -> None:
         except Exception:
             pass
         raise
+    finally:
+        if beat_timer is not None:
+            beat_timer.stop()
+        if ui_watchdog is not None:
+            ui_watchdog.stop()
+            if ui_watchdog._thread is not None:
+                ui_watchdog._thread.join()
+        if win is not None:
+            # Direct app.quit(), startup exceptions and Ctrl+C can bypass the
+            # normal asynchronous close path. Keep native owners until all
+            # in-flight read-only work completes, then delete only those owners.
+            win.stop_workers(timeout_ms=None)
+            win.deleteLater()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        if app is not None:
+            app.shutdown()
+    raise SystemExit(exit_code)
 
 
 if __name__ == "__main__":

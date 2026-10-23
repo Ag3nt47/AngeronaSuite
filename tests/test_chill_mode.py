@@ -286,6 +286,7 @@ def test_chill_starts_resilience_backends_without_redundant_status_windows(
     import angerona.resilience.shutdown_token as shutdown_token
 
     calls: list[dict] = []
+    monkeypatch.setenv("ANGERONA_RESILIENCE", "1")
     monkeypatch.setattr(app_module, "current_platform", lambda: "windows")
     monkeypatch.setattr(shutdown_token, "clear_standdown", lambda: None)
     monkeypatch.setattr(

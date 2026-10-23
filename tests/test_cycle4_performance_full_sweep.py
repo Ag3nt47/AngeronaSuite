@@ -105,6 +105,7 @@ def test_reverse_feed_reader_preserves_newest_match_across_small_blocks(tmp_path
 
 
 def test_network_detectors_use_shared_connection_snapshot(monkeypatch) -> None:
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11434")
     from angerona.modules import beacon_detector, counter_agentic
 
     rows = [

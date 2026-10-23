@@ -81,6 +81,8 @@ class PrivilegedOpcode(str, Enum):
     BOOT_ATTEST = "boot.attest"
     AUDIT_APPEND = "audit.append"
     DRIVER_QUARANTINE = "driver.quarantine"
+    LOGON_AUDIT_CONFIGURE = "prevention.logon.configure"
+    LOGON_AUDIT_RESTORE = "prevention.logon.restore"
 
 
 class CapabilityError(ValueError):

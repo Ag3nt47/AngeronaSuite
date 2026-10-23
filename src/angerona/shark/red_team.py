@@ -656,7 +656,9 @@ class RedTeamEngine:
 
     # ── playbook ─────────────────────────────────────────────────────────────
     def _run_playbook(self, jitter_range, noise_chance) -> None:
-        from angerona.modules.purple_guard import RedTeamValidationError, RedTeamValidationLease
+        from angerona.modules.purple_guard import (
+            RedTeamProducerLivenessError, RedTeamValidationError, RedTeamValidationLease,
+        )
 
         self._narrate(
             f"\U0001F5E1️ Red Team Attack {self.run_id} starting — an APT-style "
@@ -768,6 +770,11 @@ class RedTeamEngine:
                     except _DrillCancelled:
                         raise
                     except RedTeamValidationError as exc:
+                        failure_detail = (
+                            exc.failure_detail()
+                            if type(exc) is RedTeamProducerLivenessError
+                            else f"{type(exc).__name__}: {exc}"[:500]
+                        )
                         self._narrate(f"⚠ validation authority lost: {exc}")
                         if len(self.steps) == before and self._active_plan_entry:
                             expected = self._active_plan_entry
@@ -776,7 +783,7 @@ class RedTeamEngine:
                                 str(expected.get("technique") or "failed probe"),
                                 "Simulation stopped because detector validation authority was lost.",
                                 time.time(),
-                                detail=f"{type(exc).__name__}: {exc}"[:500],
+                                detail=failure_detail,
                                 ok=False,
                             )
                         raise _DrillAuthorityLost(str(exc)) from exc

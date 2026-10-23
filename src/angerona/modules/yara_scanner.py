@@ -106,7 +106,7 @@ class _TraversalBatch:
 class YaraScannerModule(BaseModule):
     background_pacing_allowed = True
     name = "YARA Scanner"
-    version = "1.13.0"
+    version = "1.14.0"
     description = "Scans Downloads and the isolated drill sandbox with in-process YARA."
     category = "Signatures"
     enabled_by_default = True
@@ -471,6 +471,11 @@ class YaraScannerModule(BaseModule):
                 value.st_mtime_ns, value.st_nlink)
 
     @staticmethod
+    def _cache_usn(value: object) -> int:
+        # Zero represents unavailable proof, never a reusable Windows token.
+        return value if type(value) is int and 0 < value < (1 << 63) else 0
+
+    @staticmethod
     def _event_digest(event: Event) -> str:
         return hashlib.sha256(json.dumps({
             "module": event.module, "message": event.message,
@@ -566,18 +571,36 @@ class YaraScannerModule(BaseModule):
                     "inode": int(opened.st_ino),
                     "birthtime_ns": int(getattr(opened, "st_birthtime_ns", 0) or 0),
                 }
-                # Windows Path.stat and fstat have different ctime semantics
-                # in Python 3.12. Use the native handle ChangeTime, also for
-                # cache admission, so restoring mtime cannot suppress rescans.
+                # Windows ChangeTime can collide during rapid same-size writes.
+                # Require stable descriptor-bound USN proof for metadata-only
+                # cache reuse; unavailable proof still permits a content scan.
                 from angerona.modules.file_integrity import FileIntegrityModule
                 change_token = FileIntegrityModule._handle_change_token(handle.fileno())
-                scan_identity = (id(scanner), *identity, change_token)
-                if self._scan_cache.get(cache_key) == scan_identity:
+                usn = (self._cache_usn(FileIntegrityModule._handle_usn(handle.fileno()))
+                       if os.name == "nt" else 0)
+                cacheable = os.name != "nt" or usn > 0
+                if not cacheable:
+                    self._scan_cache.pop(cache_key, None)
+                confirmed_change = FileIntegrityModule._handle_change_token(handle.fileno())
+                confirmed_usn = (
+                    self._cache_usn(FileIntegrityModule._handle_usn(handle.fileno()))
+                    if os.name == "nt" else 0
+                )
+                if (confirmed_change != change_token or confirmed_usn != usn
+                        or self._file_identity(os.fstat(handle.fileno())) != identity
+                        or self._file_identity(path.stat(follow_symlinks=False)) != identity):
+                    self._scan_cache.pop(cache_key, None)
+                    raise OSError("file changed before signature inspection")
+                scan_identity = (id(scanner), *identity, change_token, usn)
+                if cacheable and self._scan_cache.get(cache_key) == scan_identity:
                     self._scan_cache.move_to_end(cache_key)
                     return "scanned"
-                payload = handle.read(MAX_FILE_BYTES + 1)
+                self._scan_cache.pop(cache_key, None)
+                payload = handle.read(int(opened.st_size) + 1)
                 if len(payload) > MAX_FILE_BYTES:
                     raise OSError("file grew beyond signature budget")
+                if len(payload) != int(opened.st_size):
+                    raise OSError("file changed size during signature inspection")
                 digest = hashlib.sha256(payload).hexdigest()
                 results = scanner.scan(payload)
                 matches = {str(match.identifier): "" for match in results.matching_rules}
@@ -605,8 +628,11 @@ class YaraScannerModule(BaseModule):
                         # signature already proved in the outer bytes or an
                         # earlier member. Never cache this as a complete scan.
                         archive_error = f"{type(exc).__name__}: {exc}"[:500]
+                final_change = FileIntegrityModule._handle_change_token(handle.fileno())
+                final_usn = (self._cache_usn(FileIntegrityModule._handle_usn(handle.fileno()))
+                             if os.name == "nt" else 0)
                 if (self._file_identity(os.fstat(handle.fileno())) != identity
-                        or FileIntegrityModule._handle_change_token(handle.fileno()) != change_token
+                        or final_change != change_token or final_usn != usn
                         or self._file_identity(path.stat(follow_symlinks=False)) != identity):
                     raise OSError("file changed during signature inspection")
             for rule, member in matches.items():
@@ -642,10 +668,11 @@ class YaraScannerModule(BaseModule):
             if archive_error:
                 self.last_error = archive_error
                 return "failed"
-            self._scan_cache[cache_key] = scan_identity
-            self._scan_cache.move_to_end(cache_key)
-            while len(self._scan_cache) > MAX_SCAN_CACHE:
-                self._scan_cache.popitem(last=False)
+            if cacheable:
+                self._scan_cache[cache_key] = scan_identity
+                self._scan_cache.move_to_end(cache_key)
+                while len(self._scan_cache) > MAX_SCAN_CACHE:
+                    self._scan_cache.popitem(last=False)
             return "scanned"
         except Exception as exc:
             self.last_error = str(exc)
@@ -663,11 +690,11 @@ class YaraScannerModule(BaseModule):
             import yara_x
             rule = yara_x.compile(
                 'rule EICAR_Min { strings: $e = "' + marker + '" condition: $e }')
-            # Exercise the same scanner against inert bytes in memory. Writing
-            # an EICAR-named marker to disk made the readiness probe contend with
-            # the host AV and occasionally exceed the harness deadline even
-            # though yara-x completed correctly; production file scanning is
-            # covered independently by the Scan Center regression suite.
+            # Exercise the same scanner against inert bytes in memory, without
+            # creating a disk artifact that other security tools may inspect.
+            # Earlier readiness timeouts were not causally attributed to host
+            # AV or disk I/O. Production file scanning is covered independently
+            # by the Scan Center regression suite.
             scanner = self._make_scanner(rule)
             sample = (marker + " :: Angerona benign self-test").encode("ascii")
             matches = scanner.scan(sample).matching_rules

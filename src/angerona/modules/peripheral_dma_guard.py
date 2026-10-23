@@ -25,7 +25,7 @@ class PeripheralDMAGuardModule(BaseModule):
         "device-install control posture without changing device state."
     )
     category = "Hardware"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (
@@ -61,14 +61,23 @@ class PeripheralDMAGuardModule(BaseModule):
             snapshot, assessment = self.observe_once()
         except Exception as exc:
             self.set_health(10, "peripheral/DMA posture unavailable")
-            state = f"observer-error:{type(exc).__name__}"
+            native_error = getattr(exc, "winerror", None)
+            if native_error is not None and type(native_error) is not int:
+                native_error = -1
+            state = f"observer-error:{type(exc).__name__}:{native_error}"
             if state != self._last_state:
                 self._last_state = state
                 self.emit(
                     "Peripheral and DMA posture could not be observed; controls remain unknown.",
                     Severity.CRITICAL,
-                    schema=POSTURE_SCHEMA,
+                    schema="angerona.peripheral-dma-collection-health.v1",
+                    finding_code="peripheral.collection.failed",
+                    collector_status="unknown",
+                    health_percent=10,
+                    collection_complete=False,
+                    enforcement_performed=False,
                     error_type=type(exc).__name__,
+                    native_error_code=native_error,
                     unknown_state=True,
                     raw_device_identifiers_omitted=True,
                     device_control_performed=False,

@@ -17,10 +17,95 @@ from tools.verify_wheelhouse import verify_wheelhouse
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PIP_BOOTSTRAP_VERSION = "26.2.1"
+PIP_BOOTSTRAP_VERSION = "26.2.2"
 PIP_BOOTSTRAP_SHA256 = (
-    "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e"
+    "fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70"
 )
+CERTIFI_VERSION = "2026.10.19"
+# PyPI's hash for the universal wheel removing compromised emSign ECC G3 trust.
+CERTIFI_SHA256 = "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b"
+CERTIFI_SIZE = 136464
+
+
+@pytest.mark.parametrize("lock", [
+    "requirements-bootstrap-pip.txt",
+    "requirements-release-hashed.txt",
+    "release/locks/posix/linux-x86_64.txt",
+    "release/locks/posix/macos-arm64.txt",
+    "release/locks/posix/source/linux-x86_64.txt",
+    "release/locks/posix/source/macos-arm64.txt",
+    "release/locks/posix/source/macos-x86_64-base.txt",
+])
+def test_pip_vendored_ca_fix_has_one_reviewed_hash_across_release_targets(lock: str) -> None:
+    path = ROOT / lock
+    blocks = [block for block in path.read_text(encoding="utf-8").split("\n\n")
+              if any(line.startswith("pip==") for line in block.splitlines())]
+    assert len(blocks) == 1
+    assert blocks[0].splitlines() == [
+        f"pip=={PIP_BOOTSTRAP_VERSION} \\",
+        f"    --hash=sha256:{PIP_BOOTSTRAP_SHA256}",
+    ]
+    if lock.startswith("release/"):
+        manifest = json.loads(path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+        assert [row for row in manifest["artifacts"] if row["name"] == "pip"] == [{
+            "name": "pip", "version": PIP_BOOTSTRAP_VERSION,
+            "filename": f"pip-{PIP_BOOTSTRAP_VERSION}-py3-none-any.whl",
+            "size": 1819850, "sha256": PIP_BOOTSTRAP_SHA256,
+        }]
+
+
+def test_every_install_input_excludes_the_compromised_certifi_bundle() -> None:
+    import ast
+    import re
+
+    from packaging.requirements import Requirement
+
+    project = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    dependencies = re.search(r"(?ms)^dependencies = (\[.*?^\])", project)
+    assert dependencies is not None
+    inputs = [ast.literal_eval(dependencies.group(1))]
+    for name in (
+        "requirements.txt", "requirements-posix-release.in",
+        "constraints-release.txt", "constraints-posix-release.txt",
+    ):
+        inputs.append([
+            line.split("#", 1)[0].strip()
+            for line in (ROOT / name).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ])
+    for requirements in inputs:
+        certifi = [Requirement(line) for line in requirements
+                   if Requirement(line).name.casefold() == "certifi"]
+        assert len(certifi) == 1
+        assert "2026.6.17" not in certifi[0].specifier
+        assert "2026.10.18" not in certifi[0].specifier
+        assert CERTIFI_VERSION in certifi[0].specifier
+
+
+@pytest.mark.parametrize("lock", [
+    "requirements-release-hashed.txt",
+    "release/locks/posix/linux-x86_64.txt",
+    "release/locks/posix/macos-arm64.txt",
+    "release/locks/posix/source/linux-x86_64.txt",
+    "release/locks/posix/source/macos-arm64.txt",
+    "release/locks/posix/source/macos-x86_64-base.txt",
+])
+def test_certifi_security_fix_binds_the_same_universal_wheel(lock: str) -> None:
+    path = ROOT / lock
+    blocks = [block for block in path.read_text(encoding="utf-8").split("\n\n")
+              if any(line.startswith("certifi==") for line in block.splitlines())]
+    assert len(blocks) == 1
+    assert blocks[0].splitlines() == [
+        f"certifi=={CERTIFI_VERSION} \\", f"    --hash=sha256:{CERTIFI_SHA256}",
+    ]
+    if lock.startswith("release/"):
+        manifest = json.loads(path.with_suffix(".manifest.json").read_text(encoding="utf-8"))
+        certifi = [row for row in manifest["artifacts"] if row["name"] == "certifi"]
+        assert certifi == [{
+            "name": "certifi", "version": CERTIFI_VERSION,
+            "filename": f"certifi-{CERTIFI_VERSION}-py3-none-any.whl",
+            "size": CERTIFI_SIZE, "sha256": CERTIFI_SHA256,
+        }]
 
 
 def _wheel(path: Path, name: str, version: str, payload: bytes = b"wheel") -> Path:

@@ -190,7 +190,7 @@ class NetworkMonitorModule(BaseModule):
     name = "Network Monitor"
     description = "Watches new outbound connections; alerts on suspicious ports and first-seen external hosts."
     category = "Network"
-    version = "1.13.0"
+    version = "1.14.0"
 
     def __init__(self) -> None:
         super().__init__()

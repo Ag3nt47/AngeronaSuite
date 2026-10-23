@@ -298,10 +298,17 @@ def test_footer_reuses_sampler_only_when_its_dashboard_is_visible(
     owner = SimpleNamespace(
         _closed=threading.Event(), _busy=threading.Event(),
         _sample_requested=threading.Event(), _external_view_active=external,
+        _sampler=None, _delivery_timer=SimpleNamespace(isActive=lambda: True),
         isVisible=lambda: card_visible,
         window=lambda: SimpleNamespace(isVisible=lambda: window_visible,
                                        isMinimized=lambda: minimized),
     )
+    from angerona.gui.system_pulse import _SystemPulseSampler
+
+    owner._sampler = _SystemPulseSampler(lambda: {})
+    owner._closed = owner._sampler.closed
+    owner._busy = owner._sampler.busy
+    owner._sample_requested = owner._sampler.requested
     if closed:
         owner._closed.set()
     if busy:

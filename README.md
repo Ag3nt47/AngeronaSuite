@@ -19,9 +19,25 @@ configured policy and works without an AI model.
 ![Python](https://img.shields.io/badge/Python-3.10--3.13-3776AB)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-Current version: **v1.13.0** · [Capabilities](ANGERONA_CAPABILITIES.md) ·
+Current development version: **v1.14.0** · [Capabilities](ANGERONA_CAPABILITIES.md) ·
 [Master Manual](Angerona_Master_Manual.docx) ·
 [Hardware and self-check guide](docs/hardware-and-selfcheck.md) · [Security](SECURITY.md)
+
+**New in v1.14.0: [Live AI Review and debugging](docs/live-debug-harness.md), under active development.**
+Opt in to an outbound diagnostic feed and connect an AI's local command-line
+reader while Angerona runs. Black Box's dedicated review tab combines live
+alerts, errors, explicit coverage gaps and reasoned review notes. Use the
+documented reproduce–patch–test loop for performance, bug and security testing.
+Review notes do not grant response authority or silently dismiss detections.
+See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
+for reproduced defects, measured improvements and unresolved observations.
+
+**Also in the [v1.14 security integration scope](docs/releases/v1.14-security-integration.md):**
+verified protection readiness, a UGCAP witness protocol requiring separate deployment,
+authenticated operator approvals, privilege separation, process egress enforcement,
+identity collectors, guided prevention, independent recovery and release efficacy.
+The register distinguishes implemented and tested components from ongoing work
+and required external deployment. Observation and bug fixes precede publication.
 
 **Newest safeguards, under active development: [UGCAP and the rotating Enclave Mesh](docs/ugcap-enclave-mesh.md).**
 Bring a user-enrolled offline integrity vault, Windows TPM key proof, exact
@@ -35,8 +51,16 @@ impenetrable operating system or hardware enclave.
 A dedicated surveillanceware dashboard brings together host audits, reviewed
 intelligence, single-rule lockdown requests, an inert sandbox, dated news and
 an opt-in Hail Mary emergency beacon. Inspect recent hits and response receipts,
-add research URLs, and tune the policy from its own tab. This is a preview with
+add research URLs, and tune the policy from its top-right black-spy button and
+dedicated window. Header buttons adapt to dashboard width. Dated reference
+briefs keep the banner useful offline; live official reporting remains opt-in.
+The Modules window also offers a governed **Turn all on** action with progress
+and explicit held/skipped results. This is a preview with
 explicit sensor coverage and platform limits.
+
+The minimized globe has separate colour-coded Core, Watchdog, Scanner and
+Black Box moons. Scan Center and detector modules reuse immutable connection
+snapshots to avoid duplicate collection while preserving age and coverage gaps.
 
 [![SpywareGuard application dashboard with synthetic DEMO detections and response records](docs/screenshots/angerona-spywareguard-preview.png)](docs/screenshots/angerona-spywareguard-preview.png)
 
@@ -87,9 +111,9 @@ features depend on platform, permissions, configuration and trusted evidence.
 | macOS 14+ | [Start-Angerona-macOS.command](Start-Angerona-macOS.command) | Observe preview; one launcher detects Intel, Apple Silicon and Rosetta. |
 | Linux x86_64 | [Start-Angerona-Linux.sh](Start-Angerona-Linux.sh) | Observe, with optional explicitly configured eBPF; reviewed native CI target is Ubuntu 24.04. |
 
-Publisher signing and Apple notarization credentials are **not configured** in
-this maintenance environment. Trusted installer publication remains pending;
-the source launchers below are the available development setup path.
+Publisher signing and Apple notarization require independently provisioned
+credentials and trust. The source launchers below provide development setup;
+an unsigned artifact does not establish Windows Protect authority.
 
 For a tagged Windows release with signing provisioned, use its `Angerona-<version>-win64.msix` and adjacent
 SHA-256 file from [Releases](../../releases). Windows must trust the provisioned
@@ -215,8 +239,32 @@ product capability. See [Security](SECURITY.md) and [capability limits](ANGERONA
 
 ## Validation and development
 
+v1.14 brings Live AI Review, SpywareGuard, shared scanning and governed module
+controls into one workbench. Daily GitHub checks default off in Settings and
+Full Setup; background manual checks and three-way source staging preserve
+local customizations and explicit conflicts. The frozen full R10 regression
+passed **7,554 tests with 49 skips and no failures**, with unchanged source,
+runtime and harness, exact native retirement and MainThread-only shutdown.
+
+Later installer and tooltip changes passed **141 focused controls**, followed
+by a **29-phase default selfcheck** accounting for 86 module rows (68 passed,
+18 explicit skips), a separate pipeline and nine verifiers. These are separate
+validation scopes; the isolated selfcheck does not prove live coverage of every
+module. The [139-issue review](analysis/live-debug-2026-10-22/README.md) preserves
+original failed gates, unknown historical causes and deployment gaps. Timings
+are not whole-product benchmarks, and simulated responses are not native
+detection efficacy.
+
+The preceding [e7154f4 checkpoint](https://github.com/Ag3nt47/AngeronaSuite/commit/e7154f45403fab584e4fdbce5f8ffb06d9f37d69)
+passed its own CI 12/Security 3; that historical CI does not validate a later
+publication head. Source staging grants no installation authority: activation
+remains held until independently trusted release, recovery and runtime checks
+are available. Installer preservation has confined acceptance; durable crash
+reconciliation, restart health and signed deployment remain separate gates.
+See the [update guide](docs/github-updates.md) and [validation evidence](analysis/live-debug-2026-10-22/validation.json).
+
 The [SpywareGuard, UGCAP and Enclave Mesh review](analysis/spyware-enclave-2026-10-21/README.md)
-records the new feature checks, adversarial fixes and remaining coverage limits.
+records the preceding feature checks, adversarial fixes and remaining coverage limits.
 The full local regression recorded **5,775 passes and 28 skips**. One Windows
 file-replacement failure passed three exact repeats and all **33 repair tests**
 on follow-up. The offline selfcheck passed **28/28 phases**, accounting for all **86 modules**.
@@ -225,8 +273,10 @@ Users can edit the MIT-licensed source and build their own security features:
 add sensors, improve rules, extend dashboards or contribute a reviewed module.
 Start with [Contributing](CONTRIBUTING.md) and
 [Writing a module](docs/writing-modules.md). UGCAP intentionally detects source
-edits; review an intentional change and explicitly enroll a new baseline rather
-than automatically trusting changed code.
+edits; review an intentional change and explicitly enroll a new baseline. If
+an independent witness is required, changed vault/baseline identities also need
+separately reviewed witness enrollment or reconciliation. Preserve its retained
+head and evidence; disabling it or deleting its state cannot establish trust.
 
 The [Adaptation review](docs/adaptation-button-review.md) and
 [Self-Test / Red Team review](docs/selftest-redteam-button-review.md) trace the
@@ -290,6 +340,26 @@ This is the earlier release record, not the September 23 full-suite result.
 [Historical validation details](analysis/loop/LOOP_LOG.md).
 
 ## What's new
+
+The [v1.14 development update](docs/releases/v1.14.0.md) adds opt-in local
+Live AI Review, a dedicated SpywareGuard window, governed background bulk
+startup, four named function moons and shared connection-scan receipts.
+Expiring readiness, authenticated approvals, witness checkpoints, staged
+Windows prevention, isolated recovery and replay/training separation have
+explicit [implementation and acceptance boundaries](docs/releases/v1.14-security-integration.md).
+Native process-bound egress admission, signed installed privileged-service
+deployment and independently administered witness/backup authorities remain
+acceptance work; the diagnostic service exposes no mutators.
+
+The review also hardens fresh executable hashing, runtime fingerprints,
+persistence classification, witness replay/freshness, recovery bounds and
+approval dispatch. Qt/pipe shutdown retains worker and native-I/O ownership.
+Cached presentation, bounded log turns and scan reuse reduce repeated work;
+component measurements and unresolved startup delays are retained in the
+[issue and interaction maps](analysis/live-debug-2026-10-22/README.md).
+The catalog remains **86 modules**. The [validation record](analysis/live-debug-2026-10-22/validation.json)
+separates full-suite, focused, isolated-selfcheck and live-observation evidence;
+unsupported providers and deployment prerequisites remain explicit.
 
 The [UGCAP / Enclave Mesh preview](docs/ugcap-enclave-mesh.md) adds a dedicated
 integrity challenge and recovery tab, a hardware-bound encrypted baseline on
@@ -562,5 +632,9 @@ The earlier [QEMU Analysis Lab and Ollama startup work](analysis/continuation-20
 and [native Mac/Linux source launchers](docs/NATIVE_INSTALL.md) remain available.
 Unused or unsupported modules stay off and outside the running/enabled count.
 Restart Angerona to load changes. [Review, tests and remaining work](analysis/upgrade-20260923/validation.md).
+
+A later run of the same canonical GUI test after the two-file cadence change
+passed both actual launches, with stable inputs and exact retirement. This is
+scoped observation, not full-regression, failure-capture or R7 cause proof.
 
 <!-- ANGERONA_DOC_STATUS tests=2882 skips=15 modules=86 -->

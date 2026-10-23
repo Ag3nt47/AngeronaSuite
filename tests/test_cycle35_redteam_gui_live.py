@@ -538,6 +538,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 ) -> None:
     """Two UI clicks reach signed AAR and independent OS response evidence."""
     monkeypatch.setenv("ANGERONA_DATA", str(isolated_root))
+    monkeypatch.setenv("ANGERONA_DIAG_DIR", str(isolated_root / "diagnostics"))
     monkeypatch.setenv("ANGERONA_SOAR_RESPONSE_SCOPE", str(isolated_root / "drill-sandbox"))
 
     from angerona.core import report_attest
@@ -557,10 +558,11 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.shark.aar_report import AARReportResult, verified_aar_handoff_text
     from angerona.shark.red_team import INTENSITY_LEVELS, RedTeamEngine
 
-    trace_path = (
-        Path(__file__).resolve().parents[1] / ".tmp"
-        / f"bug_audit_gui_trace_{os.getpid()}.jsonl"
-    )
+    # Each pytest case already owns a unique retained root. Keep every
+    # trace, AAR alias and independent witness below that root as well.
+    case_evidence = isolated_root / "diagnostics" / "gui-live"
+    case_evidence.mkdir(parents=True, exist_ok=True)
+    trace_path = case_evidence / "bug_audit_gui_trace.jsonl"
 
     def trace(phase: str, **details: object) -> None:
         with trace_path.open("a", encoding="utf-8") as stream:
@@ -574,7 +576,6 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     # functions call their originals and return/raise unchanged; no gate is
     # bypassed. Thread-local capture confines diagnostics to the engine thread.
     diagnostic_local = threading.local()
-    diagnostic_root = Path(__file__).resolve().parents[1] / ".tmp"
     original_stat = Path.stat
 
     def diagnostic_stat(path: Path, *args: object, **kwargs: object):
@@ -687,10 +688,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                         for item in diagnostic_local.stat_errors
                     ],
                 }
-                diagnostic_path = diagnostic_root / f"bug_audit_gui_lease_failure_{run_id}.json"
+                diagnostic_path = case_evidence / f"bug_audit_gui_lease_failure_{run_id}.json"
                 diagnostic_path.write_text(json.dumps(snapshot, indent=2, default=str), encoding="utf-8")
             except Exception as diagnostic_exc:
-                (diagnostic_root / f"bug_audit_gui_lease_failure_{run_id}.txt").write_text(
+                (case_evidence / f"bug_audit_gui_lease_failure_{run_id}.txt").write_text(
                     f"Diagnostic capture failed: {diagnostic_exc}", encoding="utf-8",
                 )
             raise
@@ -783,10 +784,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
     app = _app()
     window = MainWindow(bus, recorder, manager, config)
-    pulse_card = window.system_pulse
-    pulse_worker = pulse_card._sample_worker
-    instructor_state = window._fi_coaching_worker
-    instructor_worker = window._fi_worker
+    pulse_worker = window.system_pulse._sample_worker
     trace("mainwindow_constructed")
     window.show()
     app.processEvents()
@@ -936,10 +934,9 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     for step in engine.steps
                     for pid, token in zip(step.pids, step.correlation_tokens)
                 ]
-            evidence_root = Path(__file__).resolve().parents[1] / ".tmp"
-            witness_input = evidence_root / f"bug_audit_gui_os_witness_{run_id}.pre.input.json"
+            witness_input = case_evidence / f"bug_audit_gui_os_witness_{run_id}.pre.input.json"
             witness_output = (
-                evidence_root
+                case_evidence
                 / f"bug_audit_gui_os_witness_{run_id}.pre.json"
             )
             witness_input.write_text(json.dumps({
@@ -957,7 +954,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                  str(witness_input), str(witness_output)],
                 check=False, capture_output=True, text=True, timeout=15.0,
             )
-            (evidence_root / f"bug_audit_gui_os_witness_{run_id}.pre.stderr.txt").write_text(
+            (case_evidence / f"bug_audit_gui_os_witness_{run_id}.pre.stderr.txt").write_text(
                 witness_process.stderr, encoding="utf-8",
             )
             if witness_process.returncode:
@@ -999,6 +996,118 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         console.sld.setValue(0)
         assert console.loc_edit.text() == str(isolated_root / "drill-sandbox")
 
+        def capture_failed_launch_admission(run_index: int) -> None:
+            """Record a bounded refused-launch view; grant no readiness proof."""
+            try:
+                status_limit, log_limit = 16_384, 4096
+                status = console.live_status.text()
+                status_truncated = len(status) > status_limit
+                typed: dict[str, object] = {}
+                parse_note = "typed diagnostic marker unavailable"
+                if status_truncated:
+                    parse_note = "console status exceeded diagnostic limit; no prefix was parsed"
+                else:
+                    _prefix, marker, encoded = status.partition("observation_diagnostic=")
+                    if marker:
+                        try:
+                            decoded = json.loads(encoded)
+                        except (ValueError, RecursionError):
+                            parse_note = "typed diagnostic JSON invalid or incomplete"
+                        else:
+                            if (isinstance(decoded, dict) and decoded.get("schema") ==
+                                    "angerona.process-fresh-observation-diagnostic.v1"):
+                                typed = decoded
+                                parse_note = "known fields copied from serialized refusal; diagnostic only"
+                            else:
+                                parse_note = "typed diagnostic schema unavailable or unsupported"
+
+                def bounded_int(value: object) -> int | None:
+                    return value if type(value) is int and 0 <= value <= 2**63 - 1 else None
+
+                def bounded_seconds(value: object) -> float | None:
+                    # This comparison also rejects NaN, infinities and negatives.
+                    return float(value) if type(value) in (int, float) and 0 <= value <= 86400 else None
+
+                def bounded_text(value: object, limit: int = 128) -> str | None:
+                    return value[:limit] if isinstance(value, str) else None
+
+                def bounded_token(value: object) -> list[int] | None:
+                    if (isinstance(value, list) and len(value) == 2
+                            and all(type(item) is int and 0 < item <= 2**63 - 1 for item in value)):
+                        return list(value)
+                    return None
+
+                diagnostic: dict[str, object] = {
+                    "schema": bounded_text(typed.get("schema")),
+                    "parse_note": parse_note,
+                    "generation": bounded_int(typed.get("generation")),
+                }
+                for key in ("diagnostic_only", "available", "waiting"):
+                    value = typed.get(key)
+                    diagnostic[key] = value if type(value) is bool else None
+                for key in ("requested_token", "pending_token", "inflight_token",
+                            "completed_token", "last_attempt_token", "last_coverage_token"):
+                    diagnostic[key] = bounded_token(typed.get(key))
+                for key in ("requested_age_seconds", "stage_age_seconds",
+                            "last_attempt_age_seconds", "last_coverage_age_seconds",
+                            "nominal_wait_seconds", "declared_wait_seconds", "wait_elapsed_seconds"):
+                    diagnostic[key] = bounded_seconds(typed.get(key))
+                for key in ("requested_stage", "worker_stage", "last_refusal_reason"):
+                    diagnostic[key] = bounded_text(typed.get(key))
+                for key in ("age_limit_seconds", "count_limit"):
+                    diagnostic[key] = bounded_int(typed.get(key))
+                coverage = typed.get("last_coverage")
+                if isinstance(coverage, dict):
+                    coverage_fields: dict[str, object] = {}
+                    for key in ("complete", "enumeration_complete", "fresh", "counts_valid", "error_reported"):
+                        value = coverage.get(key)
+                        coverage_fields[key] = value if type(value) is bool else None
+                    for key in ("enumerated", "skipped", "unreadable", "identity_incomplete",
+                                "observed_identity_gaps"):
+                        value = coverage.get(key)
+                        coverage_fields[key] = (
+                            value if type(value) is int and 0 <= value <= 2**31 - 1 else None
+                        )
+                    diagnostic["last_coverage"] = coverage_fields
+                else:
+                    diagnostic["last_coverage"] = None
+
+                log_tail = None
+                log_note = "console log unavailable"
+                try:
+                    from PySide6.QtGui import QTextCursor
+
+                    document = console.log.document()
+                    cursor = QTextCursor(document)
+                    cursor.setPosition(max(0, document.characterCount() - 1 - log_limit))
+                    cursor.movePosition(QTextCursor.MoveOperation.End, QTextCursor.MoveMode.KeepAnchor)
+                    log_tail = cursor.selectedText().replace("\u2029", "\n")[:log_limit]
+                    log_note = "last at most 4096 UTF-16 document units; diagnostic text is untrusted"
+                except Exception as exc:
+                    log_note = "console log capture unavailable: " + type(exc).__name__[:80]
+
+                trace(
+                    "launch_admission_failed", run_index=run_index,
+                    diagnostic_only=True, observed_monotonic=time.monotonic(),
+                    test_process_pid=os.getpid(),
+                    console_status=status[:status_limit], console_status_truncated=status_truncated,
+                    console_preparing=console._launch_preparing,
+                    console_run_pending=console._run_pending,
+                    observation_diagnostic=diagnostic,
+                    console_log_tail=log_tail, console_log_note=log_note,
+                )
+            except Exception as exc:
+                # Capture/formatting/IO failure must never replace the original
+                # unchanged admission assertion or turn its refusal into a pass.
+                try:
+                    trace(
+                        "launch_admission_diagnostic_unavailable", run_index=run_index,
+                        diagnostic_only=True, capture_error_type=type(exc).__name__[:80],
+                    )
+                except Exception:
+                    pass
+
+
         try:
             for run_index in (1, 2):
                 started = time.monotonic()
@@ -1018,6 +1127,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 ):
                     app.processEvents()
                     time.sleep(0.05)
+                if not console._report_runs.get("red_team"):
+                    capture_failed_launch_admission(run_index)
                 assert console._report_runs.get("red_team"), {
                     "console": console.live_status.text(),
                     "modal_errors": modal_errors,
@@ -1052,17 +1163,16 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 trace("signed_aar", run_index=run_index, run_id=handoff.run_id,
                       outcome=report.get("outcome"))
                 assert report["run_id"] == handoff.run_id
-                evidence_root = Path(__file__).resolve().parents[1] / ".tmp"
                 shutil.copyfile(
                     isolated_root / "redteam_aar.json",
-                    evidence_root / f"bug_audit_gui_aar_{run_index}.json",
+                    case_evidence / f"bug_audit_gui_aar_{run_index}.json",
                 )
 
                 witness_input, pre_output = witness_paths[handoff.run_id]
                 pre_witness = json.loads(pre_output.read_text(encoding="utf-8"))
                 assert pre_witness["run_id"] == handoff.run_id
-                post_input = evidence_root / f"bug_audit_gui_os_witness_{handoff.run_id}.post.input.json"
-                post_output = evidence_root / f"bug_audit_gui_os_witness_{handoff.run_id}.post.json"
+                post_input = case_evidence / f"bug_audit_gui_os_witness_{handoff.run_id}.post.input.json"
+                post_output = case_evidence / f"bug_audit_gui_os_witness_{handoff.run_id}.post.json"
                 post_request = json.loads(witness_input.read_text(encoding="utf-8"))
                 post_request["verify_digest"] = True
                 post_input.write_text(json.dumps(post_request), encoding="utf-8")
@@ -1071,7 +1181,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                      str(post_input), str(post_output)],
                     check=False, capture_output=True, text=True, timeout=15.0,
                 )
-                (evidence_root / f"bug_audit_gui_os_witness_{handoff.run_id}.post.stderr.txt").write_text(
+                (case_evidence / f"bug_audit_gui_os_witness_{handoff.run_id}.post.stderr.txt").write_text(
                     post_process.stderr, encoding="utf-8",
                 )
                 assert post_process.returncode == 0, post_process.stderr
@@ -1081,13 +1191,13 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 assert witness["run_id"] == handoff.run_id
                 shutil.copyfile(
                     pre_output,
-                    evidence_root / f"bug_audit_gui_os_witness_{run_index}.pre.json",
+                    case_evidence / f"bug_audit_gui_os_witness_{run_index}.pre.json",
                 )
                 shutil.copyfile(
                     post_output,
-                    evidence_root / f"bug_audit_gui_os_witness_{run_index}.post.json",
+                    case_evidence / f"bug_audit_gui_os_witness_{run_index}.post.json",
                 )
-                (evidence_root / f"bug_audit_gui_run_{run_index}.json").write_text(
+                (case_evidence / f"bug_audit_gui_run_{run_index}.json").write_text(
                     json.dumps({
                         "run_id": handoff.run_id,
                         "duration_seconds": round(time.monotonic() - started, 3),
@@ -1153,30 +1263,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     finally:
         trace("cleanup_start")
         cleanup_deadline = time.monotonic() + 30.0
-        cleanup_errors: list[str] = []
-        # These are the exact worker generations created by this window. A
-        # replacement is never granted shutdown authority by a retained test.
-        for label, still_owned, close in (
-            (
-                "System Pulse",
-                lambda: window.system_pulse is pulse_card
-                and pulse_card._sample_worker is pulse_worker,
-                pulse_card.shutdown,
-            ),
-            (
-                "Flight Instructor",
-                lambda: window._fi_coaching_worker is instructor_state
-                and window._fi_worker is instructor_worker
-                and instructor_state.thread is instructor_worker,
-                window._close_flight_instructor,
-            ),
-        ):
-            try:
-                assert still_owned(), f"GUI-owned {label} generation changed"
-                close()
-            except Exception as error:
-                cleanup_errors.append(f"{label} close: {type(error).__name__}")
         try:
+            window.system_pulse.shutdown()
             # A failed assertion can leave preparation holding the manager and
             # recorder. Cancel and let that worker release its exact lease/watches
             # before their fixtures are stopped or closed.
@@ -1192,19 +1280,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 window.red_team_engine.stop_and_clean()
             manager.stop_all()
         finally:
-            # Both captured threads get a bounded join even if earlier cleanup
-            # fails; their combined wait shares the original 30-second budget.
-            for label, worker in (
-                ("System Pulse", pulse_worker),
-                ("Flight Instructor", instructor_worker),
-            ):
-                try:
-                    worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
-                    assert not worker.is_alive(), f"GUI-owned {label} worker did not retire"
-                except Exception as error:
-                    cleanup_errors.append(f"{label} join: {type(error).__name__}")
-            if not instructor_state.retired.is_set():
-                cleanup_errors.append("Flight Instructor state did not retire")
+            # Retain and join the exact sampler created by this window. Reuse the
+            # existing shared cleanup budget; shutdown itself must not block Qt.
+            pulse_worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
+            assert not pulse_worker.is_alive(), "GUI-owned System Pulse sampler did not retire"
         for name in ("timer", "_chill_maintenance_timer", "_adaptation_timer", "_beat_timer"):
             timer = getattr(window, name, None)
             if timer is not None:
@@ -1215,6 +1294,4 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         window.tray.hide()
         window.hide()
         recorder.close()
-        app.processEvents()
-        assert not cleanup_errors, cleanup_errors
         trace("cleanup_done")

@@ -63,6 +63,7 @@ class AngeronaApp:
         qt: QApplication,
         *,
         force_chill: bool = False,
+        live_debug: bool = False,
         high_water_provider: IndependentHighWater | None = None,
         startup_endpoint: str | None = None,
     ) -> None:
@@ -99,6 +100,8 @@ class AngeronaApp:
         self.storage = FlightRecorder(self.config.db_path)
         self.bus = EventBus()
         self.bus.arm(self.storage.authority)
+
+        self.live_debug_service = None
 
         # Optional, offline normal-process learning. The EventBus callback only
         # performs a bounded put_nowait; signature verification, executable
@@ -206,6 +209,7 @@ class AngeronaApp:
             recorder=self.storage,
             high_water_provider=high_water_provider,
         )
+        self.manager.live_debug_service = self.live_debug_service
         # SentinelLens is an additive, local-only read model. Its EventBus
         # subscriber performs only a bounded put_nowait; deterministic parsing,
         # graph construction, and anomaly scoring run on the owned worker.
@@ -298,6 +302,100 @@ class AngeronaApp:
         # Settings consumes only this bounded, privacy-safe status provider; it
         # never receives fleet service keys or endpoint private-key material.
         self.window.enterprise_runtime_provider = self.enterprise_runtime_snapshot
+        orb = getattr(self.window, "_holographic_orb", None)
+        if orb is not None:
+            orb.set_service_status_source(self._orb_cached_service_statuses)
+        # Open sharing only after all mandatory construction has succeeded. A
+        # failed constructor must not leave a live endpoint with no App owner.
+        self._start_live_debug(live_debug)
+
+    def _orb_cached_service_statuses(self) -> dict:
+        """Expose existing manager/supervisor fields without host I/O or locks.
+
+        Supervisor states have no observation timestamp. The presentation must
+        retain unknown age and may never treat this copy as fresh attestation.
+        """
+        unknown = {
+            "state": "unknown", "age_seconds": None,
+            "reason": "No running resilience supervisor supplies cached status.",
+            "scope": "Cached supervisor state only; current process liveness and detector coverage are unverified.",
+        }
+        result = {name: dict(unknown) for name in ("core", "watchdog", "scanner", "blackbox")}
+        manager = getattr(self, "manager", None)
+        if getattr(manager, "_shutdown", False) is True:
+            state, reason = "stopped", "The module manager has requested shutdown."
+        elif getattr(manager, "ugcap_paused", False) is True:
+            state, reason = "held", "UGCAP verification holds ordinary managed workers."
+        elif getattr(manager, "_runtime_active", False) is True:
+            state, reason = "running", "The module manager's runtime is active."
+        else:
+            state, reason = "unknown", "Managed runtime startup has not been confirmed."
+        result["core"] = {
+            "state": state, "reason": reason, "age_seconds": None,
+            "scope": "In-process manager state; individual detector health and scan coverage are not assessed.",
+        }
+        resilience = getattr(self, "_resilience", None)
+        if resilience is None or getattr(resilience, "status", None) != "running":
+            return result
+        components = getattr(getattr(resilience, "_sup", None), "components", None)
+        if not isinstance(components, dict):
+            return result
+        try:
+            # Fixed-name lookups avoid concurrent dictionary iteration and do
+            # not call a process probe, heartbeat reader or persisted status.
+            for name in ("watchdog", "scanner", "blackbox"):
+                component = components.get(name)
+                if component is None:
+                    continue
+                if name == "blackbox" and getattr(self.config, "blackbox_enabled", True) is not True:
+                    result[name]["reason"] = "Black Box is disabled in settings; process liveness is unverified."
+                    continue
+                cached = getattr(component, "last_state", "unknown")
+                cached = cached if isinstance(cached, str) else "unknown"
+                if (getattr(component, "safe_mode", False) is True
+                        or getattr(component, "state_fault", False) is True):
+                    state, reason = "degraded", "Supervisor recovery is held in safe mode or has a state fault."
+                elif cached in {"alive", "dead", "suspended", "stopped"}:
+                    state, reason = cached, f"The supervisor's last cached state was {cached}."
+                elif cached.startswith("unauthenticated_") or cached == "legacy_unverified":
+                    state, reason = "degraded", "The supervisor could not authenticate component status."
+                else:
+                    state, reason = "unknown", "The supervisor has no recognized cached observation."
+                result[name] = dict(unknown, state=state, reason=reason)
+            if (resilience is not getattr(self, "_resilience", None)
+                    or getattr(resilience, "status", None) != "running"):
+                raise RuntimeError("resilience owner changed")
+        except (AttributeError, RuntimeError):
+            for name in ("watchdog", "scanner", "blackbox"):
+                result[name] = dict(unknown)
+        return result
+
+    def _start_live_debug(self, requested: bool = False) -> None:
+        """Start the optional, outbound diagnostic copy after construction."""
+        try:
+            from angerona.core.live_debug import LiveDebugService
+
+            self.live_debug_service = LiveDebugService(
+                self.bus, self.config.data_dir,
+                enabled=(requested or getattr(self.config, "live_debug_enabled", False)),
+            )
+            started = self.live_debug_service.start()
+            self.manager.live_debug_service = self.live_debug_service
+            status = self.live_debug_service.status()
+            if status.get("enabled") and not started:
+                self._record_startup_degradation(
+                    "Live debug harness", "live diagnostic sharing is unavailable",
+                    RuntimeError(status.get("error", "debug service did not start")),
+                )
+        except Exception as exc:
+            if self.live_debug_service is not None:
+                try:
+                    self.live_debug_service.stop(timeout=1.0)
+                except Exception:
+                    pass
+            self._record_startup_degradation(
+                "Live debug harness", "live diagnostic sharing is unavailable", exc,
+            )
 
     def _record_startup_degradation(
         self,
@@ -482,21 +580,6 @@ class AngeronaApp:
                         "to launch it.")
                     return
 
-            # Single-instance guard: skip if a recorder is already running.
-            if not force:
-                try:
-                    import psutil
-                    me = os.getpid()
-                    for p in psutil.process_iter(["pid", "cmdline"]):
-                        if p.info["pid"] == me:
-                            continue
-                        cmdline = " ".join(p.info.get("cmdline") or []).lower()
-                        if ("blackbox_recorder" in cmdline
-                                or "angeronablackbox" in cmdline):
-                            return   # already up — leave it
-                except Exception:
-                    pass
-
             # Prefer a windowless interpreter so no console flashes.
             creationflags = 0
             if sys.platform.startswith("win"):
@@ -510,6 +593,12 @@ class AngeronaApp:
                     if pyw.exists():
                         exe = str(pyw)
                 command = [exe, str(bb), "--show"]
+
+            if not force:
+                from angerona.resilience.supervisor import cached_cmdline_probe
+                expected = command[:1] if frozen else command[:2]
+                if cached_cmdline_probe(expected_argv=expected)():
+                    return
 
             # Capture output so a crash-on-startup is recoverable.
             try:
@@ -1120,6 +1209,12 @@ class AngeronaApp:
             self._admin_audit = None
         self._endpoint_identity = None
         self.manager.stop_all()
+        debug_service = getattr(self, "live_debug_service", None)
+        if debug_service is not None:
+            try:
+                debug_service.stop(timeout=2.0)
+            except Exception:
+                pass
         alert_worker = getattr(self, "alert_retention_worker", None)
         if alert_worker is not None:
             try:

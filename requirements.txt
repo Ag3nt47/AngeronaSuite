@@ -15,6 +15,7 @@ cryptography>=50.0.0                         # AES-GCM/HKDF; includes 2026 oracl
 
 # ── AI triage ────────────────────────────────────────────────────────────────
 requests>=2.31
+certifi>=2026.10.19                # excludes compromised emSign root bundle
 urllib3>=2.8.0                     # fixed HTTP parsing dependency floor
 
 # ── Optional cloud escalation (only used if you supply keys) ──────────────────

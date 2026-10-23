@@ -402,7 +402,11 @@ def test_spawn_environment_excludes_credentials_and_python_path(monkeypatch):
 
 
 @pytest.fixture
-def inert_control():
+def inert_control(monkeypatch):
+    from angerona.core import approval_identity
+    monkeypatch.setattr(approval_identity, "current_os_identity", lambda: SimpleNamespace(
+        issuer="inert-test", subject="inert-test",
+    ))
     control = EngineControl(threading.Event())
     control.attach(Manager(), EventBus(), SimpleNamespace(eco_mode=False), None)
     yield control

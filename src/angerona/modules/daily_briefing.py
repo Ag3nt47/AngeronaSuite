@@ -149,7 +149,7 @@ class DailyBriefingModule(BaseModule):
     category = "Reporting"
     adaptive_throttle_allowed = True
     adaptive_throttle_max = 4.0
-    version = "1.13.0"
+    version = "1.14.0"
 
     def __init__(self) -> None:
         super().__init__()

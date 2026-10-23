@@ -14,6 +14,8 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
+from angerona.core.approval_identity import ApprovalIdentityVerifier
+
 MAX_ROLES = 128
 MAX_PRINCIPALS = 5000
 MAX_BINDINGS = 5000
@@ -35,8 +37,12 @@ class Principal:
     expires_at: float = 0
 
     def __post_init__(self) -> None:
-        if not _IDENTIFIER.fullmatch(self.principal_id):
+        if type(self.principal_id) is not str or not _IDENTIFIER.fullmatch(self.principal_id):
             raise ValueError("invalid principal ID")
+        if type(self.kind) is not PrincipalKind:
+            raise ValueError("principal kind must use its typed enum")
+        if type(self.enabled) is not bool:
+            raise ValueError("principal enabled must be a boolean")
         if (
             isinstance(self.expires_at, bool)
             or not isinstance(self.expires_at, (int, float))
@@ -276,6 +282,8 @@ class AuthorizationPolicy:
         *,
         duty_constraints: Sequence[frozenset[str]] = DEFAULT_DUTY_CONSTRAINTS,
         audit_sink: Callable[[AuthorizationDecision], Any] | None = None,
+        identity_verifier: ApprovalIdentityVerifier | None = None,
+        credential_bindings: Mapping[str, str] | None = None,
     ) -> None:
         if len(audit_key) < 32:
             raise ValueError("audit key must be at least 32 bytes")
@@ -298,6 +306,14 @@ class AuthorizationPolicy:
         )
         self._key = bytes(audit_key)
         self._audit_sink = audit_sink
+        if identity_verifier is not None and not isinstance(identity_verifier, ApprovalIdentityVerifier):
+            raise TypeError("Identity verifier must be provisioned by trusted policy composition")
+        self._identity_verifier = identity_verifier
+        self.credential_bindings = MappingProxyType(dict(credential_bindings or {}))
+        for alias, credential_id in self.credential_bindings.items():
+            if (alias not in self.principals or identity_verifier is None
+                    or credential_id not in identity_verifier.credentials):
+                raise ValueError("Policy credential binding is not provisioned")
         self._receipt_lock = threading.RLock()
         self._receipts: OrderedDict[str, tuple[str, AuthorizationDecision]] = OrderedDict()
         if len(self.principals) != len(principals) or len(self.roles) != len(roles):
@@ -314,7 +330,14 @@ class AuthorizationPolicy:
                 raise ValueError("invalid separation-of-duty constraint")
         for index, first in enumerate(self.bindings):
             for second in self.bindings[index + 1:]:
-                if first.principal_id != second.principal_id:
+                same_identity = first.principal_id == second.principal_id
+                if not same_identity and identity_verifier is not None:
+                    first_record = identity_verifier.credentials.get(self.credential_bindings.get(first.principal_id))
+                    second_record = identity_verifier.credentials.get(self.credential_bindings.get(second.principal_id))
+                    same_identity = (first_record is not None and second_record is not None
+                        and (first_record.principal_id == second_record.principal_id
+                             or first_record.key_fingerprint == second_record.key_fingerprint))
+                if not same_identity:
                     continue
                 pair = frozenset((first.role_id, second.role_id))
                 if (
@@ -339,7 +362,29 @@ class AuthorizationPolicy:
                 sorted(rule) for rule in self.duty_constraints
                 if rule.issubset(self.roles)
             ],
+            "credential_bindings": {alias: asdict(identity_verifier.credentials[credential_id])
+                                    for alias, credential_id in self.credential_bindings.items()}
+                                    if identity_verifier is not None else {},
         })).hexdigest()
+
+    def authentication_digest(self, request: AuthorizationRequest) -> str:
+        """Exact request and policy context signed by an enrolled operator."""
+        return hashlib.sha256(_canonical({"request": asdict(request), "policy_hash": self.policy_hash})).hexdigest()
+
+    def decide_authenticated(self, request: AuthorizationRequest, proof, *, now=None) -> AuthorizationDecision:
+        """Authenticated command-dispatch seam; request cannot supply a registry.
+
+        ``decide`` remains a policy evaluator for existing authenticated fleet
+        adapters and dry-run inspection. Its receipt alone is not proof of an
+        operator login; command dispatch must enter here with a fresh proof.
+        """
+        if self._identity_verifier is None or request.principal_id not in self.credential_bindings:
+            raise PermissionError("Authenticated operator binding unavailable; labels are advisory")
+        principal = self._identity_verifier.verify(proof, self.authentication_digest(request), now=now)
+        expected = self._identity_verifier.credentials[self.credential_bindings[request.principal_id]]
+        if principal.principal_id != expected.principal_id:
+            raise PermissionError("Authenticated operator does not match the requested principal")
+        return self.decide(request, now=now)
 
     def decide(
         self, request: AuthorizationRequest, *, now: float | None = None

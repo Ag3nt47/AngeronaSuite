@@ -12,10 +12,33 @@ def _row(**values):
             "create_time": 1234.5, **values}
 
 
-def test_private_legacy_rows_cannot_poison_cached_evidence(monkeypatch):
+def _install_rows(monkeypatch, rows, *, after=None, iterator=None):
+    """Supply fresh-object reads independently of the PID-only iterator."""
     import psutil
+    by_pid = {row["pid"]: row for row in rows}
+    reads, enumerations = [], []
 
-    monkeypatch.setattr(psutil, "process_iter", lambda _attrs: [SimpleNamespace(info=_row())])
+    class Process:
+        def __init__(self, pid):
+            self.pid = pid
+
+        def as_dict(self, *, attrs, ad_value):
+            reads.append(tuple(attrs))
+            source = after if after is not None and len(attrs) == 3 else by_pid
+            return {field: source[self.pid].get(field) for field in attrs}
+
+    def process_iter():
+        enumerations.append(True)
+        return iterator() if iterator is not None else iter(SimpleNamespace(pid=row["pid"]) for row in rows)
+
+    monkeypatch.setattr(psutil, "process_iter", process_iter)
+    monkeypatch.setattr(psutil, "Process", Process)
+    monkeypatch.setattr(psutil, "_ppid_map", lambda: {row["pid"]: row["ppid"] for row in rows}, raising=False)
+    return reads, enumerations
+
+
+def test_private_legacy_rows_cannot_poison_cached_evidence(monkeypatch):
+    _install_rows(monkeypatch, [_row()])
     sensors.process_snapshot(max_age=0)
     first = sensors.list_processes(max_age=60)
     first[0]["pid"] = 999
@@ -28,13 +51,11 @@ def test_private_legacy_rows_cannot_poison_cached_evidence(monkeypatch):
 
 
 def test_partial_enumeration_keeps_visible_evidence_and_loss(monkeypatch):
-    import psutil
-
-    def rows(_attrs):
-        yield SimpleNamespace(info=_row())
+    def rows():
+        yield SimpleNamespace(pid=123)
         raise PermissionError("fixture denied remaining processes")
 
-    monkeypatch.setattr(psutil, "process_iter", rows)
+    _install_rows(monkeypatch, [_row()], iterator=rows)
     receipt = sensors.process_snapshot(max_age=0)
     assert len(receipt.processes) == 1
     assert receipt.enumerated == 1
@@ -43,11 +64,9 @@ def test_partial_enumeration_keeps_visible_evidence_and_loss(monkeypatch):
 
 
 def test_missing_cmdline_and_invalid_birth_are_unknown_not_empty_success(monkeypatch):
-    import psutil
-
-    monkeypatch.setattr(psutil, "process_iter", lambda _attrs: [
-        SimpleNamespace(info=_row(cmdline=None, create_time=float("nan"))),
-        SimpleNamespace(info=_row(pid=456, cmdline=[object()])),
+    _install_rows(monkeypatch, [
+        _row(cmdline=None, create_time=float("nan")),
+        _row(pid=456, cmdline=[object()]),
     ])
     receipt = sensors.process_snapshot(max_age=0)
     assert receipt.enumeration_complete and not receipt.complete
@@ -56,12 +75,8 @@ def test_missing_cmdline_and_invalid_birth_are_unknown_not_empty_success(monkeyp
     assert all(item["cmdline"] is None for item in receipt.processes)
 
 
-def test_psutil_cached_process_with_reused_pid_cannot_mix_generations(monkeypatch):
-    import psutil
-
-    monkeypatch.setattr(psutil, "process_iter", lambda _attrs: [SimpleNamespace(
-        info=_row(create_time=100.0), is_running=lambda: False,
-    )])
+def test_fresh_process_birth_change_cannot_mix_generations(monkeypatch):
+    _install_rows(monkeypatch, [_row(create_time=100.0)], after={123: _row(create_time=200.0)})
     receipt = sensors.process_snapshot(max_age=0)
     assert receipt.processes == ()
     assert receipt.enumerated == 1 and receipt.skipped == 1
@@ -69,19 +84,15 @@ def test_psutil_cached_process_with_reused_pid_cannot_mix_generations(monkeypatc
 
 
 def test_credential_and_recovery_detectors_share_one_os_inventory(monkeypatch):
-    import psutil
-
-    calls = []
     monkeypatch.setattr(sensors, "_proc_cache", (0.0, None))
-    monkeypatch.setattr(psutil, "process_iter", lambda attrs: (
-        calls.append(tuple(attrs)) or [SimpleNamespace(info=_row(cmdline=["benign.exe"]))]
-    ))
+    reads, calls = _install_rows(monkeypatch, [_row(cmdline=["benign.exe"])])
     for module in (lsass_guard.LsassGuardModule(), shadowcopy_guard.ShadowCopyGuardModule()):
         monkeypatch.setattr(module, "sleep", lambda _seconds, target=module: target.stop())
         module.run()
         assert module._last_coverage["readable"] == 1
     assert len(calls) == 1
-    assert "create_time" in calls[0] and "ppid" in calls[0]
+    assert "create_time" in reads[0]
+    assert {"pid", "create_time", "exe"} == set(reads[1])
 
 
 @pytest.mark.parametrize("provider, factory", [

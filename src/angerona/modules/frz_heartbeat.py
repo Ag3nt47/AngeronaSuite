@@ -133,7 +133,7 @@ class FrzHeartbeatModule(BaseModule):
         "isolation and terminates the compromised interpreter."
     )
     category = "Resilience"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
 
     _WRITE_INTERVAL = HEARTBEAT_MS / 1000.0

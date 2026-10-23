@@ -330,7 +330,7 @@ class _BlockedUncertainKillProcess(_UncertainKillProcess):
 
     def kill(self) -> None:
         self.kill_entered.set()
-        if not self.release_kill.wait(2.0):
+        if not self.release_kill.wait(30.0):
             raise RuntimeError("inert kill barrier timed out")
         self.killed = True
 
@@ -359,50 +359,98 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
         return action
 
     monkeypatch.setattr(module, "_action", capture_action)
-    worker = threading.Thread(
-        target=module._act_on_process,
-        args=(4242, policy, Event("inert-test", "race", Severity.HIGH), "combat-race"),
-        kwargs={"allowed_actions": frozenset({"terminate_process"})},
-        daemon=True,
-    )
-    worker.start()
-    assert process.kill_entered.wait(1.0)
-    action = captured["action"]
+    worker_result: dict[str, object] = {}
+    worker_done = threading.Event()
 
-    operator_policy = _operator_policy()
-    module.bind_manager(
-        SimpleNamespace(recovery_authorization_policy=operator_policy)
-    )
-    # This is the formerly accepted bare-intent authorization shape.
-    bare_intent_decision = _operator_decision(
-        operator_policy,
-        action.action_id,
-        request_id="recovery-race-bare-intent",
+    def act_on_inert_process() -> None:
+        try:
+            worker_result["actions"] = module._act_on_process(
+                4242,
+                policy,
+                Event("inert-test", "race", Severity.HIGH),
+                "combat-race",
+                allowed_actions=frozenset({"terminate_process"}),
+            )
+        except Exception as exc:
+            worker_result["error"] = repr(exc)
+        finally:
+            worker_done.set()
+
+    worker = threading.Thread(
+        target=act_on_inert_process,
+        daemon=True,
     )
     disposition_result: dict[str, object] = {}
     disposition_started = threading.Event()
     disposition_done = threading.Event()
+    disposer = None
 
-    def dispose_while_kill_is_blocked() -> None:
-        disposition_started.set()
-        disposition_result.update(module.resolve_nonreversible_recovery(
+    try:
+        worker.start()
+        # Durable key/journal creation can exceed one second on an inspected
+        # Windows volume. Wait for the actual mutation barrier, never a sleep.
+        assert process.kill_entered.wait(10.0), {
+            "worker_done": worker_done.is_set(), "worker_result": worker_result,
+            "action_captured": "action" in captured,
+            "journal_error": module._journal_error,
+        }
+        action = captured["action"]
+        assert action.action == "terminate_process"
+        # Prove lock ownership directly before testing the competing disposer;
+        # scheduler delay alone cannot satisfy the blocked-disposition check.
+        lock_available = module._receipt_lock.acquire(blocking=False)
+        if lock_available:
+            module._receipt_lock.release()
+        assert lock_available is False
+        assert process.release_kill.is_set() is False
+
+        operator_policy = _operator_policy()
+        module.bind_manager(
+            SimpleNamespace(recovery_authorization_policy=operator_policy)
+        )
+        # This is the formerly accepted bare-intent authorization shape.
+        bare_intent_decision = _operator_decision(
+            operator_policy,
             action.action_id,
-            disposition="confirmed_not_applied",
-            reason="Operator checked before the inert kill barrier was released.",
-            decision=bare_intent_decision,
-        ))
-        disposition_done.set()
+            request_id="recovery-race-bare-intent",
+        )
 
-    disposer = threading.Thread(target=dispose_while_kill_is_blocked, daemon=True)
-    disposer.start()
-    assert disposition_started.wait(1.0)
-    assert disposition_done.wait(0.05) is False
-    process.release_kill.set()
-    worker.join(2.0)
-    disposer.join(2.0)
+        def dispose_while_kill_is_blocked() -> None:
+            disposition_started.set()
+            try:
+                disposition_result.update(module.resolve_nonreversible_recovery(
+                    action.action_id,
+                    disposition="confirmed_not_applied",
+                    reason="Operator checked before the inert kill barrier was released.",
+                    decision=bare_intent_decision,
+                ))
+            except Exception as exc:
+                disposition_result["worker_exception"] = repr(exc)
+            finally:
+                disposition_done.set()
+
+        disposer = threading.Thread(target=dispose_while_kill_is_blocked, daemon=True)
+        disposer.start()
+        assert disposition_started.wait(10.0)
+        assert disposition_done.wait(0.05) is False
+    finally:
+        # An early assertion must not leave fake workers running after pytest
+        # restores module monkeypatches or advances to another test.
+        process.release_kill.set()
+        if worker.ident is not None:
+            worker.join(10.0)
+        if disposer is not None and disposer.ident is not None:
+            disposer.join(10.0)
+        assert not worker.is_alive(), worker_result
+        assert disposer is None or not disposer.is_alive(), disposition_result
 
     assert not worker.is_alive()
+    assert disposer is not None
     assert not disposer.is_alive()
+    assert worker_done.is_set()
+    assert worker_result == {"actions": []}
+    assert disposition_done.is_set()
+    assert "worker_exception" not in disposition_result
     assert process.killed is True
     assert disposition_result["ok"] is False
     assert module._mutation_blocked is True

@@ -59,7 +59,7 @@ class SpywareGuardModule(BaseModule):
         "reviewed intelligence, exact-target single-rule containment and emergency beacons."
     )
     category = "Spyware Defense"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "detect"
     maturity_channel = "preview"
@@ -120,7 +120,7 @@ class SpywareGuardModule(BaseModule):
         self._sources = deque(maxlen=32)
         self._news: list[dict] = []
         self._news_pending: set[str] = set()
-        self._news_status: dict = {"state": "disabled", "refreshing": False}
+        self._news_status: dict = {"state": "disabled", "refreshing": False, "sources": {}}
         self._last_news = None
         self._approved: OrderedDict[tuple[str, str], str] = OrderedDict()
         self._dedup: OrderedDict[str, float] = OrderedDict()
@@ -146,6 +146,9 @@ class SpywareGuardModule(BaseModule):
             value = getattr(self._config, name, default)
             self._settings[name] = value if type(value) is bool else default
         self._intel.network_enabled = self._settings["spyware_network_enabled"]
+        with self._lock:
+            self._news_status.update(state="awaiting-refresh" if self._settings["spyware_network_enabled"]
+                                     else "disabled", refreshing=False)
 
     def _enqueue(self, command: str, payload=None) -> bool:
         try:
@@ -299,23 +302,41 @@ class SpywareGuardModule(BaseModule):
     def _schedule_news(self) -> None:
         if not self._settings["spyware_network_enabled"]:
             with self._lock:
-                self._news_status = {"state": "disabled", "refreshing": False}
+                self._news_status.update(state="disabled", refreshing=False)
             return
         from angerona.core.spyware_news import NEWS_SOURCES
         self._last_news = self._clock()
-        for source in NEWS_SOURCES:
-            with self._lock:
-                if source in self._news_pending:
-                    continue
-                self._news_pending.add(source)
-                self._news_status.update(state="refreshing", refreshing=True)
+        with self._lock:
+            sources = [source for source in NEWS_SOURCES if source not in self._news_pending]
+            if not sources:
+                return
+            self._news_pending.update(sources)
+            self._news_status.update(state="refreshing", refreshing=True, last_attempt=self._clock(), error="")
+            statuses = self._news_status.setdefault("sources", {})
+            for source in sources:
+                statuses[source] = {"state": "queued"}
+        for source in sources:
             if not self._schedule_report("news", source):
                 with self._lock:
                     self._news_pending.discard(source)
                     self._news_status["error"] = "QueueFull"
+                    self._news_status["sources"][source] = {"state": "failed", "error": "QueueFull"}
         with self._lock:
-            if not self._news_pending:
-                self._news_status.update(refreshing=False, state="retry-required")
+            self._finish_news_status()
+
+    def _finish_news_status(self) -> None:
+        """Called under the state lock; failures never promote old cache to live."""
+        statuses = list(self._news_status.get("sources", {}).values())
+        failed = [row for row in statuses if row.get("state") == "failed"]
+        successful = [row for row in statuses if row.get("state") == "available"]
+        state = ("disabled" if not self._settings["spyware_network_enabled"] else
+                 "refreshing" if self._news_pending else
+                 "partial" if failed and successful else
+                 "retry-required" if failed and all(row.get("error") == "QueueFull" for row in failed) else
+                 "failed" if failed else
+                 "current" if any(row.get("items", 0) for row in successful) else "empty")
+        self._news_status.update(state=state, refreshing=bool(self._news_pending)
+                                 and self._settings["spyware_network_enabled"])
 
     def _report_worker(self, stopped) -> None:
         # A slow research publisher must not delay single-rule host containment
@@ -332,11 +353,13 @@ class SpywareGuardModule(BaseModule):
                 if kind == "news":
                     from angerona.core.spyware_news import fetch_news_source
                     items = fetch_news_source(value, network_enabled=True, now=self._clock())
-                    if not stopped.is_set():
+                    if not stopped.is_set() and self._settings["spyware_network_enabled"]:
                         with self._lock:
                             merged = {item["url"]: item for item in self._news + items}
                             self._news = sorted(merged.values(), key=lambda row: row["published"], reverse=True)[:30]
                             self._news_status.update(last_refresh=self._clock())
+                            self._news_status.setdefault("sources", {})[value] = {
+                                "state": "available", "items": len(items), "checked_at": self._clock()}
                     continue
                 result = (self._intel.refresh(value, now=self._clock()) if kind == "source"
                           else self._intel.refresh_url(value, now=self._clock()))
@@ -354,20 +377,20 @@ class SpywareGuardModule(BaseModule):
                     with self._lock:
                         if kind == "news":
                             self._news_status["error"] = type(exc).__name__
+                            self._news_status.setdefault("sources", {})[value] = {
+                                "state": "failed", "error": type(exc).__name__, "checked_at": self._clock()}
                         self._sources.appendleft({"url": url, "status": "failed",
                             "error": type(exc).__name__, "ts": self._clock()})
             finally:
                 if kind == "news":
                     with self._lock:
                         self._news_pending.discard(value)
-                        if not self._news_pending:
-                            self._news_status.update(refreshing=False,
-                                state="disabled" if not self._settings["spyware_network_enabled"]
-                                else "current" if self._news else "failed" if self._news_status.get("error") else "empty")
+                        self._finish_news_status()
                 self._reports.task_done()
 
     def _response(self, finding: dict, local_authority: bool) -> dict:
-        if not local_authority or not self._settings["spyware_auto_contain"]:
+        if (not local_authority or not self._settings["spyware_auto_contain"]
+                or finding.get("response_eligible") is False):
             return {}
         pid, birth = finding.get("pid"), finding.get("process_create_time")
         exact_process = (type(pid) is int and pid > 4 and pid not in {os.getpid(), os.getppid()}
@@ -421,6 +444,8 @@ class SpywareGuardModule(BaseModule):
                        incident_id=token, actor_attribution="none", spyware_confirmed=False,
                        response_authorized=False, response_authority="none",
                        active_attack=False, disposition="observation")
+        if finding.get("response_eligible") is False and finding.get("finding_kind") == "exposure":
+            details["disposition"] = "exposure"
         if response:
             details.update(response)
             details.update(response_authority="typed-response", active_attack=True,
@@ -438,7 +463,9 @@ class SpywareGuardModule(BaseModule):
                "remote_ip": finding.get("remote_ip", ""), "evidence": finding.get("evidence", {}),
                "response_requested": bool(response),
                "status": "upstream-response-requested" if response_already_requested
-                         else "containment-requested" if response else "no-exact-authorized-target"}
+                         else "containment-requested" if response
+                         else "exposure-review" if details["disposition"] == "exposure"
+                         else "no-exact-authorized-target"}
         with self._lock:
             self._hits.appendleft(hit)
             self._counts["findings"] += 1
@@ -792,6 +819,11 @@ class SpywareGuardModule(BaseModule):
         self._consume_events()
         self._collect_responses()
         now = self._clock()
+        # Headline I/O stays on the research worker. Queue it before a long
+        # host scan or general report jobs can postpone the visible feed.
+        if self._settings["spyware_network_enabled"] and (
+                self._last_news is None or now - self._last_news >= 1800):
+            self._schedule_news()
         if self._scan_requested or self._last_scan is None or now - self._last_scan >= 300:
             self._scan_requested = False
             try:
@@ -806,9 +838,6 @@ class SpywareGuardModule(BaseModule):
                 if self.stopping:
                     break
                 self._schedule_report("source", source)
-        if self._settings["spyware_network_enabled"] and (
-                self._last_news is None or now - self._last_news >= 1800):
-            self._schedule_news()
         beacon = self._ensure_beacon()
         if beacon is not None:
             if self._settings["spyware_beacon_enabled"]:
@@ -834,8 +863,12 @@ class SpywareGuardModule(BaseModule):
             result["encrypted_evidence"] = dict(self._vault_state)
             result["sandbox"] = dict(self._coverage.get("last_sandbox", {}))
             now = self._clock()
-            result["news"] = [row for row in self._news if 0 <= now - row["published"] <= 30 * 86400]
-            result["news_status"] = dict(self._news_status)
+            from angerona.core.spyware_news import MAX_CACHED_NEWS_AGE
+            result["news"] = [row for row in self._news if 0 <= now - row["published"] <= MAX_CACHED_NEWS_AGE]
+            result["news_status"] = dict(self._news_status,
+                sources={name: dict(row) for name, row in self._news_status.get("sources", {}).items()})
+            if not self._settings["spyware_network_enabled"]:
+                result["news_status"].update(state="disabled", refreshing=False)
             result["coverage"]["behavior_adapters"] = self._engine.coverage()
         result["indicators"] = [dict(asdict(item), approved=approved.get((item.kind, item.value)) == item.source_sha256)
                                  for item in self._intel.indicators(now=self._clock())[:500]]

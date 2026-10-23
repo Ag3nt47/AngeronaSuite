@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import threading
 
 try:
@@ -69,6 +70,11 @@ def _looks_like_lsass_dump(cmdline: str) -> str | None:
             return f"credential-dump token: {tok}"
     for sig in _DUMP_SIGNATURES:
         if all(part in cl for part in sig):
+            # A flag must be a complete raw argument, not --max-cases or a
+            # path fragment. This remains a semantic observation, not argv
+            # execution/target proof; role-aware response checks stay separate.
+            if "-ma" in sig and not re.search(r"(?<!\S)(?:-ma|\"-ma\"|'-ma')(?=\s|$)", cl):
+                continue
             return "credential-dump pattern: " + " + ".join(sig)
     return None
 
@@ -183,7 +189,7 @@ class LsassGuardModule(BaseModule):
     description = ("Detects LSASS credential-dumping (Mimikatz/procdump/comsvcs MiniDump, "
                    "T1003.001) by process command line + artifact signatures. Read-only.")
     category = "Detection"
-    version = "1.13.0"
+    version = "1.14.0"
 
     _POLL = 3.0
 

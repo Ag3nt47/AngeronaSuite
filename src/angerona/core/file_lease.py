@@ -42,6 +42,17 @@ class ExclusiveFileLease:
                 raise ExclusiveFileLeaseError(
                     "authority lease reparse status is unavailable"
                 ) from exc
+        try:
+            named = candidate.lstat()
+        except FileNotFoundError:
+            named = None
+        except OSError as exc:
+            raise ExclusiveFileLeaseError("authority lease identity is unavailable") from exc
+        if named is not None and (
+            not stat.S_ISREG(named.st_mode) or named.st_nlink != 1
+            or getattr(named, "st_file_attributes", 0) & 0x400
+        ):
+            raise ExclusiveFileLeaseError("authority lease is not a single-link regular file")
         flags = os.O_RDWR | os.O_CREAT
         if hasattr(os, "O_BINARY"):
             flags |= os.O_BINARY
@@ -50,8 +61,15 @@ class ExclusiveFileLease:
         try:
             descriptor = os.open(os.fspath(candidate), flags, 0o600)
             info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode):
-                raise ExclusiveFileLeaseError("authority lease is not a regular file")
+            # Validate the actual descriptor and its named identity BEFORE the
+            # first write. An empty hardlink must never receive the NUL byte.
+            current = candidate.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                    or getattr(info, "st_file_attributes", 0) & 0x400
+                    or getattr(current, "st_file_attributes", 0) & 0x400
+                    or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
+                raise ExclusiveFileLeaseError("authority lease is not the named single-link regular file")
             if info.st_size == 0:
                 os.write(descriptor, b"\x00")
                 os.fsync(descriptor)

@@ -120,28 +120,26 @@ class RawProcessSensor:
         except Exception:
             return []
         current: set[int] = set()
-        new_processes: dict[int, object] = {}
-        # Ask psutil for PID only on the recurring pass.  Parent/name/executable
-        # and command-line queries are necessary only for newly observed PIDs;
-        # fetching them for every long-lived process once per second was the
-        # scanner's dominant idle cost.
-        for p in psutil.process_iter(["pid"], ad_value=None):
+        # The recurring diff needs only the native PID list. process_iter(attrs)
+        # still builds/updates a Process.info dictionary per host process, even
+        # with just ["pid"]. Construct identity-bound Process objects only for
+        # newly observed additions, never for a baseline or shed telemetry.
+        for value in psutil.pids():
             try:
-                pid = int(p.info["pid"])
+                pid = int(value)
                 current.add(pid)
-                if self._seeded and pid not in self._known:
-                    new_processes[pid] = p
             except Exception:
                 continue
         frames: list[bytes] = []
         if self._seeded:
-            for pid, process in new_processes.items():
+            for pid in sorted(current - self._known):
                 if not enrich:
                     # The host counts these INFO frames as shed load. Do not
                     # query executable/command-line evidence merely to drop it.
                     frames.append(json.dumps({"type": "process_creation", "pid": pid}).encode())
                     continue
                 try:
+                    process = psutil.Process(pid)
                     with process.oneshot():
                         parent = process.ppid()
                         name = process.name() or "unknown"
@@ -156,7 +154,12 @@ class RawProcessSensor:
                             parent_name,
                             psutil,
                         )
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                except psutil.NoSuchProcess:
+                    # Do not retain a disappeared addition as already seen;
+                    # its PID may belong to a replacement on the next poll.
+                    current.discard(pid)
+                    continue
+                except psutil.AccessDenied:
                     continue
                 except Exception:
                     continue

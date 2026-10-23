@@ -26,7 +26,7 @@ class FleetHealthMonitorModule(BaseModule):
         "without mutating hosts."
     )
     category = "Fleet"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "detect"
     maturity_channel = "preview"
@@ -123,6 +123,10 @@ class FleetHealthMonitorModule(BaseModule):
             tenant_id = self._tenant_id
             if fabric is None or not tenant_id:
                 return 35, "local Fleet Fabric store is not bound", {
+                    "finding_code": "fleet.coverage.unbound",
+                    "fabric_bound": False,
+                    "observation_only": True,
+                    "enforcement_performed": False,
                     "evidence_rows": 0,
                     "retention_drops": 0,
                     "reported_drops": 0,

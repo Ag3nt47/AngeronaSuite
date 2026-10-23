@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from angerona import __version__
 from angerona.core import detection_evaluation as evaluation
 from angerona.core.detection_evaluation import (
     CohortLoss,
@@ -537,7 +538,7 @@ def test_detection_runtime_has_native_v12_detect_only_contract():
         module, capability_id="angerona.detection-runtime"
     )
     assert contract.schema_version == 12
-    assert contract.implementation_version == "1.13.0"
+    assert contract.implementation_version == __version__
     assert contract.metadata_level == "native"
     assert contract.mode == "detect"
     assert contract.response_authority == "none"

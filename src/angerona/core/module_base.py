@@ -715,7 +715,11 @@ class BaseModule:
         """Monotonic generation identifier, useful for diagnostics/tests."""
         return self._lifecycle_generation
 
-    def sleep(self, seconds: float, *, cycle_complete: bool = True) -> None:
+    def sleep(
+        self, seconds: float, *, cycle_complete: bool = True,
+        _wake_event: threading.Event | None = None,
+        _background_pacing: bool = True,
+    ) -> None:
         """Interruptible sleep — returns early if the module is stopping.
 
         The wait is scaled by ``self._throttle`` (default 1.0). The Adaptive
@@ -723,7 +727,9 @@ class BaseModule:
         modules when the host is under load, so their poll loops run less often
         (lower CPU) automatically — in both Eco and normal mode — and relaxes it
         back to 1.0 when things are idle. Modules that use ``self.sleep()`` for
-        their loop cadence get this for free."""
+        their loop cadence get this for free. A reviewed one-shot work retry
+        may omit discretionary background pacing; the cadence multiplier,
+        including its persistent Chill floor, still applies."""
         # Most legacy loops sleep after completing a poll/baseline. Sleep-first
         # loops must pass ``cycle_complete=False`` and explicitly publish the
         # boundary after their work; otherwise startup could attest readiness
@@ -731,7 +737,10 @@ class BaseModule:
         with self._throttle_lock:
             throttle = float(self._throttle)
         wait_seconds = max(0.0, float(seconds)) * throttle
-        if type(self).__dict__.get("background_pacing_allowed") is True:
+        if (
+            _background_pacing
+            and type(self).__dict__.get("background_pacing_allowed") is True
+        ):
             # Independent cosmetic/governor settings never disable this policy.
             # Use the larger wait, not a product of two independent governors.
             wait_seconds = max(wait_seconds, self.background_interval(seconds))
@@ -749,7 +758,19 @@ class BaseModule:
                     self._watchdog_deadline_at = (
                         now + wait_seconds + self._watchdog_work_budget_seconds()
                     )
-        self.generation_stop_event().wait(timeout=wait_seconds)
+        stop_event = self.generation_stop_event()
+        if _wake_event is None:
+            stop_event.wait(timeout=wait_seconds)
+        else:
+            # A local hint may shorten idle time, never attest completed work.
+            # Retain this generation's immutable stop token; stop still wakes
+            # immediately. Only opted-in workers pay the bounded hint checks.
+            deadline = time.monotonic() + wait_seconds
+            while not stop_event.is_set() and not _wake_event.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                stop_event.wait(timeout=min(0.25, remaining))
         pacer = getattr(self._run_context, "routine_pacer", None)
         if pacer is not None:
             pacer.resume()

@@ -130,9 +130,10 @@ def _validate_regular_file(path: Path) -> None:
 def _hold_plain_directories(*paths: Path):
     """Keep validated Windows directory handles open for a bounded read.
 
-    Mutating operations use the stronger delete-access handles in
-    ``_windows_atomic_bytes_write``. This read guard still rejects every
-    reparse component before opening a file and revalidates afterwards.
+    Directory-list access participates in Windows sharing checks; keeping
+    delete sharing disabled pins each directory while allowing another
+    compatible directory guard. Reparse components are still rejected before
+    opening a file and revalidated afterwards.
     """
     if os.name != "nt":
         for path in paths:
@@ -155,6 +156,7 @@ def _hold_plain_directories(*paths: Path):
     invalid = wintypes.HANDLE(-1).value
     open_existing = 3
     read_attributes = 0x00000080
+    list_directory = 0x00000001  # Attribute-only access is exempt from sharing checks.
     share_read_write = 0x00000001 | 0x00000002
     backup_semantics = 0x02000000
     open_reparse = 0x00200000
@@ -192,7 +194,7 @@ def _hold_plain_directories(*paths: Path):
                     f"sandbox parent component is not a directory: {component}"
                 )
             handle = create_file(
-                os.fspath(component), read_attributes, share_read_write, None, open_existing,
+                os.fspath(component), read_attributes | list_directory, share_read_write, None, open_existing,
                 backup_semantics | open_reparse, None,
             )
             if handle == invalid:
@@ -296,9 +298,10 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
     """Write and rename through verified Windows handles.
 
     The temporary file's actual kernel path is checked against already-open
-    root/parent handles before any bytes are written. Those handles request
-    delete access without sharing delete, which makes Windows reject a parent
-    rename while the final atomic rename is in flight.
+    root/parent handles before any bytes are written. Directory-list access
+    participates in sharing checks without requesting directory DELETE rights,
+    so these no-delete-sharing guards compose with retained read guards while
+    still refusing parent rename. Temporary-file DELETE access is unchanged.
     """
     import ctypes
     from ctypes import wintypes
@@ -358,6 +361,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
 
     invalid = wintypes.HANDLE(-1).value
     read_attributes = 0x00000080
+    list_directory = 0x00000001
     generic_write = 0x40000000
     delete_access = 0x00010000
     share_read_write = 0x00000001 | 0x00000002
@@ -407,7 +411,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
     delete_temp = False
     try:
         root_handle = open_handle(
-            root, read_attributes | delete_access, share_read_write, open_existing,
+            root, read_attributes | list_directory, share_read_write, open_existing,
             backup_semantics | open_reparse,
         )
         if path.parent == root:
@@ -415,7 +419,7 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
         else:
             parent_handle = open_handle(
                 path.parent,
-                read_attributes | delete_access,
+                read_attributes | list_directory,
                 share_read_write,
                 open_existing,
                 backup_semantics | open_reparse,

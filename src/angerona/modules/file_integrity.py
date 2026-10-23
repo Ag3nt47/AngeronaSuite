@@ -366,7 +366,7 @@ def _extra_paranoid_dirs() -> "list[str]":
 class FileIntegrityModule(BaseModule):
     CODE = "FIM"
     name = "File Integrity Monitor"
-    version = "1.13.0"
+    version = "1.14.0"
     description = "Detects unauthorized creation, modification, or deletion of watched files."
     category = "Integrity"
 

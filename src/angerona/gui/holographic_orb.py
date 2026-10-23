@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import math
 import weakref
+from collections.abc import Mapping
 from dataclasses import dataclass
+from html import escape
 from typing import Callable
 
 from PySide6.QtCore import (
@@ -93,6 +95,20 @@ _SERVICES = (
         _AMBER,
     ),
 )
+
+_STATUS_TONES = {
+    "unknown": "#94a3b8", "alive": "#38bdf8", "running": "#38bdf8",
+    "starting": "#fbbf24", "held": "#fbbf24", "degraded": "#fb923c",
+    "stopped": "#ef4444", "dead": "#ef4444", "suspended": "#ef4444",
+}
+
+
+@dataclass(frozen=True)
+class OrbServiceStatus:
+    state: str = "unknown"
+    reason: str = "No cached status is available."
+    scope: str = "Presentation only; no liveness probe has been performed."
+    age_seconds: float | None = None
 
 
 def _lerp(a: float, b: float, progress: float) -> float:
@@ -261,8 +277,9 @@ class HolographicOrb(QWidget):
     serviceTriggered = Signal(str)
     restoreRecentRequested = Signal()
     hiddenByOperator = Signal()
+    statusRefreshRequested = Signal()
 
-    _COLLAPSED_SIZE = 116
+    _COLLAPSED_SIZE = 144
     _GLOBE_RADIUS = 40.0
     _NODE_RADIUS = 22.0
 
@@ -293,6 +310,7 @@ class HolographicOrb(QWidget):
         self._node_centers: dict[str, QPointF] = {}
         self._node_rects: dict[str, QRectF] = {}
         self._hover_key = ""
+        self._service_statuses = {service.key: OrbServiceStatus() for service in _SERVICES}
         self._press_global = QPoint()
         self._press_local = QPoint()
         self._drag_anchor_start = QPoint()
@@ -305,6 +323,7 @@ class HolographicOrb(QWidget):
         self._menu_animation.setEasingCurve(QEasingCurve.OutCubic)
         self._menu_animation.finished.connect(self._menu_animation_finished)
         self.hide()
+        self._update_service_accessibility()
 
     @property
     def services(self) -> tuple[OrbService, ...]:
@@ -316,6 +335,56 @@ class HolographicOrb(QWidget):
 
     def _motion_enabled(self) -> bool:
         return motion_allowed(self._config)
+
+    def set_service_statuses(self, snapshot) -> None:
+        """Consume only four bounded cached presentation records, never probe."""
+        values = snapshot if isinstance(snapshot, Mapping) else {}
+        states = {}
+        for service in _SERVICES:
+            row = values.get(service.key)
+            row = row if isinstance(row, Mapping) else {}
+            state = row.get("state")
+            state = state if isinstance(state, str) and state in _STATUS_TONES else "unknown"
+            reason = row.get("reason")
+            scope = row.get("scope")
+            age = row.get("age_seconds")
+            age = (float(age) if type(age) in (int, float)
+                   and 0 <= age <= 86400 and math.isfinite(age) else None)
+            states[service.key] = OrbServiceStatus(
+                state,
+                " ".join(reason.split())[:400] if isinstance(reason, str) else "No cached status is available.",
+                " ".join(scope.split())[:400] if isinstance(scope, str) else "Cached presentation; coverage is not assessed.",
+                age,
+            )
+        if states != self._service_statuses:
+            self._service_statuses = states
+            self._update_service_accessibility()
+            self.update()
+
+    def _update_service_accessibility(self) -> None:
+        summary = "; ".join(
+            f"{service.label}: {self._service_statuses[service.key].state.upper()}"
+            for service in _SERVICES
+        )
+        description = (
+            "Four function moons: C Core, W Watchdog, S Scanner, B Black Box. "
+            "Moon colors identify functions; the small badge shows cached status. "
+            + summary + ". Cached state does not prove detector coverage or current liveness. "
+            "Click a moon to open its existing controls; click the globe for the radial menu."
+        )
+        self.setAccessibleDescription(description)
+        self.setToolTip(description)
+
+    def _service_tooltip(self, service: OrbService) -> str:
+        status = self._service_statuses[service.key]
+        age = (f"{status.age_seconds:.1f} seconds" if status.age_seconds is not None
+               else "unknown; the producer supplies no observation timestamp")
+        return (
+            f"<b>{escape(service.label)} · {status.state.upper()}</b><br>"
+            f"{escape(service.description)}<br>{escape(status.reason)}<br>"
+            f"{escape(status.scope)}<br>Observation age: {escape(age)}.<br>"
+            "Color identifies the function, not proof of health."
+        )
 
     @staticmethod
     def _distance_to_screen(point: QPoint, screen) -> int:
@@ -376,6 +445,7 @@ class HolographicOrb(QWidget):
         )
 
     def show_token(self) -> None:
+        self.statusRefreshRequested.emit()
         if self._anchor == QPoint(-1, -1):
             self._anchor = self._clamp_anchor(self._saved_anchor())
         self._apply_geometry(expanded=self._menu_expanded)
@@ -429,12 +499,15 @@ class HolographicOrb(QWidget):
             # Keep the complete icon and its name chip on-screen even when the
             # orb is dragged into a corner. This preserves the radial direction
             # while preventing an edge-clipped destination.
-            candidate.setX(
-                max(available.left() + 54, min(candidate.x(), available.right() - 54))
-            )
-            candidate.setY(
-                max(available.top() + 34, min(candidate.y(), available.bottom() - 52))
-            )
+            # Scanner's outer name chip reaches 122 logical pixels from its
+            # node. Reserve the complete chip, not just the circular icon.
+            # Logical screen dimensions already incorporate display scaling.
+            horizontal_margin = min(134, max(0, (available.width() - 1) // 2))
+            vertical_margin = min(64, max(0, (available.height() - 1) // 2))
+            candidate.setX(max(available.left() + horizontal_margin,
+                               min(candidate.x(), available.right() - horizontal_margin)))
+            candidate.setY(max(available.top() + vertical_margin,
+                               min(candidate.y(), available.bottom() - vertical_margin)))
             offsets[service.key] = QPointF(
                 candidate.x() - self._anchor.x(),
                 candidate.y() - self._anchor.y(),
@@ -445,8 +518,8 @@ class HolographicOrb(QWidget):
         points = [QPointF(self._anchor)]
         for offset in self._node_offsets().values():
             points.append(QPointF(self._anchor) + offset)
-        left = min(point.x() for point in points) - 82
-        right = max(point.x() for point in points) + 82
+        left = min(point.x() for point in points) - 132
+        right = max(point.x() for point in points) + 132
         top = min(point.y() for point in points) - 66
         bottom = max(point.y() for point in points) + 66
         desired = QRect(
@@ -598,14 +671,7 @@ class HolographicOrb(QWidget):
         )
         painter.restore()
 
-        orbit_angle = self._phase * 1.8
-        orbit = QPointF(
-            center.x() + math.cos(orbit_angle) * (radius + 6.0),
-            center.y() + math.sin(orbit_angle) * (radius + 6.0) * 0.38,
-        )
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#d9fbff"))
-        painter.drawEllipse(orbit, 2.1, 2.1)
+        self._paint_function_moons(painter)
 
         painter.setPen(QColor("#e6faff"))
         font = QFont("Consolas", 7)
@@ -617,6 +683,37 @@ class HolographicOrb(QWidget):
             Qt.AlignCenter,
             "ANGERONA",
         )
+
+    def _paint_status_badge(self, painter, center, key) -> None:
+        status = self._service_statuses[key]
+        painter.setPen(QPen(_INK, 1.0))
+        painter.setBrush(QColor(_STATUS_TONES[status.state]))
+        badge = QPointF(center.x() + 7, center.y() + 7)
+        painter.drawEllipse(badge, 3.3, 3.3)
+        if status.state == "unknown":
+            painter.setPen(_INK)
+            painter.setFont(QFont("Segoe UI", 5, QFont.Bold))
+            painter.drawText(QRectF(badge.x() - 3, badge.y() - 4, 6, 8), Qt.AlignCenter, "?")
+
+    def _paint_function_moons(self, painter) -> None:
+        if self._menu_progress > 0.01:
+            return
+        painter.setPen(QPen(QColor(56, 189, 248, 45), 0.8))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(self._orb_center, 55, 55)
+        for index, service in enumerate(_SERVICES):
+            angle = self._phase * 0.55 + index * math.tau / len(_SERVICES)
+            point = self._orb_center + QPointF(math.cos(angle) * 55, math.sin(angle) * 55)
+            self._node_centers[service.key] = point
+            self._node_rects[service.key] = QRectF(point.x() - 15, point.y() - 15, 30, 30)
+            painter.setPen(QPen(QColor("#dbeafe") if self._hover_key == service.key else service.color, 1.1))
+            painter.setBrush(service.color)
+            painter.drawEllipse(point, 8, 8)
+            painter.setPen(_INK)
+            painter.setFont(QFont("Segoe UI", 6, QFont.Bold))
+            painter.drawText(QRectF(point.x() - 7, point.y() - 7, 14, 14), Qt.AlignCenter,
+                             {"core": "C", "watchdog": "W", "scanner": "S", "blackbox": "B"}[service.key])
+            self._paint_status_badge(painter, point, service.key)
 
     def _draw_service_icon(
         self,
@@ -711,6 +808,8 @@ class HolographicOrb(QWidget):
             painter.setPen(QPen(ring, 1.5))
             painter.drawEllipse(rect)
             self._draw_service_icon(painter, service, center, alpha)
+            if progress >= 0.95:
+                self._paint_status_badge(painter, QPointF(center.x() + 8, center.y() + 8), service.key)
 
             if progress >= 0.68:
                 label_alpha = round((progress - 0.68) / 0.32 * 230)
@@ -814,7 +913,7 @@ class HolographicOrb(QWidget):
                 service = next(item for item in _SERVICES if item.key == key)
                 QToolTip.showText(
                     event.globalPosition().toPoint(),
-                    f"<b>{service.label}</b><br>{service.description}",
+                    self._service_tooltip(service),
                     self,
                 )
             else:
@@ -877,6 +976,11 @@ class HolographicOrbController(QObject):
         self._component_windows: dict[str, QMainWindow] = {}
         self._trails: list[CollapseTrail] = []
         self._shutting_down = False
+        self._service_status_source = None
+        self._service_status_timer = None
+        self._component_gate_states: dict[str, bool] = {}
+        self.orb.statusRefreshRequested.connect(
+            lambda: self._refresh_service_statuses(force=True))
         self._enabled = bool(getattr(config, "holographic_orb_enabled", True))
         app = QApplication.instance()
         if app is not None:
@@ -885,6 +989,40 @@ class HolographicOrbController(QObject):
 
     def enabled(self) -> bool:
         return self._enabled and not self._shutting_down
+
+    def set_service_status_source(self, source: Callable | None) -> None:
+        """Share the existing dashboard cadence; the source must be memory-only."""
+        self._service_status_source = source if callable(source) else None
+        timer = getattr(self.main_window, "timer", None)
+        if isinstance(timer, QTimer) and self._service_status_timer is None:
+            timer.timeout.connect(self._refresh_service_statuses)
+            self._service_status_timer = timer
+        self._refresh_service_statuses(force=True)
+
+    def _refresh_service_statuses(self, *, force: bool = False) -> None:
+        if self._shutting_down or (not force and not self.orb.isVisible()):
+            return
+        try:
+            snapshot = self._service_status_source() if self._service_status_source else {}
+        except Exception:
+            snapshot = {}
+        self.orb.set_service_statuses(snapshot)
+        self.sync_security_gate()
+
+    def sync_security_gate(self) -> None:
+        """Keep previously opened component controls behind the workspace gate."""
+        if self._shutting_down:
+            return
+        held = (getattr(getattr(self.main_window, "manager", None), "ugcap_paused", False) is True
+                or getattr(self.main_window, "_ugcap_workspace_locked", False) is True)
+        for key, window in tuple(self._component_windows.items()):
+            if not isValid(window):
+                continue
+            if held and key not in self._component_gate_states:
+                self._component_gate_states[key] = window.isEnabled()
+                window.setEnabled(False)
+            elif not held and key in self._component_gate_states:
+                window.setEnabled(self._component_gate_states.pop(key))
 
     def sync_config(self) -> None:
         requested = bool(getattr(self.config, "holographic_orb_enabled", True))
@@ -1139,10 +1277,16 @@ class HolographicOrbController(QObject):
         return window
 
     def _service_triggered(self, key: str) -> None:
+        if self._shutting_down:
+            return
         if key == "core":
             self.restore_main()
             return
         if key not in {"watchdog", "scanner", "blackbox"}:
+            return
+        self.sync_security_gate()
+        if (getattr(getattr(self.main_window, "manager", None), "ugcap_paused", False) is True
+                or getattr(self.main_window, "_ugcap_workspace_locked", False) is True):
             return
         window = self._component_window(key)
         if window.isVisible() and not self.is_collapsed(window):
@@ -1152,6 +1296,13 @@ class HolographicOrbController(QObject):
 
     def shutdown(self) -> None:
         self._shutting_down = True
+        self._service_status_source = None
+        timer, self._service_status_timer = self._service_status_timer, None
+        if timer is not None:
+            try:
+                timer.timeout.disconnect(self._refresh_service_statuses)
+            except (RuntimeError, TypeError):
+                pass
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)

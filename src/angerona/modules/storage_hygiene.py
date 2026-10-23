@@ -326,7 +326,7 @@ class StorageHygieneModule(BaseModule):
                    "proposes relocation to the configured root. Privileged pathname "
                    "migration/purge is retired until handle-safe execution is available.")
     category = "Maintenance"
-    version = "1.13.0"
+    version = "1.14.0"
 
     _INTERVAL = 15 * 60.0     # re-check every 15 min
 

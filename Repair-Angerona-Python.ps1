@@ -176,7 +176,7 @@ function Test-RepairedRuntime([string]$VenvPath, [string]$OldStagingPath = '') {
     $probe = @'
 import importlib.metadata as m, pathlib, re, sys, sysconfig
 assert sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64'
-assert m.version('pip') == '26.2.1'
+assert m.version('pip') == '26.2.2'
 assert pathlib.Path(sys.prefix).absolute() == pathlib.Path(sys.argv[1]).absolute()
 for line in pathlib.Path(sys.argv[2]).read_text(encoding='utf-8').splitlines():
     pin = re.match(r'^([A-Za-z0-9_.-]+)==([^\s\\]+)', line)

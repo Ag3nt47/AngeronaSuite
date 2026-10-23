@@ -1,9 +1,11 @@
 """Owned instructor lifecycle; all coaching/model/network work is inert."""
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import queue
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -93,6 +95,16 @@ class FixtureWindow(main_window.MainWindow):
 
     def changeEvent(self, event):
         QMainWindow.changeEvent(self, event)
+
+
+def cleanup_function():
+    path = ROOT / "tools/selfcheck.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                    and node.name == "_teardown_qt_owned")
+    namespace = {"time": time}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+    return namespace[function.name]
 
 
 def retire_window(window):
@@ -357,3 +369,41 @@ def test_about_to_quit_closes_without_join_or_native_cancellation(app, monkeypat
     assert actual_quit_calls == []
 
 
+def test_actual_selfcheck_teardown_collects_and_retires_idle_instructor(app):
+    window = FixtureWindow(lambda line: line)
+    worker = window._fi_worker
+    try:
+        detail = cleanup_function()(app, [window])
+        assert not worker.is_alive() and window._fi_coaching_worker.retired.is_set()
+        assert not isValid(window)
+        assert "1 Python / 0 Qt workers retired" in detail
+    finally:
+        retire_window(window)
+
+
+def test_actual_selfcheck_refuses_teardown_green_and_owner_deletion_while_active(app):
+    entered, release = threading.Event(), threading.Event()
+
+    def narrate(_line):
+        entered.set()
+        assert release.wait(3)
+        return "late explanation"
+
+    window = FixtureWindow(narrate)
+    state = window._fi_coaching_worker
+    try:
+        state.submit("active")
+        assert entered.wait(3)
+        with pytest.raises(AssertionError, match="GUI reader did not stop: FlightInstructorWorker"):
+            cleanup_function()(app, [window], timeout=0)
+        assert isValid(window) and state.thread.is_alive()
+        assert state.closed.is_set() and not state.retired.is_set()
+        release.set()
+        state.thread.join(3)
+        detail = cleanup_function()(app, [window])
+        assert not isValid(window)
+        assert "1 Python / 0 Qt workers retired" in detail
+        assert window.deliveries == []
+    finally:
+        release.set()
+        retire_window(window)

@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import copy
 import time
+from datetime import datetime, timezone
+from email.utils import format_datetime
 from types import SimpleNamespace
 
-from PySide6.QtCore import QCoreApplication, QEvent, Qt
+import pytest
+from PySide6.QtCore import QByteArray, QCoreApplication, QEvent, Qt
+from PySide6.QtGui import QTextDocument
 from PySide6.QtWidgets import QApplication
 
 from angerona.core.spyware_catalog import CATALOG_REVIEWED, SPYWARE_PROFILES
@@ -296,7 +300,9 @@ def news_rows(now):
 def test_news_strip_is_offline_until_opt_in_and_refresh_is_explicit(monkeypatch):
     page, module = make_page(show=True)
     try:
-        assert "offline" in page.news_headline.text()
+        assert "Downloads disabled" in page.news_state.text()
+        assert "REFERENCE" in page.news_badge.text()
+        assert "no live check" in page.news_state.text()
         assert not page.news_refresh_button.isEnabled()
         page._request_news_refresh()
         assert module.calls == []
@@ -307,7 +313,7 @@ def test_news_strip_is_offline_until_opt_in_and_refresh_is_explicit(monkeypatch)
         page.news_refresh_button.click()
         assert module.calls == [("news",)]
         assert page._news_refreshing
-        assert "queued" in page.news_headline.text()
+        assert "queued" in page.status.text()
     finally:
         page.close()
 
@@ -363,17 +369,20 @@ def test_news_headline_and_source_date_link_map_to_current_validated_article(mon
         page.refresh()
         assert opened == []
         page.news_headline.click()
+        assert opened == []
+        assert page._news_dialog.isVisible()
+        assert "Local dashboard context" in page.news_detail.toPlainText()
         page.news_source_button.click()
         page._rotate_news()
         page.news_source_button.click()
-        assert opened == [rows[0]["url"], rows[0]["url"], rows[1]["url"]]
+        assert opened == [rows[0]["url"], rows[1]["url"]]
         assert "Project Zero" in page.news_source_button.text()
         assert module.calls == []
     finally:
         page.close()
 
 
-def test_stale_future_unverified_and_unsafe_news_do_not_appear(monkeypatch):
+def test_stale_cache_is_labelled_and_future_unverified_unsafe_news_do_not_appear(monkeypatch):
     page, module = make_page(show=True)
     try:
         now = time.time()
@@ -384,13 +393,12 @@ def test_stale_future_unverified_and_unsafe_news_do_not_appear(monkeypatch):
                                    dict(good, verified_at=None),
                                    dict(good, url="https://127.0.0.1/admin")]
         page.refresh()
-        assert not page._news_items
-        assert "No verified" in page.news_headline.text()
-        assert not page.news_source_button.isVisible()
-        assert not page._news_rotation_timer.isActive()
+        assert len(page._news_items) == 1
+        assert page._news_items[0]["stale"] is True
+        assert "STALE CACHE" in page.news_badge.text()
         module.snapshot["news_status"] = {"state": "failed", "error": "source unavailable"}
         page.refresh()
-        assert "failed" in page.news_headline.text()
+        assert "Refresh unavailable" in page.news_state.text()
     finally:
         page.close()
 
@@ -402,5 +410,215 @@ def test_rule_export_is_explicit_queue_only_action():
         page.export_rules_button.click()
         assert module.calls == [("rules",)]
         assert "Inactive rule candidates" in page.status.text()
+    finally:
+        page.close()
+
+
+def test_offline_reference_detail_is_local_dated_and_source_open_is_explicit(monkeypatch):
+    from angerona.gui import spyware_guard_page as ui
+    opened = []
+    monkeypatch.setattr(ui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    page, module = make_page(show=True)
+    try:
+        assert "REFERENCE" in page.news_badge.text()
+        assert "2026-10-19" in page.news_source_button.text()
+        assert page.news_summary.text()
+        page.news_headline.click()
+        text = page.news_detail.toPlainText()
+        assert "Bundled reference; not live news" in text
+        assert "2026-10-22" in text and "not connect this computer" in text
+        assert opened == [] and module.calls == []
+        page.news_detail_source_button.click()
+        assert opened == [page._news_items[0]["url"]]
+        page.close()
+        assert not page._news_dialog.isVisible()
+    finally:
+        page.close()
+
+
+def test_cached_feed_remains_visible_after_network_opt_out_without_fetching():
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["news"] = news_rows(time.time())
+        page.refresh()
+        assert len(page._news_items) == 2
+        assert "Downloads disabled" in page.news_state.text()
+        assert "CACHED INTEL" in page.news_badge.text()
+        assert not page.news_refresh_button.isEnabled()
+        page._request_news_refresh()
+        assert module.calls == []
+        page.hide()
+        assert not page._news_scroll_timer.isActive()
+        page.show()
+        assert page._timer.isActive()
+    finally:
+        page.close()
+
+
+def test_partial_source_status_and_cached_summary_are_plain_text():
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["settings"]["spyware_network_enabled"] = True
+        module.snapshot["news"] = [dict(news_rows(time.time())[0], summary="<script>plain cached text</script>")]
+        module.snapshot["news_status"] = {"state": "partial", "sources": {
+            "cisa": {"state": "failed", "error": "ValueError"},
+            "citizen_lab": {"state": "available", "items": 1}}}
+        page.refresh()
+        assert "Some sources unavailable" in page.news_state.text()
+        assert "CISA" in page.news_state.toolTip()
+        assert page.news_summary.textFormat() == Qt.TextFormat.PlainText
+        assert module.calls == []
+    finally:
+        page.close()
+
+class _TooltipDocument(QTextDocument):
+    """Observe rich-text semantics while refusing every resource load."""
+
+    def __init__(self):
+        super().__init__()
+        self.resource_requests = []
+
+    def loadResource(self, resource_type, url):  # noqa: N802 - Qt virtual method
+        self.resource_requests.append((resource_type, url.toString()))
+        return QByteArray()  # Never delegate to Qt's default resource loader.
+
+
+def _tooltip_formats(document):
+    formats = []
+    block = document.begin()
+    while block.isValid():
+        fragment = block.begin()
+        while not fragment.atEnd():
+            value = fragment.fragment()
+            if value.isValid():
+                formats.append(value.charFormat())
+            fragment += 1
+        block = block.next()
+    return formats
+
+
+def _literal_tooltip_text(markup):
+    document = _TooltipDocument()
+    document.setHtml(markup)
+    document.adjustSize()  # Exercise layout's resource lookup, not only parsing.
+    formats = _tooltip_formats(document)
+    assert not any(value.isImageFormat() for value in formats)
+    assert not any(value.isAnchor() for value in formats)
+    assert document.resource_requests == []
+    return document.toPlainText()
+
+
+def test_tooltip_document_probe_observes_raw_images_and_anchors_without_loading():
+    document = _TooltipDocument()
+    document.setHtml(
+        '<qt><img src="fixture://spyguard-tooltip/probe">'
+        '<a href="https://example.invalid/probe">link</a></qt>'
+    )
+    document.adjustSize()
+    formats = _tooltip_formats(document)
+    assert any(value.isImageFormat() for value in formats)
+    assert any(value.isAnchor() for value in formats)
+    assert document.resource_requests  # The refusing loader is an active observer.
+
+
+@pytest.mark.parametrize("summary", [
+    '<b>Spyware advisory</b> <img src="fixture://spyguard-tooltip/image">'
+    '<a href="https://example.invalid/report">details</a>',
+    '&lt;b&gt;literal&lt;/b&gt; &amp; "quotes" and \'apostrophes\'',
+    "first line\r\nsecond line\n<img src='file:///never-loaded'>\rlast line",
+])
+def test_cached_summary_tooltip_renders_literal_text_without_rich_resources(summary):
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["news"] = [dict(news_rows(time.time())[0], summary=summary)]
+        original = copy.deepcopy(module.snapshot)
+        page.refresh()
+        assert _literal_tooltip_text(page.news_summary.toolTip()) == summary.replace("\r\n", "\n").replace("\r", "\n")
+        assert page.news_summary.textFormat() == Qt.TextFormat.PlainText
+        assert page._news_items[0]["summary"] == summary
+        assert module.snapshot == original and module.calls == []
+    finally:
+        page.close()
+
+
+def test_external_status_headline_source_and_evidence_tooltips_stay_literal():
+    payload = '<img src="fixture://spyguard-tooltip/status"><a href="https://example.invalid/">text</a>'
+    page, module = make_page(show=True)
+    try:
+        row = dict(news_rows(time.time())[0], title=payload)
+        module.snapshot["news"] = [row]
+        module.snapshot["news_status"] = {
+            "state": "partial", "error": payload,
+            "sources": {"cisa": payload, payload: "unavailable"},
+        }
+        module.snapshot["hits"] = [{"rule": payload, "pid": 123}]
+        original = copy.deepcopy(module.snapshot)
+        page.refresh()
+        assert _literal_tooltip_text(page.news_state.toolTip()) == "CISA: " + payload + "\n" + payload + ": unavailable"
+        assert _literal_tooltip_text(page.news_strip.toolTip()) == (
+            "Official research headlines only. Article publication dates determine freshness; "
+            "news never activates detection or response rules. " + payload
+        )
+        assert _literal_tooltip_text(page.news_headline.toolTip()) == (
+            "View cached research details (no download)\n" + payload + "\n" + row["url"]
+        )
+        source_text = _literal_tooltip_text(page.news_source_button.toolTip())
+        assert source_text.startswith("Citizen Lab\nPublished (UTC): ")
+        assert source_text.endswith("\n" + row["url"])
+        assert _literal_tooltip_text(page.hits_table.item(0, 1).toolTip()) == payload
+        assert page.hits_table.item(0, 1).text() == payload
+        assert module.snapshot == original and module.calls == []
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize(("description", "expected"), [
+    (
+        '&lt;b&gt;Spyware advisory&lt;/b&gt; '
+        '&lt;img src="fixture://spyguard-tooltip/cisa"&gt;',
+        '<b>Spyware advisory</b> <img src="fixture://spyguard-tooltip/cisa">',
+    ),
+    (
+        '&amp;lt;b&amp;gt;Spyware advisory&amp;lt;/b&amp;gt;',
+        '&lt;b&gt;Spyware advisory&lt;/b&gt;',
+    ),
+])
+def test_cisa_encoded_description_to_actual_page_tooltip_is_literal(
+    monkeypatch, description, expected,
+):
+    from angerona.core import spyware_news
+    from angerona.gui import spyware_guard_page as ui
+
+    fetch_calls, opened = [], []
+
+    def forbidden_fetch(*args, **kwargs):
+        fetch_calls.append((args, kwargs))
+        raise AssertionError("Tooltip display attempted network ingestion")
+
+    monkeypatch.setattr(spyware_news, "_fetch_https_report", forbidden_fetch)
+    monkeypatch.setattr(ui.QDesktopServices, "openUrl", lambda url: opened.append(url.toString()))
+    now = time.time()
+    stamp = format_datetime(datetime.fromtimestamp(now - 60, timezone.utc))
+    url = "https://www.cisa.gov/news-events/cybersecurity-advisories/aa26-tooltip-control"
+    feed = (
+        '<rss version="2.0"><channel><item><title>Spyware advisory</title>'
+        f'<description><![CDATA[{description}]]></description>'
+        f'<link>{url}</link><pubDate>{stamp}</pubDate></item></channel></rss>'
+    )
+    rows = spyware_news.parse_news_feed(feed, source_name="cisa", now=now)
+    assert len(rows) == 1 and rows[0]["summary"] == expected
+    original_rows = copy.deepcopy(rows)
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["news"] = rows
+        page.refresh()
+        assert _literal_tooltip_text(page.news_summary.toolTip()) == expected
+        assert page._news_items[0]["summary"] == expected
+        assert module.snapshot["news"] == original_rows and rows == original_rows
+        assert page.news_summary.textFormat() == Qt.TextFormat.PlainText
+        assert fetch_calls == [] and opened == [] and module.calls == []
+        page.news_source_button.click()
+        assert opened == [url]  # Existing explicit, validated browser action only.
+        assert fetch_calls == [] and module.calls == []
     finally:
         page.close()

@@ -29,12 +29,15 @@ def test_console_reports_disconnect_and_bounds_event_history():
         assert window.chill.isEnabled()
         assert window.retention_days.value() == 14
         assert "Operator policy" in window.response.text()
+        assert "unavailable" in window.operator_auth.text()
+        assert "not proof" in window.operator_auth.text()
         for index in range(1100):
             window.events.appendPlainText(str(index))
         assert window.events.document().blockCount() <= 1000
         window.render_frame({"error": "Connection lost"})
         assert "unknown" in window.banner.text()
         assert not window.chill.isEnabled()
+        assert "unknown" in window.operator_auth.text()
     finally:
         window.close()
 

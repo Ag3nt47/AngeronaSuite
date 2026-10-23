@@ -248,12 +248,11 @@ def test_missing_recovery_assurance_stays_exposure(tmp_path, monkeypatch, verifi
     )
     bus = EventBus()
     module.bind(bus)
-    monkeypatch.setattr(module, "sleep", lambda *_args: module._stop.set())
     if verification_error:
         def broken():
             raise ValueError("inert verification failure")
         monkeypatch.setattr(module, "observe_once", broken)
-    module.run()
+    module._observe_and_emit()
     event = bus.recent(1)[0]
     assert event.severity == Severity.CRITICAL
     assert event_disposition(event) == "exposure"

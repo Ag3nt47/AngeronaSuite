@@ -17,20 +17,18 @@ import stat
 import threading
 import time
 import uuid
-from collections import OrderedDict
 from pathlib import Path
 from typing import Iterable
+
+from angerona.core.executable_trust import _open_sealed
+from angerona.core.source_sandbox import _hold_plain_directories, _validate_regular_file
 
 _LOCK = threading.RLock()
 _CACHE: dict[str, tuple[int, list[dict]]] = {}
 _DEFAULT_DATA_DIR: Path | None = None
-_HASH_CACHE: OrderedDict[
-    str,
-    tuple[tuple[int, int, int, int, int], float, str],
-] = OrderedDict()
-_HASH_CACHE_TTL_SECONDS = 2.0
-_HASH_CACHE_MAX = 256
 _MAX_EXECUTABLE_BYTES = 1024 * 1024 * 1024
+_HASH_READ_CHUNK_BYTES = 1024 * 1024
+_HASH_READ_BUDGET_SECONDS = 5.0
 _MAX_POLICY_BYTES = 2 * 1024 * 1024
 _MAX_POLICY_ENTRIES = 4096
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -85,67 +83,87 @@ def _is_reparse(path: Path) -> bool:
 
 
 def _hash_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
+    # On CPython 3.12 Windows, named stat retains creation time in st_ctime
+    # while descriptor stat can report change time there. Compare the explicit
+    # birth timestamp on Windows; POSIX change time remains meaningful. These
+    # stamps bind one retained read and never authorize cached digest reuse.
+    stamp = (getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+             if os.name == "nt" else info.st_ctime_ns)
     return (
         int(getattr(info, "st_dev", 0)),
         int(getattr(info, "st_ino", 0)),
         int(info.st_size),
         int(info.st_mtime_ns),
-        int(getattr(info, "st_ctime_ns", 0)),
+        int(stamp),
     )
 
 
-def executable_sha256(path: str | os.PathLike) -> str:
-    """Hash one ordinary executable without following a reparse-point file.
-
-    The cache is deliberately short lived and keyed by file identity, size,
-    modification time, and change time. Hashing occurs only after an exact path
-    matches a trusted entry, so ordinary untrusted process scans pay no digest
-    cost.
-    """
-    candidate = Path(path)
+def _open_hash_stream(path: Path):
+    if os.name == "nt":
+        return _open_sealed(path)
+    # A FIFO substituted after lstat must not block open before fstat can
+    # reject its type. O_NONBLOCK has no effect on regular files.
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    descriptor = os.open(path, flags)
     try:
-        before = candidate.stat()
-        if (
-            not candidate.is_file()
-            or _is_reparse(candidate)
-            or not 0 < before.st_size <= _MAX_EXECUTABLE_BYTES
-        ):
-            raise ValueError("trusted executable must be an ordinary bounded file")
+        return os.fdopen(descriptor, "rb", buffering=0)
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def executable_sha256(path: str | os.PathLike) -> str:
+    """Hash current bytes through a bounded, identity-bound ordinary file read.
+
+    The opened descriptor must match both the initial and final named file.
+    Windows denies write/delete sharing during this operation; no handle or
+    lock survives the call. Metadata-only digest reuse is unsafe: a same-size
+    edit with restored mtime can preserve Windows stat identity. Policy
+    snapshots remain reusable, but every digest authorization proves bytes
+    again. A read budget bounds cooperative work, not a stalled kernel I/O.
+    """
+    candidate = Path(os.path.abspath(os.fspath(path)))
+    deadline = time.monotonic() + _HASH_READ_BUDGET_SECONDS
+    try:
+        with _hold_plain_directories(candidate.parent):
+            _validate_regular_file(candidate)
+            before = candidate.lstat()
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or not 0 < before.st_size <= _MAX_EXECUTABLE_BYTES):
+                raise ValueError("trusted executable must be an ordinary bounded single-link file")
+            identity = _hash_identity(before)
+            digest = hashlib.sha256()
+            with _open_hash_stream(candidate) as handle:
+                held = os.fstat(handle.fileno())
+                if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1
+                        or _hash_identity(held) != identity):
+                    raise ValueError("trusted executable changed before its file was opened")
+                remaining = int(held.st_size)
+                while remaining:
+                    if time.monotonic() >= deadline:
+                        raise ValueError("trusted executable verification exceeded its read budget")
+                    chunk = handle.read(min(_HASH_READ_CHUNK_BYTES, remaining))
+                    if not chunk or len(chunk) > remaining:
+                        raise ValueError("trusted executable changed during verification")
+                    digest.update(chunk)
+                    remaining -= len(chunk)
+                if time.monotonic() >= deadline:
+                    raise ValueError("trusted executable verification exceeded its read budget")
+                if handle.read(1):
+                    raise ValueError("trusted executable grew during verification")
+                after = os.fstat(handle.fileno())
+                _validate_regular_file(candidate)
+                named = candidate.lstat()
+                if (after.st_nlink != 1 or named.st_nlink != 1
+                        or _hash_identity(after) != identity
+                        or _hash_identity(named) != identity):
+                    raise ValueError("trusted executable changed during verification")
+                if time.monotonic() >= deadline:
+                    raise ValueError("trusted executable verification exceeded its read budget")
+            return digest.hexdigest()
     except OSError as exc:
         raise ValueError("trusted executable is unavailable") from exc
-    identity = _hash_identity(before)
-    key = _normal_path(str(candidate))
-    now = time.monotonic()
-    with _LOCK:
-        cached = _HASH_CACHE.get(key)
-        if (
-            cached is not None
-            and cached[0] == identity
-            and now - cached[1] <= _HASH_CACHE_TTL_SECONDS
-        ):
-            _HASH_CACHE.move_to_end(key)
-            return cached[2]
-
-    digest = hashlib.sha256()
-    with candidate.open("rb") as handle:
-        while True:
-            chunk = handle.read(1024 * 1024)
-            if not chunk:
-                break
-            digest.update(chunk)
-    try:
-        after = candidate.stat()
-    except OSError as exc:
-        raise ValueError("trusted executable changed during verification") from exc
-    if _hash_identity(after) != identity:
-        raise ValueError("trusted executable changed during verification")
-    value = digest.hexdigest()
-    with _LOCK:
-        _HASH_CACHE[key] = (identity, now, value)
-        _HASH_CACHE.move_to_end(key)
-        while len(_HASH_CACHE) > _HASH_CACHE_MAX:
-            _HASH_CACHE.popitem(last=False)
-    return value
 
 
 def _load(data_dir=None) -> list[dict]:

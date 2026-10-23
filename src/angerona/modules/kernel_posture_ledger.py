@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -21,12 +22,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
+from angerona.core.agent_integrity import _held_bytes
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.privilege import trusted_powershell_path, trusted_windows_directories
 from angerona.core.win import run_hidden
 
 LEDGER_VERSION = 1
 GENESIS_HASH = "0" * 64
 MAX_LEDGER_RECORDS = 256
+MAX_LEDGER_RECORD_BYTES = 64 * 1024
+MAX_LEDGER_BYTES = MAX_LEDGER_RECORDS * MAX_LEDGER_RECORD_BYTES
 MAX_DRIVER_SERVICE_KEYS = 16_384
 MAX_DRIVER_COLLECTION_ERRORS = 32
 
@@ -49,12 +54,15 @@ def _bounded_text(value: object, limit: int = 240) -> str:
 def _powershell_json(script: str, timeout: float = 8.0) -> object | None:
     if os.name != "nt":
         return None
-    command = [
-        "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-        "-ExecutionPolicy", "Bypass", "-Command",
-        f"$ErrorActionPreference='Stop'; {script} | ConvertTo-Json -Compress",
-    ]
     try:
+        executable = trusted_powershell_path()
+        if not executable.is_file():
+            return None
+        command = [
+            str(executable), "-NoLogo", "-NoProfile", "-NonInteractive",
+            "-ExecutionPolicy", "Bypass", "-Command",
+            f"$ErrorActionPreference='Stop'; {script} | ConvertTo-Json -Compress",
+        ]
         result = run_hidden(
             command, capture_output=True, text=True, timeout=timeout,
             check=False,
@@ -95,8 +103,12 @@ def _boot_flags() -> dict:
     if os.name != "nt":
         return {"testsigning": None, "debug": None, "nointegritychecks": None}
     try:
+        _windows, system = trusted_windows_directories()
+        executable = system / "bcdedit.exe"
+        if not executable.is_file():
+            raise OSError("trusted bcdedit is unavailable")
         result = run_hidden(
-            ["bcdedit.exe", "/enum", "{current}"],
+            [str(executable), "/enum", "{current}"],
             capture_output=True, text=True, timeout=6, check=False,
         )
         if result.returncode != 0:
@@ -122,8 +134,12 @@ def _code_integrity_log() -> bool | None:
     if os.name != "nt":
         return None
     try:
+        _windows, system = trusted_windows_directories()
+        executable = system / "wevtutil.exe"
+        if not executable.is_file():
+            return None
         result = run_hidden(
-            ["wevtutil.exe", "gli", "Microsoft-Windows-CodeIntegrity/Operational"],
+            [str(executable), "gli", "Microsoft-Windows-CodeIntegrity/Operational"],
             capture_output=True, text=True, timeout=6, check=False,
         )
         return result.returncode == 0
@@ -328,6 +344,34 @@ class KernelPostureProvider:
         }
 
 
+def _bounded_ledger_lines(text: str, maximum: int) -> list[str]:
+    # Match str.splitlines() (including Unicode separators) lazily. Never
+    # materialize millions of line objects before checking the record budget.
+    lines: list[str] = []
+    start = 0
+
+    def append_line(end: int) -> None:
+        if len(lines) >= maximum:
+            raise ValueError("ledger exceeds its record bound")
+        if end - start > MAX_LEDGER_RECORD_BYTES:
+            raise ValueError("ledger record exceeds its byte bound")
+        line = text[start:end]
+        if not line.strip():
+            raise ValueError("ledger is empty or contains blank records")
+        if len(line.encode("utf-8")) > MAX_LEDGER_RECORD_BYTES:
+            raise ValueError("ledger record exceeds its byte bound")
+        lines.append(line)
+
+    for separator in re.finditer(r"\r\n|[\n\v\f\r\x1c-\x1e\x85\u2028\u2029]", text):
+        append_line(separator.start())
+        start = separator.end()
+    if start < len(text):
+        append_line(len(text))
+    if not lines:
+        raise ValueError("ledger is empty or contains blank records")
+    return lines
+
+
 class KernelPostureLedger:
     def __init__(
         self,
@@ -357,14 +401,14 @@ class KernelPostureLedger:
                 raise RuntimeError("kernel posture ledger disappeared after initialization")
             return []
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
-            if not lines or any(not line.strip() for line in lines):
-                raise ValueError("ledger is empty or contains blank records")
+            with _held_bytes(self.path, MAX_LEDGER_BYTES) as raw:
+                # Preserve read_text(encoding="utf-8") + json.loads(str):
+                # bytes must not enable JSON's UTF-16/32 or BOM auto-detection.
+                text = raw.decode("utf-8")
+            lines = _bounded_ledger_lines(text, self.max_records)
             rows = [json.loads(line) for line in lines]
             if any(not isinstance(row, dict) for row in rows):
                 raise ValueError("ledger record is not an object")
-            if len(rows) > self.max_records:
-                raise ValueError("ledger exceeds its record bound")
             return rows
         except Exception as exc:
             raise RuntimeError(f"kernel posture ledger is corrupt: {exc}") from exc
@@ -403,12 +447,18 @@ class KernelPostureLedger:
             rows = [self._signed(anchor_hashed), *retained]
         else:
             rows = normal_rows
+        lines = [json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows]
+        if any(len(line.encode("utf-8")) > MAX_LEDGER_RECORD_BYTES for line in lines):
+            raise ValueError("ledger record exceeds its byte bound")
+        payload = "".join(line + "\n" for line in lines)
+        # write_text's default newline=None translates each record separator
+        # to os.linesep. Preflight physical bytes while preserving that writer.
+        physical_size = len(payload.encode("utf-8")) + (len(os.linesep) - 1) * len(lines)
+        if physical_size > MAX_LEDGER_BYTES:
+            raise ValueError("ledger exceeds its byte bound")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temp = self.path.with_suffix(self.path.suffix + f".tmp.{os.getpid()}")
-        temp.write_text(
-            "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
-            encoding="utf-8",
-        )
+        temp.write_text(payload, encoding="utf-8")
         # Windows antivirus/indexing can briefly open a newly written file
         # without delete sharing, causing an otherwise atomic replace to fail
         # with ERROR_ACCESS_DENIED. Retry only that transient sharing class for
@@ -469,7 +519,7 @@ class KernelBoundaryPostureLedger(BaseModule):
         "Code Integrity telemetry, and kernel-driver-service drift."
     )
     category = "Integrity"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
     _INTERVAL = 300.0
 
@@ -494,7 +544,9 @@ class KernelBoundaryPostureLedger(BaseModule):
         changes: list[str] = []
         if self._last_snapshot:
             for key in sorted(snapshot):
-                if snapshot.get(key) != self._last_snapshot.get(key):
+                # Fresh collection time remains in every signed snapshot, but
+                # it is not a change to the measured host posture itself.
+                if key != "driver_collected_at" and snapshot.get(key) != self._last_snapshot.get(key):
                     changes.append(key)
         self._ledger.append(snapshot)
         self._last_snapshot = dict(snapshot)

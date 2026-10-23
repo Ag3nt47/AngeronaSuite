@@ -406,7 +406,7 @@ def test_workbench_has_complete_navigation_and_nonwriting_sandbox(tmp_path: Path
     assert dialog.windowTitle() == "Adaptation — Adapt to Host"
     assert [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())] == [
         "Overview", "Audit + Drift", "Exceptions + Feedback", "Adapt Host",
-        "Sandbox", "Automation", "Activity",
+        "Sandbox", "Automation", "Activity", "Independent Recovery", "Windows Prevention",
     ]
     menus = [action.text() for action in dialog.findChild(QMenuBar).actions()]
     assert menus == ["File", "Audit", "Adapt", "Safety", "Help"]

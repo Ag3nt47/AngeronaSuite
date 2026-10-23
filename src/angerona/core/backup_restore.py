@@ -730,7 +730,25 @@ class EncryptedBackupManager:
 
     def _scan_archive(
         self, path: Path, *, output_root: Path | None = None,
+        max_files: int = MAX_ITEMS, max_file_bytes: int = MAX_ITEM_BYTES,
+        max_total_bytes: int = MAX_TOTAL_BYTES, max_path_parts: int = 24,
+        reject_sparse: bool = False, continue_work=None,
     ) -> BackupManifest:
+        limits = ((max_files, MAX_ITEMS), (max_file_bytes, MAX_ITEM_BYTES),
+                  (max_total_bytes, MAX_TOTAL_BYTES), (max_path_parts, 24))
+        if (any(type(value) is not int or not 1 <= value <= ceiling for value, ceiling in limits)
+                or type(reject_sparse) is not bool or (continue_work is not None and not callable(continue_work))):
+            raise ValueError("backup scan limits are invalid")
+
+        def check():
+            if continue_work is not None and continue_work() is not True:
+                raise InterruptedError("backup verification cancelled")
+
+        def sparse(member):
+            return member.issparse() or any(
+                name.startswith("GNU.sparse.") or name == "SCHILY.realsize" for name in member.pax_headers)
+
+        check()
         stream, reader, header = self._open_archive(path)
         try:
             with tarfile.open(fileobj=reader, mode="r|") as archive:
@@ -738,6 +756,7 @@ class EncryptedBackupManager:
                 if (
                     member is None or member.name != "manifest.json"
                     or not member.isfile() or not 1 <= member.size <= 1024 * 1024
+                    or (reject_sparse and sparse(member))
                 ):
                     raise ValueError("backup manifest entry is invalid")
                 manifest_stream = archive.extractfile(member)
@@ -748,15 +767,22 @@ class EncryptedBackupManager:
                 except (UnicodeError, json.JSONDecodeError) as exc:
                     raise ValueError("backup manifest JSON is invalid") from exc
                 manifest = _parse_manifest(raw)
+                if (len(manifest.items) > max_files or manifest.total_bytes > max_total_bytes
+                        or any(item.size_bytes > max_file_bytes
+                               or len(_relative(item.relative_path).parts) > max_path_parts
+                               for item in manifest.items)):
+                    raise ValueError("backup manifest exceeds scan limits")
                 header_backup_id = _parse_header(header)["backup_id"]
                 if header_backup_id != manifest.backup_id:
                     raise ValueError("backup header identity does not match manifest")
                 for index, item in enumerate(manifest.items):
+                    check()
                     member = archive.next()
                     expected_name = f"data/{index:08d}.bin"
                     if (
                         member is None or member.name != expected_name
                         or not member.isfile() or member.size != item.size_bytes
+                        or (reject_sparse and sparse(member))
                     ):
                         raise ValueError("backup payload entry is invalid")
                     incoming = archive.extractfile(member)
@@ -771,7 +797,13 @@ class EncryptedBackupManager:
                     try:
                         hasher = hashlib.sha256()
                         size = 0
-                        while chunk := incoming.read(1024 * 1024):
+                        while True:
+                            # This also bounds cancellation when a tar reader
+                            # synthesizes sparse logical bytes without physical IO.
+                            check()
+                            chunk = incoming.read(1024 * 1024)
+                            if not chunk:
+                                break
                             size += len(chunk)
                             if size > item.size_bytes:
                                 raise ValueError("backup payload exceeds manifest size")
@@ -790,8 +822,10 @@ class EncryptedBackupManager:
                             output.close()
                 if archive.next() is not None:
                     raise ValueError("backup contains an unexpected extra entry")
-            while reader.read(1024 * 1024):
-                pass
+            while True:
+                check()
+                if not reader.read(1024 * 1024):
+                    break
             if not reader.done:
                 reader._finish()
             return manifest

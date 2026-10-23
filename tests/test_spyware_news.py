@@ -47,6 +47,16 @@ def project_zero_index(*items):
             + "".join(items) + "</main></body></html>")
 
 
+def citizen_index(*, title="Pegasus attacks on Serbian pro-democracy figures", date="October 19, 2026",
+                  link="https://citizenlab.ca/research/pegasus-spyware-serbian-pro-democracy/",
+                  summary="Research distinguishes Pegasus infection evidence from threat notifications."):
+    return f'''<!DOCTYPE html><html><body><div class="nua-home-slider-mobile__slide">
+      <h2 class="nua-home-slider-mobile__slide-title"><a href="{escape(link)}">Research</a></h2>
+      <h3 class="nua-home-slider-mobile__slide-subtitle"><a href="{escape(link)}">{title}</a></h3>
+      <p class="nua-home-slider-mobile__slide-excerpt">{summary}</p>
+      <p class="nua-home-slider-mobile__slide-date">{date}</p></div></body></html>'''
+
+
 def test_rss_filters_significance_deduplicates_links_and_orders_by_published():
     raw = rss(
         rss_item(title="Research event logistics", link="https://citizenlab.ca/research/event/"),
@@ -57,7 +67,8 @@ def test_rss_filters_significance_deduplicates_links_and_orders_by_published():
     rows = news.parse_news_feed(raw, source_name="citizen_lab", now=NOW)
     assert len(rows) == 2
     assert rows[0] == {"title": "Updated spyware exploit analysis", "url": ARTICLE,
-                       "published": NOW - 1000, "source": "citizen_lab", "verified_at": NOW}
+                       "published": NOW - 1000, "source": "citizen_lab", "verified_at": NOW,
+                       "summary": "", "advisory_only": True}
     assert rows[1]["title"] == "Browser vulnerability investigation"
 
 
@@ -150,7 +161,8 @@ def test_project_zero_html_matches_real_homepage_structure_and_utc_day_metadata(
     assert rows == [{"title": "How to fix a bug in a fix",
                      "url": "https://projectzero.google/2026/10/emergency-patching.html",
                      "published": datetime(2026, 10, 6, tzinfo=timezone.utc).timestamp(),
-                     "source": "project_zero", "verified_at": NOW}]
+                     "source": "project_zero", "verified_at": NOW,
+                     "summary": "Research on fast vendor fixes for urgent vulnerabilities.", "advisory_only": True}]
     assert news.parse_project_zero_index(raw.encode(), now=NOW) == rows
 
 
@@ -239,7 +251,7 @@ def test_news_fetch_requires_exact_opt_in_and_fixed_official_source(monkeypatch)
     calls = []
     def fetch(url, **kwargs):
         calls.append((url, kwargs))
-        return rss(rss_item()).encode(), "xml"
+        return citizen_index().encode(), "html"
     monkeypatch.setattr(news, "_fetch_https_report", fetch)
     for enabled in (False, None, 1, "true"):
         with pytest.raises(PermissionError):
@@ -249,7 +261,7 @@ def test_news_fetch_requires_exact_opt_in_and_fixed_official_source(monkeypatch)
     assert calls == []
     rows = news.fetch_news_source("citizen_lab", network_enabled=True, now=NOW)
     assert len(rows) == 1
-    assert calls == [(news.NEWS_SOURCES["citizen_lab"], {"timeout": 15.0, "expected_format": "xml"})]
+    assert calls == [("https://citizenlab.ca/", {"timeout": 15.0, "expected_format": "html"})]
 
 
 def test_project_zero_fetch_uses_bounded_official_html_index_instead_of_archive(monkeypatch):
@@ -294,3 +306,38 @@ def test_pinned_fetch_accepts_xml_only_when_explicitly_requested(monkeypatch, mi
 def test_offline_selftest_never_fetches(monkeypatch):
     monkeypatch.setattr(news, "_fetch_https_report", lambda *_a, **_k: pytest.fail("self-test fetched"))
     assert news.self_test()[0]
+
+
+def test_citizen_lab_research_card_uses_current_shape_dates_and_bounded_plain_summary(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("index parser attempted DNS"))
+    raw = citizen_index(summary="<b>Pegasus evidence</b> &amp; context <script>secret script</script>\u202e " + "a" * 1800)
+    rows = news.parse_citizen_lab_index(raw, now=NOW)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["published"] == datetime(2026, 10, 19, tzinfo=timezone.utc).timestamp()
+    assert row["title"] == "Pegasus attacks on Serbian pro-democracy figures"
+    assert row["summary"].startswith("Pegasus evidence & context")
+    assert "secret script" not in row["summary"] and "\u202e" not in row["summary"]
+    assert len(row["summary"]) <= news.MAX_NEWS_SUMMARY
+    assert row["advisory_only"] is True
+
+
+@pytest.mark.parametrize("changes", [{"date": "October 23, 2026"}, {"date": "September 01, 2026"},
+    {"date": "October 99, 2026"}, {"link": "https://evil.example/research/spyware/"},
+    {"title": "Research logistics", "summary": "<script>spyware exploit</script>"}])
+def test_citizen_lab_index_keeps_date_link_and_significance_guards(changes):
+    assert news.parse_citizen_lab_index(citizen_index(**changes), now=NOW) == []
+
+
+def test_offline_references_have_fixed_review_dates_no_io_and_detached_data(monkeypatch):
+    monkeypatch.setattr(news, "_fetch_https_report", lambda *_a, **_k: pytest.fail("offline reference fetched"))
+    now = datetime(2026, 10, 22, 12, tzinfo=timezone.utc).timestamp()
+    rows = news.reference_news(now=now)
+    assert len(rows) == 3
+    assert {row["origin"] for row in rows} == {"bundled-reference"}
+    assert all(row["advisory_only"] and row["reviewed"] == "2026-10-22" for row in rows)
+    assert all(row["published"] <= row["verified_at"] <= now for row in rows)
+    assert all(news.safe_news_article_url(row["url"], row["source"]) for row in rows)
+    rows[0]["title"] = "changed"
+    assert news.reference_news(now=now)[0]["title"] != "changed"
+    assert news.reference_news(now=NOW) == []  # Do not claim a future editorial review.

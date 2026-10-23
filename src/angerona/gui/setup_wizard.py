@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 
 CONFIG_KINDS = frozenset({
-    "check", "text", "secret_config", "combo", "mic", "spin", "double",
+    "check", "text", "multiline", "secret_config", "combo", "mic", "spin", "double",
 })
 SECRET_KINDS = frozenset({"password_env", "provider_secret"})
 
@@ -68,6 +68,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "fleet_service_enabled": False,
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
+        "github_daily_check_enabled": False,
     },
     "Maximum local coverage": {
         "eco_mode": False,
@@ -93,6 +94,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "fleet_service_enabled": False,
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
+        "github_daily_check_enabled": False,
     },
     "Low-resource local": {
         "eco_mode": True,
@@ -118,6 +120,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "fleet_service_enabled": False,
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
+        "github_daily_check_enabled": False,
     },
 }
 
@@ -406,6 +409,19 @@ STEPS: tuple[Step, ...] = (
         "Only capabilities supported by this operating system can be enabled.",
         (
             Field("check", "blackbox_enabled", "Run the Windows Black Box sidecar", platforms=("win32",)),
+            Field("check", "identity_session_collection_enabled", "Read Windows session Security events",
+                  platforms=("win32",), note="Opt-in Identity Session Guard input after restart. "
+                  "Bounded read-only events; no credential values. Missing access or continuity is a coverage gap."),
+            Field("check", "browser_extension_inventory_enabled", "Inventory current-user Chromium extension manifests",
+                  platforms=("win32",), note="Opt-in manifest IDs, versions and permissions only. "
+                  "No cookies, history, credentials or page contents are read. Requires Identity Session Guard."),
+            Field(
+                "check", "live_debug_enabled", "Share a local read-only Live AI Review stream",
+                platforms=("win32",),
+                note="Off by default. Shares bounded, redacted alerts and diagnostic views "
+                     "through a local Windows pipe. Readers cannot issue commands. "
+                     "Restart Angerona after changing this setting.",
+            ),
             Field("check", "ebpf_enabled", "Enable the optional privileged Linux BCC/eBPF sensor", platforms=("linux",),
                   note="Do not run the desktop GUI as root; deploy the sensor separately."),
             Field("check", "process_baseline_enabled", "Learn normal signed processes for operator-reviewed trust suggestions"),
@@ -467,7 +483,7 @@ STEPS: tuple[Step, ...] = (
                   note="Off by default. Permission and platform limits appear in source coverage."),
             Field("text", "spyware_research_urls", "Saved research URLs", "https://example.org/report",
                   note="Comma-separated HTTPS URLs; maximum 32 entries of 2048 characters each. "
-                       "Use the SpywareGuard tab to ingest and review reports; saving URLs grants no response authority."),
+                       "Use the SpywareGuard window to ingest and review reports; saving URLs grants no response authority."),
             Field("check", "spyware_beacon_enabled", "Enable the Hail Mary emergency beacon",
                   note="Off by default. Requires an authorized destination below; delivery is best effort "
                        "and can fail after network isolation, power loss or compromise."),
@@ -502,6 +518,18 @@ STEPS: tuple[Step, ...] = (
             Field("check", "ugcap_lockdown", "Request local-host isolation when integrity divergence is detected",
                   note="On by default. Adversary Combat independently gates isolation. Managed workers pause "
                        "on integrity failure regardless of this optional isolation request."),
+            Field("check", "ugcap_witness_enabled", "Require an independently administered UGCAP witness",
+                  note="Off by default. Requires separate enrollment, private mTLS certificates and pinned "
+                       "witness public identity. Unavailable or stale witness evidence holds the integrity gate. "
+                       "Provision the host key in the UGCAP Witness page; setup never creates a signing identity."),
+            Field("text", "ugcap_witness_endpoint", "Private HTTPS witness endpoint", maximum=512),
+            Field("text", "ugcap_witness_certificate_sha256", "Witness TLS certificate SHA-256", maximum=64),
+            Field("multiline", "ugcap_witness_authority_public_key", "Enrolled witness Ed25519 public key (PEM)", maximum=2048),
+            Field("text", "ugcap_witness_installation_id", "Enrolled installation ID", maximum=32),
+            Field("text", "ugcap_witness_client_id", "Enrolled host client ID", maximum=32),
+            Field("text", "ugcap_witness_client_certificate_path", "Local mTLS client certificate file", maximum=1024),
+            Field("text", "ugcap_witness_client_key_path", "Protected local mTLS private-key file", maximum=1024),
+            Field("text", "ugcap_witness_ca_bundle_path", "Private witness CA certificate file", maximum=1024),
         ),
     ),
     Step(
@@ -516,9 +544,16 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Updates and storage",
-        "Review where evidence is retained and configure the public release source.",
+        "v1.14 can check canonical GitHub metadata daily while Angerona is open. "
+        "This optional network check prompts before any isolated download and "
+        "never silently replaces your code or settings. Review where evidence is retained.",
         (
-            Field("text", "github_repo", "GitHub release repository", "owner/AngeronaSuite"),
+            Field("text", "github_repo", "Canonical GitHub update repository", "Ag3nt47/AngeronaSuite",
+                  note="Updates use Ag3nt47/AngeronaSuite only; source main and signed releases are distinct."),
+            Field("check", "github_daily_check_enabled", "Check GitHub for updates once a day (network)",
+                  note="Off until enabled. Prompts before downloading an isolated source candidate; "
+                       "user edits are preserved and conflicts block activation. Source preparation provides static checks; "
+                       "activation remains held for separate application validation. Checks run while Angerona is open."),
             Field("info", "data_dir", "Evidence and settings location"),
             Field("check", "alert_retention_enabled", "Automatically clean archived alert copies",
                   note="Keeps signed evidence, recovery records and pinned archives. Defaults: 30 days / 256 MiB."),
@@ -713,6 +748,13 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     ):
         errors.append("UGCAP requires an absolute local vault FILE path on the attached secondary volume.")
 
+    from angerona.core.ugcap_witness import WITNESS_DEFAULTS, validate_settings
+    try:
+        validate_settings({key: values.get(key, default) for key, default in WITNESS_DEFAULTS.items()})
+    except (ValueError, RuntimeError, TypeError):
+        errors.append("UGCAP witness enrollment is invalid or incomplete. Review its private HTTPS endpoint, "
+                      "public identity pins, IDs and mTLS files in the UGCAP Witness page.")
+
     try:
         interval = int(values.get("aria_inbox_interval_min", 0))
         if not 1 <= interval <= 1440:
@@ -779,6 +821,8 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     repo = str(values.get("github_repo", ""))
     if repo and not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
         errors.append("GitHub repository must use the owner/repository form.")
+    if values.get("github_daily_check_enabled") and repo != "Ag3nt47/AngeronaSuite":
+        errors.append("Daily updates require the canonical repository Ag3nt47/AngeronaSuite.")
     return errors
 
 
@@ -879,7 +923,7 @@ try:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import (
         QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QHBoxLayout,
-        QLabel, QLineEdit, QMessageBox, QPushButton, QScrollArea, QSpinBox,
+        QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
         QStackedWidget, QVBoxLayout, QWidget,
     )
     _HAVE_QT = True
@@ -1015,6 +1059,17 @@ if _HAVE_QT:
                 widget.setRange(float(field.minimum), float(field.maximum))
                 widget.setValue(float(getattr(self._cfg, field.key, field.minimum)))
                 return widget
+            if field.kind == "multiline":
+                widget = QPlainTextEdit()
+                widget.setPlainText(str(getattr(self._cfg, field.key, "")))
+                widget.setMaximumHeight(100)
+                widget.setPlaceholderText(field.placeholder)
+                def bound_public_text(editor=widget, maximum=int(field.maximum)):
+                    value = editor.toPlainText()
+                    if len(value) > maximum:
+                        editor.setPlainText(value[:maximum])
+                widget.textChanged.connect(bound_public_text)
+                return widget
             if field.kind in {"text", "secret_config", "password_env", "provider_secret"}:
                 current = "" if field.kind in SECRET_KINDS or field.kind == "secret_config" else getattr(self._cfg, field.key, "")
                 if field.key in {"ai_provider_order", "spyware_research_urls"} and isinstance(current, list):
@@ -1054,6 +1109,8 @@ if _HAVE_QT:
                 return widget.value()
             if isinstance(widget, QLineEdit):
                 return widget.text().strip()
+            if isinstance(widget, QPlainTextEdit):
+                return widget.toPlainText().strip()
             return None
 
         def _staged(self) -> tuple[dict[str, object], dict[str, str], dict[str, str]]:
@@ -1090,6 +1147,8 @@ if _HAVE_QT:
                     widget.setValue(value)
                 elif isinstance(widget, QLineEdit):
                     widget.setText(str(value))
+                elif isinstance(widget, QPlainTextEdit):
+                    widget.setPlainText(str(value))
 
         def _set_secret_widget(self, key: str, value: str) -> bool:
             for mapping in self._widgets:
@@ -1155,6 +1214,7 @@ if _HAVE_QT:
                 "aria_voice_cloud_tts", "aria_research_egress", "aria_push_enabled",
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
                 "spyware_network_enabled", "spyware_beacon_enabled",
+                "github_daily_check_enabled",
             ) if values.get(key)]
             return (
                 f"Platform: {platform_family()}\n"
@@ -1231,6 +1291,7 @@ if _HAVE_QT:
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
                 "siem_host", "remote_bridge_mode", "ioc_feed_url",
                 "spyware_network_enabled", "spyware_beacon_enabled",
+                "github_daily_check_enabled",
             ))
             if outbound and QMessageBox.question(
                 self, "Confirm optional network features",

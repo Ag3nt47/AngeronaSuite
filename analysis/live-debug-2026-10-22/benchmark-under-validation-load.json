@@ -1,0 +1,35 @@
+{
+  "schema": "angerona.live-debug-benchmark.v1",
+  "synthetic": true,
+  "python": "3.12.10",
+  "baseline": {
+    "count": 1000,
+    "wall_seconds": 0.032487200000105076,
+    "publish_us_p50": 24.900000425986946,
+    "publish_us_p95": 60.200000007171184,
+    "publish_us_max": 234.499999351101
+  },
+  "paced_500_per_second": {
+    "count": 1000,
+    "wall_seconds": 2.6452970000000278,
+    "publish_us_p50": 117.64999999286374,
+    "publish_us_p95": 249.90000019897707,
+    "publish_us_max": 1929.0000000182772,
+    "exported": 1000,
+    "dropped": 0,
+    "export_ms_p50": 0.0,
+    "export_ms_p95": 1.0213851928710938,
+    "export_ms_max": 5.410194396972656
+  },
+  "burst": {
+    "count": 5000,
+    "wall_seconds": 0.43659829999978683,
+    "publish_us_p50": 30.79999987676274,
+    "publish_us_p95": 126.7000006919261,
+    "publish_us_max": 32991.69999991136,
+    "dropped": 2602
+  },
+  "history_100_ms_p50": 1.6379499998038227,
+  "retained_records": 2000,
+  "shutdown_ms": 45.355499999459425
+}

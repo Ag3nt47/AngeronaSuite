@@ -81,7 +81,7 @@ class NetworkProtocolDecoderModule(BaseModule):
     description = ("Decodes DNS query names and scores label entropy to catch DGA "
                    "beacons and DNS-tunneling exfiltration.")
     category = "Network"
-    version = "1.13.0"
+    version = "1.14.0"
 
     def __init__(self) -> None:
         super().__init__()

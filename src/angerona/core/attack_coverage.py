@@ -1,20 +1,45 @@
 """core/attack_coverage.py — MITRE ATT&CK coverage map + text heatmap.
 
-Turns "we detect stuff" into a defensible, honest matrix: for every technique the
-suite touches, which of the three capabilities we actually have —
-  D = Detect      (a live sensor/module raises on it)
-  S = Simulate    (a red-team / shark drill exercises it, so detection is tested)
-  R = Remediate   (a vetted action in remediation_actions.py can respond)
+The curated registry declares shipped capabilities, not successful runtime work:
+  D = detector mapping; S = available drill; R = vetted response action.
+Actual readiness is separate: fresh current-generation sensor work, followed by
+dated, expiring, narrowly scoped detection and response verification evidence.
 
 The registry below is CURATED (not scraped from code — that's fragile), but the
 Remediate column is cross-checked at runtime against the real ACTIONS allow-list
-so the map can't silently claim a response we don't ship. Gaps are shown, not
-hidden — the point of the view is to make blind spots obvious.
+so the map cannot declare a response we do not ship. Existence never earns
+response-verified credit; unavailable sensors and missing tests remain gaps.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List
+import weakref
+
+from angerona.core.verified_readiness import VerifiedReadiness
+
+
+_readiness_ref: weakref.ReferenceType | None = None
+
+
+def bind_manager(manager) -> VerifiedReadiness:
+    """Install one manager-owned advisory cache after normal composition."""
+    global _readiness_ref
+    service = VerifiedReadiness(manager)
+    _readiness_ref = weakref.ref(service)
+    return service
+
+
+def readiness_snapshot(manager=None) -> dict:
+    service = (getattr(manager, "verified_readiness", None) if manager is not None
+               else _readiness_ref() if _readiness_ref is not None else None)
+    if service is not None:
+        return service.snapshot(COVERAGE)
+    return {"schema": "angerona.verified-readiness.v1", "available": False,
+            "reason": "no live registered readiness service", "history": [],
+            "techniques": [{"tid": t.tid, "stage": "declared", "collecting": False,
+                            "sources": [], "evidence": None,
+                            "gaps": ["no live registered readiness service"]} for t in COVERAGE]}
 
 
 @dataclass(frozen=True)
@@ -89,7 +114,7 @@ def _valid_action_keys() -> set:
 
 
 def summary() -> dict:
-    """Counts of techniques with each capability, plus overall coverage %."""
+    """Separate curated declarations from current verified runtime readiness."""
     valid = _valid_action_keys()
     d = s = r = 0
     for t in COVERAGE:
@@ -100,8 +125,16 @@ def summary() -> dict:
     # "Covered" = at least a detection OR a remediation for the technique.
     covered = sum(1 for t in COVERAGE
                   if t.detect or any(k in valid for k in t.remediate))
+    live = readiness_snapshot()
+    states = live["techniques"]
+    collecting = sum(bool(row["collecting"]) for row in states)
+    tested = sum(row["stage"] in {"detection-tested", "response-verified"} for row in states)
+    responded = sum(row["stage"] == "response-verified" for row in states)
     return {"techniques": n, "detect": d, "simulate": s, "remediate": r,
-            "covered": covered, "coverage_pct": round(100 * covered / n) if n else 0}
+            "declared_covered": covered,
+            "declared_coverage_pct": round(100 * covered / n) if n else 0,
+            "collecting": collecting, "detection_tested": tested, "response_verified": responded,
+            "covered": tested, "coverage_pct": round(100 * tested / n) if n else 0}
 
 
 def render() -> str:
@@ -115,7 +148,9 @@ def render() -> str:
     def flag(present, ch):
         return ch if present else "·"
 
-    lines = ["MITRE ATT&CK coverage  —  D=Detect  S=Simulate  R=Remediate   (· = gap)",
+    readiness = {r["tid"]: r for r in readiness_snapshot()["techniques"]}
+    lines = ["MITRE ATT&CK declarations — D=Detect S=Simulate R=Remediate (· = gap)",
+             "Readiness requires fresh sensor work; scoped test/response proof expires.",
              "=" * 72]
     order = _TACTIC_ORDER + [x for x in by_tactic if x not in _TACTIC_ORDER]
     for tactic in order:
@@ -128,10 +163,13 @@ def render() -> str:
             caps = (flag(t.detect, "D") + flag(t.simulate, "S") + flag(r_ok, "R"))
             who = t.detect or t.remediate or t.simulate
             src = f"  ({who[0]})" if who else ""
-            lines.append(f"  {caps}  {t.tid:<11} {t.name}{src}")
+            state = readiness.get(t.tid, {})
+            lines.append(f"  {caps}  {t.tid:<11} {t.name}{src}  [{state.get('stage', 'declared')}]")
+            if state.get("gaps"):
+                lines.append("       gap: " + "; ".join(state["gaps"]))
     s = summary()
     lines.append("\n" + "-" * 72)
-    lines.append(f"{s['covered']}/{s['techniques']} techniques covered "
-                 f"({s['coverage_pct']}%)  ·  detect={s['detect']}  "
-                 f"simulate={s['simulate']}  remediate={s['remediate']}")
+    lines.append(f"Declared {s['declared_covered']}/{s['techniques']}; collecting={s['collecting']}; "
+                 f"detection-tested={s['detection_tested']}; response-verified={s['response_verified']}.")
+    lines.append("Practice proof covers inert marker/process controls only, not real exploit coverage.")
     return "\n".join(lines)

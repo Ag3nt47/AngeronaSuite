@@ -14,6 +14,7 @@ Run it with the venv Python:  run-selfcheck.bat  (writes selfcheck_report.txt)
 from __future__ import annotations
 
 import os
+import faulthandler
 import json
 import sys
 import time
@@ -32,6 +33,8 @@ for _stream in (sys.stdout, sys.stderr):
         _stream.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+faulthandler.enable(all_threads=True)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # no real display needed
 os.environ.setdefault("ANGERONA_SELFCHECK", "1")
@@ -87,10 +90,10 @@ module_runner = None
 def rec(status: str, name: str, detail: str = "") -> None:
     rows.append((status, name, detail))
     print(f"{'[+]' if status == PASS else '[!]'} {status}  {name}"
-          + (f"  — {detail}" if detail and status == PASS else ""))
+          + (f"  — {detail}" if detail and status == PASS else ""), flush=True)
     if detail and status == FAIL:
         for line in detail.splitlines():
-            print("       " + line)
+            print("       " + line, flush=True)
 
 
 def phase(name: str):
@@ -124,6 +127,90 @@ qt = QApplication.instance() or QApplication(sys.argv)
 # real application. Timers are first dispatched in later phases; collecting a
 # prior top-level wrapper before then can leave native callbacks dangling.
 _qt_owners = []
+
+
+def _keep_widget(widget):
+    """Retain the Python owner until its timers/readers have been quiesced."""
+    _qt_owners.append(widget)
+    return widget
+
+
+def _teardown_qt_owned(qt, owners, *, timeout=5.0):
+    """Stop owned activity before deletion; never dispatch ordinary callbacks."""
+    import threading
+    from PySide6.QtCore import QCoreApplication, QEvent, QThread, QTimer
+    from PySide6.QtWidgets import QWidget
+    from shiboken6 import isValid
+    from angerona.gui.async_snapshot import AsyncSnapshot
+    from angerona.gui.header_controls import PanelRevealOverlay
+    from angerona.gui.main_window import MainWindow
+    from angerona.gui.system_pulse import SystemPulseCard
+
+    roots = {id(widget): widget for widget in owners if isValid(widget)}
+    widgets = dict(roots)
+    for widget in roots.values():
+        widgets.update((id(child), child) for child in widget.findChildren(QWidget))
+    python_workers = {}
+    qt_workers = {}
+    readers = 0
+    for widget in widgets.values():
+        if isinstance(widget, PanelRevealOverlay):
+            widget.shutdown()
+        for timer in widget.findChildren(QTimer):
+            timer.stop()
+    for widget in widgets.values():
+        for value in tuple(vars(widget).values()):
+            if isinstance(value, AsyncSnapshot):
+                value.close()
+                readers += 1
+                if value.thread is not None:
+                    python_workers[id(value.thread)] = value.thread
+            elif isinstance(value, QThread) and isValid(value):
+                qt_workers[id(value)] = value
+        if isinstance(widget, SystemPulseCard):
+            widget.shutdown()
+            python_workers[id(widget._sample_worker)] = widget._sample_worker
+        if isinstance(widget, MainWindow):
+            widget._simulation_closing = True
+            widget._close_flight_instructor()
+            instructor = getattr(widget, "_fi_worker", None)
+            if instructor is not None:
+                python_workers[id(instructor)] = instructor
+            widget._aria_voice_stop = True
+            widget._close_operations_service()
+            widget._holographic_orb.shutdown()
+            widget.tray.hide()
+            watchdog = getattr(widget, "_ui_watchdog", None)
+            if watchdog is not None:
+                watchdog.stop()
+                if watchdog._thread is not None:
+                    python_workers[id(watchdog._thread)] = watchdog._thread
+        elif id(widget) in roots:
+            # MainWindow.Close means hide-to-tray; the dashboard is handled
+            # explicitly above rather than triggering notifications/hard exit.
+            widget.close()
+
+    deadline = time.monotonic() + timeout
+    for worker in python_workers.values():
+        if worker is not threading.current_thread() and worker.ident is not None:
+            worker.join(max(0.0, deadline - time.monotonic()))
+        assert not worker.is_alive(), f"GUI reader did not stop: {worker.name}"
+    for worker in qt_workers.values():
+        if not isValid(worker):
+            continue
+        worker.requestInterruption()
+        worker.quit()
+        worker.wait(max(0, int((deadline - time.monotonic()) * 1000)))
+        assert not worker.isRunning(), f"Qt worker did not stop: {worker.objectName()}"
+    for widget in roots.values():
+        if isValid(widget):
+            widget.hide()
+            widget.deleteLater()
+    # processEvents() here can deliver already-due timers/queued completions
+    # against a partly dismantled widget tree. Complete only requested deletes.
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert all(not isValid(widget) for widget in roots.values()), "owned widget deletion incomplete"
+    return f"{len(roots)} widget owners, {readers} readers, {len(python_workers)} Python / {len(qt_workers)} Qt workers retired"
 
 from angerona.core.config import Config              # noqa: E402
 from angerona.core.eventbus import EventBus, Event, Severity   # noqa: E402
@@ -213,7 +300,7 @@ def _():
 
     runner = module_runner = SelfTestRunner(manager, bus)
     report = runner.run(timeout=12.0, expected_failure_cb=_expected_reason)
-    print(report)
+    print(report, flush=True)
     if runner.last_failures:
         raise AssertionError(
             f"{len(runner.last_failures)} UNEXPECTED module failure(s): "
@@ -302,6 +389,17 @@ def _():
     c = pages.DashboardCards(bus, storage, manager)
     _qt_owners.append(c)
     c.refresh()
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        qt.processEvents()
+        if not c._count_reader.busy and not c._threat_reader.busy:
+            if c._cached_count >= 3 and c.c_crit.value.text() == "1":
+                break
+            c.refresh()
+        time.sleep(0.005)
+    assert c._cached_count >= 3, "dashboard counts did not render seeded evidence"
+    assert c.c_crit.value.text() == "1", "dashboard did not render seeded critical evidence"
+    assert c.c_threat.value.text() == "Critical", "dashboard threat snapshot did not complete"
     return (f"modules={c.c_modules.value.text()} alerts={c.c_alerts.value.text()} "
             f"crit={c.c_crit.value.text()} threat={c.c_threat.value.text()}")
 
@@ -322,7 +420,7 @@ def _wait_event_history(dialog, *, min_rows: int) -> None:
 
 @phase("EventsWindow — Alerts (LOW+)")
 def _():
-    d = pages.EventsWindow("Alerts", bus, storage, min_sev=Severity.LOW)
+    d = _keep_widget(pages.EventsWindow("Alerts", bus, storage, min_sev=Severity.LOW))
     try:
         _wait_event_history(d, min_rows=2)
         assert d.table.rowCount() >= 2, "alert history did not render seeded evidence"
@@ -333,7 +431,7 @@ def _():
 
 @phase("EventsWindow — Critical")
 def _():
-    d = pages.EventsWindow("Critical", bus, storage, min_sev=Severity.CRITICAL)
+    d = _keep_widget(pages.EventsWindow("Critical", bus, storage, min_sev=Severity.CRITICAL))
     try:
         _wait_event_history(d, min_rows=1)
         assert d.table.rowCount() >= 1, "critical history did not render seeded evidence"
@@ -344,16 +442,22 @@ def _():
 
 @phase("ModulesStatusWindow")
 def _():
-    d = pages.ModulesStatusWindow(manager, bus)
+    d = _keep_widget(pages.ModulesStatusWindow(manager, bus))
     d._refresh()
     return f"{d.table.rowCount()} rows"
 
 
 @phase("ThreatWindow — refresh + select + posture lookup")
 def _():
-    d = pages.ThreatWindow(bus, storage, manager)
+    d = _keep_widget(pages.ThreatWindow(bus, storage, manager))
     d._refresh()
+    deadline = time.monotonic() + 5.0
+    while d._threat_reader.busy and time.monotonic() < deadline:
+        qt.processEvents()
+        time.sleep(0.005)
+    assert not d._threat_reader.busy, "threat reader did not finish"
     n = d.table.rowCount()
+    assert n, "threat snapshot did not render the seeded HIGH/CRITICAL evidence"
     if n:
         d.table.setCurrentCell(0, 0)
         d._on_select(0, 0)
@@ -364,7 +468,7 @@ def _():
 @phase("ModuleInspector — build for first module")
 def _():
     first = sorted(manager.modules.values(), key=lambda m: m.name)[0]
-    pages.ModuleInspector(manager, bus, first)
+    _keep_widget(pages.ModuleInspector(manager, bus, first))
     return first.name
 
 
@@ -429,9 +533,9 @@ def _():
     prov.graph.ingest("t", "file", {"pid": 200, "path": "C:/temp/evil.exe"}, time.time())
     tree = pages.build_blast_tree(prov, 200)
     assert tree["origin"] and tree["blast_radius"], "blast tree empty"
-    d = pages.BlastRadiusDialog(prov, 200)
+    d = _keep_widget(pages.BlastRadiusDialog(prov, 200))
     assert d.tree.topLevelItemCount() == 2, "blast tree missing origin/blast roots"
-    cv = pages.CollisionView()
+    cv = _keep_widget(pages.CollisionView())
     cv._refresh()
     assert pages._ring_for("File Integrity Monitor").startswith("Ring 1"), "ring map off"
     return f"blast roots=2; collision rows={cv.table.rowCount()}"
@@ -447,7 +551,7 @@ def _():
         for p in ("complexity", "target_dir", "custom"):
             assert p in sig.parameters, f"{eng.__name__}.start missing {p}"
         assert hasattr(eng, "_step_custom"), f"{eng.__name__} missing _step_custom"
-    dlg = pages.RedTeamSimulationDialog(default_target="C:/Temp")
+    dlg = _keep_widget(pages.RedTeamSimulationDialog(default_target="C:/Temp"))
     dlg.cb_shark.setChecked(True)
     dlg.cb_apt.setChecked(False)
     dlg.complexity.setCurrentText("High (3 phases)")
@@ -580,14 +684,14 @@ def _():
     # persistence: a fresh store reads the saved file back
     assert CustomTechniqueStore(sp).names() == ["t2"], "store did not persist"
 
-    dlg = RedTeamSimulationDialog(default_target="C:/Temp", store_path=sp)
+    dlg = _keep_widget(RedTeamSimulationDialog(default_target="C:/Temp", store_path=sp))
     dlg.custom_name.setText("t3"); dlg.custom_payload.setPlainText("x")
     dlg._save_custom()
     assert "t3" in dlg.store.names(), "dialog save didn't persist"
     dlg._delete_custom()
     assert "t3" not in dlg.store.names(), "dialog delete didn't remove"
 
-    mon = SharkMonitorDialog()
+    mon = _keep_widget(SharkMonitorDialog())
     mon.append("offense line"); mon.append_instructor("coach line")
     assert hasattr(mon, "log") and hasattr(mon, "instructor"), "monitor not two-pane"
     return "console cmds ok; custom CRUD+persist ok; two-pane monitor ok"
@@ -776,16 +880,22 @@ def _():
 def _():
     from angerona.core import attack_coverage as ac
     text = ac.render()
-    assert "MITRE ATT&CK coverage" in text and "T1071" in text, "heatmap render broken"
+    assert "MITRE ATT&CK declarations" in text and "T1071" in text, "heatmap render broken"
     s = ac.summary()
     assert 0 <= s["coverage_pct"] <= 100 and s["techniques"] > 10, f"bad summary: {s}"
+    assert (0 <= s["response_verified"] <= s["detection_tested"] <= s["techniques"]
+            and s["covered"] == s["detection_tested"]), f"unproved coverage: {s}"
+    assert s["declared_covered"] >= s["detection_tested"], f"declaration/proof mismatch: {s}"
+    assert "inert marker/process controls only" in text, "practice proof scope missing"
     # Every remediate reference must be a REAL action key (no phantom coverage).
     from angerona.modules.remediation_actions import ACTIONS
     valid = {a.key for a in ACTIONS}
     for t in ac.COVERAGE:
         for k in t.remediate:
             assert k in valid, f"{t.tid} claims non-existent action '{k}'"
-    return f"{s['covered']}/{s['techniques']} techniques ({s['coverage_pct']}%); remediate keys real"
+    return (f"{s['declared_covered']} declared; {s['collecting']} collecting; "
+            f"{s['detection_tested']} scoped detection tests; "
+            f"{s['response_verified']} verified responses; remediate keys real")
 
 
 @phase("Incident correlation (grouping + scoring + window split)")
@@ -817,7 +927,7 @@ def _():
 @phase("World View → native Qt flow window (live)")
 def _():
     from angerona.gui.flow_window import FlowWindow
-    w = FlowWindow(bus, storage, manager, config)
+    w = _keep_widget(FlowWindow(bus, storage, manager, config))
     assert len(w._items) == 6, f"expected 6 flow nodes (2x3 grid), got {len(w._items)}"
     w._refresh()
     w._select("harden")
@@ -852,28 +962,14 @@ def _():
     return f"WAL on; ledger bounded (300 inserts → {n} rows); audit-count cached"
 
 
-# Tear down native Qt objects and any module-owned workers deterministically.
-# Relying on interpreter finalization left timers/widgets alive and caused a
-# Windows 0xC0000409 native fault after an otherwise clean self-check.
-try:
+@phase("Qt owned-widget, reader and recorder teardown")
+def _():
     manager.stop_all()
-except Exception:
-    pass
-qt.closeAllWindows()
-for _widget in _qt_owners:
-    _widget.deleteLater()
-qt.processEvents()
-time.sleep(0.2)
-qt.processEvents()
-try:
-    from PySide6.QtCore import QCoreApplication, QEvent
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-except Exception:
-    pass
-try:
+    detail = _teardown_qt_owned(qt, _qt_owners)
     storage.close()
-except Exception:
-    pass
+    qt.shutdown()
+    assert QApplication.instance() is None, "QApplication shutdown incomplete"
+    return detail
 
 passed = sum(1 for s, _, _ in rows if s == PASS)
 failed = sum(1 for s, _, _ in rows if s == FAIL)
@@ -900,9 +996,6 @@ if failed:
         if s == FAIL:
             print("   - " + n)
 print("=" * 72)
-# PySide6 on the supported Windows/Python combination can fault while its
-# process-global Qt state is being finalized, after all explicit cleanup has
-# completed. Exit directly so the harness reports its actual test result.
 sys.stdout.flush()
 sys.stderr.flush()
-os._exit(1 if failed else 0)
+raise SystemExit(1 if failed else 0)

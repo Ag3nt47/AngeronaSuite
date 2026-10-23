@@ -1,0 +1,855 @@
+{
+  "schema": "angerona.reviewed-issue-map.v1",
+  "version": "1.14.0",
+  "review_date": "2026-10-22",
+  "scope": "source and isolated diagnostic review; no clean-host attestation",
+  "interaction_map": "interaction-map.md",
+  "validation": "validation.json",
+  "issues": [
+    {
+      "id": "INT-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "`marshal` code fingerprints change when execution holds an extra constant reference; reproduced on the exact `executable_sha256` callable",
+      "result_and_limits": "Canonical v2 fingerprints preserve constants, nested code, exception tables, defaults and closures. Old independent manifests require explicit review."
+    },
+    {
+      "id": "INT-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Repeated ACL helper collection can time out; localized principal names are incomplete evidence",
+      "result_and_limits": "Native Windows SID/access-mask audit; denied, unsupported and incomplete fallback evidence remains unknown. The screenshot's exact helper failure is unconfirmed."
+    },
+    {
+      "id": "SEC-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "A swap/read/restore race returned approved bytes for a different named executable",
+      "result_and_limits": "Initial, opened-descriptor and final named identity checks, single-link enforcement and retained no-follow file/parent custody. Inert re-attack denied."
+    },
+    {
+      "id": "SEC-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "A same-size edit with restored mtime preserved Windows metadata and reused an approved cached digest",
+      "result_and_limits": "Removed executable digest-result reuse. Every authorization hashes fresh bounded content; policy snapshot caching remains."
+    },
+    {
+      "id": "SEC-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Patching the separate stricter digest predicate escaped its sibling's runtime monitoring",
+      "result_and_limits": "Monitor the strict predicate and new custody helpers explicitly; missing mandatory coverage fails closed."
+    },
+    {
+      "id": "PER-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "An unquoted service configuration alone requested critical host isolation",
+      "result_and_limits": "Configuration exposure remains reviewable and cannot request containment. Eligible execution detections keep the single-rule policy."
+    },
+    {
+      "id": "PER-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Whole-command path matching treated log/output arguments as executable payloads",
+      "result_and_limits": "Parse executable/script targets and retain real transient execution findings."
+    },
+    {
+      "id": "PER-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Task names/descriptions and ordinary interpreter use were treated as critical execution",
+      "result_and_limits": "Inspect task execution fields; generic administration/profile locations remain review exposures. No trust-by-name exception."
+    },
+    {
+      "id": "PER-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "Initial parser narrowing missed valid nested/quoted interpreter execution",
+      "result_and_limits": "Independent review added cmd switches/double quoting, PowerShell prefixes/direct scripts, Python option arguments, shell commands and quoted regsvr32 targets. Unsupported syntax is partial analysis."
+    },
+    {
+      "id": "CLS-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Exact ACL/persistence collection failures and Sysmon replay notices entered the active-threat list",
+      "result_and_limits": "Producer-specific health contracts retain signed severity. Explicit attack, integrity and delivery-failure evidence still scores."
+    },
+    {
+      "id": "GUI-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Reveal filter resolved PySide enum attributes for every widget event",
+      "result_and_limits": "Cached membership; measured rejection-path component speedup 3.71 times in the isolated review. This is not a whole-application speedup."
+    },
+    {
+      "id": "GUI-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Deleted destinations and stale opening callbacks could wedge reveal coordination",
+      "result_and_limits": "Owned/coalesced timers, deleted-target recovery and preserved security-window opt-outs."
+    },
+    {
+      "id": "GUI-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Recovered heartbeat could be blamed for an earlier delay; a sampled Qt stack was called a deadlock",
+      "result_and_limits": "Stable heartbeat sampling and accurate uncertainty in watchdog/Black Box wording."
+    },
+    {
+      "id": "GUI-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "Runtime-code source location existed but alert detail showed unavailable",
+      "result_and_limits": "Display source provenance without converting the source file into a quarantine target."
+    },
+    {
+      "id": "GUI-05",
+      "status": "open-cause",
+      "cause_or_observation": "Exact native Qt five-second delay in screenshots",
+      "result_and_limits": "Unresolved cause; a Python stack sample alone cannot prove a lock cycle. Collect live evidence and repeated samples."
+    },
+    {
+      "id": "GUI-06",
+      "status": "implemented-validated",
+      "cause_or_observation": "Legacy threat dialog could perform current executable-authorization hashing on Qt",
+      "result_and_limits": "Coalesced background threat snapshots, responsive pending state, retained evidence on read failure and safe close."
+    },
+    {
+      "id": "GUI-07",
+      "status": "open-cause",
+      "cause_or_observation": "An isolated real source launch measured an 8.94-second startup Qt timer gap while offline regression was running",
+      "result_and_limits": "Captured through the live feed with no reported queue loss. A sampled responsiveness-publication frame is not causal proof: 2,000 isolated real-footer publications peaked at 7.6 ms. Bounded next-run instrumentation is prepared; cause remains open."
+    },
+    {
+      "id": "DBG-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "A normal-user reviewer cannot read elevated private recorder storage",
+      "result_and_limits": "Opt-in outward-only Windows pipe shares bounded redacted views; protected storage ACLs stay intact."
+    },
+    {
+      "id": "DBG-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "History paging copied all retained records while holding the publisher lock",
+      "result_and_limits": "Select only the requested page under the lock, then copy outside it; serialization also stays outside the handoff lock."
+    },
+    {
+      "id": "DBG-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Log path checks could race a reparse/parent replacement",
+      "result_and_limits": "Retained native parent/file custody and canonical handle-path checks; no arbitrary-file export API."
+    },
+    {
+      "id": "DBG-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "Malformed records, slow readers, disconnects and cancellation can lose or misattribute evidence",
+      "result_and_limits": "Bounded frames/queues/clients, OS PID and held process-birth binding, explicit gaps, cancellation completion ownership and regression coverage."
+    },
+    {
+      "id": "DBG-05",
+      "status": "implemented-validated",
+      "cause_or_observation": "CLI writer failure could re-enter the failed writer; unbound verdicts could label unseen sequences",
+      "result_and_limits": "Independent review requires isolated output errors and reasoned, record-bound caller-only annotations."
+    },
+    {
+      "id": "DBG-06",
+      "status": "implemented-validated",
+      "cause_or_observation": "A 64 KiB short-line log generated over 65,000 views and delayed EventBus export",
+      "result_and_limits": "Bounded, resumable source turns and fair log scheduling; blank runs become counted notices. Mixed-line replay and simultaneous log/event pressure checks passed; no lossless-capture claim."
+    },
+    {
+      "id": "DBG-07",
+      "status": "implemented-validated",
+      "cause_or_observation": "Native overlapped cancellation could release buffers early or wait for unissued I/O",
+      "result_and_limits": "Track operation issuance, cancel and drain before releasing ownership; real-pipe and interruption regressions."
+    },
+    {
+      "id": "DBG-08",
+      "status": "implemented-validated",
+      "cause_or_observation": "Scanner/watchdog/Black Box startup exceptions were outside the original stream's log allowlist",
+      "result_and_limits": "Explicit fixed crash/stall sources in both the diagnostic feed and independent recorder."
+    },
+    {
+      "id": "DBG-09",
+      "status": "implemented-validated",
+      "cause_or_observation": "The installed pywin32 returns integer 535 for an already-connected pipe without issuing overlapped I/O; treating it as pending hung live shutdown",
+      "result_and_limits": "Corrected returned and raised status handling, bounded stop waits, retained pending-I/O ownership and partial-start cleanup. All 17 native lifecycle regressions passed. The failed observation and its exact owned-process cleanup remain recorded."
+    },
+    {
+      "id": "DBG-10",
+      "status": "implemented-validated",
+      "cause_or_observation": "A fast reader replayed over 1,100 views without error, while the same live feed disconnected when its consumer persisted each record to disk",
+      "result_and_limits": "One-second per-client write deadline was too short for a disk-persistence pause. Three-second bounded waits preserve cancellation and client independence; a native retained-history pause replay and existing stalled-reader regressions passed. Restart is required for a running producer to load this change."
+    },
+    {
+      "id": "SCN-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "A one-second PID difference scan allocated per-process metadata for unchanged processes",
+      "result_and_limits": "Read PID sets with `psutil.pids`; enrich additions only. Measured idle component median 4.98 to 0.34 ms, 14.6 times faster."
+    },
+    {
+      "id": "SIDE-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Substring process matching could adopt an unrelated process mentioning a helper",
+      "result_and_limits": "Shared exact executable/script/module/role identity, refreshed candidate argv, PID-generation cache and denied-candidate isolation."
+    },
+    {
+      "id": "SIDE-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Peer watchdog ignored the Black Box disable setting",
+      "result_and_limits": "Both supervisors now honor the configured disable boundary."
+    },
+    {
+      "id": "SIDE-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Aliased snapshot/status paths caused repeated identical disk work",
+      "result_and_limits": "Deduplicated paths and removed redundant exists/stat calls; independent recorder remains a separate failure domain."
+    },
+    {
+      "id": "SIDE-04",
+      "status": "mitigated-with-limit",
+      "cause_or_observation": "Legacy Black Box process inspection chose the largest matching core when multiple data profiles coexisted",
+      "result_and_limits": "Ambiguous independent cores now yield unknown process identity instead of RSS-based selection; launcher/child collapse remains. 64 affected regressions passed. Discovery of a single core is still advisory, not proof of its data-profile ownership; Live AI Review uses explicit PID/birth binding."
+    },
+    {
+      "id": "SIDE-05",
+      "status": "implemented-validated",
+      "cause_or_observation": "Closing the actual Black Box left six QThreads running and reproduced native exit 0xC0000409",
+      "result_and_limits": "Normal close waits asynchronously for owned readers; direct quit and partial startup also retire owners before Qt deletion. 76 affected tests passed; independent optional-thread/snapshot replay remained responsive and exited normally. The actual live recorder also closed with exit 0."
+    },
+    {
+      "id": "HOST-01",
+      "status": "observation",
+      "cause_or_observation": "Short live sample showed substantial system CPU contention from multiple programs",
+      "result_and_limits": "Scheduling pressure is a plausible contributor, not a malware verdict. No unrelated process was terminated or allowlisted."
+    },
+    {
+      "id": "TST-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Direct-file pytest wrapper invocation omitted the repository import root",
+      "result_and_limits": "Direct-file mode now anchors the selected script's checkout. Passing/failing child runs preserve pytest's verdict and exit journal; 15 wrapper regressions passed."
+    },
+    {
+      "id": "TST-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Selfcheck completed its GUI phases but crashed during native Qt teardown",
+      "result_and_limits": "Retain owners, stop timers/readers, join bounded workers and dispatch only DeferredDelete before QApplication shutdown. Two complete runs exited normally; the forced-exit workaround was removed. A printed report alone is not a successful process exit."
+    },
+    {
+      "id": "TST-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "A race regression's one-second startup assertion failed while its worker reached the intended barrier immediately afterward",
+      "result_and_limits": "Event-confirmed bounded synchronization, direct lock-ownership proof, worker diagnostics and unconditional release/join preserve the causal security checks. All 41 tests in its file and a final exact-race rerun passed; product gates are unchanged."
+    },
+    {
+      "id": "TST-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "The full regression found the new live-debug setting missing from guided setup and an outdated CLI flag assertion",
+      "result_and_limits": "Guided setup now exposes the Windows read-only sharing opt-in and restart requirement. All 40 affected setup/settings/CLI tests passed."
+    },
+    {
+      "id": "GUI-08",
+      "status": "implemented-validated",
+      "cause_or_observation": "The source editor searched each line separately for 35 identically formatted keywords",
+      "result_and_limits": "One equivalent keyword alternation reduces rule scans from 41 to 7. Exact native formatting equivalence and 12 affected regressions passed; measured full source-dialog construction was 2.10 to 2.30 seconds before and 0.50 to 0.78 seconds after."
+    },
+    {
+      "id": "GUI-09",
+      "status": "implemented-validated",
+      "cause_or_observation": "New bulk module startup can contend with synchronous lifecycle controls; Chill may change during settings persistence",
+      "result_and_limits": "Background governed startup, held competing controls and first-cycle pacing. A post-save veto-only admission check closes the reproduced race; nine late policy/lifecycle transitions held startup and the control started once. Independent final native test file: 25 passed."
+    },
+    {
+      "id": "GUI-10",
+      "status": "implemented-validated",
+      "cause_or_observation": "SpywareGuard occupied a tab and fixed header buttons did not use wide screens well",
+      "result_and_limits": "One reusable dedicated window opens from the wider top-right black-spy button. Native width/scale, lifecycle and UGCAP checks passed across 480 to 3,840 pixels."
+    },
+    {
+      "id": "GUI-11",
+      "status": "implemented-validated",
+      "cause_or_observation": "The collapsed globe had one anonymous orbit dot; the expanded Scanner label could clip",
+      "result_and_limits": "Four colour-coded named-function moons reuse the existing cached status cadence and routes. Native geometry checks cover small, edge and negative-origin displays; no per-moon collector/timer."
+    },
+    {
+      "id": "NEWS-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Generic Citizen Lab RSS omitted recent research, news queued behind scans, and summaries were discarded",
+      "result_and_limits": "Bounded official research cards, earlier background scheduling, cached details, per-source failure state and dated offline references. 146 affected regressions passed; unavailable CISA retrieval remains visible."
+    },
+    {
+      "id": "SCN-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Eight shared sensor reads plus eight Scan Center audits made nine connection enumerations; cached row dictionaries could be changed by a consumer",
+      "result_and_limits": "Scan Center reuses the existing typed receipt and shared rows are immutable. Inert concurrent replay made one query, preserving age/partial/error/cancellation limits; 141 compatibility regressions passed."
+    },
+    {
+      "id": "SCN-03",
+      "cause_or_observation": "YARA and API Patch Detector request their full 64 MiB/128 MiB caps for smaller regular files",
+      "result_and_limits": "Applied four-file change uses opened size plus one and rejects size changes; YARA refuses a mismatch before scanning. Five new real-file/receipt/cache/retry controls and 84 focused tests passed/native 0 with stable files and clean retirement. This bounds requested bytes, not allocator behavior or product throughput; a tiny 20-read comparison is diagnostic only. Other read candidates remain deferred.",
+      "status": "applied-root84-focused-accepted-no-throughput-claim"
+    },
+    {
+      "id": "TST-05",
+      "status": "open-cause",
+      "cause_or_observation": "One native repair fault-injection fixture encountered a Windows atomic-replace failure before reaching the intended crash point",
+      "result_and_limits": "Recovery failed closed and preserved the original environment. The exact fixture passed in an independent rerun; the transient OS/storage cause remains unconfirmed. No trust gate was relaxed or broad retry added."
+    },
+    {
+      "id": "TST-06",
+      "status": "implemented-validated",
+      "cause_or_observation": "A threat-dialog test's first native Qt dispatch outlasted its entire 200-ms observation interval",
+      "result_and_limits": "Event-confirmed repeated heartbeats are required while the worker remains blocked, within a bounded two-second interval. 79 affected regressions passed; this is not a fix or causal explanation for the historical startup stall."
+    },
+    {
+      "id": "SEC-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "The installed certifi bundle retained a compromised CA root; the bootstrap pip also vendored an affected bundle",
+      "result_and_limits": "Reviewed certifi 2026.10.19 and pip 26.2.2 wheels, matched official metadata hashes and updated release locks. The fresh installed-environment audit reports no known vulnerabilities."
+    },
+    {
+      "id": "AUTH-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "One policy signing key under multiple approval labels could count as multiple operators",
+      "result_and_limits": "Enrolled issuer/subject/key proofs, distinct-key/subject matching, exact-operation signatures and durable revocation/attempt records. Registered high-impact actions require independent outcome verification; global critical-change integration is still in scope."
+    },
+    {
+      "id": "READY-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "ATT&CK declarations contributed to apparent protection without proving collection or recent detection",
+      "result_and_limits": "Separate declared, collecting, scoped detection-tested and response-verified stages; stop, replacement, loss, expiry and clock discontinuity withdraw proof. Practice controls do not become real exploit coverage."
+    },
+    {
+      "id": "WIT-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Losing witness state before restarting could silently re-enroll an old host head",
+      "result_and_limits": "Explicit create-only initialization and a signed durable enrollment marker make partial loss fail closed across restart. Restoring all witness storage still requires an independent freshness floor."
+    },
+    {
+      "id": "WIT-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Closing a witness authority could release its lease while a checkpoint was still committing",
+      "result_and_limits": "Close and checkpoint/save use the same authority lock, and save rechecks lease ownership. A bounded concurrency regression verifies retained ownership."
+    },
+    {
+      "id": "ID-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Identity Session Guard lacked dependable local event and browser inventory producers",
+      "result_and_limits": "Opt-in native fixed-provider Windows session events and bounded Chromium manifest metadata. Actual Security-channel reads were denied here and remain a gap; browser inventory returned unverified manifest declarations only."
+    },
+    {
+      "id": "HOST-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Ollama listened on every interface and was correctly rejected; local restart stalled during GPU discovery",
+      "result_and_limits": "With explicit computer-only authorization, persisted loopback binding and a strict boolean Vulkan compatibility override. Normal trusted startup and local APIs are ready; actual listener inspection shows only IPv4 loopback. CUDA discovery remains available."
+    },
+    {
+      "id": "SIDE-06",
+      "status": "implemented-validated",
+      "cause_or_observation": "Reverse-close hid Black Box before closing it, so Qt did not necessarily emit lastWindowClosed after its readers drained",
+      "result_and_limits": "The standalone entry exits on an accepted, fully drained close signal. Hidden-close/native-entry regressions and compatibility tests: 87 passed. The actual updated recorder closed with native exit 0."
+    },
+    {
+      "id": "TST-07",
+      "status": "implemented-validated",
+      "cause_or_observation": "The observation deadline used QApplication.quit, which the intentional dashboard close-to-tray handler cancels",
+      "result_and_limits": "An inert native Qt reproduction confirms close negotiation, not a module deadlock. The owned test uses Qt.exit on its GUI thread and still runs production cleanup. The repeated two-minute desktop run exited normally, with a 1.27-second maximum measured Qt gap."
+    },
+    {
+      "id": "TST-08",
+      "status": "implemented-validated",
+      "cause_or_observation": "New collector/witness settings were absent from Full Setup; the new coverage wording broke a stale selfcheck assertion",
+      "result_and_limits": "Complete settings mapping, bounded multiline public-key editing, witness enrollment validation and semantic declaration/proof checks. Fresh selfcheck: 29 phases passed with normal exit; 176 cross-feature and 83 setup/matrix checks passed in their respective groups."
+    },
+    {
+      "id": "EVAL-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Labelled replay could be described as held out without checking declared training or fixture overlap",
+      "result_and_limits": "Optional training-cohort comparison rejects exact payload reuse despite renamed IDs/labels, duplicate denominators, incomplete sources and changed package seals. 48 replay/evaluation regressions passed. Independent curation and semantic disjointness remain unproven."
+    },
+    {
+      "id": "WIT-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Disabling or changing witness enrollment could resurrect a cached matched receipt as fresh assurance",
+      "result_and_limits": "Shared invalidation covers settings and explicit host-key provisioning, including provider failure before IO. Fresh current witness/UI/guard gate: 75 passed; independent key/enrollment regression: 5 passed. Disabled status cannot inherit old assurance."
+    },
+    {
+      "id": "WIT-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "A 256-entry witness nonce FIFO evicted still-fresh requests, allowing exact signed replay after capacity pressure",
+      "result_and_limits": "Freshness-bound retention refuses requests at bounded live capacity rather than evicting valid nonces. Capacity/restart/expiry regression and independent signed replay retest passed; head rollback was never observed in the original reproduction."
+    },
+    {
+      "id": "RCV-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "External recovery verified a logical sparse payload before applying its smaller per-file drill bound",
+      "result_and_limits": "Strict limits precede payload verification in restore and recheck, sparse encodings are rejected, and logical chunks check cancellation. Independent replay reduced pre-rejection hashing from 32 MiB to the 10,405-byte encrypted input only. No live files were restored."
+    },
+    {
+      "id": "RCV-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Recovery observation used the global data directory while its workflow used the manager's configured private profile",
+      "result_and_limits": "One configured-profile resolver now serves both paths. Regression finds an imported signed backup without consulting the ambient profile; affected recovery, archive and witness integration gate: 175 passed."
+    },
+    {
+      "id": "PREV-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "Guidance could imply that requested Windows settings prove runtime enforcement",
+      "result_and_limits": "Exact native Logon audit staging, signed authority and prior-state recovery contracts; HVCI, blocklist, LSA, App Control and Secure Boot remain guided and held. 39 focused checks passed; the real native query was denied and no policy writes occurred."
+    },
+    {
+      "id": "SVC-01",
+      "status": "implemented-validated",
+      "cause_or_observation": "A protected-directory ACL mask rejected safe read/execute rights while inspecting installed service custody",
+      "result_and_limits": "The reviewed mask now separates mutation from read/execute rights. Native access-mask regressions preserve rejection of generic service execute rights; production service deployment remains unconfigured."
+    },
+    {
+      "id": "PREV-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Cancelling a restore before dispatch permanently consumed its original recovery opportunity",
+      "result_and_limits": "Durable cancellation releases only the exact undispatched original link, preserving the cancelled child ID and uncertain dispatched attempts. Independent configure, cancel, newly signed restore replay succeeded with exactly two consumed capabilities."
+    },
+    {
+      "id": "DBG-11",
+      "status": "implemented-validated",
+      "cause_or_observation": "Stop during native exporter startup could return clean and later leave a dead exporter reporting running; another start could replace its owner",
+      "result_and_limits": "Separate lifecycle ownership, immediate stop signalling, bounded pending status and pre-activation cancellation checks. New barrier regression and 79 affected checks passed; independent held-start replay confirmed no late activation or replaced owner."
+    },
+    {
+      "id": "DBG-12",
+      "status": "implemented-validated",
+      "cause_or_observation": "A CLI duration limit could end a non-follow snapshot before its declared retained cursor and return success",
+      "result_and_limits": "Duration now applies to follow mode as documented; finite snapshots must reach their declared cursor or report their independent incomplete-snapshot deadline. Controlled-clock regression preserves every retained sequence."
+    },
+    {
+      "id": "TST-09",
+      "status": "implemented-validated",
+      "cause_or_observation": "Runtime plan source checks omitted transitive custody and cancellation helpers",
+      "result_and_limits": "A bounded manifest now includes the complete first-party Python tree and harness. Changed helpers, added and removed Python files invalidate the plan; 30 harness regressions passed. This remains source-drift evidence, not independent build or dependency attestation."
+    },
+    {
+      "id": "DBG-13",
+      "status": "implemented-validated",
+      "cause_or_observation": "A deeply nested existing JSONL header could escape CLI error handling with RecursionError",
+      "result_and_limits": "Existing-output inspection now uses the stream's bounded strict decoder for depth, nodes, finite numbers and duplicate keys. Seven new cases passed; malformed local files yield a bounded advisory error."
+    },
+    {
+      "id": "READY-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "A monotonic clock rollback followed by recovery could resurrect an older detection proof",
+      "result_and_limits": "The invalidation floor retains the previous maximum; new proof is required after a discontinuity. Independent replay now stays at collecting after clock recovery instead of restoring the old verified-response stage."
+    },
+    {
+      "id": "READY-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Process Monitor discarded incomplete sensor receipts and reported healthy collection after native enumeration denial",
+      "result_and_limits": "The worker retains typed collection coverage and degrades health for denied, partial and error receipts. Independent real-worker fixtures for denial, failure, partial iteration and unreadable command lines all withhold collecting; the complete control earns collecting."
+    },
+    {
+      "id": "AUTH-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Closing the broker released its durable state lease while an admitted handler was still running",
+      "result_and_limits": "Bounded pending-close retains ownership through the handler and receipt write, rejects queued work and retires the lease once. Independent two-phase restart-exclusion replay passed; 146 related tests passed."
+    },
+    {
+      "id": "AUTH-03",
+      "status": "implemented-validated",
+      "cause_or_observation": "Approval expiry or revocation during durable attempt persistence was not rechecked before dispatch",
+      "result_and_limits": "Final current admission checks run after durable burn. Independent genuine-proof expiry and revocation cases made zero handler calls, retained the spent attempt and rejected retry after restart. Clock regression and closing during burn also block dispatch."
+    },
+    {
+      "id": "AUTH-04",
+      "status": "implemented-validated",
+      "cause_or_observation": "Trusted principal construction accepted truthy non-boolean enabled values and untyped kind values",
+      "result_and_limits": "Strict ID, PrincipalKind and boolean validation now rejects malformed configuration. 61 authorization/identity/policy checks passed; this is configuration hardening, with no demonstrated remote input path."
+    },
+    {
+      "id": "CLS-02",
+      "status": "implemented-validated",
+      "cause_or_observation": "Fleet Health Monitor's high-severity unbound-store coverage event lacked an exact health-disposition contract and could score as an active threat",
+      "result_and_limits": "Exact typed unbound coverage now remains HIGH health evidence; genuine custody failures and contradictory attack evidence remain active. 220 Fleet/threat regressions and independent signed-event replay passed. Retained pre-contract records still require review."
+    },
+    {
+      "id": "TST-10",
+      "status": "implemented-validated",
+      "cause_or_observation": "A legacy recovery-readiness fixture patched `sleep` but ran a worker that now waits on `_wake.wait`, so the full-suite fixture did not terminate",
+      "result_and_limits": "The single-cycle assertion now calls the production observation method directly. All 16 tests in its file passed. The interrupted broad run remains incomplete; a new source-frozen full run with per-test tracing is running."
+    },
+    {
+      "id": "TST-11",
+      "status": "implemented-validated",
+      "cause_or_observation": "Two fixtures depended on ambient hostname and resilience settings removed by the sealed test harness",
+      "result_and_limits": "Explicit inert hostname and explicit enabled-policy input under a mocked backend preserve each assertion. The two failures were identified in a 177-pass diagnostic run; all 29 affected-file tests passed after correction. Product policy is unchanged."
+    },
+    {
+      "id": "DBG-14",
+      "status": "implemented-validated",
+      "cause_or_observation": "The independent pytest exit journal retained its file until interpreter finalization and emitted ResourceWarning",
+      "result_and_limits": "The last exit callback writes its final marker then closes its captured stream. Strict warning/order and invalid-descriptor checks preserve native verdicts; all 18 launcher tests passed."
+    },
+    {
+      "id": "CI-01",
+      "status": "published-ci-validated-exact-history-fixture-exceptions",
+      "cause_or_observation": "Public main's secret-scan flagged a public TPM key-container name as a generic API key",
+      "result_and_limits": "Reviewed checkpoint 787fb43 passes the exact committed CI push-scope scan and real-secret negative controls with default rules retained. Guarded publication passed, including all seven public README images; the actual GitHub secret-scan now passes. The later full ancestry audit completed with three deliberate synthetic-fixture findings, unchanged policy and native exit1; no live credential was identified. Initial partial scans remain preserved."
+    },
+    {
+      "id": "CI-02",
+      "status": "published-ci-validated",
+      "cause_or_observation": "A Windows pipe can close just before its terminating parent reports gone, mislabelling engine exit as heartbeat loss",
+      "result_and_limits": "Published checkpoint 787fb43 reprobes the same authenticated PID/birth for a bounded 250 ms and preserves unknown/reused identity refusal. Its 34 beacon and 103 related checks passed. The actual main-push CI passed all12 jobs (each Python 3.10 to 3.13 matrix run:5795 passed,13 skipped); security passed all3 jobs. Both published checkpoints were fast-forwarded into the broader working tree before the current source freeze."
+    },
+    {
+      "id": "CI-03",
+      "status": "published-original-failure-retained-test-repair-ci-validated",
+      "cause_or_observation": "Published cd8e22a failed one existing capacity-boundary test on GitHub Python3.12",
+      "result_and_limits": "Original CI:11 successful jobs,1 failed; security:3 successful jobs. Test-only repair e1c056c is published with29 focused passes,1 skip and additional budget/tamper controls; production policy is unchanged. Its exact main-push CI passed12/12 jobs and security3/3; each Python3.10-3.13 job passed5890 tests with14 skips. Historical cause is not uniquely proven and the failed run is retained."
+    },
+    {
+      "id": "CI-04",
+      "status": "test-repair-published-exact-ci-green-original-failure-retained",
+      "cause_or_observation": "Published b79209c2 failed the Python 3.10 process-baseline state-integrity test while stopping its worker",
+      "result_and_limits": "The54c8732 test-only repair kept persistence/stop/tamper budgets and passed exact CI 12/Security 3; Python 3.10 through3.13 each 5979/18/native 0. Original b792 cause uncertainty remains. Checkpoint 13 a74’s GUI/Forge failures remain historical despite later focused controls. CI 14’s four Python failures were stale lexical queue-audit matches (TST-30); checkpoint 15 published the25-control test-only correction and passed exact CI 12/Security 3, each Python 6131/18/native 0. Separate frozen root full R10 accepted 7554/0/49. These results do not publish broader1.14 or identify original CI causes."
+    },
+    {
+      "id": "TST-12",
+      "status": "private-toolchain-corrected-targeted-pass",
+      "cause_or_observation": "The private full-test driver reused the runtime-only sealed PATH, hiding Git from four inert publication fixtures and skipping developer-tool checks",
+      "result_and_limits": "Correct the private test-toolchain handoff with the machine-installed absolute Git directory while retaining runtime isolation overrides. No product change is needed. Eleven selected Git/Git Bash tests and both exact documentation-checker failures passed in focused native reruns. The frozen broad run retains its original failures and continues."
+    },
+    {
+      "id": "OBS-01",
+      "status": "implemented-validated-runtime-followup",
+      "cause_or_observation": "The observer records a long final persistence stage but updates its loop-gap maximum only at the next iteration, which may never occur after the deadline",
+      "result_and_limits": "A raw-scanner case exited normally but overran the requested interval during observer I/O. Its OBSERVED label is incomplete and must be interpreted with gaps. Terminal work/deadline accounting and the sole advisory heartbeat durability change are applied with 49 passing matrix tests; new runtime observation remains in progress; this does not establish a scanner deadlock or the cause of historical Qt stalls."
+    },
+    {
+      "id": "CLS-03",
+      "status": "implemented-validated-runtime-held",
+      "cause_or_observation": "App Control collector denial was scored as an active threat",
+      "result_and_limits": "Applied an exact typed unavailable-collector contract; genuine decisions, cursor authentication failures and unexpected errors remain active. Included in 251 passing affected checks; the native provider remains held for bounded-wait review."
+    },
+    {
+      "id": "CLS-04",
+      "status": "implemented-validated-runtime-held",
+      "cause_or_observation": "Peripheral/DMA observer denial was scored as an active threat",
+      "result_and_limits": "Applied exact typed collection health while preserving device risks and unknown errors as active. Error dedup now distinguishes changed native failure codes. Included in 251 passing affected checks; runtime provider drain remains held."
+    },
+    {
+      "id": "CLS-05",
+      "status": "implemented-validated-runtime-held",
+      "cause_or_observation": "Authentication-extension collection denial was scored as an active threat",
+      "result_and_limits": "Applied exact typed unavailable-collector health; baseline tampering, contradictory fields and unexpected exceptions remain active. Included in 251 passing affected checks; fixed-local path and cancellation review remain open."
+    },
+    {
+      "id": "GUI-12",
+      "status": "implemented-validated",
+      "cause_or_observation": "Independent label-based preferences did not guarantee the wider SpywareGuard button after font/style changes",
+      "result_and_limits": "Applied shared-budget width priority. Native 16 window/scale points and 3 immediate font/style transitions passed with containment, non-overlap, reopen/settings and UGCAP gates; host operations were forbidden."
+    },
+    {
+      "id": "SVC-02",
+      "status": "implemented-validated-diagnostic-only",
+      "cause_or_observation": "A successful pipe write followed by immediate disconnect can discard an unread response",
+      "result_and_limits": "Deterministic native reproduction confirmed one authenticated callback then lost response. Applied bounded exact-byte nonce/digest receipt, never dispatched or retried;81 affected tests passed with native shutdown. Privileged service remains diagnostic only."
+    },
+    {
+      "id": "PRIV-01",
+      "status": "published-validated",
+      "cause_or_observation": "Username discovery failed in a sealed Windows environment and broke sessions and privacy exports",
+      "result_and_limits": "Published ffb41c4 adds bounded native username fallback for display/redaction, never identity authority. Session collection is independent; IR export refuses before collection/destination creation if no real redaction seed exists. Checkpoint 330 passed,2 platform skips."
+    },
+    {
+      "id": "TST-13",
+      "status": "fixture-corrected-targeted-pass",
+      "cause_or_observation": "A connection-snapshot fixture hardcoded11434 while isolated configuration deliberately selected65534",
+      "result_and_limits": "The product correctly followed its configured port. The fixture now explicitly supplies its inert11434 endpoint; original failure retained and full affected rerun recorded separately."
+    },
+    {
+      "id": "TST-14",
+      "status": "private-harness-corrected-targeted-pass",
+      "cause_or_observation": "A private focused runner omitted its temporary directory, causing four hardlink fixtures to fall back to another volume",
+      "result_and_limits": "Corrected private directory preparation without weakening runtime hardlink enumeration. Original163-case attempt retained:4 failed,1 skipped; corrected rerun passed 162 tests with 1 skip and native exit0. The full-suite driver already prepared its private temporary path."
+    },
+    {
+      "id": "TST-15",
+      "status": "fresh-root-selfcheck29-pass-historical-failures-unattributed",
+      "cause_or_observation": "Refreshed selfchecks exceeded module deadlines or refused an unproved fresh Process observation",
+      "result_and_limits": "Latest actual module selfcheck at a74/1852 passed29 phases/native0 in31.485s, reconciling86 module rows (68PASS18SKIP), separate pipeline and9 verifiers. Both native generations retired/four handles closed/MainThread/no QApplication. Earlier failures and29.265s remain historical; this is not fullR8, a benchmark or R7 cause proof."
+    },
+    {
+      "id": "TST-16",
+      "status": "fixture-applied-focused-pass-full-refresh-pending",
+      "cause_or_observation": "A startup-response fixture assumed the expiration counter guaranteed completed diagnostic publication",
+      "result_and_limits": "A controlled barrier reproduced the legitimate intermediate state, then verified one response-inert diagnostic after publication. Corrected fixture and barrier are applied and included in366 passing focused checks. Production response code is unchanged."
+    },
+    {
+      "id": "TST-17",
+      "status": "full-r10-node-pass-historical-r7-cause-capture-open",
+      "cause_or_observation": "The repeated GUI campaign could not prove a later Process Monitor cycle before launch admission closed",
+      "result_and_limits": "Latest full R7 failed only the second GUI launch: fresh Process Monitor proof refused after 6.579 seconds, stage retry/waiting true, no red-team report run. First launch passed 37/37 signed simulated-response contracts plus OS witness; case-process evidence was time-correlated, not independently attested. Cause unknown. Earlier GUI r6 and R6c passes remain historical. Test-only capture is applied; one focused test/two actual GUI launches passed with exact retirement as a nonreproduction, but the failure-only branch was not exercised and cause/capture gap remain open; no health/readiness/pacing/deadline override or causal repair is claimed. Later frozen full R10 passed the same two-launch GUI call (122.2837177 seconds) and all 7603 cases had zero failures. Historical R7 pacing/last refusal/cause and the unexercised failure-capture branch remain unresolved; elapsed time is not a benchmark."
+    },
+    {
+      "id": "TST-18",
+      "status": "applied-startup-improvement-root-native-acceptance-passed-history-unattributed",
+      "cause_or_observation": "UGCAP's slow-operation worker fixture failed during protected-channel startup",
+      "result_and_limits": "Startup preparation and bounded diagnostics are applied; strict authentication, expiry and deadlines remain. Private R7's 135 passes and two unexplained failures remain recorded. Private R8 and the subsequent main-tree gate each passed all 137 selected tests with native exit 0; the latter retained 1,190 unchanged inputs and actual kernel retirement. The earlier failures were not reproduced or causally explained."
+    },
+    {
+      "id": "TST-19",
+      "status": "collector-applied-two-launch-native-gui-acceptance-passed",
+      "cause_or_observation": "Fresh GUI acceptance could not complete its first rich Process Monitor collection within readiness admission",
+      "result_and_limits": "Cold diagnosis demonstrated repeated whole-system parent maps. Applied one-map/fresh-identity collection passed419 focused tests, then the actual two-launch GUI check passed with native exit0 and1180 unchanged inputs. Original initial-readiness native1 is retained. Protected identity fields remain unknown; timings are not a controlled throughput benchmark."
+    },
+    {
+      "id": "TST-20",
+      "status": "applied-kernel-retirement-correction-root-native-acceptance-passed",
+      "cause_or_observation": "UGCAP cleanup credited job-zero and launcher exit before the actual child process handle became signaled",
+      "result_and_limits": "The original native probe confirmed premature retirement credit. Applied bounded member witnesses now require signaled kernel handles plus job, process and I/O completion. Root acceptance passed 137 tests, no skips, normal native exit 0 and 1,190 unchanged inputs. Private R7's two functional failures remain historical; no lasting orphan or continued application-code execution was established by the original probe."
+    },
+    {
+      "id": "TST-21",
+      "status": "native-access-violation-open-offline-symbol-parse-held",
+      "cause_or_observation": "Private native gate crashed after writing passing JUnit records",
+      "result_and_limits": "The original 0xC0000005 remains open. Both A/B arms exited 0, but the timer never fired. Auth custody passed separate native/main-tree gates. Official matching Python PDB metadata was validated; offline DbgHelp stopped before parsing because its no-network option could not round-trip. One approved offline pure-Python decoder also stopped before procedure parsing on an unsupported debug header. No symbol function or initiating cause is claimed. R6c retired normally with assertion exit1 and did not repeat C0; the original cause stays open. R7 also retired normally without this error recurring; historical cause remains open."
+    },
+    {
+      "id": "TST-22",
+      "status": "request-retry-applied-scoped-and-root-selfcheck29-pass",
+      "cause_or_observation": "An accepted fresh Process observation request was cleared before collection and lost when the result was refused",
+      "result_and_limits": "Source-confirmed repair retains the latest refused request for a fresh read at the next normal poll; newer requests and stop/restart revoke older credit. Reviewed patch `aa432db7eb4bb6593d9c13ee71550a5f7e5f568153d16df4078f2f1e0ef15a12` passed 42 private supplied-inventory tests and 163 main-tree tests, with normal native retirement. Subsequent uninstrumented root selfcheck r4 passed 29/29 with 1,192 unchanged inputs and MainThread-only atexit. The historical r3 failure remains unattributed."
+    },
+    {
+      "id": "TST-23",
+      "status": "published-narrow-selftest-checkpoint-ci-green-broader-validation-held",
+      "cause_or_observation": "A native call holding the GIL can delay startup/coordination beyond the requested deadline and still receive a successful self-test result",
+      "result_and_limits": "Applied accounting passed 12 private controls and 88 main-tree tests. The initial warning is retained; two subsequent 12-case native-fixture gates each passed without warnings, with native exit 0 and 1,191 unchanged inputs. Thread ownership precedes startup; read-only closure review confirmed join-before-rebind and monkeypatch restoration. These gates used b8ca8f; current e9cc6ee7 adds separate robustness repairs while preserving deadline decisions. Root selfcheck r4 passed 29/29 on the earlier revision. Native work is not preempted and no historical YARA cause is established. The core repair is published in narrow checkpoint b10e0f0; broader validation remains held.",
+      "previous_status_before_narrow_publication": "deadline-accounting-applied-fixture-and-root-selfcheck29-pass"
+    },
+    {
+      "id": "TST-24",
+      "status": "published-narrow-selftest-checkpoint-ci-green-broader-validation-held",
+      "cause_or_observation": "Formatting an unrenderable callback exception can leave the bounded-call API reporting success without a value or error, hiding a notification failure",
+      "result_and_limits": "Source review confirmed this predates the deadline correction. Applied failure-marker handling preserves a failure even when exception formatting raises. Private 76-case and main-tree 110-case gates passed with native exit 0, unchanged inputs and MainThread-only atexit. Fresh revised-source selfcheck r5 passed 29/29 with 1,193 unchanged inputs and the same clean retirement. No observed host incident or historical YARA cause is attributed. The core repair is published in narrow checkpoint b10e0f0; broader validation remains held.",
+      "previous_status_before_narrow_publication": "robustness-repair-applied-root110-and-selfcheck29-pass"
+    },
+    {
+      "id": "TST-25",
+      "status": "published-narrow-selftest-checkpoint-ci-green-broader-validation-held",
+      "cause_or_observation": "Event or Thread construction after capacity acquisition can raise before the start guard and leak a worker permit",
+      "result_and_limits": "Source review confirmed this predates the deadline correction. Applied pre-start cleanup returns exactly the acquired capacity and rethrows construction failures, including controlled BaseException cases. Private 76-case and main-tree 110-case gates plus fresh root selfcheck r5 (29/29) passed; existing start-interruption uncertainty, worker-owned release and concurrency caps remain. The core repair is published in narrow checkpoint b10e0f0; broader validation remains held.",
+      "previous_status_before_narrow_publication": "capacity-cleanup-applied-root110-and-selfcheck29-pass"
+    },
+    {
+      "id": "TST-26",
+      "status": "test-owner-cleanup-applied-root71-pass-clean-retirement",
+      "cause_or_observation": "A module-admission test retained its own Enclave manager without calling stop_all, leaving a rotation thread at normal atexit",
+      "result_and_limits": "The original 71-test main-tree gate remains recorded with EnclaveMesh-rotate. A test-only owner cleanup preserved all assertions and other top-level nodes; repeated 71 tests passed without warnings, with native exit 0, 1,192 unchanged inputs, actual kernel retirement and MainThread-only atexit. No production Enclave lifecycle defect is inferred."
+    },
+    {
+      "id": "TST-27",
+      "status": "fixture-sampler-cleanup-applied-gui-r4-pass-mainthread-only",
+      "cause_or_observation": "The two-launch GUI fixture omitted both pulse.shutdown and joining its actual sampler, leaving SystemPulseSampler at r3 atexit",
+      "result_and_limits": "Applied fixture cleanup passed both actual r4 launches with native exit 0, 1,193 unchanged inputs, actual kernel retirement and MainThread-only atexit. The r3 thread record is retained. This proves fixture retirement; production repair and its wider failed acceptance remain tracked separately under GUI-15. Public five-case assertions later passed but the gate rejected Pulse/FI ownership residue. Selected18 now retires MainThread only after public FI/fixture repair; original failed acceptance is retained, no post-exit orphan is claimed."
+    },
+    {
+      "id": "TST-28",
+      "status": "case-local-diagnostics-applied-prior-aliases-preserved-old-gaps-retained",
+      "cause_or_observation": "Shared GUI AAR/run aliases and PID-based trace names can overwrite another case's evidence",
+      "result_and_limits": "Applied case-local diagnostics passed r4's two launches while all four prior shared aliases stayed byte-identical. Each launch verified 37/37 simulation responses, 36 source removals/hash matches, three process witnesses and no modals; native analytics remained 0/37. Archived r3 has 18 matching files; r2 has 14, with four overwritten old aliases unavailable. No historical reconstruction or native analytic efficacy is claimed."
+    },
+    {
+      "id": "DET-01",
+      "status": "semantic-boundary-applied-old-notices-unbound",
+      "cause_or_observation": "The generic -ma/lsass semantic matcher also matched --max-cases and a case label",
+      "result_and_limits": "Reviewed raw-argument boundary is applied and included in366 passing focused checks, with 23 new regressions and five weak-response negative controls. Later frozen full R10 passed with this correction present. Narrative-token ambiguity remains; earlier notices still lack ancestry proof and receive no blanket exemption."
+    },
+    {
+      "id": "DOC-01",
+      "status": "implemented-render-validated",
+      "cause_or_observation": "Current manual Chapter1.1 still described the older84-capability inventory",
+      "result_and_limits": "Updated current reference and routing to the exported86=13 native declarations+73 adapters; dated historical validation remains unchanged. Generator is idempotent; all 54 rendered pages and the full current-reference page were inspected without clipping."
+    },
+    {
+      "id": "AUTH-05",
+      "status": "partial-open",
+      "cause_or_observation": "R6-03 lacked retained native process custody across Windows termination",
+      "result_and_limits": "Published ffb41c4 retains a least-rights native handle through intent, exact dispatch/wait and signed terminal verification. No PID fallback. Suspend/resume/undo, executable-file custody and persistent pathname firewall lifetime remain open."
+    },
+    {
+      "id": "OBS-02",
+      "status": "implemented-targeted-validated-runtime-followup",
+      "cause_or_observation": "Final-only health discarded a sampled C2 degradation after recovery",
+      "result_and_limits": "Bounded interval summaries now retain completed-cycle gaps, minimum health, liveness, loss and crash evidence. Startup warming remains separate. All58 matrix checks passed; two600-second cases now complete with native exit0 and retained provider/timing gaps. Historical pair evidence retains its sampled 65-health gap and unknown cause."
+    },
+    {
+      "id": "OBS-03",
+      "status": "diagnostic-readers-retired-guidance-added",
+      "cause_or_observation": "Recursive private-path discovery left native diagnostic readers running after their limited-output shell pipelines returned exit 0",
+      "result_and_limits": "All three exact owned readers were retired using matched command arguments and retained process handles with creation-time checks. Bounded source/path discovery guidance is applied. Shell pipeline completion is not native-child retirement proof. This is a diagnostic workflow issue, with no application defect or historical failure/timing attribution established. Separate external RealTime-priority configuration risk is recorded with zero observed CPU deltas/no starvation proof; normalization remains held for OS permissions and unproven action ownership, without historical attribution."
+    },
+    {
+      "id": "OPS-01",
+      "status": "preserving-cleanup-applied-published-checkpoint12-ci-green",
+      "cause_or_observation": "cleanup.ps1 recursively deletes workspace databases, logs and diagnostic artifacts that may be forensic evidence",
+      "result_and_limits": "Preserving c2d6 is applied and public in narrow checkpoint 12 after actual PS5/PS7 and permanent 28-case acceptance. CI passed 12/12 and Security 3/3; each Python run passed 6,049 with 18 skips/native 0. Historical source 947 invocation was not observed or linked to external Temp loss. Earlier PS5 harness-module-path failure and child-only correction remain retained."
+    },
+    {
+      "id": "UPD-01",
+      "cause_or_observation": "Original Settings called the network updater synchronously and discarded its returned status",
+      "result_and_limits": "Reviewed R6 controller/source is applied in 20 files with settings unchanged. Private focused successor passed 83 with one optional skip/native 0, including cancellation before Git/network and 30 CLI cases; R5's 330/3/2 failure is retained. Root R3 accepted 179 passes/one optional skip/native 0 plus uninstrumented selfcheck 29/0/native 0. R2's recorder acceptance failure (ExitCode serialized null) is retained. This is focused acceptance, without public daily-feature publication.",
+      "status": "r6-applied-root179-1-and-selfcheck29-accepted-unpublished"
+    },
+    {
+      "id": "UPD-02",
+      "cause_or_observation": "Daily checks and preserving source staging lack an accepted activation/release-authority workflow",
+      "result_and_limits": "R6 source is applied and focused main-tree validation passed; daily networking stays OFF unless selected and runtime settings were unchanged. Private controls passed both junction tests and 30 CLI cases. Root 179/1 and selfcheck 29 accepted, but activation ALWAYS HELD. HTTPS/source SHA is not release authority, CRLF may conflict. No daily feature publication. R5's failed gate is retained; earlier private candidate bundles R1–R4 remained unexecuted.",
+      "status": "r6-root-scoped-accepted-activation-held-unpublished"
+    },
+    {
+      "id": "RED-01",
+      "status": "implemented-validated-historical-cause-unresolved",
+      "cause_or_observation": "Twenty-two validation refusal conditions shared one generic producer-liveness message",
+      "result_and_limits": "Added typed first-refusal diagnostics while preserving predicate order and authority. A fresh 80-step signed campaign completed; 76 simulation validations/responses verified, native analytic detections 0/76. The historical incomplete campaign's cause remains unknown."
+    },
+    {
+      "id": "GUI-13",
+      "status": "implemented-independently-validated",
+      "cause_or_observation": "A second showEvent definition overrode Threat Intelligence refresh-timer restart",
+      "result_and_limits": "Removed the overriding duplicate and restored the single refresh timer after hide/show. Independently reviewed and applied; all18 focused checks pass with normal native exit."
+    },
+    {
+      "id": "GUI-14",
+      "status": "flight-repair-root71-pass-selfcheck29-pass-test-cleanup-corrected",
+      "cause_or_observation": "The Flight Instructor daemon has no terminal queue path and retains its bound MainWindow",
+      "result_and_limits": "Applied repair passed private R3 25/25 and 71 main-tree tests, retaining private R2's 24/25 minimal-fixture failure. The first main-tree gate retained an unrelated test-owned EnclaveMesh-rotate. After test-only owner cleanup, repeated 71 tests passed without warnings, with native exit 0, 1,192 unchanged inputs and MainThread-only atexit, as did root selfcheck r4 (29/29). No fully constructed window defect, production Enclave leak or historical crash cause is inferred. Separate public GUI gate passed 5 assertions/native0 but acceptance rejected retained Pulse/FI workers. Public FI backport and fixture cleanup then passed 18 selected tests with MainThread-only retirement; The selected public repair is now published in checkpoint 14 (943fb9a). Its new CI failures are a separate stale lexical audit, not a retirement failure. Original CI310 response cause is not closed."
+    },
+    {
+      "id": "GUI-15",
+      "status": "repair-applied-private74-pass-root-combined142-2-failed-cause-open",
+      "cause_or_observation": "The production SystemPulse worker retains its Qt card and lacks complete quit/destroy cancellation, leaving a check-to-emit lifetime race",
+      "result_and_limits": "Applied 6d7100 plus 27 controls and three fixture adaptations after fresh uninstrumented private R4 passed 74 cases with native 0, complete phases and normal cleanup. Original watchdog/framing gaps and private R3's 72/2 remain unattributed. Root combined gate failed 142/2 despite all 27 new Pulse cases passing. Later instrumented 144-pass/four-witness diagnostics grant no acceptance or causal closure; two legacy timer assertions remain under investigation. Both calls passed in R6c; this is nonreproduction, not historical-cause closure. R7 also retired normally without this error recurring; historical cause remains open."
+    },
+    {
+      "id": "GUI-16",
+      "status": "narrow-guards-published-checkpoint11-ci-green-broader-acceptance-held",
+      "cause_or_observation": "AsyncSnapshot.request does not recheck closed/paused state after prepare and updating-status callbacks, allowing synchronous owner disposal before worker creation or timer access",
+      "result_and_limits": "Applied exact two guards as 60bef with eight controls: original six typed failures/two passes/native 1 versus candidate eight passes/native 0, with exact cleanup/provenance. All eight new cases also passed in the failed 142/2 root combined gate. The worker stays detached with no Qt emission; read cancellation remains cooperative and close does not prove retirement. No native crash cause or full acceptance is claimed."
+    },
+    {
+      "id": "PER-05",
+      "status": "implemented-independently-validated",
+      "cause_or_observation": "Distinct CVE detail requests could create unbounded concurrent analysis workers",
+      "result_and_limits": "Applied a shared two-active-analysis, zero-waiting-queue coordinator with Qt-owned worker retirement and valid late callbacks; all18 focused checks pass. Native TLS cleanup remains outside its physical-thread bound, and whole-application shutdown is not proven by this change."
+    },
+    {
+      "id": "SEC-05",
+      "status": "trusted-launchers-applied-provider-admission-held",
+      "cause_or_observation": "Kernel Posture Ledger uses unqualified inbox executable names",
+      "result_and_limits": "Absolute trusted-directory paths and missing-tool refusal are applied and included in366 focused passes. They grant no whole-provider deadline or runtime admission; provider remains held."
+    },
+    {
+      "id": "SEC-08",
+      "status": "control-admission-published-ci-validated",
+      "cause_or_observation": "Engine control could admit or start queued work after shutdown won, or report ready after stopping",
+      "result_and_limits": "Admission, running transition and start/close share the existing lock; stopped readiness is refused. Published in reviewed checkpoint b89c5356; included in419 root focused passes. All12 exact CI and3 Security jobs passed. In-flight operations finish; unstarted receipts remain queued on a closed engine, without fabricated cancellation/success."
+    },
+    {
+      "id": "SEC-09",
+      "status": "directory-custody-composition-applied-native-accepted",
+      "cause_or_observation": "Metadata-only directory handles were assumed to enforce sharing restrictions against ancestor rename",
+      "result_and_limits": "Reviewed read and atomic-writer guards now use sharing-relevant directory-list access with no delete sharing. Compatible nested writes and sealed-leaf refusal passed; the two original initrd assertions now pass unchanged. Private337-pass and main-tree563-pass gates exited natively0. Listing denial stays explicit; original failures are retained."
+    },
+    {
+      "id": "SEC-06",
+      "status": "component-custody-applied-native-accepted-whole-provider-held",
+      "cause_or_observation": "Authentication component drive syntax does not establish fixed-local or no-reparse access before stat/open",
+      "result_and_limits": "Authentication-component custody is applied and included in563 main-tree passes. Fixed-local validation precedes filesystem access; bounded no-reparse ancestry stays held through byte hashing/probes. Four owned native cases passed. The whole provider remains held for offline signature/cancellation/budget review; no mapped-drive or remote test was performed."
+    },
+    {
+      "id": "SEC-07",
+      "status": "offline-collection-unproven-held",
+      "cause_or_observation": "Driver signature validation does not prove offline retrieval",
+      "result_and_limits": "No transfer was observed. Cache-only signature policy and fixed-local component custody remain unproven; provider remains held from the no-egress runtime lane."
+    },
+    {
+      "id": "PER-06",
+      "status": "bounded-compatible-ledger-applied-provider-admission-held",
+      "cause_or_observation": "Kernel ledger parses unbounded file bytes before enforcing record count",
+      "result_and_limits": "Bounded held reads and lazy parsing are applied and included in366 focused passes. Strict UTF-8, original Windows writer bytes and signed timestamps are preserved. Superseded newline/encoding/allocation regressions were rejected. No hostile live file was used; provider admission remains held."
+    },
+    {
+      "id": "PER-07",
+      "status": "finite-wait-published-whole-provider-bound-held",
+      "cause_or_observation": "App Control EvtNext uses its infinite default without a cancellation owner",
+      "result_and_limits": "Reviewed commit5523293 is published through6fb7f929 and integrated locally, with a500ms read bound. Its native/contract checks and actual GitHub matrix passed. Exhaustion and timeout remain distinct; whole-provider deadline/cancellation and active-runtime admission remain unproven."
+    },
+    {
+      "id": "PER-09",
+      "status": "control-wakeup-published-ci-validated",
+      "cause_or_observation": "Idle engine shutdown waited for the half-second queue poll",
+      "result_and_limits": "An identity-only stop marker wakes the owned queue without executing a command, changing poll/join limits or evicting accepted requests. Published in reviewed checkpoint b89c5356; included in419 root focused passes. All12 exact CI and3 Security jobs passed; an in-flight operation can still require the existing bounded wait."
+    },
+    {
+      "id": "PER-10",
+      "status": "release-parser-batch-published-ci-validated",
+      "cause_or_observation": "Release syntax validation launched a separate PowerShell process for each of13 inert sources",
+      "result_and_limits": "Each source is parsed independently in one child with exact indexed results and mismatch/error refusal. Published in reviewed checkpoint b89c5356; included in419 root focused passes. All12 exact CI and3 Security jobs passed; native side-effect and single-source controls passed. Earlier failed private collection semantics are retained. No controlled whole-suite speedup claimed."
+    },
+    {
+      "id": "PER-08",
+      "status": "provider-shutdown-budget-held",
+      "cause_or_observation": "Several read-only provider timeouts exceed the matrix's 15-second worker drain",
+      "result_and_limits": "Driver, Platform, Peripheral, Kernel and Authentication providers remain held. Native timeout totals and cooperative cancellation do not establish a hard shutdown deadline."
+    },
+    {
+      "id": "TST-29",
+      "cause_or_observation": "Two recorder-negative fixtures fail earlier cold-producer admission instead of their intended recorder refusal",
+      "result_and_limits": "Full R6c failed both recorder negatives at earlier fresh 13-contract admission within 0.2 seconds; the smaller original baseline reproduced the first while the instance-spoof case passed. Stage-specific test-only correction is included in 73 accepted selected cases/native 0 with strict retirement. No production transport/deadline change or unique historical timing cause is claimed. Both previously failing R6c nodes passed R7; R7 failed a separate GUI launch assertion, and the historical result remains. A later cadence cohort failed 121/1 when another recorder-negative fixture reached real host Process coverage refusal first; production failed closed correctly. A test-only recorder fixture then passed122 selected cases/native0 with unchanged production/health/coverage rules; the original physical collection gap remains unresolved.",
+      "status": "recorder-stage-fixture-confined-selected122-pass-original-coverage-gap-retained"
+    },
+    {
+      "id": "TST-30",
+      "cause_or_observation": "Lexical unguarded-requests audit mistakes self._requests.get() queue access for requests.get networking",
+      "result_and_limits": "Original full R6c/selected 53/3 failed a lexical audit on queue.Queue access, not a new HTTP call. Root’s AST test-only correction passed 73 selected cases and its node passed R7/full R10. The old public test failed all four CI 14 Python jobs6113/1/18. Public AST successor with 17 added controls passed 25, published as checkpoint 15/e715, then exact CI 12/Security 3 passed with all four Python 6131/18/native 0. Original failed runs remain retained; no production-networking change or historical-cause closure follows.",
+      "status": "root-full-r10-pass-public-test-backport25-published-ci-pending"
+    },
+    {
+      "id": "TST-31",
+      "cause_or_observation": "Per-row CVE analysis admission returned None in the owned-worker lifecycle test",
+      "result_and_limits": "Full and original selected baseline failed CVE worker admission. Source/test-order evidence identified a real global aboutToQuit emission closing an already-created shared coordinator. Scoped signal and nonintrusive identity/QThread cleanup corrections passed 73 selected cases/native 0; production shutdown is unchanged. The original full result remains. The previously failing R6c node passed R7; R7 failed a separate GUI launch assertion, and the historical result remains.",
+      "status": "scoped-test-only-correction-and-r7-node-pass-overall-r7-failed"
+    },
+    {
+      "id": "TST-32",
+      "cause_or_observation": "Restored-mtime YARA edit returned scanned but produced no event in the test bus",
+      "result_and_limits": "Full R6c used actual yara_x and retained the exact 55-byte marker; scanned also labels cache hits. Original-product deterministic controls failed all 17 new cases while 66 existing cases passed, including the original restored-mtime test. Applied one-file per-file-USN/no-cache repair passed the identical 83 cases, and fresh module selfcheck passed 29 phases with clean retirement. The controlled timestamp-only weakness is proven; the original failed full-run branch remains unobserved. No sleep workaround, benchmark or complete regression is claimed. The previously failing R6c node passed R7; R7 failed a separate GUI launch assertion, and the historical result remains.",
+      "status": "controlled-usn-fix-accepted83-r7-node-passed-original-branch-unobserved"
+    },
+    {
+      "id": "PER-11",
+      "cause_or_observation": "Black Box repeatedly requests cap-sized status bytes and reads historical self-test failures without a byte bound",
+      "result_and_limits": "Applied two-file bounded status/history reads passed 136 selected cases/no skips/native 0, stable inputs and exact retirement. At most 64 KiB requests retain 4 MiB caps plus sentinel, partial-fault refusal, both schemas and informational gaps. Exactly 501 rows preserve 500 history plus one fresh live failure; report bytes/mtime stay unchanged and the original code backup remains. Namespace is 1,850, Python inventory 1,147; only the two changed files received fresh AST/Ruff checks. No throughput benchmark, new module selfcheck or complete regression is claimed. The later frozen full R10 passed 7554/0/49 with this repair present; that is regression coverage, not a throughput benchmark.",
+      "status": "applied-bounded-health-reads-accepted136-full-regression-after-change-pending"
+    },
+    {
+      "id": "PER-12",
+      "cause_or_observation": "Discretionary background pacing can consume a fresh Process observation lease before a retained retry",
+      "result_and_limits": "A supplied factor-8/one-second-base control exhausted the unchanged eight-second lease on original code, then passed after a two-file one-token retry credit. All 12 new controls passed. The cohort's original 121/1 failed at a genuine host-coverage prerequisite; test-only recorder confinement then passed 122/no skips/native 0 with exact retirement. Only discretionary background addition is omitted; mandatory cadence/throttle/Chill/health/deadlines/coalesced wakes remain. R7 factor/last refusal/cause stay unknown; no total wakeup bound, token-expiry contract, benchmark or complete regression claimed. Later frozen full R10 passed 7554/0/49 with the source repair present; no historical R7 cause or performance claim follows.",
+      "status": "paired-control-and-selected122-accepted-r7-cause-open"
+    },
+    {
+      "id": "UPD-03",
+      "cause_or_observation": "Packaged installer cleanup can discard previous payload backups after a failed restoration",
+      "result_and_limits": "Original source could discard previous payload after failed restoration; no observed host data-loss incident was attributed. Reviewed preservation source passed 27 confined controls within accepted 141, native 0 with exact retirement. Twenty-one actual PS5.1 child receipts were reviewed:19 normal0/two intentional abrupt99, all process/stdio handles closed/no gaps; six inert failure controls are not physical-process proof. Earlier R3/R4/R5 plans remain historical. Durable crash reconciliation, forward file-object leases, administrator/ACL/disk-full races, restart health and trusted activation/signing remain open. Source-stage activation is separate.",
+      "status": "preservation-applied-27-controls-combined141-accepted-crash-deployment-open"
+    },
+    {
+      "id": "TST-33",
+      "cause_or_observation": "Foreign Qt-thread identity observation leaves a Dummy bookkeeping object in a rejected gate journal",
+      "result_and_limits": "The first selected successor passed 73 assertions/native 0 but acceptance rejected MainThread+Dummy-2. CPython foreign-thread Dummy bookkeeping and actual QThread.wait do not prove a live OS thread or leak. The applied identity-observer correction passed 73/native 0 with MainThread-only retirement under unchanged strict criteria; the original rejected journal remains, without filtering.",
+      "status": "test-observer-corrected-strict73-accepted-original-reject-retained"
+    },
+    {
+      "id": "GUI-17",
+      "cause_or_observation": "External plain summaries can become Qt tooltip markup after entity decoding",
+      "result_and_limits": "Original Qt baseline passed one canary and failed six formatting controls: four image-format interpretations and two entity-text redecodes. Six external tooltip sinks now escape literal text through trusted Qt wrapping. All seven controls passed in the accepted 141-case installer/page/news/release/authority gate, native 0 with exact clean retirement. Runtime HTTP/file/script execution or response/trust authority was not proved. Full R10 predates this correction; its coverage is separate.",
+      "status": "applied-original1pass6fail-to-sevenpass-combined141-accepted"
+    }
+  ],
+  "preserved_uncertainty": [
+    "Protected historical host evidence was not accessible from this development session.",
+    "Timed interactive observations cannot establish unattended endurance or universal clean shutdown.",
+    "Frozen full r5 completed with three failures; subsequent focused, selfcheck and GUI acceptance address some failures. New native retirement, directory composition and crash findings remain held before the next full run.",
+    "Eight module-health gaps remain in the instrumented all-eligible case; corrected classifications do not certify every diagnostic severity.",
+    "Observer stage maxima need not be from one iteration and cannot attribute historical Qt stalls."
+  ],
+  "review_status": "139 reviewed issues: fullR10 and later141/default29 accepted with exact retirement; original failures and explicit deployment gaps retained. Preceding CI15 is historical, not proof for a later publication head. Markdown operator/AI guide is current; optional DOCX appendix has no render/delivery acceptance."
+}

@@ -10,7 +10,7 @@ but no longer actually enforces anything.
 
 How
     At arm time it fingerprints a set of critical callables — module, qualname,
-    the complete marshalled code object, defaults, and closure values. Every
+    canonical executable code metadata, defaults, and closure values. Every
     cycle it re-resolves each target and compares. Reassignment, constants-only
     patches, referenced-name changes, and modified defaults/closures all produce
     a CRITICAL runtime-tamper signal.
@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import hashlib
 import importlib
-import marshal
 import os
+import struct
 import subprocess
 import sys
 import time
 from pathlib import Path
+from types import CodeType
 from typing import Mapping
 
 from angerona.core.module_base import BaseModule, Severity
@@ -48,6 +49,53 @@ from angerona.core.module_base import BaseModule, Severity
 _BROAD_PRINCIPALS = ("everyone", "\\users", "authenticated users", "builtin\\users",
                      "interactive", "\\everyone")
 _WRITE_RIGHTS = ("(F)", "(M)", "(W)", "(WD)", "(RX,W)", "(GW)")
+_BROAD_SIDS = frozenset({
+    "S-1-1-0",       # Everyone
+    "S-1-5-4",       # Interactive
+    "S-1-5-7",       # Anonymous Logon
+    "S-1-5-11",      # Authenticated Users
+    "S-1-5-32-545",  # BUILTIN\Users
+    "S-1-5-32-546",  # BUILTIN\Guests
+})
+_MUTATION_ACCESS = (
+    0x00000002 | 0x00000004 | 0x00000010 | 0x00000040 | 0x00000100
+    | 0x00010000 | 0x00040000 | 0x00080000 | 0x10000000 | 0x40000000
+)
+
+
+def _native_acl_weaknesses(data_dir: str) -> list[str]:
+    """Read the DACL directly, using locale-independent SID/access values.
+
+    Unsupported allow ACEs or an unreadable descriptor remain unknown. This is
+    an exposure audit, not an effective-access calculation: an explicit broad
+    write grant remains reviewable even when a separate deny ACE also exists.
+    No permissions are changed.
+    """
+    import win32security
+
+    descriptor = win32security.GetNamedSecurityInfo(
+        data_dir, win32security.SE_FILE_OBJECT,
+        win32security.DACL_SECURITY_INFORMATION,
+    )
+    dacl = descriptor.GetSecurityDescriptorDacl()
+    if dacl is None:
+        return ["S-1-1-0: unrestricted access (NULL DACL)"]
+    count = dacl.GetAceCount()
+    if not 0 <= count <= 4096:
+        raise ValueError("state directory ACL exceeds the bounded ACE audit")
+    findings = []
+    for index in range(count):
+        ace = dacl.GetAce(index)
+        kind = ace[0][0]
+        if kind == win32security.ACCESS_DENIED_ACE_TYPE:
+            continue
+        if kind != win32security.ACCESS_ALLOWED_ACE_TYPE or len(ace) != 3:
+            raise ValueError(f"state directory ACL has unsupported ACE type {kind}")
+        mask = int(ace[1])
+        sid = win32security.ConvertSidToStringSid(ace[2])
+        if sid in _BROAD_SIDS and mask & _MUTATION_ACCESS:
+            findings.append(f"{sid}: write-class access mask 0x{mask:08x}")
+    return findings
 
 
 def _is_elevated() -> bool:
@@ -94,32 +142,42 @@ def audit_state_dir_status() -> dict[str, object]:
         result["reason"] = "state directory is unresolved or unavailable"
         return result
     result["path"] = data_dir
+    native_complete = True
     try:
-        from angerona.core.privilege import trusted_windows_directories
+        try:
+            weak = _native_acl_weaknesses(data_dir)
+        except ImportError:
+            native_complete = False
+            # Compatibility for minimal Windows installs without pywin32. The
+            # normal Windows extra uses the native audit and starts no process.
+            from angerona.core.privilege import trusted_windows_directories
 
-        _windows, system = trusted_windows_directories()
-        executable = system / "icacls.exe"
-        if not executable.is_file():
-            result["reason"] = "trusted System32 icacls.exe is unavailable"
-            return result
-        completed = subprocess.run(
-            [str(executable), data_dir],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=0x08000000,
-            check=False,
-        )
-        out = completed.stdout
-        if completed.returncode != 0 or not out.strip():
-            result["reason"] = (
-                f"icacls collection failed with exit {completed.returncode}"
+            _windows, system = trusted_windows_directories()
+            executable = system / "icacls.exe"
+            if not executable.is_file():
+                result["reason"] = "trusted System32 icacls.exe is unavailable"
+                return result
+            completed = subprocess.run(
+                [str(executable), data_dir],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=0x08000000,
+                check=False,
             )
-            return result
+            out = completed.stdout
+            if completed.returncode != 0 or not out.strip():
+                result["reason"] = (
+                    f"icacls collection failed with exit {completed.returncode}"
+                )
+                return result
+            weak = parse_icacls_weaknesses(out)
+    except subprocess.TimeoutExpired:
+        result["reason"] = "ACL helper exceeded its 10-second collection budget"
+        return result
     except Exception as exc:
         result["reason"] = f"ACL collection failed: {exc}"
         return result
-    weak = parse_icacls_weaknesses(out)
     if weak:
         prefix = "Angerona is ELEVATED but its" if _is_elevated() else "Angerona's"
         finding = (
@@ -129,6 +187,12 @@ def audit_state_dir_status() -> dict[str, object]:
             "Lock it down: icacls \"" + data_dir + "\" /inheritance:r /grant:r "
             "Administrators:(OI)(CI)F SYSTEM:(OI)(CI)F  [" + "; ".join(weak[:2]) + "]")
         result.update(status="weak", findings=[finding], reason="broad write ACL detected")
+        return result
+    if not native_complete:
+        result["reason"] = (
+            "native SID-based ACL coverage requires pywin32; the legacy helper "
+            "found no confirmed broad writer, so complete ACL assurance is unknown"
+        )
         return result
     result.update(status="ok", reason="ACL collection complete; no broad writer found")
     return result
@@ -171,10 +235,22 @@ _DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "angerona.resilience.heartbeat:proof_for",
     ),
     "angerona.core.process_allowlist:is_allowed": (
+        "angerona.core.process_allowlist:is_digest_pinned_allowed",
         "angerona.core.process_allowlist:_normal_name",
         "angerona.core.process_allowlist:_normal_path",
         "angerona.core.process_allowlist:policy_snapshot",
         "angerona.core.process_allowlist:executable_sha256",
+        "angerona.core.process_allowlist:_hash_identity",
+        "angerona.core.process_allowlist:_open_hash_stream",
+        "angerona.core.process_allowlist:_open_sealed",
+        "angerona.core.executable_trust:_open_windows_sealed",
+        "angerona.core.executable_trust:_open_posix_sealed",
+        "angerona.core.process_allowlist:_hold_plain_directories",
+        "angerona.core.process_allowlist:_hold_plain_directories.__wrapped__",
+        "angerona.core.process_allowlist:_validate_regular_file",
+        "angerona.core.source_sandbox:_validate_chain",
+        "angerona.core.source_sandbox:_chain",
+        "angerona.core.source_sandbox:_is_link_or_reparse",
     ),
 }
 
@@ -209,23 +285,84 @@ def _source_evidence(obj) -> dict[str, object] | None:
     }
 
 
-def _integrity_bytes(value, *, depth: int = 0) -> bytes:
-    """Return a bounded, deterministic representation for callable metadata.
+_CODE_FIELDS = (
+    "co_argcount", "co_posonlyargcount", "co_kwonlyargcount", "co_nlocals",
+    "co_stacksize", "co_flags", "co_code", "co_consts", "co_names",
+    "co_varnames", "co_filename", "co_name", "co_qualname", "co_firstlineno",
+    "co_linetable", "co_exceptiontable", "co_freevars", "co_cellvars",
+)
 
-    ``marshal`` is deliberately used for Python code objects because ``co_code``
-    alone omits constants, referenced global names, exception tables, and other
-    execution-relevant fields.  Defaults and closure cells are included too so
-    changing a policy function without changing its bytecode still trips the
-    monitor.  This is a local hash input only; values are never persisted or
-    emitted.
+
+def _scalar_bytes(value) -> bytes:
+    """Canonical scalar encoding, independent of Python's object refcounts."""
+    if value is None:
+        return b"none"
+    if value is Ellipsis:
+        return b"ellipsis"
+    if isinstance(value, bool):
+        return b"bool:1" if value else b"bool:0"
+    if isinstance(value, int):
+        # Binary magnitude also handles integers beyond Python's decimal limit.
+        magnitude = abs(value)
+        return (b"int:-" if value < 0 else b"int:+") + magnitude.to_bytes(
+            max(1, (magnitude.bit_length() + 7) // 8), "big"
+        )
+    if isinstance(value, float):
+        return b"float:" + struct.pack(">d", value)
+    if isinstance(value, complex):
+        return b"complex:" + struct.pack(">dd", value.real, value.imag)
+    if isinstance(value, str):
+        return b"str:" + value.encode("utf-8", "surrogatepass")
+    if isinstance(value, bytes):
+        return b"bytes:" + value
+    raise TypeError(f"unsupported code constant type: {type(value).__name__}")
+
+
+def _code_bytes(value, *, depth: int = 0) -> bytes:
+    """Hash every executable code field without marshal's reference flags.
+
+    Marshal encodes sharing using live reference counts. Merely executing a
+    function can temporarily add a reference to a constant, changing the dump
+    although its code is untouched. Length-framed, typed values avoid that
+    instability while retaining constants, nested code, names and exception
+    tables. This version intentionally invalidates older approved fingerprints.
+    """
+    if depth > 128:
+        raise ValueError("code metadata exceeds the supported nesting bound")
+    if isinstance(value, CodeType):
+        kind = b"code-v2"
+        members = tuple(
+            (name, getattr(value, name)) for name in _CODE_FIELDS
+            if hasattr(value, name)
+        )
+    elif isinstance(value, tuple):
+        kind, members = b"tuple", value
+    elif isinstance(value, frozenset):
+        kind = b"frozenset"
+        members = tuple(sorted(_code_bytes(item, depth=depth + 1) for item in value))
+    else:
+        return _scalar_bytes(value)
+    hasher = hashlib.sha256(kind)
+    hasher.update(len(members).to_bytes(8, "big"))
+    for member in members:
+        encoded = _code_bytes(member, depth=depth + 1)
+        hasher.update(len(encoded).to_bytes(8, "big"))
+        hasher.update(encoded)
+    return kind + b":" + hasher.digest()
+
+
+def _integrity_bytes(value, *, depth: int = 0) -> bytes:
+    """Return deterministic callable metadata; values are never emitted.
+
+    Defaults and closure cells are included so changing a policy function
+    without changing its bytecode still trips the monitor.
     """
     if depth >= 6:
         return b"<depth-limit>"
     if value is None or isinstance(value, (bool, int, float, complex, str, bytes)):
-        try:
-            return marshal.dumps(value)[:65536]
-        except (TypeError, ValueError):
-            pass
+        # A fixed-width digest also prevents delimiter-bearing defaults from
+        # colliding and covers the complete scalar rather than a prefix.
+        return b"<scalar>" + hashlib.sha256(_scalar_bytes(value)).digest()
     if isinstance(value, tuple):
         return b"(" + b"|".join(
             _integrity_bytes(item, depth=depth + 1) for item in value[:128]
@@ -248,10 +385,7 @@ def _integrity_bytes(value, *, depth: int = 0) -> bytes:
         return b"<set>" + b"|".join(items[:128])
     code = getattr(value, "__code__", None)
     if code is not None:
-        try:
-            return b"<code>" + marshal.dumps(code)[:262144]
-        except (TypeError, ValueError):
-            pass
+        return b"<code>" + _code_bytes(code)
     type_id = f"{type(value).__module__}.{type(value).__qualname__}".encode(
         "utf-8", "backslashreplace"
     )
@@ -270,7 +404,7 @@ def _fingerprint(obj) -> str:
     code = getattr(fn, "__code__", None)
     if code is not None:
         hasher = hashlib.sha256()
-        hasher.update(marshal.dumps(code))
+        hasher.update(_code_bytes(code))
         hasher.update(_integrity_bytes(getattr(fn, "__defaults__", None)))
         hasher.update(_integrity_bytes(getattr(fn, "__kwdefaults__", None)))
         closure = getattr(fn, "__closure__", None) or ()
@@ -280,7 +414,7 @@ def _fingerprint(obj) -> str:
             except ValueError:
                 value = "<empty-cell>"
             hasher.update(_integrity_bytes(value))
-        digest = hasher.hexdigest()[:24]
+        digest = "v2-" + hasher.hexdigest()[:24]
     else:
         digest = "no-code"
     return f"{mod}:{qual}:{digest}"
@@ -431,7 +565,7 @@ class SelfIntegrityMonitor(BaseModule):
                    "enforcement functions with mandatory dependency/source coverage and "
                    "an explicitly approved baseline boundary.")
     category = "Integrity"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
 
     _INTERVAL = 15.0
@@ -500,6 +634,9 @@ class SelfIntegrityMonitor(BaseModule):
                     f"Self-integrity ACL evidence unavailable: {reason}",
                     Severity.HIGH,
                     disposition="health",
+                    schema="angerona.self-integrity-acl-health.v1",
+                    response_authorized=False,
+                    response_authority="observe-only",
                     acl_status=status,
                     acl_path=acl.get("path", ""),
                 )
@@ -512,8 +649,13 @@ class SelfIntegrityMonitor(BaseModule):
             )
         if self._engine.manifest_status != "verified":
             score = 60 if self._engine.manifest_status == "tofu-unapproved" else 25
+            guidance = (
+                "; review and explicitly re-approve the baseline if fingerprints "
+                "predate format v2"
+                if self._engine.manifest_status == "mismatch" else ""
+            )
             degradations.append(
-                (score, f"integrity baseline {self._engine.manifest_status}")
+                (score, f"integrity baseline {self._engine.manifest_status}{guidance}")
             )
         acl_status = str(acl.get("status", "collection-failed"))
         if acl_status == "collection-failed":

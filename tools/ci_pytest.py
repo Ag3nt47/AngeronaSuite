@@ -18,7 +18,7 @@ import time
 def _journal():
     path = os.environ.get("ANGERONA_PYTEST_EXIT_PATH")
     if not path:
-        return lambda *_args, **_fields: None
+        return (lambda *_args, **_fields: None), (lambda: None)
     try:
         stream = Path(path).open("x", encoding="utf-8", buffering=1)
     except (OSError, ValueError):
@@ -27,11 +27,12 @@ def _journal():
             sys.stderr.write("CI pytest exit journal could not be opened.\n")
         except (OSError, ValueError):
             pass
-        return lambda *_args, **_fields: None
+        return (lambda *_args, **_fields: None), (lambda: None)
 
     # Keep independent references: tests can temporarily replace these module
     # attributes, and standard output may already have failed during shutdown.
     encode, clock, write, flush = json.dumps, time.monotonic, stream.write, stream.flush
+    close = stream.close
 
     def record(kind, **fields):
         try:
@@ -40,17 +41,37 @@ def _journal():
         except (OSError, ValueError):
             pass
 
-    return record
+    def finish():
+        try:
+            record("python-atexit-end")
+        finally:
+            # Retire only after pytest's callbacks and the final marker. A
+            # failed diagnostic close must preserve the original exit result.
+            try:
+                close()
+            except (OSError, ValueError):
+                pass
+
+    return record, finish
 
 
 def main() -> None:
-    record = _journal()
+    if __package__ in {None, ""}:
+        # ``python tools/ci_pytest.py`` otherwise exposes only tools/ at
+        # sys.path[0]. run_module does not reproduce python -m's root entry,
+        # so root-level helpers and the tools namespace become unimportable.
+        # Anchor the explicitly selected script's checkout, never an arbitrary
+        # working directory. Module-mode invocation already has its own path.
+        repository = str(Path(__file__).resolve().parents[1])
+        if repository not in sys.path:
+            sys.path.insert(0, repository)
+    record, finish_journal = _journal()
     register_exit = atexit.register
-    register_exit(record, "python-atexit-end")
+    register_exit(finish_journal)
     record("process-start", python=sys.version.split()[0], argument_count=len(sys.argv) - 1)
     try:
         # Launch the actual pytest __main__, including its console stdout-flush
-        # behavior. Module execution preserves the repository-root import path.
+        # behavior. Direct-file mode has established its checkout import root.
         runpy.run_module("pytest", run_name="__main__", alter_sys=True)
     except SystemExit as exc:
         code = exc.code

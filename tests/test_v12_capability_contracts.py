@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from angerona import __version__
 from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
 from angerona.core.module_contract import (
@@ -35,7 +36,7 @@ def test_all_builtins_publish_unique_v12_contracts() -> None:
     assert all(row["contract_schema_version"] == CONTRACT_SCHEMA_VERSION for row in rows)
     assert {
         row["implementation_version"] for row in rows
-    } == {"1.13.0"}
+    } == {__version__}
     assert all(row["operational"]["schema"] == "angerona.module-operational.v12" for row in rows)
     json.dumps(rows, sort_keys=True)
 

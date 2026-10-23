@@ -75,11 +75,10 @@ def test_chill_stops_cosmetic_callbacks_and_slows_views_without_blocking_manual_
 def test_pulse_chill_sampling_budget_visibility_and_manual_request(monkeypatch, controller):
     sampled = threading.Event()
 
-    def sample(card):
-        card._busy.clear()
+    def sample(_collector):
         sampled.set()
 
-    monkeypatch.setattr(SystemPulseCard, "_sample", sample)
+    monkeypatch.setattr("angerona.gui.system_pulse._SystemPulseCollector.__call__", sample)
     window = QWidget()
     card = SystemPulseCard(window)
     QVBoxLayout(window).addWidget(card)

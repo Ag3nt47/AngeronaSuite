@@ -190,7 +190,7 @@ class AMSIBridgeModule(BaseModule):
         "time.  Does NOT patch AmsiScanBuffer (no offensive bypass)."
     )
     category = "Endpoint"
-    version = "1.13.0"
+    version = "1.14.0"
 
     _POLL_INTERVAL = 5.0   # how often to drain the bus for new script events
 

@@ -213,6 +213,83 @@ function Assert-SafeRelativePath([string]$Path) {
     }
 }
 
+function Write-ReleaseRecoveryNotice([string]$Message) {
+    # Recovery reporting must never replace the original installation error.
+    try { Write-Warning -Message $Message -WarningAction Continue } catch {}
+}
+
+function Invoke-ReleasePayloadReplacement(
+    [string]$TargetRoot,
+    [string]$PayloadRoot,
+    [string]$StageRoot,
+    [string[]]$InstallPaths,
+    $RecoveryState
+) {
+    # This helper is called only after the installed authority verifies the
+    # candidate. It grants no release or rollback authority of its own.
+    $seenPaths = @{}
+    foreach ($relative in $InstallPaths) {
+        Assert-SafeRelativePath $relative
+        $folded = $relative.ToLowerInvariant()
+        if ($seenPaths.ContainsKey($folded)) {
+            throw 'The verified installation path list contains a duplicate.'
+        }
+        $seenPaths[$folded] = $true
+    }
+    $backupRoot = Join-Path $StageRoot 'previous'
+    [void](New-Item -ItemType Directory -Path $backupRoot)
+    Set-Acl -LiteralPath $backupRoot -AclObject (New-ProtectedAcl $true)
+    $RecoveryState.Phase = 'verified-payload-replacement'
+    foreach ($relative in $InstallPaths) {
+        $sourcePath = Join-Path $PayloadRoot ($relative.Replace('/', '\'))
+        $destination = Join-Path $TargetRoot ($relative.Replace('/', '\'))
+        $destinationParent = Split-Path -Parent $destination
+        $backup = Join-Path $backupRoot ($relative.Replace('/', '\'))
+        $backupParent = Split-Path -Parent $backup
+        if (-not (Test-Path -LiteralPath $backupParent)) {
+            [void](New-Item -ItemType Directory -Path $backupParent -Force)
+        }
+        $hadPrevious = Test-Path -LiteralPath $destination -PathType Leaf
+        # Account for the current entry BEFORE any destination-side operation.
+        # These labels are diagnostics, not retained file-object custody and
+        # must never authorize removal or replacement of a recovery target.
+        $entry = [pscustomobject]@{
+            RelativePath = $relative
+            HadPrevious = [bool]$hadPrevious
+            PreviousMove = 'not-attempted'
+            Copy = 'not-attempted'
+            Acl = 'not-attempted'
+            Recovery = 'not-authorized-no-file-object-custody'
+        }
+        [void]$RecoveryState.Entries.Add($entry)
+        if (-not (Test-Path -LiteralPath $destinationParent)) {
+            $RecoveryState.DestinationMutationAttempted = $true
+            [void](New-Item -ItemType Directory -Path $destinationParent -Force)
+        }
+        Assert-NotReparse $destinationParent
+        if ($hadPrevious) {
+            Assert-NotReparse $destination
+            $RecoveryState.DestinationMutationAttempted = $true
+            $entry.PreviousMove = 'attempted-outcome-unproven'
+            Move-Item -LiteralPath $destination -Destination $backup
+            $entry.PreviousMove = 'returned-success-not-object-attestation'
+        } else {
+            $entry.PreviousMove = 'not-required'
+        }
+        $RecoveryState.DestinationMutationAttempted = $true
+        $entry.Copy = 'attempted-outcome-unproven'
+        Copy-Item -LiteralPath $sourcePath -Destination $destination
+        $entry.Copy = 'returned-success-not-object-attestation'
+        $entry.Acl = 'attempted-outcome-unproven'
+        Set-Acl -LiteralPath $destination -AclObject (New-ProtectedAcl $false)
+        $entry.Acl = 'returned-success-not-runtime-verification'
+    }
+    # Paths or matching contents cannot prove ownership of a file generation.
+    # No automatic destructive rollback is implemented here. In particular,
+    # the previous release floor is evidence, never permission to downgrade.
+    $RecoveryState.Phase = 'files-copied-startup-unverified'
+}
+
 function Assert-InstalledCustody {
     if (-not (Test-Path -LiteralPath $target -PathType Container)) {
         throw ('The portable package is upgrade-only. First installation requires the ' +
@@ -307,6 +384,12 @@ Assert-NotReparse $archiveChecksum
 $stage = Join-Path $target ('.installing-' + [guid]::NewGuid().ToString('N'))
 [void](New-Item -ItemType Directory -Path $stage)
 Set-Acl -LiteralPath $stage -AclObject (New-ProtectedAcl $true)
+$recoveryState = [pscustomobject]@{
+    Phase = 'pre-mutation-staging'
+    DestinationMutationAttempted = $false
+    Entries = [Collections.Generic.List[object]]::new()
+}
+$upgradeFailure = $null
 try {
     $stagedArchive = Join-Path $stage ([IO.Path]::GetFileName($archive))
     Copy-Item -LiteralPath $archive -Destination $stagedArchive
@@ -497,65 +580,46 @@ try {
         'release-files.sha256',
         'release-floor.json'
     )
-    $backupRoot = Join-Path $stage 'previous'
-    [void](New-Item -ItemType Directory -Path $backupRoot)
-    $installed = @()
-    try {
-        foreach ($relative in $installPaths) {
-            Assert-SafeRelativePath $relative
-            $sourcePath = Join-Path $payloadRoot ($relative.Replace('/', '\'))
-            $destination = Join-Path $target ($relative.Replace('/', '\'))
-            $destinationParent = Split-Path -Parent $destination
-            if (-not (Test-Path -LiteralPath $destinationParent)) {
-                [void](New-Item -ItemType Directory -Path $destinationParent -Force)
-            }
-            Assert-NotReparse $destinationParent
-            $backup = Join-Path $backupRoot ($relative.Replace('/', '\'))
-            $backupParent = Split-Path -Parent $backup
-            if (-not (Test-Path -LiteralPath $backupParent)) {
-                [void](New-Item -ItemType Directory -Path $backupParent -Force)
-            }
-            $hadPrevious = Test-Path -LiteralPath $destination -PathType Leaf
-            if ($hadPrevious) {
-                Assert-NotReparse $destination
-                Move-Item -LiteralPath $destination -Destination $backup
-            }
-            try {
-                Copy-Item -LiteralPath $sourcePath -Destination $destination
-                Set-Acl -LiteralPath $destination -AclObject (New-ProtectedAcl $false)
-            } catch {
-                if ($hadPrevious -and (Test-Path -LiteralPath $backup)) {
-                    Move-Item -LiteralPath $backup -Destination $destination
-                }
-                throw
-            }
-            $installed += [pscustomobject]@{
-                Destination = $destination
-                Backup = $backup
-                HadPrevious = $hadPrevious
-            }
-        }
-    } catch {
-        for ($index = $installed.Count - 1; $index -ge 0; $index--) {
-            $entry = $installed[$index]
-            if (Test-Path -LiteralPath $entry.Destination) {
-                Remove-Item -LiteralPath $entry.Destination -Force
-            }
-            if ($entry.HadPrevious -and (Test-Path -LiteralPath $entry.Backup)) {
-                Move-Item -LiteralPath $entry.Backup -Destination $entry.Destination
-            }
-        }
-        throw
-    }
+    Invoke-ReleasePayloadReplacement -TargetRoot $target -PayloadRoot $payloadRoot `
+        -StageRoot $stage -InstallPaths $installPaths -RecoveryState $recoveryState
     Set-Acl -LiteralPath $target -AclObject (New-ProtectedAcl $true)
+} catch {
+    $upgradeFailure = $_
+    if ($recoveryState.DestinationMutationAttempted) {
+        $recoveryState.Phase = 'recovery-required-no-automatic-rollback'
+        Write-ReleaseRecoveryNotice (
+            "Upgrade failed after destination mutation was attempted. " +
+            "No automatic rollback is authorized; review $stage. " +
+            "Accounted entries: $($recoveryState.Entries.Count). " +
+            'Do not replace the protected release floor from a backup.')
+    }
+    throw
 } finally {
-    $stageFull = [IO.Path]::GetFullPath($stage)
-    $targetPrefix = $target.TrimEnd('\') + '\'
-    if ($stageFull.StartsWith(
-            $targetPrefix, [StringComparison]::OrdinalIgnoreCase) -and
-            (Test-Path -LiteralPath $stageFull)) {
-        Assert-NotReparse $stageFull
-        Remove-Item -LiteralPath $stageFull -Recurse -Force
+    if ($recoveryState.DestinationMutationAttempted) {
+        # Preserve the complete protected stage on failure, unknown outcomes,
+        # AND apparent copy success. Start-Process is not a health receipt.
+        # Never delete a candidate, backup, or replaced generation by path/hash.
+        Write-ReleaseRecoveryNotice (
+            "Recovery material retained at $stage; state: $($recoveryState.Phase). " +
+            'Startup health and recovery reconciliation remain unverified.')
+    } else {
+        # No destination-side operation was attempted. Keep the existing
+        # protected pre-mutation staging cleanup; failed cleanup must not mask
+        # the primary verification/installation exception.
+        try {
+            $stageFull = [IO.Path]::GetFullPath($stage)
+            $targetPrefix = $target.TrimEnd('\') + '\'
+            if ($stageFull.StartsWith(
+                    $targetPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+                    (Test-Path -LiteralPath $stageFull)) {
+                Assert-NotReparse $stageFull
+                Remove-Item -LiteralPath $stageFull -Recurse -Force
+            }
+        } catch {
+            if ($null -eq $upgradeFailure) { throw }
+            Write-ReleaseRecoveryNotice (
+                "Pre-mutation staging cleanup was not proven; retained path: $stage")
+        }
     }
 }
 
@@ -567,5 +631,6 @@ $shortcut.WorkingDirectory = $target
 $shortcut.IconLocation = (Join-Path $target 'Angerona.exe') + ',0'
 $shortcut.Save()
 
-Write-Host "Verified Angerona upgrade installed to $target" -ForegroundColor Green
+Write-Host "Authorized Angerona upgrade files copied to $target; startup verification pending." `
+    -ForegroundColor Yellow
 Start-Process -FilePath (Join-Path $target 'AngeronaStartup.exe')

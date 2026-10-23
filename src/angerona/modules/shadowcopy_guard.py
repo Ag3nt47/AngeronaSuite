@@ -147,7 +147,7 @@ class ShadowCopyGuardModule(BaseModule):
     description = ("Detects shadow-copy deletion + recovery disabling (vssadmin/wmic/"
                    "wbadmin/bcdedit, T1490) — a ransomware precursor — and alerts with the pid.")
     category = "Detection"
-    version = "1.13.0"
+    version = "1.14.0"
 
     _POLL = 2.0
 

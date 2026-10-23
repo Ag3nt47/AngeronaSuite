@@ -26,13 +26,18 @@ def test_system_pulse_reuses_one_sampler_thread_and_wakes_it_on_shutdown() -> No
     worker = card._sample_worker
     completed = threading.Event()
     sampler_threads: list[int] = []
+    clear_busy = card._sampler.busy.clear
+
+    def sample_completed() -> None:
+        clear_busy()
+        completed.set()
+
+    card._sampler.busy.clear = sample_completed
 
     def fake_sample() -> None:
         sampler_threads.append(threading.get_ident())
-        card._busy.clear()
-        completed.set()
 
-    card._sample = fake_sample
+    card._sampler.collect = fake_sample
     for _index in range(3):
         completed.clear()
         card.request_sample()

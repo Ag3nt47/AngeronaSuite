@@ -1,7 +1,7 @@
 """Bounded official research headlines for presentation, never detection rules.
 
 The fetch path shares SpywareGuard's pinned public HTTPS transport. RSS/Atom and
-the bounded Project Zero HTML index are untrusted data: stale dates, unrelated
+the bounded Citizen Lab/Project Zero indexes are untrusted data: stale dates, unrelated
 items, and unsafe article links are rejected. Article links are checked without
 resolving DNS; only an explicit operator click opens the browser.
 """
@@ -30,8 +30,13 @@ MAX_FEED_ENTRIES = 300
 MAX_XML_NODES = 20_000
 MAX_HTML_DEPTH = 64
 MAX_NEWS_AGE = 30 * 86400
+MAX_CACHED_NEWS_AGE = 180 * 86400
+MAX_NEWS_SUMMARY = 1200
+REFERENCE_REVIEWED = "2026-10-22"
 NEWS_SOURCES = MappingProxyType({
-    "citizen_lab": "https://citizenlab.ca/feed/",
+    # Its general RSS stream omits current research reports. The homepage's
+    # dated research cards include the reports without crawling article pages.
+    "citizen_lab": "https://citizenlab.ca/",
     # The Atom endpoint contains the complete archive and exceeds the shared
     # transport limit. Its official recent-post index is small and bounded.
     "project_zero": "https://projectzero.google/",
@@ -55,6 +60,42 @@ _CITIZEN_NONARTICLES = frozenset({
 })
 _MONTHS = {month: index for index, month in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+_LONG_MONTHS = {month: index for index, month in enumerate((
+    "January", "February", "March", "April", "May", "June", "July", "August", "September",
+    "October", "November", "December"), 1)}
+
+# Reviewed primary-source reference briefs, not a simulated feed or detection
+# indicators. They remain useful offline; their dates never advance at runtime.
+_REFERENCE_BRIEFS = (
+    ("citizen_lab", "2026-10-19", "Pegasus attacks on Serbian pro-democracy figures",
+     "https://citizenlab.ca/research/pegasus-spyware-serbian-pro-democracy/",
+     "Citizen Lab and the SHARE Foundation reported evidence of Pegasus infection involving a Serbian university leader, "
+     "and a separate Apple threat notification involving a prosecutor. The report distinguishes confirmed infection "
+     "from notification-based targeting evidence; it does not establish infection on this computer."),
+    ("citizen_lab", "2026-10-15", "AdFection: targeted advertising used to deliver spyware",
+     "https://citizenlab.ca/research/how-discover-tech-turned-targeted-ads-into-a-pipeline-for-spyware/",
+     "Citizen Lab describes targeted advertising infrastructure associated with Discover-Tech/Controlium and delivery "
+     "of Candiru spyware to Al Jazeera devices. Advertising exposure and a local heuristic alone do not identify an actor; "
+     "review the original technical evidence and the local detector's coverage separately."),
+    ("project_zero", "2026-10-06", "Emergency patching and the limits of urgent vulnerability fixes",
+     "https://projectzero.google/2026/10/emergency-patching.html",
+     "Project Zero reviews mechanisms vendors use to deliver urgent security fixes outside normal update cycles. "
+     "The article concerns response and patch delivery design; it is not an announcement that this device is vulnerable "
+     "or that a new spyware infection has been detected."),
+)
+
+
+def reference_news(*, now=None) -> list[dict]:
+    """Return detached, honestly dated offline references; never perform I/O."""
+    timestamp = _timestamp(now)
+    reviewed = datetime.fromisoformat(REFERENCE_REVIEWED).replace(tzinfo=timezone.utc).timestamp()
+    if timestamp < reviewed:
+        return []
+    return [{"source": source, "published": datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp(),
+             "title": title, "url": safe_news_article_url(url, source), "summary": summary,
+             "verified_at": reviewed, "origin": "bundled-reference", "reviewed": REFERENCE_REVIEWED,
+             "advisory_only": True}
+            for source, day, title, url, summary in _REFERENCE_BRIEFS]
 
 
 def _timestamp(value) -> float:
@@ -130,10 +171,32 @@ def _date(value: str) -> float | None:
     return stamp if math.isfinite(stamp) and stamp > 0 else None
 
 
+class _PlainSummary(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.text = []
+        self.ignored = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "template", "noscript"}:
+            self.ignored += 1
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "template", "noscript"}:
+            self.ignored = max(0, self.ignored - 1)
+
+    def handle_data(self, data):
+        if not self.ignored:
+            self.text.append(data)
+
+
 def _plain(value: str, limit=260) -> str:
     # Titles remain plain text; discard markup and invisible/bidi controls so
     # the displayed source cannot be visually swapped by a feed entry.
-    text = re.sub(r"<[^>]{0,1000}>", " ", value[:4096])
+    parser = _PlainSummary()
+    parser.feed(value[:4096])
+    parser.close()
+    text = " ".join(parser.text)
     text = "".join(ch for ch in text if unicodedata.category(ch) not in {"Cc", "Cf"})
     return " ".join(text.split())[:limit]
 
@@ -153,15 +216,18 @@ def _element_text(element) -> str:
 
 def _news_entry(title, summary, stamp, link, *, source_name, timestamp):
     title = _plain(title)
+    summary = _plain(summary, MAX_NEWS_SUMMARY)
+    summary = re.sub(r"\s+read more(?:\s*→)?\s*$", "", summary, flags=re.IGNORECASE)
     if (not title or stamp is None or stamp > timestamp or timestamp - stamp > MAX_NEWS_AGE
-            or not _SIGNIFICANT.search(title + " " + summary[:4096])):
+            or not _SIGNIFICANT.search(title + " " + summary)):
         return None
     try:
         url = safe_news_article_url(link.strip(), source_name)
     except (ValueError, UnicodeError):
         return None
     return {"title": title, "url": url, "published": stamp,
-            "source": source_name, "verified_at": timestamp}
+            "source": source_name, "verified_at": timestamp, "summary": summary,
+            "advisory_only": True}
 
 
 class _ProjectZeroIndexParser(HTMLParser):
@@ -171,8 +237,9 @@ class _ProjectZeroIndexParser(HTMLParser):
                        "link", "meta", "param", "source", "track", "wbr"})
     _IGNORE = frozenset({"script", "style", "template", "noscript"})
 
-    def __init__(self):
+    def __init__(self, source_name="project_zero"):
         super().__init__(convert_charrefs=True)
+        self._citizen = source_name == "citizen_lab"
         self.entries = []
         self._stack = []
         self._article = None
@@ -199,16 +266,28 @@ class _ProjectZeroIndexParser(HTMLParser):
         classes = (attributes.get("class") or "").split()
         inherited = self._stack[-1][1] if self._stack else 0
         ignored = (self._stack[-1][2] if self._stack else False) or tag in self._IGNORE
-        if tag == "article" and not ignored:
+        entry = (tag == "div" and "nua-home-slider-mobile__slide" in classes if self._citizen
+                 else tag == "article")
+        if entry and not ignored:
             if self._article is not None:
                 raise ValueError("news index contains nested articles")
             self._count += 1
-            if "grid" in classes and self._count <= MAX_FEED_ENTRIES:
+            if (self._citizen or "grid" in classes) and self._count <= MAX_FEED_ENTRIES:
                 self._article = {"title": "", "date": "", "summary": "", "link": ""}
                 self._article_depth = len(self._stack) + 1
         flags = inherited
         if self._article is not None and not ignored:
-            if tag == "div" and "post-title" in classes:
+            if self._citizen and any(name in classes for name in (
+                    "nua-home-slider-mobile__slide-title", "nua-home-slider-mobile__slide-subtitle")):
+                if "nua-home-slider-mobile__slide-subtitle" in classes:
+                    self._article["title"] = ""
+                    self._article["link"] = ""
+                flags |= 1
+            elif self._citizen and "nua-home-slider-mobile__slide-date" in classes:
+                flags |= 2
+            elif self._citizen and "nua-home-slider-mobile__slide-excerpt" in classes:
+                flags |= 4
+            elif tag == "div" and "post-title" in classes:
                 flags |= 1
             elif tag == "a" and "post-date" in classes:
                 flags |= 2
@@ -243,7 +322,7 @@ class _ProjectZeroIndexParser(HTMLParser):
                 self._article[field] += data[:4096 - len(self._article[field])]
 
 
-def parse_project_zero_index(payload: bytes | str, *, now=None) -> list[dict]:
+def _parse_official_index(payload: bytes | str, *, source_name: str, now=None) -> list[dict]:
     """Parse the fixed official recent-post index, never arbitrary user HTML.
 
     Its visible YYYY-Mon-DD metadata has day precision. Treat that date as
@@ -255,7 +334,7 @@ def parse_project_zero_index(payload: bytes | str, *, now=None) -> list[dict]:
     raw = payload.encode("utf-8") if isinstance(payload, str) else payload
     if not raw or len(raw) > MAX_NEWS_BYTES:
         raise ValueError("news index exceeds byte bound")
-    parser = _ProjectZeroIndexParser()
+    parser = _ProjectZeroIndexParser(source_name)
     try:
         parser.feed(raw.decode("utf-8", errors="strict"))
         parser.close()
@@ -263,25 +342,41 @@ def parse_project_zero_index(payload: bytes | str, *, now=None) -> list[dict]:
         raise ValueError("news index HTML is malformed") from exc
     results = {}
     for entry in parser.entries:
-        match = re.fullmatch(r"(\d{4})-([A-Z][a-z]{2})-(\d{2})", entry["date"].strip())
-        if match is None or match[2] not in _MONTHS:
-            continue
+        if source_name == "citizen_lab":
+            match = re.fullmatch(r"([A-Z][a-z]+) (\d{1,2}), (\d{4})", entry["date"].strip())
+            if match is None or match[1] not in _LONG_MONTHS:
+                continue
+            year, month, day = int(match[3]), _LONG_MONTHS[match[1]], int(match[2])
+        else:
+            match = re.fullmatch(r"(\d{4})-([A-Z][a-z]{2})-(\d{2})", entry["date"].strip())
+            if match is None or match[2] not in _MONTHS:
+                continue
+            year, month, day = int(match[1]), _MONTHS[match[2]], int(match[3])
         try:
-            stamp = datetime(int(match[1]), _MONTHS[match[2]], int(match[3]), tzinfo=timezone.utc).timestamp()
+            stamp = datetime(year, month, day, tzinfo=timezone.utc).timestamp()
         except (ValueError, OverflowError, OSError):
             continue
         link = entry["link"]
         if link.startswith("/") and not link.startswith("//"):
             # Prefix the fixed origin without normalizing traversal segments;
             # the article policy must see and reject the original path.
-            link = NEWS_SOURCES["project_zero"].rstrip("/") + link
+            link = NEWS_SOURCES[source_name].rstrip("/") + link
         row = _news_entry(entry["title"], entry["summary"], stamp, link,
-                          source_name="project_zero", timestamp=timestamp)
+                          source_name=source_name, timestamp=timestamp)
         if row is not None:
             existing = results.get(row["url"])
             if existing is None or stamp > existing["published"]:
                 results[row["url"]] = row
     return sorted(results.values(), key=lambda row: (-row["published"], row["url"]))[:MAX_NEWS_ITEMS]
+
+
+def parse_project_zero_index(payload: bytes | str, *, now=None) -> list[dict]:
+    return _parse_official_index(payload, source_name="project_zero", now=now)
+
+
+def parse_citizen_lab_index(payload: bytes | str, *, now=None) -> list[dict]:
+    """Parse dated official research cards; do not fetch assets or follow links."""
+    return _parse_official_index(payload, source_name="citizen_lab", now=now)
 
 
 def parse_news_feed(payload: bytes | str, *, source_name: str, now=None) -> list[dict]:
@@ -349,9 +444,9 @@ def fetch_news_source(source_name: str, *, network_enabled: bool = False, now=No
     if network_enabled is not True:
         raise PermissionError("news downloads require explicit network enablement")
     timestamp = _timestamp(now)
-    if source_name == "project_zero":
+    if source_name in {"project_zero", "citizen_lab"}:
         raw, _ = _fetch_https_report(NEWS_SOURCES[source_name], timeout=15.0, expected_format="html")
-        return parse_project_zero_index(raw, now=timestamp)
+        return _parse_official_index(raw, source_name=source_name, now=timestamp)
     raw, _ = _fetch_https_report(NEWS_SOURCES[source_name], timeout=15.0, expected_format="xml")
     return parse_news_feed(raw, source_name=source_name, now=timestamp)
 

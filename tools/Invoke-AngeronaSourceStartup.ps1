@@ -210,7 +210,7 @@ function Invoke-SourceStartupPass([string]$Root, [switch]$SetupOnly) {
         $pip = @'
 import importlib.metadata as m
 try:
-    raise SystemExit(0 if m.version('pip') == '26.2.1' else 82)
+    raise SystemExit(0 if m.version('pip') == '26.2.2' else 82)
 except m.PackageNotFoundError:
     raise SystemExit(82)
 '@

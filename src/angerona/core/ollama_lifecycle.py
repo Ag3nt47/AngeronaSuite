@@ -610,6 +610,13 @@ def _startup_environment(host: str) -> dict[str, str]:
         "OLLAMA_MAX_LOADED_MODELS": "1",
         "OLLAMA_NUM_PARALLEL": "1",
     })
+    # An operator may disable a problematic GPU discovery backend. Keep this
+    # a strict boolean, never a library/path override or an egress policy knob.
+    # Current Ollama versions enable Vulkan by default; disabling it can retain
+    # working CUDA discovery on hardware where Vulkan initialization stalls.
+    vulkan = os.environ.get("OLLAMA_VULKAN", "").strip().casefold()
+    if vulkan in {"0", "false", "1", "true"}:
+        environment["OLLAMA_VULKAN"] = "1" if vulkan in {"1", "true"} else "0"
     model_directory = os.environ.get("OLLAMA_MODELS", "")
     if (model_directory and len(model_directory) <= 4096
             and not any(ord(character) < 32 for character in model_directory)

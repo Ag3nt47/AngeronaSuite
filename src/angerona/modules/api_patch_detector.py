@@ -166,7 +166,7 @@ class ApiPatchDetectorModule(BaseModule):
     description = ("Reads pristine ntdll/kernel32 from disk and compares export "
                    "prologues against live memory to catch inline sensor hooks.")
     category = "Integrity"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
 
     # BL-14: a much shorter (jittered) interval shrinks the hook→act→unhook window
@@ -250,7 +250,7 @@ class ApiPatchDetectorModule(BaseModule):
                 before = os.fstat(handle.fileno())
                 if not 0 < int(before.st_size) <= _MAX_DLL_BYTES:
                     raise OSError("system DLL size is outside the parser bound")
-                data = handle.read(_MAX_DLL_BYTES + 1)
+                data = handle.read(int(before.st_size) + 1)
                 after = os.fstat(handle.fileno())
             if len(data) != int(before.st_size) or len(data) > _MAX_DLL_BYTES:
                 raise OSError("system DLL read was incomplete or exceeded the bound")

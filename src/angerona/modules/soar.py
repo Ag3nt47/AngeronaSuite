@@ -60,7 +60,7 @@ class SOARModule(BaseModule):
         "G3-B: requires 2-signal corroboration and System32 allowlist before auto-act."
     )
     category = "Response"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = ("windows",)
     capability_mode = "respond"
     capability_inputs = ("authenticated-high-severity-event", "operator-response-policy")

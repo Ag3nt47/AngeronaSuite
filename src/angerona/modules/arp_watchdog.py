@@ -113,7 +113,7 @@ class ARPWatchdogModule(BaseModule):
     CODE = "ARPW"
     NAME = "ARP Watchdog"
     name = "ARP Watchdog"
-    version = "1.13.0"
+    version = "1.14.0"
     description = (
         "Detects ARP poisoning (T1557.002) via ARP cache diff polling and "
         "optional real-time scapy gratuitous-ARP sniffing."

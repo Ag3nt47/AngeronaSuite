@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -53,6 +55,37 @@ def test_single_unbound_local_rule_requests_local_host_lockdown():
     assert event.details["response_contract"] == {
         "version": 1, "actions": ["isolate_host"], "targets": {"host": "local"}}
     assert AdversaryCombat._response_actions(event) is not None
+
+
+def test_service_configuration_exposure_cannot_request_host_lockdown():
+    from angerona.core.spyware_sensors import analyze_persistence
+    findings = analyze_persistence([{"source": "windows.services", "id": "fixture",
+        "command": r'C:\Program Files\Example\service.exe --service'}])
+    module, bus = make_module(persistence_collector=lambda **_: {
+        "findings": findings, "coverage": {}})
+    module._scan_once()
+    event, = bus.recent(10)
+    assert event.severity == Severity.LOW
+    assert event.details["disposition"] == "exposure"
+    assert event.details["response_eligible"] is False
+    assert event.details["active_attack"] is False
+    assert event.details["response_authorized"] is False
+    assert "response_contract" not in event.details
+    assert module.dashboard_snapshot()["hits"][0]["status"] == "exposure-review"
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 0
+
+
+def test_real_transient_execution_retains_single_rule_host_containment():
+    from angerona.core.spyware_sensors import analyze_persistence
+    findings = analyze_persistence([{"source": "windows.run", "id": "BingWallpaperDaemon",
+        "command": r'powershell.exe -File C:\Temp\payload.ps1'}])
+    module, bus = make_module(persistence_collector=lambda **_: {
+        "findings": findings, "coverage": {}})
+    module._scan_once()
+    event, = bus.recent(10)
+    assert event.severity == Severity.CRITICAL
+    assert event.details["response_contract"]["actions"] == ["isolate_host"]
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 1
 
 
 @pytest.mark.parametrize("override", [{"pid": True}, {"pid": os.getpid()},
@@ -236,6 +269,91 @@ def test_full_research_queue_does_not_leave_news_refresh_stuck(monkeypatch):
     snapshot = module.dashboard_snapshot()
     assert not snapshot["news_status"]["refreshing"]
     assert snapshot["news_status"]["state"] == "retry-required"
+
+
+def _wait_for_news(module):
+    deadline = time.monotonic() + 5
+    while module._news_pending and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not module._news_pending
+
+
+def _stop_news_worker(module):
+    module._report_stop.set()
+    if module._report_thread is not None:
+        module._report_thread.join(2)
+        assert not module._report_thread.is_alive()
+
+
+def test_news_worker_reports_partial_sources_and_never_creates_response_authority(monkeypatch):
+    from angerona.core import spyware_news
+    module, bus = make_module()
+    module._settings["spyware_network_enabled"] = True
+    observed_threads = []
+
+    def fetch(source, **kwargs):
+        observed_threads.append(threading.get_ident())
+        assert kwargs["network_enabled"] is True
+        if source == "cisa":
+            raise ValueError("controlled unavailable source")
+        return [{"source": source, "url": f"https://{source}.example/fixture", "title": "inert fixture",
+                 "published": NOW - 10, "verified_at": NOW, "summary": "inert research", "advisory_only": True}]
+
+    monkeypatch.setattr(spyware_news, "fetch_news_source", fetch)
+    try:
+        module._schedule_news()
+        _wait_for_news(module)
+        snapshot = module.dashboard_snapshot()
+        assert snapshot["news_status"]["state"] == "partial"
+        assert snapshot["news_status"]["sources"]["cisa"]["state"] == "failed"
+        assert len(snapshot["news"]) == 2
+        assert all(identity != threading.get_ident() for identity in observed_threads)
+        assert snapshot["stats"]["response_requests"] == 0
+        assert snapshot["indicators"] == [] and not bus.recent(10)
+    finally:
+        _stop_news_worker(module)
+
+
+def test_failed_refresh_keeps_cache_without_claiming_it_current_then_clears_error(monkeypatch):
+    from angerona.core import spyware_news
+    module, _ = make_module()
+    module._settings["spyware_network_enabled"] = True
+    module._news = [{"source": "citizen_lab", "url": "https://citizenlab.ca/research/cache/",
+                     "published": NOW - 31 * 86400, "verified_at": NOW - 30 * 86400}]
+    def unavailable(*_args, **_kwargs):
+        raise ValueError("controlled failure")
+    monkeypatch.setattr(spyware_news, "fetch_news_source", unavailable)
+    try:
+        module._schedule_news()
+        _wait_for_news(module)
+        snapshot = module.dashboard_snapshot()
+        assert snapshot["news"] and snapshot["news_status"]["state"] == "failed"
+        monkeypatch.setattr(spyware_news, "fetch_news_source", lambda *_args, **_kwargs: [])
+        module._schedule_news()
+        _wait_for_news(module)
+        snapshot = module.dashboard_snapshot()
+        assert snapshot["news_status"]["state"] == "empty"
+        assert snapshot["news_status"]["error"] == ""
+        module._settings["spyware_network_enabled"] = False
+        assert module.dashboard_snapshot()["news_status"]["state"] == "disabled"
+        assert module.dashboard_snapshot()["news"]
+    finally:
+        _stop_news_worker(module)
+
+
+def test_automatic_news_is_queued_before_host_scan_without_changing_network_gate(monkeypatch):
+    module, _ = make_module()
+    order = []
+    module._last_refresh = NOW
+    monkeypatch.setattr(module, "_scan_once", lambda: order.append("scan"))
+    monkeypatch.setattr(module, "_schedule_news", lambda: order.append("news"))
+    module._settings["spyware_network_enabled"] = True
+    module._tick()
+    assert order == ["news", "scan"]
+    order.clear()
+    module._settings["spyware_network_enabled"] = False
+    module._tick()
+    assert order == ["scan"]
 
 
 def test_authenticated_single_api_rule_is_contained_without_second_hit():

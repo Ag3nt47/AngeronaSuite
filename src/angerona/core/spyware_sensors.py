@@ -48,8 +48,152 @@ _HOST = re.compile(
     r"cscript|cmd|bash|sh|python(?:\d(?:\.\d+)?)?)(?:\.exe)?(?:[\s\"']|$)",
     re.IGNORECASE,
 )
-_ENCODED = re.compile(r"(?:^|\s)-(?:enc|encodedcommand)(?:\s|:)", re.IGNORECASE)
 _REMOTE = re.compile(r"(?:https?|ftp)://", re.IGNORECASE)
+_TOKENS = re.compile(r'''(?:[^\s"']+|"[^"\r\n]*"|'[^'\r\n]*')+''')
+
+
+def _command_parts(command: str) -> tuple[str, str]:
+    """Separate an executable from arguments without treating log paths as code.
+
+    This is deliberately a metadata parser, not a shell evaluator. Unquoted
+    Windows executable paths containing spaces are retained for exposure review.
+    """
+    command = _text(command).strip()
+    if not command:
+        return "", ""
+    if command[0] in {'"', "'"}:
+        end = command.find(command[0], 1)
+        if end != -1:
+            return command[1:end], command[end + 1:].strip()
+    windows_path = re.match(r"(?i)^((?:[a-z]:[\\/]|\\\\|%[^%]+%[\\/]).*?\.(?:exe|com|dll))(?=\s|$)", command)
+    if windows_path:
+        return windows_path[1], command[windows_path.end():].strip()
+    pieces = command.split(None, 1)
+    return pieces[0], pieces[1] if len(pieces) > 1 else ""
+
+
+def _execution_host(executable: str) -> str:
+    basename = executable.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return basename.removesuffix(".exe") if _HOST.fullmatch(basename) else ""
+
+
+def _unquote(token: str) -> str:
+    return token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"} else token
+
+
+def _execution_analysis(command: str, *, depth: int = 0) -> dict[str, Any]:
+    """Bounded metadata parsing; unsupported shell syntax stays UNKNOWN."""
+    executable, arguments = _command_parts(command)
+    host = _execution_host(executable)
+    matches = list(_TOKENS.finditer(arguments))
+    tokens = [_unquote(match[0]) for match in matches]
+    payloads: list[str] = []
+    result = {"executable": executable, "targets": payloads, "host": host,
+              "remote": False, "encoded": False, "ambiguous": executable.startswith(('"', "'")), "inline": ""}
+    if host in {"powershell", "pwsh"}:
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            switch = token.lower().lstrip("-/")
+            if token.startswith(("-", "/")) and switch and "file".startswith(switch):
+                if index + 1 < len(tokens):
+                    payloads.append(tokens[index + 1])
+                    result["ambiguous"] = tokens[index + 1] == "-"
+                else:
+                    result["ambiguous"] = True
+                break
+            if token.startswith(("-", "/")) and switch and ("encodedcommand".startswith(switch) or switch == "ec"):
+                result["encoded"] = index + 1 < len(tokens)
+                result["ambiguous"] = not result["encoded"]
+                break
+            if token.startswith(("-", "/")) and switch and "command".startswith(switch):
+                expression = _unquote(arguments[matches[index].end():].strip()).strip()
+                result["inline"] = expression
+                invocation = re.match(r"(?is)^(?:[&.]\s+|start-process\s+(?:-filepath\s+)?)(.+)$", expression)
+                if invocation:
+                    target, _ = _command_parts(invocation[1])
+                    payloads.append(target)
+                elif re.match(r"(?i)^(?:[a-z]:[\\/]|/|\.{1,2}[\\/])", expression):
+                    target, _ = _command_parts(expression)
+                    payloads.append(target)
+                else:
+                    result["ambiguous"] = True
+                result["remote"] = bool(_REMOTE.search(expression) and re.match(
+                    r"(?is)^(?:iex|invoke-expression|invoke-webrequest|iwr|curl|wget)\b", expression))
+                break
+            value_option = switch in {"ep", "if", "of", "wd", "ea"} or any(
+                len(switch) >= len(minimum) and name.startswith(switch)
+                for name, minimum in (("executionpolicy", "ex"), ("windowstyle", "w"),
+                    ("inputformat", "inp"), ("outputformat", "o"), ("workingdirectory", "wo"),
+                    ("configurationname", "config"), ("configurationfile", "configurationf"),
+                    ("settingsfile", "settings"), ("version", "v"), ("custompipename", "custom"),
+                    ("psconsolefile", "psconsole"), ("encodedarguments", "encodeda")))
+            if token.startswith(("-", "/")) and value_option:
+                if index + 1 >= len(tokens):
+                    result["ambiguous"] = True
+                    break
+                index += 2
+                continue
+            flag_option = any(len(switch) >= len(minimum) and name.startswith(switch)
+                for name, minimum in (("noprofile", "nop"), ("noninteractive", "noni"),
+                    ("nologo", "nol"), ("noexit", "noe"), ("sta", "sta"), ("mta", "mta")))
+            if token.startswith(("-", "/")) and flag_option:
+                index += 1
+                continue
+            if not token.startswith("-") and token.lower().endswith(".ps1"):
+                payloads.append(token)  # implicit File form; following values are script arguments
+            else:
+                result["ambiguous"] = True
+            break
+    elif host in {"cmd", "sh", "bash"}:
+        nested = re.match(r"(?is)^(?:/[dsqau]\s+)*[/-](?:c|k)\s*(.+)$", arguments)
+        if nested:
+            expression = nested[1].strip()
+            if (expression.startswith('""') and expression.endswith('"')) or (
+                    len(expression) >= 2 and expression[0] == expression[-1]
+                    and expression[0] in {'"', "'"} and expression.count(expression[0]) == 2):
+                expression = expression[1:-1]
+            if depth >= 3:
+                result["ambiguous"] = True
+            else:
+                child = _execution_analysis(expression, depth=depth + 1)
+                payloads.extend([child["executable"], *child["targets"]])
+                for key in ("remote", "encoded", "ambiguous", "inline"):
+                    result[key] = child[key]
+                result["ambiguous"] |= bool(re.search(r"[&|;`]|\$\(", expression))
+        elif tokens and host in {"sh", "bash"} and not tokens[0].startswith("-"):
+            payloads.append(tokens[0])
+        else:
+            result["ambiguous"] = True
+    elif host:
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token.lower() in {"-c", "-command", "-encodedcommand", "-enc", "-m", "-"}:
+                result["ambiguous"] = True
+                break
+            if host.startswith("python") and token in {"-W", "-X", "--check-hash-based-pycs"}:
+                index += 2
+                if index >= len(tokens):
+                    result["ambiguous"] = True
+                continue
+            if host == "regsvr32" and token.lower().startswith("/i:"):
+                payloads.append(_unquote(token[3:]))
+                index += 1
+                continue
+            if token.startswith("-") or (token.startswith("/") and not host.startswith("python")):
+                index += 1
+                continue
+            payloads.append(token.split(",", 1)[0] if host == "rundll32" else token)
+            break
+    result["remote"] |= any(_REMOTE.match(target) for target in payloads)
+    result["ambiguous"] |= bool(host and not executable)
+    return result
+
+
+def _execution_paths(command: str) -> tuple[str, list[str]]:
+    result = _execution_analysis(command)
+    return result["executable"], result["targets"]
 
 
 def _limit(value: int, maximum: int = _MAX_ENTRIES) -> int:
@@ -96,13 +240,16 @@ def analyze_persistence(records: Iterable[dict[str, Any]]) -> list[dict[str, Any
         command = _text(record.get("command"))
         source = record.get("source", "")
         script = _text(record.get("script"))
-        execution = command + " " + script
-        host = bool(_HOST.search(command))
-        risky_path = bool(_RISK_PATH.search(execution))
-        if host and (_ENCODED.search(command) or "frombase64string" in execution.lower()):
+        analysis = _execution_analysis(command)
+        executable, payloads = analysis["executable"], analysis["targets"]
+        host = bool(analysis["host"])
+        risky_path = any(_RISK_PATH.search(path) for path in (executable, *payloads)
+                         if not path.startswith(('"', "'")))
+        if analysis["encoded"] or ((host or source == "windows.wmi" and script)
+                and "frombase64string" in (analysis["inline"] + " " + script).lower()):
             findings.append(_finding(record, "persistence_encoded_execution", "high",
                 "Persistence launches an encoded interpreter command; review the decoded payload."))
-        elif (host or source == "windows.wmi" and script) and _REMOTE.search(execution):
+        elif analysis["remote"] or source == "windows.wmi" and script and _REMOTE.search(script):
             findings.append(_finding(record, "persistence_remote_execution", "high",
                 "Persistence combines a script/execution host with a remote URL."))
         elif host and risky_path:
@@ -111,12 +258,22 @@ def analyze_persistence(records: Iterable[dict[str, Any]]) -> list[dict[str, Any
         elif source == "windows.com" and risky_path:
             findings.append(_finding(record, "com_transient_server", "medium",
                 "COM in-process server points into a temporary/public/download directory."))
-        elif risky_path and re.search(r"\.(?:exe|dll|ps1|vbs|js|sh|py)(?:[\s\"',]|$)", command, re.I):
+        elif risky_path and any(re.search(r"\.(?:exe|dll|ps1|vbs|js|sh|py)$", path, re.I)
+                                for path in (executable, *payloads)):
             findings.append(_finding(record, "persistence_transient_payload", "medium",
                 "Persistence executes a payload from a temporary/public/download directory."))
         elif source == "windows.services" and _unquoted_service_path(command):
-            findings.append(_finding(record, "service_unquoted_path", "low",
-                "Unquoted service executable contains spaces; review path permissions and service configuration."))
+            finding = _finding(record, "service_unquoted_path", "low",
+                "Unquoted service executable contains spaces; review path permissions and service configuration.")
+            finding.update(response_eligible=False, finding_kind="exposure",
+                           eligibility_reason="configuration-only; writable prefix or execution not established")
+            findings.append(finding)
+        elif analysis["ambiguous"] or source == "windows.wmi" and script:
+            finding = _finding(record, "persistence_parser_ambiguous", "low",
+                "Persistence execution syntax could not be fully resolved; execution coverage is UNKNOWN and requires review.")
+            finding.update(response_eligible=False, finding_kind="observation", coverage_status="partial",
+                           eligibility_reason="unsupported or ambiguous shell syntax; no verified execution target")
+            findings.append(finding)
     return findings
 
 
@@ -186,7 +343,8 @@ def _collect_wmi(limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     # Use the OS binary by absolute path rather than resolving an untrusted PATH.
     powershell = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     script = (
-        "$ErrorActionPreference='Stop'; $rows=@(Get-CimInstance -Namespace root/subscription "
+        "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false); "
+        "$rows=@(Get-CimInstance -Namespace root/subscription "
         f"-ClassName __EventConsumer | Select-Object -First {limit + 1} | ForEach-Object {{ "
         "[pscustomobject]@{Name=([string]$_.Name).Substring(0,[Math]::Min(512,([string]$_.Name).Length));"
         "CommandLineTemplate=([string]$_.CommandLineTemplate).Substring(0,[Math]::Min(4096,([string]$_.CommandLineTemplate).Length));"
@@ -363,6 +521,10 @@ def collect_persistence(max_entries: int = 512) -> dict[str, Any]:
         except Exception as exc:
             result["coverage"][source] = _failure(exc)
     result["findings"] = analyze_persistence(result["records"])
+    ambiguous = sum(finding["kind"] == "persistence_parser_ambiguous" for finding in result["findings"])
+    if ambiguous:
+        result["coverage"]["persistence.execution_analysis"] = _coverage("partial",
+            "Unsupported or ambiguous execution syntax remains UNKNOWN; inventory completeness is separate", ambiguous)
     return result
 
 

@@ -12,12 +12,14 @@ import time
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import authorize_response
+from angerona.core.ugcap_witness import WITNESS_DEFAULTS, WitnessAssessment, validate_settings
 
 
 _DEFAULTS = {
     "ugcap_enabled": False, "ugcap_cadence_hours": 168,
     "ugcap_vault_path": "", "ugcap_key_name": "Angerona.UGCAP.v1", "ugcap_lockdown": True,
 }
+_DEFAULTS.update(WITNESS_DEFAULTS)
 
 
 def _wipe(value) -> None:
@@ -34,22 +36,23 @@ class UGCAPGuardModule(BaseModule):
         "verification worker, managed-workspace circuit breaker and reviewed source recovery."
     )
     category = "Integrity"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "protect"
     maturity_channel = "preview"
-    capability_inputs = ("explicit-user-challenge", "offline-vault", "hardware-key-proof")
-    capability_outputs = ("integrity-diff", "workspace-gate", "host-isolation-request")
-    capability_permissions = ("protected-source-read", "user-approved-source-restore", "event.emit")
+    capability_inputs = ("explicit-user-challenge", "offline-vault", "hardware-key-proof", "opt-in-pinned-witness")
+    capability_outputs = ("integrity-diff", "workspace-gate", "host-isolation-request", "witness-assurance")
+    capability_permissions = ("protected-source-read", "user-approved-source-restore", "event.emit", "network.connect")
     high_risk_permissions = ("user-approved-source-restore",)
-    data_classes = ("source-manifest", "encrypted-backup", "integrity-diff")
-    egress = "none"
+    data_classes = ("source-manifest", "encrypted-backup", "integrity-diff", "hash-only-witness-checkpoint")
+    egress = "optional"
     retention = "encrypted-secondary-media-baseline-and-audit; bounded-public-runtime-status"
     response_authority = "typed-response"
     platform_requirements = (
         "Optional BLAKE3 package; separately attached secondary volume",
         "Explicit user passcode for every operation",
         "Provisioned Windows TPM2 key; other hardware backends unavailable",
+        "Witness opt-in requires separately administered private mTLS / Ed25519 enrollment",
     )
     restart_policy = "bounded-three-attempt-backoff-quarantine"
     loss_behavior = "missing-proof-stays-locked; incomplete-verification-never-resumes"
@@ -61,9 +64,11 @@ class UGCAPGuardModule(BaseModule):
         "ugcap_enabled": {"type": "boolean", "default": False},
         "ugcap_cadence_hours": {"type": "integer", "minimum": 1, "maximum": 8760},
         "ugcap_vault_path": {"type": "string"}, "ugcap_key_name": {"type": "string"},
-        "ugcap_lockdown": {"type": "boolean", "default": True}}, "additionalProperties": False}
+        "ugcap_lockdown": {"type": "boolean", "default": True},
+        **{name: {"type": "boolean" if type(default) is bool else "string", "default": default}
+           for name, default in WITNESS_DEFAULTS.items()}}, "additionalProperties": False}
 
-    def __init__(self, *, clock=time.time, daemon_factory=None) -> None:
+    def __init__(self, *, clock=time.time, daemon_factory=None, witness_factory=None) -> None:
         super().__init__()
         self._clock = clock
         self._daemon_factory = daemon_factory
@@ -85,6 +90,14 @@ class UGCAPGuardModule(BaseModule):
         self._challenge_requested = False
         self._authorization_epoch = 0
         self._history = deque(maxlen=50)
+        self._witness_factory = witness_factory
+        self._witness = None
+        self._witness_checkpoint = None
+        self._witness_public_key = ""
+        self._witness_next = 0.0
+        self._witness_backoff = 30.0
+        self._witness_succeeded_at = None
+        self._witness_status = WitnessAssessment("deployment-required", "local-chain-only").snapshot()
 
     def bind_manager(self, manager) -> None:
         self._manager = manager
@@ -143,6 +156,12 @@ class UGCAPGuardModule(BaseModule):
             return False
         return self._queue("provision", {"key_name": key_name})
 
+    def queue_provision_witness_key(self) -> bool:
+        return self._queue("witness-key", {})
+
+    def queue_probe_witness(self) -> bool:
+        return self._queue("witness-probe", {})
+
     def queue_lock(self) -> bool:
         with self._state_lock:
             self._authorization_epoch += 1
@@ -163,6 +182,10 @@ class UGCAPGuardModule(BaseModule):
                 return {"queued": False}
             if key == "ugcap_key_name" and re.fullmatch(r"Angerona\.UGCAP\.[A-Za-z0-9_-]{1,96}", value) is None:
                 return {"queued": False}
+        try:
+            validate_settings({name: kwargs.get(name, self._settings[name]) for name in WITNESS_DEFAULTS})
+        except (ValueError, RuntimeError, UnicodeError):
+            return {"queued": False}
         if kwargs:
             with self._state_lock:
                 self._authorization_epoch += 1
@@ -245,6 +268,12 @@ class UGCAPGuardModule(BaseModule):
         with self._state_lock:
             self._report = self._public_report(report)
         if report.get("status") == "verified":
+            if not self._check_witness(report.get("witness_checkpoint")):
+                with self._state_lock:
+                    self._state = "witness-held"
+                return
+            if not self._proof_current(epoch):
+                return
             activate = getattr(self._manager, "activate_enclave_mesh", None)
             if not callable(activate) or activate(report) is not True:
                 raise RuntimeError("UGCAP mesh activation proof unavailable")
@@ -277,6 +306,63 @@ class UGCAPGuardModule(BaseModule):
             with self._state_lock:
                 self._state = "incomplete-locked"
 
+    def _invalidate_witness(self):
+        """Worker-only: cached proof belongs to exactly the previous enrollment/key."""
+        with self._state_lock:
+            required = self._settings["ugcap_witness_enabled"]
+            self._witness_status = WitnessAssessment(
+                "verification-checkpoint-required" if required else "deployment-required",
+                "unverified-witness" if required else "local-chain-only").snapshot()
+            self._witness_succeeded_at = None
+            self._witness_checkpoint = None
+            self._witness = None
+            self._witness_next = 0.0
+            self._witness_backoff = 30.0
+
+    def _check_witness(self, observation=None, *, heartbeat=False) -> bool:
+        """Runs only on this module's worker. No evidence grants response authority."""
+        enabled = self._settings["ugcap_witness_enabled"]
+        if not enabled:
+            with self._state_lock:
+                self._witness_status = WitnessAssessment("deployment-required", "local-chain-only").snapshot()
+                self._witness_succeeded_at = None
+            return True
+        if observation is not None:
+            self._witness_checkpoint = observation
+        if self._witness_checkpoint is None:
+            status = WitnessAssessment("verification-checkpoint-required", "unverified-witness")
+        else:
+            try:
+                if self._witness is None:
+                    factory = self._witness_factory
+                    if factory is None:
+                        from angerona.core.ugcap_witness import client_from_settings
+                        factory = client_from_settings
+                    self._witness = factory({name: self._settings[name] for name in WITNESS_DEFAULTS},
+                                            Path(getattr(self._config, "data_dir", Path.cwd())))
+                status = self._witness.exchange(self._witness_checkpoint, heartbeat=heartbeat)
+                if not isinstance(status, WitnessAssessment):
+                    raise RuntimeError("invalid witness assessment")
+            except Exception:
+                status = WitnessAssessment("unreachable-or-rejected", "unverified-witness")
+        with self._state_lock:
+            previous = self._witness_status.get("status")
+            self._witness_status = status.snapshot()
+            if status.gate_allowed:
+                self._witness_succeeded_at = time.monotonic()
+        self._witness_backoff = 30.0 if status.gate_allowed else min(300.0, self._witness_backoff * 2)
+        self._witness_next = time.monotonic() + self._witness_backoff
+        if not status.gate_allowed:
+            if self._manager is not None and not getattr(self._manager, "ugcap_paused", False):
+                self._pause("UGCAP opted-in independent witness is unavailable or conflicts with the local audit")
+            with self._state_lock:
+                self._state = "witness-held"
+            if previous != status.status:
+                self.emit("UGCAP witness assurance is unavailable or reports a retained-head conflict.",
+                          Severity.HIGH, event_type="ugcap_witness_gap", witness_status=status.status,
+                          response_authorized=False, active_attack=False, workspace_locked=True)
+        return status.gate_allowed
+
     def _process_one(self) -> None:
         try:
             command, payload = self._commands.get_nowait()
@@ -296,6 +382,8 @@ class UGCAPGuardModule(BaseModule):
                         raise
                 with self._state_lock:
                     self._settings.update(payload)
+                    if any(name in WITNESS_DEFAULTS for name in payload):
+                        self._invalidate_witness()
                 if payload.get("ugcap_enabled") is True:
                     self._verified_at = None
                     self._challenge_requested = False
@@ -312,6 +400,18 @@ class UGCAPGuardModule(BaseModule):
                 with self._state_lock:
                     self._hardware = result
                     self._result = self._public_report(result)
+            elif command == "witness-key":
+                from angerona.core.ugcap_witness import provision_host_identity
+                # Provision can discover lost/changed key custody or fail. Clear
+                # prior credit before touching the provider, including on failure.
+                with self._state_lock:
+                    self._invalidate_witness()
+                    self._witness_public_key = ""
+                public_key = provision_host_identity(Path(getattr(self._config, "data_dir", Path.cwd())))
+                with self._state_lock:
+                    self._witness_public_key = public_key
+            elif command == "witness-probe":
+                self._check_witness(heartbeat=True)
             else:
                 epoch = payload.get("_epoch", -1)
                 if not self._proof_current(epoch):
@@ -354,6 +454,9 @@ class UGCAPGuardModule(BaseModule):
 
     def _tick(self) -> None:
         self._process_one()
+        if (self._settings["ugcap_enabled"] and self._settings["ugcap_witness_enabled"]
+                and time.monotonic() >= self._witness_next):
+            self._check_witness(heartbeat=True)
         if self._settings["ugcap_enabled"] and not self._challenge_requested:
             due = self._verified_at is None or (
                 self._clock() - self._verified_at >= self._settings["ugcap_cadence_hours"] * 3600)
@@ -379,6 +482,14 @@ class UGCAPGuardModule(BaseModule):
                       "coverage": dict(self._coverage), "error": self._error,
                       "workspace_locked": getattr(self._manager, "ugcap_paused", False),
                       "last_verified_at": self._verified_at}
+            result["witness"] = dict(self._witness_status)
+            if not self._settings["ugcap_witness_enabled"]:
+                result["witness"] = WitnessAssessment("deployment-required", "local-chain-only").snapshot()
+            elif (self._witness_status.get("gate_allowed")
+                    and (self._witness_succeeded_at is None
+                         or not 0 <= time.monotonic() - self._witness_succeeded_at <= 90)):
+                result["witness"].update(status="stale", assurance="unverified-witness", gate_allowed=False)
+            result["witness_host_public_key"] = self._witness_public_key
         return json.loads(json.dumps(result, default=str))
 
     def run(self) -> None:
@@ -399,6 +510,7 @@ class UGCAPGuardModule(BaseModule):
             if self._daemon is not None:
                 self._daemon.close()
                 self._daemon = None
+            self._witness = None
 
     def stop(self) -> None:
         with self._state_lock:

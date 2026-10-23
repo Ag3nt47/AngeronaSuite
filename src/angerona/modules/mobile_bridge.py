@@ -449,7 +449,7 @@ class MobileResponseBridge(BaseModule):
     description = ("E2EE (Signal) state-gated remote orchestration: posture queries "
                    "and token+PIN-gated containment from the operator's phone.")
     category = "Response"
-    version = "1.13.0"
+    version = "1.14.0"
     # The manager parks this worker while mobile_enabled is false and reconciles
     # live Settings changes. The run-loop gate also protects direct invocations.
     enabled_by_default = True

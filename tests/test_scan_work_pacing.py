@@ -142,6 +142,10 @@ def test_pressure_yields_keep_complete_file_coverage(tmp_path, monkeypatch, pres
 
 @pytest.mark.parametrize("stop_at", [None, 2])
 def test_archive_checkpoints_preserve_findings_and_honest_coverage(tmp_path, monkeypatch, stop_at):
+    from angerona.modules.file_integrity import FileIntegrityModule
+
+    # Complete coverage admits a cache entry only with stable Windows USN proof.
+    monkeypatch.setattr(FileIntegrityModule, "_handle_usn", staticmethod(lambda _fd: 101))
     target = tmp_path / "inert.zip"
     with zipfile.ZipFile(target, "w") as archive:
         for name in ("one", "two", "three"):

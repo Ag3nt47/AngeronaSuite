@@ -52,7 +52,7 @@ class ExposureGraphGuardModule(BaseModule):
         "evidence, and collection age."
     )
     category = "Exposure Management"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     maturity_channel = "stable"

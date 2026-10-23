@@ -73,6 +73,36 @@ def make_page(tmp_path, *, show=False, paused=False):
     return page, module
 
 
+def test_witness_ui_only_queues_worker_actions_and_displays_public_enrollment(tmp_path, monkeypatch):
+    from angerona.core import ugcap_witness
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("No witness network, crypto or credential IO on Qt")
+
+    monkeypatch.setattr(ugcap_witness, "client_from_settings", forbidden)
+    monkeypatch.setattr(ugcap_witness, "provision_host_identity", forbidden)
+    page, module = make_page(tmp_path, show=True)
+    module.queue_provision_witness_key = lambda: module.calls.append(("witness-key",)) or True
+    module.queue_probe_witness = lambda: module.calls.append(("witness-probe",)) or True
+    try:
+        assert module.calls == []
+        assert "Deployment required" in page.witness_status.text() or "deployment-required" in page.witness_status.text()
+        page.witness_key_button.click()
+        page.witness_probe.click()
+        assert module.calls == [("witness-key",), ("witness-probe",)]
+        page.witness_apply.click()
+        assert module.calls[-1][0] == "settings"
+        assert module.calls[-1][1]["ugcap_witness_enabled"] is False
+        module.snapshot["witness_host_public_key"] = "-----BEGIN PUBLIC KEY-----\nfixture\n-----END PUBLIC KEY-----"
+        module.snapshot["witness"] = {"status": "rollback", "assurance": "witness-conflict-or-gap"}
+        page.refresh()
+        assert "rollback" in page.witness_status.text()
+        assert page.witness_host_public_key.toPlainText() == module.snapshot["witness_host_public_key"]
+        assert "PRIVATE KEY" not in page.witness_details.toPlainText()
+    finally:
+        page.close()
+
+
 def drift_report(module, **kwargs):
     report = {"report_id": "a" * 32, "generation": "b" * 32,
               "vault_path": module.snapshot["settings"]["ugcap_vault_path"],

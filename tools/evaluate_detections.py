@@ -27,6 +27,8 @@ REPORT_SCHEMA = "angerona.labelled-detection-quality.v1"
 MAX_INPUT_BYTES = 8 * 1024 * 1024
 MAX_OUTPUT_BYTES = 16 * 1024 * 1024
 MAX_PACKAGES = 16
+MAX_TRAINING_COHORTS = 8
+MAX_HOLDOUT_COMPARISON_ROWS = 40_000
 
 
 def _canonical(value):
@@ -118,6 +120,61 @@ def build_report(cohort, comparison):
     return {**body, "report_digest": "sha256:" + hashlib.sha256(_canonical(body)).hexdigest()}
 
 
+def assess_holdout(cohort, training, packages):
+    """Check exact payload disjointness, without claiming independent curation.
+
+    IDs, labels and revisions cannot disguise an identical replayed event.
+    Semantic duplicates, unreported training sets and prior human exposure are
+    outside this check; the report keeps those limits alongside its digests.
+    """
+    if not 1 <= len(training) <= MAX_TRAINING_COHORTS:
+        raise ValueError("Held-out evaluation requires 1 through 8 explicit training cohorts")
+    cohorts = [cohort, *training]
+    if sum(len(item.rows) for item in cohorts) > MAX_HOLDOUT_COMPARISON_ROWS:
+        raise ValueError("Held-out comparison exceeds 40000 total rows")
+    if not 1 <= len(packages) <= MAX_PACKAGES * 2:
+        raise ValueError("Held-out package bound exceeded")
+    for item in cohorts:
+        item.assert_intact()
+        if not item.loss.complete or not item.fully_labelled:
+            raise ValueError("Held-out comparison requires complete labelled cohorts")
+    if {row.label for row in cohort.rows} != {True, False}:
+        raise ValueError("Held-out cohort requires both positive and benign observations")
+    def fingerprint(event):
+        return hashlib.sha256(_canonical(event)).digest()
+    evaluation = {fingerprint(row.event()) for row in cohort.rows}
+    if len(evaluation) != len(cohort.rows):
+        raise ValueError("Held-out denominator contains duplicate event payloads")
+    seen = set()
+    for item in training:
+        if item.source_digest in seen:
+            raise ValueError("Duplicate training cohort")
+        seen.add(item.source_digest)
+        if any(fingerprint(row.event()) in evaluation for row in item.rows):
+            raise ValueError("Held-out payload overlaps a training cohort")
+    from angerona.core.detection_packages import validate_package
+    package_digests = []
+    for package in packages:
+        document = validate_package(package.document)
+        package_digests.append(document["digest"])
+        if any(fingerprint(fixture["event"]) in evaluation for fixture in document["fixtures"]):
+            raise ValueError("Held-out payload overlaps a package fixture")
+    return {
+        "schema": "angerona.exact-payload-holdout.v1", "status": "disjoint",
+        "evaluation_source_digest": cohort.source_digest,
+        "training_source_digests": sorted(seen),
+        "package_digests": sorted(set(package_digests)),
+        "evaluation_rows": len(cohort.rows),
+        "training_rows": sum(len(item.rows) for item in training),
+        "independent_review_verified": False,
+        "limitations": [
+            "Checks exact canonical event payloads against declared training cohorts and package fixtures only.",
+            "Cannot prove semantic disjointness, absence of undeclared training data or prior curator exposure.",
+            "Labels remain curator-supplied; this is not independent review or live-host efficacy proof.",
+        ],
+    }
+
+
 def write_report(path, report):
     target = Path(path).absolute()
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -145,22 +202,28 @@ def main(argv=None):
                         help="Candidate package; repeatable, maximum 16")
     parser.add_argument("--cohort", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--training-cohort", type=Path, action="append", default=[],
+                        help="Enable exact-payload holdout checks; repeat for 1..8 declared training cohorts")
     parser.add_argument("--max-false-positives", type=int)
     parser.add_argument("--max-false-negatives", type=int)
     args = parser.parse_args(argv)
     try:
         if max(len(args.active), len(args.candidate)) > MAX_PACKAGES:
             raise ValueError("At most 16 packages per side")
+        if len(args.training_cohort) > MAX_TRAINING_COHORTS:
+            raise ValueError("At most 8 training cohorts")
         if any(value is not None and value < 0 for value in (
             args.max_false_positives, args.max_false_negatives,
         )):
             raise ValueError("Quality thresholds must be non-negative")
-        inputs = [args.cohort, *args.active, *args.candidate]
+        inputs = [args.cohort, *args.active, *args.candidate, *args.training_cohort]
         if args.output.resolve() in {path.resolve() for path in inputs}:
             raise ValueError("Output may not overwrite a cohort or package input")
         cohort = load_cohort(args.cohort)
         active = [load_package(path) for path in args.active]
         candidate = [load_package(path) for path in args.candidate]
+        holdout = assess_holdout(cohort, [load_cohort(path) for path in args.training_cohort],
+                                 [*active, *candidate]) if args.training_cohort else None
         comparison = compare_detection_packages(cohort, active=active, candidate=candidate)
         report = build_report(cohort, comparison)
         failures = []
@@ -171,6 +234,8 @@ def main(argv=None):
                     failures.append(f"candidate {name} exceeds {limit}")
         # Gate metadata is part of the outer seal, not the core evaluator digest.
         report.pop("report_digest")
+        if holdout is not None:
+            report["holdout"] = holdout
         thresholds_configured = (
             args.max_false_positives is not None or args.max_false_negatives is not None
         )

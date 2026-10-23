@@ -90,6 +90,32 @@ def test_pid_discovery_ignores_large_helpers_and_prefers_matching_core_child(mon
     assert blackbox.find_angerona_pid() == 103
 
 
+def test_multiple_independent_cores_do_not_select_an_unrelated_profile_by_rss(monkeypatch):
+    def proc(pid, parent, rss):
+        return SimpleNamespace(info={
+            "pid": pid, "ppid": parent, "name": "python.exe",
+            "cmdline": ["python.exe", "-m", "angerona"],
+            "memory_info": SimpleNamespace(rss=rss),
+        }, memory_info=lambda: pytest.fail("RSS must not select a data profile"))
+
+    rows = [proc(101, 1, 10**9), proc(102, 101, 10**8), proc(201, 1, 10)]
+    monkeypatch.setattr(blackbox.psutil, "process_iter", lambda _attrs: iter(rows))
+    assert blackbox.find_angerona_pid() is None
+    rows.pop()
+    assert blackbox.find_angerona_pid() == 102
+
+
+def test_unknown_process_identity_does_not_report_a_dead_suite(monkeypatch):
+    monkeypatch.setattr(blackbox, "find_angerona_pid", lambda: None)
+    worker = blackbox.SuiteHealthWorker()
+    monkeypatch.setattr(worker, "_read_status", lambda: {})
+    result = worker._collect()
+    assert result["pid"] is None
+    assert result["state"] == "UNKNOWN"
+    assert result["bus_fresh"] is False
+    assert result["counts"] == {}
+
+
 def _snapshot(*, generated=970.0, interval=30.0, revision=12, deliveries=24):
     return {"pid": 101, "process_started_at": 500.0, "generated_ts": generated,
             "heartbeat_interval_s": interval,

@@ -45,7 +45,7 @@ class AuthenticationExtensionIntegrityGuardModule(BaseModule):
         "and security packages; credential providers and filters; and network providers."
     )
     category = "Identity"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset({"windows"})
     capability_mode = "observe"
     maturity_channel = "preview"
@@ -302,12 +302,20 @@ class AuthenticationExtensionIntegrityGuardModule(BaseModule):
                 "Authentication-extension collection failed closed; no host state was "
                 "classified as clean.",
             )
+            native_error = getattr(exc, "winerror", None)
             self.emit(
                 "Authentication-extension collection failed closed.",
                 Severity.HIGH,
                 **self._event_details(
+                    schema="angerona.auth-extension-collection-health.v1",
                     finding_code="auth_extension.collection.failed",
+                    collector_status="unknown",
+                    health_percent=15,
+                    collection_complete=False,
+                    observation_only=True,
+                    enforcement_performed=False,
                     failure_type=type(exc).__name__,
+                    native_error_code=native_error if native_error is None or type(native_error) is int else -1,
                 ),
             )
             return {

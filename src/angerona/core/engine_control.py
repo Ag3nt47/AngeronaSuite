@@ -59,6 +59,18 @@ class EngineControl:
         self.runtime_metrics = None
         self._last_operation_seconds = 0.0
         self._pending_chill_entries = 0
+        self.operator_boundary = {
+            "state": "unavailable", "transport": "same-user-directory-HMAC",
+            "os_operator_transport_available": False,
+            "independent_approval_backend_available": False,
+            "reason": "Independent OS-authenticated operator transport and protected approval backend are not provisioned",
+        }
+        try:
+            from .approval_identity import current_os_identity
+            identity = current_os_identity()
+            self.operator_boundary["engine_account"] = {"issuer": identity.issuer, "subject": identity.subject}
+        except Exception:
+            self.operator_boundary["engine_account"] = None
 
     def attach(self, manager, bus, config, chill) -> None:
         self.manager, self.bus, self.config, self.chill = manager, bus, config, chill
@@ -156,7 +168,7 @@ class EngineControl:
                                     "retained_receipts": len(self._operations),
                                     "last_operation_seconds": self._last_operation_seconds},
                 "alert_retention": self.retention.snapshot() if self.retention is not None else {},
-                "response": response}
+                "response": response, "operator_auth": dict(self.operator_boundary)}
 
     def _events(self, cursor: int) -> dict:
         if self.bus is None:

@@ -54,6 +54,15 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_BUILD_SCRIPT_BYTES = 2 * 1024 * 1024
 
 
+def _frozen_windows_posture(protected: bool, signed: bool, package_trusted: bool) -> int:
+    """Classify supplied observations; this function cannot establish authority."""
+    if protected and signed and package_trusted:
+        return 100
+    if protected and signed:
+        return 75
+    return 60 if protected else 40
+
+
 def _find_binary() -> pathlib.Path | None:
     for p in _BIN_CANDIDATES:
         if p.exists():
@@ -173,7 +182,7 @@ class HermeticPackagerModule(BaseModule):
         "Exposes trigger_build() for review-gated rebuild — never auto-executes."
     )
     category = "Resilience"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
 
     _POLL = 300.0   # recheck every 5 minutes
@@ -352,9 +361,10 @@ class HermeticPackagerModule(BaseModule):
 
                 package = verify_current_msix_authority()
                 self._image_authority = package.reason
-                if protected and signed and package.trusted:
+                score = _frozen_windows_posture(protected, signed, package.trusted)
+                if score == 100:
                     return (
-                        100,
+                        score,
                         f"OS image, protected path, Authenticode, and exact MSIX "
                         f"authority verified ({self._binary.name})",
                     )
@@ -362,11 +372,11 @@ class HermeticPackagerModule(BaseModule):
                     f"protected={protected}, signature={status}, "
                     f"package={package.reason}"
                 )
-                if protected and signed:
-                    return (75, f"Hermetic image verified locally; {factors}")
-                if protected:
-                    return (60, f"Hermetic OS image lacks publisher proof; {factors}")
-                return (40, f"Frozen metadata lacks protected image custody; {factors}")
+                if score == 75:
+                    return (score, f"Hermetic image verified locally; {factors}")
+                if score == 60:
+                    return (score, f"Hermetic OS image lacks publisher proof; {factors}")
+                return (score, f"Frozen metadata lacks protected image custody; {factors}")
             self._sig_status = "unsupported"
             self._image_authority = "non-Windows package publisher proof unavailable"
             return (
@@ -421,13 +431,23 @@ class HermeticPackagerModule(BaseModule):
         self._reap_build_jobs(stop=True)
 
     def self_test(self) -> tuple[bool, str]:
-        pct, note = self._assess()
-        build_bat_present = _BUILD_BAT.exists()
-        return (
-            True,  # always passes — reports status, not a binary correctness check
-            f"Assessment: {note} | "
-            f"build-hermetic.bat={'found' if build_bat_present else 'missing'} | "
-            f"hermetic={self._is_hermetic}",
+        # An offline diagnostic must not spend its 12-second harness budget
+        # waiting for a live Authenticode child with a 15-second native timeout.
+        # Exercise the exact runtime classifier with missing-proof negatives;
+        # retain live assessment exclusively in run(). Do not alter health,
+        # cached observations, signing pins or build-execution authority here.
+        cases = (
+            (True, True, True, 100), (True, True, False, 75),
+            (True, False, True, 60), (True, False, False, 60),
+            (False, True, True, 40), (False, True, False, 40),
+            (False, False, True, 40), (False, False, False, 40),
+        )
+        for protected, signed, package_trusted, expected in cases:
+            if _frozen_windows_posture(protected, signed, package_trusted) != expected:
+                return False, "packaging classifier admitted incorrect or incomplete proof"
+        return True, (
+            "Offline packaging classifier passed 8 positive/negative cases; "
+            "live signature, package provenance and filesystem custody were not assessed"
         )
 
 

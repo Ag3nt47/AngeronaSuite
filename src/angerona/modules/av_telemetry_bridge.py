@@ -278,7 +278,7 @@ class AVTelemetryBridgeModule(BaseModule):
     CODE = "AVTB"
     NAME = "AV Telemetry Bridge"
     name = "AV Telemetry Bridge"
-    version = "1.13.0"
+    version = "1.14.0"
     description = (
         "Bridges Windows Defender detection events (EID 1116/1117/5001) into "
         "the Angerona bus for cross-sensor correlation."

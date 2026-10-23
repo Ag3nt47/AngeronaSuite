@@ -12,6 +12,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from angerona import __version__
 from angerona.core.fleet_fabric import (
     ZERO_DIGEST,
     CoordinatorTransportConfig,
@@ -226,7 +227,7 @@ def test_fleet_health_module_has_full_native_observe_only_contract() -> None:
     )
     assert contract.metadata_level == "native"
     assert contract.metadata_gaps == ()
-    assert contract.implementation_version == "1.13.0"
+    assert contract.implementation_version == __version__
     assert contract.mode == "detect"
     assert contract.response_authority == "none"
     assert contract.egress == "none"

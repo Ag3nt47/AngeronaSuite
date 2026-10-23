@@ -55,7 +55,7 @@ def _install_fast_pyside_feature_detection() -> bool:
 def main() -> int:
     setup_requested = "--setup" in sys.argv
     chill_requested = "--chill" in sys.argv
-    engine_flags = {"--engine-console", "--engine-serve", "--engine-service"}.intersection(sys.argv)
+    engine_flags = {"--engine-console", "--engine-serve", "--engine-service", "--response-service"}.intersection(sys.argv)
     if len(engine_flags) > 1:
         print("[Angerona] Choose exactly one engine launch mode.", flush=True)
         return 2
@@ -81,7 +81,7 @@ def main() -> int:
         # SCM package enters through its own native dispatcher. Neither route
         # requests elevation implicitly or bypasses the exact package pin.
         if engine_mode:
-            if engine_mode != "--engine-service" and is_admin():
+            if engine_mode not in {"--engine-service", "--response-service"} and is_admin():
                 print("[Angerona] Open the engine console in an ordinary-user session.", flush=True)
                 return 2
             return _run_engine_mode(engine_mode, **({"force_chill": True} if chill_requested else {}))
@@ -197,7 +197,7 @@ def main() -> int:
     # parses arguments so the same dedicated setup shortcut works in source and
     # frozen releases without an unknown-option warning.
     qt = QApplication([
-        arg for arg in application_args if arg not in {"--setup", "--chill"}
+        arg for arg in application_args if arg not in {"--setup", "--chill", "--live-debug"}
     ])
     qt.setApplicationName("Angerona")
 
@@ -222,6 +222,7 @@ def main() -> int:
     from angerona.app import AngeronaApp
     app = AngeronaApp(
         qt, force_chill=chill_requested, startup_endpoint=startup_endpoint,
+        **({"live_debug": True} if "--live-debug" in application_args else {}),
     )
     app._instance_lock = lock  # keep the lock socket alive for the app's lifetime
     app.start()
@@ -233,6 +234,13 @@ def main() -> int:
 
 def _run_engine_mode(mode: str, *, force_chill: bool = False) -> int:
     """Route before the embedded GUI singleton so only the engine owns sensors."""
+    if mode == "--response-service":
+        from angerona.core.response_service_host import run_dispatcher
+        try:
+            return run_dispatcher()
+        except PermissionError as error:
+            print(f"[Angerona] Isolated response broker unavailable: {error}.", flush=True)
+            return 2
     if mode == "--engine-service":
         from angerona.core.engine_windows_service import run_dispatcher
         return run_dispatcher()

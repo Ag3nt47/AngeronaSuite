@@ -65,6 +65,134 @@ def test_validation_lease_temporarily_starts_sensor_and_proves_recorder(
         recorder.close()
 
 
+def _observe_supplied_readiness_and_bound_missing_recorder_echo(monkeypatch, guard):
+    """Use supplied inventory with real producer work for recorder-only tests.
+
+    The empty typed receipts describe this fixture, not live-host coverage.
+    No health, readiness, clock, admission deadline or recorder result is faked.
+    """
+    import psutil
+
+    from angerona.modules import process_monitor
+    from angerona.modules.process_monitor import ProcessMonitorModule
+    from angerona.telemetry import sensors
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    supplied = []
+
+    def supplied_inventory(*, max_age=None):
+        snapshot = ProcessSnapshot(
+            processes=(), collected_at=time.time(), complete=True,
+            enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+            error="", enumeration_complete=True,
+        )
+        supplied.append((max_age, snapshot))
+        return snapshot
+
+    def native_inventory_forbidden(*_args, **_kwargs):
+        raise AssertionError("recorder-only fixture attempted native process inventory")
+
+    # Confine only these two recorder-negative tests. The real worker captures
+    # a fixture startup PID boundary and consumes explicit structured receipts.
+    monkeypatch.setattr(psutil, "pids", lambda: [])
+    monkeypatch.setattr(psutil, "process_iter", native_inventory_forbidden)
+    monkeypatch.setattr(sensors, "process_snapshot", native_inventory_forbidden)
+    monkeypatch.setattr(process_monitor, "process_snapshot", supplied_inventory)
+
+    real_request = ProcessMonitorModule.request_fresh_observation
+    real_wait = purple_guard.PurpleGuard.wait_for_validation_cycle
+    real_echo = purple_guard._wait_for_recorder_echo
+    requests, waits, completed = [], [], []
+    owned = []
+
+    def remember_owned(module):
+        with module._lifecycle_lock:
+            thread, generation = module._thread, module.lifecycle_generation
+            assert thread is not None and thread.is_alive()
+            for observed, prior_thread, prior_generation in owned:
+                if observed is module:
+                    assert thread is prior_thread and generation == prior_generation
+                    return
+            owned.append((module, thread, generation))
+
+    def request(module, *, expected_generation):
+        # The real admission starts both exact instances before this boundary.
+        remember_owned(guard)
+        remember_owned(module)
+        before = purple_guard.BaseModule.operational_snapshot(module)
+        ticket = real_request(module, expected_generation=expected_generation)
+        requests.append((module, ticket, max(1, int(before["cycle_count"]))))
+        return ticket
+
+    def wait(module, required, *, after_serial, timeout):
+        result = real_wait(module, required, after_serial=after_serial, timeout=timeout)
+        waits.append((module, frozenset(required), after_serial, result))
+        return result
+
+    def fresh_producers():
+        assert len(requests) == len(waits) == 1
+        purple, required, baseline, result = waits[0]
+        assert purple is guard and result is True and len(required) == 13
+        cycle = guard.validation_cycle_snapshot()
+        status = purple_guard.BaseModule.operational_snapshot(guard)
+        assert cycle["serial"] > baseline and required.issubset(cycle["techniques"])
+        assert status["status"] == "running" and status["thread_alive"] and status["first_cycle_complete"]
+        assert cycle["generation"] == status["lifecycle_generation"] and status["health"] >= 90
+        process, ticket, process_baseline = requests[0]
+        process_status = purple_guard.BaseModule.operational_snapshot(process)
+        assert ticket is not None and ProcessMonitorModule.fresh_observation_complete(process, ticket)
+        assert process_status["lifecycle_generation"] == ticket[0]
+        assert process_status["cycle_count"] > process_baseline and process_status["first_cycle_complete"]
+        assert process_status["status"] == "running" and process_status["thread_alive"]
+        assert process_status["health"] >= 50 and process_status["event_overflow_count"] == 0
+        assert any(age == 0.0 and type(receipt) is ProcessSnapshot for age, receipt in supplied)
+        return cycle["generation"], ticket
+
+    def echo(bus, recorder, *, timeout):
+        # Admission still executes the exact real class methods. The separate
+        # negative recorder assertion begins only after their work is proven.
+        admitted = fresh_producers()
+        with pytest.raises(purple_guard.RedTeamValidationError, match="did not reach the flight recorder") as refusal:
+            real_echo(bus, recorder, timeout=0.2)
+        assert fresh_producers() == admitted
+        completed.append(admitted)
+        raise refusal.value  # Preserve the actual error and exercise lease cleanup.
+
+    def retire_owned():
+        errors = []
+        for module, thread, generation in owned:
+            try:
+                with module._lifecycle_lock:
+                    assert module._thread is thread and module.lifecycle_generation == generation
+                    module.stop()
+            except Exception as exc:
+                errors.append(f"{module.name} stop: {type(exc).__name__}: {exc}")
+        for module, thread, generation in owned:
+            try:
+                # Join every captured worker even if another stop/identity
+                # check failed. Never stop an unexpected replacement worker.
+                thread.join(5.0)
+                assert not thread.is_alive(), "exact recorder-test producer did not retire"
+                assert module._thread is thread and module.lifecycle_generation == generation
+            except Exception as exc:
+                errors.append(f"{module.name} retirement: {type(exc).__name__}: {exc}")
+        if not any(module is guard for module, _thread, _generation in owned):
+            try:
+                # An admission failing before the real request must not leave
+                # this fixture's unremembered guard running behind the test.
+                with guard._lifecycle_lock:
+                    assert guard.status == "stopped"
+                    assert guard._thread is None or not guard._thread.is_alive()
+            except Exception as exc:
+                errors.append(f"unremembered guard: {type(exc).__name__}: {exc}")
+        assert not errors, errors
+
+    monkeypatch.setattr(ProcessMonitorModule, "request_fresh_observation", request)
+    monkeypatch.setattr(purple_guard.PurpleGuard, "wait_for_validation_cycle", wait)
+    monkeypatch.setattr(purple_guard, "_wait_for_recorder_echo", echo)
+    return completed, retire_owned
+
+
 def test_validation_lease_fails_closed_without_recorder_delivery_and_restores_state(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -80,6 +208,8 @@ def test_validation_lease_fails_closed_without_recorder_delivery_and_restores_st
     guard.bind(bus)
     manager = SimpleNamespace(modules={guard.name: guard}, bus=bus)
     target = tmp_path / "undelivered-target"
+    # Supply process input so this negative test reaches its real recorder gap.
+    recorder_checks, retire_producers = _observe_supplied_readiness_and_bound_missing_recorder_echo(monkeypatch, guard)
     try:
         with pytest.raises(
             purple_guard.RedTeamValidationError,
@@ -91,13 +221,16 @@ def test_validation_lease_fails_closed_without_recorder_delivery_and_restores_st
                 recorder,
                 tmp_path,
                 target,
-                timeout=0.2,
+                timeout=3.0,
             )
+        assert len(recorder_checks) == 1
         assert guard.status == "stopped"
         assert target.resolve() not in purple_guard._runtime_targets_snapshot()
     finally:
-        guard.stop()
-        recorder.close()
+        try:
+            retire_producers()
+        finally:
+            recorder.close()
 
 
 def test_validation_lease_ignores_instance_methods_that_fake_persistence(
@@ -124,6 +257,8 @@ def test_validation_lease_ignores_instance_methods_that_fake_persistence(
         "recent_in_window",
         lambda *_args, **_kwargs: bus.recent(64),
     )
+    # Supplied inventory isolates the instance-spoof assertion from host gaps.
+    recorder_checks, retire_producers = _observe_supplied_readiness_and_bound_missing_recorder_echo(monkeypatch, guard)
     try:
         with pytest.raises(
             purple_guard.RedTeamValidationError,
@@ -135,14 +270,17 @@ def test_validation_lease_ignores_instance_methods_that_fake_persistence(
                 recorder,
                 tmp_path,
                 target,
-                timeout=0.2,
+                timeout=3.0,
             )
+        assert len(recorder_checks) == 1
         assert FlightRecorder.revision(recorder) == 0
         assert guard.status == "stopped"
         assert target.resolve() not in purple_guard._runtime_targets_snapshot()
     finally:
-        guard.stop()
-        recorder.close()
+        try:
+            retire_producers()
+        finally:
+            recorder.close()
 
 
 def test_tagged_process_probe_survives_general_event_flood(

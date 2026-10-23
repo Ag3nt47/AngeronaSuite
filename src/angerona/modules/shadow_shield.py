@@ -71,7 +71,7 @@ class ShadowShield(BaseModule):
     CODE = "SHDW"
     description = "Ransomware file shielding via a delta version cache and VSS snapshots."
     category = "Response"
-    version = "1.13.0"
+    version = "1.14.0"
     # A real bounded VSS request can take 90 seconds. Cache work publishes
     # completed slices with explicitly partial coverage, never timer heartbeats.
     startup_cycle_timeout = 120.0

@@ -359,7 +359,7 @@ class USBMonitorModule(BaseModule):
         "PIN approves Angerona scanning, and disables Windows AutoRun/AutoPlay."
     )
     category = "Detection"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset({"windows", "macos", "linux"})
 
     _POLL = 4.0

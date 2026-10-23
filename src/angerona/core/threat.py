@@ -79,6 +79,17 @@ _EXPOSURE_EVENT_TYPES = {
     "usb_pin_lockout",
 }
 
+_FLEET_UNBOUND_COUNTS = (
+    "evidence_rows", "retention_drops", "reported_drops", "backpressure_devices",
+    "unhealthy_devices", "enrolled_devices", "fresh_devices", "missing_devices", "stale_devices",
+)
+_FLEET_UNBOUND_FIELDS = frozenset({
+    "schema", "health_percent", "exact_reason", "finding_code", "fabric_bound",
+    "observation_only", "enforcement_performed", "response_authorized", "response_authority",
+    "remote_shell_available", "arbitrary_command_available", "transport_enabled", "transport_available",
+    *_FLEET_UNBOUND_COUNTS,
+})
+
 
 def _is_health_noise(event) -> bool:
     msg = (getattr(event, "message", "") or "").lower()
@@ -176,6 +187,158 @@ def _legacy_indicator_only(event, details: dict, module: str) -> bool:
     return False
 
 
+# Exact collector-failure envelopes. Detection, custody and runtime-error
+# records from these producers remain subject to ordinary active classification.
+_COLLECTION_FAILURE_CONTRACTS = {
+    "app control decision evidence": (
+        Severity.HIGH, "failure_type", {
+            "schema": "angerona.app-control-collection-health.v1",
+            "finding_code": "app_control.collection.failed",
+            "source_channel": "Microsoft-Windows-CodeIntegrity/Operational",
+            "disposition": "health",
+            "sensor_state": "blind",
+            "collector_status": "unknown",
+            "health_percent": 25,
+            "collection_complete": False,
+            "observation_only": True,
+            "enforcement_performed": False,
+            "response_authorized": False,
+            "response_authority": "observe-only",
+        },
+    ),
+    "peripheral and dma posture guard": (
+        Severity.CRITICAL, "error_type", {
+            "schema": "angerona.peripheral-dma-collection-health.v1",
+            "finding_code": "peripheral.collection.failed",
+            "collector_status": "unknown",
+            "health_percent": 10,
+            "collection_complete": False,
+            "enforcement_performed": False,
+            "unknown_state": True,
+            "raw_device_identifiers_omitted": True,
+            "device_control_performed": False,
+            "observation_only": True,
+            "malicious_firmware_protection_claimed": False,
+            "firmware_and_kernel_tampering_out_of_scope": True,
+            "response_authorized": False,
+            "response_authority": "observe-only",
+        },
+    ),
+    "authentication extension integrity guard": (
+        Severity.HIGH, "failure_type", {
+            "schema": "angerona.auth-extension-collection-health.v1",
+            "finding_code": "auth_extension.collection.failed",
+            "collector_status": "unknown",
+            "health_percent": 15,
+            "collection_complete": False,
+            "observation_only": True,
+            "enforcement_performed": False,
+            "read_only": True,
+            "response_authorized": False,
+            "response_authority": "observe-only",
+            "attribution": "not-assessed",
+            "capability_mode": "observe",
+            "egress": "none",
+            "raw_paths_omitted": True,
+            "credentials_collected": False,
+            "lsass_memory_accessed": False,
+        },
+    ),
+}
+
+
+def _unavailable_collection_health(event, details: dict, module: str) -> bool:
+    """Admit known unavailable collectors, never an arbitrary error or label."""
+    contract = _COLLECTION_FAILURE_CONTRACTS.get(module)
+    if contract is None:
+        return False
+    severity, error_field, fixed = contract
+    if (
+        type(getattr(event, "severity", None)) is not Severity
+        or event.severity is not severity
+        or set(details) != set(fixed) | {error_field, "native_error_code"}
+        or any(type(details[key]) is not type(value) or details[key] != value
+               for key, value in fixed.items())
+    ):
+        return False
+    error = details[error_field]
+    code = details["native_error_code"]
+    if type(error) is not str or (code is not None and type(code) is not int):
+        return False
+    if error == "PermissionError":
+        return code in (None, 5)
+    if error == "FileNotFoundError":
+        return code in (None, 2, 3)
+    if error in ("ImportError", "ModuleNotFoundError"):
+        return code is None
+    # pywintypes.error reports a native Windows error rather than the Python
+    # subclasses above. Missing Event Log channels are meaningful only here.
+    return error == "error" and (
+        code == 5
+        or (module == "app control decision evidence" and code == 15007)
+    )
+
+
+def _collection_health(details: dict, module: str) -> bool:
+    """Recognize exact collector notices, including retained pre-schema records.
+
+    A missed collection is a serious assurance gap, but does not establish an
+    intrusion. Do not accept an arbitrary producer's ``health`` label or hide
+    integrity failures, response requests, or explicit hostile evidence.
+    """
+    if (
+        (details.get("response_authorized") is not None
+         and details.get("response_authorized") is not False)
+        or details.get("response_authority") not in (None, "observe-only")
+        or any(key in details for key in (
+            "response_contract", "target", "tamper", "hardening", "active_exploitation",
+        ))
+    ):
+        return False
+    schema = details.get("schema")
+    if module == "self-integrity monitor":
+        return (
+            schema in (None, "angerona.self-integrity-acl-health.v1")
+            and details.get("disposition") == "health"
+            and details.get("acl_status") == "collection-failed"
+            and isinstance(details.get("acl_path"), str)
+        )
+    if module == "persistence sweep":
+        coverage = details.get("coverage")
+        return (
+            schema in (None, "angerona.persistence-coverage.v1")
+            and details.get("finding_code") == "persistence.collector.incomplete"
+            and details.get("response_authorized") is False
+            and isinstance(coverage, dict)
+            and bool(coverage)
+            and all(
+                isinstance(name, str) and isinstance(value, dict)
+                and value.get("status") in ("complete", "partial", "unknown")
+                and isinstance(value.get("error"), str)
+                for name, value in coverage.items()
+            )
+            and any(value["status"] != "complete" for value in coverage.values())
+        )
+    if module == "sysmon event bridge":
+        return (
+            schema is None
+            and details.get("disposition") == "health"
+            and details.get("state") in (
+                "generation-gap-replay", "tail-anchor-missing-replay", "verified",
+                "first-run-tail-anchored", "empty-generation-anchored",
+            )
+            and isinstance(details.get("current_generation"), str)
+            and len(details["current_generation"]) == 64
+            and all(char in "0123456789abcdef" for char in details["current_generation"])
+            and all(
+                type(details.get(key)) is int and details[key] >= 0
+                for key in ("cursor", "oldest_record", "newest_record", "replay_from")
+            )
+            and details.get("cursor_persistence") in ("durable", "failed")
+        )
+    return False
+
+
 def _coverage_health(details: dict, module: str) -> bool:
     """Recognize producer-specific coverage notices, never detector findings.
 
@@ -189,6 +352,26 @@ def _coverage_health(details: dict, module: str) -> bool:
     ):
         return False
     schema = details.get("schema")
+    if module == "fleet health monitor":
+        # Only the default unbound-store producer contract is operational
+        # health. Custody failures, bound fleet findings and response requests
+        # must retain their normal threat classification, even at this source.
+        return (
+            schema == "angerona.fleet-health-status.v1"
+            and set(details) == _FLEET_UNBOUND_FIELDS
+            and details.get("finding_code") == "fleet.coverage.unbound"
+            and details.get("fabric_bound") is False
+            and details.get("observation_only") is True
+            and details.get("enforcement_performed") is False
+            and details.get("remote_shell_available") is False
+            and details.get("arbitrary_command_available") is False
+            and details.get("transport_enabled") is False
+            and details.get("transport_available") is False
+            and type(details.get("health_percent")) is int and details["health_percent"] == 35
+            and isinstance(details.get("exact_reason"), str)
+            and 0 < len(details["exact_reason"]) <= 512
+            and all(type(details.get(key)) is int and details[key] == 0 for key in _FLEET_UNBOUND_COUNTS)
+        )
     if module == "process egress lease guard":
         return (
             schema == "angerona.process-egress-guard-status.v1"
@@ -272,7 +455,11 @@ def event_disposition(event) -> str:
         return "observation"
     if details.get("active_exploitation") is True or details.get("active_attack") is True:
         return "active"
-    if _coverage_health(details, module):
+    if (
+        _unavailable_collection_health(event, details, module)
+        or _collection_health(details, module)
+        or _coverage_health(details, module)
+    ):
         return "health"
     finding_kind = str(details.get("finding_kind") or "").strip().casefold()
     disposition = str(details.get("disposition") or "").strip().casefold()

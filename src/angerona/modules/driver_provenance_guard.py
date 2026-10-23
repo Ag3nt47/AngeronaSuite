@@ -879,7 +879,7 @@ class DriverProvenanceGuard(BaseModule):
         "kernel load receipt."
     )
     category = "Integrity"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (

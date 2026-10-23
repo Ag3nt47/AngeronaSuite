@@ -54,7 +54,58 @@ _SPAWN_LOCK_ERRORS: dict[str, str] = {}
 _SPAWN_LOCK_ERRORS_GUARD = threading.Lock()
 
 
-def cached_cmdline_probe(*needles: str, psutil_module=None) -> Callable[[], bool]:
+def _invocation_matches(process, command, expected: tuple[str, ...]) -> bool:
+    """Match a real interpreter invocation, never mentions in arbitrary text.
+
+    This establishes liveness identity, not signed-build or runtime integrity.
+    Resolve a relative script against that process's cwd, not our own cwd.
+    """
+    if (not isinstance(command, (list, tuple)) or len(command) < len(expected)
+            or not all(isinstance(part, str) for part in command)):
+        return False
+    if len(expected) == 1:
+        return (os.path.normcase(os.path.realpath(process.exe()))
+                == os.path.normcase(os.path.realpath(expected[0])))
+    # Presentation launches may add harmless interpreter options. Never scan
+    # past -c/stdin or treat their code text as a script path.
+    index = 1
+    for _ in range(16):
+        if index >= len(command):
+            return False
+        token = command[index]
+        if token in {"-u", "-B", "-E", "-I", "-s", "-S", "-P", "-O", "-OO", "-q"}:
+            index += 1
+        elif token in {"-X", "-W"} and index + 1 < len(command):
+            index += 2
+        else:
+            break
+    command = [command[0], *command[index:]]
+    if len(command) < len(expected):
+        return False
+    normalize = lambda path: os.path.normcase(os.path.realpath(path))
+    if len(expected) > 2 and expected[1] == "-m":
+        if tuple(command[1:len(expected)]) != expected[1:]:
+            return False
+    else:
+        if len(expected) < 2 or command[1].startswith("-"):
+            return False
+        script = command[1]
+        if not os.path.isabs(script):
+            script = os.path.join(process.cwd(), script)
+        if (normalize(script) != normalize(expected[1])
+                or tuple(command[2:len(expected)]) != expected[2:]):
+            return False
+    executable = normalize(expected[0])
+    allowed = {executable}
+    basename = os.path.basename(executable)
+    if os.name == "nt" and basename in {"python.exe", "pythonw.exe"}:
+        sibling = "pythonw.exe" if basename == "python.exe" else "python.exe"
+        allowed.add(normalize(os.path.join(os.path.dirname(executable), sibling)))
+    return normalize(process.exe()) in allowed
+
+
+def cached_cmdline_probe(*needles: str, psutil_module=None,
+                         expected_argv=None) -> Callable[[], bool]:
     """Return a liveness probe that scans the process table only on adoption.
 
     Heartbeat-less sidecars used to call ``process_iter(cmdline)`` on every
@@ -68,6 +119,10 @@ def cached_cmdline_probe(*needles: str, psutil_module=None) -> Callable[[], bool
     """
     cached_process = None
     loaded_psutil = psutil_module
+    expected = tuple(expected_argv) if expected_argv is not None else None
+    if expected is not None and (not expected or not all(
+            isinstance(part, str) and part for part in expected)):
+        raise ValueError("An exact executable or module/script invocation is required")
 
     def _probe() -> bool:
         nonlocal cached_process, loaded_psutil
@@ -88,10 +143,23 @@ def cached_cmdline_probe(*needles: str, psutil_module=None) -> Callable[[], bool
                 import psutil as loaded_psutil_module
                 loaded_psutil = loaded_psutil_module
             for process in loaded_psutil.process_iter(["cmdline"]):
-                command = " ".join(process.info.get("cmdline") or [])
-                if command and all(needle in command for needle in needles):
+                try:
+                    command = process.info.get("cmdline") or []
+                    if expected is not None:
+                        if not _invocation_matches(process, command, expected):
+                            continue
+                        # process_iter info can be cached: confirm fresh argv
+                        # and PID generation before adopting this sidecar.
+                        if (not _invocation_matches(process, process.cmdline(), expected)
+                                or not process.is_running()):
+                            continue
+                    elif not command or not all(needle in command for needle in needles):
+                        continue
                     cached_process = process
                     return True
+                except Exception:
+                    # One denied/exited process must not hide a later valid one.
+                    continue
         except Exception:
             cached_process = None
         return False

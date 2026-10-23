@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import pytest
+import time
 
 from types import SimpleNamespace
 
 from angerona.core.eventbus import EventBus, Severity
 from angerona.modules import lsass_guard, process_monitor
+from angerona.telemetry.sensors import ProcessSnapshot
+
+
+def _receipt(rows):
+    gaps = sum(not process_monitor._process_identity(row)[1] for row in rows)
+    return ProcessSnapshot(tuple(rows), time.time(), not gaps, len(rows), 0, identity_incomplete=gaps)
 
 
 def test_process_monitor_evaluates_same_pid_with_new_birth(monkeypatch) -> None:
@@ -29,13 +36,14 @@ def test_process_monitor_evaluates_same_pid_with_new_birth(monkeypatch) -> None:
     ]
     calls = 0
 
-    def list_processes(*_args, **_kwargs):
+    def process_snapshot(*_args, **_kwargs):
         nonlocal calls
         result = snapshots[min(calls, 1)]
         calls += 1
-        return result
+        return _receipt(result)
 
-    monkeypatch.setattr(process_monitor, "list_processes", list_processes)
+    monkeypatch.setattr(process_monitor, "process_snapshot", process_snapshot)
+    monkeypatch.setattr("psutil.pids", lambda: [])
     module = process_monitor.ProcessMonitorModule()
     bus = EventBus()
     module.bind(bus)
@@ -63,13 +71,14 @@ def test_process_monitor_missing_birth_is_visible_in_health(monkeypatch) -> None
     }]]
     calls = 0
 
-    def list_processes(*_args, **_kwargs):
+    def process_snapshot(*_args, **_kwargs):
         nonlocal calls
         result = snapshots[min(calls, 1)]
         calls += 1
-        return result
+        return _receipt(result)
 
-    monkeypatch.setattr(process_monitor, "list_processes", list_processes)
+    monkeypatch.setattr(process_monitor, "process_snapshot", process_snapshot)
+    monkeypatch.setattr("psutil.pids", lambda: [])
     module = process_monitor.ProcessMonitorModule()
     monkeypatch.setattr(
         module,

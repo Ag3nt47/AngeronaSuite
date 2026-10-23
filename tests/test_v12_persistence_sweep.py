@@ -86,6 +86,42 @@ def test_persistence_self_test_covers_record_diffs() -> None:
     assert passed, detail
 
 
+def test_administrative_task_metadata_and_plain_script_hosts_are_not_critical() -> None:
+    module = PersistenceSweepModule()
+    for name in ("SystemTempGuard", "Codex Realtime Priority (Agent47)", "AngeronaDisposableCleanup", "UnfamiliarTool"):
+        record = json.dumps({"id": "\\" + name,
+            "description": "Uses PowerShell, IEX, mshta and C:\\Temp\\example.exe in documentation",
+            "actions": [{"Execute": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                         "Arguments": r"-NoProfile -File C:\Admin\audit.ps1 -LogPath C:\Temp\audit.log"}]})
+        severity, _ = module._classify("ScheduledTask", name, record, "T1053.005")
+        assert severity.name == "MEDIUM"
+
+
+def test_execution_fields_under_harmless_names_still_detect_encoded_and_temp_payloads() -> None:
+    module = PersistenceSweepModule()
+    for arguments, expected in (("-EncodedCommand SQBFAFgA", "CRITICAL"),
+                                (r"-File C:\Temp\payload.ps1", "HIGH")):
+        record = json.dumps({"id": "\\AngeronaDisposableCleanup", "description": "Routine cleanup",
+            "actions": [{"Execute": "powershell.exe", "Arguments": arguments}]})
+        severity, _ = module._classify("ScheduledTask", "AngeronaDisposableCleanup", record, "T1053.005")
+        assert severity.name == expected
+
+
+def test_profile_install_location_without_acl_proof_is_reviewable_not_active() -> None:
+    module = PersistenceSweepModule()
+    for name in ("BingWallpaperDaemon", "UnknownApp"):
+        severity, reason = module._classify("HKCU\\Run", name,
+            r'"C:\Users\Alice\AppData\Local\Example\app.exe" --silent', "T1547.001")
+        assert severity.name == "MEDIUM"
+        assert "permissions and operator review required" in reason
+
+
+def test_service_descriptive_metadata_cannot_supply_execution_indicators() -> None:
+    record = json.dumps({"binpath": r'C:\Windows\System32\service.exe --log C:\Temp\service.log',
+                         "username": "powershell-iex", "start_type": "auto"})
+    assert PersistenceSweepModule()._classify("Service", "mshta.exe", record, "T1543.003")[0].name == "MEDIUM"
+
+
 def test_winlogon_exact_defaults_apply_only_to_shell_and_userinit() -> None:
     module = PersistenceSweepModule()
     ordinary = module._classify(
@@ -133,6 +169,25 @@ def test_nonzero_collector_exit_is_unknown_not_empty(monkeypatch) -> None:
 
     assert "ScheduledTask" not in module._pending
     assert module.coverage_snapshot()["ScheduledTask"]["status"] == "unknown"
+
+
+def test_powershell_collectors_use_fixed_system_binary_and_utf8(monkeypatch) -> None:
+    module = PersistenceSweepModule()
+    calls = []
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout="[]", stderr="")
+    monkeypatch.setattr(persistence_module.subprocess, "run", run)
+    module._pending = {}
+    module._collect_scheduled()
+    module._collect_wmi()
+    assert len(calls) == 2
+    for argv, kwargs in calls:
+        assert argv[0] == persistence_module._POWERSHELL
+        assert argv[0].lower().endswith(r"\system32\windowspowershell\v1.0\powershell.exe")
+        assert "OutputEncoding" in argv[-1]
+        assert kwargs["encoding"] == "utf-8"
+        assert kwargs["timeout"] == 20
 
 
 def test_scheduled_task_action_only_change_is_detected(monkeypatch) -> None:
@@ -247,3 +302,10 @@ def test_failed_surface_is_not_diffed_as_empty(monkeypatch) -> None:
         event.details.get("change") == "removed" for event in bus.recent(50)
     )
     assert module.health == 50
+    coverage_event, = [event for event in bus.recent(50)
+        if event.details.get("finding_code") == "persistence.collector.incomplete"]
+    assert coverage_event.details["schema"] == "angerona.persistence-coverage.v1"
+    assert coverage_event.details["disposition"] == "health"
+    assert coverage_event.details["collection_complete"] is False
+    assert coverage_event.details["active_attack"] is False
+    assert coverage_event.details["response_authority"] == "observe-only"

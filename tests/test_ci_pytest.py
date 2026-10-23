@@ -15,7 +15,8 @@ from angerona.core.privilege import sanitized_child_environment
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run(tmp_path, arguments, *, fake_body=None, journal_initial=None, environment_updates=None):
+def _run(tmp_path, arguments, *, fake_body=None, journal_initial=None,
+         environment_updates=None, direct_file=False, cwd=None):
     environment = sanitized_child_environment(source={})
     journal = tmp_path / "exit.jsonl"
     trace = tmp_path / "trace.jsonl"
@@ -42,12 +43,41 @@ def _run(tmp_path, arguments, *, fake_body=None, journal_initial=None, environme
         # accumulated repository scratch must not consume the 30s deadline.
         child_arguments[:0] = ["--confcutdir", str(tmp_path), "--rootdir", str(tmp_path)]
     result = subprocess.run(
-        [sys.executable, "-X", "faulthandler", "-m", "tools.ci_pytest", *child_arguments],
-        cwd=ROOT, env=environment, capture_output=True, text=True, timeout=30,
+        [sys.executable, "-X", "faulthandler",
+         *([str(ROOT / "tools" / "ci_pytest.py")] if direct_file else ["-m", "tools.ci_pytest"]),
+         *child_arguments],
+        cwd=ROOT if cwd is None else cwd, env=environment, capture_output=True, text=True, timeout=30,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     records = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
     return result, records, trace
+
+
+@pytest.mark.parametrize("passes", [True, False])
+def test_direct_file_mode_resolves_checkout_helpers_from_another_working_directory(tmp_path, passes):
+    probe = tmp_path / "test_checkout_imports.py"
+    probe.write_text(
+        "from importlib.util import find_spec\nfrom pathlib import Path\n"
+        "from tools import ci_pytest\n"
+        "def test_checkout_imports():\n"
+        f"    expected = Path({str(ROOT)!r})\n"
+        "    assert Path(ci_pytest.__file__).resolve() == expected / 'tools' / 'ci_pytest.py'\n"
+        "    assert Path(find_spec('blackbox_recorder').origin).resolve() == expected / 'blackbox_recorder.py'\n"
+        f"    assert {passes!r}\n",
+        encoding="utf-8",
+    )
+    result, records, trace = _run(
+        tmp_path, ["-q", "-p", "tools.pytest_execution_trace", str(probe)],
+        direct_file=True, cwd=tmp_path,
+    )
+    expected = 0 if passes else 1
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert any(row["kind"] == "pytest-system-exit" and row["exit_code"] == expected for row in records)
+    phases = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    finish = next(row for row in phases if row["kind"] == "session-finish")
+    assert finish["testscollected"] == 1 and finish["exitstatus"] == expected
+    assert phases[-2]["completed"] is True
+    assert {"python-atexit-begin", "python-atexit-end"} <= {row["kind"] for row in records}
 
 
 @pytest.mark.parametrize("outcome", [
@@ -124,6 +154,69 @@ raise SystemExit(0)
     assert result.returncode == 0, result.stderr
     assert len(records) == 1
     assert records[0]["kind"] == "process-start"
+
+
+def test_exit_journal_closes_after_final_marker_without_resource_warning(tmp_path):
+    retirement = tmp_path / "retirement.json"
+    # Register before the wrapper so this runs after its final marker. Keep
+    # the exact stream alive to inspect explicit closure, not GC timing.
+    (tmp_path / "sitecustomize.py").write_text(
+        "import atexit, json\nfrom pathlib import Path\n"
+        "state = {}\n"
+        "def observe_retirement():\n"
+        f"    Path({str(retirement)!r}).write_text(\n"
+        "        json.dumps({'closed': state['journal'].closed}), encoding='utf-8')\n"
+        "atexit.register(observe_retirement)\n",
+        encoding="utf-8",
+    )
+    body = """import atexit, gc, io, json, os, sitecustomize
+from pathlib import Path
+owned = [stream for stream in gc.get_objects()
+         if isinstance(stream, io.TextIOWrapper)
+         and stream.name == os.environ['ANGERONA_PYTEST_EXIT_PATH']]
+assert len(owned) == 1, 'exact owned diagnostic stream was not found'
+sitecustomize.state['journal'] = owned[0]
+def pytest_callback():
+    stream = sitecustomize.state['journal']
+    assert not stream.closed, 'journal closed before pytest atexit callbacks'
+    rows = Path(stream.name).read_text(encoding='utf-8').splitlines()
+    assert json.loads(rows[-1])['kind'] == 'python-atexit-begin'
+    stream.write(json.dumps({'kind': 'pytest-atexit-probe'}) + '\\n')
+    stream.flush()
+atexit.register(pytest_callback)
+raise SystemExit(0)
+"""
+    result, records, _trace = _run(
+        tmp_path, [], fake_body=body,
+        environment_updates={"PYTHONWARNINGS": "error::ResourceWarning"},
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(retirement.read_text(encoding="utf-8")) == {"closed": True}
+    assert [row["kind"] for row in records][-4:] == [
+        "pytest-entrypoint-finished", "python-atexit-begin",
+        "pytest-atexit-probe", "python-atexit-end",
+    ]
+    assert "ResourceWarning" not in result.stderr
+    assert "Exception ignored" not in result.stderr
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+def test_exit_journal_write_and_close_failure_preserve_native_verdict(tmp_path, exit_code):
+    body = """import gc, io, os
+owned = [stream for stream in gc.get_objects()
+         if isinstance(stream, io.TextIOWrapper)
+         and stream.name == os.environ['ANGERONA_PYTEST_EXIT_PATH']]
+assert len(owned) == 1, 'exact owned diagnostic stream was not found'
+os.close(owned[0].fileno())
+""" + f"raise SystemExit({exit_code})\n"
+    result, records, _trace = _run(
+        tmp_path, [], fake_body=body,
+        environment_updates={"PYTHONWARNINGS": "error::ResourceWarning"},
+    )
+    assert result.returncode == exit_code, result.stdout + result.stderr
+    assert [row["kind"] for row in records] == ["process-start"]
+    assert "ResourceWarning" not in result.stderr
+    assert "Exception ignored" not in result.stderr
 
 
 @pytest.mark.parametrize("passes", [True, False])

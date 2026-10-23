@@ -57,6 +57,7 @@ _ICON_COLORS = {
     "world": "#38bdf8",
     "attack": "#fb923c",
     "intel": "#60a5fa",
+    "spyware": "#000000",
     "forensics": "#c084fc",
     "operations": "#22d3ee",
     "console": "#2dd4bf",
@@ -65,6 +66,11 @@ _ICON_COLORS = {
     "settings": "#cbd5e1",
     "stop": "#ffffff",
 }
+
+# Resolving PySide enum attributes is relatively costly. This filter observes
+# every widget paint/layout event, while only these three types need Python
+# reveal handling; construct their membership table once.
+_REVEAL_EVENT_TYPES = frozenset((QEvent.MouseButtonPress, QEvent.Close, QEvent.Show))
 
 
 def _icon_pixmap(kind: str, color: str, size: int = 22) -> QPixmap:
@@ -145,6 +151,33 @@ def _icon_pixmap(kind: str, color: str, size: int = 22) -> QPixmap:
         p.drawPath(shield)
         p.drawLine(QPointF(8.0, 11.0), QPointF(10.2, 13.2))
         p.drawLine(QPointF(10.2, 13.2), QPointF(14.5, 8.7))
+    elif kind == "spyware":
+        # A fedora, dark glasses and coat keep the black surveillance icon
+        # recognizable at the same small sizes as the other destinations.
+        p.setBrush(c)
+        hat = QPainterPath()
+        hat.moveTo(3.0, 7.5)
+        hat.lineTo(7.0, 6.0)
+        hat.lineTo(8.0, 2.5)
+        hat.lineTo(14.0, 2.5)
+        hat.lineTo(15.0, 6.0)
+        hat.lineTo(19.0, 7.5)
+        hat.closeSubpath()
+        p.drawPath(hat)
+        p.setBrush(Qt.NoBrush)
+        p.drawArc(QRectF(7.0, 7.0, 8.0, 8.5), 180 * 16, 180 * 16)
+        p.setBrush(c)
+        p.drawRoundedRect(QRectF(7.0, 9.1, 3.3, 2.1), 0.7, 0.7)
+        p.drawRoundedRect(QRectF(11.7, 9.1, 3.3, 2.1), 0.7, 0.7)
+        p.drawLine(QPointF(10.3, 9.8), QPointF(11.7, 9.8))
+        coat = QPainterPath()
+        coat.moveTo(7.0, 15.0)
+        coat.lineTo(10.9, 18.0)
+        coat.lineTo(15.0, 15.0)
+        coat.lineTo(18.5, 19.5)
+        coat.lineTo(3.5, 19.5)
+        coat.closeSubpath()
+        p.drawPath(coat)
     elif kind == "forensics":
         p.drawEllipse(QRectF(3.0, 3.0, 11.5, 11.5))
         p.drawLine(QPointF(13.0, 13.0), QPointF(19.0, 19.0))
@@ -264,6 +297,15 @@ class HeaderActionButton(QPushButton):
 
     def is_compact(self) -> bool:
         return self._compact
+
+    def set_responsive_width(self, width: int) -> None:
+        """Apply a bounded row allocation without repeated layout mutations."""
+        extent = max(32, min(400, int(width)))
+        if self.minimumWidth() == extent and self.maximumWidth() == extent:
+            return
+        self.setMinimumWidth(extent)
+        self.setMaximumWidth(extent)
+        self._fit_label()
 
     def sizeHint(self):  # noqa: N802 - Qt signature
         hint = super().sizeHint()
@@ -461,6 +503,12 @@ class PanelRevealOverlay(QWidget):
         self._animation.setDuration(360)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.finished.connect(self._finish)
+        self._reveal_start_timer = QTimer(self)
+        self._reveal_start_timer.setSingleShot(True)
+        self._reveal_start_timer.timeout.connect(self._start_target_reveal)
+        self._pending_start_timer = QTimer(self)
+        self._pending_start_timer.setSingleShot(True)
+        self._pending_start_timer.timeout.connect(self._start_next_pending_window)
         self.hide()
 
     def set_motion_config(self, config=None) -> None:
@@ -488,7 +536,7 @@ class PanelRevealOverlay(QWidget):
         except RuntimeError:
             return True
 
-    def _is_reveal_destination(self, widget: QWidget) -> bool:
+    def _is_reveal_destination(self, widget: QWidget, *, allow_owner: bool = False) -> bool:
         """Return whether *widget* is an Angerona-owned content window.
 
         Tooltips, menus, splash surfaces, and the holographic token are not
@@ -496,7 +544,7 @@ class PanelRevealOverlay(QWidget):
         here causes flicker or a duplicate animation.
         """
         try:
-            if not widget.isWindow() or widget is self.window():
+            if not widget.isWindow() or (widget is self.window() and not allow_owner):
                 return False
             if widget.windowType() in (
                 Qt.ToolTip,
@@ -533,6 +581,8 @@ class PanelRevealOverlay(QWidget):
         self._global_windows = False
         self._armed = False
         self._animation.stop()
+        self._reveal_start_timer.stop()
+        self._pending_start_timer.stop()
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -581,7 +631,8 @@ class PanelRevealOverlay(QWidget):
     ) -> bool:
         """Run an action and reveal the top-level window it creates."""
         if (
-            self._armed
+            self._shut_down
+            or self._armed
             or self._target is not None
             or self._animation_busy()
         ):
@@ -597,7 +648,8 @@ class PanelRevealOverlay(QWidget):
             app.installEventFilter(self)
         try:
             result = after()
-            if self._armed and isinstance(result, QWidget):
+            if (self._armed and isinstance(result, QWidget)
+                    and self._is_reveal_destination(result, allow_owner=True)):
                 if not result.isVisible():
                     result.show()
                 self._capture(result)
@@ -618,7 +670,7 @@ class PanelRevealOverlay(QWidget):
         if not isinstance(watched, QWidget):
             return False
         event_type = event.type()
-        if event_type not in (QEvent.MouseButtonPress, QEvent.Close, QEvent.Show):
+        if event_type not in _REVEAL_EVENT_TYPES:
             return False
         if event_type == QEvent.MouseButtonPress:
             if not self._global_windows:
@@ -774,7 +826,7 @@ class PanelRevealOverlay(QWidget):
         # Let layouts and the window manager settle before taking the final
         # dimensions. Modal exec() enters a nested event loop, so this also works
         # for existing blocking dialogs without rewriting every destination.
-        QTimer.singleShot(0, self._start_target_reveal)
+        self._reveal_start_timer.start(0)
 
     def _queue_pending_window(self, target: QWidget) -> None:
         for reference in self._pending_windows:
@@ -880,14 +932,27 @@ class PanelRevealOverlay(QWidget):
 
     def _start_target_reveal(self) -> None:
         target = self._target
-        if target is None or not target.isVisible():
+        if self._shut_down:
+            return
+        try:
+            visible = target is not None and target.isVisible()
+        except RuntimeError:
+            # A delete-on-close destination may disappear before its queued
+            # opening callback. Release it so subsequent dialogs can still open.
+            visible = False
+        if not visible:
             if target is not None:
-                if self._previous_mask.isEmpty():
-                    target.clearMask()
-                else:
-                    target.setMask(self._previous_mask)
+                try:
+                    if self._previous_mask.isEmpty():
+                        target.clearMask()
+                    else:
+                        target.setMask(self._previous_mask)
+                except RuntimeError:
+                    pass
             self._target = None
             self._previous_mask = QRegion()
+            self._mode = "idle"
+            self._pending_start_timer.start(0)
             return
         bounds = target.rect()
         local = target.mapFromGlobal(self._source_global)
@@ -912,6 +977,8 @@ class PanelRevealOverlay(QWidget):
         """Collapse one captured destination, then allow its real close."""
         if self._target is target and self._mode == "closing":
             return
+
+        self._reveal_start_timer.stop()
 
         # A very fast X press can arrive while the opening animation is still
         # running. Reverse from the exact visible progress instead of flashing
@@ -1080,7 +1147,8 @@ class PanelRevealOverlay(QWidget):
                 and self._target is None
             ):
                 app.removeEventFilter(self)
-            QTimer.singleShot(0, self._start_next_pending_window)
+            if not self._shut_down:
+                self._pending_start_timer.start(0)
 
 
 def install_global_window_reveal(

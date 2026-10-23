@@ -17,6 +17,7 @@ from __future__ import annotations
 import threading
 import time
 import math
+import sys
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Dict, Iterable, List, Mapping
@@ -45,17 +46,71 @@ _conn_cache_lock = threading.Lock()
 _proc_cache: tuple[float, "ProcessSnapshot | None"] = (0.0, None)
 _conn_cache: tuple[float, "ConnectionSnapshot | None"] = (0.0, None)
 
+# Bounds constrain our retained rows and adapter validation, not the duration of
+# an individual native call. Missing/truncated evidence remains a coverage gap.
+_MAX_PROCESS_ROWS = 65_536
+_MAX_PARENT_MAP_ROWS = 65_536
+_WINDOWS_PROCESS_MAP = sys.platform == "win32"
+
+
+def _positive_birth(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return float(value) if math.isfinite(value) and value > 0 else None
+    except (OverflowError, ValueError):
+        return None
+
+
+def _process_image(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _windows_parent_map(psutil) -> dict[int, int]:
+    """Read one scan-local advisory map; never fall back to per-row scans.
+
+    psutil 7.2.2's private adapter, also used by Process.children(), wraps one
+    Toolhelp process snapshot. The supported project dependency is broader, so
+    reject unavailable or changed adapter shapes as collection loss. This map
+    has neither parent-birth nor executable custody and grants no authority.
+    """
+    reader = getattr(psutil, "_ppid_map", None)
+    if not callable(reader):
+        raise ValueError("unsupported Windows parent-map adapter")
+    rows = reader()
+    if type(rows) is not dict or len(rows) > _MAX_PARENT_MAP_ROWS:
+        raise ValueError("invalid or oversized Windows parent map")
+    for pid, parent in rows.items():
+        if (type(pid) is not int or type(parent) is not int
+                or not 0 <= pid <= 0xFFFFFFFF or not 0 <= parent <= 0xFFFFFFFF):
+            raise ValueError("invalid Windows parent-map identity")
+    return rows
+
 
 @dataclass(frozen=True)
 class ConnectionSnapshot:
-    """Bounded connection inventory plus explicit collection coverage."""
+    """Immutable connection inventory plus explicit collection coverage."""
 
-    connections: tuple[Dict, ...]
+    connections: tuple[Mapping[str, object], ...]
     collected_at: float
     complete: bool
     enumerated: int
     skipped: int
     error: str = ""
+
+    def __post_init__(self) -> None:
+        # Detach even caller-supplied mappings before sharing a receipt. Sensor
+        # rows contain only scalar values; a consumer cannot poison another
+        # detector's status/PID/endpoints through the cached dictionary.
+        object.__setattr__(self, "connections", tuple(
+            MappingProxyType(dict(row)) for row in self.connections
+        ))
+
+    def to_dict(self) -> dict[str, object]:
+        """Return detached, JSON-compatible presentation data."""
+        return {"connections": [dict(row) for row in self.connections],
+                "collected_at": self.collected_at, "complete": self.complete,
+                "enumerated": self.enumerated, "skipped": self.skipped, "error": self.error}
 
 
 class ConnectionList(list[Dict]):
@@ -86,9 +141,10 @@ class ConnectionList(list[Dict]):
 class ProcessSnapshot:
     """Shared, immutable process evidence with explicit collection loss.
 
-    A missing command line or birth timestamp is retained as an unknown; it
-    never becomes an empty, apparently successful inventory. Consumers must
-    still revalidate process identity before taking action.
+    Missing command lines and unconfirmed PID/birth/image observations remain
+    unknown, never an apparently successful inventory. Parent PIDs are advisory
+    observations, not parent-birth proof. Consumers must independently revalidate
+    process identity and image custody before taking action.
     """
 
     processes: tuple[Mapping[str, object], ...]
@@ -103,11 +159,14 @@ class ProcessSnapshot:
 
 
 def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
-    """Snapshot rich process metadata, including PID birth and parent identity.
+    """Snapshot rich metadata, birth observations and advisory parent PIDs.
 
     Cached for a short window (``ANGERONA_SENSOR_CACHE_TTL``, default 1.5 s) so
     concurrent sensor threads share one enumeration instead of each running
-    their own.  Pass ``max_age=0`` to force a fresh scan.
+    their own. Pass ``max_age=0`` to force a fresh scan. Cached psutil Process
+    objects contribute PIDs only: metadata comes from independent fresh objects.
+    A second birth/image read brackets the scan-local Windows parent map. These
+    are coherent observations, not an atomic snapshot or response authority.
     """
     global _proc_cache
     ttl = _CACHE_TTL if max_age is None else max_age
@@ -126,47 +185,92 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
         enumerated = skipped = unreadable = identity_incomplete = 0
         error = ""
         enumeration_complete = True
+        pending: list[tuple[int, dict[str, object]]] = []
         try:
             import psutil
 
-            for p in psutil.process_iter([
-                "pid", "name", "exe", "ppid", "username", "cmdline", "create_time",
-            ]):
+            attrs = ["pid", "name", "exe", "username", "cmdline", "create_time"]
+            if not _WINDOWS_PROCESS_MAP:
+                attrs.append("ppid")
+            # Iteration may reuse psutil's lifetime-cached objects. Do not read
+            # their .info, birth, image, ppid or is_running() identity cache.
+            for p in psutil.process_iter():
                 enumerated += 1
+                if enumerated > _MAX_PROCESS_ROWS:
+                    enumeration_complete = False
+                    skipped += 1
+                    error = "process inventory exceeded the bounded row limit"
+                    break
                 try:
-                    info = dict(p.info)
-                    # psutil caches Process objects between process_iter calls.
-                    # Verify their birth identity after reading the metadata:
-                    # otherwise a reused PID can mix an old birth timestamp
-                    # with the replacement process's image or command line.
-                    running = getattr(p, "is_running", None)
-                    if running is not None and not running():
-                        skipped += 1
-                        continue
-                    command = info.get("cmdline")
-                    if not isinstance(command, (tuple, list)) or any(
-                        not isinstance(value, str) for value in command
-                    ):
-                        command = None
-                        unreadable += 1
-                    else:
-                        command = tuple(command)
-                    info["cmdline"] = command
-                    try:
-                        birth = float(info.get("create_time"))
-                        valid_identity = (
-                            isinstance(info.get("pid"), int) and info["pid"] > 0
-                            and math.isfinite(birth) and birth > 0
-                        )
-                    except (TypeError, ValueError, OverflowError):
-                        valid_identity = False
-                    identity_incomplete += int(not valid_identity)
-                    out.append(MappingProxyType(info))
+                    pid = p.pid
+                    if type(pid) is not int or pid < 0:
+                        raise ValueError("invalid enumerated PID")
+                    info = psutil.Process(pid).as_dict(attrs=attrs, ad_value=None)
+                    if type(info.get("pid")) is not int or info["pid"] != pid:
+                        raise ValueError("process metadata PID changed")
+                    pending.append((pid, info))
                 except Exception:
                     skipped += 1
         except Exception as exc:
             enumeration_complete = False
             error = f"process enumeration failed: {exc}"[:500]
+
+        # One whole-system map instead of one for each cold Process.ppid().
+        # Preserve already visible metadata even when the map is unavailable.
+        parents = None
+        if _WINDOWS_PROCESS_MAP and pending:
+            try:
+                parents = _windows_parent_map(psutil)
+            except Exception as exc:
+                enumeration_complete = False
+                error = error or f"Windows parent map unavailable: {type(exc).__name__}"
+        for pid, info in pending:
+            try:
+                after = psutil.Process(pid).as_dict(
+                    attrs=["pid", "create_time", "exe"], ad_value=None,
+                )
+                if type(after.get("pid")) is not int or after["pid"] != pid:
+                    raise ValueError("process verification PID changed")
+                before_birth = _positive_birth(info.get("create_time"))
+                after_birth = _positive_birth(after.get("create_time"))
+                before_image = _process_image(info.get("exe"))
+                after_image = _process_image(after.get("exe"))
+                # Different known observations are loss, not a stitched row.
+                # Independent objects avoid the denied-fast-birth (PID,None)
+                # identity comparison and the lifetime cached exe() result.
+                if (before_birth is not None and after_birth is not None
+                        and before_birth != after_birth):
+                    raise ValueError("process birth changed during collection")
+                if (before_image is not None and after_image is not None
+                        and before_image != after_image):
+                    raise ValueError("process image changed during collection")
+                coherent = bool(pid > 0 and before_birth is not None
+                                and after_birth is not None and before_image is not None
+                                and after_image is not None)
+                if before_birth is None or after_birth is None:
+                    info["create_time"] = None
+                if before_image is None or after_image is None:
+                    info["exe"] = None
+                if _WINDOWS_PROCESS_MAP:
+                    # Bind the PID-only parent map only between matching fresh
+                    # observations. Unreadable/protected identity stays unknown.
+                    info["ppid"] = parents.get(pid) if coherent and parents is not None else None
+                    coherent = coherent and info["ppid"] is not None
+                elif not coherent:
+                    info["ppid"] = None
+                identity_incomplete += int(not coherent)
+                command = info.get("cmdline")
+                if not isinstance(command, (tuple, list)) or any(
+                    not isinstance(value, str) for value in command
+                ):
+                    command = None
+                    unreadable += 1
+                else:
+                    command = tuple(command)
+                info["cmdline"] = command
+                out.append(MappingProxyType(info))
+            except Exception:
+                skipped += 1
         if skipped and not error:
             error = f"{skipped} process row(s) could not be normalized"
         receipt = ProcessSnapshot(

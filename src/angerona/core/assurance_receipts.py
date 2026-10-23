@@ -127,6 +127,21 @@ class _ProducerEnrollment:
     key: bytes
 
 
+@dataclass(frozen=True, eq=False)
+class ValidatedDetectorObservation:
+    """Non-secret observation sent only after the broker's real consumption.
+
+    Presentation observers cannot manufacture, consume, or replay a detector
+    receipt through this notification. It carries no technique test credit.
+    """
+
+    module_name: str
+    generation: int
+    probe_id: str
+    observation: str
+    observed_at: float
+
+
 class DetectorReceiptIssuer:
     """Object capability issued only to one manager-registered detector."""
 
@@ -166,7 +181,8 @@ class DetectorReceiptIssuer:
 class AssuranceReceiptBroker:
     """Manager-held verifier binding receipts to registered module objects."""
 
-    def __init__(self, registry: Callable[[], Mapping[str, object]]) -> None:
+    def __init__(self, registry: Callable[[], Mapping[str, object]], *,
+                 on_verified: Callable[[object, ValidatedDetectorObservation], None] | None = None) -> None:
         self.__root = secrets.token_bytes(32)
         self.__registry = registry
         self.__lock = threading.RLock()
@@ -175,6 +191,17 @@ class AssuranceReceiptBroker:
         self.__by_code: dict[str, _ProducerEnrollment] = {}
         self.__active: OrderedDict[str, AssuranceChallenge] = OrderedDict()
         self.__issued: OrderedDict[tuple[str, str], dict[str, object]] = OrderedDict()
+        self.__on_verified = on_verified
+        self.__notifications: OrderedDict[int, tuple[ValidatedDetectorObservation, weakref.ReferenceType]] = OrderedDict()
+
+    def _consume_notification(self, producer: object, observation: object) -> bool:
+        """Validate the exact post-verification object, independently of receipt credit."""
+        with self.__lock:
+            pending = self.__notifications.get(id(observation))
+            if pending is None or pending[0] is not observation or pending[1]() is not producer:
+                return False
+            self.__notifications.pop(id(observation), None)
+            return True
 
     def enroll_consumer(self, consumer: object) -> None:
         if (
@@ -409,4 +436,20 @@ class AssuranceReceiptBroker:
                 return False
             self.__active.pop(probe_id, None)
             self.__issued.pop((code, probe_id), None)
-            return True
+            notification = ValidatedDetectorObservation(
+                enrollment.module_name, int(receipt["lifecycle_generation"]), probe_id,
+                str(receipt["observation"]), observed_at,
+            )
+            if self.__on_verified is not None:
+                self.__notifications[id(notification)] = (notification, weakref.ref(producer))
+                while len(self.__notifications) > _MAX_ACTIVE:
+                    self.__notifications.popitem(last=False)
+        # Consumption is final before notifying a bounded in-memory observer.
+        # Observer failure must never repeat or revoke the original consumer's
+        # success, and no producer MAC/key is exported to presentation code.
+        if self.__on_verified is not None:
+            try:
+                self.__on_verified(producer, notification)
+            except Exception:
+                pass
+        return True

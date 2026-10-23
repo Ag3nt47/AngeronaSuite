@@ -68,3 +68,125 @@ def test_binary_response_classification_retains_all_signature_requirements(heade
         observed_file_identity={"device": 1, "inode": 2, "birthtime_ns": 0},
     )
     assert classification == ("credential-dumper-binary-signatures" if expected else "")
+
+
+class _OpenedReadProbe:
+    """Keep real descriptor/stat behavior while observing only its content read."""
+
+    def __init__(self, handle, read):
+        self._handle = handle
+        self._read = read
+
+    def __enter__(self):
+        self._handle.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        return self._handle.__exit__(*args)
+
+    def fileno(self):
+        return self._handle.fileno()
+
+    def read(self, size=-1):
+        return self._read(self._handle, size)
+
+
+def test_small_file_keeps_payload_positive_receipt_and_cache_without_cap_sized_read(
+    tmp_path, monkeypatch,
+):
+    import hashlib
+    from types import SimpleNamespace
+
+    from angerona.core.eventbus import BusAuthority, EventBus
+    from angerona.modules.file_integrity import FileIntegrityModule
+
+    # This case asserts cache reuse, so Windows must have stable USN proof.
+    monkeypatch.setattr(FileIntegrityModule, "_handle_usn", staticmethod(lambda _fd: 101))
+
+    path = tmp_path / "small-positive.bin"
+    payload = b"ANGERONA INERT READ-SIZE PROBE"
+    path.write_bytes(payload)
+    bus = EventBus()
+    bus.arm(BusAuthority(b"r" * 32))
+    module = YaraScannerModule()
+    module.bind(bus)
+    read_sizes, scanned = [], []
+    real_fdopen = yara_scanner.os.fdopen
+
+    def read(handle, size):
+        read_sizes.append(size)
+        assert 0 < size <= len(payload) + 1, "small file requested the full scan budget"
+        return handle.read(size)
+
+    monkeypatch.setattr(
+        yara_scanner.os, "fdopen",
+        lambda *args, **kwargs: _OpenedReadProbe(real_fdopen(*args, **kwargs), read),
+    )
+
+    class Scanner:
+        def scan(self, content):
+            scanned.append(content)
+            return SimpleNamespace(matching_rules=[SimpleNamespace(identifier="Inert_Read_Probe")])
+
+    scanner = Scanner()
+    assert module._scan_file(scanner, path) == "scanned", module.last_error
+    assert scanned == [payload] and len(read_sizes) == 1
+    events = bus.recent(10)
+    assert len(events) == 1
+    event = events[0]
+    assert bus.verify(event) and module.verify_detection_event(event)
+    assert event.details["observed_content_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert event.details["rule"] == "Inert_Read_Probe"
+    assert event.details["scan_complete"] is True
+    assert event.details["response_authorized"] is False
+    assert module._scan_cache
+    assert module._scan_file(scanner, path) == "scanned", module.last_error
+    assert scanned == [payload] and len(read_sizes) == 1
+    assert len(bus.recent(10)) == 1
+
+
+@pytest.mark.parametrize("mutation", ["append", "truncate"])
+def test_read_time_size_change_is_refused_before_scan_receipt_or_cache(
+    tmp_path, monkeypatch, mutation,
+):
+    from types import SimpleNamespace
+
+    from angerona.core.eventbus import BusAuthority, EventBus
+
+    path = tmp_path / "changing.bin"
+    payload = b"ANGERONA INERT READ-SIZE PROBE"
+    path.write_bytes(payload)
+    bus = EventBus()
+    bus.arm(BusAuthority(b"r" * 32))
+    module = YaraScannerModule()
+    module.bind(bus)
+    observed, scanned = [], []
+    real_fdopen = yara_scanner.os.fdopen
+
+    def read(handle, size):
+        with path.open("r+b") as writer:
+            if mutation == "append":
+                writer.seek(0, 2)
+                writer.write(b"!")
+            else:
+                writer.truncate(len(payload) - 1)
+        observed.append(path.stat().st_size)
+        return handle.read(size)
+
+    monkeypatch.setattr(
+        yara_scanner.os, "fdopen",
+        lambda *args, **kwargs: _OpenedReadProbe(real_fdopen(*args, **kwargs), read),
+    )
+
+    class Scanner:
+        def scan(self, content):
+            scanned.append(content)
+            return SimpleNamespace(matching_rules=[SimpleNamespace(identifier="Inert_Read_Probe")])
+
+    assert module._scan_file(Scanner(), path) == "failed"
+    expected_size = len(payload) + (1 if mutation == "append" else -1)
+    assert observed == [expected_size] and path.stat().st_size == expected_size
+    assert not scanned
+    assert not module._scan_cache and not module._detection_receipts
+    assert not bus.recent(10)
+    assert "size" in module.last_error

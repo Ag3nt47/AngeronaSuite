@@ -30,6 +30,7 @@ import weakref
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, TypeAlias
 
@@ -115,6 +116,109 @@ REDTEAM_COMPREHENSIVE_VALIDATION_TECHNIQUES = frozenset(
 
 class RedTeamValidationError(RuntimeError):
     """The drill validation plane could not prove it was ready."""
+
+
+class RedTeamProcessObservationReadinessError(RedTeamValidationError):
+    """A refused launch with observed diagnostics, never an inferred cause."""
+
+    def failure_evidence(self) -> dict[str, object]:
+        try:
+            return copy.deepcopy(self._observation_diagnostic)
+        except Exception:
+            return {
+                "schema": "angerona.process-fresh-observation-diagnostic.v1",
+                "diagnostic_only": True,
+                "available": False,
+                "reason": "diagnostic-unavailable",
+            }
+
+
+def _encode_process_observation_diagnostic(diagnostic: dict[str, object]) -> str:
+    """Diagnostic-only encoding seam; caller contains normal formatter errors."""
+    return json.dumps(diagnostic, sort_keys=True, separators=(",", ":"))
+
+
+def _process_observation_readiness_error(
+    message: str, *, process_module: object, request: tuple[int, int],
+) -> RedTeamValidationError:
+    # Construct the original refusal first. No diagnostic failure may replace
+    # its original class/message, or turn a refused launch into acceptance.
+    original = RedTeamValidationError(message)
+    try:
+        from angerona.modules.process_monitor import ProcessMonitorModule
+
+        diagnostic = ProcessMonitorModule.fresh_observation_diagnostic(process_module, request)
+        if diagnostic.get("available") is not True:
+            return original
+        encoded = _encode_process_observation_diagnostic(diagnostic)
+        error = RedTeamProcessObservationReadinessError(message + "; observation_diagnostic=" + encoded)
+        error._observation_diagnostic = diagnostic
+        return error
+    except Exception:
+        return original
+
+
+class ValidationLivenessReason(Enum):
+    """Bounded diagnostic vocabulary; no reason grants execution authority."""
+
+    LEASE_RELEASED = ('lease-released', None)
+    ARTIFACT_CUSTODY_FAILED = ('artifact-custody-failed', None)
+    LEASE_NOT_CONSUMED = ('lease-not-consumed', None)
+    RUN_MISMATCH = ('run-mismatch', None)
+    RUN_EXPIRED = ('run-expired', None)
+    PROCESS_EPOCH_CHANGED = ('process-epoch-changed', None)
+    MANAGER_BUS_CHANGED = ('manager-bus-changed', None)
+    REGISTRY_UNAVAILABLE = ('registry-unavailable', None)
+    PURPLE_REGISTRY_CHANGED = ('producer-registry-changed', 'purple_guard')
+    PROCESS_REGISTRY_CHANGED = ('producer-registry-changed', 'process_monitor')
+    PURPLE_BUS_CHANGED = ('producer-bus-changed', 'purple_guard')
+    PROCESS_BUS_CHANGED = ('producer-bus-changed', 'process_monitor')
+    PURPLE_STATUS_UNPROVEN = ('producer-status-not-running', 'purple_guard')
+    PURPLE_THREAD_UNPROVEN = ('producer-thread-not-proven', 'purple_guard')
+    PURPLE_HEALTH_LOW = ('producer-health-below-minimum', 'purple_guard')
+    PURPLE_GENERATION_CHANGED = ('producer-generation-changed', 'purple_guard')
+    PROCESS_STATUS_UNPROVEN = ('producer-status-not-running', 'process_monitor')
+    PROCESS_THREAD_UNPROVEN = ('producer-thread-not-proven', 'process_monitor')
+    PROCESS_FIRST_CYCLE_UNPROVEN = ('producer-first-cycle-not-proven', 'process_monitor')
+    PROCESS_HEALTH_LOW = ('producer-health-below-minimum', 'process_monitor')
+    PROCESS_OVERFLOW = ('producer-overflow-not-zero', 'process_monitor')
+    PROCESS_GENERATION_CHANGED = ('producer-generation-changed', 'process_monitor')
+
+    @property
+    def code(self) -> str:
+        return self.value[0]
+
+    @property
+    def enrolled_producer(self) -> str | None:
+        return self.value[1]
+
+
+class RedTeamProducerLivenessError(RedTeamValidationError):
+    """The first failed lease/producer predicate, without inferring a death."""
+
+    def __init__(self, reason: ValidationLivenessReason) -> None:
+        if type(reason) is not ValidationLivenessReason:
+            raise TypeError("an exact validation liveness reason is required")
+        self.reason = reason
+        message = "validation producers are no longer live; reason=" + reason.code
+        if reason.enrolled_producer is not None:
+            message += "; enrolled_producer=" + reason.enrolled_producer
+        super().__init__(message)
+
+    def failure_evidence(self) -> dict[str, str | None]:
+        """Return fixed enum values only: no keys, tokens, paths or commands."""
+        return {
+            "schema": "angerona.redteam-liveness.v1",
+            "reason": self.reason.code,
+            "enrolled_producer": self.reason.enrolled_producer,
+        }
+
+    def failure_detail(self) -> str:
+        """Fit complete typed diagnostics in the existing signed step detail."""
+        return (
+            "RedTeamValidationError: validation producers are no longer live; diagnostic="
+            + json.dumps(self.failure_evidence(), sort_keys=True, separators=(",", ":"))
+        )
 
 
 _LEASE_ISSUER = object()
@@ -1903,33 +2007,59 @@ class RedTeamValidationLease:
             )
             process_readiness = state.readiness.get("process_sensor") or {}
             modules = getattr(state.manager, "modules", {})
-            if (
-                state.released
-                or state.artifact_custody_failed
-                or not state.consumed
-                or str(run_id) != state.bound_run_id
-                or time.monotonic() > state.run_deadline_monotonic
-                or state.process_epoch != _LEASE_PROCESS_EPOCH
-                or getattr(state.manager, "bus", None) is not state.bus
-                or not isinstance(modules, dict)
-                or modules.get(state.module.name) is not state.module
-                or modules.get("Process Monitor") is not state.process_module
-                or getattr(state.module, "_bus", None) is not state.bus
-                or getattr(state.process_module, "_bus", None) is not state.bus
-                or purple.get("status") != "running"
-                or purple.get("thread_alive") is not True
-                or int(purple.get("health", 0)) < 90
-                or int(purple.get("lifecycle_generation", -1))
+            if state.released:
+                reason = ValidationLivenessReason.LEASE_RELEASED
+            elif state.artifact_custody_failed:
+                reason = ValidationLivenessReason.ARTIFACT_CUSTODY_FAILED
+            elif not state.consumed:
+                reason = ValidationLivenessReason.LEASE_NOT_CONSUMED
+            elif str(run_id) != state.bound_run_id:
+                reason = ValidationLivenessReason.RUN_MISMATCH
+            elif time.monotonic() > state.run_deadline_monotonic:
+                reason = ValidationLivenessReason.RUN_EXPIRED
+            elif state.process_epoch != _LEASE_PROCESS_EPOCH:
+                reason = ValidationLivenessReason.PROCESS_EPOCH_CHANGED
+            elif getattr(state.manager, "bus", None) is not state.bus:
+                reason = ValidationLivenessReason.MANAGER_BUS_CHANGED
+            elif not isinstance(modules, dict):
+                reason = ValidationLivenessReason.REGISTRY_UNAVAILABLE
+            elif modules.get(state.module.name) is not state.module:
+                reason = ValidationLivenessReason.PURPLE_REGISTRY_CHANGED
+            elif modules.get("Process Monitor") is not state.process_module:
+                reason = ValidationLivenessReason.PROCESS_REGISTRY_CHANGED
+            elif getattr(state.module, "_bus", None) is not state.bus:
+                reason = ValidationLivenessReason.PURPLE_BUS_CHANGED
+            elif getattr(state.process_module, "_bus", None) is not state.bus:
+                reason = ValidationLivenessReason.PROCESS_BUS_CHANGED
+            elif purple.get("status") != "running":
+                reason = ValidationLivenessReason.PURPLE_STATUS_UNPROVEN
+            elif purple.get("thread_alive") is not True:
+                reason = ValidationLivenessReason.PURPLE_THREAD_UNPROVEN
+            elif int(purple.get("health", 0)) < 90:
+                reason = ValidationLivenessReason.PURPLE_HEALTH_LOW
+            elif (
+                int(purple.get("lifecycle_generation", -1))
                 != int(state.readiness.get("sensor_generation") or -2)
-                or process.get("status") != "running"
-                or process.get("thread_alive") is not True
-                or process.get("first_cycle_complete") is not True
-                or int(process.get("health", 0)) < 50
-                or int(process.get("event_overflow_count", -1)) != 0
-                or int(process.get("lifecycle_generation", -1))
+            ):
+                reason = ValidationLivenessReason.PURPLE_GENERATION_CHANGED
+            elif process.get("status") != "running":
+                reason = ValidationLivenessReason.PROCESS_STATUS_UNPROVEN
+            elif process.get("thread_alive") is not True:
+                reason = ValidationLivenessReason.PROCESS_THREAD_UNPROVEN
+            elif process.get("first_cycle_complete") is not True:
+                reason = ValidationLivenessReason.PROCESS_FIRST_CYCLE_UNPROVEN
+            elif int(process.get("health", 0)) < 50:
+                reason = ValidationLivenessReason.PROCESS_HEALTH_LOW
+            elif int(process.get("event_overflow_count", -1)) != 0:
+                reason = ValidationLivenessReason.PROCESS_OVERFLOW
+            elif (
+                int(process.get("lifecycle_generation", -1))
                 != int(process_readiness.get("generation", -2))
             ):
-                raise RedTeamValidationError("validation producers are no longer live")
+                reason = ValidationLivenessReason.PROCESS_GENERATION_CHANGED
+            else:
+                return
+            raise RedTeamProducerLivenessError(reason)
 
     @contextmanager
     def marker_move_guard(self, path: Path):
@@ -3805,7 +3935,7 @@ class PurpleGuard(BaseModule):
     name = "Purple Remediation Guard"
     description = "Turns reviewed red-team misses into exact, rerun-verifiable detector signatures."
     category = "Detection"
-    version = "1.13.0"
+    version = "1.14.0"
     enabled_by_default = True
 
     def __init__(self, data_root: Path | None = None) -> None:
@@ -4479,9 +4609,6 @@ def acquire_redteam_validation_lease(
     )
     prior_chill = bool(getattr(module, "_chill_paused", False))
     process_prior_chill = bool(getattr(process_module, "_chill_paused", False))
-    process_baseline_cycle = int(
-        BaseModule.operational_snapshot(process_module).get("cycle_count", 0)
-    )
     process_needs_start = not bool(
         process_module.operational_snapshot().get("thread_alive")
         and process_module.status == "running"
@@ -4520,6 +4647,18 @@ def acquire_redteam_validation_lease(
             state.started_temporarily = True
             setattr(module, "_chill_paused", False)
             module.start()
+        # Rebase after a temporary start resets the cycle counter. The PID
+        # boundary is cycle 1; only completed rich observation may pass launch.
+        process_initial = BaseModule.operational_snapshot(process_module)
+        process_expected_generation = int(process_initial.get("lifecycle_generation", 0))
+        process_baseline_cycle = max(1, int(process_initial.get("cycle_count", 0)))
+        process_request = ProcessMonitorModule.request_fresh_observation(
+            process_module, expected_generation=process_expected_generation,
+        )
+        if process_request is None:
+            raise RedTeamValidationError(
+                "Process Monitor declined the current-generation observation request"
+            )
         if not module.wait_for_validation_cycle(
             required_techniques,
             after_serial=baseline,
@@ -4550,6 +4689,11 @@ def acquire_redteam_validation_lease(
                 and process_operational.get("first_cycle_complete") is True
                 and int(process_operational.get("cycle_count", 0))
                 > process_baseline_cycle
+                and int(process_operational.get("lifecycle_generation", 0))
+                == process_expected_generation
+                and ProcessMonitorModule.fresh_observation_complete(
+                    process_module, process_request,
+                )
             ):
                 break
             time.sleep(0.025)
@@ -4559,16 +4703,25 @@ def acquire_redteam_validation_lease(
             or process_operational.get("first_cycle_complete") is not True
             or int(process_operational.get("cycle_count", 0))
             <= process_baseline_cycle
+            or int(process_operational.get("lifecycle_generation", 0))
+            != process_expected_generation
+            or not ProcessMonitorModule.fresh_observation_complete(
+                process_module, process_request,
+            )
             or int(process_operational.get("health", 0)) < 50
             or int(process_operational.get("event_overflow_count", -1)) != 0
         ):
-            raise RedTeamValidationError(
+            raise _process_observation_readiness_error(
                 "Process Monitor did not prove a healthy fresh loss-free observation cycle: "
                 f"status={process_operational.get('status')}, "
                 f"health={process_operational.get('health')}, "
                 f"cycle={process_operational.get('cycle_count')}, "
                 f"baseline={process_baseline_cycle}, "
-                f"error={getattr(process_module, 'last_error', '')}"
+                f"generation={process_operational.get('lifecycle_generation')}, "
+                f"expected_generation={process_expected_generation}, "
+                f"requested_observation_complete={ProcessMonitorModule.fresh_observation_complete(process_module, process_request)}, "
+                f"error={getattr(process_module, 'last_error', '')}",
+                process_module=process_module, request=process_request,
             )
         operational = module.operational_snapshot()
         if (

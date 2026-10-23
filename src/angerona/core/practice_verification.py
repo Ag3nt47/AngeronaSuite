@@ -50,6 +50,30 @@ _PROCESS_TECHNIQUE = "T1059"
 _ENV_LOCK = threading.RLock()
 
 
+def _readiness_begin(bus, detector, responder, technique, run_id):
+    """Private, fault-isolated seam for this real practice verifier only."""
+    try:
+        from angerona.core.verified_readiness import _practice_service
+        service = _practice_service(bus)
+        if service is not None:
+            return service, service._begin_practice(detector, responder, technique, run_id)
+    except Exception:
+        pass
+    return None, None
+
+
+def _readiness_finish(binding, **evidence) -> None:
+    service, ticket = binding
+    if service is None or ticket is None:
+        return
+    try:
+        service._finish_practice(ticket, **evidence)
+    except Exception:
+        # Advisory presentation must never invalidate a completed remediation,
+        # retry a host action, or prevent the real verifier's cleanup.
+        pass
+
+
 def _emit_progress(progress: Callable[[int, str], None] | None,
                    percent: int, text: str) -> None:
     if progress is None:
@@ -244,6 +268,8 @@ def verify_practice_fixes(
         negative = root / f"_redteam_benign_note_practice_{verification_id}.txt"
         process: subprocess.Popen | None = None
         detection = response = None
+        checks = {}
+        readiness = _readiness_begin(bus, purple_guard, active_response, mitre, verification_id)
         error = ""
         base_pct = 8 + int(index / max(1, total) * 84)
         _emit_progress(progress, base_pct, f"Testing {mitre} positive control")
@@ -347,6 +373,10 @@ def verify_practice_fixes(
                 raise RuntimeError(str(verification.get("error") or "receipt rejected"))
             contract = verification.get("contract") or {}
             receipt = contract.get("verification_receipt") or {}
+            _readiness_finish(
+                readiness, bus=bus, detection=detection, response=response,
+                checks=checks, receipt_id=str(receipt.get("receipt_id") or ""),
+            )
             results.append({
                 "mitre": mitre,
                 "status": "PRACTICE_FIX_VERIFIED",
@@ -358,6 +388,10 @@ def verify_practice_fixes(
             })
         except Exception as exc:
             error = str(exc)
+            _readiness_finish(
+                readiness, bus=bus, detection=detection, response=response,
+                checks=checks, failure=error,
+            )
             results.append({
                 "mitre": mitre,
                 "status": "FIX_APPLIED_RETEST_FAILED",

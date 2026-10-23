@@ -17,6 +17,7 @@ from angerona.core.atomic_io import replace_with_retry
 from angerona.core.response_broker import (
     ResponseBroker, ResponseProposal, ResponseReceipt,
 )
+from angerona.core.approval_identity import SignedPrincipalProof
 
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{2,127}$")
 _QUERY = re.compile(r"^[a-z][a-z0-9_.-]{2,79}$")
@@ -151,6 +152,12 @@ class SafeResponseSessionManager:
         if len(audit_key) < 32:
             raise ValueError("response session key must contain at least 32 bytes")
         self._path = Path(path)
+        from angerona.core.engine_transport import private_directory
+        from angerona.core.file_lease import ExclusiveFileLease
+        private_directory(self._path.parent)
+        self._state_lease = ExclusiveFileLease(self._path.with_suffix(self._path.suffix + ".lease"))
+        self._closed = False
+        self._degraded = False
         self._key = bytes(audit_key)
         self._broker = broker
         self._clock = clock
@@ -160,7 +167,19 @@ class SafeResponseSessionManager:
         self._lock = threading.RLock()
         for query in queries:
             self.register_query(query)
-        self._load()
+        try:
+            self._load()
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self):
+        self._closed = True
+        self._state_lease.close()
+
+    def _ensure_open(self):
+        if self._closed or self._degraded or not self._state_lease.held:
+            raise PermissionError("Durable response-session authority is closed or degraded")
 
     def register_query(self, query: ReadOnlyQuery) -> None:
         if query.query_id in self._queries:
@@ -168,6 +187,7 @@ class SafeResponseSessionManager:
         self._queries[query.query_id] = query
 
     def create(self, spec: ResponseSessionSpec) -> None:
+        self._ensure_open()
         if any(query_id not in self._queries for query_id in spec.query_ids):
             raise PermissionError("response session query is not registered")
         registered = set(self._broker.registered_operation_ids())
@@ -185,39 +205,51 @@ class SafeResponseSessionManager:
             if len(self._records) >= 1_000:
                 raise ValueError("response session catalog limit reached")
             self._records[spec.session_id] = {
-                "spec": spec, "state": "draft", "approvals": set(),
+                "spec": spec, "state": "draft", "approvals": {},
                 "transcript": [],
             }
             self._save()
 
-    def approve(self, session_id: str, approver: str) -> int:
-        if not _ID.fullmatch(approver):
-            raise ValueError("invalid response-session approver")
+    def approve(self, session_id: str, approver: SignedPrincipalProof) -> int:
+        self._ensure_open()
         with self._lock:
             record = self._get(session_id)
             spec = record["spec"]
             self._expire(record)
             if record["state"] != "draft":
                 raise PermissionError("response session is not approvable")
-            if approver == spec.requested_by:
-                raise PermissionError("requester cannot approve their own session")
-            record["approvals"].add(approver)
+            self._broker.verify_approval(approver, spec.digest, spec.requested_by)
+            if len(record["approvals"]) >= 128 and approver.credential_id not in record["approvals"]:
+                raise ValueError("Session approval bound exceeded")
+            record["approvals"][approver.credential_id] = approver
             self._save()
-            return len(record["approvals"])
+            return len(self._verified_approvals(record))
 
     def open(self, session_id: str) -> None:
+        self._ensure_open()
         with self._lock:
             record = self._get(session_id)
             self._expire(record)
             if record["state"] != "draft":
                 raise ValueError("response session is not in draft")
             required = 2 if record["spec"].response_operation_ids else 1
-            if len(record["approvals"]) < required:
+            if len(self._verified_approvals(record)) < required:
                 raise PermissionError(
                     f"response session requires {required} approval(s)"
                 )
             record["state"] = "active"
             self._save()
+
+    def revoke_approvals(self, session_id: str) -> None:
+        """Protected backend revocation; retain signed evidence as history."""
+        with self._lock:
+            record = self._get(session_id)
+            record["state"] = "closed"
+            self._save()
+
+    def _verified_approvals(self, record):
+        spec = record["spec"]
+        return self._broker.verified_approvals(record["approvals"].values(), spec.digest, spec.requested_by)
 
     def query(
         self,
@@ -296,6 +328,12 @@ class SafeResponseSessionManager:
                     raise PermissionError(
                         "response session ended while query was running"
                     )
+                required = 2 if record["spec"].response_operation_ids else 1
+                if len(self._verified_approvals(record)) < required:
+                    self._append_event(record, request_id, "query", query_id, request_digest,
+                        hashlib.sha256(result_encoded).hexdigest(), "discarded-approval-revoked", False)
+                    self._save()
+                    raise PermissionError("Session approvals expired or were revoked while query was running")
                 existing = self._find_event(record, request_id)
                 if existing is not None:
                     return {
@@ -446,10 +484,14 @@ class SafeResponseSessionManager:
         )
 
     def _active(self, session_id: str) -> dict[str, Any]:
+        self._ensure_open()
         record = self._get(session_id)
         self._expire(record)
         if record["state"] != "active":
             raise PermissionError("response session is not active")
+        required = 2 if record["spec"].response_operation_ids else 1
+        if len(self._verified_approvals(record)) < required:
+            raise PermissionError("Session authenticated approvals expired, revoked or unavailable")
         return record
 
     def _expire(self, record: dict[str, Any]) -> None:
@@ -467,11 +509,20 @@ class SafeResponseSessionManager:
             raise KeyError(session_id) from exc
 
     def _save(self) -> None:
+        self._ensure_open()
+        try:
+            self._save_unchecked()
+        except BaseException:
+            self._degraded = True
+            raise
+
+    def _save_unchecked(self) -> None:
         records = {
             session_id: {
                 "spec": asdict(record["spec"]),
                 "state": record["state"],
-                "approvals": sorted(record["approvals"]),
+                "approvals": {key: asdict(proof) for key, proof in record["approvals"].items()},
+                "legacy_approval_labels": list(record.get("legacy_approval_labels", ())),
                 "transcript": [
                     asdict(event) for event in record["transcript"]
                 ],
@@ -482,7 +533,7 @@ class SafeResponseSessionManager:
             self._key, _canonical(records), hashlib.sha256
         ).hexdigest()
         encoded = _canonical({
-            "schema_version": 1, "records": records, "hmac": signature,
+            "schema_version": 2, "records": records, "hmac": signature,
         })
         if len(encoded) > MAX_STATE_BYTES:
             raise ValueError("response session state exceeds 16 MiB")
@@ -531,11 +582,14 @@ class SafeResponseSessionManager:
     def _load(self) -> None:
         if not self._path.exists():
             return
+        from angerona.core.engine_transport import verify_private
+        verify_private(self._path)
         if self._path.stat().st_size > MAX_STATE_BYTES:
             raise ValueError("response session state exceeds 16 MiB")
         value = json.loads(self._path.read_text(encoding="utf-8"))
         records = value.get("records")
-        if value.get("schema_version") != 1 or not isinstance(records, dict):
+        version = value.get("schema_version")
+        if version not in (1, 2) or not isinstance(records, dict):
             raise ValueError("response session state is invalid")
         expected = hmac.new(
             self._key, _canonical(records), hashlib.sha256
@@ -550,19 +604,24 @@ class SafeResponseSessionManager:
             )
             spec = ResponseSessionSpec(**spec_raw)
             state = raw.get("state")
-            approvals = set(raw.get("approvals", ()))
+            legacy = list(raw.get("approvals", ())) if version == 1 else list(raw.get("legacy_approval_labels", ()))
+            approvals = {} if version == 1 else {key: SignedPrincipalProof(**proof)
+                                                for key, proof in raw.get("approvals", {}).items()}
             transcript = [
                 TranscriptEvent(**event) for event in raw.get("transcript", ())
             ]
             if (
                 session_id != spec.session_id or state not in _STATES
-                or any(not _ID.fullmatch(item) for item in approvals)
+                or len(approvals) > 128 or any(not _ID.fullmatch(item) for item in legacy)
                 or len(transcript) > MAX_TRANSCRIPT
             ):
                 raise ValueError("response session record is invalid")
             if not self._verify_chain(session_id, transcript):
                 raise ValueError("response session transcript authentication failed")
+            for proof in approvals.values():
+                proof.signing_bytes()
             self._records[session_id] = {
                 "spec": spec, "state": state, "approvals": approvals,
+                "legacy_approval_labels": legacy,
                 "transcript": transcript,
             }

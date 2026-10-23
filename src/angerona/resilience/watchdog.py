@@ -70,8 +70,8 @@ def _blackbox_script():
     return p if p.exists() else None
 
 
-def _cmdline_probe(*needles: str):
-    return cached_cmdline_probe(*needles)
+def _cmdline_probe(*needles: str, expected_argv=None):
+    return cached_cmdline_probe(*needles, expected_argv=expected_argv)
 
 
 def _refresh_heartbeat(writer, token_raw: bytes | None = None):
@@ -164,9 +164,12 @@ def main(argv: list[str] | None = None) -> int:
         window="hidden",
     )
     bb = _blackbox_script()
-    if bb is not None:
+    blackbox_enabled = os.environ.get("ANGERONA_BLACKBOX_ENABLED", "1").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+    if bb is not None and blackbox_enabled:
         sup.add("blackbox", [pyw, str(bb)], window="hidden",
-                running_probe=_cmdline_probe("blackbox_recorder.py"))
+                running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)]))
 
     sup.start()   # adopt-if-alive: never double-starts what's already running
 

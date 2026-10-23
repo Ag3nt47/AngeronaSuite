@@ -23,7 +23,7 @@ class MacOSObserveModule(BaseModule):
         "preview; native Endpoint Security enforcement is reported separately."
     )
     category = "Endpoint"
-    version = "1.13.0"
+    version = "1.14.0"
     supported_platforms = SUPPORTED_PLATFORMS
     capability_mode = "observe"
     platform_requirements = (

@@ -60,7 +60,7 @@ class DynamicResourceModule(BaseModule):
         "and restores its original priority after COOLDOWN_S seconds of calm."
     )
     category = "System"
-    version = "1.13.0"
+    version = "1.14.0"
 
     @property
     def state(self) -> str:
