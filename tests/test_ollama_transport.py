@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -192,11 +193,86 @@ def test_stream_never_emits_unredacted_cross_chunk_secret(monkeypatch) -> None:
     assert "123-45-6789" not in "".join(emitted)
 
 
+def _attribute_chain(node: ast.expr) -> tuple[str, ...] | None:
+    if isinstance(node, ast.Name):
+        return (node.id,)
+    if isinstance(node, ast.Attribute):
+        parent = _attribute_chain(node.value)
+        return (*parent, node.attr) if parent is not None else None
+    return None
+
+
+def _unguarded_requests_call_lines(text: str) -> list[int]:
+    """Find explicit imported requests.get/post and requests.api calls.
+
+    This conservative syntax audit does not resolve arbitrary runtime aliases,
+    Sessions or dynamic imports, or establish complete HTTP transport policy.
+    Imported-name shadowing may require review.
+    """
+    tree = ast.parse(text)
+    modules, functions = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "requests" or (alias.name == "requests.api" and not alias.asname):
+                    name = alias.asname or "requests"
+                    modules.update(((name,), (name, "api")))
+                elif alias.name == "requests.api":
+                    modules.add((alias.asname,))
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in {"requests", "requests.api"}:
+            for alias in node.names:
+                if alias.name in {"get", "post"}:
+                    functions.add(alias.asname or alias.name)
+                elif alias.name == "api" and node.module == "requests":
+                    modules.add((alias.asname or "api",))
+                elif alias.name == "*":
+                    functions.update(("get", "post"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        chain = _attribute_chain(node.func)
+        if chain and len(chain) > 1 and chain[-1] in {"get", "post"} and chain[:-1] in modules:
+            offenders.append(node.lineno)
+        elif chain and len(chain) == 1 and chain[0] in functions:
+            offenders.append(node.lineno)
+    return sorted(offenders)
+
+
+@pytest.mark.parametrize("text", [
+    "import requests\nrequests.get('http://invalid.example')\n",
+    "import requests\nrequests . post ('http://invalid.example')\n",
+    "import requests as http\nhttp.get('http://invalid.example')\n",
+    "from requests import post\npost('http://invalid.example')\n",
+    "from requests import get as fetch\nfetch('http://invalid.example')\n",
+    "import requests.api as api\napi.post('http://invalid.example')\n",
+    "import requests.api\nrequests.api.get('http://invalid.example')\n",
+    "from requests import api as http_api\nhttp_api.post('http://invalid.example')\n",
+    "from requests.api import get as fetch\nfetch('http://invalid.example')\n",
+    "from requests import *\nget('http://invalid.example')\n",
+])
+def test_unguarded_requests_audit_recognizes_real_imported_call_forms(text) -> None:
+    assert _unguarded_requests_call_lines(text) == [2]
+
+
+@pytest.mark.parametrize("text", [
+    "# requests.get('http://invalid.example')\n",
+    "description = \"requests.post('http://invalid.example')\"\n",
+    "pending_requests = {}\npending_requests.get('stage')\n",
+    "requests = {}\nrequests.get('stage')\n",
+    "self._requests.get()\n",
+    "self.requests.get('stage')\n",
+    "import requests\nmapping = {}\nmapping.get('stage')\n",
+])
+def test_unguarded_requests_audit_ignores_text_and_unrelated_members(text) -> None:
+    assert _unguarded_requests_call_lines(text) == []
+
+
 def test_product_sources_have_no_unguarded_requests_calls() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "angerona"
     offenders = []
     for source in root.rglob("*.py"):
         text = source.read_text(encoding="utf-8", errors="replace")
-        if "requests.get(" in text or "requests.post(" in text:
-            offenders.append(str(source.relative_to(root)))
+        for line in _unguarded_requests_call_lines(text):
+            offenders.append(f"{source.relative_to(root)}:{line}")
     assert offenders == []
