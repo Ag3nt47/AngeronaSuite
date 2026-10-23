@@ -69,6 +69,8 @@ class AsyncSnapshot:
         except Exception:
             self._set_status("unavailable")
             return
+        if self._closed or self._paused:
+            return
         try:
             if self.thread is None or not self.thread.is_alive():
                 self.thread = threading.Thread(
@@ -85,6 +87,8 @@ class AsyncSnapshot:
             return
         self.busy = True
         self._set_status("updating")
+        if self._closed or self._paused:
+            return
         self._timer.setInterval(_INITIAL_POLL_MS)
         self._timer.start()
 
