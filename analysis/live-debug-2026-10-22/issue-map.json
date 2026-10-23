@@ -860,6 +860,18 @@
       "cause_or_observation": "Witness integration fixture uses ordinary writes for files governed by strict private custody; original Python 3.13 drip startup cause is unknown",
       "result_and_limits": "The c3 witness test failed on all four hosted Python versions. Python 3.10–3.12 retained an owner rejection for an ordinarily written fixture public key; fixture public keys, certificates and CA material now use strict private creation. Python 3.13 instead lacked the header-drip started event and its underlying OSError was not recorded, so that original startup cause remains unknown. The focused ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck with exact retirement. Later fixture acceptance does not causally explain or overwrite the original Python 3.13 failure, deploy an independent witness, or prove a new hosted-matrix pass.",
       "status": "fixture-custody-corrected-focused238-default29-original313-cause-unknown"
+    },
+    {
+      "id": "TST-36",
+      "cause_or_observation": "Strict TLS verification rejects the witness fixture certificate for a missing Authority Key Identifier",
+      "result_and_limits": "Published 434 failed the witness test on Python 3.13 with an explicit Missing Authority Key Identifier error. The fixture now supplies CA Subject Key Identifier/critical Key Usage and leaf Authority Key Identifiers, with strict verification explicitly enabled on every supported Python version. The applied fixture passed 40 local Python 3.12 controls with strict verification. The joint changed-source gate then passed 71 controls/no skips/native 0 and a fresh default 29-phase selfcheck, with unchanged inputs and exact retirement. These scoped results do not establish a later hosted 3.13 pass or explain c3’s older swallowed startup failure, whose cause stays unknown.",
+      "status": "strict-fixture-applied-joint71-default29-accepted-hosted-ci-unproved"
+    },
+    {
+      "id": "TST-37",
+      "cause_or_observation": "Release-fixture timeout handling discards output from the initial confinement preflight",
+      "result_and_limits": "Published 434 Python 3.13 retained 27 setup errors cascading from one 45-second confinement-paths PowerShell timeout. After the primary failure, stdout/stderr reads were skipped and temporary streams closed, leaving the original output unavailable. A later cleanup return code 1 is not the primary timeout cause. The applied helper captures failure-only bounded 2 KiB tails with explicit truncation/read faults, advisory stage and native phase/elapsed/retirement details, preserving the primary error, 45-second wait and 10-second cleanup; no retries, skips or product-installer changes. The joint gate passed 71 controls and a fresh default 29-phase selfcheck with exact retirement. A separate audit proved 21 unique real PowerShell generations retired with handles/stdio closed: 19 expected exit 0 and two intentional exit 99. Ten inert controls remain separate, including all four new cases; seven retained mock receipts are not native-process proof. Original timeout cause remains unknown after this nonreproduction, no product-installer defect is proved, and new markers are not retroactive causal evidence.",
+      "status": "diagnostic-loss-fixed-joint71-default29-accepted-original-timeout-cause-unknown"
     }
   ],
   "preserved_uncertainty": [
@@ -869,5 +881,5 @@
     "Eight module-health gaps remain in the instrumented all-eligible case; corrected classifications do not certify every diagnostic severity.",
     "Observer stage maxima need not be from one iteration and cannot attribute historical Qt stalls."
   ],
-  "review_status": "142 reviewed issues: all prior 139 objects and their order preserved. Published c3 hosted CI retained six failures in each Python 3.10–3.13 job (7612 passed/19 skipped), CI8/12 and Security3/3. Applied five-file follow-up accepted238 focused controls plus fresh default29 with exact retirement; new publication and its hosted CI remain unproved. Original Python3.13 witness startup cause and deployment gaps remain open."
+  "review_status": "144 reviewed issues: all prior 142 objects/order preserved. Published434 retained CI11/12 plus Security3/3, with one failed Python3.13 job and27 cascading setup errors. Joint changed-source71/default29 accepted with exact retirement;21 real PowerShell generations audited separately from ten inert controls. Original release timeout and older c3 startup causes stay unknown; no new hosted pass or deployment authority claimed."
 }

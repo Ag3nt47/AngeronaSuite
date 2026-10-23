@@ -2,7 +2,7 @@
   "schema": "angerona.validation-progress.v1",
   "version": "1.14.0",
   "date": "2026-10-22",
-  "status": "142 issue IDs: c3 published hosted CI failed the same six tests on each Python3.10–3.13 run (7612 passed/19 skipped); CI8/12 and Security3/3. Applied five-file repair accepted238 focused controls and fresh default29 with exact retirement. Original failures and unknown Python3.13 witness startup cause retained; upcoming repair publication and hosted CI unproved.",
+  "status": "144 issue IDs: published434 finishedCI11/12 andSecurity3/3;Python3.13 retained one failure and27 setup errors. Applied fixture follow-up accepted71 focused controls and fresh default29 with exact retirement;21 unique real PowerShell generations audited separately from ten inert controls. Original timeout and older c3 startup causes remain unknown; no new hosted pass claimed.",
   "raw_host_captures_published": false,
   "publication": {
     "state": "Preceding maintenance checkpoint15/e715 was published and its exact CI12/Security3 passed. These are historical checkpoint facts, not a current-main or later-head CI claim.",
@@ -5351,7 +5351,7 @@
     "after_minutes": 60,
     "scope": "One-line GitHub Actions Python matrix executor allowance; product deadlines unchanged. Static workflow validation and R7 workflow tests passed. No new publication or product speed claim."
   },
-  "full_regression_next_state": "Published c3 hosted full matrix completed failed: each Python3.10–3.13 recorded7612 passed/6 failed/19 skipped/native1. Applied five-file follow-up passed238 focused controls and fresh default29; these scoped source gates do not replace the original full result or establish a later hosted matrix. Historical R10 acceptance is retained for its own frozen cutoff.",
+  "full_regression_next_state": "Published434 terminalCI remains failed onlyPython3.13: one test failure plus27 cascading setup errors,7593 passed/19 skipped. Three other Python versions each7621 passed/19 skipped. Later scoped fixture71/default29 acceptance and exact retirement do not replace that failed hosted history, prove its original timeout cause or establish a later full hosted pass.",
   "queued_spyware_research": {
     "state": "QUEUED_DESIGNS_NOT_IMPLEMENTED",
     "provenance": "Parent-forwarded primary-source review; no additional independent validation claimed by this documentation task.",
@@ -5674,20 +5674,21 @@
   },
   "current_state": {
     "source_version": "1.14.0",
-    "source_head_at_applied_repair": "c3b73e0583c338fa45b764a6c5849142ff5cbc2e",
-    "root_namespace": 1853,
-    "source_after_five_file_application_sha256": "1679a6ebff860e434abc1685c5446ae3f4ec259eedd9d771d511ba7938f43d52",
-    "issue_ids": 142,
-    "prior_139_issue_objects_and_order_preserved": true,
-    "latest_completed_hosted_full": "Published c3: same six failures,7612 passes,19 skips/7637 cases/native1 in each Python3.10–3.13 job; CI8/12 and Security3/3.",
-    "latest_accepted_source_gate": "238 focused controls across eight files/0 failed/0 skipped/native0; separate fresh default29 selfcheck accepted.",
-    "latest_module_selfcheck": "29 phases PASS,0 FAIL/native0;86 module rows68PASS18 explicit optional/platform SKIP, plus separate pipeline PASS and nine verifiers. Not physical all86 runtime evidence.",
-    "next_repair_publication_sha": "UNKNOWN; no commit or publication result is supplied by these source gates.",
-    "next_repair_hosted_ci": "PENDING_NOT_PROVED",
-    "original_python313_witness_startup_cause": "UNKNOWN; original missing header-drip started event did not retain the underlying OSError.",
-    "historical_last_accepted_full": "Frozen R10 accepted7554/0/49 for its own snapshot; later141/default29 acceptance is separate.",
+    "source_head_at_fixture_followup": "43417d51df89b740d8a7b085517cb3ba2afc7236",
+    "root_namespace": 1854,
+    "source_after_release_diagnostics_application_sha256": "b10e1abaf02ffbc92754ad6369045e09de6ea9949af82a27932e5d8edae48093",
+    "issue_ids": 144,
+    "prior_142_issue_objects_and_order_preserved": true,
+    "latest_completed_hosted_full": "434:CI11/12 andSecurity3/3;Python3.10–3.12 each7621PASS19SKIP/native0;3.13 oneFAIL7593PASS19SKIP27SETUPERRORS/native1.",
+    "latest_focused_source_gate": "71PASS0FAIL0SKIP/native0; strict witness40 plus original release27 plus four new inert diagnostic controls.",
+    "latest_module_selfcheck": "Fresh default29PASS0FAIL/native0;86 module rows68PASS18SKIP plus separatePipelinePASS and nine verifiers. Not all86 physical runtime proof.",
+    "native_powershell_receipts": "21 unique real generations retired/handles+stdio closed:19 expected0 and two intentional99. Ten inert controls separate; seven retained mock receipts are not physical proof.",
+    "original_release_timeout_cause": "UNKNOWN; passing later controls is a nonreproduction, and new output markers do not reconstruct discarded original output.",
+    "older_c3_witness_startup_cause": "UNKNOWN;434 Missing Authority Key Identifier evidence is not retroactive proof.",
     "source_activation": "ALWAYS HELD",
-    "scope": "Actual c3 hosted failure history plus accepted follow-up source validation. This record does not assert current global main, a new hosted pass, signed installation, independent witness deployment, all-module physical efficacy or a performance improvement."
+    "new_publication_sha": "UNKNOWN_NOT_SUPPLIED",
+    "new_hosted_ci": "NOT_PROVED",
+    "scope": "Actual434 hosted failure history plus accepted scoped fixture follow-up. No current global-main assertion, new full hosted pass, installer-defect attribution, independent authority deployment or signed activation."
   },
   "public_requests_audit_backport": {
     "issue": "TST-30",
@@ -6039,5 +6040,205 @@
       "AUTH-06",
       "TST-35"
     ]
+  },
+  "ci434_fixture_followup": {
+    "state": "APPLIED_FOCUSED71_DEFAULT29_ACCEPTED_ORIGINAL_HOSTED_FAILURES_RETAINED",
+    "issue_ids": [
+      "TST-36",
+      "TST-37"
+    ],
+    "hosted_ci": {
+      "commit": "43417d51df89b740d8a7b085517cb3ba2afc7236",
+      "ci_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683336",
+      "ci_result": "failure",
+      "successful_jobs": 11,
+      "failed_jobs": 1,
+      "total_jobs": 12,
+      "security_url": "https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683286",
+      "security_result": "success",
+      "successful_security_jobs": 3,
+      "python_matrix": [
+        {
+          "python": "3.10",
+          "passed": 7621,
+          "failed": 0,
+          "skipped": 19,
+          "setup_errors": 0,
+          "collected": 7640,
+          "native_exit": 0,
+          "seconds": 1399.85
+        },
+        {
+          "python": "3.11",
+          "passed": 7621,
+          "failed": 0,
+          "skipped": 19,
+          "setup_errors": 0,
+          "collected": 7640,
+          "native_exit": 0,
+          "seconds": 1369.98
+        },
+        {
+          "python": "3.12",
+          "passed": 7621,
+          "failed": 0,
+          "skipped": 19,
+          "setup_errors": 0,
+          "collected": 7640,
+          "native_exit": 0,
+          "seconds": 1374.24
+        },
+        {
+          "python": "3.13",
+          "passed": 7593,
+          "failed": 1,
+          "skipped": 19,
+          "setup_errors": 27,
+          "collected": 7640,
+          "native_exit": 1,
+          "seconds": 913.32
+        }
+      ],
+      "terminal_proof_sha256": "0778c0ab7dfbf4402412626a9e5086293afe6a7a20497e8cefb5a242f27baea0"
+    },
+    "strict_certificate_fixture": {
+      "state": "ROOT_APPLIED_LOCAL_STRICT40_ACCEPTED",
+      "source_path": "tests/test_ugcap_witness.py",
+      "source_sha256": "968961086b395ded80b216f6fa483bde1469e143707747e34950c074ac25edc6",
+      "result_sha256": "e51b5d018ab894377b814b4515abc98ad621bca9b60b945ae59fcca3994fb069",
+      "passed": 40,
+      "failed": 0,
+      "skipped": 0,
+      "native_exit": 0,
+      "junit_seconds": 39.501,
+      "seconds": 45.063,
+      "scope": "Local Python3.12 with explicit strict verification. Actual434 Missing Authority Key Identifier cause is proven; c3 original swallowed startup cause remains unknown. No new hosted3.13 pass follows.",
+      "unchanged_source_head_index_runtime_freeze": true,
+      "two_same_generation_wait_object_0": true,
+      "both_native_exit_codes": [
+        0,
+        0
+      ],
+      "four_handles_closed": true,
+      "threads_at_atexit": [
+        "MainThread"
+      ],
+      "qapplication_none": true,
+      "top_level_widgets": 0
+    },
+    "release_fixture_diagnostics": {
+      "state": "APPLIED_JOINT71_DEFAULT29_ACCEPTED_TIMEOUT_CAUSE_UNKNOWN",
+      "source_files": [
+        {
+          "path": "tests/test_release_upgrade_preservation.py",
+          "sha256": "5ff87a7ad99462c664c595e67400b309b8e07b368a9c3de4463bd583d667780b"
+        },
+        {
+          "path": "tests/test_release_upgrade_diagnostics.py",
+          "sha256": "ba8438662e26e12511007f411c0d8ef052a9866795b1cbab17c9224f75b34ed9"
+        }
+      ],
+      "application_result_sha256": "bd751e0b51616c9e90171f098e897143d519959abdc8abd19e7c45d5889a7e07",
+      "source_entries": 1854,
+      "source_after_sha256": "b10e1abaf02ffbc92754ad6369045e09de6ea9949af82a27932e5d8edae48093",
+      "failure_tail_bytes_each": 2048,
+      "rendered_note_tail_characters_each": 256,
+      "primary_wait_seconds": 45,
+      "owned_cleanup_wait_seconds": 10,
+      "receipt_bytes": 65536,
+      "release_controls": 31,
+      "actual_powershell_controls": 21,
+      "inert_controls": 10,
+      "new_inert_controls": 4,
+      "original_setup_errors": 27,
+      "original_timeout_cause": "UNKNOWN; original stdout/stderr were discarded on the primary-failure path.",
+      "product_installer_changed": false,
+      "retry_or_skip_policy_changed": false,
+      "new_markers_are_retroactive_cause_proof": false
+    },
+    "joint_focused_acceptance": {
+      "state": "ACCEPTED_SAME_SOURCE_THREE_FILE_FOCUSED_GATE",
+      "result_sha256": "95e6cceb63179194d8135c72146d1280396512f36f279e7efa4bc44e83682c9b",
+      "passed": 71,
+      "failed": 0,
+      "skipped": 0,
+      "collected": 71,
+      "native_exit": 0,
+      "acceptance_complete": true,
+      "seconds": 91.391,
+      "junit_seconds": 87.93,
+      "cohorts": {
+        "strict_witness": 40,
+        "original_release": 27,
+        "new_inert_diagnostics": 4
+      },
+      "actual_root_origins": [
+        "angerona.core.ugcap_witness",
+        "tools.ugcap_witness_server"
+      ],
+      "source_head_logical_and_physical_index_runtime_harness_unchanged": true,
+      "two_same_generation_wait_object_0": true,
+      "both_native_exit_codes": [
+        0,
+        0
+      ],
+      "four_handles_closed": true,
+      "threads_at_atexit": [
+        "MainThread"
+      ],
+      "qapplication_none": true,
+      "top_level_widgets": 0,
+      "scope": "Focused source validation only; successful rerun does not prove the original45-second timeout cause or a later hosted CI pass."
+    },
+    "default_selfcheck": {
+      "state": "ACCEPTED_FRESH_DEFAULT_ISOLATED_PROFILE",
+      "result_sha256": "4c5451c3ed2d3f99af0361bda61fab7cee06032c914b3bfcf71fb81de1e5eccf",
+      "passed_phases": 29,
+      "failed_phases": 0,
+      "native_exit": 0,
+      "acceptance_complete": true,
+      "seconds": 34.953,
+      "module_rows": 86,
+      "module_passed": 68,
+      "module_skipped": 18,
+      "separate_pipeline": "PASS",
+      "verifiers": 9,
+      "teardown": {
+        "widget_owners": 13,
+        "readers": 13,
+        "python_workers": 8,
+        "qt_workers": 0
+      },
+      "source_head_logical_and_physical_index_runtime_harness_unchanged": true,
+      "two_same_generation_wait_object_0": true,
+      "both_native_exit_codes": [
+        0,
+        0
+      ],
+      "four_handles_closed": true,
+      "threads_at_atexit": [
+        "MainThread"
+      ],
+      "qapplication_none": true,
+      "top_level_widgets": 0,
+      "scope": "Explicit optional/platform skips remain; separate pipeline is not a69th module pass. Not all86 physical runtime proof."
+    },
+    "new_publication_sha": "UNKNOWN_NOT_SUPPLIED",
+    "new_hosted_ci": "NOT_PROVED",
+    "limits": "Scoped source changes and original hosted failures remain separate. No new full hosted pass, product-installer defect attribution, independent witness deployment, signed activation or performance claim.",
+    "native_powershell_receipt_audit": {
+      "summary_sha256": "9c4e36b0f339b4aa30831a9cde104adf844a1d06eeb2d3c51c70d9e6dad31674",
+      "actual_unique_native_generations": 21,
+      "all_retired_with_handles_and_stdio_closed": true,
+      "all_native_exit_codes_match_popen": true,
+      "expected_native_exit_zero": 19,
+      "intentional_abrupt_exit_99": 2,
+      "original_inert_controls": 6,
+      "new_inert_controls": 4,
+      "total_inert_controls": 10,
+      "retained_inert_receipts": 7,
+      "inert_receipts_are_native_process_proof": false,
+      "scope": "Two unchanged abrupt-interruption tests intentionally require exit99. Some inert failure controls deliberately produce no receipt. Historical timeout cause remains UNKNOWN."
+    }
   }
 }

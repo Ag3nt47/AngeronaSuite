@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 
 import pytest
 
@@ -21,10 +23,17 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows installer fixtures")
 _PENDING_OWNED_CHILDREN: list[subprocess.Popen] = []
+_FAILURE_STREAM_BYTES = 2048
 
 
 HARNESS = r"""
 $ErrorActionPreference = 'Stop'
+# Fixed advisory markers only; no approval, mutation or timing authority.
+function Write-FixtureStage([string]$Stage) {
+    [Console]::Error.WriteLine('ANGERONA_FIXTURE_STAGE=' + $Stage)
+    [Console]::Error.Flush()
+}
+Write-FixtureStage 'harness-entry'
 function Assert-LocalCanonicalFixturePath([string]$Path) {
     $full = [IO.Path]::GetFullPath($Path)
     if ($Path -notmatch '^[A-Za-z]:\\' -or $Path.Contains('/') -or
@@ -72,6 +81,7 @@ function Assert-LocalCanonicalFixturePath([string]$Path) {
     }
 }
 $fixture = $env:ANGERONA_TEST_FIXTURE
+Write-FixtureStage 'initial-path-guard'
 Assert-LocalCanonicalFixturePath $fixture
 $fixture = [IO.Path]::GetFullPath($fixture)
 $fixturePrefix = $fixture.TrimEnd('\') + '\'
@@ -90,10 +100,12 @@ if ($PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -n
 $release = Join-Path $fixture 'parent-release.marker'
 Assert-FixturePath $release
 $releaseWait = [Diagnostics.Stopwatch]::StartNew()
+Write-FixtureStage 'parent-admission-wait'
 while (-not [IO.File]::Exists($release)) {
     if ($releaseWait.Elapsed.TotalSeconds -gt 10) { throw 'Parent did not admit this exact child.' }
     [Threading.Thread]::Sleep(10)
 }
+Write-FixtureStage 'parent-admission-observed'
 if ($env:ANGERONA_TEST_CASE -like 'confinement-*') {
     $originalFixture = $fixture
     $originalPrefix = $fixturePrefix
@@ -104,11 +116,15 @@ if ($env:ANGERONA_TEST_CASE -like 'confinement-*') {
             (Join-Path $fixture 'alias~1'),
             (Join-Path $fixture 'missing\..\escape'),
             (Join-Path ([IO.Path]::GetDirectoryName($fixture)) 'outside'))
+        $probeNumber = 0
         foreach ($probe in $probes) {
+            Write-FixtureStage ('confinement-probe-' + $probeNumber + '-start')
             $refused = $false
             try { Assert-FixturePath $probe } catch { $refused = $true }
             if (-not $refused) { throw "Negative path probe was admitted: $probe" }
             $rejections.Add($probe)
+            Write-FixtureStage ('confinement-probe-' + $probeNumber + '-done')
+            $probeNumber++
         }
     } else {
         $probeTarget = Join-Path $fixture 'probe-target'
@@ -145,6 +161,7 @@ if ($env:ANGERONA_TEST_CASE -like 'confinement-*') {
             $fixturePrefix = $originalPrefix
         }
     }
+    Write-FixtureStage 'confinement-result-write'
     $probeResult = Join-Path $fixture 'confinement-result.json'
     Assert-FixturePath $probeResult
     [IO.File]::WriteAllText($probeResult, ([pscustomobject]@{
@@ -153,6 +170,7 @@ if ($env:ANGERONA_TEST_CASE -like 'confinement-*') {
         product_functions_loaded = $false
         recursive_removal_executed = $false
     } | ConvertTo-Json -Depth 4 -Compress))
+    Write-FixtureStage 'confinement-done'
     [Environment]::Exit(0)
 }
 $target = Join-Path $fixture 'target'
@@ -502,6 +520,70 @@ def _write_native_retirement(fixture: Path, proof: dict) -> None:
     _assert_local_canonical_path(evidence, fence=fixture)
 
 
+def _capture_failure_stream(stream, *, limit: int = _FAILURE_STREAM_BYTES) -> dict:
+    """Read only a bounded tail of our own regular temporary file."""
+    if stream is None:
+        return {"state": "not_created", "retained_bytes": 0, "truncated": False}
+    try:
+        stream.seek(0, os.SEEK_END)
+        total = stream.tell()
+        if type(total) is not int or total < 0:
+            raise ValueError("Diagnostic stream length is invalid")
+        stream.seek(max(0, total - limit))
+        raw = stream.read(limit + 1)
+        if not isinstance(raw, bytes):
+            raise TypeError("Diagnostic stream did not return bytes")
+        grew = len(raw) > limit
+        raw = raw[:limit]
+        text = raw.decode("utf-8", "replace")
+        stages = re.findall(r"(?m)^ANGERONA_FIXTURE_STAGE=([a-z0-9-]{1,80})[ \t\r]*$", text)
+        return {
+            "state": "captured", "observed_total_bytes": total, "retained_bytes": len(raw),
+            "limit_bytes": limit, "truncated": total > len(raw) or grew,
+            "grew_during_read": grew, "sha256": hashlib.sha256(raw).hexdigest(),
+            "encoding": "utf-8-replace", "text": text,
+            "last_advisory_stage": stages[-1] if stages else None,
+        }
+    except BaseException as error:
+        return {"state": "unavailable", "retained_bytes": 0, "limit_bytes": limit,
+                "read_error": _bounded_native_error(error), "truncated": "UNPROVED"}
+
+
+def _surface_failure_evidence(primary: BaseException, proof: dict, fixture: Path) -> None:
+    """Expose bounded fixture-only evidence even when CI drops pytest temp files."""
+    try:
+        capture = proof.get("failure_capture", {})
+        summary = {
+            "kind": "angerona.owned-ps5-failure.v1", "failure_phase": proof["failure_phase"],
+            "primary_error": _bounded_native_error(primary)[:256], "elapsed_seconds": proof["elapsed_seconds"],
+            "native_execution_wait_seconds": proof["native_execution_wait_seconds"],
+            "retirement_proven": proof["retirement_proven"], "wait_status": proof["wait_status"],
+            "native_exit_after_cleanup": proof["native_exit"],
+            "owned_termination_requested": proof["owned_termination_requested"],
+            "closed_handles": proof["closed_handles"],
+            "receipt": str(fixture / "native-retirement.json")[-512:],
+            "receipt_error": _bounded_native_error(primary.angerona_receipt_error)[:256]
+                             if hasattr(primary, "angerona_receipt_error") else None,
+            "capture": {},
+            "advisory_only": True, "original_timeout_cause": "UNKNOWN",
+        }
+        for name in ("stdout", "stderr"):
+            row = capture.get(name, {})
+            summary["capture"][name] = {key: row.get(key) for key in (
+                "state", "observed_total_bytes", "retained_bytes", "limit_bytes",
+                "truncated", "last_advisory_stage")}
+            summary["capture"][name]["text_tail"] = row.get("text", "")[-256:]
+            summary["capture"][name]["read_error"] = row.get("read_error", "")[:256]
+        note = "ANGERONA_OWNED_PS5_FAILURE=" + json.dumps(summary, sort_keys=True, ensure_ascii=True)
+        add_note = getattr(primary, "add_note", None)
+        if callable(add_note):
+            add_note(note)
+        else:  # Python 3.10 has no BaseException.add_note.
+            print(note, file=sys.stderr, flush=True)
+    except BaseException as error:
+        primary.angerona_diagnostic_note_error = error
+
+
 def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Path,
                    fixture: Path, executable_sha256: str) -> subprocess.CompletedProcess[str]:
     """Capture the first failure before independent native/stream cleanup.
@@ -510,6 +592,8 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
     process-handle closure is unproved. Every created stream receives its own
     close attempt before the bounded durable receipt and any explicit rethrow.
     """
+    started = time.monotonic()
+    execution_wait_started = None
     executable = Path(command[0])
     _assert_local_canonical_path(tmp_path)
     release = fixture / "parent-release.marker"
@@ -528,6 +612,7 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
         "native_exit": "UNPROVED", "popen_exit": "UNPROVED",
         "executable_sha256": "UNPROVED", "handle_closed": "UNPROVED",
         "stdio_closed": "UNPROVED", "spawn_attempted": False,
+        "owned_termination_requested": False,
         "streams_created": {"stdout": False, "stderr": False},
         "stream_closed": {"stdout": "UNPROVED", "stderr": "UNPROVED"},
     }
@@ -563,12 +648,16 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
             marker.write("admitted-owned-process")
         proof.update(admission_state="admitted", admission_completed=True)
         phase = "native_execution_wait"
+        execution_wait_started = time.monotonic()
         process.wait(timeout=45)
     except BaseException as error:
         primary, failure_phase = error, phase
+    execution_wait_seconds = (max(0.0, time.monotonic() - execution_wait_started)
+                              if execution_wait_started is not None else None)
     if process is not None:
         try:
             if process.poll() is None:
+                proof["owned_termination_requested"] = True
                 process.kill()  # Only this retained Popen/native handle.
                 process.wait(timeout=10)
             proof["popen_exit"] = process.returncode
@@ -620,6 +709,13 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
             stderr = errors.read().decode("utf-8", "replace")
         except BaseException as error:
             primary, failure_phase = error, "captured_stream_read"
+    if primary is not None:
+        proof["failure_capture"] = {
+            "diagnostic_only": True, "captured_after_retirement_attempt": True,
+            "writer_retirement_proven": retired,
+            "stdout": _capture_failure_stream(output),
+            "stderr": _capture_failure_stream(errors),
+        }
     # Each owner is closed independently. No context-manager unwinding can
     # replace a captured creation/spawn/admission/wait/read failure.
     for name, stream in (("stdout", output), ("stderr", errors)):
@@ -643,6 +739,8 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
         failure_phase=failure_phase, retirement_errors=list(retirement_errors),
         stream_close_errors=list(stream_close_errors),
         primary_error=_bounded_native_error(primary) if primary is not None else "none",
+        elapsed_seconds=max(0.0, time.monotonic() - started),
+        native_execution_wait_seconds=execution_wait_seconds,
         closed_handles={"process": proof["handle_closed"], "stdio": proof["stdio_closed"]},
     )
     try:
@@ -656,6 +754,8 @@ def _run_owned_ps5(command: list[str], environment: dict[str, str], tmp_path: Pa
         primary.angerona_retirement_errors = retirement_errors
         primary.angerona_stream_close_errors = stream_close_errors
         primary.angerona_owned_child = proof
+        primary.angerona_failure_capture = proof.get("failure_capture", {})
+        _surface_failure_evidence(primary, proof, fixture)
         raise primary
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 

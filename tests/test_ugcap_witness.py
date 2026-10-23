@@ -438,6 +438,12 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
           .public_key(ca_key.public_key()).serial_number(x509.random_serial_number())
           .not_valid_before(now - dt.timedelta(minutes=1)).not_valid_after(now + dt.timedelta(days=1))
           .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+          .add_extension(x509.SubjectKeyIdentifier.from_public_key(ca_key.public_key()), critical=False)
+          .add_extension(x509.KeyUsage(
+              digital_signature=False, content_commitment=False,
+              key_encipherment=False, data_encipherment=False,
+              key_agreement=False, key_cert_sign=True, crl_sign=True,
+              encipher_only=False, decipher_only=False), critical=True)
           .sign(ca_key, hashes.SHA256()))
 
     def certificate(name, usage, *, ip=False):
@@ -446,6 +452,8 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
             x509.NameAttribute(NameOID.COMMON_NAME, name)])).issuer_name(ca_name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - dt.timedelta(minutes=1)).not_valid_after(now + dt.timedelta(days=1))
+            .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()),
+                           critical=False)
             .add_extension(x509.ExtendedKeyUsage([usage]), critical=False))
         if ip:
             builder = builder.add_extension(x509.SubjectAlternativeName([
@@ -465,6 +473,8 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(server_path, server_key)
     context.verify_mode = ssl.CERT_REQUIRED
+    # Exercise Python 3.13's stricter certificate defaults on every test runtime.
+    context.verify_flags |= ssl.VERIFY_X509_STRICT
     context.load_verify_locations(cafile=str(ca_path))
     handler = handler_for(witness.authority, request_timeout=1.0)
     server = WitnessHTTPServer(("127.0.0.1", 0), handler, tls_context=context)
@@ -490,6 +500,7 @@ def test_actual_private_mtls_pin_before_request_and_native_shutdown(witness, mon
         # Complete bounded client setup before measuring the drip worker's
         # first-byte readiness; setup failures must reach the test directly.
         drip_context = ssl.create_default_context(cafile=str(ca_path))
+        drip_context.verify_flags |= ssl.VERIFY_X509_STRICT
         drip_context.load_cert_chain(str(client_path), str(client_key))
         drip_raw = socket.create_connection(("127.0.0.1", server.server_port), timeout=2)
         try:

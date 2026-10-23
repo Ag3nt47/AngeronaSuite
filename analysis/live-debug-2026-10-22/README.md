@@ -21,37 +21,39 @@ providers' active-path, cancellation, executable, storage and offline limits.
 
 ## Current source and hosted CI evidence (2026-10-23)
 
-Published v1.14 commit [c3b73e0](https://github.com/Ag3nt47/AngeronaSuite/commit/c3b73e0583c338fa45b764a6c5849142ff5cbc2e)
-completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424262)
-with eight successful jobs and four failed Python jobs. Every Python 3.10–3.13
-job recorded 7,612 passes, six failures and 19 skips across 7,637 cases/native 1.
-[Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39947424183)
-passed all three jobs; that does not make CI green. The six node failures belong
-to three families: hidden-child guard ordering (TST-34), response-session private
-file ownership and its legacy fixture (AUTH-06), and witness fixture custody
-(TST-35). The original Python 3.13 header-drip startup cause remains unknown:
-its underlying OSError was not recorded. No later result overwrites this history.
+Published [43417d5](https://github.com/Ag3nt47/AngeronaSuite/commit/43417d51df89b740d8a7b085517cb3ba2afc7236)
+completed [CI](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683336)
+with 11 successful jobs and one failed Python 3.13 job; [Security](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/39953683286)
+passed all three. Python 3.10–3.12 each recorded 7,621 passes/19 skips across
+7,640 cases/native 0. Python 3.13 retained one failure, 7,593 passes, 19 skips
+and 27 setup errors/native 1. Security success does not make CI green.
 
-The applied five-file follow-up passed 238 controls across eight test files
-(64.223 seconds JUnit/67.968 outer), then a fresh default 29-phase selfcheck
-(36.265 seconds outer). Both accepted gates preserved the 1,853-entry source,
-HEAD, logical and physical index, runtime and harness. Each retired both exact
-process generations with native 0 and four closed handles, MainThread only,
-no QApplication and zero widgets. The selfcheck reconciled 68 passed and 18
-explicitly skipped module rows, plus a separate passing pipeline and nine
-verifiers; 13 widget owners, 13 readers and eight Python workers retired.
-These are scoped source checks, not a new hosted full-matrix pass, all-module
-physical runtime evidence or a speed benchmark. At this source-validation cutoff,
-no follow-up publication SHA or hosted CI result was claimed.
+The explicit TLS error proves the 434 witness fixture lacked an Authority Key
+Identifier (TST-36). Its standards-compliant correction passed 40 local Python
+3.12 controls with strict verification. This does not explain c3’s older
+swallowed witness startup failure; that original cause remains unknown.
+The 27 release setup errors cascade from one initial 45-second confinement
+preflight timeout. Its original output was discarded, so the underlying timeout
+cause remains unknown (TST-37). The helper now retains bounded failure output
+and advisory stage/retirement details without changing waits, retry/skip policy
+or the product installer. New markers do not recover old output or prove cause.
 
-The earlier frozen full R10 accepted 7,554/0/49 across 7,603 cases for its own
-source cutoff; later installer/tooltip work separately passed 141 controls and
-a default 29-phase selfcheck. Original R7/R6c/CI 14/a74 failures, unknown causes
-and deployment gaps remain preserved below and in validation. Registry: 142
-unique IDs, with all prior 139 objects and their order retained. Daily checks
-default OFF, and source activation remains ALWAYS HELD. No independent witness
-deployment, signed installation, new DOCX acceptance or performance improvement
-is established by these regression results.
+The joint ROOT gate passed 71 controls/no skips/native 0 (87.930 seconds JUnit/
+91.391 outer), followed by a fresh default 29-phase selfcheck (34.953 seconds).
+Both preserved source 1,854/HEAD 434, logical and physical indices, runtime and
+harness; both exact process generations retired/native 0 with four handles closed,
+MainThread only, no QApplication and zero widgets. Selfcheck accounted for 68
+passed and 18 skipped module rows, plus a separate passing pipeline/nine verifiers;
+13 widget owners, 13 readers and eight Python workers retired. The native receipt
+audit proved 21 unique real PowerShell generations retired with handles/stdio
+closed: 19 expected exit 0 and two intentional exit 99. Ten inert controls remain
+separate, including all four new cases; seven mock receipts are not native proof.
+
+All prior 142 issue objects/order remain; the two new entries bring the register
+to 144. These source gates are a nonreproduction of the original timeout, not
+a causal repair or a new hosted CI pass. Original c3/R7/R6c failure history and
+deployment gaps remain preserved. No signed deployment, independent witness
+deployment or trusted activation is established by this source-validation cutoff.
 
 ## Issue map
 
@@ -199,6 +201,8 @@ is established by these regression results.
 | TST-34 | Hidden-child no-run refusal occurs after resolving a nonexistent venv interpreter | All four c3 hosted Python jobs failed the same hidden-child refusal test. Source ordering reached strict interpreter resolution before the explicit no-run guard. The applied guard now rejects the hidden child before runtime preparation; explicit missing-venv controls retain that boundary. The eight-file ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck, with unchanged inputs and exact retirement. This scoped result does not replace the original c3 failures or establish a new hosted-matrix pass. |
 | AUTH-06 | Fresh response-session files can receive a Windows default owner that fails strict token-user custody | Four safe-response-session tests failed in every c3 hosted Python job. The source repair creates new private files through the existing strict creator with token-user ownership; owner verification is not relaxed. The legacy saved-label fixture now uses the same strict private-file creation while its labels remain history without execution authority. The eight-file ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck, including the authority and revocation boundaries, with exact retirement. No host-compromise incident or later hosted-CI success is inferred. |
 | TST-35 | Witness integration fixture uses ordinary writes for files governed by strict private custody; original Python 3.13 drip startup cause is unknown | The c3 witness test failed on all four hosted Python versions. Python 3.10–3.12 retained an owner rejection for an ordinarily written fixture public key; fixture public keys, certificates and CA material now use strict private creation. Python 3.13 instead lacked the header-drip started event and its underlying OSError was not recorded, so that original startup cause remains unknown. The focused ROOT successor passed 238 controls/no skips/native 0 and a fresh default 29-phase selfcheck with exact retirement. Later fixture acceptance does not causally explain or overwrite the original Python 3.13 failure, deploy an independent witness, or prove a new hosted-matrix pass. |
+| TST-36 | Strict TLS verification rejects the witness fixture certificate for a missing Authority Key Identifier | Published 434 failed the witness test on Python 3.13 with an explicit Missing Authority Key Identifier error. The fixture now supplies CA Subject Key Identifier/critical Key Usage and leaf Authority Key Identifiers, with strict verification explicitly enabled on every supported Python version. The applied fixture passed 40 local Python 3.12 controls with strict verification. The joint changed-source gate then passed 71 controls/no skips/native 0 and a fresh default 29-phase selfcheck, with unchanged inputs and exact retirement. These scoped results do not establish a later hosted 3.13 pass or explain c3’s older swallowed startup failure, whose cause stays unknown. |
+| TST-37 | Release-fixture timeout handling discards output from the initial confinement preflight | Published 434 Python 3.13 retained 27 setup errors cascading from one 45-second confinement-paths PowerShell timeout. After the primary failure, stdout/stderr reads were skipped and temporary streams closed, leaving the original output unavailable. A later cleanup return code 1 is not the primary timeout cause. The applied helper captures failure-only bounded 2 KiB tails with explicit truncation/read faults, advisory stage and native phase/elapsed/retirement details, preserving the primary error, 45-second wait and 10-second cleanup; no retries, skips or product-installer changes. The joint gate passed 71 controls and a fresh default 29-phase selfcheck with exact retirement. A separate audit proved 21 unique real PowerShell generations retired with handles/stdio closed: 19 expected exit 0 and two intentional exit 99. Ten inert controls remain separate, including all four new cases; seven retained mock receipts are not native-process proof. Original timeout cause remains unknown after this nonreproduction, no product-installer defect is proved, and new markers are not retroactive causal evidence. |
 
 ## Testing loop
 
