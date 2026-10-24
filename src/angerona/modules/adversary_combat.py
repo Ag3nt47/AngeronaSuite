@@ -2333,6 +2333,23 @@ class AdversaryCombat(BaseModule):
                 "recovery rollback anchor could not be committed"
             ) from exc
 
+    @contextmanager
+    def _recovery_anchor_transaction(self) -> Iterator[None]:
+        """Admit protected-store publication before a journal phase is durable.
+
+        Keep the existing credential transaction through anchor and witness
+        publication. Its bounded admission must fail before journal append,
+        rather than manufacturing a checkpoint gap during ordinary contention.
+        Storage failures after append still require authenticated recovery.
+        """
+        if self._rollback_anchor_override is not None:
+            yield
+            return
+        from angerona.core.secure_store import secret_transaction
+
+        with secret_transaction(self.data_root):
+            yield
+
     def _decode_recovery_anchor(self, raw: str) -> dict[str, Any]:
         value = self._bounded_authority_json(
             raw,
@@ -3569,7 +3586,10 @@ class AdversaryCombat(BaseModule):
         """Append one authenticated, chained, fsynced journal phase."""
         with self._receipt_lock:
             with self._journal_writer_lease():
-                with self._pinned_journal_session(create=True):
+                with (
+                    self._pinned_journal_session(create=True),
+                    self._recovery_anchor_transaction(),
+                ):
                     try:
                         records = self._validated_active_journal_cache()
                         if records is None:
@@ -3899,9 +3919,10 @@ class AdversaryCombat(BaseModule):
             self._append_undo_phase(
                 "undo_intent", orphan, undo_id, recovery=True
             )
-        except Exception:
+        except Exception as exc:
             self._trip_mutation_circuit(
-                orphan, "uncertain mutation rollback intent was not durable"
+                orphan, "uncertain mutation rollback intent was not durable",
+                cause=exc,
             )
             return
         ok, rollback_error = self._undo_record(orphan)
@@ -3926,7 +3947,8 @@ class AdversaryCombat(BaseModule):
         )
 
     def _trip_mutation_circuit(
-        self, record: dict[str, Any], reason: str
+        self, record: dict[str, Any], reason: str,
+        *, cause: BaseException | None = None,
     ) -> None:
         """Disarm all later mutation until this exact orphan is recovered."""
         action_id = str(record.get("action_id") or "")
@@ -3935,6 +3957,39 @@ class AdversaryCombat(BaseModule):
         self._mutation_blocked = True
         self._journal_error = str(reason)[:1000]
         self.set_health(0, "RECOVERY REQUIRED — Combat mutation circuit open")
+        # Original private alerts retain a bounded typed cause for this failure
+        # boundary. Exception messages, paths, credentials and frame locals are
+        # deliberately excluded; this detail grants no response authority.
+        cause_types: list[str] = []
+        cause_codes: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        while isinstance(cause, BaseException) and len(cause_types) < 4:
+            if id(cause) in seen:
+                break
+            seen.add(id(cause))
+            name = type(cause).__name__
+            cause_types.append(
+                name if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", name)
+                else "Exception"
+            )
+            diagnostic: dict[str, Any] = {"cause_index": len(cause_types) - 1}
+            for field, allowed_codes in (("winerror", {5, 32, 33}),
+                                         ("errno", {1, 5, 13, 16, 26, 28})):
+                try:
+                    value = getattr(cause, field, None)
+                except Exception:
+                    value = None
+                if type(value) is int and value in allowed_codes:
+                    diagnostic[field] = value
+            try:
+                boundary = getattr(cause, "angerona_write_boundary", None)
+            except Exception:
+                boundary = None
+            if type(boundary) is str and boundary == "credential-atomic-replace":
+                diagnostic["boundary"] = boundary
+            if len(diagnostic) > 1:
+                cause_codes.append(diagnostic)
+            cause = cause.__cause__
         self.emit(
             "Adversary Combat disarmed itself after a mutation could not be "
             "durably committed or immediately rolled back. No later response "
@@ -3945,6 +4000,8 @@ class AdversaryCombat(BaseModule):
             recovery_required=True,
             action_id=action_id or None,
             recovery_error=self._journal_error,
+            **({"recovery_cause_types": cause_types} if cause_types else {}),
+            **({"recovery_cause_codes": cause_codes} if cause_codes else {}),
         )
 
     def _journal_failure(self, action: CombatAction, error: str) -> None:
@@ -4378,21 +4435,29 @@ class AdversaryCombat(BaseModule):
         except Exception:
             return None
         allowed = allowed_actions or _CONTRACT_ACTIONS
-        if policy.block_network and exe and "isolate_program" in allowed:
+        exact_suspend_only = (
+            "suspend_process" in allowed and "terminate_process" not in allowed
+        )
+        suspend_requested = (
+            exact_suspend_only
+            or policy.process_action == "suspend"
+            or policy.mode == "contain"
+        )
+        terminate_first = (
+            policy.mode == "maximum"
+            and policy.process_action == "terminate"
+            and "terminate_process" in allowed
+            and not suspend_requested
+        )
+        if (not terminate_first and policy.block_network and exe
+                and "isolate_program" in allowed):
             action = self._block_program(exe, pid, created, event, combat_id)
             if action is not None:
                 actions.append(action)
         action: CombatAction | None = None
         suspend_started = False
         try:
-            exact_suspend_only = (
-                "suspend_process" in allowed and "terminate_process" not in allowed
-            )
-            if (
-                exact_suspend_only
-                or policy.process_action == "suspend"
-                or policy.mode == "contain"
-            ):
+            if suspend_requested:
                 if "suspend_process" not in allowed:
                     return actions
                 action = self._action(
@@ -4443,6 +4508,33 @@ class AdversaryCombat(BaseModule):
                 committed = self._terminate_process_transaction(process, action)
                 if committed is not None:
                     actions.append(committed)
+                    # This response targets one process generation. Once its
+                    # exit is verified, a PID-bound program rule cannot pass
+                    # the existing live-process postcondition. Do not delay
+                    # the kill or install a persistent fence for a dead target.
+                    return actions
+                if (terminate_first and policy.block_network and exe
+                        and "isolate_program" in allowed
+                        and not self._mutation_blocked
+                        and not self._recovery_required
+                        and not self._journal_saturated
+                        and not self.stopping):
+                    # A pre-effect refusal may still permit the existing
+                    # reversible response. Uncertain termination latches the
+                    # mutation circuit and must never reach this fallback.
+                    try:
+                        identity_matches = (
+                            process.is_running()
+                            and abs(float(process.create_time()) - created) <= 0.001
+                            and os.path.normcase(os.path.abspath(process.exe()))
+                            == os.path.normcase(os.path.abspath(exe))
+                        )
+                    except Exception:
+                        identity_matches = False
+                    if identity_matches:
+                        fenced = self._block_program(exe, pid, created, event, combat_id)
+                        if fenced is not None:
+                            actions.append(fenced)
                 return actions
         except Exception as exc:
             if action is not None:
@@ -4455,18 +4547,29 @@ class AdversaryCombat(BaseModule):
                     self._journal_failure(action, f"{type(exc).__name__}: {exc}")
         return actions
 
+    def _firewall_step_completed(self) -> None:
+        """Record real bounded work only for the initialized current worker."""
+        if (self._thread is threading.current_thread()
+                and self.status == "running"
+                and self._response_initialized
+                and not self.stopping):
+            self.mark_cycle_complete(interval_seconds=1.0)
+
     def _run_firewall(self, arguments: list[str]) -> bool:
         if os.name != "nt":
             return False
         try:
             from angerona.core.win import run_hidden
 
-            result = run_hidden(
-                ["netsh", "advfirewall", "firewall", *arguments],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
+            try:
+                result = run_hidden(
+                    ["netsh", "advfirewall", "firewall", *arguments],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            finally:
+                self._firewall_step_completed()
             if int(getattr(result, "returncode", 1)) != 0:
                 return False
             rule_name = next(
@@ -4484,23 +4587,25 @@ class AdversaryCombat(BaseModule):
         except Exception:
             return False
 
-    @staticmethod
-    def _firewall_rule_exists(rule_name: str) -> bool | None:
+    def _firewall_rule_exists(self, rule_name: str) -> bool | None:
         """Return exact presence, proven absence, or unavailable evidence."""
         if os.name != "nt" or not rule_name:
             return None
         try:
             from angerona.core.win import run_hidden
 
-            result = run_hidden(
-                [
-                    "netsh", "advfirewall", "firewall", "show", "rule",
-                    f"name={rule_name}",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=15,
-            )
+            try:
+                result = run_hidden(
+                    [
+                        "netsh", "advfirewall", "firewall", "show", "rule",
+                        f"name={rule_name}",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=15,
+                )
+            finally:
+                self._firewall_step_completed()
             output = (
                 str(getattr(result, "stdout", "") or "")
                 + "\n"

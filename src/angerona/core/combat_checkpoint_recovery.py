@@ -1,4 +1,4 @@
-"""Recover narrowly proven unapplied-drill or completed-rollback checkpoints.
+"""Recover narrowly proven no-effect interrupted Combat accounting.
 
 This is not a general journal repair facility. No target is moved, removed or
 executed; no signing authority is created; no historical journal byte changes.
@@ -18,13 +18,14 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import time
 from typing import Any, Callable
 
 from angerona.modules.adversary_combat import JournalIntegrityError
 
 
 class CheckpointRecoveryRefused(JournalIntegrityError):
-    """The exact no-effect drill recovery contract could not be proved."""
+    """The exact no-effect recovery contract could not be proved."""
 
 
 def _read_regular(path: Path, maximum: int) -> bytes:
@@ -587,3 +588,533 @@ def recover_rollback_checkpoint(
                         raise CheckpointRecoveryRefused("Rollback checkpoint final verification failed")
                     return {**plan.report, "checkpoint_sequence": len(records), "recovered": True,
                             "backup_directory": str(directory)}
+
+
+_HOST_INCOMPLETE = "host isolation postcondition was incomplete"
+_HOST_NO_EFFECT = (
+    _HOST_INCOMPLETE
+    + "; explicit stopped recovery observed both managed rules absent; no host action performed"
+)
+_PROGRAM_NO_EFFECT = (
+    "program firewall postcondition failed"
+    "; explicit stopped recovery observed the managed program rule absent; no host action performed"
+)
+_RECOVERY_ACTION_BINDINGS = (
+    "action_id", "combat_id", "action", "target", "applied_at", "reversible",
+    "trigger_module", "trigger_ts",
+)
+
+
+@dataclass
+class _HostUndoPlan:
+    report: dict[str, Any]
+    records: list[dict[str, Any]]
+    inputs: dict[str, bytes]
+    rules: tuple[str, ...]
+
+
+def _recovery_timestamp(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value) and value > 0
+
+
+def _host_recovery_intent(module, record: dict[str, Any]) -> None:
+    if (not all(_recovery_timestamp(record.get(key))
+                for key in ("applied_at", "trigger_ts", "intent_at"))
+            or not isinstance(record.get("trigger_module"), str) or not record["trigger_module"]
+            or record["applied_at"] > record["intent_at"]):
+        raise CheckpointRecoveryRefused("Recovery intent timestamps or trigger binding are invalid")
+    if record.get("action") != "isolate_host":
+        _rollback_intent(module, record)
+        return
+    details = record.get("details")
+    rules = details.get("rules") if isinstance(details, dict) else None
+    if (record.get("record_type") != "intent" or record.get("status") != "pending"
+            or record.get("reversible") is not True
+            or not re.fullmatch(r"act-[0-9a-f]{16}", str(record.get("action_id") or ""))
+            or not re.fullmatch(r"combat-[0-9a-f]{12}", str(record.get("combat_id") or ""))
+            or record.get("target") != "all remote network traffic"
+            or not isinstance(rules, list) or len(rules) != 2
+            or not all(isinstance(rule, str) for rule in rules)
+            or not module._valid_rule_set("isolate_host", rules)
+            or module._combat_action_from_record(record) is None):
+        raise CheckpointRecoveryRefused("Host recovery intent/rule binding is invalid")
+
+
+def _recovery_orphan(intent, orphan) -> None:
+    expected = (_HOST_INCOMPLETE if intent["action"] == "isolate_host"
+                else "program firewall postcondition failed")
+    if (intent["action"] not in {"isolate_host", "isolate_program"}
+            or orphan.get("record_type") != "orphan" or orphan.get("status") != "orphaned"
+            or orphan.get("rollback_state") != "pending"
+            or any(orphan.get(key) != intent[key] for key in _RECOVERY_ACTION_BINDINGS + ("details",))
+            or orphan.get("mutation_started") is not None or orphan.get("rollback_error") is not None
+            or orphan.get("error") != expected):
+        raise CheckpointRecoveryRefused("Recovery orphan is not bound to its exact reversible intent")
+
+
+def _recovery_undo(orphan, undo, phase: str, undo_id: str | None = None) -> None:
+    if (undo.get("record_type") != phase
+            or undo.get("status") != ("pending" if phase == "undo_intent" else "undone")
+            or not re.fullmatch(r"undo-[0-9a-f]{16}", str(undo.get("undo_id") or ""))
+            or (undo_id is not None and undo.get("undo_id") != undo_id)
+            or undo.get("undo_of") != orphan["action_id"]
+            or undo.get("action") != orphan["action"]
+            or undo.get("bound_record_hmac") != orphan["record_hmac"]
+            or undo.get("recovery") is not True or undo.get("error") != ""
+            or not _recovery_timestamp(undo.get("phase_at"))):
+        raise CheckpointRecoveryRefused("Recovery undo identity/orphan binding is invalid")
+
+
+def _completed_native_termination(module, intent, terminal) -> tuple[int, int]:
+    """Validate historical native completion, never authorize another process action."""
+    from angerona.core.windows_process_lease import ProcessObjectIdentity, _image_path
+
+    details, proof = intent.get("details"), terminal.get("details")
+    if not isinstance(details, dict) or not isinstance(proof, dict):
+        raise CheckpointRecoveryRefused("Completed termination lacks native custody proof")
+    pid, birth, ticks = (details.get(key) for key in ("pid", "create_time", "native_birth_ticks"))
+    name = details.get("name")
+    if (intent.get("record_type") != "intent" or intent.get("status") != "pending"
+            or intent.get("action") != "terminate_process" or intent.get("reversible") is not False
+            or not re.fullmatch(r"act-[0-9a-f]{16}", str(intent.get("action_id") or ""))
+            or not re.fullmatch(r"combat-[0-9a-f]{12}", str(intent.get("combat_id") or ""))
+            or type(pid) is not int or not 0 < pid <= 0xFFFFFFFF
+            or not _recovery_timestamp(birth) or type(ticks) is not int or not 0 < ticks < 2**64
+            or type(details.get("native_pid")) is not int or details["native_pid"] != pid
+            or details.get("process_custody") != "windows-retained-handle-v1"
+            or not re.fullmatch(r"[0-9a-f]{32}", str(details.get("mutation_generation") or ""))
+            or not isinstance(name, str) or not 1 <= len(name) <= 260
+            or intent.get("target") != f"{name} ({pid})"
+            or not isinstance(intent.get("trigger_module"), str) or not intent["trigger_module"]
+            or not all(_recovery_timestamp(intent.get(key))
+                       for key in ("applied_at", "intent_at", "trigger_ts"))
+            or not birth <= intent["applied_at"] <= intent["intent_at"]
+            or module._combat_action_from_record(intent) is None):
+        raise CheckpointRecoveryRefused("Completed termination intent/generation binding is invalid")
+    try:
+        image = _image_path(details.get("exe"))
+        if _image_path(details.get("native_image")) != image:
+            raise ValueError("different image")
+        observed_birth = ProcessObjectIdentity(pid, ticks, image).create_time
+        if not _recovery_timestamp(observed_birth) or abs(observed_birth - birth) > 0.001:
+            raise ValueError("different generation")
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise CheckpointRecoveryRefused("Completed termination native image/generation is invalid") from exc
+    additions = {"postcondition_verified", "native_image_observation", "native_exit_code", "native_wait_signaled"}
+    if (terminal.get("record_type") != "commit" or terminal.get("status") != "applied"
+            or any(type(terminal.get(key)) is not type(intent[key]) or terminal.get(key) != intent[key]
+                   for key in _RECOVERY_ACTION_BINDINGS)
+            or set(proof) != set(details) | additions
+            or module._canonical_record({key: proof[key] for key in details}) != module._canonical_record(details)
+            or proof.get("postcondition_verified") is not True
+            or proof.get("native_wait_signaled") is not True
+            or proof.get("native_image_observation") != "before-termination"
+            or type(proof.get("native_exit_code")) is not int
+            or not 0 <= proof["native_exit_code"] <= 0xFFFFFFFF
+            or not _recovery_timestamp(terminal.get("committed_at"))
+            or terminal["committed_at"] < intent["intent_at"]):
+        raise CheckpointRecoveryRefused("Completed termination terminal/native proof is inconsistent")
+    return pid, ticks
+
+
+def _closed_recovery_prefix(module, records, used_actions, used_undos,
+                            *, allow_program_recovery: bool = False) -> None:
+    """Admit only paired actions and exact completed reversible rollback groups."""
+    index, terminated = 0, set()
+    while index < len(records):
+        intent = records[index]
+        if allow_program_recovery and intent.get("action") == "terminate_process":
+            if index + 1 >= len(records) or intent.get("action_id") in used_actions:
+                raise CheckpointRecoveryRefused("Recovery history leaves or reuses termination work")
+            identity = _completed_native_termination(module, intent, records[index + 1])
+            if identity in terminated:
+                raise CheckpointRecoveryRefused("Recovery history reuses a terminated native generation")
+            terminated.add(identity)
+            used_actions.add(intent["action_id"])
+            index += 2
+            continue
+        _host_recovery_intent(module, intent)
+        action_id = intent["action_id"]
+        if action_id in used_actions or index + 1 >= len(records):
+            raise CheckpointRecoveryRefused("Recovery history reuses an action or leaves work pending")
+        used_actions.add(action_id)
+        terminal = records[index + 1]
+        if terminal.get("record_type") == "orphan":
+            if index + 5 > len(records):
+                raise CheckpointRecoveryRefused("Recovery history leaves a rollback pending")
+            orphan, undo, undone, failure = records[index + 1:index + 5]
+            _recovery_orphan(intent, orphan)
+            _recovery_undo(orphan, undo, "undo_intent")
+            _recovery_undo(orphan, undone, "undo_commit", undo["undo_id"])
+            if undo["undo_id"] in used_undos:
+                raise CheckpointRecoveryRefused("Recovery history reuses an undo identity")
+            used_undos.add(undo["undo_id"])
+            errors = {orphan["error"] + "; uncertain mutation rolled back"}
+            if intent["action"] == "isolate_host":
+                errors.add(_HOST_NO_EFFECT)
+            elif allow_program_recovery and intent["action"] == "isolate_program":
+                errors.add(_PROGRAM_NO_EFFECT)
+            if (failure.get("record_type") != "failure" or failure.get("status") != "failed"
+                    or any(failure.get(key) != intent[key] for key in ("action_id", "combat_id", "action"))
+                    or failure.get("error") not in errors):
+                raise CheckpointRecoveryRefused("Recovery history rollback terminal is inconsistent")
+            stamps = [intent.get("intent_at"), orphan.get("orphaned_at"), undo["phase_at"],
+                      undone["phase_at"], failure.get("failed_at")]
+            if not all(_recovery_timestamp(stamp) for stamp in stamps) or stamps != sorted(stamps):
+                raise CheckpointRecoveryRefused("Recovery history rollback timestamps are inconsistent")
+            index += 5
+            continue
+        if any(terminal.get(key) != intent[key] for key in ("action_id", "combat_id", "action")):
+            raise CheckpointRecoveryRefused("Recovery history terminal is not paired")
+        if terminal.get("record_type") == "commit":
+            if (terminal.get("status") != "applied"
+                    or any(terminal.get(key) != intent[key] for key in _RECOVERY_ACTION_BINDINGS)
+                    or not isinstance(terminal.get("details"), dict)
+                    or any(terminal["details"].get(key) != value for key, value in intent["details"].items())):
+                raise CheckpointRecoveryRefused("Recovery history commit binding is inconsistent")
+        elif (terminal.get("record_type") != "failure" or terminal.get("status") != "failed"
+              or intent["action"] not in {"activate_honeypots", "quarantine_file"}
+              or terminal.get("error") != "orphaned intent had no observed postcondition"):
+            raise CheckpointRecoveryRefused("Recovery history has unfamiliar terminal work")
+        stamps = [intent.get("intent_at"), terminal.get(
+            "committed_at" if terminal["record_type"] == "commit" else "failed_at")]
+        if not all(_recovery_timestamp(stamp) for stamp in stamps) or stamps != sorted(stamps):
+            raise CheckpointRecoveryRefused("Recovery history terminal timestamps are inconsistent")
+        index += 2
+
+
+def _authenticated_host_records(module, raw: bytes, *, reserve: int = 0) -> list[dict[str, Any]]:
+    from angerona.modules.adversary_combat import (
+        _MAX_JOURNAL_BYTES, _MAX_JOURNAL_LINE_BYTES, _MAX_JOURNAL_RECORDS,
+    )
+
+    lines = raw.splitlines()
+    if (not raw.endswith(b"\n") or not 1 <= len(lines) <= _MAX_JOURNAL_RECORDS - reserve
+            or len(raw) + reserve * (_MAX_JOURNAL_LINE_BYTES + 1) > _MAX_JOURNAL_BYTES):
+        raise CheckpointRecoveryRefused("Host undo journal is incomplete or lacks closure capacity")
+    records, previous = [], "0" * 64
+    for sequence, line in enumerate(lines, 1):
+        record = module._bounded_authority_json(line, label="host undo recovery record",
+                                                max_bytes=_MAX_JOURNAL_LINE_BYTES)
+        core = {key: value for key, value in record.items() if key != "record_hmac"}
+        if (not module._signed_journal_schema_valid(record)
+                or type(record.get("journal_version")) is not int or record["sequence"] != sequence
+                or record["previous_hmac"] != previous
+                or not hmac.compare_digest(record["record_hmac"], module._record_hmac(core))):
+            raise CheckpointRecoveryRefused("Host undo full journal chain authentication failed")
+        records.append(record)
+        previous = record["record_hmac"]
+    return records
+
+
+def _host_undo_records(module, raw: bytes) -> list[dict[str, Any]]:
+    records = _authenticated_host_records(module, raw, reserve=2)
+    if len(records) < 3:
+        raise CheckpointRecoveryRefused("Host undo journal lacks its exact three-record tail")
+    used_actions, used_undos = set(), set()
+    _closed_recovery_prefix(module, records[:-3], used_actions, used_undos)
+    intent, orphan, undo = records[-3:]
+    _host_recovery_intent(module, intent)
+    if intent["action"] != "isolate_host" or intent["action_id"] in used_actions:
+        raise CheckpointRecoveryRefused("Host undo tail is not one unique host-isolation intent")
+    _recovery_orphan(intent, orphan)
+    _recovery_undo(orphan, undo, "undo_intent")
+    stamps = [intent.get("intent_at"), orphan.get("orphaned_at"), undo["phase_at"]]
+    if (undo["undo_id"] in used_undos or not all(_recovery_timestamp(stamp) for stamp in stamps)
+            or stamps != sorted(stamps) or time.time() < undo["phase_at"]):
+        raise CheckpointRecoveryRefused("Host undo identity or timestamps are inconsistent")
+    return records
+
+
+def _program_closed_prefix(module, records, used_actions, used_undos) -> None:
+    _closed_recovery_prefix(module, records, used_actions, used_undos, allow_program_recovery=True)
+
+
+def _program_undo_records(module, raw: bytes) -> list[dict[str, Any]]:
+    records = _authenticated_host_records(module, raw, reserve=2)
+    if len(records) < 3:
+        raise CheckpointRecoveryRefused("Program undo journal lacks its exact three-record tail")
+    used_actions, used_undos = set(), set()
+    _program_closed_prefix(module, records[:-3], used_actions, used_undos)
+    intent, orphan, undo = records[-3:]
+    _host_recovery_intent(module, intent)
+    if intent["action"] != "isolate_program" or intent["action_id"] in used_actions:
+        raise CheckpointRecoveryRefused("Program undo tail is not one unique program-isolation intent")
+    _recovery_orphan(intent, orphan)
+    _recovery_undo(orphan, undo, "undo_intent")
+    stamps = [intent["intent_at"], orphan.get("orphaned_at"), undo["phase_at"]]
+    if (undo["undo_id"] in used_undos or not all(_recovery_timestamp(stamp) for stamp in stamps)
+            or stamps != sorted(stamps) or time.time() < undo["phase_at"]):
+        raise CheckpointRecoveryRefused("Program undo identity or timestamps are inconsistent")
+    return records
+
+
+def _firewall_closure_records(module, plan: _HostUndoPlan, *, program: bool = False
+                             ) -> tuple[list[dict[str, Any]], bytes]:
+    """Authenticate the entire proposed closed history before its first write."""
+    from angerona.modules.adversary_combat import _JOURNAL_VERSION, _MAX_JOURNAL_LINE_BYTES
+
+    intent, orphan, undo = plan.records[-3:]
+    action = "isolate_program" if program else "isolate_host"
+    if intent["action"] != action:
+        raise CheckpointRecoveryRefused("Firewall undo closure action scope differs")
+    stamp = time.time()
+    if not _recovery_timestamp(stamp) or stamp < undo["phase_at"]:
+        raise CheckpointRecoveryRefused("Host undo closure clock is inconsistent")
+    payloads = [{
+        "record_type": "undo_commit", "undo_id": undo["undo_id"], "undo_of": undo["undo_of"],
+        "action": action, "phase_at": stamp, "status": "undone", "error": "",
+        "recovery": True, "bound_record_hmac": orphan["record_hmac"],
+    }, {
+        "record_type": "failure", "action_id": intent["action_id"], "combat_id": intent["combat_id"],
+        "action": action, "failed_at": stamp, "status": "failed",
+        "error": _PROGRAM_NO_EFFECT if program else _HOST_NO_EFFECT,
+    }]
+    sequence, previous, encoded = len(plan.records), undo["record_hmac"], b""
+    for payload in payloads:
+        sequence += 1
+        core = {**payload, "journal_version": _JOURNAL_VERSION, "sequence": sequence,
+                "previous_hmac": previous}
+        record = {**core, "record_hmac": module._record_hmac(core)}
+        previous = record["record_hmac"]
+        encoded += module._canonical_record(record) + b"\n"
+    # Reuse the existing single bounded pinned append for this small two-record
+    # batch. No anchor advances until both durable records have been read back.
+    if len(encoded) > _MAX_JOURNAL_LINE_BYTES + 1:
+        raise CheckpointRecoveryRefused("Host undo closure batch exceeds its byte budget")
+    records = _authenticated_host_records(module, plan.inputs["adversary_combat_actions.jsonl"] + encoded)
+    (_program_closed_prefix if program else _closed_recovery_prefix)(module, records, set(), set())
+    if module._ordered_pending_phases(records) or _pending_host_undos(records):
+        raise CheckpointRecoveryRefused("Host undo proposed closure leaves pending work")
+    return records, encoded
+
+
+def _host_closure_records(module, plan: _HostUndoPlan) -> tuple[list[dict[str, Any]], bytes]:
+    return _firewall_closure_records(module, plan)
+
+
+def _program_closure_records(module, plan: _HostUndoPlan) -> tuple[list[dict[str, Any]], bytes]:
+    return _firewall_closure_records(module, plan, program=True)
+
+
+def _pending_host_undos(records) -> set[str]:
+    return {record["undo_id"] for record in records if record["record_type"] == "undo_intent"} - {
+        record["undo_id"] for record in records if record["record_type"] in {"undo_commit", "undo_failure"}}
+
+
+def _firewall_undo_plan(module, *, program: bool = False) -> _HostUndoPlan:
+    from angerona.modules.adversary_combat import _JOURNAL_CONTEXT, _MAX_JOURNAL_BYTES
+
+    root = Path(os.path.abspath(module.data_root))
+    inputs = {
+        "bus.key": _read_regular(root / "bus.key", 256),
+        "adversary_combat_actions.jsonl": _read_regular(module.receipt_path, _MAX_JOURNAL_BYTES),
+        "secrets.dpapi": _read_regular(root / "secrets.dpapi", 1024 * 1024),
+        "adversary_combat_recovery_witness.json": _read_regular(module.recovery_witness_path, 16 * 1024),
+    }
+    key = bytes.fromhex(inputs["bus.key"].decode("ascii").strip())
+    if (len(key) != 32 or not isinstance(module._journal_key_cache, bytes)
+            or not hmac.compare_digest(module._journal_key_cache,
+                                       hmac.new(key, _JOURNAL_CONTEXT, hashlib.sha256).digest())):
+        raise CheckpointRecoveryRefused("Host undo authority does not match this installation")
+    records = (_program_undo_records if program else _host_undo_records)(
+        module, inputs["adversary_combat_actions.jsonl"])
+    anchor = module._validated_recovery_anchor(module._read_recovery_anchor_value())
+    module._verify_recovery_witness(anchor)
+    tail = records[-1]
+    if (anchor["schema"] != 2 or anchor["last_journal_sequence"] != len(records) - 1
+            or anchor["last_journal_hmac"] != tail["previous_hmac"]
+            or anchor["active_action_id"] or anchor["active_challenge_sequence"]
+            or anchor["active_challenge_nonce"] or anchor["consumed_terminal_sequence"]
+            or anchor["challenge_counter"]):
+        raise CheckpointRecoveryRefused("Host undo is not the exact one-record checkpoint gap")
+    for name, path in (("bus.key", root / "bus.key"), ("secrets.dpapi", root / "secrets.dpapi"),
+                       ("adversary_combat_actions.jsonl", module.receipt_path),
+                       ("adversary_combat_recovery_witness.json", module.recovery_witness_path)):
+        if inputs[name] != _read_regular(path, max(256, len(inputs[name]))):
+            raise CheckpointRecoveryRefused("Host undo authority changed during inspection")
+    context = b"stopped-program-undo-checkpoint-v1\0" if program else b"stopped-host-undo-checkpoint-v1\0"
+    token = hashlib.sha256(context + b"\0".join(
+        [str(root).encode(), *(inputs[name] for name in sorted(inputs))]
+    )).hexdigest()
+    rules = tuple(records[-3]["details"]["rules"])
+    report = {"eligible": True, "journal_records": len(records),
+              "checkpoint_sequence": anchor["last_journal_sequence"], "review_token": token,
+              "pending_action": ("one interrupted recovery undo for an uncommitted program-isolation action"
+                                 if program else "one interrupted recovery undo for an uncommitted host-isolation action"),
+              "action_id": records[-3]["action_id"], "undo_id": tail["undo_id"],
+              "rules": list(rules), "postcondition": ("the exact intent-bound managed program rule absent"
+                                                     if program else "both exact intent-bound managed host rules absent"),
+              "append_records": ["undo_commit", "failure"],
+              "host_actions_executed": 0, "rearmed": False}
+    return _HostUndoPlan(report, records, inputs, rules)
+
+
+def _host_undo_plan(module) -> _HostUndoPlan:
+    return _firewall_undo_plan(module)
+
+
+def _program_undo_plan(module) -> _HostUndoPlan:
+    return _firewall_undo_plan(module, program=True)
+
+
+def _require_host_undo_absence(plan: _HostUndoPlan) -> None:
+    if any(state is not True for state in [_native_firewall_rule_absent(rule) for rule in plan.rules]):
+        raise CheckpointRecoveryRefused("Both exact managed host rules must be natively absent")
+
+
+def _require_program_undo_absence(plan: _HostUndoPlan) -> None:
+    if len(plan.rules) != 1 or _native_firewall_rule_absent(plan.rules[0]) is not True:
+        raise CheckpointRecoveryRefused("The exact managed program rule must be natively absent")
+
+
+def inspect_host_undo_checkpoint(module) -> dict[str, Any]:
+    """Read-only eligibility; callers must separately keep the application stopped."""
+    plan = _host_undo_plan(module)
+    _require_host_undo_absence(plan)
+    current = _host_undo_plan(module)
+    if not hmac.compare_digest(plan.report["review_token"], current.report["review_token"]):
+        raise CheckpointRecoveryRefused("Host undo inputs changed during native observation")
+    return dict(plan.report)
+
+
+def inspect_program_undo_checkpoint(module) -> dict[str, Any]:
+    """Read-only program-only eligibility; separately keep every suite role stopped."""
+    plan = _program_undo_plan(module)
+    _require_program_undo_absence(plan)
+    current = _program_undo_plan(module)
+    if not hmac.compare_digest(plan.report["review_token"], current.report["review_token"]):
+        raise CheckpointRecoveryRefused("Program undo inputs changed during native observation")
+    return dict(plan.report)
+
+
+def _backup_firewall_undo(module, plan: _HostUndoPlan, *, program: bool = False) -> Path:
+    from angerona.core.engine_transport import create_private_file, private_directory, verify_private
+
+    prefix = "combat-program-undo-recovery-" if program else "combat-host-undo-recovery-"
+    directory = private_directory(module.data_root / (prefix + secrets.token_hex(16)))
+    for name, raw in plan.inputs.items():
+        if name == "bus.key":
+            continue
+        target = directory / name
+        descriptor = create_private_file(target)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        verify_private(target)
+        if _read_regular(target, 32 * 1024 * 1024) != raw:
+            raise CheckpointRecoveryRefused("Host undo private backup failed verification")
+    verify_private(directory, directory=True)
+    return directory
+
+
+def _backup_host_undo(module, plan: _HostUndoPlan) -> Path:
+    return _backup_firewall_undo(module, plan)
+
+
+def _backup_program_undo(module, plan: _HostUndoPlan) -> Path:
+    return _backup_firewall_undo(module, plan, program=True)
+
+
+def _recover_firewall_undo_checkpoint(module, *, expected_token: str,
+                                      before_commit: Callable[[], None],
+                                      program: bool = False) -> dict[str, Any]:
+    """Explicit stopped accounting closure. Never perform a host undo or rearm.
+
+    Interrupted stages stay held and need a new, separately reviewed recovery;
+    this narrowly admitted initial shape is not a generic retry/startup bypass.
+    Native absence and stopped-process guards are point-in-time observations.
+    """
+    from angerona.core.secure_store import secret_transaction
+
+    label = "Program undo" if program else "Host undo"
+    build_plan = _program_undo_plan if program else _host_undo_plan
+    require_absence = _require_program_undo_absence if program else _require_host_undo_absence
+    backup = _backup_program_undo if program else _backup_host_undo
+    build_closure = _program_closure_records if program else _host_closure_records
+    validate_prefix = _program_closed_prefix if program else _closed_recovery_prefix
+
+    if not isinstance(expected_token, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_token):
+        raise CheckpointRecoveryRefused(f"{label} apply requires a reviewed inspection token")
+    if not callable(before_commit):
+        raise CheckpointRecoveryRefused(f"{label} apply requires the stopped-application guard")
+    before_commit()
+    with module._receipt_lock:
+        with module._journal_writer_lease():
+            with module._pinned_journal_session(create=False):
+                with secret_transaction(module.data_root):
+                    plan = build_plan(module)
+                    if not hmac.compare_digest(expected_token, plan.report["review_token"]):
+                        raise CheckpointRecoveryRefused(f"{label} recovery inputs changed; inspect again")
+                    require_absence(plan)
+                    try:
+                        directory = backup(module, plan)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        raise CheckpointRecoveryRefused(f"{label} private backup failed verification") from exc
+                    proposed, encoded = build_closure(module, plan)
+                    before_commit()
+                    current = build_plan(module)
+                    if not hmac.compare_digest(expected_token, current.report["review_token"]):
+                        raise CheckpointRecoveryRefused(f"{label} inputs changed during backup/stopped check")
+                    require_absence(current)
+                    module._assert_journal_session(module._active_journal_session())
+                    expected = current.inputs["adversary_combat_actions.jsonl"] + encoded
+                    if _read_regular(module.receipt_path, 32 * 1024 * 1024) != current.inputs[
+                            "adversary_combat_actions.jsonl"]:
+                        raise CheckpointRecoveryRefused(f"{label} journal changed before closure append")
+                    # Keep the checkpoint behind the *whole* closed batch. Any
+                    # partial append or intermediate anchor/witness failure then
+                    # remains an explicit startup hold, before host reconciliation.
+                    try:
+                        module._append_pinned_journal_bytes(encoded)
+                    finally:
+                        module._invalidate_journal_cache()
+                    if _read_regular(module.receipt_path, 32 * 1024 * 1024) != expected:
+                        raise CheckpointRecoveryRefused(f"{label} durable closure batch differs from its proof")
+                    authenticated = _authenticated_host_records(module, expected)
+                    validate_prefix(module, authenticated, set(), set())
+                    if module._ordered_pending_phases(authenticated) or _pending_host_undos(authenticated):
+                        raise CheckpointRecoveryRefused(f"{label} durable closure batch leaves pending work")
+                    for record in (current.records[-1], *proposed[-2:]):
+                        before_commit()
+                        require_absence(current)
+                        module._assert_journal_session(module._active_journal_session())
+                        if _read_regular(module.receipt_path, 32 * 1024 * 1024) != expected:
+                            raise CheckpointRecoveryRefused(f"{label} closure changed before checkpoint advance")
+                        module._advance_recovery_anchor(record)
+                    module._invalidate_journal_cache()
+                    records, legacy = module._read_journal(strict=True)
+                    validate_prefix(module, records, set(), set())
+                    require_absence(current)
+                    anchor = module._validated_recovery_anchor(module._read_recovery_anchor_value())
+                    module._verify_recovery_witness(anchor)
+                    witness = module._read_recovery_witness()
+                    if (legacy or len(records) != len(plan.records) + 2
+                            or _read_regular(module.receipt_path, 32 * 1024 * 1024) != expected
+                            or module._pending_recovery_records() or _pending_host_undos(records)
+                            or anchor["last_journal_sequence"] != len(records)
+                            or witness["last_journal_sequence"] != len(records)
+                            or anchor["last_journal_hmac"] != proposed[-1]["record_hmac"]
+                            or _read_regular(module.data_root / "bus.key", 256) != plan.inputs["bus.key"]):
+                        raise CheckpointRecoveryRefused(f"{label} final prefix/phase/authority verification failed")
+                    return {**plan.report, "recovered": True, "journal_records": len(records),
+                            "checkpoint_sequence": len(records), "pending_actions": 0, "pending_undos": 0,
+                            "witness_sequence": witness["last_journal_sequence"],
+                            "backup_directory": str(directory),
+                            "closure": "rules already absent; no host removal or other host action performed"}
+
+
+
+def recover_host_undo_checkpoint(module, *, expected_token: str,
+                                 before_commit: Callable[[], None]) -> dict[str, Any]:
+    """Explicit stopped host-only accounting closure; no host action or rearm."""
+    return _recover_firewall_undo_checkpoint(module, expected_token=expected_token,
+                                             before_commit=before_commit)
+
+
+def recover_program_undo_checkpoint(module, *, expected_token: str,
+                                    before_commit: Callable[[], None]) -> dict[str, Any]:
+    """Explicit stopped program-only accounting closure; no host action or rearm."""
+    return _recover_firewall_undo_checkpoint(module, expected_token=expected_token,
+                                             before_commit=before_commit, program=True)

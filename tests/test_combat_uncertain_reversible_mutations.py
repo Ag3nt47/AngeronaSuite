@@ -148,7 +148,7 @@ def test_firewall_rollback_requires_proven_absence(monkeypatch, tmp_path, state)
     (0, "", None),
 ])
 def test_firewall_query_distinguishes_absence_from_unavailable(
-    monkeypatch, returncode, output, expected,
+    monkeypatch, tmp_path, returncode, output, expected,
 ):
     from angerona.core import win
 
@@ -156,7 +156,8 @@ def test_firewall_query_distinguishes_absence_from_unavailable(
     monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(win, "run_hidden", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=returncode, stdout=output, stderr=""))
-    assert combat.AdversaryCombat._firewall_rule_exists("AngeronaCombat-test") is expected
+    module = combat.AdversaryCombat(tmp_path, rollback_anchor={})
+    assert module._firewall_rule_exists("AngeronaCombat-test") is expected
 
 
 def test_pending_firewall_recovery_waits_for_query_evidence(monkeypatch, tmp_path):

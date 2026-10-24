@@ -25,6 +25,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Mapping
@@ -584,6 +585,222 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
         return _write_secret_map_locked(updates, data_root)
 
 
+def _credential_file_state(path: Path, *, missing_ok: bool = False):
+    """Snapshot one ordinary file without retaining a deny-delete reader."""
+    if _path_traverses_reparse(path):
+        raise PermissionError("Credential publication path traverses an alias")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                             | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        if missing_ok and not os.path.lexists(path):
+            return None
+        raise
+    try:
+        before = os.fstat(descriptor)
+
+        def identity(info):
+            return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                    info.st_mode, info.st_nlink,
+                    int(getattr(info, "st_file_attributes", 0)))
+
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or int(getattr(before, "st_file_attributes", 0)) & (0x400 | 0x1)):
+            raise PermissionError("Credential publication needs a writable ordinary single-link file")
+        digest = hashlib.sha256()
+        remaining = before.st_size + 1
+        count = 0
+        while remaining:
+            block = os.read(descriptor, min(64 * 1024, remaining))
+            if not block:
+                break
+            digest.update(block)
+            count += len(block)
+            remaining -= len(block)
+        after, current = os.fstat(descriptor), path.lstat()
+        # Windows fstat ctime and path lstat ctime can represent different
+        # native timestamps. Compare that field only across descriptor reads.
+        if (count != before.st_size or identity(before) != identity(after)
+                or before.st_ctime_ns != after.st_ctime_ns
+                or identity(after) != identity(current) or _path_traverses_reparse(path)):
+            raise PermissionError("Credential publication file changed during inspection")
+        return identity(after), after.st_ctime_ns, digest.digest()
+    finally:
+        os.close(descriptor)
+
+
+def _credential_security_state(
+    path: Path, *, directory: bool = False, missing_ok: bool = False,
+    allow_inherited_directory: bool = False,
+):
+    """Read private native custody without changing an owner, DACL or flags."""
+    try:
+        import win32api
+        import win32con
+        import win32file
+        import win32security
+    except ImportError as exc:
+        raise _NativeACLUnavailable("Native retry custody proof is unavailable") from exc
+    if _path_traverses_reparse(path):
+        raise PermissionError("Credential retry security path traverses an alias")
+    if missing_ok and not os.path.lexists(path):
+        return None
+    # Share delete explicitly: these short inspection handles must not cause
+    # the very rename contention they are intended to diagnose.
+    handle = win32file.CreateFile(
+        str(path), win32con.READ_CONTROL,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+        None, win32con.OPEN_EXISTING, 0x00200000 | (0x02000000 if directory else 0), None,
+    )
+    try:
+        before = win32file.GetFileInformationByHandle(handle)
+        if (before[0] & 0x400 or bool(before[0] & 0x10) != directory
+                or (not directory and (before[7] != 1 or before[0] & 0x1))):
+            raise PermissionError("Credential retry security object is unsafe")
+        token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32con.TOKEN_QUERY)
+        try:
+            user = win32security.GetTokenInformation(token, win32security.TokenUser)[0]
+        finally:
+            token.Close()
+        trustees = frozenset({win32security.ConvertSidToStringSid(user),
+                              "S-1-5-18", "S-1-5-32-544"})
+        fields = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+        descriptor = win32security.GetSecurityInfo(handle, win32security.SE_FILE_OBJECT, fields)
+        owner = win32security.ConvertSidToStringSid(descriptor.GetSecurityDescriptorOwner())
+        control = descriptor.GetSecurityDescriptorControl()[0]
+        valid = owner in trustees
+        if directory:
+            acl = descriptor.GetSecurityDescriptorDacl()
+            valid = (valid and (allow_inherited_directory
+                                or bool(control & win32security.SE_DACL_PROTECTED))
+                     and acl is not None and 0 < acl.GetAceCount() <= len(trustees))
+            seen = set()
+            if valid:
+                for index in range(acl.GetAceCount()):
+                    ace = acl.GetAce(index)
+                    if (len(ace) != 3 or ace[0][0] != win32security.ACCESS_ALLOWED_ACE_TYPE
+                            or ace[0][1] & ~(0x13 if allow_inherited_directory else 0x3)
+                            or ace[1] != 0x001F01FF):
+                        valid = False
+                        break
+                    principal = win32security.ConvertSidToStringSid(ace[2])
+                    if principal not in trustees or principal in seen:
+                        valid = False
+                        break
+                    seen.add(principal)
+        else:
+            valid = valid and _private_acl_matches(descriptor, owner, trustees, win32security)
+        if not valid:
+            raise PermissionError("Credential retry owner or DACL is outside private custody")
+        after = win32file.GetFileInformationByHandle(handle)
+        identity = lambda info: (info[0], info[4], info[7], info[8], info[9])
+        if identity(before) != identity(after) or _path_traverses_reparse(path):
+            raise PermissionError("Credential retry security identity changed")
+        current = win32file.CreateFile(
+            str(path), win32con.READ_CONTROL,
+            win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE | win32con.FILE_SHARE_DELETE,
+            None, win32con.OPEN_EXISTING, 0x00200000 | (0x02000000 if directory else 0), None,
+        )
+        try:
+            if identity(win32file.GetFileInformationByHandle(current)) != identity(before):
+                raise PermissionError("Credential retry security pathname changed")
+        finally:
+            current.Close()
+        return identity(before), bytes(descriptor), control
+    finally:
+        handle.Close()
+
+
+def _credential_parent_security_state(parent: Path):
+    """Bind a trusted-only inheritance route to its first protected directory.
+
+    Every applying ACE must be an ordinary full-access grant to this account,
+    SYSTEM or administrators. Read-only outsider grants are conservatively
+    refused too. No directory permissions are changed by this bounded proof.
+    """
+    parent = Path(os.path.abspath(parent))
+    chain = []
+    for component in (parent, *parent.parents)[:32]:
+        state = _credential_security_state(
+            component, directory=True, allow_inherited_directory=True,
+        )
+        chain.append((os.path.normcase(os.path.abspath(component)), state))
+        if state[2] & 0x1000:  # SE_DACL_PROTECTED; no upstream inheritance route.
+            return tuple(chain)
+    raise PermissionError("Credential retry inheritance boundary is unavailable or too deep")
+
+
+def _replace_credential_file(source: Path, destination: Path, data_root: Path | None) -> None:
+    """Retry only a proven unpublished Windows sharing/access failure.
+
+    Cooperating writers remain serialized by the credential transaction. Every
+    retry also rechecks ordinary-file identities, content, ancestor topology
+    and exact native private security through the first protected directory;
+    replacement, aliases or an uncertain completed publication refuse retry.
+    All snapshot descriptors close before rename, avoiding our own deny-delete
+    reader. Seven attempts sleep at most 0.7 seconds in total.
+    """
+    source, destination = Path(os.path.abspath(source)), Path(os.path.abspath(destination))
+    parent = source.parent
+    if destination.parent != parent:
+        raise ValueError("Credential publication must stay in one directory")
+
+    def parent_state():
+        chain = []
+        for component in (parent, *parent.parents):
+            info = component.lstat()
+            attributes = int(getattr(info, "st_file_attributes", 0))
+            if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                    or attributes & 0x400):
+                raise PermissionError("Credential publication ancestry is unsafe")
+            chain.append((os.path.normcase(os.path.abspath(component)), info.st_dev, info.st_ino,
+                          info.st_mode, attributes))
+        return tuple(chain)
+
+    def security_state():
+        return (_credential_security_state(source),
+                _credential_security_state(destination, missing_ok=True),
+                _credential_parent_security_state(parent))
+
+    topology = parent_state()
+    original_source = _credential_file_state(source)
+    original_destination = _credential_file_state(destination, missing_ok=True)
+    retry_security = None
+    if os.name == "nt":
+        try:
+            retry_security = security_state()
+        except Exception:
+            # Preserve existing first-attempt publication policy when optional
+            # APIs/private parent proof are unavailable. Such a state never
+            # authorizes a retry, even for native access/sharing errors.
+            pass
+
+    def unchanged():
+        _assert_transaction(data_root)
+        if (parent_state() != topology or _credential_file_state(source) != original_source
+                or _credential_file_state(destination, missing_ok=True) != original_destination):
+            raise PermissionError("Credential publication custody changed; refusing replacement retry")
+        if retry_security is not None and security_state() != retry_security:
+            raise PermissionError("Credential publication security changed; refusing replacement retry")
+
+    for attempt in range(7):
+        unchanged()
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            # This fixed local marker contains no path, message or credential.
+            exc.angerona_write_boundary = "credential-atomic-replace"
+            if (os.name != "nt" or type(getattr(exc, "winerror", None)) is not int
+                    or exc.winerror not in {5, 32} or attempt == 6 or retry_security is None):
+                raise
+            try:
+                unchanged()
+            except (OSError, RuntimeError) as changed:
+                raise changed from exc
+            time.sleep(min(0.2, 0.02 * (2 ** attempt)))
+
+
 def _write_secret_map_locked(updates: Mapping[str, object], data_root: Path | None = None) -> Path:
     _assert_transaction(data_root)
     # Clear an inherited plaintext PIN even when this particular update does
@@ -681,7 +898,7 @@ def _write_secret_map_locked(updates: Mapping[str, object], data_root: Path | No
             stream.flush()
             os.fsync(stream.fileno())
         _private_acl(tmp)
-        os.replace(tmp, path)
+        _replace_credential_file(tmp, path, data_root)
         _private_acl(path)
     finally:
         if descriptor is not None:

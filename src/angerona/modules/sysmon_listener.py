@@ -76,6 +76,7 @@ _MAX_RECORD_ANCHOR_CHARS = 2 * 1024 * 1024
 _EVTLOG_SEQ_FWD = 0x0001 | 0x0004   # EVENTLOG_SEQUENTIAL_READ | EVENTLOG_FORWARDS_READ
 _EVTLOG_SEEK_FWD = 0x0002 | 0x0004  # EVENTLOG_SEEK_READ | EVENTLOG_FORWARDS_READ
 _SYSMON_CHANNEL = "Microsoft-Windows-Sysmon/Operational"
+_SYSMON_PROVIDER = "Microsoft-Windows-Sysmon"
 _CURSOR_SCHEMA = 3
 _MAX_CURSOR_BYTES = 4096
 _CURSOR_SIG_FIELD = "_angerona_hmac"
@@ -1023,43 +1024,87 @@ class SysmonListenerModule(BaseModule):
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
-        if self._try_open_sysmon():
-            self._run_sysmon_loop()
-        else:
-            self._run_fallback_loop()
+        try:
+            if self._try_open_sysmon():
+                self._run_sysmon_loop()
+            else:
+                self._run_fallback_loop()
+        finally:
+            self._close_sysmon()
+
+    @staticmethod
+    def _verified_provider(record: object) -> bool:
+        try:
+            provider = record.SourceName
+        except Exception:
+            return False
+        return type(provider) is str and provider.casefold() == _SYSMON_PROVIDER.casefold()
+
+    def _close_sysmon(self) -> None:
+        handle, self._evtlog_handle = self._evtlog_handle, None
+        if handle is not None:
+            try:
+                import win32evtlog
+                win32evtlog.CloseEventLog(handle)
+            except Exception:
+                pass
 
     def _try_open_sysmon(self) -> bool:
-        """Attempt to open the Sysmon event log channel.
-
-        Returns True if successful; False if Sysmon is not installed or
-        win32evtlog is not available (non-Windows or missing pywin32).
-        """
+        """Reject classic OpenEventLog's silent Application-log fallback."""
+        self._close_sysmon()
+        handle = probe = None
+        error_class = "NativeChannelUnavailable"
         try:
-            import win32evtlog  # type: ignore[import]
-            self._evtlog_handle = win32evtlog.OpenEventLog(None, _SYSMON_CHANNEL)
+            import win32evtlog
+            # Unlike classic OpenEventLog, an exact modern channel query does
+            # not silently substitute Application when this channel is absent.
+            probe = win32evtlog.EvtQuery(
+                _SYSMON_CHANNEL,
+                win32evtlog.EvtQueryChannelPath | win32evtlog.EvtQueryForwardDirection,
+                "*",
+            )
+            probe.Close()
+            probe = None
+            error_class = "ClassicChannelUnavailable"
+            handle = win32evtlog.OpenEventLog(None, _SYSMON_CHANNEL)
+            count = int(win32evtlog.GetNumberOfEventLogRecords(handle))
+            if count:
+                oldest = int(win32evtlog.GetOldestEventLogRecord(handle))
+                records = win32evtlog.ReadEventLog(handle, _EVTLOG_SEEK_FWD, oldest, 65536)
+                first = next((r for r in records or () if self._record_number(r) == oldest), None)
+                if first is None or not self._verified_provider(first):
+                    error_class = "ProviderMismatch"
+                    raise ValueError("Sysmon provider identity unavailable")
+            self._evtlog_handle, handle = handle, None
             self._using_fallback = False
             self._continuity_state = "unverified"
-            self.set_health(70, "Sysmon channel open; durable continuity not yet verified")
-            self.emit(
-                f"Sysmon channel opened: {_SYSMON_CHANNEL}",
-                Severity.INFO,
-                channel=_SYSMON_CHANNEL,
-            )
+            self.set_health(70, "Sysmon channel/provider open; durable continuity not yet verified")
+            self.emit(f"Sysmon channel opened: {_SYSMON_CHANNEL}", Severity.INFO,
+                      channel=_SYSMON_CHANNEL)
             return True
-        except Exception as exc:
+        except Exception:
             self._using_fallback = True
-            self.set_health(
-                50,
-                f"Sysmon unavailable — running psutil fallback: {exc}",
-            )
+            self.set_health(50, "Sysmon channel/provider unavailable; process-diff fallback only")
             self.emit(
-                f"Sysmon/win32evtlog not available ({exc}). "
-                "Running psutil process-diff fallback (EID-1 equivalent only). "
-                "Install Sysmon64 + pywin32 for full coverage.",
-                Severity.MEDIUM,
-                fallback=True,
+                "Sysmon channel/provider could not be verified. Running process-diff "
+                "fallback; network, driver, thread and tamper telemetry are unavailable.",
+                Severity.MEDIUM, finding_code="sysmon.collector.unavailable",
+                disposition="health", active_attack=False, response_authorized=False,
+                response_authority="observe-only", coverage_state="unavailable",
+                error_type=error_class, fallback=True,
             )
             return False
+        finally:
+            if probe is not None:
+                try:
+                    probe.Close()
+                except Exception:
+                    pass
+            if handle is not None:
+                try:
+                    win32evtlog.CloseEventLog(handle)
+                except Exception:
+                    pass
 
     # ── Sysmon event log loop ─────────────────────────────────────────────────
     def _run_sysmon_loop(self) -> None:
@@ -1083,7 +1128,9 @@ class SysmonListenerModule(BaseModule):
                 # Reopen once; the next operation is always a durable reload,
                 # generation capture, exact-anchor verification and explicit seek.
                 try:
-                    self._evtlog_handle = win32evtlog.OpenEventLog(None, _SYSMON_CHANNEL)
+                    if not self._try_open_sysmon():
+                        self._run_fallback_loop()
+                        return
                     self._continuity_state = "reopened-unverified"
                     self._reseek_and_drain(win32evtlog)
                 except Exception as reopen_exc:
@@ -1091,56 +1138,59 @@ class SysmonListenerModule(BaseModule):
                         self.set_health(35, f"Sysmon reopen continuity failed: {reopen_exc}")
             self.sleep(self._POLL_INTERVAL)
 
+    def _reject_sensor_record(self, error_class: str, *, eid: int | None = None,
+                              observed_severity: Severity | None = None) -> None:
+        self._parse_rejection_count += 1
+        self.set_health(50, "Sysmon record coverage unavailable; provider/payload rejected")
+        details = {
+            "finding_code": "sysmon.collector.unavailable", "disposition": "health",
+            "active_attack": False, "response_authorized": False,
+            "response_authority": "observe-only", "coverage_state": "unavailable",
+            "error_type": error_class, "parse_rejection_count": self._parse_rejection_count,
+        }
+        if eid is not None:
+            details["eid"] = eid
+        if observed_severity is not None:
+            details["observed_severity"] = observed_severity.name
+        self.emit("Sysmon record could not be verified or decoded; telemetry is unavailable.",
+                  Severity.MEDIUM, **details)
+
     def _process_record(self, rec: object) -> None:
-        """Parse a single win32evtlog record and emit onto the bus."""
+        """Verify native provider identity before assigning any Sysmon meaning."""
+        if not self._verified_provider(rec):
+            self._reject_sensor_record("ProviderMismatch")
+            return
         try:
-            eid = int(rec.EventID & 0xFFFF)  # strip facility/severity bits
+            eid = int(rec.EventID & 0xFFFF)
         except Exception:
-            self._parse_rejection_count += 1
-            if not self._cursor_persist_failed:
-                self.set_health(70, "Sysmon record rejected: invalid EventID")
+            self._reject_sensor_record("InvalidEventId")
             return
         if eid not in _EID_MAP:
             return
-
         label, tags, severity = _EID_MAP[eid]
-
-        # Reconstruct the XML payload from the StringInserts field.
-        # Sysmon stores the full event XML as the first StringInsert.
-        xml_str: Optional[str] = None
+        xml_str = None
         try:
             inserts = rec.StringInserts
             if inserts:
                 xml_str = inserts[0] if isinstance(inserts[0], str) else None
         except Exception:
             pass
-
-        if xml_str and len(xml_str) <= _MAX_EVENT_XML_CHARS:
-            try:
-                root = ET.fromstring(xml_str)
-                msg     = _build_message(eid, root)
-                details = _build_details(eid, root, label, tags)
-            except (ET.ParseError, DefusedXmlException):
-                self._parse_rejection_count += 1
-                msg     = f"Sysmon EID {eid}: {label} (XML parse error)"
-                details = {
-                    "eid": eid, "label": label, "mitre_tags": tags,
-                    "parse_rejection_count": self._parse_rejection_count,
-                }
-        elif xml_str and len(xml_str) > _MAX_EVENT_XML_CHARS:
-            self._parse_rejection_count += 1
-            msg = f"Sysmon EID {eid}: {label} (XML payload exceeded safety bound)"
-            details = {
-                "eid": eid,
-                "label": label,
-                "mitre_tags": tags,
-                "xml_status": "oversized",
-                "parse_rejection_count": self._parse_rejection_count,
-            }
-        else:
-            msg     = f"Sysmon EID {eid}: {label}"
-            details = {"eid": eid, "label": label, "mitre_tags": tags}
-
+        if not xml_str:
+            self._reject_sensor_record("XmlMissing", eid=eid, observed_severity=severity)
+            return
+        if len(xml_str) > _MAX_EVENT_XML_CHARS:
+            self._reject_sensor_record("XmlOversized", eid=eid, observed_severity=severity)
+            return
+        try:
+            root = ET.fromstring(xml_str)
+            msg = _build_message(eid, root)
+            details = _build_details(eid, root, label, tags)
+        except ET.ParseError:
+            self._reject_sensor_record("XmlParseError", eid=eid, observed_severity=severity)
+            return
+        except DefusedXmlException:
+            self._reject_sensor_record("XmlUnsafe", eid=eid, observed_severity=severity)
+            return
         self.emit(msg, severity, **details)
 
     # ── psutil fallback loop ──────────────────────────────────────────────────
@@ -1238,7 +1288,7 @@ class SysmonListenerModule(BaseModule):
                 if ok else "generation-bound cursor contract failed",
             )
         if self._using_fallback:
-            return True, "Running psutil fallback (Sysmon not installed)"
+            return True, "Running process-diff fallback; Sysmon telemetry unavailable"
         if self._evtlog_handle is not None:
             return True, f"Sysmon channel open: {_SYSMON_CHANNEL}"
         return False, "Not yet initialised"

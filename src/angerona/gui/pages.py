@@ -24,6 +24,8 @@ import threading
 import time
 import uuid
 import weakref
+from dataclasses import dataclass
+from itertools import islice
 from pathlib import Path
 from urllib.parse import quote
 
@@ -627,6 +629,24 @@ def _event_row_identities(events, bus=None) -> list[str]:
         counts[base] = ordinal + 1
         identities.append(f"{base}:{ordinal}")
     return identities
+
+
+@dataclass(frozen=True)
+class _PreparedAlertRow:
+    """Worker-owned display evidence; never a response authorization token."""
+
+    event: object
+    identity: str
+    path_text: str
+    path_tooltip: str
+
+
+def _prepare_alert_rows(events, bus, limit: int) -> tuple[_PreparedAlertRow, ...]:
+    """Authenticate and format bounded alert rows without touching Qt."""
+    return tuple(
+        _PreparedAlertRow(event, _event_record_identity(event, bus), *_event_path_display(event))
+        for event in islice(events, limit)
+    )
 
 
 def _is_integrity_alert(event) -> bool:
@@ -5231,6 +5251,13 @@ class AlertsPanel(QFrame):
         self._newest_ts: float = 0.0
         self._last_storage_revision: int = -1
         self._last_gap_rebuild: float = 0.0
+        self._prepared_alert_rows: tuple[_PreparedAlertRow, ...] | None = None
+        self._alert_render_job = None
+        self._alert_render_generation = 0
+        self._alert_render_timer = QTimer(self)
+        self._alert_render_timer.setInterval(1)
+        self._alert_render_timer.timeout.connect(self._advance_alert_render)
+        self.destroyed.connect(self._cancel_alert_render)
         self._events_reader = AsyncSnapshot(
             self, self._prepare_alert_snapshot,
             lambda snapshot: self._apply_loaded_events(*snapshot), name="DashboardAlertReader",
@@ -5652,7 +5679,7 @@ class AlertsPanel(QFrame):
             f"{time.strftime('%H:%M:%S', time.localtime(expires))}: {description}. "
             "Use Undo Allow to restore it now."
         )
-        self._rebuild_event_rows(self._events, force=True)
+        self._refresh_alert_presentation(force=True)
         self.suppression_changed.emit()
         return True
 
@@ -5701,7 +5728,7 @@ class AlertsPanel(QFrame):
         self._status.setText(
             f"Temporary suppression revoked for {scope[0]}; matching alerts are visible."
         )
-        self._rebuild_event_rows(self._events, force=True)
+        self._refresh_alert_presentation(force=True)
         self.suppression_changed.emit()
 
     def _expire_suppressions(self, now: float | None = None) -> bool:
@@ -5806,7 +5833,10 @@ class AlertsPanel(QFrame):
         self._status.setText(f"✓ {result}{suffix}")
         return True
 
-    def _insert_row(self, pos: int, e, row_identity: str | None = None) -> None:
+    def _insert_row(
+        self, pos: int, e, row_identity: str | None = None,
+        prepared: _PreparedAlertRow | None = None,
+    ) -> None:
         if self._is_suppressed(e):
             return
         self.table.insertRow(pos)
@@ -5827,7 +5857,10 @@ class AlertsPanel(QFrame):
         self.table.setItem(pos, 1, mod_item)
         self.table.setItem(pos, 2, _SeverityItem(e.severity))
         self.table.setItem(pos, 3, QTableWidgetItem(e.message))
-        path_text, path_tooltip = _event_path_display(e)
+        path_text, path_tooltip = (
+            (prepared.path_text, prepared.path_tooltip) if prepared is not None
+            else _event_path_display(e)
+        )
         path_item = QTableWidgetItem(path_text)
         path_item.setToolTip(path_tooltip)
         self.table.setItem(pos, 4, path_item)
@@ -5870,6 +5903,7 @@ class AlertsPanel(QFrame):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        self._cancel_alert_render()
         self._events_reader.close()
         super().closeEvent(event)
 
@@ -5877,7 +5911,7 @@ class AlertsPanel(QFrame):
         # Expiry is wall-clock state, independent of ledger revision. Re-render
         # when a temporary suppression lapses even if no new event arrived.
         if self._expire_suppressions():
-            self._rebuild_event_rows(self._events, force=True)
+            self._refresh_alert_presentation(force=True)
         # The pre-check is an in-memory committed revision. If a writer is busy,
         # keep the current table and retry on the next two-second refresh.
         revision = self.storage.revision()
@@ -5886,21 +5920,146 @@ class AlertsPanel(QFrame):
         self._events_reader.request()
 
     def _prepare_alert_snapshot(self):
-        storage, revision = self.storage, self.storage.revision()
-        return lambda: (revision, storage.try_recent(120))
+        storage, revision, bus = self.storage, self.storage.revision(), self.bus
+        limit = self._MAX_ROWS
 
-    def _apply_loaded_events(self, revision, events) -> None:
+        def read():
+            events = storage.try_recent(limit)
+            if events is None:
+                return revision, None, None
+            rows = _prepare_alert_rows(events, bus, limit)
+            return revision, tuple(row.event for row in rows), rows
+
+        return read
+
+    def _apply_loaded_events(self, revision, events, prepared_rows=None) -> None:
         if not self._accept_async_results:
             return
         if events is None:
             return
-        self._rebuild_event_rows(events)
+        if prepared_rows is None:
+            # Compatibility for explicit direct callers. Routine ledger reads
+            # always supply the worker's authenticated display projection.
+            self._prepared_alert_rows = None
+            self._rebuild_event_rows(events)
+        else:
+            self._prepared_alert_rows = prepared_rows
+            self._queue_alert_render(prepared_rows)
         self._events = list(events)
         self._newest_ts = float(events[0].ts) if events else 0.0
         self._last_storage_revision = revision
 
+    def _refresh_alert_presentation(self, *, force=False) -> None:
+        if self._prepared_alert_rows is None:
+            self._rebuild_event_rows(self._events, force=force)
+        else:
+            # Suppression changes only re-project the already prepared display.
+            # Button preflight and execution still authenticate their originals.
+            self._queue_alert_render(self._prepared_alert_rows, force=force)
+
+    def _cancel_alert_render(self, *_args) -> None:
+        self._alert_render_generation += 1
+        self._alert_render_job = None
+        timer = getattr(self, "_alert_render_timer", None)
+        if timer is not None and isValid(timer):
+            timer.stop()
+
+    def _queue_alert_render(self, rows, *, force=False) -> None:
+        """Keep one newest display job and yield between small Qt-only batches."""
+        interrupted = self._alert_render_job is not None
+        self._cancel_alert_render()
+        if not self._accept_async_results:
+            return
+        selected, counts = [], {}
+        for row in rows:
+            if self._is_suppressed(row.event):
+                continue
+            ordinal = counts.get(row.identity, 0)
+            counts[row.identity] = ordinal + 1
+            selected.append((row, f"{row.identity}:{ordinal}"))
+        identities = tuple(identity for _row, identity in selected)
+        if identities == self._rendered_event_ids and not force and not interrupted:
+            return
+        header = self.table.horizontalHeader()
+        self._alert_render_job = {
+            "generation": self._alert_render_generation,
+            "rows": tuple(selected), "identities": identities, "wanted": set(identities),
+            "index": 0, "scroll": self.table.verticalScrollBar().value(),
+            "new": bool(set(identities) - set(self._rendered_event_ids)),
+            "sort_col": header.sortIndicatorSection(), "sort_order": header.sortIndicatorOrder(),
+        }
+        self._alert_render_timer.start()
+
+    def _advance_alert_render(self) -> None:
+        job = self._alert_render_job
+        if job is None or not self._accept_async_results:
+            self._cancel_alert_render()
+            return
+        table = self.table
+        header = table.horizontalHeader()
+        job["sort_col"], job["sort_order"] = header.sortIndicatorSection(), header.sortIndicatorOrder()
+        sorting, updates, blocked = table.isSortingEnabled(), table.updatesEnabled(), table.blockSignals(True)
+        table.setSortingEnabled(False)
+        table.setUpdatesEnabled(False)
+        done = False
+        deadline = time.monotonic() + 0.004
+        try:
+            retained = {table.item(r, 0).data(Qt.UserRole + 1): table.item(r, 0)
+                        for r in range(table.rowCount()) if table.item(r, 0) is not None}
+            for _ in range(8):
+                if job is not self._alert_render_job:
+                    return
+                if job["index"] < len(job["rows"]):
+                    row, identity = job["rows"][job["index"]]
+                    item = retained.get(identity)
+                    if item is not None:
+                        item.setData(Qt.UserRole, row.event)
+                    else:
+                        # Make room before insertion, keeping the visible table
+                        # capped while newest rows arrive ahead of old removals.
+                        if table.rowCount() >= self._MAX_ROWS:
+                            for index in range(table.rowCount() - 1, -1, -1):
+                                old = table.item(index, 0)
+                                if old is None or old.data(Qt.UserRole + 1) not in job["wanted"]:
+                                    self._free_row_widgets(index)
+                                    table.removeRow(index)
+                                    break
+                        self._insert_row(table.rowCount(), row.event, identity, row)
+                    job["index"] += 1
+                else:
+                    for index in range(table.rowCount() - 1, -1, -1):
+                        item = table.item(index, 0)
+                        if item is None or item.data(Qt.UserRole + 1) not in job["wanted"]:
+                            self._free_row_widgets(index)
+                            table.removeRow(index)
+                            break
+                    else:
+                        done = True
+                        break
+                if time.monotonic() >= deadline:
+                    break
+        except Exception:
+            self._rendered_event_ids = ()
+            self._prepared_alert_rows = None
+            self._last_storage_revision = -1
+            self._cancel_alert_render()
+        finally:
+            if isValid(table):
+                table.setSortingEnabled(sorting)
+                if sorting:
+                    table.sortByColumn(job["sort_col"], job["sort_order"])
+                _restore_alert_scroll(table, job["sort_col"], job["sort_order"], job["scroll"], job["new"])
+                table.setUpdatesEnabled(updates)
+                table.blockSignals(blocked)
+        if done and job is self._alert_render_job:
+            self._rendered_event_ids = job["identities"]
+            self._cancel_alert_render()
+            self._update_preview()
+
     def _rebuild_event_rows(self, events, *, force: bool = False) -> None:
         """Reconcile by full event identity so equal timestamps cannot drop rows."""
+        self._cancel_alert_render()
+        self._prepared_alert_rows = None
         visible = [event for event in events if not self._is_suppressed(event)][:self._MAX_ROWS]
         identities = tuple(_event_row_identities(visible, self.bus))
         if identities == self._rendered_event_ids and not force:
@@ -6951,47 +7110,166 @@ class _ModuleStrip(QFrame):
         self._prev: dict = {}
         self._built_names: tuple[str, ...] = ()
         self._dimensions_pending = False
+        self._ribbon_closed = False
+        self._target_names: tuple[str, ...] = ()
+        self._chip_reconcile_job = None
+        self._chip_reconcile_timer = QTimer(self)
+        self._chip_reconcile_timer.setInterval(1)
+        self._chip_reconcile_timer.timeout.connect(self._advance_chip_reconcile)
+        self._dimensions_timer = QTimer(self)
+        self._dimensions_timer.setSingleShot(True)
+        self._dimensions_timer.timeout.connect(self._flush_dimensions)
+        self.destroyed.connect(self._cancel_chip_reconcile)
+
+    def _module_names(self) -> tuple[str, ...]:
+        # Registration runs on the loader. Copy its current in-memory mapping,
+        # rather than retaining an iterator across Qt operations.
+        return tuple(sorted(self.manager.modules.copy()))
+
+    def _remove_chip(self, name: str) -> None:
+        chip = self._chips.pop(name, None)
+        self._prev.pop(name, None)
+        if chip is not None:
+            self._lay.removeWidget(chip)
+            chip.hide()
+            chip.deleteLater()
+
+    def _prepare_new_chip(self, name: str, chip) -> None:
+        """Subclasses may paint from cached state before insertion."""
+
+    def _insert_chip(self, name: str, callback) -> None:
+        chip = _ClickableChip(name)
+        chip.setParent(self._scroll.widget())
+        chip.setAlignment(Qt.AlignCenter)
+        chip.setFont(_chip_font())
+        if callback is not None:
+            chip.clicked.connect(callback)
+        self._prepare_new_chip(name, chip)
+        self._size_chip(name, chip)
+        position = sum(existing < name for existing in self._chips)
+        self._chips[name] = chip
+        self._chips = dict(sorted(self._chips.items()))
+        self._lay.insertWidget(position, chip)
 
     def _rebuild(self, callback) -> None:
-        while self._lay.count():
-            item = self._lay.takeAt(0)
-            if item.widget():
-                item.widget().hide()
-                item.widget().deleteLater()
-        self._chips.clear()
-        self._prev.clear()
-        self._built_names = tuple(sorted(self.manager.modules))
-        for name in self._built_names:
-            chip = _ClickableChip(name)
-            chip.setAlignment(Qt.AlignCenter)
-            chip.setFont(_chip_font())
-            if callback is not None:
-                chip.clicked.connect(callback)
-            self._chips[name] = chip
-            self._lay.addWidget(chip)
-        self._update_dimensions()
-        self._queue_dimensions()
+        """Retain unchanged health chips and their focus/style cache."""
+        if self._ribbon_closed:
+            return
+        names = self._module_names()
+        wanted = set(names)
+        for name in tuple(self._chips):
+            if name not in wanted:
+                self._remove_chip(name)
+        for name in names:
+            if name not in self._chips:
+                self._insert_chip(name, callback)
+        self._built_names = self._target_names = names
+        self._update_strip_geometry()
+
+    def _start_chip_reconcile(self, names, callback) -> None:
+        self._cancel_chip_reconcile()
+        self._target_names = names
+        wanted = set(names)
+        self._chip_reconcile_job = {
+            "names": names, "callback": callback,
+            "remove": tuple(name for name in self._chips if name not in wanted),
+            "add": tuple(name for name in names if name not in self._chips),
+            "remove_index": 0, "add_index": 0,
+        }
+
+    def _queue_chip_reconcile(self, callback) -> None:
+        """Coalesce loader churn into one latest-target resource ribbon job."""
+        if self._ribbon_closed:
+            return
+        names = self._module_names()
+        if names == self._target_names and (
+            self._chip_reconcile_job is not None or names == self._built_names
+        ):
+            return
+        self._start_chip_reconcile(names, callback)
+        self._advance_chip_reconcile()
+
+    def _advance_chip_reconcile(self) -> None:
+        job = self._chip_reconcile_job
+        if job is None or self._ribbon_closed:
+            self._cancel_chip_reconcile()
+            return
+        # Replace obsolete targets even between ordinary dashboard refreshes.
+        names = self._module_names()
+        if names != job["names"]:
+            self._start_chip_reconcile(names, job["callback"])
+            job = self._chip_reconcile_job
+        deadline = time.monotonic() + 0.004
+        changed = False
+        for _ in range(8):
+            if job is not self._chip_reconcile_job or self._ribbon_closed:
+                return
+            if job["remove_index"] < len(job["remove"]):
+                name = job["remove"][job["remove_index"]]
+                job["remove_index"] += 1
+                self._remove_chip(name)
+            elif job["add_index"] < len(job["add"]):
+                name = job["add"][job["add_index"]]
+                job["add_index"] += 1
+                self._insert_chip(name, job["callback"])
+            else:
+                break
+            changed = True
+            if time.monotonic() >= deadline:
+                break
+        if changed:
+            self._update_strip_geometry()
+        if (job["remove_index"] == len(job["remove"])
+                and job["add_index"] == len(job["add"])):
+            self._built_names = job["names"]
+            self._cancel_chip_reconcile()
+        else:
+            self._chip_reconcile_timer.start()
+
+    def _cancel_chip_reconcile(self, *_args) -> None:
+        self._chip_reconcile_job = None
+        timer = getattr(self, "_chip_reconcile_timer", None)
+        if timer is not None and isValid(timer):
+            timer.stop()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._ribbon_closed = True
+        self._cancel_chip_reconcile()
+        self._dimensions_pending = False
+        self._dimensions_timer.stop()
+        super().closeEvent(event)
+
+    def _size_chip(self, name: str, chip) -> None:
+        module = self.manager.modules.get(name)
+        if module is None:
+            return
+        code = _short_code(module)
+        metrics = chip.fontMetrics()
+        width = max(68, metrics.horizontalAdvance(code) + 22,
+                    metrics.horizontalAdvance("100%") + 22)
+        height = max(42, metrics.lineSpacing() * 2 + 10)
+        if chip.width() != width or chip.height() != height:
+            chip.setFixedSize(width, height)
+
+    def _update_strip_geometry(self) -> None:
+        height = max((chip.height() for chip in self._chips.values()), default=42)
+        metrics = self._heading.fontMetrics()
+        width = max(108, metrics.horizontalAdvance("ACTIVITY") + 10,
+                    metrics.horizontalAdvance("999/999 live") + 10)
+        if self._caption.width() != width:
+            self._caption.setFixedWidth(width)
+        height = (max(height, self._caption.sizeHint().height())
+                  + self._scroll.horizontalScrollBar().sizeHint().height() + 8)
+        if self.height() != height:
+            self.setFixedHeight(height)
 
     def _update_dimensions(self) -> None:
-        if not hasattr(self, "_chips"):
+        if not hasattr(self, "_chips") or self._ribbon_closed:
             return
-        height = 42
-        # Both rows use the same names/font and therefore stay aligned even
-        # when a plugin supplies an acronym longer than the usual five letters.
+        # Font/theme changes still resize every chip, once per coalesced turn.
         for name, chip in self._chips.items():
-            code = _short_code(self.manager.modules[name])
-            metrics = chip.fontMetrics()
-            chip.setFixedSize(
-                max(68, metrics.horizontalAdvance(code) + 22,
-                    metrics.horizontalAdvance("100%") + 22),
-                max(42, metrics.lineSpacing() * 2 + 10),
-            )
-            height = max(height, chip.height())
-        metrics = self._heading.fontMetrics()
-        self._caption.setFixedWidth(max(108, metrics.horizontalAdvance("ACTIVITY") + 10,
-                                        metrics.horizontalAdvance("999/999 live") + 10))
-        self.setFixedHeight(max(height, self._caption.sizeHint().height()) +
-                            self._scroll.horizontalScrollBar().sizeHint().height() + 8)
+            self._size_chip(name, chip)
+        self._update_strip_geometry()
 
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)
@@ -6999,14 +7277,16 @@ class _ModuleStrip(QFrame):
             self._queue_dimensions()
 
     def _queue_dimensions(self) -> None:
-        if not hasattr(self, "_chips") or self._dimensions_pending:
+        if (not hasattr(self, "_dimensions_timer") or self._ribbon_closed
+                or self._dimensions_pending):
             return
         self._dimensions_pending = True
-        QTimer.singleShot(0, self._flush_dimensions)
+        self._dimensions_timer.start(0)
 
     def _flush_dimensions(self) -> None:
         self._dimensions_pending = False
-        self._update_dimensions()
+        if not self._ribbon_closed:
+            self._update_dimensions()
 
     def enterEvent(self, event) -> None:  # noqa: N802
         self.interacted.emit()
@@ -7183,11 +7463,15 @@ class ResourceStrip(_ModuleStrip):
         super().__init__(manager, "ACTIVITY", "Estimated")
         self.setObjectName("ResourceStrip")
         self.bus = bus
+        self._latest_activity: dict[str, int] = {}
         self._summary.setToolTip("Estimated intensity from recent events and sensor workload; not measured CPU usage.")
         self._build()
 
     def _build(self) -> None:
-        self._rebuild(self._open_resource)
+        self._queue_chip_reconcile(self._open_resource)
+
+    def _prepare_new_chip(self, name: str, chip) -> None:
+        self._paint_resource_chip(name, chip, self._latest_activity)
 
     def _intensity(self, name: str, mod, activity: dict) -> int:
         if getattr(mod, "status", "") != "running":
@@ -7197,44 +7481,49 @@ class ResourceStrip(_ModuleStrip):
         return max(1, min(100, base + bonus))
 
     def refresh(self) -> None:
-        if self._built_names != tuple(sorted(self.manager.modules)):
-            self._build()
-        # Live activity: count recent events per module (cheap, changes over time).
+        # This is the existing bounded in-memory activity view. Timer turns
+        # reuse it and never collect another backend snapshot.
         activity: dict[str, int] = {}
         try:
             for e in self.bus.recent(120):
                 activity[e.module] = activity.get(e.module, 0) + 1
         except Exception:
             pass
+        self._latest_activity = activity
+        if self._built_names != self._module_names():
+            self._build()
         for name, chip in self._chips.items():
-            mod = self.manager.modules.get(name)
-            if not mod:
-                continue
-            enabled = _manager_enabled(self.manager, mod)
-            running = enabled and getattr(mod, "status", "") == "running"
-            pct = self._intensity(name, mod, activity) if enabled else 0
-            key = (pct, running, enabled)
-            if self._prev.get(name) == key:
-                continue
-            self._prev[name] = key
-            color = _intensity_color(pct, running) if enabled else HEALTH_COLOR["off"]
-            label = f"{pct}%" if enabled else "OFF"
-            text = f"{_short_code(mod)}\n{label}"
-            tooltip = (f"{mod.name} — estimated resource intensity {pct}%"
-                       + ("" if running else " (stopped)")
-                       + ". Based on recent events and sensor workload; not measured CPU usage.")
-            if chip.text() != text:
-                chip.setText(text)
-            if chip.toolTip() != tooltip:
-                chip.setToolTip(tooltip)
-                chip.setAccessibleDescription(tooltip)
-            style = (
-                f"QLabel {{background:#1a{color[1:]}; color:{color};"
-                f"border:1px solid #55{color[1:]}; border-radius:8px;"
-                f"padding:2px 5px; font-weight:700;}}"
-                "QLabel:focus {border:1px solid #e2e8f0;}")
-            if chip.styleSheet() != style:
-                chip.setStyleSheet(style)
+            self._paint_resource_chip(name, chip, activity)
+
+    def _paint_resource_chip(self, name: str, chip, activity: dict) -> None:
+        mod = self.manager.modules.get(name)
+        if not mod:
+            return
+        enabled = _manager_enabled(self.manager, mod)
+        running = enabled and getattr(mod, "status", "") == "running"
+        pct = self._intensity(name, mod, activity) if enabled else 0
+        key = (pct, running, enabled)
+        if self._prev.get(name) == key:
+            return
+        self._prev[name] = key
+        color = _intensity_color(pct, running) if enabled else HEALTH_COLOR["off"]
+        label = f"{pct}%" if enabled else "OFF"
+        text = f"{_short_code(mod)}\n{label}"
+        tooltip = (f"{mod.name} — estimated resource intensity {pct}%"
+                   + ("" if running else " (stopped)")
+                   + ". Based on recent events and sensor workload; not measured CPU usage.")
+        if chip.text() != text:
+            chip.setText(text)
+        if chip.toolTip() != tooltip:
+            chip.setToolTip(tooltip)
+            chip.setAccessibleDescription(tooltip)
+        style = (
+            f"QLabel {{background:#1a{color[1:]}; color:{color};"
+            f"border:1px solid #55{color[1:]}; border-radius:8px;"
+            f"padding:2px 5px; font-weight:700;}}"
+            "QLabel:focus {border:1px solid #e2e8f0;}")
+        if chip.styleSheet() != style:
+            chip.setStyleSheet(style)
 
     def _resource_snapshot(self, name: str) -> dict:
         module = self.manager.modules.get(name)

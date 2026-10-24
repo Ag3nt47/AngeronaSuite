@@ -25,8 +25,11 @@ This availability-aggressive policy can interrupt legitimate software or
 network access on a heuristic false positive. Change **Single-rule containment**
 in this window's Settings. Adversary Combat's separately configured authority,
 platform, protected-process and exact-object checks still apply. Full host
-isolation requires its Maximum policy. Unelevated source runs retain their
-Observe/development boundary; a request cannot grant missing OS authority.
+isolation requires its Maximum policy. In Maximum/terminate mode, an eligible
+process response attempts termination before firewall work. A verified exit
+completes that process response without adding a persistent program rule for
+the exited target. An unelevated run can act within its actual Windows rights;
+a request cannot grant missing OS authority.
 
 Research mentions, unreviewed indicators, CVEs, remote observations, malformed
 telemetry, health-only events and sandbox rehearsals do not acquire local
@@ -37,6 +40,12 @@ isolation. Persistence analysis uses executable and script targets rather than
 task descriptions, names or log/output arguments. Unsupported interpreter
 syntax reports partial analysis instead of a clean verdict. Eligible local
 execution findings retain the single-rule containment policy above.
+
+A Windows Run entry that merely names a temporary/public/download payload is
+also a configuration exposure. The registry collector does not establish file
+existence, execution or malicious content. That finding preserves its evidence
+and observed severity without requesting host isolation. Independent behavioral
+or activated-definition matches retain their own automatic response.
 
 ## What is collected
 
@@ -75,11 +84,66 @@ response_eligible=false. Linux region metadata has no equivalent native identity
 receipt in this path. An obsolete worker generation loses publication authority
 after stop/restart. A receipt is metadata, not a signature: authenticated producer
 provenance and the existing exact-target response boundary remain required.
-An executable private region can be legitimate JIT activity; this change does
-not identify an implant or prove a clean host. See the
+Private executable-region metadata and the Memory Injection Scanner's explicit
+RWX alert-only observations remain exposure leads. SpywareGuard preserves their
+identity evidence but cannot turn those permissions alone into process, file,
+peer or host containment. Independently supported active findings and activated
+definition matches retain automatic response. These observations do not identify
+an implant or prove a clean host. See the
 [identity and key review](key-and-communication-integrity.md).
 
 ## Intelligence, source links and news
+
+### Updating local spyware definitions
+
+Open **SpywareGuard → Definitions → Import definitions** and choose a local
+JSON pack. Parsing and file access run on the module worker. Importing stages a
+preview; it does not activate rules. The view shows the version, validity dates,
+digest, counts by indicator kind and the first 25 literal indicators.
+
+Select **Activate imported pack** to install the exact displayed pack. That one
+activation authorizes its definitions; subsequent local matches request the
+existing automatic containment policy without per-incident approval. Current
+and previous packs persist together in an authenticated local state file.
+**Roll back to previous pack** selects the displayed prior pack as a new local
+generation. Expired packs cannot provide live matches, and failed imports or
+stale queued selections do not silently replace the current pack.
+
+Packs contain only literal SHA-256, public-IP and domain indicators. They cannot
+contain scripts, regular expressions, commands or configuration overrides. Use
+numeric dotted versions such as `2026.10.24.1`; ordinary activation advances the
+highest accepted version, including after rollback. Publication and expiry are
+finite Unix timestamps with a validity window of at most 30 days. Inputs are
+limited to 4 MiB and 5,000 unique indicators.
+
+The following is an **inert format example**, not a current threat feed or a
+supplied spyware signature. Its dates must be updated for a later review:
+
+```json
+{
+  "schema": "angerona.spyware-definitions.v1",
+  "version": "2026.10.24.1",
+  "published_at": 1792800000,
+  "expires_at": 1793404800,
+  "indicators": [
+    {"kind": "domain", "value": "example.invalid"}
+  ]
+}
+```
+
+Local activation authenticates the installation's approved choice, not an
+external publisher. A digest identifies a bundle; it is not a publisher
+signature, and local HMAC state does not independently witness replay of an
+entire older authenticated state file. No spyware feed, publisher key or real
+IOC set is invented or automatically enrolled. Research downloads and news
+remain candidates under their separate review workflow. A future unattended
+network update channel requires an independently enrolled, authenticated publisher.
+
+An unavailable existing activation authority or uncertain post-replacement
+publication remains a visible definitions hold. The implementation preserves
+the state for review rather than generating replacement authority or pretending
+that memory and disk still agree. Other sensors and reviewed research retain
+their existing boundaries.
 
 Enable **Network intelligence ingestion** to allow outbound research downloads.
 The module supports the official Citizen Lab and Project Zero research indexes

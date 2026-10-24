@@ -58,12 +58,17 @@ COLLECTION_SOURCES = frozenset({
     "neighbors",
     "profile",
     "wireless",
+    "gateway-identities-interface-bound",
 })
+GATEWAY_IDENTITY_EVIDENCE_SOURCE = "gateway-identities-interface-bound"
 REQUIRED_GLOBAL_COLLECTION = frozenset({
     "interfaces", "addresses", "routes-ipv4", "routes-ipv6"
 })
 REQUIRED_LINK_COLLECTION = frozenset({
     "addresses", "dns", "dhcp", "routes-ipv4", "routes-ipv6", "neighbors", "profile"
+})
+_GATEWAY_EVIDENCE_COLLECTION = REQUIRED_GLOBAL_COLLECTION | frozenset({
+    "neighbors", GATEWAY_IDENTITY_EVIDENCE_SOURCE,
 })
 _BASELINE_DOMAIN = b"angerona/network-trust-baseline/v1\x00"
 _PRIVACY_DOMAIN = b"angerona/network-trust-privacy/v1\x00"
@@ -508,6 +513,60 @@ def _wifi_security_state(value: str) -> str:
     return "unknown"
 
 
+def _resolved_interface_gateway_evidence(link: NetworkLinkObservation) -> bool:
+    """Require one usable, interface-bound neighbor identity per routed gateway.
+
+    This validates observation provenance, never the gateway's trustworthiness.
+    A successful empty cache, an unknown interface, or a multicast/zero address
+    cannot establish a changed gateway MAC.
+    """
+    if not link.default_routes or link.interface_index is None or link.interface_index <= 0:
+        return False
+    if any(route.interface_index != link.interface_index for route in link.default_routes):
+        return False
+    gateways = {route.gateway for route in link.default_routes}
+    observed: set[str] = set()
+    for identity in link.gateway_identities:
+        parts = identity.rsplit("|", 1)
+        if len(parts) != 2 or parts[0] not in gateways or parts[0] in observed:
+            return False
+        octets = parts[1].casefold().split(":")
+        if len(octets) != 6 or any(
+            len(value) != 2 or any(char not in _HEX for char in value)
+            for value in octets
+        ):
+            return False
+        address = bytes(int(value, 16) for value in octets)
+        if not any(address) or address[0] & 1:
+            return False
+        observed.add(parts[0])
+    return observed == gateways
+
+
+def _gateway_comparison_evidence(
+    path: _PathFingerprint, prior: _PathFingerprint | None,
+    global_current_complete: bool,
+) -> tuple[bool, bool, bool]:
+    current_ready = global_current_complete and bool(path.gateway_tokens) and _GATEWAY_EVIDENCE_COLLECTION.issubset(
+        path.collection_complete
+    )
+    prior_ready = bool(prior and prior.gateway_tokens) and _GATEWAY_EVIDENCE_COLLECTION.issubset(
+        prior.collection_complete if prior is not None else ()
+    )
+    # The name-based path token alone does not bind a replacement adapter.
+    # Route tokens bind the native index and gateway without retaining either.
+    prior_ready = prior_ready and {
+        (route[0], route[1]) for route in prior.route_tokens
+    } == {(route[0], route[1]) for route in path.route_tokens}
+    # Legacy schema-v2 tokens remain admissible comparison state, but their
+    # opaque hashes cannot prove that the old collector retained an interface.
+    prior_identity_needed = bool(prior and (prior.gateway_tokens or prior.route_tokens))
+    gap = bool(path.gateway_tokens or path.route_tokens or prior_identity_needed) and (
+        not current_ready or (prior_identity_needed and not prior_ready)
+    )
+    return current_ready, prior_ready, gap
+
+
 def _fingerprint(link: NetworkLinkObservation, key: bytes) -> _PathFingerprint:
     path_token = _privacy_token(key, b"interface", link.interface_id)
     network_identity = "\0".join((link.ssid, link.bssid))
@@ -532,7 +591,10 @@ def _fingerprint(link: NetworkLinkObservation, key: bytes) -> _PathFingerprint:
     route_tokens = tuple(sorted({
         (
             route.family,
-            _privacy_token(key, b"default-route", route.gateway),
+            _privacy_token(
+                key, b"default-route-interface-v1",
+                f"{link.interface_index}|{route.gateway}",
+            ),
             route.metric,
             route.selected,
             route.attested,
@@ -545,6 +607,11 @@ def _fingerprint(link: NetworkLinkObservation, key: bytes) -> _PathFingerprint:
         _privacy_token(key, b"gateway-identity", value)
         for value in link.gateway_identities
     }))
+    completeness = set(link.collection_complete)
+    if not _resolved_interface_gateway_evidence(link) or not (
+        REQUIRED_GLOBAL_COLLECTION | {"neighbors"}
+    ).issubset(completeness):
+        completeness.discard(GATEWAY_IDENTITY_EVIDENCE_SOURCE)
     return _PathFingerprint(
         path_token=path_token,
         kind=link.kind,
@@ -556,7 +623,7 @@ def _fingerprint(link: NetworkLinkObservation, key: bytes) -> _PathFingerprint:
         gateway_tokens=gateway_tokens,
         profile_category=link.profile_category,
         trust_label=link.gateway_attestation,
-        collection_complete=link.collection_complete,
+        collection_complete=tuple(sorted(completeness)),
     )
 
 
@@ -613,6 +680,7 @@ def evaluate_network_trust(
     global_complete = REQUIRED_GLOBAL_COLLECTION.issubset(
         snapshot.collection_complete
     )
+    global_gateway_complete = global_complete and "neighbors" in snapshot.collection_complete
     selected_by_family: dict[
         str, list[tuple[_PathFingerprint, tuple[str, str, int | None, bool, bool]]]
     ] = {"ipv4": [], "ipv6": []}
@@ -627,13 +695,24 @@ def evaluate_network_trust(
             if route[3]:
                 selected_by_family[route[0]].append((path, route))
 
+    prior_by_path = {
+        path.path_token: path for path in (previous.paths if previous else ())
+    }
     normalized: list[_PathFingerprint] = []
     for path in observed:
+        if not global_gateway_complete:
+            path = replace(path, collection_complete=tuple(
+                item for item in path.collection_complete
+                if item != GATEWAY_IDENTITY_EVIDENCE_SOURCE
+            ))
         source = source_by_token[path.path_token]
         required = set(REQUIRED_LINK_COLLECTION)
         if source.kind == "wifi":
             required.add("wireless")
-        link_complete = required.issubset(path.collection_complete)
+        _, _, gateway_gap = _gateway_comparison_evidence(
+            path, prior_by_path.get(path.path_token), global_gateway_complete
+        )
+        link_complete = required.issubset(path.collection_complete) and not gateway_gap
         full_route_attestation = bool(applicable_families)
         for family in applicable_families:
             selected = selected_by_family[family]
@@ -669,11 +748,11 @@ def evaluate_network_trust(
         set(REQUIRED_LINK_COLLECTION).union(
             {"wireless"} if path.kind == "wifi" else set()
         ).issubset(path.collection_complete)
+        and not _gateway_comparison_evidence(
+            path, prior_by_path.get(path.path_token), global_gateway_complete
+        )[2]
         for path in current
     )
-    prior_by_path = {
-        path.path_token: path for path in (previous.paths if previous else ())
-    }
     added_path_count = sum(
         path.path_token not in prior_by_path for path in current
     ) if previous is not None else 0
@@ -686,7 +765,17 @@ def evaluate_network_trust(
         required = set(REQUIRED_LINK_COLLECTION)
         if path.kind == "wifi":
             required.add("wireless")
-        missing_sources = tuple(sorted(required.difference(path.collection_complete)))
+        current_gateway_ready, prior_gateway_ready, gateway_gap = (
+            _gateway_comparison_evidence(
+                path, prior_by_path.get(path.path_token), global_gateway_complete
+            )
+        )
+        missing = required.difference(path.collection_complete)
+        if gateway_gap:
+            missing.add(GATEWAY_IDENTITY_EVIDENCE_SOURCE)
+            if "neighbors" not in snapshot.collection_complete:
+                missing.add("neighbors")
+        missing_sources = tuple(sorted(missing))
         attested_families = tuple(sorted({
             route[0] for route in path.route_tokens if route[3] and route[4]
         }))
@@ -707,7 +796,17 @@ def evaluate_network_trust(
                 "high",
                 path,
                 "required per-interface or address-family evidence is incomplete",
-                evidence={"missing_sources": tuple(sorted(missing))},
+                evidence={
+                    "missing_sources": tuple(sorted(missing)),
+                    **({"baseline_gateway_evidence_unproven": True} if (
+                        prior_by_path.get(path.path_token) is not None
+                        and (
+                            prior_by_path[path.path_token].gateway_tokens
+                            or prior_by_path[path.path_token].route_tokens
+                        )
+                        and not prior_gateway_ready
+                    ) else {}),
+                },
                 recommendations=(
                     "restore-network-inventory-sources",
                     "keep-path-untrusted",
@@ -845,6 +944,10 @@ def evaluate_network_trust(
         for rule_id, severity, before, after, reason in comparisons:
             # Missing telemetry on both samples is stable, not evidence.  A
             # present-to-missing transition remains drift and fails closed.
+            if rule_id == "network.gateway_identity_drift" and not (
+                global_complete and current_gateway_ready and prior_gateway_ready
+            ):
+                continue
             if before != after and (before or after):
                 findings.append(_finding(
                     rule_id,
@@ -1387,13 +1490,16 @@ def self_test() -> tuple[bool, str]:
     first = NetworkSnapshot((NetworkLinkObservation(
         "self-test-wifi",
         "wifi",
+        interface_index=7,
         interface_epoch="one",
         ssid="sensitive-self-test-ssid",
         bssid="00:11:22:33:44:55",
         wifi_security="WPA3-SAE CCMP",
         dns_servers=("10.0.0.2",),
         dhcp_server="10.0.0.1",
-        default_routes=(DefaultRouteObservation("10.0.0.1", selected=True),),
+        default_routes=(DefaultRouteObservation(
+            "10.0.0.1", metric=10, selected=True, interface_index=7
+        ),),
         gateway_identities=("10.0.0.1|00:aa:bb:cc:dd:ee",),
         profile_category="private",
         collection_complete=tuple(COLLECTION_SOURCES),
@@ -1402,14 +1508,17 @@ def self_test() -> tuple[bool, str]:
     second = NetworkSnapshot((NetworkLinkObservation(
         "self-test-wifi",
         "wifi",
+        interface_index=7,
         interface_epoch="two",
         ssid="sensitive-self-test-ssid",
         bssid="00:11:22:33:44:55",
         wifi_security="WPA3-SAE CCMP",
         dns_servers=("10.0.0.9",),
         dhcp_server="10.0.0.8",
-        default_routes=(DefaultRouteObservation("10.0.0.7", selected=True),),
-        gateway_identities=("10.0.0.7|00:ff:ee:dd:cc:bb",),
+        default_routes=(DefaultRouteObservation(
+            "10.0.0.1", metric=20, selected=True, interface_index=7
+        ),),
+        gateway_identities=("10.0.0.1|00:ff:ee:dd:cc:bb",),
         profile_category="public",
         collection_complete=tuple(COLLECTION_SOURCES),
     ),), collection_complete=tuple(COLLECTION_SOURCES))

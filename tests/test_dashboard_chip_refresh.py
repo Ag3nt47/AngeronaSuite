@@ -1,5 +1,6 @@
 """Visible health notes and native style events for dashboard chip updates."""
 from types import SimpleNamespace
+import time
 
 from PySide6.QtCore import QObject, QEvent, QPoint, QPointF, Qt
 from PySide6.QtGui import QFontMetrics, QWheelEvent
@@ -102,7 +103,14 @@ def ribbon_pair(owner, width=900, config=None):
     health.refresh()
     activity.refresh()
     window.show()
-    QApplication.instance().processEvents()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        QApplication.instance().processEvents()
+        if getattr(activity, "_chip_reconcile_job", None) is None:
+            break
+        time.sleep(0.001)
+    assert getattr(activity, "_chip_reconcile_job", None) is None
+    assert set(activity._chips) == set(owner.modules)
     return window, health, activity
 
 

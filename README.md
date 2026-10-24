@@ -35,11 +35,22 @@ for reproduced defects, measured improvements and unresolved observations.
 **Current v1.14 maintenance — live alert and containment review:** Retained
 critical alerts now survive INFO bursts in status, dashboard and posture
 calculations. Self-integrity distinguishes source-file drift from live callable
-changes, and Live AI Review preserves that classification. An explicit
-stopped-application recovery tool can reconcile one authenticated completed
-firewall rollback checkpoint while preserving its history and private backups.
+changes, and Live AI Review preserves that classification. Separate explicit
+stopped-application recovery tools reconcile narrowly proven firewall rollback
+checkpoints while preserving original history and verified private backups.
 Single-rule containment policy remains active. See the
 [sanitized runtime findings, performance measurements and validation limits](analysis/live-review-2026-10-24.md).
+The follow-up dashboard change prepares authenticated alert rows on a worker
+and applies small paint batches on Qt, retaining unchanged module chips.
+Maximum process response now attempts termination before firewall work;
+uncorroborated memory-permission and configuration-only startup leads retain
+exposure status. Sysmon provider
+checks prevent unrelated Application-log records acquiring detection labels.
+Gateway identity-change claims require complete evidence bound to the same
+interface and gateway in both samples; collection loss remains a coverage alert.
+SpywareGuard's new
+[Definitions workflow](docs/spyware-guard.md#updating-local-spyware-definitions)
+supports local versioned indicator-pack import, activation and rollback.
 
 **Previous model parser integrity maintenance:** Malformed manifests,
 inventories and approved baselines now use the existing typed refusal path for

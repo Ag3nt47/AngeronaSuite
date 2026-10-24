@@ -67,6 +67,18 @@ class FakeModule:
         self.calls.append(("rules",))
         return True
 
+    def queue_definition_import(self, path):
+        self.calls.append(("definition-import", path))
+        return True
+
+    def activate_definitions(self, *, expected):
+        self.calls.append(("definition-activate", copy.deepcopy(expected)))
+        return True
+
+    def rollback_definitions(self, *, expected):
+        self.calls.append(("definition-rollback", copy.deepcopy(expected)))
+        return True
+
 
 def make_page(*, show=False):
     module = FakeModule()
@@ -90,6 +102,80 @@ def test_construction_and_opening_never_fetch_scan_or_change_policy():
         assert module.calls == []
         assert page._timer.interval() == 3000
         assert page._timer.isActive()
+    finally:
+        page.close()
+
+
+def test_definition_import_only_queues_path_without_reading_file(monkeypatch):
+    from pathlib import Path
+    from angerona.gui import spyware_guard_page as ui
+
+    page, module = make_page(show=True)
+    try:
+        monkeypatch.setattr(ui.QFileDialog, "getOpenFileName", lambda *_: ("C:/chosen/definitions.json", "JSON"))
+        monkeypatch.setattr(Path, "open", lambda *_a, **_k: pytest.fail("GUI read definition bytes"))
+        assert module.calls == []
+        page.import_definitions_button.click()
+        assert module.calls == [("definition-import", "C:/chosen/definitions.json")]
+        assert "queued" in page.definitions_status.text()
+        assert page.definitions_active.text() == "Active pack: none"
+        assert not page.activate_definitions_button.isEnabled()
+    finally:
+        page.close()
+
+
+def test_definition_activation_and_rollback_pass_exact_displayed_identity():
+    page, module = make_page(show=True)
+    try:
+        now = time.time()
+        staged = {"action": "activate", "session": "a" * 32, "generation": 7,
+                  "sha256": "b" * 64, "active_sha256": "c" * 64}
+        previous = {"action": "rollback", "session": "a" * 32, "generation": 7,
+                    "sha256": "d" * 64, "active_sha256": "c" * 64}
+        summary = {"version": "2026.10.24", "published_at": now - 60,
+                   "expires_at": now + 3600, "indicator_count": 3,
+                   "counts": {"sha256": 1, "ip": 1, "domain": 1}, "sha256": "b" * 64,
+                   "indicator_preview": [{"kind": "domain", "value": "example.invalid"}]}
+        module.snapshot["definitions"] = {
+            "state": "staged", "busy": False, "generation": 7,
+            "active": dict(summary, version="2026.10.23", sha256="c" * 64),
+            "staged": dict(summary, review_identity=staged),
+            "previous": dict(summary, version="2026.10.22", review_identity=previous),
+        }
+        page.refresh()
+        assert "2026.10.23" in page.definitions_active.text()
+        assert "3 indicators" in page.definitions_staged.text()
+        assert "b" * 64 in page.definitions_staged.text()
+        assert page.definitions_preview.toPlainText() == "Showing 1 of 3 indicators\ndomain: example.invalid"
+        page.activate_definitions_button.click()
+        page.rollback_definitions_button.click()
+        assert module.calls == [("definition-activate", staged), ("definition-rollback", previous)]
+        assert "2026.10.23" in page.definitions_active.text()  # Queued does not mean applied.
+        assert page.definitions_staged.textFormat() == Qt.TextFormat.PlainText
+        module.snapshot["definitions"]["busy"] = True
+        page.refresh()
+        assert not any(button.isEnabled() for button in (
+            page.import_definitions_button, page.activate_definitions_button, page.rollback_definitions_button))
+    finally:
+        page.close()
+
+
+def test_definitions_missing_identity_never_queues_and_cancel_has_no_effect(monkeypatch):
+    from angerona.gui import spyware_guard_page as ui
+
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["definitions"] = {"state": "error", "error": "<b>Invalid pack</b>",
+                                          "staged": {"version": "preview-without-identity"}}
+        page.refresh()
+        assert "<b>Invalid pack</b>" in page.definitions_status.text()
+        assert page.definitions_status.textFormat() == Qt.TextFormat.PlainText
+        assert not page.activate_definitions_button.isEnabled()
+        page._activate_definitions()
+        assert "stale" in page.definitions_status.text()
+        monkeypatch.setattr(ui.QFileDialog, "getOpenFileName", lambda *_: ("", ""))
+        page.import_definitions_button.click()
+        assert module.calls == []
     finally:
         page.close()
 

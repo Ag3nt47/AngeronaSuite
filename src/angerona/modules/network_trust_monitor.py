@@ -39,6 +39,8 @@ from angerona.core.personal_sentinel_gateway import (
 from angerona.core.network_trust import (
     COLLECTION_SOURCES,
     DefaultRouteObservation,
+    GATEWAY_IDENTITY_EVIDENCE_SOURCE,
+    _resolved_interface_gateway_evidence,
     MAX_LINKS,
     MAX_ROUTES_PER_LINK,
     NetworkLinkObservation,
@@ -571,26 +573,79 @@ def _default_routes(
     return routes, frozenset(complete_families)
 
 
-def _neighbor_identities() -> tuple[dict[str, str], bool]:
-    if os.name == "nt":
+def _neighbor_identities() -> tuple[dict[tuple[int, str], str], bool]:
+    """Keep each cached identity bound to the native interface that supplied it."""
+    windows = os.name == "nt"
+    linux = not windows and platform.system().casefold() == "linux"
+    if windows:
         observation = _run_observation_command_result(["arp", "-a"])
-    elif platform.system().casefold() == "linux":
+    elif linux:
         observation = _run_observation_command_result(["ip", "neigh", "show"])
     else:
         observation = _run_observation_command_result(["arp", "-an"])
-    text = observation.text
-    result: dict[str, str] = {}
+    result: dict[tuple[int, str], str] = {}
+    ambiguous: set[tuple[int, str]] = set()
+    lines = observation.text.splitlines()
+    complete = observation.complete and len(lines) <= 2048
     mac_pattern = re.compile(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b")
-    ip_pattern = re.compile(r"(?<![0-9a-f:.])(?:\d{1,3}\.){3}\d{1,3}(?![0-9.])")
-    for line in text.splitlines()[:2048]:
-        mac = mac_pattern.search(line)
-        candidates = ip_pattern.findall(line)
-        if not mac or not candidates:
+    header_pattern = re.compile(r"(?i)^\s*Interface:\s+(\S+)\s+---\s+0x([0-9a-f]+)\s*$")
+    interface_index = None
+    for line in lines[:2048]:
+        if windows:
+            header = header_pattern.match(line)
+            if header or line.lstrip().casefold().startswith("interface:") or "---" in line:
+                interface_index = int(header.group(2), 16) if header else None
+                if header is None or not _valid_ip(header.group(1)) or not (
+                    interface_index is not None and 0 < interface_index <= 2**31 - 1
+                ):
+                    interface_index = None
+                    complete = False
+                continue
+        fields = line.split()
+        if windows:
+            mac = mac_pattern.fullmatch(fields[1]) if len(fields) >= 2 else None
+        else:
+            labelled_mac = re.search(r"\blladdr\s+(\S+)" if linux else r"\bat\s+(\S+)", line)
+            mac = mac_pattern.fullmatch(labelled_mac.group(1)) if labelled_mac else None
+        if windows:
+            address = _valid_ip(fields[0]) if fields else ""
+            index = interface_index
+        else:
+            interface = re.search(r"\bdev\s+(\S+)" if linux else r"\bon\s+(\S+)", line)
+            if linux:
+                address = _valid_ip(fields[0]) if fields else ""
+            else:
+                address_match = re.search(r"\(([^)]+)\)", line)
+                address = _valid_ip(address_match.group(1)) if address_match else ""
+            try:
+                index = socket.if_nametoindex(interface.group(1)) if interface else None
+            except (OSError, ValueError):
+                index = None
+        if not address:
+            if mac is not None:
+                complete = False
             continue
-        address = _valid_ip(candidates[0])
-        if address:
-            result[address] = mac.group(0).casefold().replace("-", ":")
-    return result, observation.complete
+        if index is None or not 0 < index <= 2**31 - 1:
+            complete = False
+            continue
+        key = (index, address)
+        if mac is None or (
+            windows and (len(fields) < 3 or fields[2].casefold() not in {"static", "dynamic"})
+        ) or (linux and re.search(r"\b(?:FAILED|INCOMPLETE)\b", line, re.IGNORECASE)):
+            result.pop(key, None)
+            ambiguous.add(key)
+            complete = False
+            continue
+        value = mac.group(0).casefold().replace("-", ":")
+        if key in ambiguous:
+            continue
+        if key in result and result[key] != value:
+            del result[key]
+            ambiguous.add(key)
+            complete = False
+            continue
+        result[key] = value
+    return result, complete
 
 
 def _bounded_owned_ips(rows: object) -> tuple[tuple[str, ...], bool]:
@@ -714,10 +769,14 @@ def observe_system_network() -> NetworkSnapshot:
             hint in name_folded for hint in _WIFI_NAME_HINTS
         ) or name_folded.startswith("wl") else "ethernet"
         link_routes = tuple(routes.get(name, ()))
-        gateway_identities = tuple(
-            f"{route.gateway}|{neighbors.get(route.gateway, 'unresolved')}"
+        try:
+            interface_index = socket.if_nametoindex(name)
+        except OSError:
+            interface_index = None
+        gateway_identities = tuple(sorted({
+            f"{route.gateway}|{neighbors.get((interface_index, route.gateway), 'unresolved')}"
             for route in link_routes
-        )
+        }))
         network = wireless or {}
         interface_dns, interface_dhcp = interface_settings.get(
             name_folded, (dns_servers, dhcp_servers[0] if len(dhcp_servers) == 1 else "")
@@ -727,11 +786,7 @@ def observe_system_network() -> NetworkSnapshot:
             ",".join(owned_ips),
             network.get("bssid", ""),
         ))[:512]
-        try:
-            interface_index = socket.if_nametoindex(name)
-        except OSError:
-            interface_index = None
-        links.append(NetworkLinkObservation(
+        link = NetworkLinkObservation(
             interface_id=name[:512],
             kind=kind,
             interface_index=interface_index,
@@ -748,7 +803,12 @@ def observe_system_network() -> NetworkSnapshot:
             profile_category=profiles.get(name_folded, "unknown"),
             gateway_attestation="untrusted",
             collection_complete=tuple(sorted(complete_sources)),
-        ))
+        )
+        if neighbors_complete and _resolved_interface_gateway_evidence(link):
+            link = replace(link, collection_complete=tuple(sorted({
+                *link.collection_complete, GATEWAY_IDENTITY_EVIDENCE_SOURCE,
+            })))
+        links.append(link)
     return NetworkSnapshot(
         tuple(links), time.time(), tuple(sorted(complete_sources))
     )

@@ -31,6 +31,22 @@ _THREAT = {Severity.INFO: "SECURE", Severity.LOW: "LOW", Severity.MEDIUM: "ELEVA
            Severity.HIGH: "HIGH", Severity.CRITICAL: "CRITICAL"}
 
 
+def _worker_identity(module) -> dict:
+    """Advisory current-worker correlation, without host queries or module locks."""
+    thread = getattr(module, "_thread", None)
+    generation = getattr(module, "_lifecycle_generation", None)
+    if (not isinstance(thread, threading.Thread) or type(generation) is not int
+            or generation < 0 or not thread.is_alive()):
+        return {}
+    native_id = thread.native_id
+    if (type(native_id) is not int or not 0 < native_id <= 0xFFFFFFFF
+            or thread is not getattr(module, "_thread", None)
+            or generation != getattr(module, "_lifecycle_generation", None)):
+        return {}
+    return {"native_id": str(native_id), "lifecycle_generation": generation,
+            "advisory_only": True}
+
+
 class StatusReporter:
     def __init__(
         self, bus, storage, manager, config, interval: float = 3.0,
@@ -183,6 +199,7 @@ class StatusReporter:
         from angerona.core.module_usage import module_counts
         counts = module_counts(self.manager)
         mods = []
+        worker_diagnostics = os.environ.get("ANGERONA_RUNTIME_METRICS") == "1"
         for name, m in sorted(self.manager.modules.items()):
             mods.append({
                 "name": m.name, "category": m.category, "version": m.version,
@@ -190,6 +207,8 @@ class StatusReporter:
                 "health_note": m.health_note, "enabled": self.manager.is_enabled(name),
                 "last_error": m.last_error,
             })
+            if worker_diagnostics:
+                mods[-1]["worker"] = _worker_identity(m)
         telemetry = {}
         evicted_sensors = 0
         visibility = {

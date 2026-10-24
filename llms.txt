@@ -5,49 +5,167 @@ Date: 2026-10-24
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.14.0 — live alert visibility and containment checkpoint review)
+## LATEST (v1.14.0 — live review, response recovery and runtime corrections)
 
-- User-authorized review attached to the actual core generation separately from
-  launcher/scanner/watchdog/Black Box. Initial pipe disabled; bounded read-only
-  original ledger/status/watchdog review and private native process sampling.
-  Original 78-record selected capture; later 254.438s/883 durable records all
-  archive-HMAC verified, ending with explicit operator-termination identity gap.
-  Archive integrity is not a threat verdict or authenticated live-producer proof.
-- 300s/101 samples: core mean89.33% one CPU/11.17% machine; Black Box0.776%
-  one CPU; host60.31%/92.9% peak. Observer cost1.42% machine; status age87.43s;
-  inline bus +784 budget violations/+16549 deliveries/zero failures. Six core
-  watchdog samples5.2-5.9s; no same-day Black Box sample. No causal speed claim.
-- Repeated missing temporary startup target promoted by standing single-rule
-  policy; nine RWX metadata pairs and a timing-only Defender beacon observation
-  do not establish spyware. User prioritizes containment before human review;
-  preserve exact process-generation and existing single-rule requests, no new
-  binary/publisher allowlist, automatic suppression or fabricated action success.
-- Fix limited-tail critical visibility using EventBus's atomic retained revision
-  view across status/dashboard/threat window/posture; preserve ACK/allow/resolve
-  policy and bounded-retention limits. Gate91pass/one existing skip.
-- Three current tamper reports followed our authorized threat.py source edit;
-  containing-file drift branch means callable fingerprint unchanged. Emit typed
-  source-file/runtime-callable/coverage findings with accurate wording, retaining
-  CRITICAL/tamper/approval/latching; strict three-value tamper_kind live export.
-  Integrity31 focused/selected tests + self_test pass; export25 focused pass.
-- New separate stopped-app rollback tool authenticates whole bounded history,
-  exact five-phase undo/failure tail, existing anchor/witness and native managed
-  rule absence. Recovery111 distinct tests pass/zero skips; interruption after
-  anchor write remains a held witness mismatch with backups. No startup bypass.
-- Actual explicit repair after operator termination: journal361/checkpoint360
-  advanced to361, original journal/key unchanged, prior encrypted authority and
-  witness privately backed up; zero host actions, unrearmed. Native query and
-  stopped checks are point-in-time, no OS interlock. Old native exit codes absent.
-- Preserve first offline selfcheck28pass/one failed phase from inherited scheme-
-  less Ollama host; strict URL refusal is correct. Disposable rerun uses only a
-  child-process loopback URL:29 phases pass/68 modulePASS/18 moduleSKIP. Final
-  combined priority/integrity/export gate100pass/zero skips, nativeexit0;
-  compileall/docs drift/whitespace pass. Post-apply read-only inspection verified
-  full361-chain+matching anchor/witness+no pending work+native ruleabsent, original
-  key/journal and backup bytes preserved. Publication/restarted observation need
-  separate receipts; source tests alone do not establish deployed containment.
-- Product remains1.14.0 maintenance, broader1.15 incomplete; existing191-issue
-  register and historical roots unchanged. Raw captures/host paths/keys private.
+- Current work is v1.14.0 maintenance; broader v1.15 remains incomplete. Preserve
+  the existing 191-issue register, historical blocks and historical root values.
+  The ten-minute and gateway-corrected five-minute observations are complete.
+  Completion additionally requires guarded canonical GitHub publication proof;
+  offline/live validation alone is not publication.
+- Actual stopped program-undo closure advanced 452 records/451 checkpoints to
+  454 authenticated records and matching anchor/witness. Eleven independent
+  read-only postflight checks passed: original prefix/key, verified backups,
+  exact native rule absence, no pending phases, zero host actions and no rearm.
+  Earlier 361 and 391 checkpoint incidents below are historical milestones.
+- Later observation verified three exact-process termination receipts. The
+  private executable/RWX memory metadata behind those requests did not establish
+  spyware. Weak permission-only/JIT-overlapping memory leads now remain exposure
+  observations without an automatic response contract. Stronger exact-target
+  rules retain standing response; no executable/publisher allowlist was added.
+- Follow-up registry review found the temporary Windows Run payload rule also
+  contains configuration only, with no collector proof of file existence,
+  execution or malicious content. Its exact source/kind now stays exposure
+  without a host-fallback response; stronger corroborated behavior and activated
+  definitions remain automatic. Its final six-suite gate passed 371 cases with
+  zero failures/skips and native exit 0.
+- Maximum mode with terminate policy and a permitted termination contract now
+  prioritizes the exact process termination before program firewall isolation,
+  returning after verified termination without a persistent program fence for
+  that dead target. Suspend-only and other policy/contract boundaries remain.
+  Journal evidence, native generation custody and uncertain-effect holds remain.
+- A verified Sysmon defect came from classic OpenEventLog silently substituting
+  Application when the Sysmon channel was absent, giving unrelated event IDs
+  Sysmon meanings. Require the exact modern channel query, provider identity and
+  valid payload. Missing Sysmon now reports process-diff fallback coverage;
+  network, driver, thread and tamper telemetry remain explicitly unavailable.
+- Gateway review reproduced a false CRITICAL from missing route evidence;
+  current gateway tokens matched the unchanged authenticated historical baseline.
+  Critical MAC-change comparison now requires complete resolved evidence on both
+  samples with matching interface/gateway binding. Missing/legacy/ambiguous
+  context remains HIGH coverage/untrusted and cannot advance the baseline.
+  Purpose-separated binding tokens retain privacy; no schema/key reset or host
+  baseline/enrollment rewrite. Regression/focused network gate: 101 pass/native0.
+- Credential replacement retries only unpublished Windows errors 5/32, at most
+  seven attempts and 0.7 s aggregate sleep. This is not an I/O deadline. Every
+  retry rechecks unchanged bytes/identities, readonly flags, owner/DACL and full
+  ancestry through a protected directory. Trusted inherited parent chains,
+  including depth-two eligibility, require that proof; credential leaves remain
+  strictly protected. Retry adds no ACL changes and preserves first-attempt
+  policy when optional retry proof is unavailable. Uncertain publication refuses.
+- SpywareGuard Definitions adds local JSON import, a 25-indicator literal preview,
+  digest-bound activation and retained-version rollback. Limits: 4 MiB/5,000
+  literal SHA-256/public-IP/domain indicators, numeric dotted versions, 30-day
+  validity. Purpose-separated existing installation authority authenticates local
+  approval; publisher identity and whole-state replay resistance are not proven.
+  Research approval stays separate; no feed, key or real indicators were enrolled.
+- Definition updates use queued generation-bound commands and cached GUI state.
+  An exception from a replace wrapper can occur after rename: unless the exact
+  prior state is proved unchanged, publication becomes unknown and matching/
+  further updates hold for restart review. Active approved definitions otherwise
+  drive existing automatic response without per-incident confirmation.
+- Bulk alert HMAC, identity and artifact projection run on DashboardAlertReader;
+  Qt applies at most eight row operations per cooperative 4 ms turn and coalesces
+  newer snapshots. The activity ribbon retains same-name chips and batches eight
+  chip changes under the same cooperative budget, reusing cached activity. Initial
+  bulk health-ribbon construction remains synchronous. Click-time event/process
+  authentication is unchanged; cached presentation grants no action authority.
+- Watchdog samples exposed GUI HMAC work and a later ribbon addWidget frame.
+  A sampled frame cannot assign an entire 5.1–5.5 s delay; native Qt/GIL/scheduling
+  causes remain unresolved. Budgets cannot preempt one native call. Activity
+  percentages remain estimates and no fresh live speedup is established.
+- Opt-in runtime status adds primary-worker native_id as a decimal string,
+  lifecycle_generation and advisory_only=true. Missing/racing workers are empty;
+  disabled opt-in omits the field. Correlate against actual core PID/birth and
+  sample time: thread reuse/staleness and child/provider threads limit attribution.
+  This mapping is neither measured module CPU nor process/response authority.
+- Separate stopped recovery tools preserve narrow completed-rollback, host-undo
+  and program-undo admission. Program recovery requires full authenticated known
+  history, exact completed native termination intent/commit bindings, one exact
+  managed program rule absent and existing anchor/witness. It backs up originals,
+  appends both truthful undo/failure terminals BEFORE any checkpoint advances,
+  executes no host action and does not rearm. Interrupted stages remain held;
+  no generic repair, startup bypass, key reset or authority discard was added.
+- Combined 28-suite validation passed 778 cases/one existing platform skip,
+  native exit 0; it imported SpywareGuard before the final startup classification
+  change, which the subsequent 371-case gate covers. Final-source offline
+  selfcheck passed all 29 phases with native exit 0 and owned Qt/reader retirement. The final
+  native storage gate passed 99 cases/one existing platform skip; actual-profile
+  retry eligibility was proved read-only. The prior 559-pass/one-skip gate preceded the
+  latest store and definition publication fixes. Earlier scoped results include
+  program recovery 215 pass and GUI 54 pass; do not present overlapping earlier
+  runs as final-source integration. Frozen source digests begin 8f3107bd (store)
+  and 2bdfea4d (definitions); independent static audits found no remaining blocker.
+- The pre-gateway 600-second run had all20 scoped source hashes unchanged,
+  51 valid metrics samples/32 publications, max GUI beat lag1156ms and tick
+  duration107.774ms (19available/13missing recent bodies). Core82.951%oneCPU/
+  10.369%machine; BlackBox0.901%oneCPU; observer0.0397%machine. All49 matching
+  status samples ARMED/pending0; two stale retired-core statuses excluded.
+  ActualChill=true/admin=false, memory scanner paused; no full-mode/RWX exercise.
+  No new hang-watchdog entry; no causal before/after speedup claim.
+- The900 captured events included18serious; bounded122/122HMAC originals matched
+  all18 despite1698startup records lost during diagnostic replay. StartupRun
+  metadata stayed MEDIUMexposure/noresponse; Sysmon reported truthful unavailable
+  coverage. A signed455–456 startupSmartDeception activation preceded the native
+  observer; it is module activation, not a threat-triggered PID response. Exact8
+  suite generations then retired under reviewed456authority with allbytes intact.
+- Final gateway-corrected run: all22 scoped source hashes unchanged; 41 valid
+  metrics/21 publications, GUI beat lag max1532ms, recent tick max64.7295ms
+  (13available/8missing). Core10.5872%machine/BlackBox0.11198%; no observed drops
+  or new watchdog entry. All39 current status samples ARMED/pending0; two stale
+  old-core files excluded. ActualChill/paused-memory/adminFalse/TOFUunapproved
+  coverage limits persist. Resident footprint higher but decreasing; cause
+  unknown, private commit roughly198–201MB. No causal speedup/host-clean claim.
+- Final-source selfcheck29phases/native0; independent native attach missed that
+  already-ended child. Final Live Debug initial/retry readers both failed with
+  explicit pipe-read errors; preserve incomplete snapshot/delivery gaps. Status,
+  metrics and protected-original HMAC review remain independent. Gateway now
+  HIGH incomplete/untrusted/noadvance; post-window baseline+enrollment bytes,
+  timestamps/revision2 unchanged and ARPbaselineabsent. App remains running.
+- Final protected-original selection76/76HMACverified below500cap covered all
+  17serious (16HIGH/1CRIT). Solecritical=recoveryexposure/observe-only/noresponse;
+  no new corroborated active threat. SINT31/31INFO+TOFU-MEDIUM, no high/critical
+  callablealert. Failedfeedinitialseq2215<3733 leaves1518initialretainedrecords
+  undelivered in addition to1733initiallost. Protectedarchives do not establish
+  continuousdelivery. Latestexactgenerationstatus ARMED/ready/queue0/pending0.
+- Historical foundation 8a604d4 was guarded-published to canonical public main
+  and the current branch, with seven matching README assets. Its first restart
+  was ARMED/maximum/LOW and performed ten verified registered-drill quarantines,
+  not real-malware or process-termination proof. A stale startup request had no
+  eligible target. The 240 s reader retained 912 events/2,811 views, losing 1,948
+  startup records; its full map overflowed, while a 48-view serious selection
+  completed with the same gap.
+- Historical 18:03:44 UTC disarm had journal 391/anchor-witness 390 and an
+  uncommitted host-isolation recovery undo. Original critical evidence proved
+  undo-intent durability failed; its underlying exception had been discarded.
+  Pre-admitting the credential transaction before journal append closes a
+  reproduced contention window; historical contention itself is unproved.
+  New critical details retain bounded cause types without exception messages.
+- Historical explicit repair of journal 361/checkpoint 360 preserved original
+  journal/key and privately backed up authority/witness, with zero host actions
+  and no rearm. Later stopped host recovery used a distinct reviewed workflow.
+  Native absence and stopped checks are point-in-time, without an OS interlock.
+  Requested UAC utility cancellation was not termination proof; exact retained
+  native handles separately proved suite retirement, with wrappers exiting
+  naturally. Preserve separate retirement and restart receipts for each run.
+- Historical captures: 78 selected originals; later 883 archive-HMAC-verified
+  records over 254.438 s ended with an operator-termination identity gap. A 900 s
+  reader retained 3,907 events with 4,642 initial records lost and twenty retained
+  SOAR holds. Archive integrity is not a threat verdict or live-producer proof.
+- Historical 300 s capture: core mean 89.33% of one CPU, Black Box 0.776%, host
+  mean/peak 60.31%/92.9%; observer 1.42% machine CPU and status age 87.43 s.
+  Later 180 s capture: GUI lag 2.203 s/tick body 100.72 ms, core/Black Box
+  94.02%/0.859% of one CPU. Chill/competing load, missing samples and delivery
+  gaps prevent a causal speed or complete GUI claim. No TOFU manifest was forged.
+- Historical limited-tail visibility uses atomic retained EventBus revisions
+  without changing ACK/allow/resolve policy; bounded retention still applies.
+  Source-file/runtime-callable/coverage tamper kinds preserve CRITICAL evidence,
+  approval and latching; containing-file drift is not changed callable proof.
+  Prior selfchecks include one inherited scheme-less Ollama failure and later
+  disposable loopback-only 29-phase passes/68 module PASS/18 module SKIP.
+- Read docs/live-debug-harness.md before runtime review. Verify actual process
+  generation, retain authenticated originals/loss/coverage and keep raw captures,
+  host paths and keys private. Annotations grant no mutation or trust authority.
+  Source tests alone do not prove deployed containment, malware or a clean host.
   See analysis/live-review-2026-10-24.md and docs/live-debug-harness.md.
 
 ## Historical model parser normalization maintenance

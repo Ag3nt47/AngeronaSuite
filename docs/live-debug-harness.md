@@ -1,6 +1,6 @@
 # Live debug harness for local AI review
 
-Updated 23 October 2026. Angerona v1.14.0 development feature.
+Updated 24 October 2026. Angerona v1.14.0 development feature.
 
 Angerona can expose a bounded, read-only stream of its running alerts and
 diagnostics to a separate local reader. A developer or an authorized AI coding
@@ -192,6 +192,32 @@ process rows. Compare like-for-like CPU fields and keep failed diagnostic
 setups separate from actual scanner calls. The latest observation did not
 demonstrate lower CPU use.
 
+With `ANGERONA_RUNTIME_METRICS=1` set before launch, the private
+`diagnostics/status.json` module rows also include a `worker` object for the
+current primary module thread: `native_id` is a decimal string,
+`lifecycle_generation` is an integer and `advisory_only` is `true`. A worker
+observed as unavailable, retired or concurrently replaced produces an empty
+object. The field is omitted when this opt-in is off. Collection reads the existing thread reference
+without a host process query or waiting for a module lifecycle lock.
+
+Correlate this advisory identifier with the actual core PID, creation time,
+snapshot time and independently sampled native thread counters. Thread IDs can
+be reused, and the snapshot can become stale immediately after collection.
+The primary worker does not account for child/provider threads, Qt, storage or
+all CPU attributed to a module. These fields provide no response authority,
+thread lease, authenticated CPU measurement or evidence of detection efficacy;
+they are separate from the read-only live event stream.
+
+Dashboard alert authentication and display projection run on its reader worker;
+Qt applies at most eight row operations per turn under a cooperative 4 ms
+budget. Cached row identities do not replace action-time event and process
+verification. The activity ribbon retains same-name chips and coalesces changes
+into eight-chip turns with the same cooperative budget, using cached activity.
+Its percentages remain estimates, not measured CPU. Initial bulk health-ribbon
+construction remains synchronous. A single Qt/native operation can exceed a
+turn's budget; a sampled `addWidget` frame alone does not attribute a whole
+watchdog delay or demonstrate an improvement.
+
 ## Review and improvement loop
 
 ### Offline case summary for AI review
@@ -330,6 +356,58 @@ point-in-time; they do not lease the OS firewall against other writers. An
 interrupted anchor/witness update remains an explicit hold with retained backups.
 See the [24 October review](../analysis/live-review-2026-10-24.md).
 
+### Interrupted host undo with proven rule absence
+
+`tools/recover_combat_host_undo.py --data-root <DATA_ROOT>` inspects a separate,
+narrow interrupted-host-undo pattern. It requires authenticated closed history,
+the exact intent/orphan/undo-intent relationship, matching existing anchor and
+witness one record behind, and native absence of both exact managed host rules.
+The completed-program-rollback tool above does not admit this different state.
+
+With Angerona stopped, explicit `--apply --expected-token <REVIEW_TOKEN>` repeats
+the proofs under journal custody and the existing credential transaction. It
+retains verified private backups and appends both truthful undo and failure
+terminals documenting that the rules were already absent, before advancing any
+checkpoint. It executes no firewall/process action and does not rearm Combat.
+Original journal bytes remain an unchanged prefix. Unknown host state, changed
+inputs or an interrupted publication remain review holds, with no reset or
+automatic generic repair. Native absence and stopped checks remain point-in-time
+observations. Restart readiness needs a separate fresh observation.
+
+### Interrupted program undo with proven rule absence
+
+`tools/recover_combat_program_undo.py --data-root <DATA_ROOT>` is a separate,
+stopped-application, read-only inspection for one exact program-isolation
+intent/orphan/undo-intent tail. It authenticates the full journal chain and known
+closed history, the existing anchor/witness one record behind, the recorded
+program/process-generation and managed rule binding, and native absence of that one
+rule. The host-undo and completed-rollback tools retain their narrower admission
+rules and refuse this shape.
+
+Earlier irreversible actions must be completed native termination intent/commit
+pairs. Each pair must retain the exact action and process-generation/image
+binding, native custody metadata, signaled completion, exit code and verified
+postcondition. Missing, pending, conflicting or unfamiliar work remains held.
+Authenticated historical exit receipts do not establish that a process was
+malware or authorize any further process action.
+
+Stop all Angerona roles, including Black Box, before inspection or application.
+After reviewing the inspection, explicit
+`--apply --expected-token <REVIEW_TOKEN>` repeats the proofs under the writer
+lease, pinned journal custody and existing credential transaction, with verified
+private backups. It appends both `undo_commit` and a truthful `failure` terminal
+documenting the already-absent rule before advancing any checkpoint. Partial
+appends and interrupted intermediate checkpoint/witness writes remain startup
+holds requiring separately reviewed recovery. Original journal bytes remain an
+unchanged prefix; existing keys are preserved. The tool executes no firewall or
+process action, creates no signing authority and does not rearm Combat.
+
+Changed inputs, a remaining rule or unavailable native evidence refuse the
+operation. Stopped-process checks and native absence remain point-in-time
+observations, with no OS-wide firewall/process interlock. Restart readiness and
+fresh response observations remain separate; there is no generic repair or
+automatic startup bypass.
+
 Self-integrity live events distinguish `source-file-drift`,
 `runtime-callable-drift` and `coverage-unavailable` through `tamper_kind`.
 Containing-file drift does not itself establish a changed in-memory callable.
@@ -418,6 +496,8 @@ affect neighbouring components.
 | Callable integrity and ACL coverage | `src/angerona/modules/self_integrity.py` |
 | Exact callable-read regression | `tests/test_v12_self_integrity.py` |
 | Executable approval custody regressions | `tests/test_process_allowlist_hash_custody.py` |
+| Stopped no-effect Combat accounting recovery | `src/angerona/core/combat_checkpoint_recovery.py`, `tools/recover_combat_rollback.py`, `tools/recover_combat_host_undo.py`, `tools/recover_combat_program_undo.py` |
+| Opt-in primary-worker correlation | `src/angerona/core/status_report.py`, `tests/test_status_report_worker_identity.py` |
 | Persistent source trust | `docs/ugcap-enclave-mesh.md` |
 | Witness enrollment and checkpoints | `src/angerona/gui/ugcap_page.py`, `src/angerona/core/ugcap_witness.py`, `tools/ugcap_witness_server.py` |
 | Independent recovery UI and workflow | `src/angerona/gui/recovery_panel.py`, `src/angerona/core/recovery_workflow.py`, `src/angerona/modules/immutable_recovery_guard.py` |

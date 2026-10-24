@@ -7,6 +7,7 @@ No country, vendor name, CVE, feed mention or sandbox probe is response authorit
 from __future__ import annotations
 
 from collections import OrderedDict, deque
+from contextlib import contextmanager
 from dataclasses import asdict
 import hashlib
 import ipaddress
@@ -25,6 +26,7 @@ from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import authorize_response
 from angerona.core.spyware_behavior import SpywareBehaviorEngine
+from angerona.core.spyware_definitions import DefinitionError, DefinitionStore, parse_definition_review
 from angerona.core.spyware_intel import (
     OFFICIAL_SOURCES, IndicatorReviewIdentity, ThreatIntelStore, normalize_indicator,
     parse_indicator_review_identity,
@@ -98,10 +100,15 @@ class SpywareGuardModule(BaseModule):
 
     def __init__(self, *, clock=time.time, intel_store=None, persistence_collector=None,
                  memory_collector=None, process_observer=None, connection_observer=None,
-                 beacon_factory=None, vault=None) -> None:
+                 beacon_factory=None, vault=None, definition_store=None) -> None:
         super().__init__()
         self._clock = clock
         self._intel = intel_store or ThreatIntelStore()
+        self._definitions = definition_store
+        self._definitions_initialized = False
+        self._definition_pending = 0
+        self._definition_state = {"state": "not-loaded", "busy": False, "error": "",
+                                  "generation": 0, "active": None, "previous": None, "staged": None}
         self._persistence = persistence_collector or collect_persistence
         self._memory = memory_collector or inspect_process_memory
         self._processes = process_observer or process_snapshot
@@ -168,6 +175,101 @@ class SpywareGuardModule(BaseModule):
 
     def request_scan(self) -> bool:
         return self._enqueue("scan")
+
+    def _queue_definition_command(self, command, value, *, module_session=None, module_generation=None):
+        payload = {"module_session": self._review_session if module_session is None else module_session,
+                   "module_generation": self.lifecycle_generation if module_generation is None else module_generation,
+                   "value": value}
+        with self._lock:
+            if not self._enqueue(command, payload):
+                return False
+            self._definition_pending += 1
+            self._definition_state.update(busy=True, error="")
+        return True
+
+    def queue_definition_import(self, path) -> bool:
+        # Syntax only on the caller/Qt thread. The worker owns opening the file.
+        if type(path) is not str or not 1 <= len(path) <= 4096 or "\x00" in path:
+            return False
+        return self._queue_definition_command("definition_import", path)
+
+    def _queue_definition_review(self, expected, action):
+        if type(expected) is not dict:
+            return False
+        module_fields = {"module_session", "module_generation"}
+        review = {key: value for key, value in expected.items() if key not in module_fields}
+        if (set(expected) != set(review) | module_fields or parse_definition_review(review) is None
+                or review["action"] != action
+                or type(expected.get("module_generation")) is not int
+                or expected["module_generation"] != self.lifecycle_generation
+                or expected.get("module_session") != self._review_session):
+            return False
+        # Preserve the displayed generation through queue admission; a restart
+        # between the check above and enqueue must not rebind an old click.
+        return self._queue_definition_command("definition_" + action, dict(review),
+            module_session=expected["module_session"], module_generation=expected["module_generation"])
+
+    def activate_definitions(self, *, expected) -> bool:
+        return self._queue_definition_review(expected, "activate")
+
+    def rollback_definitions(self, *, expected) -> bool:
+        return self._queue_definition_review(expected, "rollback")
+
+    @contextmanager
+    def _definition_commit_guard(self, payload):
+        with self._lifecycle_lock:
+            if (self.stopping or payload["module_session"] != self._review_session
+                    or payload["module_generation"] != self.lifecycle_generation):
+                raise DefinitionError("Definition operation belongs to a retired module generation")
+            yield
+
+    def _cache_definition_snapshot(self, *, error=""):
+        # The store snapshot is a small memory-only view. Never take the module
+        # paint lock during parsing, authentication, filesystem I/O or replace.
+        snapshot = self._definitions.snapshot() if self._definitions is not None else {
+            "state": "unavailable", "generation": 0, "active": None,
+            "previous": None, "staged": None,
+        }
+        for key in ("staged", "previous"):
+            if snapshot.get(key) is not None:
+                snapshot[key]["review_identity"].update(
+                    module_session=self._review_session, module_generation=self.lifecycle_generation)
+        with self._lock:
+            snapshot.update(busy=self._definition_pending > 0, error=error)
+            self._definition_state = snapshot
+            self._coverage["definitions"] = {"state": snapshot["state"], "error": error,
+                "generation": snapshot["generation"]}
+
+    def _ensure_definitions(self):
+        if self._definitions is None:
+            root = getattr(self._config, "data_dir", None)
+            if root is None:
+                raise DefinitionError("Definition storage is unavailable without a configured data root")
+            self._definitions = DefinitionStore(Path(root), clock=self._clock)
+        self._definitions_initialized = True
+
+    def _process_definition_command(self, command, payload):
+        error = ""
+        try:
+            with self._definition_commit_guard(payload):
+                pass
+            self._ensure_definitions()
+            if command == "definition_import":
+                self._definitions.stage(payload["value"])
+            else:
+                self._definitions.apply(payload["value"], action=command.removeprefix("definition_"),
+                    commit_guard=lambda: self._definition_commit_guard(payload))
+            with self._definition_commit_guard(payload):
+                self._scan_requested = True
+        except (ValueError, OSError, RuntimeError) as exc:
+            # Do not expose arbitrary file paths or imported content in errors.
+            error = f"Definition operation refused ({type(exc).__name__}); inspect definition state before retrying."
+            self.emit("SpywareGuard definition operation could not complete.", Severity.LOW,
+                      operation=command, error_type=type(exc).__name__, response_authorized=False)
+        finally:
+            with self._lock:
+                self._definition_pending = max(0, self._definition_pending - 1)
+            self._cache_definition_snapshot(error=error)
 
     def queue_report_url(self, url: str) -> bool:
         if not isinstance(url, str) or len(url) > 2048:
@@ -259,7 +361,9 @@ class SpywareGuardModule(BaseModule):
             except queue.Empty:
                 return
             try:
-                if command == "scan":
+                if command.startswith("definition_"):
+                    self._process_definition_command(command, payload)
+                elif command == "scan":
                     self._scan_requested = True
                 elif command == "settings":
                     if self._config is not None:
@@ -441,9 +545,29 @@ class SpywareGuardModule(BaseModule):
                         self._finish_news_status()
                 self._reports.task_done()
 
+    @staticmethod
+    def _memory_observation_only(finding: dict) -> bool:
+        # A process identity binds the observation to its target. It does not
+        # turn private executable/JIT permissions into proof of injection.
+        return finding.get("kind") == "private_executable_memory" or (
+            finding.get("kind") == "sensor_memory_injection_scanner"
+            and finding.get("detector_policy") == "rwx-memory-indicator-alert-only"
+            and finding.get("active_attack") is False
+            and finding.get("disposition") == "observation"
+        )
+
+    @staticmethod
+    def _startup_configuration_only(finding: dict) -> bool:
+        # A Run entry records configured startup, not payload existence or
+        # execution. Even an attached identity cannot corroborate this rule.
+        return (finding.get("source") == "windows.run"
+                and finding.get("kind") == "persistence_transient_payload")
+
     def _response(self, finding: dict, local_authority: bool) -> dict:
         if (not local_authority or not self._settings["spyware_auto_contain"]
-                or finding.get("response_eligible") is False):
+                or finding.get("response_eligible") is False
+                or self._memory_observation_only(finding)
+                or self._startup_configuration_only(finding)):
             return {}
         pid, birth = finding.get("pid"), finding.get("process_create_time")
         if finding.get("kind") in {"private_executable_memory", "sensor_memory_injection_scanner"}:
@@ -498,6 +622,15 @@ class SpywareGuardModule(BaseModule):
 
     def _publish(self, finding: dict, *, local_authority: bool,
                  response_already_requested: bool = False) -> None:
+        memory_observation = self._memory_observation_only(finding)
+        if memory_observation or self._startup_configuration_only(finding):
+            finding = dict(finding, response_eligible=False, finding_kind="exposure",
+                classification_reason=("Memory permissions alone are an exposure lead; "
+                    "JIT runtimes overlap and independent threat evidence is required"
+                    if memory_observation else "Startup configuration alone is an exposure lead; "
+                    "payload existence, execution and maliciousness are unconfirmed"))
+            finding.pop("single_rule_host_fallback", None)
+            response_already_requested = False
         kind = str(finding.get("kind", "spyware_evidence"))[:100]
         identity = {key: finding.get(key) for key in
                     ("pid", "process_create_time", "remote_ip", "path", "evidence")}
@@ -534,6 +667,10 @@ class SpywareGuardModule(BaseModule):
                 details["single_rule_host_fallback"] = True
                 severity = Severity.CRITICAL
         summary = str(finding.get("summary") or finding.get("reason") or kind)[:1024]
+        if (kind == "persistence_transient_payload" and finding.get("source") == "windows.run"
+                and finding.get("reason") == "Persistence executes a payload from a temporary/public/download directory."):
+            summary = ("Startup entry points to a temporary/public/download payload; "
+                       "execution and maliciousness are unconfirmed.")
         hit = {"id": token, "ts": now, "kind": kind, "severity": severity.name,
                "rule": kind,
                "summary": summary, "pid": finding.get("pid"),
@@ -616,10 +753,21 @@ class SpywareGuardModule(BaseModule):
                 finding = {"kind": "sensor_" + event.module.lower().replace(" ", "_")[:70],
                            "severity": event.severity.name,
                            "summary": "Spyware-relevant local sensor finding: " + event.module,
-                           "evidence": {"producer": event.module, "source_event_ts": event.ts},
+                           "evidence": {"producer": event.module, "source_event_ts": event.ts,
+                                        "source_event_digest": event.hmac_sig},
                            "pid": details.get("pid"),
                            "process_create_time": details.get("process_create_time")}
+                if (event.module == "Memory Injection Scanner"
+                        and details.get("detector_policy") == "rwx-memory-indicator-alert-only"
+                        and details.get("active_attack") is False
+                        and details.get("disposition") == "observation"):
+                    finding.update(
+                        summary="Uncorroborated memory-permission indicator from Memory Injection Scanner",
+                        detector_policy=details["detector_policy"], active_attack=False,
+                        disposition="observation", finding_kind="exposure")
                 if event.module == "Memory Injection Scanner":
+                    finding["evidence"]["producer_policy"] = {key: details.get(key)
+                        for key in ("detector_policy", "active_attack", "disposition")}
                     receipt = parse_memory_identity(details.get("memory_identity"))
                     fresh = (receipt is not None and receipt.source == "memory.windows.inject_scanner"
                              and receipt.bound and receipt.pid == details["pid"]
@@ -631,16 +779,21 @@ class SpywareGuardModule(BaseModule):
                         self._memory_receipts.move_to_end(receipt.request_id)
                         while len(self._memory_receipts) > 2048:
                             self._memory_receipts.popitem(last=False)
-                    eligible = fresh and details.get("response_eligible") is True
+                    observation_only = self._memory_observation_only(finding)
+                    eligible = (fresh and details.get("response_eligible") is True
+                                and not observation_only)
+                    identity_reason = ("Fresh authenticated same-handle memory receipt" if fresh
+                        else "Memory source identity missing, stale, replayed, or mismatched")
                     finding.update(response_eligible=eligible,
-                        process_create_time=receipt.before.create_time if eligible else None,
+                        process_create_time=receipt.before.create_time if fresh else None,
                         memory_identity=details.get("memory_identity"),
-                        eligibility_reason="Fresh authenticated same-handle memory receipt" if eligible
-                            else "Memory source identity missing, stale, replayed, mismatched, or not response-eligible")
+                        eligibility_reason=(identity_reason if not fresh or eligible
+                            else "Memory permissions alone are an exposure lead; independent threat evidence is required"
+                            if observation_only else "Memory producer did not mark this finding response-eligible"))
                     with self._lock:
                         self._coverage["memory_sensor_identity"] = {
-                            "status": "complete" if eligible else "partial",
-                            "detail": finding["eligibility_reason"]}
+                            "status": "complete" if fresh else "partial",
+                            "detail": identity_reason}
                 if event.module == "API Patch / Anti-Blinding Detector":
                     ticks = details.get("process_birth")
                     if type(ticks) is int and 116444736000000000 < ticks < 2650467744000000000:
@@ -690,6 +843,16 @@ class SpywareGuardModule(BaseModule):
 
     def _match_indicator(self, record, kind, value, *, local_authority):
         normalized = normalize_indicator(kind, value)
+        definition = self._definitions.lookup(kind, value) if self._definitions is not None else None
+        if definition is not None:
+            finding = {"kind": "definition_" + kind + "_indicator_match", "severity": "HIGH",
+                       "summary": "Local evidence matched a locally activated spyware definition.",
+                       "evidence": definition}
+            for key in ("pid", "process_create_time", "remote_ip", "path", "observed_content_sha256"):
+                if key in record:
+                    finding[key] = record[key]
+            self._publish(finding, local_authority=local_authority)
+            return
         with self._intel.review_candidates(kind, value, clock=self._clock) as candidates:
             with self._lock:
                 review = self._approved.get((kind, normalized))
@@ -825,6 +988,7 @@ class SpywareGuardModule(BaseModule):
     def _scan_hashes(self, rows) -> None:
         with self._lock:
             wanted = any(kind == "sha256" for kind, _value in self._approved)
+        wanted = wanted or (self._definitions is not None and self._definitions.has_hashes())
         if not wanted:
             return
         # Reuse the pinned, bounded archive reader through a caller-independent
@@ -975,7 +1139,19 @@ class SpywareGuardModule(BaseModule):
                   response_authorized=False, containment_performed=False)
 
     def _tick(self) -> None:
+        if not self._definitions_initialized:
+            self._definitions_initialized = True
+            try:
+                self._ensure_definitions()
+                self._cache_definition_snapshot()
+            except (ValueError, OSError, RuntimeError) as exc:
+                self._cache_definition_snapshot(error=f"Definition storage unavailable ({type(exc).__name__}).")
         self._process_commands()
+        if self._definitions is not None:
+            # Refresh expiry/generation summaries in the worker, never in Qt.
+            with self._lock:
+                error = self._definition_state.get("error", "")
+            self._cache_definition_snapshot(error=error)
         self._ensure_report_worker()
         self._consume_events()
         self._collect_responses()
@@ -1018,6 +1194,7 @@ class SpywareGuardModule(BaseModule):
                       "coverage": dict(self._coverage), "sources": list(self._sources),
                       "stats": dict(self._counts), "settings": dict(self._settings),
                       "last_scan": self._last_scan, "status": self.status,
+                      "definitions": self._definition_state,
                       "scope": "preview; local exact-target containment; no actor attribution"}
             result["containments"] = self._response_rows + result["containments"]
             result["encrypted_evidence"] = dict(self._vault_state)

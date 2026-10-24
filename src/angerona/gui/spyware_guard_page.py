@@ -5,6 +5,7 @@ require explicit operator actions. All evidence is rendered as plain text.
 """
 from __future__ import annotations
 
+import copy
 import html
 import json
 import math
@@ -16,7 +17,7 @@ from urllib.parse import urlsplit
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QDialog, QGroupBox, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
     QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -182,6 +183,7 @@ class SpywareGuardPage(QWidget):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, 1)
         self._build_dashboard()
+        self._build_definitions()
         self._build_settings()
         self._build_research()
         self._build_sandbox()
@@ -498,6 +500,133 @@ class SpywareGuardPage(QWidget):
             table.itemSelectionChanged.connect(lambda t=table: self._show_evidence(t))
         self.tabs.addTab(page, "Dashboard")
 
+    def _build_definitions(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(_label(
+            "Import a local JSON definition pack, review its version and indicators, "
+            "then activate that exact pack. Active definitions use the existing "
+            "automatic containment policy without per-incident prompts."
+        ))
+        self.definitions_status = _label("Definition status is not available yet.")
+        layout.addWidget(self.definitions_status)
+        self.definitions_active = _label("Active pack: none")
+        self.definitions_staged = _label("Imported preview: none")
+        self.definitions_previous = _label("Previous pack: none")
+        for label in (self.definitions_active, self.definitions_staged, self.definitions_previous):
+            layout.addWidget(label)
+        self.definitions_preview = QPlainTextEdit()
+        self.definitions_preview.setReadOnly(True)
+        self.definitions_preview.setMaximumHeight(160)
+        self.definitions_preview.setPlaceholderText("The validated pack's first 25 literal indicators appear here.")
+        layout.addWidget(self.definitions_preview)
+        buttons = QHBoxLayout()
+        self.import_definitions_button = QPushButton("Import definitions…")
+        self.activate_definitions_button = QPushButton("Activate imported pack")
+        self.rollback_definitions_button = QPushButton("Roll back to previous pack")
+        self.import_definitions_button.clicked.connect(self._import_definitions)
+        self.activate_definitions_button.clicked.connect(self._activate_definitions)
+        self.rollback_definitions_button.clicked.connect(self._rollback_definitions)
+        for button in (self.import_definitions_button, self.activate_definitions_button,
+                       self.rollback_definitions_button):
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        layout.addWidget(_label(
+            "Packs contain literal SHA-256, IP and domain indicators. Importing only "
+            "creates a preview. Activation is a local authorization; an integrity "
+            "digest does not verify an external publisher. Research headlines and "
+            "report imports remain separate from active definitions."
+        ))
+        layout.addStretch(1)
+        self.tabs.addTab(page, "Definitions")
+
+    @staticmethod
+    def _definition_summary(title: str, value) -> str:
+        if not isinstance(value, dict):
+            return title + ": none"
+        counts = value.get("counts") if isinstance(value.get("counts"), dict) else {}
+        return (
+            f"{title}: {_text(value.get('version'), 80)} · "
+            f"{_text(value.get('indicator_count', 0), 20)} indicators "
+            f"(SHA-256 {_text(counts.get('sha256', 0), 20)}, "
+            f"IP {_text(counts.get('ip', 0), 20)}, "
+            f"domain {_text(counts.get('domain', 0), 20)})\n"
+            f"Published: {_time_text(value.get('published_at'))} · "
+            f"Expires: {_time_text(value.get('expires_at'))}\n"
+            f"Digest: {_text(value.get('sha256'), 64)}"
+        )
+
+    def _update_definitions(self, value) -> None:
+        data = value if isinstance(value, dict) else {}
+        module = self._module()
+        busy = data.get("busy") is True
+        supported = callable(getattr(module, "queue_definition_import", None))
+        self.definitions_active.setText(self._definition_summary("Active pack", data.get("active")))
+        self.definitions_staged.setText(self._definition_summary("Imported preview", data.get("staged")))
+        self.definitions_previous.setText(self._definition_summary("Previous pack", data.get("previous")))
+        preview_pack = data.get("staged") or data.get("active")
+        if isinstance(preview_pack, dict):
+            rows = preview_pack.get("indicator_preview")
+            rows = rows[:25] if isinstance(rows, (list, tuple)) else []
+            rendered = [f"Showing {len(rows)} of {_text(preview_pack.get('indicator_count', 0), 20)} indicators"]
+            rendered.extend(f"{_text(row.get('kind'), 16)}: {_text(row.get('value'), 253)}"
+                            for row in rows if isinstance(row, dict))
+            preview_text = "\n".join(rendered)
+        else:
+            preview_text = ""
+        if self.definitions_preview.toPlainText() != preview_text:
+            self.definitions_preview.setPlainText(preview_text)
+        message = "Definitions: " + _text(data.get("state", "not initialized"), 100)
+        if busy:
+            message += " · update queued or running"
+        if data.get("error"):
+            message += " · " + _text(data["error"], 500)
+        self.definitions_status.setText(message)
+        staged = data.get("staged")
+        previous = data.get("previous")
+        self.import_definitions_button.setEnabled(supported and not busy)
+        self.activate_definitions_button.setEnabled(
+            supported and not busy and isinstance(staged, dict)
+            and type(staged.get("review_identity")) is dict
+        )
+        self.rollback_definitions_button.setEnabled(
+            supported and not busy and isinstance(previous, dict)
+            and type(previous.get("review_identity")) is dict
+        )
+
+    def _import_definitions(self) -> None:
+        path, _filter = QFileDialog.getOpenFileName(
+            self, "Import spyware definitions", "", "JSON definition packs (*.json)",
+        )
+        if not path:
+            return
+        # File custody, parsing and persistence belong to the module worker.
+        queued = self._command("queue_definition_import", path)
+        self.definitions_status.setText(
+            "Definition import queued; the validated preview will appear here."
+            if queued else "Definition import was not queued; check module health."
+        )
+
+    def _definition_action(self, section: str, command: str) -> None:
+        data = self._snapshot.get("definitions")
+        row = data.get(section) if isinstance(data, dict) else None
+        expected = row.get("review_identity") if isinstance(row, dict) else None
+        if type(expected) is not dict:
+            self.definitions_status.setText("Definition selection is stale; refresh the preview.")
+            return
+        queued = self._command(command, expected=copy.deepcopy(expected))
+        self.definitions_status.setText(
+            "Definition update queued; the active version changes after validation and persistence."
+            if queued else "Definition update was not queued; refresh and check module health."
+        )
+
+    def _activate_definitions(self) -> None:
+        self._definition_action("staged", "activate_definitions")
+
+    def _rollback_definitions(self) -> None:
+        self._definition_action("previous", "rollback_definitions")
+
     def _build_settings(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -648,6 +777,7 @@ class SpywareGuardPage(QWidget):
         if not available:
             self.status.setText("SpywareGuard is unavailable. Enable the module to collect evidence.")
             self.news_refresh_button.setEnabled(False)
+        self._update_definitions(self._snapshot.get("definitions"))
 
     def _queue_rule_export(self) -> None:
         if self._command("queue_rule_export"):
@@ -755,6 +885,7 @@ class SpywareGuardPage(QWidget):
         if not isinstance(snapshot, dict):
             return
         self._snapshot = snapshot
+        self._update_definitions(snapshot.get("definitions"))
         self._update_news(snapshot)
         hits = self._rows(snapshot.get("hits"))
         containments = self._rows(snapshot.get("containments"))

@@ -73,6 +73,8 @@ def _link(**overrides):
         "collection_complete": COMPLETE,
     }
     values.update(overrides)
+    if not values["default_routes"] and "gateway_identities" not in overrides:
+        values["gateway_identities"] = ()
     return NetworkLinkObservation(**values)
 
 
@@ -128,9 +130,9 @@ def test_dns_dhcp_route_gateway_profile_and_epoch_drift_are_detected():
         dns_servers=("10.20.30.40",),
         dhcp_server="10.20.30.1",
         default_routes=(DefaultRouteObservation(
-            "10.20.30.1", "ipv4", 1, selected=True
+            "192.168.10.1", "ipv4", 1, selected=True, interface_index=7
         ),),
-        gateway_identities=("10.20.30.1|ff:ee:dd:cc:bb:aa",),
+        gateway_identities=("192.168.10.1|02:ee:dd:cc:bb:aa",),
         profile_category="public",
     )
     result = evaluator.evaluate(_snapshot(changed))

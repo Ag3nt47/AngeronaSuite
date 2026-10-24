@@ -37,6 +37,190 @@ def selected_review(module, *, source=None):
                 if source is None or row["source"] == source)
 
 
+def _definition_module(tmp_path):
+    from angerona.core.engine_transport import create_private_file, private_directory
+    from angerona.core.spyware_definitions import DefinitionStore, SCHEMA
+    root = private_directory(tmp_path / "definition-data")
+    with os.fdopen(create_private_file(root / "bus.key"), "wb") as stream:
+        stream.write((b"s" * 32).hex().encode())
+    store = DefinitionStore(root, clock=lambda: NOW)
+    module, bus = make_module(definition_store=store)
+    module.bind_manager(SimpleNamespace(config=SimpleNamespace(data_dir=root), modules={}))
+    module._cache_definition_snapshot()
+    path = tmp_path / "definitions.json"
+    path.write_text(json.dumps({"schema": SCHEMA, "version": "1.0",
+        "published_at": NOW - 60, "expires_at": NOW + 3600,
+        "indicators": [{"kind": "domain", "value": "inert.invalid"}]}), encoding="utf-8")
+    return module, bus, store, path
+
+
+def test_local_definition_import_activation_and_automatic_response_are_separate_from_research(tmp_path, monkeypatch):
+    from angerona.core import spyware_definitions
+    module, bus, store, path = _definition_module(tmp_path)
+    module._intel.ingest({"domains": ["research.invalid"]}, "untrusted-report", now=NOW)
+    with monkeypatch.context() as patch:
+        patch.setattr(spyware_definitions, "read_definition_file", lambda *_: pytest.fail("GUI command read a file"))
+        assert module.queue_definition_import(str(path))
+        assert module.dashboard_snapshot()["definitions"]["busy"] is True
+    module._process_commands()
+    preview = module.dashboard_snapshot()["definitions"]
+    assert preview["staged"]["version"] == "1.0" and preview["active"] is None and not preview["busy"]
+    assert not module._approved and module.activate_definitions(expected=preview["staged"]["review_identity"])
+    assert module.dashboard_snapshot()["definitions"]["busy"] is True
+    module._process_commands()
+    assert module.dashboard_snapshot()["definitions"]["active"]["version"] == "1.0"
+    assert not module._approved
+    before = bus.revision()
+    module._match_indicator({"pid": 45001, "process_create_time": NOW - 10},
+                            "domain", "research.invalid", local_authority=True)
+    assert bus.revision() == before  # research cache did not acquire activation authority
+    module._match_indicator({"pid": 45001, "process_create_time": NOW - 10},
+                            "domain", "inert.invalid", local_authority=True)
+    event = bus.recent(1)[0]
+    assert event.details["finding_code"] == "definition_domain_indicator_match"
+    assert event.details["evidence"]["locally_activated"] is True
+    assert event.details["evidence"]["publisher_verified"] is False
+    assert event.details["response_authorized"] is True
+    assert "terminate_process" in event.details["response_contract"]["actions"]
+    assert AdversaryCombat._response_actions(event) is not None and bus.verify(event)
+
+
+def test_queued_definition_activation_cannot_commit_after_owner_stop(tmp_path):
+    module, bus, store, path = _definition_module(tmp_path)
+    assert module.queue_definition_import(str(path))
+    module._process_commands()
+    expected = module.dashboard_snapshot()["definitions"]["staged"]["review_identity"]
+    assert module.activate_definitions(expected=expected)
+    module.stop()
+    module._process_commands()
+    snapshot = module.dashboard_snapshot()["definitions"]
+    assert snapshot["active"] is None and snapshot["error"] and not snapshot["busy"]
+    assert not store.path.exists()
+    assert all(event.details.get("response_authorized") is not True for event in bus.recent(10))
+
+
+def test_stale_definition_click_after_reimport_is_refused_by_worker(tmp_path):
+    module, _, store, path = _definition_module(tmp_path)
+    assert module.queue_definition_import(str(path))
+    module._process_commands()
+    expected = module.dashboard_snapshot()["definitions"]["staged"]["review_identity"]
+    assert module.queue_definition_import(str(path)) and module.activate_definitions(expected=expected)
+    module._process_commands()
+    assert module.dashboard_snapshot()["definitions"]["error"]
+    assert not module.dashboard_snapshot()["definitions"]["busy"] and not store.path.exists()
+
+
+def test_definition_import_worker_does_not_hold_dashboard_snapshot_lock(tmp_path, monkeypatch):
+    module, _, store, path = _definition_module(tmp_path)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    original = store.stage
+
+    def held_stage(source):
+        entered.set()
+        assert release.wait(5)
+        return original(source)
+
+    monkeypatch.setattr(store, "stage", held_stage)
+    assert module.queue_definition_import(str(path))
+    worker = threading.Thread(target=module._process_commands)
+    snapshots = []
+
+    def read_snapshot():
+        snapshots.append(module.dashboard_snapshot())
+        finished.set()
+
+    reader = threading.Thread(target=read_snapshot)
+    try:
+        worker.start()
+        assert entered.wait(2)
+        reader.start()
+        assert finished.wait(2)
+        assert snapshots[0]["definitions"]["busy"] is True and not release.is_set()
+    finally:
+        release.set()
+        worker.join(5)
+        if reader.ident is not None:
+            reader.join(5)
+    assert not worker.is_alive() and not reader.is_alive()
+
+
+def test_active_definition_hash_enables_existing_bounded_file_scan_without_research_approval(tmp_path):
+    module, bus, store, path = _definition_module(tmp_path)
+    artifact = tmp_path / "inert-artifact.exe"
+    artifact.write_bytes(b"inert definition-hash fixture; never executed")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    body = json.loads(path.read_text())
+    body["indicators"] = [{"kind": "sha256", "value": digest}]
+    path.write_text(json.dumps(body))
+    assert module.queue_definition_import(str(path))
+    module._process_commands()
+    assert module.activate_definitions(expected=module.dashboard_snapshot()["definitions"]["staged"]["review_identity"])
+    module._process_commands()
+    assert not module._approved and store.has_hashes()
+    module._scan_hashes([{"exe": str(artifact), "pid": 45001, "create_time": NOW - 10}])
+    event = bus.recent(1)[0]
+    assert event.details["finding_code"] == "definition_sha256_indicator_match"
+    assert event.details["observed_content_sha256"] == digest
+    assert event.details["response_authorized"] is True
+    assert "quarantine_file" in event.details["response_contract"]["actions"]
+    assert artifact.read_bytes() == b"inert definition-hash fixture; never executed"
+
+
+def test_definition_rollback_uses_exact_previous_receipt_and_new_generation(tmp_path):
+    module, _, store, path = _definition_module(tmp_path)
+    for version in ("1.0", "2.0"):
+        body = json.loads(path.read_text())
+        body["version"] = version
+        path.write_text(json.dumps(body))
+        assert module.queue_definition_import(str(path))
+        module._process_commands()
+        assert module.activate_definitions(expected=module.dashboard_snapshot()["definitions"]["staged"]["review_identity"])
+        module._process_commands()
+    snapshot = module.dashboard_snapshot()["definitions"]
+    assert module.rollback_definitions(expected=snapshot["previous"]["review_identity"])
+    module._process_commands()
+    restored = module.dashboard_snapshot()["definitions"]
+    assert restored["active"]["version"] == "1.0" and restored["generation"] == 3
+    assert restored["highest_version"] == "2.0" and not restored["busy"]
+    assert store.lookup("domain", "inert.invalid")
+
+
+def test_definition_owner_stop_after_worker_admission_still_prevents_publication(tmp_path, monkeypatch):
+    module, _, store, path = _definition_module(tmp_path)
+    assert module.queue_definition_import(str(path))
+    module._process_commands()
+    expected = module.dashboard_snapshot()["definitions"]["staged"]["review_identity"]
+    assert module.activate_definitions(expected=expected)
+    persist = store._persist
+
+    def retire_during_preparation(raw, **kwargs):
+        module.stop()
+        return persist(raw, **kwargs)
+
+    monkeypatch.setattr(store, "_persist", retire_during_preparation)
+    module._process_commands()
+    assert not store.path.exists() and module.dashboard_snapshot()["definitions"]["error"]
+    assert module.dashboard_snapshot()["definitions"]["active"] is None
+
+
+def test_definition_click_cannot_rebind_if_generation_changes_during_enqueue(tmp_path, monkeypatch):
+    module, _, store, path = _definition_module(tmp_path)
+    assert module.queue_definition_import(str(path))
+    module._process_commands()
+    expected = module.dashboard_snapshot()["definitions"]["staged"]["review_identity"]
+    enqueue = module._queue_definition_command
+
+    def replace_generation(command, value, **kwargs):
+        module._lifecycle_generation += 1
+        return enqueue(command, value, **kwargs)
+
+    monkeypatch.setattr(module, "_queue_definition_command", replace_generation)
+    assert module.activate_definitions(expected=expected)
+    module._process_commands()
+    assert not store.path.exists()
+    assert module.dashboard_snapshot()["definitions"]["error"]
+
+
 def test_single_local_rule_requests_exact_process_containment():
     module, bus = make_module()
     module._publish({"kind": "credential_read", "severity": "LOW", "pid": 45001,
@@ -61,6 +245,87 @@ def test_single_unbound_local_rule_requests_local_host_lockdown():
     assert event.details["response_contract"] == {
         "version": 1, "actions": ["isolate_host"], "targets": {"host": "local"}}
     assert AdversaryCombat._response_actions(event) is not None
+
+
+def test_startup_configuration_is_retained_as_exposure_without_host_containment():
+    from angerona.core.spyware_sensors import analyze_persistence
+    findings = analyze_persistence([{"source": "windows.run", "id": "inert-fixture",
+        "command": r"C:\Temp\inert-fixture.exe"}])
+    module, bus = make_module(persistence_collector=lambda **_: {"findings": findings, "coverage": {}})
+    module._scan_once()
+    event, = bus.recent(10)
+    assert event.message == ("Startup entry points to a temporary/public/download payload; "
+                             "execution and maliciousness are unconfirmed.")
+    assert event.details["reason"] == findings[0]["reason"]
+    assert event.details["evidence"] == findings[0]["evidence"]
+    # A registry entry is configuration, not proof of execution. The former
+    # single-rule fallback promoted this metadata to a host isolation request.
+    assert event.severity == Severity.MEDIUM
+    assert event.details["spyware_confirmed"] is False and event.details["response_authorized"] is False
+    assert event.details["response_eligible"] is False and event.details["active_attack"] is False
+    assert event.details["finding_kind"] == event.details["disposition"] == "exposure"
+    assert "response_contract" not in event.details and "single_rule_host_fallback" not in event.details
+    assert "payload existence, execution and maliciousness are unconfirmed" in event.details["classification_reason"]
+    snapshot = module.dashboard_snapshot()
+    assert snapshot["hits"][0]["status"] == "exposure-review"
+    assert snapshot["stats"]["response_requests"] == 0 and not snapshot["containments"]
+    assert findings[0]["response_authorized"] is False and "response_eligible" not in findings[0]
+    assert bus.verify(event)
+
+
+@pytest.mark.parametrize("with_targets", [False, True])
+@pytest.mark.parametrize("upstream", [False, True])
+def test_startup_configuration_cannot_launder_target_or_upstream_response_hints(tmp_path, with_targets, upstream):
+    from angerona.core.response_contract import authorize_response, process_response
+    module, bus = make_module()
+    evidence = {"source": "windows.run", "command": r"C:\Temp\inert.exe",
+                "registry_key": r"HKEY_CURRENT_USER\Software\fixture", "registry_value": "fixture"}
+    finding = {"source": "windows.run", "kind": "persistence_transient_payload",
+               "severity": "HIGH", "observed_severity": "MEDIUM", "evidence": evidence,
+               "active_attack": True, "disposition": "active", "response_eligible": True,
+               "single_rule_host_fallback": True}
+    if with_targets:
+        finding.update(pid=45001, process_create_time=NOW - 10, remote_ip="8.8.8.8",
+                       path=str(tmp_path / "inert.exe"), observed_content_sha256="a" * 64,
+                       **process_response(45001, NOW - 10))
+    else:
+        finding.update(authorize_response(["isolate_host"], local_host=True))
+    assert module._response(finding, True) == {}
+    module._publish(finding, local_authority=True, response_already_requested=upstream)
+    event, = bus.recent(10)
+    assert event.severity == Severity.HIGH and event.details["observed_severity"] == "MEDIUM"
+    assert event.details["evidence"] == evidence
+    for key in ("pid", "process_create_time", "remote_ip", "path", "observed_content_sha256"):
+        assert event.details.get(key) == finding.get(key)
+    assert event.details["response_eligible"] is False and event.details["response_authorized"] is False
+    assert event.details["active_attack"] is False and event.details["response_authority"] == "none"
+    assert event.details["finding_kind"] == event.details["disposition"] == "exposure"
+    assert "response_contract" not in event.details and "single_rule_host_fallback" not in event.details
+    assert AdversaryCombat._response_actions(event) is None
+    snapshot = module.dashboard_snapshot()
+    assert snapshot["hits"][0]["status"] == "exposure-review"
+    assert snapshot["stats"]["response_requests"] == 0 and not snapshot["containments"]
+    assert finding["response_authorized"] is True and finding["response_eligible"] is True
+    assert bus.verify(event)
+
+
+def test_startup_exposure_does_not_suppress_independent_behavior_for_same_process():
+    module, bus = make_module()
+    target = {"pid": 45001, "process_create_time": NOW - 10}
+    module._publish({"source": "windows.run", "kind": "persistence_transient_payload",
+                     "severity": "MEDIUM", **target}, local_authority=True)
+    module._publish({"source": "windows.run", "kind": "credential_read",
+                     "severity": "HIGH", **target}, local_authority=True)
+    events = bus.recent(10)
+    exposure = next(e for e in events if e.details["finding_code"] == "persistence_transient_payload")
+    active = next(e for e in events if e.details["finding_code"] == "credential_read")
+    assert exposure.details["disposition"] == "exposure" and exposure.details["response_authorized"] is False
+    assert active.details["disposition"] == "active" and active.details["response_authorized"] is True
+    assert "terminate_process" in active.details["response_contract"]["actions"]
+    assert active.details["response_contract"]["targets"] == target
+    assert AdversaryCombat._response_actions(active) is not None
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 1
+    assert all(bus.verify(e) for e in events)
 
 
 def test_service_configuration_exposure_cannot_request_host_lockdown():
@@ -531,9 +796,10 @@ def test_memory_scan_uses_collector_receipt_instead_of_inventory_birth():
     assert calls[0][1]["expected_create_time"] == NOW - 10
     assert len(calls[0][1]["request_id"]) == 32 and not calls[0][1]["cancelled"]()
     assert event.details["process_create_time"] == NOW - 10
-    assert event.details["response_eligible"] is True
-    assert event.details["response_contract"]["targets"] == {"pid": 45001, "process_create_time": NOW - 10}
-    assert "isolate_host" not in event.details["response_contract"]["actions"]
+    assert event.details["response_eligible"] is False
+    assert event.details["finding_kind"] == "exposure" and event.details["disposition"] == "exposure"
+    assert event.details["response_authorized"] is False and "response_contract" not in event.details
+    assert module.dashboard_snapshot()["coverage"]["memory"]["by_pid"]["45001"]["coverage"]["memory.identity"]["status"] == "complete"
     assert module.dashboard_snapshot()["coverage"]["memory"]["status"] == "partial"
 
 
@@ -633,6 +899,125 @@ def test_authenticated_memory_source_uses_native_receipt_not_enriched_birth():
     assert module.dashboard_snapshot()["stats"]["response_requests"] == 1
 
 
+def test_rwx_observation_keeps_native_identity_and_original_but_requests_no_response():
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture(source="memory.windows.inject_scanner")
+    bus.publish(Event("Memory Injection Scanner", "original inert RWX observation", Severity.MEDIUM, NOW, {
+        "pid": 45001, "memory_identity": receipt, "response_eligible": True,
+        "active_attack": False, "disposition": "observation",
+        "detector_policy": "rwx-memory-indicator-alert-only"}))
+    original = bus.recent(1)[0]
+    module._consume_events()
+    event = next(item for item in bus.recent(10) if item.module == module.name)
+    assert event.message == "Uncorroborated memory-permission indicator from Memory Injection Scanner"
+    assert event.severity == Severity.MEDIUM and event.details["spyware_confirmed"] is False
+    assert event.details["memory_identity"] == receipt and event.details["process_create_time"] == NOW - 10
+    assert event.details["response_eligible"] is False and event.details["response_authorized"] is False
+    assert event.details["finding_kind"] == event.details["disposition"] == "exposure"
+    assert event.details["active_attack"] is False and "response_contract" not in event.details
+    assert "single_rule_host_fallback" not in event.details
+    assert event.details["detector_policy"] == "rwx-memory-indicator-alert-only"
+    assert event.details["evidence"]["source_event_digest"] == original.hmac_sig
+    assert event.details["evidence"]["producer_policy"] == {
+        "active_attack": False, "disposition": "observation",
+        "detector_policy": "rwx-memory-indicator-alert-only"}
+    snapshot = module.dashboard_snapshot()
+    assert snapshot["coverage"]["memory_sensor_identity"]["status"] == "complete"
+    assert snapshot["hits"][0]["status"] == "exposure-review"
+    assert snapshot["stats"]["response_requests"] == 0 and not snapshot["containments"]
+    assert original.message == "original inert RWX observation" and bus.verify(original) and bus.verify(event)
+
+
+def test_fresh_active_memory_producer_after_weak_observation_still_requests_immediate_response():
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture(source="memory.windows.inject_scanner")
+    weak = {"pid": 45001, "memory_identity": receipt, "response_eligible": True,
+            "active_attack": False, "disposition": "observation",
+            "detector_policy": "rwx-memory-indicator-alert-only"}
+    bus.publish(Event("Memory Injection Scanner", "inert weak metadata", Severity.MEDIUM, NOW, weak))
+    module._consume_events()
+    strong = {**weak, "memory_identity": _memory_receipt_fixture(
+        source="memory.windows.inject_scanner", request_id="b" * 32),
+        "active_attack": True, "disposition": "active",
+        "detector_policy": "corroborated-memory-injection"}
+    bus.publish(Event("Memory Injection Scanner", "inert independently corroborated finding",
+                      Severity.HIGH, NOW, strong))
+    module._consume_events()
+    events = [e for e in bus.recent(10) if e.module == module.name]
+    exposure = next(e for e in events if e.details["disposition"] == "exposure")
+    active = next(e for e in events if e.details["disposition"] == "active")
+    assert exposure.details["response_authorized"] is False
+    assert active.details["response_authorized"] is True and active.details["active_attack"] is True
+    assert active.details["response_contract"]["targets"] == {"pid": 45001, "process_create_time": NOW - 10}
+    assert "terminate_process" in active.details["response_contract"]["actions"]
+    assert AdversaryCombat._response_actions(active) is not None
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 1
+    assert all(bus.verify(e) for e in events)
+
+
+def test_weak_memory_receipt_cannot_be_replayed_as_a_stronger_active_finding():
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture(source="memory.windows.inject_scanner")
+    details = {"pid": 45001, "memory_identity": receipt, "response_eligible": True,
+               "active_attack": False, "disposition": "observation",
+               "detector_policy": "rwx-memory-indicator-alert-only"}
+    bus.publish(Event("Memory Injection Scanner", "inert weak metadata", Severity.MEDIUM, NOW, details))
+    module._consume_events()
+    bus.publish(Event("Memory Injection Scanner", "relabelled receipt", Severity.HIGH, NOW + 1,
+                      {**details, "active_attack": True, "disposition": "active",
+                       "detector_policy": "corroborated-memory-injection"}))
+    module._consume_events()
+    events = [e for e in bus.recent(10) if e.module == module.name]
+    assert len(events) == 2 and all(e.details["response_authorized"] is False for e in events)
+    assert all("response_contract" not in e.details for e in events)
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 0
+    assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == "partial"
+    assert len(module._memory_receipts) == 1
+
+
+@pytest.mark.parametrize("kind", ["private_executable_memory", "sensor_memory_injection_scanner"])
+def test_weak_memory_metadata_cannot_use_process_peer_file_or_host_fallback(tmp_path, kind):
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture()
+    finding = {**_memory_finding_fixture(), "kind": kind, "pid": 45001, "process_create_time": NOW - 10,
+               "memory_identity": receipt, "remote_ip": "8.8.8.8",
+               "path": str(tmp_path / "inert.exe"), "observed_content_sha256": "a" * 64,
+               "active_attack": True, "single_rule_host_fallback": True}
+    if kind == "sensor_memory_injection_scanner":
+        finding.update(detector_policy="rwx-memory-indicator-alert-only",
+                       active_attack=False, disposition="observation")
+    assert module._response(finding, True) == {}
+    module._publish(finding, local_authority=True, response_already_requested=True)
+    event, = bus.recent(10)
+    assert event.details["response_eligible"] is False and event.details["active_attack"] is False
+    assert event.details["disposition"] == "exposure" and event.details["finding_kind"] == "exposure"
+    assert event.details["memory_identity"] == receipt and event.details["process_create_time"] == NOW - 10
+    assert event.details["response_authorized"] is False and "response_contract" not in event.details
+    assert "single_rule_host_fallback" not in event.details
+    assert module.dashboard_snapshot()["hits"][0]["status"] == "exposure-review"
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 0
+
+
+def test_stopped_weak_memory_owner_retains_exposure_and_source_proof_without_authority():
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture(source="memory.windows.inject_scanner")
+    bus.publish(Event("Memory Injection Scanner", "inert weak metadata", Severity.MEDIUM, NOW, {
+        "pid": 45001, "memory_identity": receipt, "response_eligible": True,
+        "detector_policy": "rwx-memory-indicator-alert-only",
+        "active_attack": False, "disposition": "observation"}))
+    original = bus.recent(1)[0]
+    module.stop()
+    module._consume_events()
+    event = next(e for e in bus.recent(10) if e.module == module.name)
+    assert event.details["disposition"] == "exposure" and event.details["response_eligible"] is False
+    assert event.details["memory_identity"] == receipt
+    assert event.details["evidence"]["source_event_digest"] == original.hmac_sig
+    assert "owner generation" in event.details["eligibility_reason"]
+    assert event.details["response_authorized"] is False and "response_contract" not in event.details
+    assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == "partial"
+    assert bus.verify(original) and bus.verify(event)
+
+
 @pytest.mark.parametrize("case", ["missing", "stale", "wrong-source", "ineligible", "legacy-upstream"])
 def test_authenticated_unbound_memory_source_remains_observation_and_cannot_launder_telemetry(case):
     from angerona.core.response_contract import process_response
@@ -653,11 +1038,12 @@ def test_authenticated_unbound_memory_source_remains_observation_and_cannot_laun
     module._consume_events()
     events = [item for item in bus.recent(10) if item.module == module.name]
     assert len(events) == 1 and events[0].details["response_eligible"] is False
-    assert events[0].details["process_create_time"] is None
+    assert events[0].details["process_create_time"] == (NOW - 10 if case == "ineligible" else None)
     assert events[0].details["response_authorized"] is False
     assert "response_contract" not in events[0].details
     assert module.dashboard_snapshot()["stats"]["response_requests"] == 0
-    assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == "partial"
+    assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == (
+        "complete" if case == "ineligible" else "partial")
 
 
 def test_authenticated_memory_receipt_replay_cannot_authorize_a_second_response():
