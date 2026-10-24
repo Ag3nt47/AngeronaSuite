@@ -5,6 +5,28 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
+## Later AI consultation privacy boundary
+
+| Interaction | Source-applied repair | Evidence and limits |
+| --- | --- | --- |
+| Research/SOAR local context -> shared sanitizer -> editable JSON preview | Show sanitized system/user text and provider/model/endpoint/fallback order; editing invalidates review | SEC-16 effective_resolution_of SEC-15; recognized redaction and explicit omission are not perfect privacy |
+| Explicit Send -> reviewed configuration/credential/content -> provider adapter | Revalidate exact preview and process-local exact credential binding before submission/fallback; hold preparation or configuration failures | No raw fallback, no universal egress deny/local-only toggle; configured manual cloud remains available |
+| Retry/follow-up/close -> retained QThread | New preview/Send for each request; cooperative interruption and safe retirement | Existing GUI context-gathering latency remains a candidate; an in-flight request cannot be recalled by cancellation |
+
+First 12-suite cohort: 182 collected/180 passed/2 failed/0 skipped/native 1, with exact
+outer-two retirement and frozen-input stability. The two reviewed fixture-only
+corrections preserve hash redaction and strict migration/readback/source checks.
+The repaired 12-suite cohort passed 182 cases including 75 new cases with zero
+failures/errors/skips and exact native retirement/frozen inputs.
+A fresh 90.14-second passive 15 eligible/71 held observation completed with 17 gap
+strings across nine modules and 65 events; zero recorded errors/crashes/loss/
+pending threads, exact outer2+core retirement and frozen-input stability. It did
+not exercise real cloud/GUI requests or prove a clean host, speedup or redaction
+completeness. Seven events explicitly deny response authority, 58 omit the field
+and none explicitly authorize it; omitted details prevent threat/FP adjudication.
+The prior caf0 integrity/regression/selfcheck/600s observations below retain their
+original scope. See [consultation privacy](../../docs/ai-consult-privacy.md).
+
 ## Memory, bundle and credential interactions
 
 | Interaction | Scoped safeguard or retained finding | Evidence limit |
@@ -16,7 +38,7 @@ security regressions. Original host evidence is retained separately.
 | Bridge mode -> protected/explicit key -> legacy read -> cleanup -> handshake | Disabled/invalid mode avoids key access. Fail closed on storage/conflict/readback/cleanup. Compare Windows birth across APIs and full FD change identity separately | SEC-12; 16 new cases passed; original R4 cause UNKNOWN, later 40-case diagnostic confirms a false-hold mode; no retained-object unlink lease |
 | secret-tool empty lookup -> gdbus metadata -> first creation | Require nonsecret proof of absent locked/unlocked items; hold unknown tools/backends | SEC-13; inert contracts passed; native Linux/Keychain/POSIX behavior remains unproven |
 | SGX hint -> amber unverified status -> optional SQLCipher helper | Require SQLCipher version/schema checks and serialize helper key/singleton creation | SEC-14; no hardware attestation or production flight-cache encryption claim |
-| Explicit legacy Research/SOAR click -> configured cloud AI | Source review confirms raw context can leave without a pre-send payload preview | SEC-15 OPEN_SOURCE; configured cloud credential and operator action required. Separate proposal is unactivated/untested, with no universal provider deny or local-only toggle |
+| Historical legacy Research/SOAR click -> configured cloud AI | SEC-15 original raw-context finding remains unchanged; later source-applied preview/sanitization repair is tracked by SEC-16 | SEC-16 passed 182 cases; passive 90.14 s retained 17 gaps and zero recorded errors; no universal provider deny, local-only toggle or GUI-context latency repair |
 
 R5 accepted 32 suites/451 functions: 786 passed, zero failures/errors and three
 exact POSIX skips; acceptance_complete=true and coverage_complete=false. All

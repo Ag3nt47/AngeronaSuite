@@ -1,5 +1,14 @@
 # Memory identity, private diagnostics and key review
 
+This document's 786-test/29-phase/600-second evidence belongs to the published
+caf0 checkpoint. Later manual-consult privacy source is tracked separately by
+[SEC-16 and the consultation guide](../../docs/ai-consult-privacy.md). Fresh
+corrected-cohort validation passed 182 cases/zero failures/errors/skips. Its fresh
+90.14-second passive 15-module observation retained 17 coverage gaps and zero
+recorded errors; it did not exercise cloud/consultation GUI requests. The earlier
+receipts are not reused as current privacy proof. SEC-15's
+original issue object stays unchanged and is linked by SEC-16's effective resolution.
+
 Current key regression, selfcheck and three changed-source observations are
 accepted within the scopes below. Guarded GitHub publication is a separate
 mandatory gate; these receipts alone do not prove publication. Development version remains v1.14.0; this does
@@ -18,7 +27,7 @@ keeps older accepted results separate from the later key repairs.
 | SEC-13 | Require nonsecret Secret Service metadata to distinguish proven absence from a locked/unknown Linux credential | First provisioning needs default native Secret Service plus gdbus. Inert Windows-host tests do not prove native Linux/Keychain/POSIX behavior. |
 | SEC-14 | Show SGX hints as unverified; reject plain-SQLite false encryption success and serialize helper/singleton creation | No quote/measurement verification, production flight-cache SQLCipher caller, database migration or hardware key-isolation claim. |
 | OBS-06 | Preserve exact source scopes for passive control, SpywareGuard, scanner and 15-module observations | Pre-key observations completed with gaps. They do not validate later key changes or demonstrate speed improvement. |
-| SEC-15 | Legacy manually requested alert Research and SOAR consult can send unredacted event/host/process context to a configured cloud AI provider | OPEN_SOURCE; requires a configured cloud credential and explicit operator click. Payload preview/redaction is not established. No confirmed real exfiltration, autonomous upload or authority bypass. A separate source-approved proposal remains unactivated/untested. No universal provider deny or GUI-context latency repair is established. |
+| SEC-15 -> SEC-16 | Historical raw manual-consult exposure is retained; the later source-applied repair adds shared sanitization, exact payload/destination preview and explicit Send | Current repair passed 182 scoped cases/zero failures/errors/skips; a fresh 90.14 s passive observation retained 17 gaps and zero recorded errors. See the consultation guide. No confirmed real exfiltration, autonomous upload, authority bypass, universal AI deny or GUI-context latency repair. |
 
 The [credential and transport guide](../../docs/key-and-communication-integrity.md)
 explains store identities, migration, Linux dependencies and assurance limits.

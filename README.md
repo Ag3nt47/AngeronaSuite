@@ -24,7 +24,7 @@ Current development version: **v1.14.0** · [Capabilities](ANGERONA_CAPABILITIES
 [Hardware and self-check guide](docs/hardware-and-selfcheck.md) · [Security](SECURITY.md)
 
 **New in v1.14.0: [Live AI Review and debugging](docs/live-debug-harness.md), under active development.**
-Opt in to an outbound diagnostic feed and connect an AI's local command-line
+Opt in to a read-only local diagnostic feed and connect an AI's local command-line
 reader while Angerona runs. Black Box's dedicated review tab combines live
 alerts, errors, explicit coverage gaps and reasoned review notes. Use the
 documented reproduce–patch–test loop for performance, bug and security testing.
@@ -32,13 +32,21 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-The current maintenance review adds handle-bound memory identity, bounded private
+The manual AI consultation dialog now prepares a bounded sanitized preview before any
+provider request. Review and edit the exact JSON, provider/model/endpoints and
+fallback order, then explicitly Send; retries and follow-ups require review too.
+See [AI consultation privacy](docs/ai-consult-privacy.md). The corrected cohort passed 182 tests with zero failures/errors/skips.
+A fresh 90.14-second passive 15-module observation retained 17 coverage gaps and
+zero recorded errors; it does not prove a clean host, redaction completeness or
+lower CPU use. The prior checkpoint's 786/29/600 results are a different scope.
+
+The prior published maintenance review added handle-bound memory identity, bounded private
 Black Box exports and serialized protected-key updates. It also makes legacy
 Bridge migration fail closed and labels SGX runtime hints as unverified. Read the
 [key and communication guide](docs/key-and-communication-integrity.md),
 [AI-aware defense priorities](docs/ai-aware-defense.md) and
 [scoped validation](analysis/live-debug-2026-10-22/key-and-memory-review.md).
-The current scope passed 786 tests with three exact POSIX skips and all 29
+That earlier scope passed 786 tests with three exact POSIX skips and all 29
 isolated selfcheck phases. A fresh 600.531-second 15-module observation retained
 17 coverage gaps; it does not prove a clean host or lower CPU use. The broader
 v1.15 integration remains in progress; this is not a v1.15 release.

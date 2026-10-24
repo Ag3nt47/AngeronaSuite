@@ -5,7 +5,47 @@ Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## Current maintenance review: key integrity and AI-aware boundaries
+## AI consultation privacy maintenance — scoped validation accepted
+
+- Version stays v1.14.0; broader v1.15 integration is incomplete. Read
+  docs/ai-consult-privacy.md and docs/ai-aware-defense.md for scope and limits.
+- Manual Research/SOAR GUI consultation uses bounded shared sanitization and an
+  exact editable system/user JSON preview, provider/model/endpoint/fallback list
+  and explicit Send. Opening, retrying or preparing a follow-up sends nothing.
+  Edits invalidate the preview until re-sanitized; configuration/credential/content
+  changes hold before submission/fallback. No raw preparation-failure fallback.
+- Process-local HMAC credential binding and retained QThread cancellation do not
+  establish durable revocation history, perfect cancellation/redaction, hostile
+  same-process protection or independent trust. GUI context gathering is still
+  a latency candidate. Configured manual cloud routes remain available after
+  review/Send. Ollama previews admit localhost/numeric loopback via existing
+  attested transport. No local-only toggle/global computer-only setting or
+  universal AI-egress deny is implemented; other entrypoints are separate.
+- First 12-suite cohort: 182 collected/180 passed/2 failed/0 skipped/native 1 is retained
+  (63db99bc87db831f9db958d04c66ae23b6bf77de8ea78db9f170e9c23edc4da5).
+  Confirmed fixture corrections preserve hash-like redaction and strict
+  migration/readback/source-preservation assertions; four production files unchanged.
+  Repaired source passed 182/0fail/0error/0skip across 12 suites/117 functions,
+  including 75 new cases; native 0/exactouter2 retirement/fourclosures/MainThread/
+  noQApp and source 1872f439/HEAD/bothindices/runtime39/helpers83 stable.
+  Current receipt e2b0c5a6cf01be853ae5102bd5228a48137519fdc39c943e668f0cfddbd03b26.
+  Fresh 90.14 s passive 15 eligible/71 held observation is OBSERVED_WITH_GAPS:
+  17 gap strings/nine modules, 65 events, zero recorded errors/crashes/loss/pending
+  threads; exact outer2+core retirement/MainThread/noQApp and frozen inputs retained.
+  Observation receipt 98a191185b733fdf7a83b800a14d5d2b1d8943d30d0a56d2451e96ba1e651e4c.
+  This profile does not exercise real cloud/consult GUI or prove perfect redaction,
+  host cleanliness, all-module coverage or speed improvement.
+- Published prior caf0c568 and proof d592354c are historical. Its 786/29/600
+  validations do not validate this later privacy change or imply current publication.
+- Registry 174 preserves all 173 prior raw issue objects/order and review_status;
+  SEC-16 effective_resolution_of SEC-15 retains the original finding unchanged.
+  External agents granted filesystem/shell/Git authority are outside internal tool
+  boundaries. Direct CLI/ARIA fallback are sanitized without universal GUI review.
+  Multiple reviewers sharing a host/account are not independently
+  administered principals or cryptographic anchors. Imported text never grants
+  authority. Guarded GitHub publication remains a separate mandatory gate.
+
+## Prior published maintenance: integrity and AI-aware boundaries
 
 - Development version remains v1.14.0; broader v1.15 integration is incomplete.
   Read docs/key-and-communication-integrity.md, docs/ai-aware-defense.md and

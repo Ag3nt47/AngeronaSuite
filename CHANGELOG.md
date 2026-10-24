@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.14.0 — reviewed AI consultation privacy
+
+- Prepare bounded sanitized system/user JSON before manual alert Research/SOAR
+  consultation. Show provider/model/endpoints and eligible fallback order; require
+  explicit Send for the initial request, retries and follow-ups. Editing invalidates
+  the preview until re-sanitized. Bind submission/fallback to reviewed content,
+  routes and exact credential binding; hold preparation/configuration failures.
+- Reuse the shared sanitizer and retain cancellable provider workers through actual
+  retirement. Redaction is best effort; GUI context gathering is still a latency
+  candidate. No global computer-only setting, local-only toggle or universal AI deny.
+- Preserve the actual first 182-case/180-pass/two-failure/zero-skip/native 1 cohort.
+  Correct only the benign-text truncation fixture and strict migration fake; four
+  production candidates remain unchanged. Repaired source passed 182 cases with
+  zero failures/errors/skips across 12 suites, including 75 new cases and exact
+  native retirement. A fresh 90.14 s passive 15-module observation retained 17
+  coverage gaps across nine modules, 65 events and zero recorded errors/crashes/
+  loss/pending threads. It does not test cloud/GUI requests or prove host cleanliness,
+  redaction completeness or speed improvement.
+- Add SEC-16 as effective resolution of SEC-15; all 173 prior raw issue objects/order
+  and historical statuses remain unchanged. No real exfiltration, autonomous upload
+  or authority bypass was demonstrated by the source finding.
+- The published caf0 checkpoint and its 786/29/600 results remain historical.
+  [Consultation privacy](docs/ai-consult-privacy.md) records scope and limitations.
+  Version stays v1.14.0; broader v1.15 remains incomplete. Guarded publication is a
+  separate mandatory gate, not a conclusion from test receipts.
+
 ## 1.14.0 — memory identity, private diagnostics and key integrity
 
 - Bind executable-region metadata to the same retained Windows query handle.

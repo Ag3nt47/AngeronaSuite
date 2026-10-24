@@ -49,37 +49,12 @@ OLLAMA_MODEL         = "llama3:8b"
 LOCAL_TIMEOUT_S      = 30.0     # manual analyze is user-initiated → can wait longer than triage's 5s
 CONFIDENCE_THRESHOLD = 70       # below this (0-100) → escalate to cloud
 
-CLOUD_MAX_PROMPT_CHARS = 10_000
-CLOUD_MAX_DEPTH = 5
-CLOUD_MAX_CONTAINER_ITEMS = 24
-CLOUD_MAX_NODES = 256
-CLOUD_MAX_STRING_CHARS = 512
-CLOUD_MAX_TEXT_CHARS = 6_000
+from angerona.core.privacy import (
+    CLOUD_MAX_PROMPT_CHARS, CLOUD_MAX_DEPTH, CLOUD_MAX_CONTAINER_ITEMS,
+    CLOUD_MAX_NODES, CLOUD_MAX_STRING_CHARS, CLOUD_MAX_TEXT_CHARS,
+    CloudPromptSanitizer as _CloudPromptSanitizer,
+)
 
-_CLOUD_SENSITIVE_KEY = re.compile(
-    r"(?i)(?:^|[_-])(?:access[_-]?token|address|addr|api[_-]?key|"
-    r"authorization|auth|cmdline|command[_-]?line|cookie|credential|"
-    r"email|env|environment|host|hostname|image|ip|key|password|passwd|"
-    r"path|private|secret|session|token|url|user|username)(?:$|[_-])"
-)
-_CLOUD_BEARER = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/-]{8,}=*")
-_CLOUD_JWT = re.compile(
-    r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"
-)
-_CLOUD_PROVIDER_TOKEN = re.compile(
-    r"\b(?:sk|ghp|gho|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{12,}\b",
-    re.IGNORECASE,
-)
-_CLOUD_HIGH_ENTROPY = re.compile(
-    r"(?<![A-Za-z0-9])(?:[A-Fa-f0-9]{40,}|[A-Za-z0-9+/_-]{48,}={0,2})"
-    r"(?![A-Za-z0-9])"
-)
-_CLOUD_WIN_PATH_WIDE = re.compile(r"(?i)\b[A-Z]:\\[^\r\n,;\"'<>|]+")
-_CLOUD_UNC_PATH_WIDE = re.compile(r"\\\\[^\r\n,;\"'<>|]+")
-_CLOUD_POSIX_PATH = re.compile(
-    r"(?<![\w.])/(?:home|Users|var|tmp|opt|etc)/[^\s\"']+"
-)
-_CLOUD_MAC = re.compile(r"\b(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}\b", re.IGNORECASE)
 
 _ANALYZE_SYSTEM_PROMPT = (
     "You are a Tier-3 SOC analyst performing deep triage on a single endpoint "
@@ -133,68 +108,6 @@ def _build_prompt(alert: dict) -> str:
         "original_details": a.get("details", ""),
     }
     return "Triage this endpoint alert:\n" + json.dumps(evidence, indent=2, default=str)
-
-
-class _CloudPromptSanitizer:
-    """Recursively redact and bound the only payload allowed off-host."""
-
-    def __init__(self) -> None:
-        self._nodes = 0
-        self._text_chars = 0
-
-    def text(self, value: Any) -> str:
-        from angerona.core.privacy import redact_text
-
-        remaining = max(0, CLOUD_MAX_TEXT_CHARS - self._text_chars)
-        limit = min(CLOUD_MAX_STRING_CHARS, remaining)
-        if limit == 0:
-            return "<redacted:text-budget>"
-        # Bound before regex work as well as after it; attacker-controlled
-        # telemetry must not make cloud prompt preparation itself unbounded.
-        text = str(value or "")[:limit]
-        text = _CLOUD_WIN_PATH_WIDE.sub("[LOCAL_PATH]", text)
-        text = _CLOUD_UNC_PATH_WIDE.sub("[LOCAL_PATH]", text)
-        text = redact_text(text, limit=limit)
-        text = _CLOUD_BEARER.sub("Bearer [REDACTED]", text)
-        text = _CLOUD_JWT.sub("[REDACTED]", text)
-        text = _CLOUD_PROVIDER_TOKEN.sub("[REDACTED]", text)
-        text = _CLOUD_HIGH_ENTROPY.sub("[REDACTED]", text)
-        text = _CLOUD_POSIX_PATH.sub("[LOCAL_PATH]", text)
-        text = _CLOUD_MAC.sub("[ADDRESS]", text)
-        self._text_chars += len(text)
-        return text
-
-    def value(self, value: Any, depth: int = 0) -> Any:
-        self._nodes += 1
-        if self._nodes > CLOUD_MAX_NODES:
-            return "<redacted:node-budget>"
-        if depth > CLOUD_MAX_DEPTH:
-            return "<redacted:depth-limit>"
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        if isinstance(value, (bytes, bytearray, memoryview)):
-            return "<redacted:binary>"
-        if isinstance(value, dict):
-            out: dict[str, Any] = {}
-            for index, (key, item) in enumerate(value.items()):
-                if index >= CLOUD_MAX_CONTAINER_ITEMS:
-                    out["_truncated"] = "<redacted:container-limit>"
-                    break
-                safe_key = self.text(key)
-                if _CLOUD_SENSITIVE_KEY.search(str(key)):
-                    out[safe_key] = "<redacted:sensitive-field>"
-                else:
-                    out[safe_key] = self.value(item, depth + 1)
-            return out
-        if isinstance(value, (list, tuple, set)):
-            safe = []
-            for index, item in enumerate(value):
-                if index >= CLOUD_MAX_CONTAINER_ITEMS:
-                    safe.append("<redacted:container-limit>")
-                    break
-                safe.append(self.value(item, depth + 1))
-            return safe
-        return self.text(value)
 
 
 def _build_cloud_prompt(alert: dict) -> str:

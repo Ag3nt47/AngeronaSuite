@@ -103,20 +103,29 @@ def test_changed_legacy_env_is_not_deleted_after_verified_store_write(
 ) -> None:
     source = tmp_path / ".env"
     source.write_text("OPENAI_API_KEY=first\n", encoding="utf-8")
-    monkeypatch.setattr(secure_store, "read_secret_map", lambda _root=None: {})
+    stored: dict[str, str] = {}
+    calls: list[tuple[object, ...]] = []
 
-    def write_and_change(_updates, _root=None):
+    def read_store(_root=None, *, strict=False):
+        calls.append(("read", _root, strict))
+        return dict(stored)
+
+    def write_and_change(updates, _root=None):
+        calls.append(("write", _root, dict(updates)))
+        stored.update(updates)
         source.write_text("OPENAI_API_KEY=replaced\n", encoding="utf-8")
-        monkeypatch.setattr(
-            secure_store,
-            "read_secret_map",
-            lambda _root=None: {"OPENAI_API_KEY": "first"},
-        )
         return tmp_path / "secrets.dpapi"
 
+    monkeypatch.setattr(secure_store, "read_secret_map", read_store)
     monkeypatch.setattr(secure_store, "write_secret_map", write_and_change)
 
     assert secure_store.migrate_legacy_env([source], tmp_path) == []
+    assert calls == [
+        ("read", tmp_path, True),
+        ("write", tmp_path, {"OPENAI_API_KEY": "first"}),
+        ("read", tmp_path, True),
+    ]
+    assert stored == {"OPENAI_API_KEY": "first"}
     assert source.read_text(encoding="utf-8") == "OPENAI_API_KEY=replaced\n"
 
 

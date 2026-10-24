@@ -30,29 +30,33 @@ compromise; MITRE ATT&CK documents prompt injection as an adversary technique.
 See [NIST AI 100-2e2025](https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-2e2025.pdf)
 and [MITRE T1698](https://attack.mitre.org/techniques/T1698/).
 
-## Known manual cloud-consult privacy gap
+## Manual consultation privacy boundary
 
-A source-only review found that legacy alert Research and SOAR consult actions
-can include raw event details, host/VPN names, process paths and connection
-context in a configured provider request without a pre-send payload preview.
-This requires configured cloud credentials and an explicit operator click;
-manual online consultation has its own consent semantics. The separate default-off
-automatic fallback settings are not a global computer-only policy. No actual
-secret transmission, autonomous upload or AI-to-response bypass was demonstrated.
-SEC-15 remains open for a separate repair: share the bounded outbound sanitizer,
-hold on preparation failure and preview the destination and exact sanitized
-payload before Send. A universal local-only deny needs enforcement across every
-provider entrypoint; it is not established by this maintenance checkpoint.
+SEC-15 records the earlier source-confirmed Research/SOAR path that could send
+raw context to a configured cloud provider without a pre-send payload preview.
+It required configured credentials and an explicit operator action; no actual
+secret transmission, autonomous upload, fallback-policy bypass or AI-to-host
+authority bypass was demonstrated. Its historical issue object stays unchanged.
+SEC-16 tracks the source-applied repair: 182 scoped cases passed with zero
+failures/errors/skips. A fresh 90.14-second passive 15-module observation retained
+17 coverage gaps and zero recorded errors; it did not exercise cloud/consultation
+GUI requests or establish a clean host, perfect redaction or faster performance.
 
-A separate repair proposal has source approval but is unactivated and untested.
-Independent review rejected an earlier proposal's trust in attacker-supplied
-redaction markers before activation; the revised proposal does not trust such
-markers. Its 75 proposed inert cases have not run. Within the unactivated proposal, Ollama preview destinations are restricted to
-localhost or numeric loopback through the existing attested transport. Configured
-manual cloud routes remain available after payload review and Send. The dialog
-adds no local-only toggle; no universal provider-egress deny or global
-computer-only setting is implemented.
-Existing GUI-thread context gathering remains a latency candidate.
+AIConsultDialog flows (Research/SOAR, CVE analysis and Sandbox Editor) show bounded sanitized system/user JSON and the eligible
+provider/model/endpoint/fallback sequence. Opening, retrying or preparing a
+follow-up does not send it. Editing invalidates the preview; re-review and an
+explicit Send are required. Submission is bound to reviewed content/configuration
+and process-local credential binding; uncertainty holds instead of sending raw
+fallback data. Retained workers cancel cooperatively through retirement.
+See [AI consultation privacy](ai-consult-privacy.md) for exact behavior and limits.
+
+This is best-effort redaction, not perfect secrecy. Configured manual cloud routes
+remain available after review/Send. Ollama preview destinations are restricted to
+localhost/numeric loopback through existing attested transport; no local-only
+toggle, global computer-only setting or universal provider-egress deny is added.
+Direct CLI and separately configured ARIA fallback callers are also sanitized
+but do not universally require this GUI preview; their existing policies remain. Existing GUI
+context gathering remains a latency candidate; no new process isolation is claimed.
 
 ## Keep AI outside the authority boundary
 

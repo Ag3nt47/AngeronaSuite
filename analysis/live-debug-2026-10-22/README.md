@@ -1,6 +1,20 @@
 # Live debugging and screenshot issue review
 
-Latest maintenance review: [memory identity, private bundles and key integrity](key-and-memory-review.md)
+Latest source maintenance: [reviewed AI consultation privacy](../../docs/ai-consult-privacy.md)
+adds bounded shared sanitization, exact editable payload/destination review and
+explicit Send for Research/SOAR initial/retry/follow-up requests. SEC-16 links
+the repair to historical SEC-15 without rewriting its finding. The first focused
+cohort failed: 180 passed/2 failed/0 skipped; its original receipt remains. Fresh
+corrected-cohort validation accepted 182 cases/zero failures/errors/skips.
+A fresh 90.14-second passive 15-module observation retained 17 gap strings across
+nine modules and 65 events; zero recorded errors/crashes/loss/pending threads,
+with exact outer/core retirement and frozen-input stability. It did not exercise
+cloud/consultation GUI requests or establish host cleanliness, perfect redaction
+or faster performance. Earlier caf0/786/29/600 evidence below is a different scope.
+The register is 174 unique IDs with all 173 earlier raw objects/order preserved.
+Version remains v1.14.0; broader v1.15 is incomplete.
+
+Prior published maintenance review: [memory identity, private bundles and key integrity](key-and-memory-review.md)
 and [sanitized evidence](key-and-memory-evidence.json). Current R5 accepted 32
 complete suites/451 functions: 786 passes, zero failures/errors, three exact POSIX
 skips. Acceptance is complete; native platform coverage is not. Same-source
