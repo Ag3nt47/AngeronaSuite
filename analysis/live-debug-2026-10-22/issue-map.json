@@ -1381,6 +1381,25 @@
         "original_alert_status_changed": false,
         "summary_sha256": "a554c059b0ae094202b227b4f5975f630d4bfad726932479c0844cd03ab4816a"
       }
+    },
+    {
+      "id": "SCN-05",
+      "status": "focused-regressions-selfcheck-passive-telemetry-accepted-with-explicit-limits",
+      "cause_or_observation": "The producer persisted a high-pressure flag but ScannerHost skipped every write while it was set. A consumer could drain the ring without clearing that flag, leaving telemetry shedding latched while process heartbeats continued.",
+      "result_and_limits": "Producer-side live occupancy refresh permits forwarding after consumer drain, preserving the 85% threshold, HMAC/schema/frame/sequence/layout, cadence, earlier shed/drop evidence and authority. Original tiny-ring latch and separate staged comparison remain: original 3 pass/17 fail/native 1 versus candidate 20 pass/native 0. Fresh active 41-suite/565-function/1133-case gate accepted 1128 passes/zero failures or errors/five exact native availability skips; all 20 new scanner cases passed and all 13 configured origins loaded including IPC. Fresh default selfcheck passed 29 phases, retaining 18 module SKIPs and six optional unloaded origins including IPC; no forced import or changed-IPC selfcheck execution credit. Independent process-telemetry observation completed 30.031 seconds with 31 heartbeats/four raw sensor frames/zero matrix interval gaps, recorded errors/drops/pending threads and scoped original outer-two plus core retirement. Its selected capture separately retains 11 advisory coverage records and zero EventBus event records, not complete alert visibility. The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged. Final offline, reviewed commit, guarded publication and current CI require separate fresh receipts. No atomic snapshot, race immunity, passive 85% pressure trigger, file-malware verdict, live-host efficacy, historical-cause closure or speed gain.",
+      "source_module_sha256": "9f2e67193973fbf61c7c7a9408c003098b2d34792b31226897a16d18c2a76e93",
+      "new_test_sha256": "6336eddad97aa2958bf7d120915358da7e86d272918d66aa9463bb478adcf197",
+      "staged_comparison_root_review_sha256": "e972467d284698a27598fdd0cf95bf829bcecb8dc2d0b1560375d34ebece1532",
+      "public_evidence": "README.md",
+      "historical_host_incident_demonstrated": false,
+      "product_speed_gain_claimed": false,
+      "accepted_fresh_gate_sha256": "9624552e303d449df8cba8e8d16d50cbffd718aa3a5437653e86429bc598d43f",
+      "accepted_fresh_gate_root_review_sha256": "b20609dacf26501075a1bca66bde08ea5e192190740638969bb6453feeddcca7",
+      "selfcheck_sha256": "ecbc964aa00213ebd75753787bc1377b0a5e328fe326ed69a586d7b5fcbf684b",
+      "raw_observation_sha256": "d6c40f00036fbb2a07b1bb03fe23a4cd26b522046586885f690767942084a692",
+      "raw_observation_root_review_sha256": "f20e84e2405178e10b93327b1b985258d615d3fa087891e971d3350955d30a28",
+      "advisory_map_sha256": "2c332e6fbca0542bc52c28690aa9f25c8ef8e513cf23f482996d82193b21802c",
+      "advisory_map_root_review_sha256": "42a0bbc7bc9d1db3fc14c592f5548446ad66d4d92a3b5d37349e272a8dc466d0"
     }
   ],
   "preserved_uncertainty": [
@@ -1717,5 +1736,191 @@
       "offline": "Requires final-source offline receipt for the exact ten-path scope; this documentation does not attest completion.",
       "publication": "Requires the unchanged canonical guarded publisher and its separate completed receipt; this documentation does not attest commit, publication or CI completion."
     }
+  },
+  "current_scanner_backpressure_review": {
+    "schema": "angerona.current.scanner-backpressure-review.v1",
+    "status": "SCOPED_GATE_SELFCHECK_PASSIVE_TELEMETRY_ACCEPTED_COMPLETION_SEPARATELY_GATED",
+    "product_version": "1.14.0 maintenance",
+    "broader_1_15_complete": false,
+    "finding": "SCN-05",
+    "issue_records": 187,
+    "previous_raw_issue_records_preserved": 186,
+    "history_policy": "Append SCN-05 after all 186 prior raw issue objects; preserve their bytes/order/status and every old root/history/review/current_validation value. SCN-04 is the separate Windows Run-view issue. No old issue is silently closed.",
+    "source": {
+      "paths": [
+        "src/angerona/resilience/ipc_ring.py",
+        "tests/test_scanner_backpressure_recovery.py"
+      ],
+      "module_sha256": "9f2e67193973fbf61c7c7a9408c003098b2d34792b31226897a16d18c2a76e93",
+      "test_sha256": "6336eddad97aa2958bf7d120915358da7e86d272918d66aa9463bb478adcf197",
+      "active_pre_documentation_map_sha256": "3c1f49a0e749e44ae983cff03c32d2ae9ded0ac9bba55b32805e8fc3f1a35916",
+      "change": "Producer-side live occupancy observation refreshes the producer-owned advisory pressure flag before shedding, permitting recovery after consumer drain without an extra write.",
+      "unchanged": [
+        "85% threshold",
+        "Producer alone writes pressure flag; reader remains a consumer",
+        "HMAC/schema/frame/sequence/layout",
+        "overrun/oversize and prior drop/shed counts",
+        "scanner cadence, keys and response authority"
+      ],
+      "limits": [
+        "One observed header is not an atomic multi-field transaction or memory-order guarantee.",
+        "Malformed observed header and closed-mmap/setter failures propagate; no fabricated low-pressure admission.",
+        "No prior real-host incident, adversary exploit, file-scan efficacy or speed gain is established."
+      ]
+    },
+    "staged_comparison": {
+      "accepted_root_review_sha256": "e972467d284698a27598fdd0cf95bf829bcecb8dc2d0b1560375d34ebece1532",
+      "baseline": {
+        "cases": 20,
+        "passed": 3,
+        "failed": 17,
+        "native_exit": 1,
+        "negative_control_only": true
+      },
+      "candidate": {
+        "cases": 20,
+        "passed": 20,
+        "failed": 0,
+        "native_exit": 0,
+        "staged_unit_evidence_only": true
+      },
+      "errors": 0,
+      "skips": 0,
+      "actual_gated_ScannerHost_run_fixture": true,
+      "owned_physical_children_waited_closed": true,
+      "independent_descendant_proof": false,
+      "deployed_source_or_live_host_efficacy": false
+    },
+    "fresh_gate": {
+      "status": "ACCEPTED_WITH_FIVE_EXACT_NATIVE_AVAILABILITY_GAPS",
+      "suites": 41,
+      "normalized_functions": 565,
+      "cases": 1133,
+      "passed": 1128,
+      "failed": 0,
+      "errors": 0,
+      "availability_skips": 5,
+      "acceptance_complete": true,
+      "coverage_complete": false,
+      "new_scanner_cases_passed": 20,
+      "privacy75_and_named_nested7": "Included subsets, not additive totals",
+      "configured_origins_loaded": 13,
+      "changed_IPC_loaded": true,
+      "actual_result_sha256": "9624552e303d449df8cba8e8d16d50cbffd718aa3a5437653e86429bc598d43f",
+      "root_review_sha256": "b20609dacf26501075a1bca66bde08ea5e192190740638969bb6453feeddcca7",
+      "native_retirement": "Original owned outer two generations retired WAIT0/native0 with closed handles; nested fixtures retain separate evidence limits.",
+      "origin_limit": "Declared filenames/code origins are not universal executed-byte attestation."
+    },
+    "selfcheck": {
+      "status": "ACCEPTED_WITH_OPTIONAL_ORIGIN_GAPS",
+      "phases": 29,
+      "failed": 0,
+      "module_PASS": 68,
+      "event_pipeline_PASS": 1,
+      "module_SKIP": 18,
+      "required_origin_count": 5,
+      "configured_origin_count": 13,
+      "loaded": 7,
+      "unloaded": 6,
+      "optional_unloaded": [
+        "angerona.core.analysis_worker",
+        "angerona.engines.ai_consult",
+        "angerona.gui.ai_consult_dialog",
+        "angerona.core.ai_security_broker",
+        "angerona.core.spyware_beacon",
+        "angerona.resilience.ipc_ring"
+      ],
+      "optional_IPC_loaded": false,
+      "force_missing_import_for_credit": false,
+      "changed_IPC_execution_credit": false,
+      "actual_result_sha256": "ecbc964aa00213ebd75753787bc1377b0a5e328fe326ed69a586d7b5fcbf684b",
+      "root_review_sha256": "de4b2c571563c603fe051cff89881c197c171933b474c476487966f536b11741",
+      "limits": "No all-86 active runtime, real model/provider/enrollment or host efficacy is established; focused scanner tests provide separate changed-IPC execution evidence."
+    },
+    "raw_process_ScannerHost30": {
+      "status": "ACCEPTED_SCOPED_PROCESS_TELEMETRY_OBSERVATION",
+      "requested_seconds": 30,
+      "actual_seconds": 30.03100000001723,
+      "scanner_heartbeats": 31,
+      "raw_scanner_sensor_frames": 4,
+      "matrix_interval_coverage_gaps": [],
+      "recorded_errors": [],
+      "scanner_capture_export_console_drops": 0,
+      "pending_threads": [],
+      "original_outer_two_and_separate_live_held_core_retired": true,
+      "native_scope": "Retained original outer two plus separately held core generation, not every descendant/helper or cached import byte.",
+      "actual_result_sha256": "d6c40f00036fbb2a07b1bb03fe23a4cd26b522046586885f690767942084a692",
+      "latest_root_review_sha256": "f20e84e2405178e10b93327b1b985258d615d3fa087891e971d3350955d30a28",
+      "selected_capture": {
+        "sha256": "fde3e13553586b1318769f05802a5e36456d237ca13850105dac51d2d8bcc530",
+        "bytes": 2751,
+        "records": 11,
+        "coverage_records": 11,
+        "EventBus_event_records": 0,
+        "notes": "Live-from-activation boundary and ten not-created diagnostic-source notes. Preserve separately from zero matrix interval-gap count; four raw sensor frames are not four alert events.",
+        "complete_alert_visibility_proved": false
+      },
+      "file_scan_request_or_malware_verdict": false,
+      "passive_85_percent_trigger_assumed": false,
+      "GUI_all86_host_efficacy_or_speed_claimed": false
+    },
+    "advisory_map": {
+      "status": "ACCEPTED_ADVISORY_PROCESSING_OF_SELECTED_CAPTURE_ONLY",
+      "selected_capture_only": true,
+      "records": 11,
+      "event_records": 0,
+      "coverage_records": 11,
+      "groups": 11,
+      "all_needs_review": true,
+      "parse_omissions": 0,
+      "overflow": 0,
+      "identity_conflicts": 0,
+      "actual_map_sha256": "2c332e6fbca0542bc52c28690aa9f25c8ef8e513cf23f482996d82193b21802c",
+      "owned_result_sha256": "a93c5392a7558886edcaeafa63c327671ba307e8208f10a760fae31d577b08fc",
+      "root_review_sha256": "42a0bbc7bc9d1db3fc14c592f5548446ad66d4d92a3b5d37349e272a8dc466d0",
+      "processing_complete": true,
+      "independent_continuity_verified": false,
+      "automatic_response": false,
+      "original_alert_dispositions_changed": false,
+      "physical_only_utility_retired_closed": true,
+      "independent_two_generation_or_descendant_proof": false,
+      "complete_alert_visibility_or_threat_false_positive_clean_host_verdict": false
+    },
+    "scope": {
+      "source_entries": 1880,
+      "python_entries": 1167,
+      "reviewed_paths": 8,
+      "code_test_paths": 2,
+      "existing_documentation_paths": 6,
+      "added_test_paths": 1,
+      "new_documents": 0,
+      "final_source_proof": "Separate mandatory final-source review/offline receipt after final documentation; no circular future source-map hash is supplied."
+    },
+    "release_completion": {
+      "status": "SEPARATE_MANDATORY_FRESH_PROOFS",
+      "offline": "Final-source offline validation for the exact eight-path scope needs its own fresh receipt; not attested here.",
+      "publication": "Reviewed commit and unchanged canonical guarded publisher/README asset proof need their own fresh receipt; not attested here.",
+      "current_CI": "Current-revision CI requires separate fresh evidence; no credit claimed here.",
+      "historical_CI": {
+        "revision": "7b44dc3181101e8519c0851387600c3f0105e57d",
+        "successful_historical_only": true,
+        "current_source_credit": false
+      },
+      "completion_preclaimed": false
+    },
+    "preserved_open_boundaries": [
+      "SEC-20 parser normalization",
+      "HOST-03 unsafe OS-volume custody exposure",
+      "HOST-04 requested 2 GiB headroom not established",
+      "SCN-04 historical Run-view identity/benignity uncertainty",
+      "Old heartbeat/native/GUI failure causes",
+      "Historical reader retirement and competing diagnostic load",
+      "Import-cache/executed-byte and helper/descendant coverage limits",
+      "Threat/false-positive/actor and clean-host verdicts remain unproved"
+    ],
+    "raw_host_capture_published": false,
+    "alert_baseline_or_trust_mutation_authority": false,
+    "review_date": "2026-10-24",
+    "documentation_results_bound": true
   }
 }

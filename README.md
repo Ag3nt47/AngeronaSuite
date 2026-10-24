@@ -32,7 +32,22 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance:** model-file admission checks the supplied root and
+**Current v1.14 maintenance — SCN-05 telemetry recovery:** ScannerHost rechecks
+queue occupancy before shedding events, allowing forwarding to resume after the
+core drains its ring. The 85% policy, authenticated frames and drop history stay
+intact. A fresh 41-suite gate passed 1128 of 1133 cases with five exact native
+availability skips; all 29 selfcheck phases passed.
+
+A separate 30.031 s process-telemetry observation recorded 31 heartbeats and four
+raw sensor frames. Its selected diagnostic capture contains 11 coverage notes
+and zero EventBus event records, preserving the limits on alert visibility.
+The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged.
+[Scoped evidence and open findings](analysis/live-debug-2026-10-22/README.md)
+separate fixture recovery, passive observation and remaining coverage gaps.
+Final offline checks, guarded publication and current CI require their own
+fresh receipts. Product remains v1.14.0 maintenance; broader v1.15 is incomplete.
+
+**Prior v1.14 maintenance:** model-file admission checks the supplied root and
 each in-root component before canonical resolution. The fresh 40-suite gate
 passed 1108 of 1113 cases with five exact availability skips; all 29 selfcheck
 phases passed. Fresh scoped observations include a synthetic model worker,

@@ -1,11 +1,55 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.14.0
-Date: 2026-10-23
+Date: 2026-10-24
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## Current original-path model custody — v1.14 maintenance
+## Current SCN-05 telemetry maintenance — scoped evidence accepted
+
+- Product 1.14.0 maintenance; broader 1.15 incomplete. Exact scope: two code/test
+  paths + six existing docs = eight paths, one added test, no new docs. Active
+  pre-doc descriptor 3c1f49a0 covers 1880 source / 1167 Python entries; final
+  source/offline/publication require their own separate fresh receipts.
+- IPC 9f2e6719 observes live occupancy before shedding and refreshes only the
+  producer-owned advisory pressure flag. A consumer drain can resume forwarding
+  without an extra frame. Keep 85%, HMAC/schema/sequence/layout, cadence, prior
+  shed/drop evidence and authority unchanged. Invalid observed headers fail
+  closed; no atomic multi-field snapshot or cross-process race guarantee.
+- Staged original 3 pass / 17 fail / native 1 versus candidate 20 pass / native 0,
+  both zero errors/skips; root review e972467d. Actual ScannerHost.run used a
+  private real ring and inert Event-gated sensor. This is separate unit evidence.
+- Fresh active gate: 41 suites / 565 functions / 1133 cases, 1128 passed, zero
+  failures/errors, five exact native availability skips. New scanner 20, privacy
+  75 and nested seven are included subsets. All 13 configured origins loaded,
+  including IPC. Acceptance is complete; coverage and executed-byte assurance
+  are not. Result 9624552e; root review b20609da.
+- Fresh selfcheck: 29 phases / zero failures, 68 module PASS + pipeline PASS,
+  18 module SKIP; five required origins, seven loaded / six unloaded of 13.
+  IPC was naturally unloaded; no forced import or selfcheck changed-IPC execution
+  credit. Result ecbc964a; root review de4b2c57.
+- Fresh independent process-creation ScannerHost30: 30.031 s, 31 heartbeats, four
+  raw sensor frames, zero matrix interval gaps/errors/drops/pending threads.
+  Original outer two plus separately held core retired under scoped native
+  proofs. Result d6c40f00; latest root review f20e84e2. Selected capture alone
+  contains 11 advisory coverage records / zero EventBus event records; preserve
+  these independently of interval-gap metrics. No complete alert visibility.
+- The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged.
+- Raw observation does not submit a file scan, deliver a malware verdict or
+  establish an 85% pressure trigger, field efficacy, GUI/all-86 coverage, clean
+  host or speed gain. Preserve all actual gaps and unverified continuity.
+- All 186 prior raw issues/order/status and every old root/history/review/
+  current_validation value remain exact. Append SCN-05 as issue 187 and separate
+  current_scanner_backpressure_review; SCN-04 remains unrelated. SEC-20 and
+  HOST-03/HOST-04 stay OPEN, along with older native/heartbeat/GUI causes,
+  reader-retirement/competing-load and import-cache/helper limits.
+- Final offline, reviewed commit, unchanged canonical guarded publication/asset
+  proof and current CI each require separate fresh receipts; none is preclaimed
+  by this reference. Successful 7b44 CI is historical, not current-source proof.
+  Keep sanitized Preview + explicit Send and all seven README image targets.
+- Receipt boundaries: analysis/live-debug-2026-10-22/README.md and interaction-map.md.
+
+## Historical original-path model custody — v1.14 maintenance
 
 - Two source paths only: ai_model_integrity.py and the new lexical-custody test.
   Check original root/in-root components before resolve; retain confinement,

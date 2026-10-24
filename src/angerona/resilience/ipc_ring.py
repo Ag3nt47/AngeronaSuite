@@ -484,7 +484,20 @@ class RingWriter(_RingBase):
 
     @property
     def backpressure(self) -> bool:
-        return bool(struct.unpack_from("<I", self._mm, 40)[0])
+        # The consumer may have drained since the last write. Only the producer
+        # refreshes this advisory flag; the reader never writes offset 40.
+        magic, version, slots, size, w, r, _drops, _bp = self._read_header()
+        if (
+            magic != _MAGIC
+            or version != _VERSION
+            or slots != self.slot_count
+            or size != self.slot_size
+            or w < r
+        ):
+            raise FrameError("IPC ring header failed integrity validation")
+        on = (w - r) / self.slot_count >= BACKPRESSURE_FRAC
+        self._set_backpressure(on)
+        return on
 
 
 class RingReader(_RingBase):

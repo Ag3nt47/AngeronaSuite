@@ -1,6 +1,31 @@
 # Component dependencies and interference review
 
-## Current original-path custody interaction
+## Current SCN-05 ring-pressure interaction
+
+| Handoff | Current behavior | Scoped evidence and limits |
+| --- | --- | --- |
+| Core consumer drains → producer observes occupancy → ScannerHost shedding | Producer refreshes its own pressure decision before the next poll; no reader-side blind flag clear | Fresh 41-suite gate accepted 1128 passes / five exact native availability gaps; all 20 new scanner cases passed |
+| Pressure decision → frame writer → authenticated consumer | Keep 85%, HMAC/schema/sequence/layout, overrun/oversize and earlier drop/shed history | Invalid observed headers fail closed; no atomic multi-field snapshot or cross-process race immunity |
+| Actual ScannerHost.run → Event-gated inert sensor → private real ring | Repeated high/shed and drain/forward turns, with retained test-thread cleanup | Staged original 3 pass / 17 fail versus candidate 20 pass; baseline failures preserved, separate from active-source and host evidence |
+| Fresh 29-phase selfcheck → natural origin inventory | Five required origins, seven loaded / six unloaded of 13; IPC naturally unloaded | No forced import or changed-IPC selfcheck execution credit; 18 module SKIPs remain |
+| Independent process ScannerHost → interval counters → native retirement | 30.031 s / 31 heartbeats / four raw sensor frames; zero matrix interval gaps/errors/drops/pending | Original outer two plus separately held core retired; no file scan, malware verdict, assumed 85% trigger, GUI or speed claim |
+| Selected views capture → advisory grouping | Preserve 11 coverage notes and zero EventBus event records independently of raw sensor counters | The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged.; no complete alert visibility or response/allowlist/trust/alert-clearing authority |
+
+Latest raw root review f20e84e2 retains the live-from-activation boundary and ten
+not-created diagnostic notes; zero matrix interval gaps do not erase them.
+Acceptance does not establish complete coverage, universal executed-byte identity
+or all-helper retirement. Advisory processing covers only the selected input; continuity remains unverified and all 11 groups require review.
+
+Final-source offline checks, guarded publication and current CI require their
+own fresh receipts; this reference attests none of those completion stages.
+Prior successful 7b44 CI is historical only. Tested descriptor 3c1f49a0 has 1880
+source / 1167 Python entries; final eight-path scope is two code/test plus six
+existing docs, one added test. Preserve all 186 prior raw issues/root/history
+values and append SCN-05 as issue 187. SCN-04, SEC-20, HOST-03/HOST-04, old
+causes, reader-retirement/competing-load and import-cache limits remain. Product
+1.14.0 maintenance; broader 1.15 incomplete.
+
+## Historical original-path custody interaction
 
 | Interaction | Current behavior | Evidence boundary |
 | --- | --- | --- |

@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.14.0 — SCN-05 telemetry backpressure maintenance
+
+- Re-evaluate live occupancy before the producer's shedding decision so a
+  drained ring can resume without an otherwise impossible extra write. Keep
+  producer-only pressure-flag updates, the 85% threshold, authenticated frame
+  and sequence/layout checks, cadence and earlier shed/drop evidence. Malformed
+  observed headers remain explicit errors; no atomic snapshot or race immunity.
+- Separate staged comparison: original source 3 passed / 17 failed / native
+  exit 1 versus candidate 20 passed / native exit 0, both zero errors/skips.
+  Preserve baseline failures as negative controls. The actual ScannerHost.run
+  fixture uses a private real ring and inert gated sensor; it is unit evidence.
+- Fresh active-source gate: 41 suites / 565 functions / 1133 cases, 1128 passed,
+  zero failures/errors and five exact native availability skips. All 20 new
+  scanner cases passed; privacy 75 and seven named nested cases are included
+  subsets. All 13 configured origins loaded, including IPC. Acceptance is
+  complete; skipped native coverage and imported-byte limits remain.
+- Fresh default selfcheck: 29 phases / zero failures, 68 module PASS plus
+  pipeline PASS, 18 module SKIP; five required origins loaded, seven configured
+  loaded / six unloaded. IPC was naturally unloaded: selfcheck adds no changed-
+  IPC execution credit, and no import was forced to make it pass.
+- Fresh process-creation ScannerHost observation: 30.031 s, 31 heartbeats and
+  four raw sensor frames; zero matrix interval gaps, recorded errors/drops or
+  pending threads. Original outer two generations and separately held core
+  retired with their scoped native proofs. The selected 2751-byte capture
+  separately retains 11 advisory coverage notes and zero EventBus event records;
+  raw sensor frames are not alert-event records or complete alert visibility.
+- The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged.
+- Preserve all 186 prior raw issues and old root/history/review values; append
+  SCN-05 as issue 187. SCN-04 stays the unrelated Windows Run-view issue. SEC-20,
+  HOST-03/HOST-04, earlier causes and all unadjudicated findings remain OPEN.
+- Exact scope: two code/test paths plus six existing docs, one added test,
+  1880 source / 1167 Python entries before final doc binding. Final-source
+  offline checks, reviewed commit, canonical guarded publication and current CI
+  need separate fresh receipts; no completion is attested here. Prior successful
+  7b44dc3 CI is historical only. No file-malware verdict, passive 85% trigger,
+  live-host efficacy, GUI/all-module coverage or speed gain is claimed.
+
+See [the scoped review](analysis/live-debug-2026-10-22/README.md). Product remains
+v1.14.0 maintenance; broader v1.15 remains incomplete.
+
 ## 1.14.0 — original-path model custody maintenance
 
 - Check the original model-root leaf and each in-root component before canonical

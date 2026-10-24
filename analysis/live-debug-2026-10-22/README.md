@@ -1,6 +1,83 @@
 # Live debugging and screenshot issue review
 
-## Current original-path model custody
+## Current SCN-05 telemetry backpressure maintenance
+
+The producer now samples live ring occupancy before deciding to shed telemetry.
+After the consumer drains, forwarding can resume without an extra write to
+clear a stale flag. Producer flag ownership, the 85% threshold, authenticated
+frames/sequence/layout, cadence and previous shed/drop counts remain. Invalid
+observed headers fail closed; one observation is not an atomic transaction or
+cross-process race-immunity proof.
+
+Separate staged comparison: **original 3 passed / 17 failed / native exit 1;
+candidate 20 passed / native exit 0; both zero errors or skips**. The actual
+ScannerHost.run test used a private real eight-slot ring, inert sensor and
+Event-gated turns. Preserve original failures as negative controls; the staged
+fixture is separate from active-source validation and passive host observation.
+Accepted staged root review:
+
+e972467d284698a27598fdd0cf95bf829bcecb8dc2d0b1560375d34ebece1532
+
+The fresh active-source gate accepted **41 suites / 565 functions / 1133 cases,
+1128 passed, zero failures/errors and five exact native availability skips**.
+All 20 new scanner cases passed. Privacy 75 and seven named nested cases are
+included subsets. All 13 configured origins loaded, including IPC. Acceptance
+is complete; skipped native cases and imported-byte limits remain.
+
+Fresh default selfcheck accepted **29 phases / zero failures**, with 68 module
+PASS plus pipeline PASS and 18 module SKIP. Five required origins loaded; the
+13 configured products split seven loaded / six unloaded. IPC was naturally
+unloaded: no import was forced and selfcheck adds no changed-IPC execution
+credit. The focused scanner cases provide that separate execution evidence.
+
+The independent process-creation ScannerHost observation completed **30.031 s**
+with 31 heartbeats and four raw sensor frames. Its matrix interval reported
+zero gaps, errors, drops or pending threads. Original outer two generations
+and separately retained live core retired with scoped native proofs; query
+handle closure is not all-helper or all-descendant retirement evidence.
+
+The selected 2751-byte views capture separately contains **11 advisory coverage
+records and zero EventBus event records**: the live-from-activation boundary
+and ten not-created diagnostic-source notes remain visible. Four raw scanner
+sensor frames are not four alert events. An empty event subset does not prove
+complete alert visibility, a clean host or absence of threats.
+
+The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged. These coverage-only groups do not adjudicate a threat or false positive and cannot be compared with earlier combined-profile alert totals as a detection-rate or benignity measure.
+
+| Evidence | Result SHA-256 | Root review SHA-256 |
+| --- | --- | --- |
+| Fresh 41-suite gate | 9624552e303d449df8cba8e8d16d50cbffd718aa3a5437653e86429bc598d43f | b20609dacf26501075a1bca66bde08ea5e192190740638969bb6453feeddcca7 |
+| Fresh default selfcheck | ecbc964aa00213ebd75753787bc1377b0a5e328fe326ed69a586d7b5fcbf684b | de4b2c571563c603fe051cff89881c197c171933b474c476487966f536b11741 |
+| Process telemetry observation | d6c40f00036fbb2a07b1bb03fe23a4cd26b522046586885f690767942084a692 | f20e84e2405178e10b93327b1b985258d615d3fa087891e971d3350955d30a28 |
+| Selected advisory map | 2c332e6fbca0542bc52c28690aa9f25c8ef8e513cf23f482996d82193b21802c | 42a0bbc7bc9d1db3fc14c592f5548446ad66d4d92a3b5d37349e272a8dc466d0 |
+
+The passive interval need not reach 85% occupancy; its completion does not
+exercise pressure recovery, submit a file scan or produce a malware verdict.
+No all-86-module, GUI, physical efficacy, historical cause or product-speed
+conclusion follows. User/OS workload, historical competing diagnostics and
+helper/import-cache limits constrain timing and security conclusions.
+
+Current source/test SHA-256 values:
+
+- ipc_ring.py: 9f2e67193973fbf61c7c7a9408c003098b2d34792b31226897a16d18c2a76e93
+- test_scanner_backpressure_recovery.py: 6336eddad97aa2958bf7d120915358da7e86d272918d66aa9463bb478adcf197
+- Tested pre-doc map: 3c1f49a0e749e44ae983cff03c32d2ae9ded0ac9bba55b32805e8fc3f1a35916
+
+Exact final review scope is eight paths: two code/test plus six existing docs,
+one added test, no new docs. The pre-doc descriptor has 1880 source / 1167 Python
+entries; final source/offline checks need their own fresh proof. All 186 prior
+raw issue objects/order/status and old root/history/review/current_validation
+values remain exact. Append SCN-05 as issue 187, distinct from SCN-04's Windows
+Run-view policy. SEC-20, HOST-03/HOST-04, old native/GUI/heartbeat causes,
+reader-retirement/competing-load and import-cache unknowns remain OPEN.
+
+Final-source offline validation, reviewed commit, unchanged canonical guarded
+publication/README-asset proof and current CI require separate fresh receipts.
+This reference does not attest their completion or include a circular future
+commit/final-map hash. Successful 7b44dc3 CI is historical only. Product remains
+1.14.0 maintenance; broader 1.15 is incomplete. See [interaction ownership](interaction-map.md).
+
+## Historical original-path model custody
 
 The original model-root leaf and in-root components are checked before resolve,
 with confined identity snapshots afterward. Fresh gate: **40 suites / 556
