@@ -41,7 +41,7 @@ LOG_SOURCES = (
     "diagnostics/blackbox_startup.log", "blackbox_startup.log",
 )
 _SAFE_DETAILS = frozenset({
-    "rule", "rule_id", "finding_code", "classification", "disposition",
+    "rule", "rule_id", "finding_code", "classification", "disposition", "tamper_kind",
     "active_attack", "response_authorized", "response_authority", "assessment",
     "pid", "ppid", "create_time", "process_name", "process_path", "source_file",
     "source_line", "file_path", "path", "target_path", "sha256", "expected_hash",
@@ -53,6 +53,9 @@ _SAFE_DETAILS = frozenset({
     "observed_severity", "single_rule_host_fallback",
     "detector_policy", "coverage_diagnostics", "evidence", "expected", "observed", "function",
     "expected_source_file", "expected_source_line", "source_hash", "code_hash", "expected_code_hash",
+})
+_TAMPER_KINDS = frozenset({
+    "runtime-callable-drift", "source-file-drift", "coverage-unavailable",
 })
 _HASH_FIELDS = frozenset({"sha256", "expected_hash", "actual_hash", "old_sha256", "new_sha256",
                           "source_hash", "code_hash", "expected_code_hash"})
@@ -762,6 +765,8 @@ class LiveDebugService:
             if value is None:
                 continue
             if key == "process_identity_complete" and type(value) is not bool:
+                continue
+            if key == "tamper_kind" and (type(value) is not str or value not in _TAMPER_KINDS):
                 continue
             if type(value) in (bool, int):
                 selected[key] = value

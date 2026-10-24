@@ -34,7 +34,7 @@ import sys
 import time
 from pathlib import Path
 from types import CodeType
-from typing import Mapping
+from typing import Literal, Mapping
 
 from angerona.core.module_base import BaseModule, Severity
 
@@ -420,6 +420,11 @@ def _fingerprint(obj) -> str:
     return f"{mod}:{qual}:{digest}"
 
 
+TamperKind = Literal[
+    "runtime-callable-drift", "source-file-drift", "coverage-unavailable",
+]
+
+
 class SelfIntegrityEngine:
     """Pure engine (no Qt / BaseModule) so it is unit-testable."""
 
@@ -448,6 +453,7 @@ class SelfIntegrityEngine:
         )
         self._baseline: dict[str, dict[str, object]] = {}
         self._unresolved: dict[str, str] = {}
+        self._tamper_kinds: dict[str, TamperKind] = {}
         self._manifest_status = "not-checked"
 
     @property
@@ -469,9 +475,14 @@ class SelfIntegrityEngine:
     def evidence(self, spec: str) -> dict[str, object]:
         return dict(self._baseline.get(spec, {}))
 
+    def tamper_kind(self, spec: str) -> TamperKind | None:
+        """Classify the latest check's finding without inferring intent."""
+        return self._tamper_kinds.get(spec)
+
     def arm(self) -> int:
         self._baseline = {}
         self._unresolved = {}
+        self._tamper_kinds = {}
         for spec in self._targets:
             obj = _resolve(spec)
             if obj is None:
@@ -507,29 +518,35 @@ class SelfIntegrityEngine:
     def check(self) -> list[str]:
         """Return human-readable descriptions of any tampered targets."""
         tampered: list[str] = []
+        self._tamper_kinds = {}
         for spec in self._targets:
             base = self._baseline.get(spec)
             if base is None:
+                self._tamper_kinds[spec] = "coverage-unavailable"
                 reason = self._unresolved.get(spec, "target was absent from baseline")
                 tampered.append(f"{spec} — mandatory coverage unavailable: {reason}")
                 continue
             obj = _resolve(spec)
             if obj is None:
+                self._tamper_kinds[spec] = "coverage-unavailable"
                 tampered.append(f"{spec} — enforcement target vanished (unloaded/replaced)")
                 continue
             source = _source_evidence(obj)
             location = f"{base['source_file']}:{base['source_line']}"
             if source is None:
+                self._tamper_kinds[spec] = "coverage-unavailable"
                 tampered.append(f"{spec} — source evidence vanished [{location}]")
                 continue
             now = _fingerprint(obj)
             if now != base["fingerprint"]:
+                self._tamper_kinds[spec] = "runtime-callable-drift"
                 tampered.append(
                     f"{spec} — code changed at runtime [{source['source_file']}:"
                     f"{source['source_line']}; expected {base['source_file']}:"
                     f"{base['source_line']}] (was {base['fingerprint']}, now {now})"
                 )
             elif source["file_sha256"] != base["file_sha256"]:
+                self._tamper_kinds[spec] = "source-file-drift"
                 tampered.append(
                     f"{spec} — containing source file changed [{source['source_file']}:"
                     f"{source['source_line']}]"
@@ -714,9 +731,28 @@ class SelfIntegrityMonitor(BaseModule):
                 self._alerted.add(desc)
                 spec = desc.split(" ", 1)[0]
                 evidence = self._engine.evidence(spec)
-                self.emit(f"🚨 RUNTIME TAMPER: {desc}. An enforcement function was "
-                          "modified in memory — possible agent monkeypatching (T1562).",
+                kind = self._engine.tamper_kind(spec) or "coverage-unavailable"
+                label, explanation = {
+                    "runtime-callable-drift": (
+                        "RUNTIME TAMPER",
+                        "The live callable fingerprint changed — possible agent "
+                        "monkeypatching (T1562).",
+                    ),
+                    "source-file-drift": (
+                        "SOURCE FILE DRIFT",
+                        "The containing source file differs from the armed baseline; "
+                        "the live callable fingerprint is unchanged. Review the source "
+                        "change and baseline approval separately.",
+                    ),
+                    "coverage-unavailable": (
+                        "INTEGRITY COVERAGE UNAVAILABLE",
+                        "Mandatory integrity evidence is unavailable; an in-memory "
+                        "modification has not been established.",
+                    ),
+                }[kind]
+                self.emit(f"🚨 {label}: {desc}. {explanation}",
                           Severity.CRITICAL, target=spec, tamper=True,
+                          tamper_kind=kind,
                           source_file=evidence.get("source_file", ""),
                           source_line=evidence.get("source_line", 0),
                           mitre_tags=["T1562", "T1055"])

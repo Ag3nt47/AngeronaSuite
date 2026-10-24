@@ -313,6 +313,28 @@ kernel or storage I/O. These file checks do not attest arbitrary process memory.
 
 ## Witness and independent recovery
 
+### Completed firewall rollback checkpoint maintenance
+
+`tools/recover_combat_rollback.py --data-root <DATA_ROOT>` performs a separate,
+read-only inspection of one narrowly defined completed-undo/failure checkpoint.
+It requires the full authenticated history, matching existing anchor/witness,
+exact phase/target binding and a native observation that the exact managed
+firewall rule is absent. Unknown or denied native evidence remains a hold.
+
+After stopping Angerona, explicit `--apply --expected-token <REVIEW_TOKEN>`
+rechecks those inputs, retains verified private backups and advances only the
+existing authenticated checkpoint. It does not edit the journal, rotate keys,
+replay host actions or rearm Combat. Restart readiness and verified action
+receipts remain separate. Stopped-process checks and rule absence are
+point-in-time; they do not lease the OS firewall against other writers. An
+interrupted anchor/witness update remains an explicit hold with retained backups.
+See the [24 October review](../analysis/live-review-2026-10-24.md).
+
+Self-integrity live events distinguish `source-file-drift`,
+`runtime-callable-drift` and `coverage-unavailable` through `tamper_kind`.
+Containing-file drift does not itself establish a changed in-memory callable.
+Each kind retains the underlying critical evidence and approval requirements.
+
 These workflows are separate from live diagnostic sharing. Their source
 interfaces do not deploy an independent authority or grant response authority
 to a diagnostic reader. See the [v1.14 acceptance register](releases/v1.14-security-integration.md)

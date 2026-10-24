@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import sys
 import threading
 from types import SimpleNamespace
@@ -203,6 +204,116 @@ def test_previous_fingerprint_format_requires_explicit_baseline_review(monkeypat
     monitor._engine = stale
     score, reason = monitor._assurance_health({"status": "ok"})
     assert score == 25 and "explicitly re-approve" in reason
+
+
+@pytest.mark.parametrize("change,kind,label", [
+    ("source", "source-file-drift", "SOURCE FILE DRIFT"),
+    ("callable", "runtime-callable-drift", "RUNTIME TAMPER"),
+    ("missing-source", "coverage-unavailable", "INTEGRITY COVERAGE UNAVAILABLE"),
+    ("missing-target", "coverage-unavailable", "INTEGRITY COVERAGE UNAVAILABLE"),
+])
+def test_live_integrity_findings_distinguish_source_callable_and_coverage(
+    monkeypatch, tmp_path, change, kind, label,
+) -> None:
+    source = tmp_path / "inert_integrity_target.py"
+    original_text = "def decision():\n    return 'allow'\n"
+    source.write_text(original_text, encoding="utf-8")
+    module_name = "_angerona_inert_integrity_target"
+    module_spec = importlib.util.spec_from_file_location(module_name, source)
+    assert module_spec is not None and module_spec.loader is not None
+    module = importlib.util.module_from_spec(module_spec)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    module_spec.loader.exec_module(module)
+    original = module.decision
+    original_fingerprint = _fingerprint(original)
+    target = f"{module_name}:decision"
+    observed = SelfIntegrityEngine((target,))
+    assert observed.arm() == 1 and observed.check() == []
+    baseline = observed.evidence(target)
+    approved = {target: {key: baseline[key] for key in ("fingerprint", "file_sha256")}}
+    engine = SelfIntegrityEngine((target,), approved_manifest=approved)
+    monitor = SelfIntegrityMonitor()
+    monitor._engine = engine
+    events, health = [], []
+    monkeypatch.setattr(monitor, "emit", lambda message, severity, **details:
+                        events.append((message, severity, details)))
+    monkeypatch.setattr(monitor, "set_health", lambda score, note="": health.append(score))
+    monkeypatch.setattr(monitor, "_collect_acl_assurance", lambda: {"status": "ok"})
+
+    def replacement():
+        return "deny"
+
+    def alter():
+        if change == "source":
+            source.write_text("def decision():\n    return 'deny'\n", encoding="utf-8")
+        elif change == "callable":
+            module.decision = replacement
+        elif change == "missing-source":
+            source.unlink()
+        else:
+            del module.decision
+
+    def restore():
+        source.write_text(original_text, encoding="utf-8")
+        module.decision = original
+
+    cycles = 0
+
+    def cycle(_interval):
+        nonlocal cycles
+        cycles += 1
+        if cycles == 1:
+            alter()
+        elif cycles == 3:
+            restore()
+        elif cycles == 4:
+            assert engine.tamper_kind(target) is None
+            alter()
+        elif cycles == 5:
+            monitor._stop.set()
+
+    monkeypatch.setattr(monitor, "sleep", cycle)
+    monitor.run()
+    critical = [event for event in events if event[1] == integrity.Severity.CRITICAL]
+    assert len(critical) == 1, "identical findings stay latched, including after restoration"
+    message, _severity, details = critical[0]
+    assert label in message
+    assert details["target"] == target and details["tamper"] is True
+    assert details["tamper_kind"] == kind
+    assert details["mitre_tags"] == ["T1562", "T1055"]
+    assert "response_authorized" not in details
+    assert health[0] == 100 and health[1:] == [10, 10, 10]
+    findings = engine.check()
+    assert len(findings) == 1 and isinstance(findings[0], str)
+    assert engine.tamper_kind(target) == kind
+    assert engine.evidence(target) == baseline
+    assert engine._approved_manifest == approved
+    if change == "source":
+        assert "live callable fingerprint is unchanged" in message
+        assert "monkeypatching" not in message
+        assert module.decision is original and module.decision() == "allow"
+        assert _fingerprint(module.decision) == original_fingerprint
+    elif change == "callable":
+        assert "live callable fingerprint changed" in message
+        assert module.decision() == "deny"
+        assert _fingerprint(module.decision) != original_fingerprint
+    else:
+        assert "in-memory modification has not been established" in message
+        assert "monkeypatching" not in message
+    restore()
+    assert engine.check() == [] and engine.tamper_kind(target) is None
+    assert engine.evidence(target) == baseline
+
+
+def test_missing_baseline_coverage_is_not_described_as_callable_drift(monkeypatch) -> None:
+    target = "inert_missing_module:decision"
+    monkeypatch.setattr(integrity, "_resolve", lambda _target: None)
+    engine = SelfIntegrityEngine((target,))
+    assert engine.arm() == 0
+    findings = engine.check()
+    assert len(findings) == 1 and "mandatory coverage unavailable" in findings[0]
+    assert engine.tamper_kind(target) == "coverage-unavailable"
+    assert engine.evidence(target) == {}
 
 
 def _fake_native_acl(monkeypatch, entries):

@@ -228,6 +228,53 @@ def test_network_identity_completeness_omits_non_boolean_values(memory_service, 
     assert record["advisory_only"] is True
 
 
+@pytest.mark.parametrize("kind,exported", [
+    ("runtime-callable-drift", True),
+    ("source-file-drift", True),
+    ("coverage-unavailable", True),
+    ("unknown", False),
+    ("SOURCE-FILE-DRIFT", False),
+    ("source-file-drift token=private-review-secret", False),
+    (True, False),
+    (1, False),
+    (None, False),
+    ([], False),
+    ({}, False),
+])
+def test_self_integrity_tamper_kind_exports_only_supported_enum(memory_service, kind, exported):
+    event = Event("Self-Integrity Monitor", "Integrity finding", Severity.CRITICAL, details={
+        "tamper_kind": kind, "source_file": "inert_source.py", "source_line": 7,
+        "reason": "token=private-review-secret", "private_key": "never export me",
+    })
+    memory_service.bus.publish(event)
+    wait_until(lambda: len([r for r in memory_service.recent()["records"]
+                           if r["kind"] == "event"]) == 1)
+    record = next(r for r in memory_service.recent()["records"] if r["kind"] == "event")
+    assert record["details"]["source_file"] == "inert_source.py"
+    assert record["details"]["source_line"] == 7
+    if exported:
+        assert record["details"]["tamper_kind"] == kind
+    else:
+        assert "tamper_kind" not in record["details"]
+    assert record["omitted_detail_count"] == (1 if exported else 2)
+    assert "private-review-secret" not in json.dumps(record)
+    assert "never export me" not in json.dumps(record)
+    original = memory_service.bus.recent(1)[0]
+    assert original.details["tamper_kind"] == kind
+    assert type(original.details["tamper_kind"]) is type(kind)
+    assert original.hmac_sig == record["original_hmac"]
+    assert record["original_integrity_verified"] is True
+    assert record["advisory_only"] is True
+
+
+def test_absent_self_integrity_tamper_kind_is_not_inferred(tmp_path):
+    service = debug.LiveDebugService(EventBus(), tmp_path)
+    record = service._event_view(Event("Self-Integrity Monitor", "Integrity finding", Severity.CRITICAL,
+                                       details={"source_file": "inert_source.py"}))
+    assert record["details"] == {"source_file": "inert_source.py"}
+    assert record["omitted_detail_count"] == 0
+
+
 def test_unsigned_unarmed_event_never_claims_integrity(tmp_path):
     service = debug.LiveDebugService(EventBus(), tmp_path)
     record = service._event_view(Event("m", "x"))

@@ -5,7 +5,52 @@ Date: 2026-10-24
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.14.0 — model parser normalization maintenance)
+## LATEST (v1.14.0 — live alert visibility and containment checkpoint review)
+
+- User-authorized review attached to the actual core generation separately from
+  launcher/scanner/watchdog/Black Box. Initial pipe disabled; bounded read-only
+  original ledger/status/watchdog review and private native process sampling.
+  Original 78-record selected capture; later 254.438s/883 durable records all
+  archive-HMAC verified, ending with explicit operator-termination identity gap.
+  Archive integrity is not a threat verdict or authenticated live-producer proof.
+- 300s/101 samples: core mean89.33% one CPU/11.17% machine; Black Box0.776%
+  one CPU; host60.31%/92.9% peak. Observer cost1.42% machine; status age87.43s;
+  inline bus +784 budget violations/+16549 deliveries/zero failures. Six core
+  watchdog samples5.2-5.9s; no same-day Black Box sample. No causal speed claim.
+- Repeated missing temporary startup target promoted by standing single-rule
+  policy; nine RWX metadata pairs and a timing-only Defender beacon observation
+  do not establish spyware. User prioritizes containment before human review;
+  preserve exact process-generation and existing single-rule requests, no new
+  binary/publisher allowlist, automatic suppression or fabricated action success.
+- Fix limited-tail critical visibility using EventBus's atomic retained revision
+  view across status/dashboard/threat window/posture; preserve ACK/allow/resolve
+  policy and bounded-retention limits. Gate91pass/one existing skip.
+- Three current tamper reports followed our authorized threat.py source edit;
+  containing-file drift branch means callable fingerprint unchanged. Emit typed
+  source-file/runtime-callable/coverage findings with accurate wording, retaining
+  CRITICAL/tamper/approval/latching; strict three-value tamper_kind live export.
+  Integrity31 focused/selected tests + self_test pass; export25 focused pass.
+- New separate stopped-app rollback tool authenticates whole bounded history,
+  exact five-phase undo/failure tail, existing anchor/witness and native managed
+  rule absence. Recovery111 distinct tests pass/zero skips; interruption after
+  anchor write remains a held witness mismatch with backups. No startup bypass.
+- Actual explicit repair after operator termination: journal361/checkpoint360
+  advanced to361, original journal/key unchanged, prior encrypted authority and
+  witness privately backed up; zero host actions, unrearmed. Native query and
+  stopped checks are point-in-time, no OS interlock. Old native exit codes absent.
+- Preserve first offline selfcheck28pass/one failed phase from inherited scheme-
+  less Ollama host; strict URL refusal is correct. Disposable rerun uses only a
+  child-process loopback URL:29 phases pass/68 modulePASS/18 moduleSKIP. Final
+  combined priority/integrity/export gate100pass/zero skips, nativeexit0;
+  compileall/docs drift/whitespace pass. Post-apply read-only inspection verified
+  full361-chain+matching anchor/witness+no pending work+native ruleabsent, original
+  key/journal and backup bytes preserved. Publication/restarted observation need
+  separate receipts; source tests alone do not establish deployed containment.
+- Product remains1.14.0 maintenance, broader1.15 incomplete; existing191-issue
+  register and historical roots unchanged. Raw captures/host paths/keys private.
+  See analysis/live-review-2026-10-24.md and docs/live-debug-harness.md.
+
+## Historical model parser normalization maintenance
 
 - Current product remains v1.14.0 maintenance; broader v1.15 is incomplete.
   Scope: two code/test paths plus seven existing docs, one new regression test,

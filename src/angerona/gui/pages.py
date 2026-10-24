@@ -83,7 +83,8 @@ from angerona.core.capability_assurance import assess_capability, cached_declara
 from angerona.core.eventbus import Severity
 from angerona.core.module_usage import module_counts
 from angerona.core.threat import (
-    active_threat_events, event_disposition, threat_label_from_active,
+    active_threat_events, event_disposition, recent_threat_candidates,
+    threat_label_from_active,
 )
 from angerona.gui.animations import begin_loading, finish_loading
 from angerona.gui.alert_preview import AlertPreview
@@ -1545,7 +1546,7 @@ class DashboardCards(QWidget):
         bus = self.bus
 
         def read():
-            active = active_threat_events(bus.recent(200))
+            active = active_threat_events(recent_threat_candidates(bus))
             crit = sum(1 for event in active if event.severity == Severity.CRITICAL)
             return crit, threat_label_from_active(active)
 
@@ -2486,7 +2487,7 @@ class ThreatWindow(QDialog):
         bus = self.bus
 
         def read():
-            events = active_threat_events(bus.recent(300))
+            events = active_threat_events(recent_threat_candidates(bus, 300))
             events.sort(key=lambda event: getattr(event, "ts", 0), reverse=True)
             return events, threat_label_from_active(events)
 

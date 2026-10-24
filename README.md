@@ -32,7 +32,16 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance — model parser integrity:** Malformed manifests,
+**Current v1.14 maintenance — live alert and containment review:** Retained
+critical alerts now survive INFO bursts in status, dashboard and posture
+calculations. Self-integrity distinguishes source-file drift from live callable
+changes, and Live AI Review preserves that classification. An explicit
+stopped-application recovery tool can reconcile one authenticated completed
+firewall rollback checkpoint while preserving its history and private backups.
+Single-rule containment policy remains active. See the
+[sanitized runtime findings, performance measurements and validation limits](analysis/live-review-2026-10-24.md).
+
+**Previous model parser integrity maintenance:** Malformed manifests,
 inventories and approved baselines now use the existing typed refusal path for
 integer conversion limits, excessive JSON nesting and timestamp overflow. Hash
 checks and Hash-based Message Authentication Code (HMAC) validation remain intact,

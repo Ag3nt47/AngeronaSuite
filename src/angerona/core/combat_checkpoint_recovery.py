@@ -1,8 +1,10 @@
-"""Recover only a proven unapplied, suite-owned inert drill checkpoint.
+"""Recover narrowly proven unapplied-drill or completed-rollback checkpoints.
 
 This is not a general journal repair facility. No target is moved, removed or
 executed; no signing authority is created; no historical journal byte changes.
-The ordinary Combat reconciliation subsequently records the unapplied intent.
+The ordinary Combat reconciliation subsequently records an unapplied drill
+intent. Completed firewall rollback recovery is an explicit stopped-app path
+and requires fresh native absence evidence; it does not run during startup.
 """
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import hmac
+import math
 import os
 from pathlib import Path
 import re
@@ -291,3 +294,296 @@ def recover_drill_checkpoint(
                         raise CheckpointRecoveryRefused("Recovery unexpectedly changed the journal")
                     return {**plan.report, "checkpoint_sequence": len(records),
                             "recovered": True, "backup_directory": str(directory)}
+
+
+@dataclass
+class _RollbackPlan:
+    report: dict[str, Any]
+    tail: dict[str, Any]
+    inputs: dict[str, bytes]
+    rule: str
+
+
+def _native_firewall_rule_absent(rule: str) -> bool | None:
+    """Query the exact native rule; only ERROR_FILE_NOT_FOUND proves absence.
+
+    No localized console parsing, provider mutation or generated COM wrappers.
+    A native COM call is point-in-time evidence and has no preemptive deadline.
+    """
+    if os.name != "nt":
+        return None
+    initialized = False
+    policy = rules = native = None
+    try:
+        import pythoncom
+        import pywintypes
+        from win32com.client import dynamic
+
+        pythoncom.CoInitializeEx(pythoncom.COINIT_APARTMENTTHREADED)
+        initialized = True
+        native = pythoncom.CoCreateInstance(
+            pythoncom.MakeIID("{E2B3C97F-6AE1-41AC-817A-F6F92166D7DD}"),
+            None, pythoncom.CLSCTX_INPROC_SERVER, pythoncom.IID_IDispatch,
+        )
+        policy = dynamic.Dispatch(native)
+        rules = policy.Rules
+        try:
+            found = rules.Item(rule)
+        except pywintypes.com_error as exc:
+            # INetFwRules::Item documents this exact HRESULT for a missing rule.
+            # IDispatch may wrap it in DISP_E_EXCEPTION with the native scode.
+            code = int(exc.hresult) & 0xFFFFFFFF
+            if code == 0x80020009 and exc.excepinfo:
+                code = int(exc.excepinfo[5]) & 0xFFFFFFFF
+            return True if code == 0x80070002 else None
+        else:
+            # A successful result, even a malformed one, never proves absence.
+            found = None
+            return False
+    except Exception:
+        return None
+    finally:
+        rules = policy = native = None
+        if initialized:
+            pythoncom.CoUninitialize()
+
+
+def _rollback_records(module, raw: bytes) -> list[dict[str, Any]]:
+    """Authenticate a deliberately small grammar, including all old history."""
+    from angerona.modules.adversary_combat import (
+        _MAX_JOURNAL_LINE_BYTES, _MAX_JOURNAL_RECORDS,
+    )
+
+    lines = raw.splitlines()
+    if not raw.endswith(b"\n") or not 5 <= len(lines) <= _MAX_JOURNAL_RECORDS:
+        raise CheckpointRecoveryRefused("Rollback journal is incomplete or exceeds its record budget")
+    records = []
+    previous = "0" * 64
+    for sequence, line in enumerate(lines, 1):
+        record = module._bounded_authority_json(
+            line, label="rollback recovery journal record", max_bytes=_MAX_JOURNAL_LINE_BYTES,
+        )
+        core = {key: value for key, value in record.items() if key != "record_hmac"}
+        if (not module._signed_journal_schema_valid(record)
+                or record["sequence"] != sequence or record["previous_hmac"] != previous
+                or not hmac.compare_digest(record["record_hmac"], module._record_hmac(core))):
+            raise CheckpointRecoveryRefused("Rollback journal chain authentication failed")
+        records.append(record)
+        previous = record["record_hmac"]
+
+    # Earlier work must be completely paired, known reversible actions. Other
+    # undo/disposition/orphan histories need a separately reviewed recovery.
+    prefix = records[:-5]
+    if len(prefix) % 2:
+        raise CheckpointRecoveryRefused("Rollback history contains unresolved work")
+    used = set()
+    action_fields = (
+        "action_id", "combat_id", "action", "target", "applied_at",
+        "reversible", "trigger_module", "trigger_ts",
+    )
+    for intent, terminal in zip(prefix[::2], prefix[1::2]):
+        _rollback_intent(module, intent)
+        if intent["action_id"] in used:
+            raise CheckpointRecoveryRefused("Rollback history reuses an action identity")
+        used.add(intent["action_id"])
+        if (terminal.get("record_type") not in {"commit", "failure"}
+                or any(terminal.get(key) != intent[key]
+                       for key in ("action_id", "combat_id", "action"))):
+            raise CheckpointRecoveryRefused("Rollback history has unpaired terminal work")
+        if terminal["record_type"] == "commit":
+            if (terminal.get("status") != "applied"
+                    or any(terminal.get(key) != intent[key] for key in action_fields)
+                    or not isinstance(terminal.get("details"), dict)
+                    or any(terminal["details"].get(key) != value
+                           for key, value in intent["details"].items())):
+                raise CheckpointRecoveryRefused("Rollback history commit binding is inconsistent")
+        elif (terminal.get("status") != "failed"
+              or intent["action"] == "isolate_program"
+              or terminal.get("error") != "orphaned intent had no observed postcondition"):
+            raise CheckpointRecoveryRefused("Rollback history failure binding is inconsistent")
+    intent, orphan, undo, undone, tail = records[-5:]
+    _rollback_intent(module, intent)
+    if intent["action_id"] in used or intent["action"] != "isolate_program":
+        raise CheckpointRecoveryRefused("Rollback tail is not a unique program-isolation action")
+    if (orphan.get("record_type") != "orphan" or orphan.get("status") != "orphaned"
+            or orphan.get("rollback_state") != "pending"
+            or any(orphan.get(key) != intent[key] for key in action_fields + ("details",))
+            or orphan.get("mutation_started") is not None
+            or orphan.get("rollback_error") is not None
+            or orphan.get("error") != "program firewall postcondition failed"):
+        raise CheckpointRecoveryRefused("Rollback orphan does not bind the exact failed program intent")
+    if (undo.get("record_type") != "undo_intent" or undo.get("status") != "pending"
+            or undone.get("record_type") != "undo_commit" or undone.get("status") != "undone"
+            or not isinstance(undo.get("undo_id"), str)
+            or not re.fullmatch(r"undo-[0-9a-f]{16}", undo["undo_id"])
+            or any(undo.get(key) != undone.get(key)
+                   for key in ("undo_id", "undo_of", "action", "bound_record_hmac"))
+            or any(record.get("recovery") is not True or record.get("error") != ""
+                   or record.get("undo_of") != intent["action_id"]
+                   or record.get("action") != intent["action"]
+                   or record.get("bound_record_hmac") != orphan["record_hmac"]
+                   for record in (undo, undone))):
+        raise CheckpointRecoveryRefused("Rollback lacks an exact successful recovery undo pair")
+    if (tail.get("record_type") != "failure" or tail.get("status") != "failed"
+            or any(tail.get(key) != intent[key] for key in ("action_id", "combat_id", "action"))
+            or tail.get("error") != orphan["error"] + "; uncertain mutation rolled back"):
+        raise CheckpointRecoveryRefused("Rollback tail is not the exact completed failure terminal")
+    timestamps = [intent["intent_at"], orphan["orphaned_at"], undo["phase_at"],
+                  undone["phase_at"], tail["failed_at"]]
+    if (any(type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+            for value in timestamps) or timestamps != sorted(timestamps)):
+        raise CheckpointRecoveryRefused("Rollback phase timestamps are inconsistent")
+    return records
+
+
+def _rollback_intent(module, record: dict[str, Any]) -> None:
+    action = record.get("action")
+    if (record.get("record_type") != "intent" or record.get("status") != "pending"
+            or record.get("reversible") is not True
+            or not re.fullmatch(r"act-[0-9a-f]{16}", str(record.get("action_id") or ""))
+            or not re.fullmatch(r"combat-[0-9a-f]{12}|startup", str(record.get("combat_id") or ""))
+            or not isinstance(action, str)
+            or action not in {"activate_honeypots", "quarantine_file", "isolate_program"}
+            or module._combat_action_from_record(record) is None):
+        raise CheckpointRecoveryRefused("Rollback history contains an unfamiliar or invalid intent")
+    details = record["details"]
+    if not isinstance(details, dict) or not isinstance(record["target"], str) or not record["target"]:
+        raise CheckpointRecoveryRefused("Rollback intent target binding is invalid")
+    if action == "activate_honeypots":
+        if record["target"] != "Smart Deception" or details.get("module") != "Smart Deception":
+            raise CheckpointRecoveryRefused("Rollback history deception binding is invalid")
+    elif action == "quarantine_file":
+        if module._valid_quarantine_binding(record) is None:
+            raise CheckpointRecoveryRefused("Rollback history quarantine binding is invalid")
+    else:
+        pid, birth, exe, rules = (details.get(key) for key in ("pid", "create_time", "exe", "rules"))
+        if (type(pid) is not int or not 0 < pid <= 0xFFFFFFFF
+                or type(birth) not in (float, int) or not math.isfinite(birth) or birth <= 0
+                or not isinstance(exe, str) or not os.path.isabs(exe)
+                or not os.path.isabs(record["target"])
+                or os.path.normcase(os.path.abspath(exe)) != os.path.normcase(os.path.abspath(record["target"]))
+                or not isinstance(rules, list) or len(rules) != 1
+                or not isinstance(rules[0], str) or not module._valid_rule_set(action, rules)
+                or not re.fullmatch(rf"Angerona-Combat-Program-{pid}-[0-9a-f]{{8}}", rules[0])):
+            raise CheckpointRecoveryRefused("Rollback program, generation or managed rule binding is invalid")
+
+
+def _rollback_plan(module) -> _RollbackPlan:
+    from angerona.modules.adversary_combat import _JOURNAL_CONTEXT, _MAX_JOURNAL_BYTES
+
+    root = Path(os.path.abspath(module.data_root))
+    inputs = {
+        "bus.key": _read_regular(root / "bus.key", 256),
+        "adversary_combat_actions.jsonl": _read_regular(module.receipt_path, _MAX_JOURNAL_BYTES),
+        "secrets.dpapi": _read_regular(root / "secrets.dpapi", 1024 * 1024),
+        "adversary_combat_recovery_witness.json": _read_regular(module.recovery_witness_path, 16 * 1024),
+    }
+    key = bytes.fromhex(inputs["bus.key"].decode("ascii").strip())
+    if (len(key) != 32 or not isinstance(module._journal_key_cache, bytes)
+            or not hmac.compare_digest(module._journal_key_cache,
+                                       hmac.new(key, _JOURNAL_CONTEXT, hashlib.sha256).digest())):
+        raise CheckpointRecoveryRefused("Existing rollback authority does not match this installation")
+    records = _rollback_records(module, inputs["adversary_combat_actions.jsonl"])
+    anchor = module._validated_recovery_anchor(module._read_recovery_anchor_value())
+    module._verify_recovery_witness(anchor)
+    tail = records[-1]
+    if (anchor["schema"] != 2 or anchor["last_journal_sequence"] != len(records) - 1
+            or anchor["last_journal_hmac"] != tail["previous_hmac"]
+            or anchor["active_action_id"] or anchor["active_challenge_sequence"]
+            or anchor["active_challenge_nonce"] or anchor["consumed_terminal_sequence"]
+            or anchor["challenge_counter"]):
+        raise CheckpointRecoveryRefused("Not an exact one-terminal rollback checkpoint")
+    for name, path in (("bus.key", root / "bus.key"),
+                       ("secrets.dpapi", root / "secrets.dpapi"),
+                       ("adversary_combat_recovery_witness.json", module.recovery_witness_path)):
+        if inputs[name] != _read_regular(path, max(256, len(inputs[name]))):
+            raise CheckpointRecoveryRefused("Rollback recovery authority changed during inspection")
+    token = hashlib.sha256(b"rollback-checkpoint-v1\0" + b"\0".join(
+        [str(root).encode(), *(inputs[name] for name in sorted(inputs))]
+    )).hexdigest()
+    rule = records[-5]["details"]["rules"][0]
+    report = {"eligible": True, "journal_records": len(records),
+              "checkpoint_sequence": anchor["last_journal_sequence"],
+              "pending_action": "completed program-isolation rollback failure terminal",
+              "review_token": token, "host_actions_executed": 0, "rearmed": False,
+              "postcondition": "exact managed firewall rule absent"}
+    return _RollbackPlan(report, tail, inputs, rule)
+
+
+def _require_rollback_absence(plan: _RollbackPlan) -> None:
+    if _native_firewall_rule_absent(plan.rule) is not True:
+        raise CheckpointRecoveryRefused("Exact managed firewall rule absence is not proven")
+
+
+def inspect_rollback_checkpoint(module) -> dict[str, Any]:
+    """Read-only exact eligibility; no checkpoint, lease or backup is written."""
+    plan = _rollback_plan(module)
+    _require_rollback_absence(plan)
+    current = _rollback_plan(module)
+    if not hmac.compare_digest(plan.report["review_token"], current.report["review_token"]):
+        raise CheckpointRecoveryRefused("Rollback recovery inputs changed during native observation")
+    return dict(plan.report)
+
+
+def _backup_rollback(module, plan: _RollbackPlan) -> Path:
+    from angerona.core.engine_transport import create_private_file, private_directory, verify_private
+
+    directory = private_directory(module.data_root / ("combat-rollback-recovery-" + secrets.token_hex(16)))
+    for name, raw in plan.inputs.items():
+        if name == "bus.key":
+            continue
+        target = directory / name
+        descriptor = create_private_file(target)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        verify_private(target)
+        if _read_regular(target, 32 * 1024 * 1024) != raw:
+            raise CheckpointRecoveryRefused("Rollback recovery backup did not verify")
+    verify_private(directory, directory=True)
+    return directory
+
+
+def recover_rollback_checkpoint(
+    module, *, expected_token: str, before_commit: Callable[[], None],
+) -> dict[str, Any]:
+    """Explicit stopped-app accounting repair; no host action or journal write.
+
+    A fresh native absence observation is required immediately before advancing
+    existing authority. It cannot lease the OS firewall against external writers.
+    """
+    from angerona.core.secure_store import secret_transaction
+
+    if not isinstance(expected_token, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_token):
+        raise CheckpointRecoveryRefused("Rollback apply requires a reviewed inspection token")
+    if not callable(before_commit):
+        raise CheckpointRecoveryRefused("Rollback apply requires the stopped-application guard")
+    before_commit()
+    with module._receipt_lock:
+        with module._journal_writer_lease():
+            with module._pinned_journal_session(create=False):
+                with secret_transaction(module.data_root):
+                    plan = _rollback_plan(module)
+                    if not hmac.compare_digest(expected_token, plan.report["review_token"]):
+                        raise CheckpointRecoveryRefused("Rollback recovery inputs changed; inspect again")
+                    _require_rollback_absence(plan)
+                    try:
+                        directory = _backup_rollback(module, plan)
+                    except (OSError, RuntimeError, ValueError) as exc:
+                        raise CheckpointRecoveryRefused("Private rollback recovery backup failed verification") from exc
+                    current = _rollback_plan(module)
+                    if not hmac.compare_digest(expected_token, current.report["review_token"]):
+                        raise CheckpointRecoveryRefused("Rollback recovery inputs changed during backup")
+                    _require_rollback_absence(current)
+                    before_commit()
+                    module._assert_journal_session(module._active_journal_session())
+                    module._advance_recovery_anchor(current.tail)
+                    module._invalidate_journal_cache()
+                    records, legacy = module._read_journal(strict=True)
+                    if (legacy or len(records) != plan.report["journal_records"]
+                            or _read_regular(module.receipt_path, 32 * 1024 * 1024)
+                            != plan.inputs["adversary_combat_actions.jsonl"]):
+                        raise CheckpointRecoveryRefused("Rollback checkpoint final verification failed")
+                    return {**plan.report, "checkpoint_sequence": len(records), "recovered": True,
+                            "backup_directory": str(directory)}

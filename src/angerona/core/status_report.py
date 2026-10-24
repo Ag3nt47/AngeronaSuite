@@ -174,9 +174,12 @@ class StatusReporter:
         }
 
     def _snapshot(self) -> dict:
-        from angerona.core.threat import active_threat_events, event_disposition, threat_level
+        from angerona.core.threat import (
+            active_threat_events, event_disposition, recent_threat_candidates,
+        )
         events = self.bus.recent(200)
-        active = active_threat_events(events)
+        active = active_threat_events(recent_threat_candidates(self.bus))
+        active_level = max((event.severity for event in active), default=Severity.INFO)
         from angerona.core.module_usage import module_counts
         counts = module_counts(self.manager)
         mods = []
@@ -253,7 +256,7 @@ class StatusReporter:
             "automatic_response": response,
             "app_version": __version__,
             "admin": is_admin(),
-            "threat_level": _THREAT[threat_level(events)],
+            "threat_level": _THREAT[active_level],
             "chill_mode": bool(getattr(self.config, "runtime_chill_active", False)),
             "counts": {
                 "modules_total": counts["enabled"],
@@ -261,8 +264,8 @@ class StatusReporter:
                 "modules_off": counts["off"],
                 "modules_discovered": counts["discovered"],
                 "alerts_24h": self.storage.count_since(time.time() - 86400),
-                # Backward-compatible key: unlike the old raw count, this now
-                # aliases the accurate ten-minute live-hostile count.
+                # Backward-compatible key: aliases the ten-minute live-hostile
+                # count among retained, unresolved event evidence.
                 "critical_24h": active_critical,
                 "active_critical_10m": active_critical,
             },

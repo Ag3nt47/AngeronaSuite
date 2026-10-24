@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from angerona.core.eventbus import Severity
-from angerona.core.threat import active_threat_events
+from angerona.core.threat import active_threat_events, recent_threat_candidates
 
 _META_MODULES = {"Self-Test", "Status", "Console"}
 
@@ -43,7 +43,7 @@ def _threat_penalty(bus, window: float = 600.0, *, active_events=None) -> tuple[
     """Return (penalty, active_threat_count)."""
     if active_events is None:
         try:
-            active_events = active_threat_events(bus.recent(200), window)
+            active_events = active_threat_events(recent_threat_candidates(bus), window)
         except Exception:
             return 0, 0
     threats = active_events
@@ -142,7 +142,7 @@ def posture(bus, manager, config=None, *, active_events=None) -> dict:
     """
     if active_events is None:
         try:
-            active_events = active_threat_events(bus.recent(200))
+            active_events = active_threat_events(recent_threat_candidates(bus))
         except Exception:
             active_events = []
     tp, threats = _threat_penalty(bus, active_events=active_events)

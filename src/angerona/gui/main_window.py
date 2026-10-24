@@ -4434,8 +4434,8 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
         try:
-            from angerona.core.threat import active_threat_events
-            evs = active_threat_events(self.bus.recent(200))
+            from angerona.core.threat import active_threat_events, recent_threat_candidates
+            evs = active_threat_events(recent_threat_candidates(self.bus))
             if evs:
                 lines.append(f"Recent HIGH/CRITICAL ({len(evs)} in window), newest first:")
                 for e in sorted(evs, key=lambda e: e.ts, reverse=True)[:6]:
@@ -4606,8 +4606,8 @@ class MainWindow(QMainWindow):
 
         def read():
             from angerona.core.posture import posture, posture_tooltip
-            from angerona.core.threat import active_threat_events
-            active = active_threat_events(bus.recent(200))
+            from angerona.core.threat import active_threat_events, recent_threat_candidates
+            active = active_threat_events(recent_threat_candidates(bus))
             p = posture(bus, manager, config, active_events=active)
             return p, posture_tooltip(p)
 

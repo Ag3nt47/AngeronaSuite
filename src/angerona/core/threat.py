@@ -535,6 +535,30 @@ def is_active_threat(event) -> bool:
     )
 
 
+def recent_threat_candidates(bus, limit: int = 200) -> list:
+    """Merge the recent presentation tail with retained HIGH/CRITICAL events.
+
+    EventBus's public revision snapshot joins its bounded general and priority
+    lanes atomically, using global publication revisions to retain order and
+    avoid duplicates. INFO traffic therefore cannot hide serious evidence that
+    is still in the priority lane. This is a retained view, not proof of complete
+    coverage of a time window; priority overflow and process restarts can still
+    lose older evidence. Classification and operator policy remain separate.
+
+    Minimal read-only bus adapters without a revision API retain their existing
+    recent-event behavior. No disk or source-evidence query is added here.
+    """
+    reader = getattr(bus, "records_since", None)
+    if not callable(reader):
+        return bus.recent(limit)
+    current, records, _overflow = reader(-1)
+    first_recent = current - max(1, int(limit))
+    return [
+        event for revision, event in records
+        if revision > first_recent or event.severity >= Severity.HIGH
+    ]
+
+
 def active_threat_events(events, window: float = 600.0) -> list:
     """Return unresolved, non-allowlisted active threats in the time window."""
     now = time.time()
