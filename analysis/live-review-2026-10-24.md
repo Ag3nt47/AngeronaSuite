@@ -736,3 +736,22 @@ This maintenance update's offline validation and observations are distinct from
 publication. Completion additionally requires the guarded publisher's exact
 canonical-origin, branch/main/HEAD, fast-forward, clean-tree and seven README
 asset checks. Its final receipt identifies the published commit.
+
+### Follow-up GitHub CI review
+
+The CI run for `3af99e55` failed on the same two assertions in all four Windows
+Python jobs (3.10–3.13); each job otherwise passed 9,035 cases with 22 skips.
+The separate Security assurance run and the eight other CI jobs succeeded.
+The Sysmon fixtures omitted the provider identity required by the corrected
+collector and expected legacy message/field values. They consequently tested
+provider rejection instead of reaching the intended XML checks.
+
+The corrected fixtures supply the verified Sysmon provider. The unsafe-entity
+case proves the hardened parser was called and checks typed unavailable,
+observation-only coverage without path leakage or response authority. The
+oversized case installs a parser that fails if either collector calls it.
+The focused XML, Sysmon adapter and coverage gate passed 25 cases with native
+exit 0; compilation and whitespace checks passed. No product, workflow,
+timeout, exclusion or parser security policy changed. Local validation used
+Python 3.12; corrected cross-version results require the new public-head run.
+Historical failed runs remain historical and were not rerun on their old SHA.

@@ -7,6 +7,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.14.0 — live review, response recovery and runtime corrections)
 
+- Follow-up GitHub CI review found the same two obsolete Sysmon XML fixtures
+  failing on all four Windows Python versions. Fixtures now provide the verified
+  provider and prove unsafe XML reaches the hardened parser, oversized XML does
+  not reach either parser, and coverage findings grant no response authority.
+  The focused 25-case gate passed; production and workflow policy are unchanged.
+  A new public-head CI result is required before claiming remote success.
 - Current work is v1.14.0 maintenance; broader v1.15 remains incomplete. Preserve
   the existing 191-issue register, historical blocks and historical root values.
   The ten-minute and gateway-corrected five-minute observations are complete.
