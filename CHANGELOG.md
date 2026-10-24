@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.14.0 — model-manifest reader maintenance
+
+- PER-19: request an already-admitted manifest size plus one byte instead of the
+  full 16 MiB cap plus one. Preserve growth/identity/length/cap, hashing, baseline
+  and response checks. New reader parity/error controls and adjacent suites are
+  included in the fresh 39-suite/544-function/1061-case gate: 1059 passed, zero
+  failures/errors, two exact Windows availability skips; coverage is incomplete.
+- SEC-19 remains OPEN: original lexical link aliases can be erased by canonical
+  resolution before lower-level no-link checks. Full approved inventory rejects
+  links and pinned digests still apply; no new lower-trust bypass is confirmed.
+  SEC-20 remains OPEN: lower-level deep/malformed parser errors need consistent
+  normalization. Outer callers hold on errors; no runtime fail-open/DoS reproduced.
+- DBG-18: retain the first failed acceptance despite 1059 test passes/native zero;
+  its private grader required the old 34-suite scope. The corrected grader was
+  followed by a fresh accepted full run. Separate guarded observer controls are
+  harness evidence, not product features or additions to the test count.
+- Fresh 29-phase selfcheck passed with 68 module PASS, pipeline PASS and 18 module
+  SKIP; five required origins loaded (seven configured loaded/five unloaded).
+  Active model attestation was not part of that selfcheck.
+- OBS-08: the 600.297-second default 15-module window recorded 463 events and zero
+  errors/drops/pending threads, retaining 19 interval gaps (18 module strings
+  across ten modules plus a 3.531-second heartbeat gap). The 3.2106547-second
+  persistence stage already used durable=False without explicit fsync; its cause
+  remains UNKNOWN. Final C2/Sysmon health 100 does not erase interval history.
+- Separate 30-second actual model-worker observation used a synthetic baseline/key:
+  one 117-byte reader return, two verified files, four ordered call/return records,
+  120 snapshots and one event; original worker/two outer process generations
+  retired. No real enrollment, key-custody, provider, GUI or speed proof follows.
+- An 8192-byte synthetic fixture measured tracked Python allocation peaks of
+  16,787,510 versus 18,873 bytes. This is not RSS/native/product performance.
+  Preserve all 181 prior raw issue objects/order/status; append five IDs for 186.
+  Product remains v1.14.0 maintenance; broader v1.15 is incomplete. Final offline
+  validation and guarded publication remain separate mandatory proofs.
+
+See [the model-integrity evidence reference](analysis/live-debug-2026-10-22/model-integrity-review.md).
+
+
 ## 1.14.0 — SpywareGuard evidence review and beacon lifecycle
 
 The scoped R4 gate, fresh selfcheck and three serial observations are accepted

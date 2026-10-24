@@ -7,7 +7,27 @@ of attacks against ordinary identity, software, network and human boundaries.
 This guide separates current controls from work that still needs implementation
 or independent deployment.
 
-## Current evidence-review repair
+## Current model-integrity boundary
+
+The manifest reader now requests the already-admitted size plus one byte while
+retaining its original identity, length, cap and authenticated-baseline checks.
+A fresh 39-suite gate passed 1059 of 1061 cases with two exact availability skips;
+a fresh 29-phase selfcheck and separate observations retain explicit limits.
+An actual model worker processed a synthetic authenticated two-file inventory
+for 30 seconds; it did not enroll or approve a real model or prove production
+key custody, provider behavior or speed. The default 15-module observation
+keeps 19 interval gap strings; no threat or false-positive adjudication follows.
+
+Two source-review findings stay OPEN: lexical link aliases can be lost before
+lower-level no-link checks, and deep/malformed parser errors are not uniformly
+normalized. Full approved inventory still rejects links, pinned digests apply
+and outer callers hold on errors. Neither a new lower-trust trust bypass nor a
+runtime fail-open/denial of service was confirmed. Imported narratives and AI
+output still confer no baseline, key, collection or response authority.
+See the [current evidence and limits](../analysis/live-debug-2026-10-22/model-integrity-review.md).
+Broader v1.15 remains incomplete; final offline and publication proofs are separate.
+
+## Historical SpywareGuard evidence-review repair
 
 SEC-18 is a LOW review-binding finding: consent for a displayed literal must
 not approve a later report, refreshed timestamp or another source's copy. Frozen

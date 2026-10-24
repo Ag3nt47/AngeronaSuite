@@ -235,7 +235,7 @@ def _read_verified_file(path: Path, root: Path, *, maximum: int) -> bytes:
                 before.st_size,
             ):
                 raise ModelIntegrityError("Ollama manifest changed before verification")
-            payload = stream.read(maximum + 1)
+            payload = stream.read(before.st_size + 1)
             after = os.fstat(stream.fileno())
     except OSError as exc:
         raise ModelIntegrityError("Ollama manifest could not be read") from exc

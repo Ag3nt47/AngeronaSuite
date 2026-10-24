@@ -1,6 +1,28 @@
 # Component dependencies and interference review
 
-## Current Spyware / LSASS / Beacon checkpoint — scoped evidence accepted
+## Current model-integrity reader scope
+
+| Interaction | Current behavior | Evidence and limit |
+| --- | --- | --- |
+| Confined manifest -> held identity/size -> reader -> post-checks | Request admitted size+1, retain all identity/length/cap/hash checks | PER-19; fresh 39-suite/544-function/1061-case gate, 1059 passes/two availability skips; no stronger-security or product-speed claim |
+| Original lexical path -> canonical resolution -> no-link checks | Full approved inventory rejects links; lower-level original-alias contract remains OPEN | SEC-19; pinned digests remain, no new lower-trust bypass confirmed |
+| Manifest bytes -> bounded JSON/inventory -> callers | Outer callers hold on parse failures; uniform lower-level error normalization remains OPEN | SEC-20; no runtime fail-open/DoS reproduced |
+| Private gate -> grader -> full ledger -> native proof | Preserve failed stale 34-suite refusal; fresh corrected 39-suite run accepted | DBG-18; helpers/controls are separate from 1061 cases; aggregate test success alone was not acceptance |
+| Synthetic baseline/key -> actual module -> observed reader/verify -> retained stop | Unchanged worker/methods/key provider/cadence; no real enrollment | Actual 30 s/two files/117-byte reader return/four ordered records; no real-key/provider/GUI/efficacy/speed proof |
+| Default 15-module heartbeat -> volatile persistence -> interval health | Keep 19 interval gap strings, including 3.531 s global heartbeat gap | The 3.2106547 s persistence stage already used durable=False/no fsync; disk/API/descheduling cause UNKNOWN, no GUI attribution |
+
+The fresh selfcheck passed 29 phases but retains 18 module skips and optional
+unloaded products. The default combined profile holds the model guard; its
+600.297-second observation and the separate model fixture are distinct evidence.
+C2/Sysmon ending at 100 does not erase their interval gaps. Primary-worker CPU
+sampling is not complete helper/exclusive-workload attribution. All 181 earlier
+raw issues/statuses, host findings, historical unretired utility and cache/import
+limits remain; the new register has 186 IDs. Exact receipts and scope are in the
+[model-integrity reference](model-integrity-review.md). Final-source/offline and
+canonical guarded publication proofs remain separate mandatory gates; broader
+1.15 is incomplete.
+
+## Historical Spyware / LSASS / Beacon checkpoint — scoped evidence accepted
 
 R4 accepted 971 of 973 cases across 34 suites/491 function occurrences with zero
 failures/errors and two exact Windows availability skips. This is a scoped

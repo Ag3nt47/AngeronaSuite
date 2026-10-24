@@ -5,7 +5,53 @@ Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## Current Spyware / LSASS / Beacon maintenance — scoped evidence accepted
+## Current model-manifest reader maintenance — v1.14, broader v1.15 incomplete
+
+- Scope: admitted manifest size+1 read only; retain native file identity/exact
+  length/cap, growth rejection, hashes and authenticated baseline semantics.
+  Two reviewed code/test paths plus eight docs; two additions. Tested pre-doc
+  source map df99ccc169aa9d5b263ec982ab86b7a25c2c4444523afc839cf19681da353d9a;
+  final expected inventory 1878 source/1165 Python requires fresh final validation.
+- Fresh accepted 39-suite/544-function gate: 1061 collected, 1059 passed, zero
+  failures/errors, two exact Windows availability skips. Full per-function
+  collection agrees; all 75 privacy, seven named nested and 88 added/adjacent
+  cases are subsets. Acceptance is complete, coverage is not. Receipt
+  f69960e2f2d87ac192a10cbf1664d731d4934e2da204434161a21c62ebf3dd36.
+  First f7a74303 acceptance remains FAILED from the stale private 34-suite grader
+  despite 1059 test passes/native zero; it is not overwritten by the fresh run.
+- Fresh selfcheck: 29 phases/zero failures; 68 module PASS + pipeline PASS,
+  18 module SKIP; five required origins loaded, seven configured loaded/five
+  unloaded. It did not actively attest a model or run all 86 modules together.
+- Combined default 15-module observation: 600.297 s, 463 events, zero recorded
+  errors/drops/pending threads. Keep 19 interval gaps: 18 strings/ten modules
+  plus one global 3.531 s heartbeat gap. C2/Sysmon final health 100 does not erase
+  interval history. Longest heartbeat-persistence stage 3.2106547 s already
+  used durable=False/no explicit fsync; disk/API/descheduling cause UNKNOWN,
+  no GUI or speed inference. Model guard is held in that default profile.
+- Separate actual 30 s model worker: private synthetic baseline/key/two-file tree;
+  one 117-byte manifest read, two verified files, four ordered reader/verify
+  call/return records, 120 snapshots, one event, no recorded errors/audit denials.
+  Original worker/two outer generations retired; four source origins loaded.
+  No real enrollment/key custody/provider/GUI/efficacy/speed proof. The 165 parent,
+  70 target and actual optimized-mode refusal controls remain separate from 1061.
+- Synthetic 8192-byte allocation fixture: tracked Python peaks 16,787,510 versus
+  18,873 bytes (two allocation reads each, 16 total timing/allocation reads).
+  This is not RSS/native/production performance or an earlier-cause explanation.
+- Preserve all 181 prior RAW issue objects/order/status and old review_status;
+  append PER-19/SEC-19/SEC-20/DBG-18/OBS-08 for 186. SEC-19 lexical alias contract
+  and SEC-20 parser normalization remain OPEN; no new lower-trust fail-open,
+  host infection or false-positive verdict. HOST-03/HOST-04, old causes,
+  unretired diagnostic/competing-load and import-cache/runtime limits remain.
+- Offline case mapping processed 474 diagnostic records into 203 needs-review groups
+  with zero parse/overflow/conflict counts; continuity remains unverified and
+  original alerts/response authority unchanged. This is not host evidence completeness.
+- Final offline validation and unchanged canonical guarded publication require
+  separate mandatory proofs. Historical cf668016 CI 12/Security 3 with 8381 passes/
+  22 skips per Python job proves only that prior revision; no new publication
+  or v1.15 release is asserted. See the sanitized current reference:
+  analysis/live-debug-2026-10-22/model-integrity-review.md.
+
+## Historical Spyware / LSASS / Beacon maintenance — scoped evidence accepted
 
 - Product 1.14.0 maintenance; broader 1.15 INCOMPLETE. R4 accepted 971/973, zero
   failures/errors, two exact Windows availability skips across 34 suites/491

@@ -1320,6 +1320,67 @@
         "speed_gain_claimed": false,
         "observation_reader_retirement_independently_proven": false
       }
+    },
+    {
+      "id": "PER-19",
+      "status": "applied-scoped-functional-evidence-no-product-speed-claim",
+      "cause_or_observation": "A manifest reader requested the full 16 MiB cap plus one byte after already admitting the held file size.",
+      "result_and_limits": "Request only admitted size plus one byte, preserving extra-byte growth rejection, file identity, exact length/cap, hash, baseline and response semantics. The fresh 39-suite/544-function gate collected 1061 cases:1059 passed/zero failures or errors/two exact Windows availability skips. The added 88 cases include 34 new reader cases; all 75 privacy and 7 named nested cases remain within 1061, not additive. An 8192-byte synthetic file measured tracked Python peaks 16,787,510 versus 18,873 bytes; this is not RSS/native/production gain or a causal explanation for prior delays. No new security-strength claim.",
+      "source_map_sha256": "df99ccc169aa9d5b263ec982ab86b7a25c2c4444523afc839cf19681da353d9a",
+      "accepted_gate_sha256": "f69960e2f2d87ac192a10cbf1664d731d4934e2da204434161a21c62ebf3dd36",
+      "measurement_sha256": "a5228f3413f2928176bd60ddcbcf4ded60fce20357838f64633e9b2e662e072c",
+      "product_speed_gain_claimed": false,
+      "public_evidence": "model-integrity-review.md"
+    },
+    {
+      "id": "SEC-19",
+      "status": "open-source-contract-hardening",
+      "cause_or_observation": "Original lexical link aliases can be erased by canonicalization before no-link checks. Full approved inventory rejects links and pinned manifest/blob digests still apply; no new lower-trust hash/baseline bypass confirmed.",
+      "result_and_limits": "The original lexical path may contain a link alias that canonical resolution removes before lower-level no-link checks. Full approved inventory still rejects links and pinned manifest/blob digests remain enforced. No new lower-trust hash/baseline bypass is confirmed; this contract remains OPEN, not closed by a smaller read or passing cohort. No host exploit, actor attribution or false-positive adjudication follows.",
+      "public_evidence": "model-integrity-review.md"
+    },
+    {
+      "id": "SEC-20",
+      "status": "open-parser-error-normalization",
+      "cause_or_observation": "Deep/malformed parser error classes are not uniformly normalized at lower-level APIs. Outer callers hold on errors. No runtime DoS or fail-open bypass reproduced.",
+      "result_and_limits": "Uniform normalization of deep/malformed parser error classes remains OPEN at lower-level APIs. Outer callers hold on errors. No runtime denial of service or fail-open bypass was reproduced; current tests/observations do not close this source-review gap or prove all adversarial parser schedules.",
+      "public_evidence": "model-integrity-review.md"
+    },
+    {
+      "id": "DBG-18",
+      "status": "private-harness-scope-repaired-fresh-acceptance-with-explicit-limits",
+      "cause_or_observation": "The first model-reader gate ran all 1061 cases but the private grader still required 34 suites and refused acceptance.",
+      "result_and_limits": "Preserve first acceptance FAILED despite 1059 passes/two skips/native zero. The narrow private grader repair was followed by a fresh complete 39-suite/544-function/1061-case gate:1059 passed/zero failures or errors/two exact availability skips. The 165 parent controls, 70 target controls and actual optimized-mode refusal are separate harness evidence. Actual synthetic model-worker capture retained the original worker and two outer process generations; source/origin pins do not prove every imported/cache byte or all descendants. These are private diagnostic safeguards, not new product efficacy or proof of old unknown causes.",
+      "failed_first_acceptance_sha256": "f7a743038087b51e81fb392285777f03de589d01e3fdca4649de9a9b00781d1b",
+      "accepted_second_cohort_sha256": "f69960e2f2d87ac192a10cbf1664d731d4934e2da204434161a21c62ebf3dd36",
+      "collection_ledger_sha256": "b76699d8dec3d331804e997feb0bf2915aa32a879f5d7111bd2abb1a6ac99d3d",
+      "static_full_counter_sha256": "bcfb40a16e818076c770d0cc3c67f13202a320d11435e06bd9f16e687ce21bce",
+      "public_evidence": "model-integrity-review.md"
+    },
+    {
+      "id": "OBS-08",
+      "status": "fresh-same-source-observed-with-retained-interval-gaps",
+      "cause_or_observation": "The combined default profile and separately controlled synthetic model-worker observation have distinct active scopes and coverage limits.",
+      "result_and_limits": "Combined 15-module window 600.297 seconds / 463 events/zero recorded errors, drops or pending threads retained 19 interval strings: 18 module gaps across 10 modules plus one global 3.531-second heartbeat gap. C2/Sysmon final health 100 does not erase interval history. The 3.2106547-second heartbeat-persistence stage already used durable=False/no explicit fsync; disk/API/descheduling cause UNKNOWN, no GUI attribution. Model guard is held in that default profile. Separate 30-second actual model worker returned one 117-byte manifest, verified 2 files, recorded 4 ordered call/return records, 120 snapshots / one event, zero errors/audit denials and original-worker/two-outer retirement. Synthetic baseline/key only; no real enrollment, key custody, provider, GUI, efficacy or speed claim. Historical unretired diagnostic/competing load, helper CPU, cache/import, HOST-03/HOST-04 and threat/false-positive unknowns remain. Final offline/publication proofs are separate mandatory gates; broader 1.15 incomplete. The unchanged offline summarizer processed 474 diagnostic records (463 events / 11 coverage records) into 203 needs-review groups, zero parse/overflow/identity conflicts; processing complete but continuity independently unverified. No original alert status or automatic response changed. Three source-backed severe groups remain advisory_only/response_authorized=false; no infection/FP adjudication.",
+      "combined_observation_sha256": "580b13903cb9e20b076da6e2f6f6db0cc85aefa8d05d2e7bc1e272d053115e83",
+      "combined_observation_root_review_sha256": "7498eb80319f964fb822666c8233b46e2c4d1684a9a4f9e99ae443f9638e7d88",
+      "model_worker_observation_sha256": "a246b6c774a93a3859d386311f4dcbc22444b47a46c4d3e3130af94e79a983b0",
+      "model_worker_root_review_sha256": "9aaeae3edb278e58a62a9744cb2701ca55905673c28b980da6e662bbb3513f44",
+      "selfcheck_sha256": "7038054e194e878c2cf05a15e87cbfd376a06b86bcf81574ffb86f6e0e095be1",
+      "public_evidence": "model-integrity-review.md",
+      "case_map": {
+        "records": 474,
+        "events": 463,
+        "coverage_records": 11,
+        "case_groups": 203,
+        "processing_complete": true,
+        "independent_evidence_continuity_verified": false,
+        "all_groups_needs_review": true,
+        "input_parse_overflow_or_identity_conflicts": 0,
+        "automatic_response": false,
+        "original_alert_status_changed": false,
+        "summary_sha256": "a554c059b0ae094202b227b4f5975f630d4bfad726932479c0844cd03ab4816a"
+      }
     }
   ],
   "preserved_uncertainty": [
@@ -1339,5 +1400,122 @@
   "historical_review_status_before_ai_privacy": "173 reviewed IDs; all164 prior raw objects/order and preceding review_status preserved. Current8e09 R5 accepted32 suites/451functions:789collected/786passed/0failed/errors/3exactPOSIXskips; acceptance_complete=true, coverage_complete=false. Same-source final selfcheck passed29 phases,68modulePASS/18SKIP+separatepipeline. Three fixed observations completed:SpywareGuard30.203s/two gaps,scanner30.079s/no gaps,combined15-module600.531s/17coverage strings/nine modules/364events,0recorded errors/crashes/loss/pending threads. Exact outer2+retainedcore samegeneration WAIT0/native0/allhandlesclosed/managerretired/MainThread/noQApp and frozen source/head/bothindices/runtime/harness retained. Primary profile516rounds/16opened/16closed/gaps[] is not complete helper attribution or speed proof. Filtered375records=364events+11coverage controls; export verification flags do not authenticate redacted payload as original;353events omit response authority,0explicit true. ThreeHIGH/CRIT and sevenSpyGuard explicit false; coverage/assurance exposures and C2 advisory omissions remain, no host/FP verdict. All earlier failures,29/11 diagnostic and originalR4 UNKNOWN cause retained; HOST03/HOST04 remain open. SEC15 OPEN_SOURCE; separate4file/75case proposal source-approved only/unactivated/unrun, no local-only toggle/global computer-only setting/universal provider-egress deny. Guarded GitHub publication is a separate mandatory gate; these receipts alone do not prove it. No native Linux/Keychain/hardware-enclave/full86 efficacy/privileged mutation/WFP/external-witness or v1.15 completion claim; declared helper/runtime pins are not whole cached-runtime attestation.",
   "historical_review_status_before_ai_broker_benchmark": "174 reviewed IDs; all 173 prior raw objects/order and preceding review_status retained, including original SEC-15. SEC-16 effective_resolution_of SEC-15 tracks source-applied dialog sanitization/exact review/Send/credential binding/worker cancellation. Initial 182-case180pass/2fail/0skip/native1 remains. Four production candidates unchanged by two fixture-only corrections. Corrected12-suite/117-function gate passed182/0fail/0error/0skip including75new cases, native0/exactouter2 retirement/fourclosures/MainThread/noQApp/fullf4391872/head/bothindices/runtime39/helpers83 stability. Fresh90.14s passive15/71 observation completed OBSERVED_WITH_GAPS:17gapstrings/nine modules,65events,0recordederrors/crashes/loss/pendingthreads,exactouter2+core retirement/frozen inputs. Filtered76records=65events+11coverage;7explicit response false/58absent/0explicit true. No host/FP/speed/realprovider/GUI/perfectredaction/current29-phase claim. Priorpublishedcaf0 proofd592354c and786/29/600 evidence remain historical, not current privacy proof. Direct CLI/ARIA callers are sanitized without universal GUI preview. No globaldeny/localonlytoggle/globalcomputer-onlysetting/newhumanidentityauth or GUIgatherlatency fix. Version1.14 remains development, broader1.15 incomplete; guarded publication separate.",
   "historical_review_status_before_spyware_lsass_beacon": "176 reviewed IDs; all174 preceding raw issue objects/order/review_status preserved as historical_review_status_before_ai_broker_benchmark. Applied SEC-17 LOW library/API refresh-after-wait repair, no deployed current broker consumer under src. PER-16 typed immutable benchmark fixture/full-cohort/denial-latch/restoration repair, no production collector optimization/speed claim. Actual15suite156function gate254collected/253passed/0failed/errors/one preciseWindows8.3 skip Volume has no distinct short filename; acceptance_complete=true,coverage_complete=false. Broker23allpass incl14newwaitstates,benchmark28allpass,agent20pass1skip,all75privacy retained; groups overlap. Exactouter2samebirthWAIT0/native0/fourclosures/MainThread/noQApp/source1874map4f7d2982/HEADbothindicesruntime39 stable. Fresh90.329s passive15eligible71held OBSERVED_WITH_GAPS17gapstrings/nine modules,97events,0recordederrors/crashes/loss/pendingthreads,exactouter2+core retirement/frozen inputs. Filtered108records=97events11coverage; response0true7false90absent; omitted evidence prevents host/threat/FP verdict. Queryprofile73rounds16openedclosed/gaps[]/CPUmeasurement not helper-complete/speed/regression evidence. No provider/cloud/GUIprivacy/all86/overnight/native-broker efficacy or whole-suite claim. Offline/guardedpublication separate mandatory gates. Published24ed22c/privacy182/90.14 and earliercaf0/786/29/600 historical, not new-patch proof. Version1.14.0development/broader1.15incomplete. All oldfailures/unknowncauses/HOST03/HOST04/gaps retained.",
-  "review_status": "181 reviewed IDs; all 176 preceding raw issue objects/order/status and the original review_status remain exact under historical_review_status_before_spyware_lsass_beacon. R4 scoped gate: 34 suites, 491 function occurrences, 973 collected, 971 passed, zero failures/errors, two exact Windows availability skips; acceptance complete, coverage incomplete. All 75 privacy and seven named nested cases, including five native beacon scenarios, passed their in-test checks; independent external gate proof covers exactly two outer generations. Fresh 29-phase selfcheck passed: 68 module PASS plus pipeline PASS, 18 module SKIP; four required origins loaded, five configured optional unloaded. Serial observations accepted: SpywareGuard 30.094 seconds/two gaps; scanner 30.172 seconds/31 heartbeats/no gap strings; combined 600.312 seconds/1933 heartbeats/369 events/17 retained interval gap strings across nine modules. Zero recorded errors/drops/pending work/observed crashes does not establish full coverage or adjudicate infection/false positives. Exact outer-two plus separately query-held core WAIT0/native-zero/required closures and frozen inputs retained for observations. Observation harness reader and possible competing diagnostic lack separate retirement proof; primary-worker CPU sampling is not helper-complete, exclusive-workload or speed evidence. Retain all three earlier failed attempts, missing R3 nested proof and UNKNOWN historical cleanup API cause. Production total beacon cleanup is not bounded; adapted test launcher does not prove the unmodified production launcher or all descendants. Tested pre-documentation source map 87acb370d9e68a75244b29da3297c3496d3330dc22a3bc2dc2f68fc7b31d4f47; final exact 19-path review (11 code/test plus eight docs, two additions), full source inventory and unchanged 1164 Python pins must precede fresh offline checks and unchanged guarded publication. These are mandatory subsequent completion gates, not preclaimed results. HOST-03/HOST-04, old unknowns and gaps stay open; restored 2 GiB headroom is not established. Product remains v1.14 maintenance; broader v1.15 incomplete."
+  "historical_review_status_before_model_reader": "181 reviewed IDs; all 176 preceding raw issue objects/order/status and the original review_status remain exact under historical_review_status_before_spyware_lsass_beacon. R4 scoped gate: 34 suites, 491 function occurrences, 973 collected, 971 passed, zero failures/errors, two exact Windows availability skips; acceptance complete, coverage incomplete. All 75 privacy and seven named nested cases, including five native beacon scenarios, passed their in-test checks; independent external gate proof covers exactly two outer generations. Fresh 29-phase selfcheck passed: 68 module PASS plus pipeline PASS, 18 module SKIP; four required origins loaded, five configured optional unloaded. Serial observations accepted: SpywareGuard 30.094 seconds/two gaps; scanner 30.172 seconds/31 heartbeats/no gap strings; combined 600.312 seconds/1933 heartbeats/369 events/17 retained interval gap strings across nine modules. Zero recorded errors/drops/pending work/observed crashes does not establish full coverage or adjudicate infection/false positives. Exact outer-two plus separately query-held core WAIT0/native-zero/required closures and frozen inputs retained for observations. Observation harness reader and possible competing diagnostic lack separate retirement proof; primary-worker CPU sampling is not helper-complete, exclusive-workload or speed evidence. Retain all three earlier failed attempts, missing R3 nested proof and UNKNOWN historical cleanup API cause. Production total beacon cleanup is not bounded; adapted test launcher does not prove the unmodified production launcher or all descendants. Tested pre-documentation source map 87acb370d9e68a75244b29da3297c3496d3330dc22a3bc2dc2f68fc7b31d4f47; final exact 19-path review (11 code/test plus eight docs, two additions), full source inventory and unchanged 1164 Python pins must precede fresh offline checks and unchanged guarded publication. These are mandatory subsequent completion gates, not preclaimed results. HOST-03/HOST-04, old unknowns and gaps stay open; restored 2 GiB headroom is not established. Product remains v1.14 maintenance; broader v1.15 incomplete.",
+  "historical_validation_before_model_reader": "validation.json",
+  "current_validation": {
+    "reference": "model-integrity-review.md",
+    "tested_pre_documentation_source_map_sha256": "df99ccc169aa9d5b263ec982ab86b7a25c2c4444523afc839cf19681da353d9a",
+    "scoped_gate": {
+      "result": "f69960e2f2d87ac192a10cbf1664d731d4934e2da204434161a21c62ebf3dd36",
+      "root_review": "40088801c6e472138eaedbfe14aed608ca7deb38e2e58bee15e0af1ebb46a0bf",
+      "ledger": "b76699d8dec3d331804e997feb0bf2915aa32a879f5d7111bd2abb1a6ac99d3d",
+      "static_full_counter": "bcfb40a16e818076c770d0cc3c67f13202a320d11435e06bd9f16e687ce21bce",
+      "counts": {
+        "suites": 39,
+        "functions": 544,
+        "collected": 1061,
+        "passed": 1059,
+        "failed": 0,
+        "errors": 0,
+        "exact_skips": 2,
+        "privacy": 75,
+        "named_nested": 7,
+        "new_adjacent_cases": 88
+      },
+      "coverage_complete": false
+    },
+    "selfcheck": {
+      "result": "7038054e194e878c2cf05a15e87cbfd376a06b86bcf81574ffb86f6e0e095be1",
+      "root_review": "17418be12eb820cae88568869205537f58702d70169c315bea462f8d48dafa78",
+      "phases": 29,
+      "failures": 0,
+      "module_pass": 68,
+      "module_skip": 18,
+      "pipeline_pass": 1,
+      "required_origins": 5,
+      "loaded": 7,
+      "optional_unloaded": 5,
+      "active_model_attestation": false
+    },
+    "combined_observation": {
+      "result": "580b13903cb9e20b076da6e2f6f6db0cc85aefa8d05d2e7bc1e272d053115e83",
+      "root_review": "7498eb80319f964fb822666c8233b46e2c4d1684a9a4f9e99ae443f9638e7d88",
+      "requested_seconds": 600,
+      "seconds": 600.2970000000205,
+      "total_seconds": 613.2820000000065,
+      "heartbeats": 1672,
+      "events": 463,
+      "event_severities": {
+        "CRITICAL": 1,
+        "HIGH": 2,
+        "INFO": 428,
+        "LOW": 29,
+        "MEDIUM": 3
+      },
+      "recorded_errors": 0,
+      "drops": 0,
+      "pending_threads": 0,
+      "coverage_gap_strings": 19,
+      "module_gap_strings": 18,
+      "modules_with_gaps": 10,
+      "global_gap_strings": 1,
+      "max_heartbeat_gap_seconds": 3.5309999999881256,
+      "heartbeat_persistence_stage_wall_seconds": 3.2106547000003047,
+      "stage_cause": "UNKNOWN; durable=False already skips explicit fsync. No disk/API/descheduling/GUI cause or speed claim.",
+      "c2_final_health": 100,
+      "sysmon_final_health": 100,
+      "scope": "15reviewedmodules/71held; modelguard is not active in this defaultprofile",
+      "primary_worker_cpu_complete": true,
+      "helper_cpu_complete": false
+    },
+    "synthetic_model_observation": {
+      "result": "a246b6c774a93a3859d386311f4dcbc22444b47a46c4d3e3130af94e79a983b0",
+      "root_review": "9aaeae3edb278e58a62a9744cb2701ca55905673c28b980da6e662bbb3513f44",
+      "seconds": 30,
+      "actual_manifest_return_bytes": 117,
+      "ordered_profile_records": 4,
+      "reader_calls": 1,
+      "reader_returns": 1,
+      "verify_calls": 1,
+      "verify_returns": 1,
+      "files_verified": 2,
+      "event_count": 1,
+      "snapshot_count": 120,
+      "errors": 0,
+      "audit_denials": 0,
+      "original_worker_retired": true,
+      "configured_loaded_origins": 4,
+      "scope": "Syntheticbaseline/key/profile only; originalmodule/keyprovider/methods/cadence unchanged; no realenrollment/keycustody/provider/GUI/efficacy/speedclaim",
+      "controls": {
+        "parent": 165,
+        "target": 70,
+        "actual_optimized_refusal": 1
+      },
+      "control_results": {
+        "parent": "ab2026f53507016cc07ca092176f215eaff6a78367d7376c157dd13c2745ea88",
+        "target": "2dbfaea929c641bc422d6dc192d7ae74904bf120901a239cbc018ad3712c37da"
+      }
+    },
+    "synthetic_allocation_measurement": {
+      "result": "a5228f3413f2928176bd60ddcbcf4ded60fce20357838f64633e9b2e662e072c",
+      "root_review": "d51ec95334342901127d5df6fb6b25a125bd8b0ffea536a6f989b5800087cbe7",
+      "fixture_bytes": 8192,
+      "reader_calls": 16,
+      "tracked_python_peak_old_bytes": [
+        16787510,
+        16787510
+      ],
+      "tracked_python_peak_new_bytes": [
+        18873,
+        18873
+      ]
+    },
+    "first_failed_acceptance": {
+      "result": "f7a743038087b51e81fb392285777f03de589d01e3fdca4649de9a9b00781d1b",
+      "review": "2f47510756485b7bff32ce45bd4d374e56302fe038f06b46b8b45ba339bbf9ca",
+      "original_superseded": false
+    },
+    "final_offline_and_publication": "Separate mandatory guarded proofs; no preclaimed result"
+  },
+  "review_status": "186 reviewed IDs; all 181 prior raw issue objects/bytes/order/status and former review_status remain exact under historical_review_status_before_model_reader. Current one-expression manifest read change passed a fresh 39-suite/544-function/1061-case gate: 1059 passes/zero failures or errors/two exact availability skips; coverage incomplete. All 75 privacy/seven named nested/88 added-adjacent cases are included, not additive. Preserve initial failed stale-grader acceptance despite test/native success. Fresh 29-phase selfcheck passed, retaining 18 module skips, five required loaded origins and five configured optional unloaded. Default 15-module 600.297-second observation retained 19 interval gaps (18 strings / ten modules plus global 3.531-second heartbeat gap), 463 events and zero recorded errors/drops/pending threads. Heartbeat-persistence 3.2106547 s already used durable=False/no explicit fsync; disk/API/descheduling/GUI cause UNKNOWN. C2/Sysmon final 100 does not erase interval history. Separate 30-second actual worker used a synthetic baseline/key only: 117-byte read/two files/four ordered records/120 snapshots/one event; original worker and two outer generations retired, no real enrollment/key custody/provider/GUI/efficacy/speed proof. Allocation fixture peaks 16,787,510 versus 18,873 bytes are tracked Python only, not RSS/native/product gain. SEC-19 lexical alias and SEC-20 parser normalization remain OPEN; no confirmed lower-trust fail-open/DoS or host/false-positive verdict. HOST-03/HOST-04, historical unretired diagnostic/competing load, old unknowns and import-cache/helper limits remain. Exact final ten-path scope/full 1878 source / 1165 Python checks, offline validation and guarded publication need separate mandatory proofs; historical cf668 CI validates only that old revision. Product remains 1.14 maintenance; broader 1.15 incomplete."
 }

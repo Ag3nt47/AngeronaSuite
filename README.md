@@ -32,14 +32,13 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance:** exact SpywareGuard review identities, less repeated
-pure LSASS matching and retained beacon cleanup have scoped regression evidence.
-The 34-suite gate passed 971 of 973 cases (zero failures/errors, two exact Windows
-availability skips); the 29-phase selfcheck passed with 18 module skips. Serial
-SpywareGuard, scanner and combined 15-module observations completed; the combined
-600.312-second window recorded no errors, drops, pending work or crashes while
-retaining 17 interval gap strings across nine modules. This is scoped evidence, with
-coverage and performance limits in the [current review](analysis/live-debug-2026-10-22/README.md).
+**Current v1.14 maintenance:** model-manifest reads use the admitted size plus
+one byte, preserving integrity checks. A fresh 39-suite gate passed 1059 of
+1061 cases with two exact availability skips; all 29 selfcheck phases passed.
+A 600-second, 15-module observation retained 19 interval gaps, while a separate
+30-second synthetic-profile run exercised the actual model-integrity worker.
+[Evidence, open findings and limits](analysis/live-debug-2026-10-22/model-integrity-review.md)
+separate these results from real-model efficacy and product performance claims.
 
 Manual AI consultation provides a bounded sanitized preview and explicit Send;
 see [AI consultation privacy](docs/ai-consult-privacy.md). Broader v1.15 remains

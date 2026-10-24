@@ -1,6 +1,40 @@
 # Live debugging and screenshot issue review
 
-## Current maintenance checkpoint — scoped evidence accepted
+## Current model-integrity maintenance
+
+The size-bounded manifest reader retains integrity checks. Fresh scoped evidence:
+**39 suites / 544 functions / 1061 collected / 1059 passed / zero failures or
+errors / two exact availability skips**; all 29 selfcheck phases passed. Coverage
+is incomplete. The separate 600.297-second default 15-module run retained 19 interval
+gaps; the actual 30-second synthetic model worker verified two fixture files.
+These establish neither a clean host nor real enrollment or product speed.
+
+| New issue | State | Scope |
+| --- | --- | --- |
+| PER-19 | Applied, scoped validation | Smaller manifest read request; 8192-byte fixture allocation evidence only |
+| SEC-19 | OPEN | Lexical alias/no-link contract; full approved inventory and pinned digests remain |
+| SEC-20 | OPEN | Lower-level parser error normalization; outer callers hold on errors |
+| DBG-18 | Private harness repaired | Preserve failed first grader acceptance and fresh accepted second run separately |
+| OBS-08 | Observed with gaps | Combined default profile, synthetic model worker and helper controls have distinct limits |
+
+The register contains 186 IDs and preserves all 181 prior raw issue objects,
+order/status and former review_status exactly. HOST-03/HOST-04, threat/false-positive
+questions and old unknowns are not cleared. The requested 2 GiB capacity buffer
+is not established. The heartbeat stage already skipped explicit fsync under
+durable=False; its 3.2106547 s delay has UNKNOWN cause. Final C2/Sysmon health 100
+cannot erase interval history. Historical unretired diagnostic/competing load and
+incomplete helper/import-cache assurance limit timing and security conclusions.
+
+The selected diagnostic copy was completely processed into 203 needs-review case
+groups (474 records); continuity remains unverified and alerts/actions unchanged.
+
+See [model-integrity maintenance](model-integrity-review.md) for the exact change,
+open contracts, accepted/failed receipts, two observation scopes, synthetic
+allocation measurement and historical cf668 CI boundary. Final exact source and
+offline validation plus guarded publication require separate mandatory proofs.
+Product remains 1.14.0 maintenance; broader 1.15 is incomplete.
+
+## Historical Spyware / LSASS / Beacon checkpoint — scoped evidence accepted
 
 **Scoped gate, selfcheck and serial observations accepted with coverage gaps.** R4 passed 971
 of 973 cases across 34 suites/491 function occurrences, zero failures/errors and
