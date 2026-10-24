@@ -1,5 +1,55 @@
 # Component dependencies and interference review
 
+## Current Spyware / LSASS / Beacon checkpoint — scoped evidence accepted
+
+R4 accepted 971 of 973 cases across 34 suites/491 function occurrences with zero
+failures/errors and two exact Windows availability skips. This is a scoped
+source/test checkpoint, not completed 1.15 or a host verdict. Final docs/source
+authority root-held final whole-source inventory after documentation review; final scope mandatory exact 19-path scope review (11 code/test and 8 documentation paths, two additions).
+
+| Interaction | Current source control | Evidence boundary |
+| --- | --- | --- |
+| Research worker → store → queued review → approval → live match | Frozen literal/source/digest/times/store-session/revision plus module session/generation; compare+assign under store→module order. Exact revocation/source removal, receipt-aware dedup, detached JSON/500-row cap. | No same-byte-refresh consent, expiry revival or duplicate-source substitution. Runtime identity is not a signature or response authority from imported prose. |
+| Shared process inventory → LSASS readability → pure matcher → response | Bypass only repeated pure matching of an existing already-alerted identity, after unchanged command/readability accounting. | Collection, identity gaps, negative rechecks, health/counters/freshness/eviction/events/response remain. No native or benign-workload speed gain established. |
+| Beacon start/heartbeat/close → retained Popen/READY/cleanup/streams/handle | Closed BrokenPipeError permits only continuation to unchanged wait/poll/reader/handle checks; every stream must actually close. Unresolved ownership prevents overlap; no production kill fallback. | Snapshot never joins; early emergency detach remains; admitted stop cannot be unsent. Pipe I/O can block before waits, so total cleanup is not bounded; startup READY/heartbeat lock limits remain. |
+| Live native fixture admission → separate terminal witness → resource cleanup | Keep strict kernel-image/PE/fingerprint/alias admission. Terminal same original handle supplies PID/raw birth, WAIT0 and native exit. A failed proof remains sticky after cleanup. | Fixed win32 paths/retained DLL-directory handle are test-only. Production API uses an adapted launcher; unmodified production launcher/descendants and whole-runtime attestation remain unproved. |
+| Private source-inventory helper → size-bounded regular-file read | Request already-admitted size+1 with unchanged custody/length/growth guards. | 31 inert controls and one 8 KiB ABBA measurement only. No product/whole-gate gain or old failure cause. |
+
+### Current R4 evidence and preserved failures
+
+Receipt 78b36785802635147855f0cbc8ce1cba88cc35b483c0ebfb319547b97b773f29; root review 92d47b23cce1e400fa4b3dcf6df00c26f6ee0c88eafc3c51eb982d7644d7797c. All 973 unique cases and 491
+function multiplicities match ledger 52fbfd2b117a64f8a87880a59eb2164f3aab3c4fab0e335add3be7c59d30ca1a / fresh independent counter
+3b1fb5396dc88316f56453600e351aefdf3cddf1d114bebf4debbe71c288ecde. All 75 privacy and 7 named nested cases, including 5 native beacon
+scenarios and their own retirement checks, passed. Exact independent outer
+attestation remains 2 generations: WAIT0/native0/four handle closures/MainThread/
+noQApp and stable source/HEAD/both indexes/runtime. It is not generalized to
+nested processes. JUnit 46.235 s / supervisor 50.703 s are timings, not speedup proof.
+Only Windows 8.3 and symlink availability skips remain; acceptance≠coverage.
+
+The private product 12 controls (a3738ecec2658723f5c0bc56296823f56c93e7bf95d7a5d6fe390c8b5cfdb740) and fixture 38 controls
+(3c26afc83e27b1e37f1bc136279e9175fe5ec8f48bcd8ee8f22d634534ee5e66) passed separately with modeled process/kernel/DLL behavior;
+they do not replace actual native cases or become additive cohort totals.
+Preserve precollection be111aa05ef19cc995ae0bbfe39b8b5892c47a766b02ef2ce8814dfb2225ddc1, R2 failed (944 passed / 1 failed / 4 setup errors / 2 skips)
+cf17c1f491117f540c0d73a2d8c3b60b96f4ba0d9c896628d8e19619529029c0 and R3 failed (944 passed / 1 failed / 4 setup errors / 2 skips) 38768982d0cd8d557b81c5c0636d831cd87086882931755ca1861e177d6a0b9e. R3 nested proof was absent;
+its exact historical cleanup API cause stays UNKNOWN. Combined fixes and the
+isolated BrokenPipe mechanism do not establish one old API cause or old proof.
+
+Tested pre-documentation source 87acb370d9e68a75244b29da3297c3496d3330dc22a3bc2dc2f68fc7b31d4f47; source cores
+20c8dd1f/22563b45/47ea3f12. Final source/scope must be rechecked after documentation changes.
+Fresh selfcheck ACCEPTED 29 phases / 0 failed, 18 module skips; ecd25a52f7731aeff24b071a2e68f1cbbbb5326ea9324586cfb6270fe65dc572; SpywareGuard 30 OBSERVED_WITH_GAPS 30.094s; 65a957fc5ff7d73e7ced9ae34b64b51f53ba6108b9b6d75fb4c72417c64fe58e; scanner 30-second
+OBSERVED 30.172s / 31 heartbeats; 840e5f87acecaec74b56ca8f8dfbcaa34f97953e3144f3c421906252f0b09fec; all-15 / 600-second OBSERVED_WITH_GAPS 600.312s / 1933 heartbeats / 369 events / 17 retained interval gap strings across nine modules; 42bc0a86bc8f3746c87aa82de109728e1a429c1294a7d7453da3bf22899c685f; offline REQUIRED after final documentation: fresh offline checks under root approval;
+publication REQUIRED after a reviewed completed commit: the unchanged canonical guarded publisher. No older 29/30/600 receipt is reused.
+
+Private reader evidence remains 31 controls, one 8192-byte file and eight old
+reads 703.7053 ms/eight new 5.0245 ms ABBA (8c3af5b0a8210e1be38ee58c734fc1c7e7a976ba1ea5668112062b0af97b388f); no product,
+whole-gate, native-attribution or causal-performance result. Registry 181 keeps
+all 176 prior raw issue objects/order/status and original review_status intact.
+HOST-03/HOST-04, unknowns and historical gaps stay open; product 1.14 maintenance,
+broader 1.15 incomplete.
+
+## Historical component reviews
+
+
 This map accompanies the [issue register](README.md). A connection means a
 known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert

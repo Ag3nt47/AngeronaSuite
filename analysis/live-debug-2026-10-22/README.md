@@ -1,5 +1,128 @@
 # Live debugging and screenshot issue review
 
+## Current maintenance checkpoint — scoped evidence accepted
+
+**Scoped gate, selfcheck and serial observations accepted with coverage gaps.** R4 passed 971
+of 973 cases across 34 suites/491 function occurrences, zero failures/errors and
+two exact Windows availability skips. Acceptance is complete; coverage is not.
+This remains v1.14.0 maintenance; broader v1.15 integration is incomplete.
+
+| New issue | Current repair | Evidence and limit |
+| --- | --- | --- |
+| SEC-18 (LOW) | Exact IndicatorReviewIdentity and module lifecycle binding, compared/assigned under store→module order; exact receipt revoke/source replacement, dedup and detached JSON/500-row cap. | No expiry revival, same-byte approval renewal or duplicate-source substitution. Runtime evidence is not a signature or permission from report prose. Scoped gate passed; no host/actor verdict. |
+| PER-17 | Skip only repeated pure LSASS matching on already-alerted identity after unchanged command/readability accounting. | All native collection/identity/freshness/counters/health/eviction/events/response preserved; no negative cache or measured native/benign speed gain. |
+| DBG-17 | Retain beacon-owned work through retirement; admit only already-closed BrokenPipeError before unchanged proof checks. Fixture live-image admission and separate terminal PID/raw birth/WAIT0/exit, sticky failed proof. | All 5 native scenarios passed in-test checks; production API launcher is explicitly adapted. No unmodified production-launcher/unknown-descendant proof. Pipe I/O can block: total cleanup not bounded, startup/heartbeat-lock limits retained. |
+| PER-18 | Private validation reader uses admitted size+1 with unchanged custody/length checks. | 31 controls and one synthetic 8 KiB ABBA experiment only; 8 old 703.7053 ms/8 new 5.0245 ms. No product/whole-gate speed or earlier-failure cause. |
+| OBS-07 | Full-multiplicity 34-suite gate and 29-phase selfcheck accepted; serial observations are recorded below, while offline checks and publication remain separately gated. | Two exact availability skips keep coverage incomplete. No host finding or unknown cause automatically closes. |
+
+### Actual R4 receipt and scope
+
+Receipt 78b36785802635147855f0cbc8ce1cba88cc35b483c0ebfb319547b97b773f29; accepted root review 92d47b23cce1e400fa4b3dcf6df00c26f6ee0c88eafc3c51eb982d7644d7797c. Ledger
+52fbfd2b117a64f8a87880a59eb2164f3aab3c4fab0e335add3be7c59d30ca1a; fresh independent function/case counter 3b1fb5396dc88316f56453600e351aefdf3cddf1d114bebf4debbe71c288ecde.
+973 unique cases/491 function occurrences match full multiplicity. All 75 privacy
+cases and 7 named nested cases, including 5 native beacon cases and their own
+ownership/retirement checks, passed. Independent outer attestation remains
+exactly 2 generations, with WAIT0/native0/four closed handles/MainThread/noQApp
+and stable source/HEAD/both indexes/runtime. Do not generalize those independent
+outer witnesses to every nested process. JUnit 46.235 s / supervisor 50.703 s do not
+establish product or whole-gate speedup.
+
+Exactly two unavailable Windows controls skipped: 8.3 short alias — Volume has
+no distinct short filename; quarantine link refusal — symlinks unavailable.
+No skip is a passing protection case. The root review retains acceptance=true
+and coverage=false. The hardlink case passed; no alias or custody check was
+relaxed to achieve this result.
+
+Product cleanup now catches only closed BrokenPipeError, and all later wait/
+poll/reader/stream/original-handle proofs still apply. It does not prove stop
+frame delivery. The test fixture keeps strict live-image admission and uses a
+separate terminal PID/raw birth/WAIT0/exit check. Failed proof remains sticky
+after resource cleanup. Explicit win32 paths and retained pywin32_system32
+DLL-directory handle are fixture-only; no .pth startup, unmodified production
+launcher or whole-runtime attestation is claimed. Private product 12 controls
+a3738ecec2658723f5c0bc56296823f56c93e7bf95d7a5d6fe390c8b5cfdb740 and fixture 38 3c26afc83e27b1e37f1bc136279e9175fe5ec8f48bcd8ee8f22d634534ee5e66 passed separately; modeled controls
+do not replace actual native validation or add to 973.
+
+### Serial passive observations
+
+| Profile | Actual window / total | Recorded result |
+| --- | --- | --- |
+| SpywareGuard solo | 30.094 / 36.766 seconds | Three events (two LOW, one MEDIUM), zero errors/drops/pending work; OBSERVED_WITH_GAPS, two coverage strings, health 85/degraded retained |
+| Raw scanner solo | 30.172 / 35.719 seconds | 31 heartbeats, zero errors/drops/pending work/gap strings; OBSERVED; no selected module workers, so worker-CPU coverage false |
+| Combined 15 modules | 600.312 / 609.860 seconds | 1933 heartbeats, 369 events; zero errors, supervisor errors, capture/export/console drops, pending work or observed crashes; clean normal shutdown; OBSERVED_WITH_GAPS |
+
+Solo SpywareGuard receipt
+65a957fc5ff7d73e7ced9ae34b64b51f53ba6108b9b6d75fb4c72417c64fe58e;
+root review 2c1d1f2f9ab2bea2799ff165dc1746c4a8d91ec9fb385c81d0873078c91c2ebf.
+Raw scanner receipt 840e5f87acecaec74b56ca8f8dfbcaa34f97953e3144f3c421906252f0b09fec;
+root review 2651323a59c89bdc521030615649a534d43d6a587c5bdcc0685cb427e2809ea3.
+Combined receipt 42bc0a86bc8f3746c87aa82de109728e1a429c1294a7d7453da3bf22899c685f;
+root review 8c0662cd612e29e1857583557a5def472031aa765e9a8ca357d067c42cfa763e.
+
+Combined event severities are one CRITICAL, two HIGH, 350 INFO, 13 LOW and three
+MEDIUM. Its 17 retained gap strings span nine modules: AegisPath, Fleet, Identity,
+Immutable Recovery, LSASS, Process Monitor, Self-Integrity and SpywareGuard
+(two each), and Sysmon (one interval gap). Unknowns and unavailable/configuration
+states remain explicit. Events are not labeled infection or false positives.
+The 17 strings record gaps during the observation interval; they do not mean all nine modules remained degraded at shutdown. Sysmon later reported health 100 after its initial cursor-anchor gap, while partial LSASS readability remained explicit.
+
+All three source-87ac profiles retain independent proof for the exact outer two
+generations and separately query-held admitted core: WAIT0/native-zero, required
+closures, clean reported shutdown and frozen source/index/runtime. This does not
+prove every descendant's original Popen-handle closure. A possible competing
+source-reader diagnostic lacks retirement/load proof; the observation harness's
+own reader also lacks separate thread-retirement proof. MainThread-only evidence
+for a child does not prove retirement of that separate reader. Combined primary
+worker CPU sampling reported no gaps; it does not cover all helpers or establish
+an exclusive host workload, speedup, regression or earlier failure cause.
+HOST-04 remains open; a restored 2 GiB buffer is not established.
+
+Final exact source/documentation review, fresh offline checks and unchanged
+guarded publication are mandatory subsequent gates, not preclaimed results.
+
+### Preserved failures and remaining completion gates
+
+Keep original precollection refusal be111aa05ef19cc995ae0bbfe39b8b5892c47a766b02ef2ce8814dfb2225ddc1, R2 failed
+944/1/4/2 cf17c1f491117f540c0d73a2d8c3b60b96f4ba0d9c896628d8e19619529029c0, and R3 failed (944 passed / 1 failed / 4 setup errors / 2 skips) 38768982d0cd8d557b81c5c0636d831cd87086882931755ca1861e177d6a0b9e. R3's nested proof
+was absent; its exact historical cleanup API cause remains UNKNOWN. Later
+passing combined fixes do not establish one earlier API cause or retroactively
+create missing proof. The records remain, including all original 176 raw issue
+objects/order/status. SEC-18/PER-17/DBG-17/PER-18/OBS-07 bring the register to 181,
+with original review_status under historical_review_status_before_spyware_lsass_beacon.
+HOST-03/HOST-04, old unknowns and coverage gaps remain open.
+
+R4 tested pre-documentation inventory 87acb370d9e68a75244b29da3297c3496d3330dc22a3bc2dc2f68fc7b31d4f47; final
+docs/source root-held final whole-source inventory after documentation review and scope mandatory exact 19-path scope review (11 code/test and 8 documentation paths, two additions). Tested core hashes
+start 20c8dd1f/22563b45/47ea3f12. Prospective source 1876/Python 1164 and 19 paths = 11 code/
+8 docs/two additions are descriptors, not final authority.
+
+| Required current-source gate | State / receipt |
+| --- | --- |
+| Scoped complete 34-suite cohort | ACCEPTED: 971 passed / two exact skips / zero failures or errors; 78b36785802635147855f0cbc8ce1cba88cc35b483c0ebfb319547b97b773f29 |
+| 29-phase isolated selfcheck | ACCEPTED 29 phases / 0 failed, 18 module skips; ecd25a52f7731aeff24b071a2e68f1cbbbb5326ea9324586cfb6270fe65dc572 |
+| SpywareGuard 30-second passive observation | OBSERVED_WITH_GAPS 30.094s; 65a957fc5ff7d73e7ced9ae34b64b51f53ba6108b9b6d75fb4c72417c64fe58e |
+| Scanner 30-second passive observation | OBSERVED 30.172s / 31 heartbeats; 840e5f87acecaec74b56ca8f8dfbcaa34f97953e3144f3c421906252f0b09fec |
+| All15/600-second passive observation | OBSERVED_WITH_GAPS 600.312s / 1933 heartbeats / 369 events / 17 retained interval gap strings across nine modules; 42bc0a86bc8f3746c87aa82de109728e1a429c1294a7d7453da3bf22899c685f |
+| Fresh final-source offline checks | REQUIRED after final documentation: fresh offline checks under root approval |
+| Guarded canonical publication | REQUIRED after a reviewed completed commit: the unchanged canonical guarded publisher |
+
+The fresh isolated selfcheck completed in 32.609 s: 29 phases PASS / 0 failed.
+Its 86-module inventory has 87 rows: 68 module PASS plus Event pipeline PASS
+(69 total PASS) and 18 module SKIP. Four required product origins were loaded;
+five configured optional components were not loaded, including beacon
+(analysis_worker, ai_consult, ai_consult_dialog, ai_security_broker, spyware_beacon).
+These are explicit gaps, not all 86-active or production-efficacy proof. Root
+review 0167976c26da936ba8767765f306c8676141bb38e3a81c537ca15a0ada7eb91e confirms exactly two outer native-zero/WAIT0 generations,
+four closed handles, MainThread/noQApp and fresh source87ac stability.
+
+No older selfcheck/observation/publication receipt is reused. Final source review,
+fresh offline checks and guarded publication require their own reviewed receipts.
+[SpywareGuard](../../docs/spyware-guard.md), [AI-aware defense](../../docs/ai-aware-defense.md)
+and the [interaction map](interaction-map.md) record current behavior and limits.
+
+## Historical broker / benchmark checkpoint
+
+
 Current maintenance review: **SEC-17 broker authority lifetime** (LOW library/API
 only) and **PER-16 benchmark fixture integrity**. Applied reviewed repairs
 refresh authority after waits and bind measurement to the actual typed synthetic

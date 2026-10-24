@@ -7,6 +7,39 @@ of attacks against ordinary identity, software, network and human boundaries.
 This guide separates current controls from work that still needs implementation
 or independent deployment.
 
+## Current evidence-review repair
+
+SEC-18 is a LOW review-binding finding: consent for a displayed literal must
+not approve a later report, refreshed timestamp or another source's copy. Frozen
+IndicatorReviewIdentity records normalized kind/value/source/SHA-256, observation
+and expiry, CSPRNG store session/revision; module session and lifecycle generation
+bind the queued review. Compare and assign under store→module lock order; release
+locks before callbacks/publication. Same-byte refresh creates new evidence rather
+than extending approval. Expiry, source removal, restart or a duplicate source
+requires review again. Exact-receipt revocation cannot remove a different newer
+approval. Dedup carries the receipt; detached JSON snapshots keep their 500-row cap.
+
+A receipt is runtime evidence, not a signature or independently administered trust
+anchor. Imported narratives and model outputs confer no response authority.
+Exact-target contracts, provenance, standing policy and OS permissions remain
+separate. Malicious same-process/admin/kernel control and shared-host reviewer
+independence limits remain; this does not recall already admitted host actions.
+
+The actual R4 gate passed 971 of 973 cases across 34 suites/491 function occurrences,
+with zero failures/errors and two exact Windows availability skips (8.3 alias and
+symlinks). Acceptance is complete; coverage is not. Receipt 78b36785802635147855f0cbc8ce1cba88cc35b483c0ebfb319547b97b773f29; root
+review 92d47b23cce1e400fa4b3dcf6df00c26f6ee0c88eafc3c51eb982d7644d7797c. All 75 privacy cases and 7 named nested regressions, including
+5 native beacon scenarios, passed in-test ownership/retirement checks. Independent
+outer native attestation stays exactly 2 generations, not every nested child.
+
+Preserve R2/R3 failures and precollection refusal. R3 nested proof was missing;
+its exact historical cleanup API cause remains UNKNOWN despite a later passing
+combined repair. The three fresh serial observations completed with explicit gaps. Fresh
+offline checks and unchanged guarded publication remain mandatory completion
+gates; see the [current evidence table](../analysis/live-debug-2026-10-22/README.md).
+This is 1.14 maintenance; broader 1.15 remains incomplete. No clean-host, perfect
+redaction, deployed all-module efficacy or measured product speed is established.
+
 ## Defend the decisions an attacker wants to change
 
 The highest-value targets are response authority, signing and update trust,

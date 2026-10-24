@@ -47,8 +47,8 @@ class FakeModule:
         self.calls.append(("url", url))
         return True
 
-    def review_indicator(self, kind, value, approved=True):
-        self.calls.append(("review", kind, value, approved))
+    def review_indicator(self, kind, value, approved=True, *, expected=None):
+        self.calls.append(("review", kind, value, approved, copy.deepcopy(expected)))
         return True
 
     def run_sandbox(self, scenario):
@@ -163,22 +163,48 @@ def test_recent_evidence_is_bounded_plaintext_and_selection_is_stable():
 def test_indicator_review_uses_selected_exact_value_and_source_provenance():
     page, module = make_page(show=True)
     try:
+        selected = {"session": "a" * 32, "generation": 0, "candidate": {
+            "kind": "domain", "value": "example.invalid", "source": "https://z.example/report",
+            "source_sha256": "b" * 64, "observed_at": 100.0, "expires_at": 200.0,
+            "store_session": "c" * 32, "revision": 2,
+        }}
+        earlier = copy.deepcopy(selected)
+        earlier["candidate"].update(source="https://a.example/report", source_sha256="d" * 64, revision=1)
         module.snapshot["indicators"] = [
             {"kind": "domain", "value": "example.invalid", "approved": False,
-             "source_url": "https://research.example/report"},
+             "source": "https://a.example/report", "review_identity": earlier},
+            {"kind": "domain", "value": "example.invalid", "approved": False,
+             "source": "https://z.example/report", "review_identity": selected},
         ]
         page.refresh()
         page.approve_button.click()
         assert module.calls == []
-        page.indicators_table.selectRow(0)
+        page.indicators_table.selectRow(1)
         page.approve_button.click()
         page.reject_button.click()
         assert module.calls == [
-            ("review", "domain", "example.invalid", True),
-            ("review", "domain", "example.invalid", False),
+            ("review", "domain", "example.invalid", True, selected),
+            ("review", "domain", "example.invalid", False, selected),
         ]
-        assert page.indicators_table.item(0, 3).text() == "https://research.example/report"
-        assert "review required" in page.indicators_table.item(0, 2).text()
+        assert page.indicators_table.item(1, 3).text() == "https://z.example/report"
+        assert "review required" in page.indicators_table.item(1, 2).text()
+    finally:
+        page.close()
+
+
+def test_indicator_review_without_bound_identity_is_explicitly_stale_and_never_queued():
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["indicators"] = [{"kind": "ip", "value": "8.8.8.8", "source": "legacy"}]
+        page.refresh()
+        page.indicators_table.selectRow(0)
+        page.approve_button.click()
+        assert not module.calls
+        assert "stale" in page.status.text().lower()
+        module.snapshot["indicator_review"] = {"state": "stale-review", "reason": "evidence-changed-or-expired"}
+        page.refresh()
+        assert "stale" in page.status.text().lower()
+        assert not module.calls
     finally:
         page.close()
 

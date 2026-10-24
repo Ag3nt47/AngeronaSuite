@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
-from dataclasses import replace
+from dataclasses import asdict, replace
 
 import pytest
 
@@ -106,6 +106,75 @@ def test_store_bounds_provenance_deduplication_and_expiry():
     assert not store.indicators(now=115)
 
 
+def review_identities(store, *, now=100):
+    with store.review_candidates(clock=lambda: now) as rows:
+        return {item.source: identity for item, identity in rows}
+
+
+def test_review_identity_tracks_exact_observation_and_session_without_implicit_renewal():
+    store = intel.ThreatIntelStore()
+    store.ingest("8.8.8.8", "selected", now=100)
+    original = review_identities(store)["selected"]
+    with pytest.raises(AttributeError):
+        original.revision = 999
+    store.ingest("1.1.1.1", "unrelated", now=100)
+    assert review_identities(store)["selected"] == original
+    store.ingest("8.8.8.8", "selected", now=100)
+    refreshed = review_identities(store)["selected"]
+    assert refreshed.source_sha256 == original.source_sha256
+    assert refreshed.observed_at == original.observed_at
+    assert refreshed.expires_at == original.expires_at
+    assert refreshed.revision != original.revision
+    other = intel.ThreatIntelStore()
+    other.ingest("8.8.8.8", "selected", now=100)
+    assert review_identities(other)["selected"].store_session != original.store_session
+    assert store.export_candidates(now=100)["active"] is False
+
+
+@pytest.mark.parametrize("field,value", [
+    ("kind", "shell"), ("value", "8.8.8.8/32"), ("source", ""),
+    ("source_sha256", "A" * 64), ("source_sha256", "bad"),
+    ("observed_at", True), ("observed_at", float("nan")),
+    ("expires_at", float("inf")), ("expires_at", float("-inf")),
+    ("expires_at", 99), ("revision", True), ("revision", 0),
+    ("store_session", "wrong-session-format"),
+])
+def test_review_identity_rejects_malformed_and_nonfinite_values(field, value):
+    store = intel.ThreatIntelStore()
+    store.ingest("8.8.8.8", "fixture", now=100)
+    raw = asdict(review_identities(store)["fixture"])
+    assert intel.parse_indicator_review_identity(raw) is not None
+    raw[field] = value
+    assert intel.parse_indicator_review_identity(raw) is None
+    assert intel.parse_indicator_review_identity({"source": "fixture"}) is None
+
+
+def test_source_refresh_removes_absent_revoked_and_expired_candidates_without_history_fallback():
+    store = intel.ThreatIntelStore()
+    store.ingest("8.8.8.8 1.1.1.1", "selected", now=100)
+    store.ingest("8.8.8.8", "other", now=100)
+    store.ingest({"type": "bundle", "objects": [
+        {"type": "indicator", "pattern_type": "stix", "revoked": True,
+         "pattern": "[ipv4-addr:value = '8.8.8.8']"},
+        {"type": "indicator", "pattern_type": "stix", "valid_until": "1970-01-01T00:01:00Z",
+         "pattern": "[ipv4-addr:value = '1.1.1.1']"},
+    ]}, "selected", now=100)
+    assert [item.source for item in store.lookup("ip", "8.8.8.8", now=100)] == ["other"]
+    assert not store.lookup("ip", "1.1.1.1", now=100)
+    assert set(review_identities(store)) == {"other"}
+    assert store.export_candidates(now=100)["active"] is False
+
+
+def test_malformed_reingestion_cannot_commit_new_candidate_identity():
+    store = intel.ThreatIntelStore()
+    store.ingest("8.8.8.8", "fixture", now=100)
+    original = review_identities(store)["fixture"]
+    with pytest.raises(ValueError, match="JSON"):
+        store.ingest("{invalid}", "fixture", now=100)
+    assert review_identities(store)["fixture"] == original
+    assert store.export_candidates(now=100)["active"] is False
+
+
 def test_persisted_candidates_roundtrip_and_failed_replace_preserves_memory_and_disk(tmp_path, monkeypatch):
     target = tmp_path / "intel.json"
     store = intel.ThreatIntelStore(target)
@@ -113,6 +182,8 @@ def test_persisted_candidates_roundtrip_and_failed_replace_preserves_memory_and_
     previous = target.read_bytes()
     loaded = intel.ThreatIntelStore(target)
     assert loaded.lookup("domain", "old.example", now=101)
+    original_identity = review_identities(store)["fixture"]
+    assert review_identities(loaded)["fixture"].store_session != original_identity.store_session
     def fail(*_args):
         raise PermissionError("simulated antivirus sharing lock")
     monkeypatch.setattr(intel, "replace_with_retry", fail)
@@ -120,6 +191,7 @@ def test_persisted_candidates_roundtrip_and_failed_replace_preserves_memory_and_
         store.ingest({"domains": ["new.example"]}, "fixture", now=102)
     assert target.read_bytes() == previous
     assert not store.lookup("domain", "new.example", now=103)
+    assert review_identities(store)["fixture"] == original_identity
     assert not list(tmp_path.glob(".spyware-intel-*"))
 
 

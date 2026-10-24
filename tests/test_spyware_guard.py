@@ -5,12 +5,13 @@ import hashlib
 import os
 import threading
 import time
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
 
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
-from angerona.core.spyware_intel import ThreatIntelStore
+from angerona.core.spyware_intel import Indicator, IndicatorReviewIdentity, ThreatIntelStore
 from angerona.modules.adversary_combat import AdversaryCombat
 from angerona.modules.spyware_guard import SpywareGuardModule
 from angerona.telemetry.sensors import ConnectionSnapshot, ProcessSnapshot
@@ -29,6 +30,11 @@ def make_module(**kwargs):
     bus.arm(BusAuthority(b"s" * 32))
     module.bind(bus)
     return module, bus
+
+
+def selected_review(module, *, source=None):
+    return next(row["review_identity"] for row in module.dashboard_snapshot()["indicators"]
+                if source is None or row["source"] == source)
 
 
 def test_single_local_rule_requests_exact_process_containment():
@@ -117,11 +123,12 @@ def test_candidate_intelligence_and_advisory_inputs_cannot_contain():
 def test_explicit_review_enables_literal_match_and_revoke_disables_it():
     module, bus = make_module()
     module._intel.ingest("8.8.8.8", "fixture", now=NOW)
-    assert module.review_indicator("ip", "8.8.8.8")
+    expected = selected_review(module)
+    assert module.review_indicator("ip", "8.8.8.8", expected=expected)
     module._process_commands()
     module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
     assert bus.recent(1)[0].details["response_contract"]["actions"] == ["block_remote_ip"]
-    assert module.review_indicator("ip", "8.8.8.8", approved=False)
+    assert module.review_indicator("ip", "8.8.8.8", approved=False, expected=expected)
     module._process_commands()
     assert not module.dashboard_snapshot()["indicators"][0]["approved"]
 
@@ -129,7 +136,7 @@ def test_explicit_review_enables_literal_match_and_revoke_disables_it():
 def test_changed_report_digest_requires_review_in_dashboard_and_live_match():
     module, bus = make_module()
     module._intel.ingest("8.8.8.8 first report", "fixture", now=NOW)
-    assert module.review_indicator("ip", "8.8.8.8")
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected_review(module))
     module._process_commands()
     module._intel.ingest("8.8.8.8 changed report", "fixture", now=NOW)
     assert not module.dashboard_snapshot()["indicators"][0]["approved"]
@@ -240,7 +247,9 @@ def test_executable_hash_budget_applies_to_retained_file(tmp_path, monkeypatch, 
         return original(target)
     monkeypatch.setattr(adversary_combat, "_PinnedFileMove", pin)
     module, _ = make_module()
-    module._approved[("sha256", "a" * 64)] = "b" * 64
+    module._intel.ingest("a" * 64, "hash-scan-fixture", now=NOW)
+    assert module.review_indicator("sha256", "a" * 64, expected=selected_review(module))
+    module._process_commands()
     matched = []
     monkeypatch.setattr(module, "_match_indicator", lambda record, kind, value, **_: matched.append(value))
     module._scan_hashes([{"exe": str(path), "pid": 45001, "create_time": NOW - 10}])
@@ -747,3 +756,257 @@ def test_stopped_owner_cannot_admit_a_fresh_authenticated_memory_response():
     assert event.details["response_eligible"] is False and event.details["response_authorized"] is False
     assert "response_contract" not in event.details
     assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == "partial"
+
+
+def test_review_binds_selected_later_source_and_revoke_cannot_remove_another_receipt():
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8 source A", "https://a.example/report", now=NOW)
+    module._intel.ingest("8.8.8.8 source Z", "https://z.example/report", now=NOW)
+    earlier = selected_review(module, source="https://a.example/report")
+    selected = selected_review(module, source="https://z.example/report")
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected)
+    module._process_commands()
+    rows = module.dashboard_snapshot()["indicators"]
+    assert [(row["source"], row["approved"]) for row in rows] == [
+        ("https://a.example/report", False), ("https://z.example/report", True)]
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    event, = bus.recent(10)
+    assert event.details["evidence"]["source"] == "https://z.example/report"
+    assert event.details["evidence"]["source_sha256"] == selected["candidate"]["source_sha256"]
+    assert event.details["evidence"]["review_identity"] == selected
+    assert event.details["response_contract"]["targets"] == {"remote_ips": ["8.8.8.8"]}
+    assert module.review_indicator("ip", "8.8.8.8", approved=False, expected=earlier)
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    assert next(row for row in module.dashboard_snapshot()["indicators"]
+                if row["source"] == "https://z.example/report")["approved"]
+    assert module.review_indicator("ip", "8.8.8.8", approved=False, expected=selected)
+    module._process_commands()
+    assert not any(row["approved"] for row in module.dashboard_snapshot()["indicators"])
+
+
+@pytest.mark.parametrize("replacement", [
+    pytest.param("8.8.8.8 changed report", id="changed-bytes"),
+    pytest.param("8.8.8.8 original report", id="identical-bytes-no-renewal"),
+    pytest.param({"ips": []}, id="literal-removed"),
+    pytest.param({"type": "bundle", "objects": [{"type": "indicator", "pattern_type": "stix",
+        "pattern": "[ipv4-addr:value = '8.8.8.8']", "revoked": True}]}, id="literal-revoked"),
+])
+def test_queued_review_refuses_replaced_removed_or_revoked_evidence(replacement):
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8 original report", "fixture", now=NOW)
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected_review(module))
+    module._intel.ingest(replacement, "fixture", now=NOW)
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    assert not any(row["approved"] for row in module.dashboard_snapshot()["indicators"])
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+
+
+def test_expired_receipt_cannot_reactivate_after_same_bytes_are_ingested_again():
+    now = [NOW]
+    module, bus = make_module(clock=lambda: now[0])
+    module._intel.ingest("8.8.8.8", "fixture", now=now[0], ttl_seconds=1)
+    previous = selected_review(module)
+    assert module.review_indicator("ip", "8.8.8.8", expected=previous)
+    module._process_commands()
+    now[0] += 1
+    assert not module.dashboard_snapshot()["indicators"]
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+    now[0] += 1
+    module._intel.ingest("8.8.8.8", "fixture", now=now[0], ttl_seconds=1)
+    current = selected_review(module)
+    assert current["candidate"]["source_sha256"] == previous["candidate"]["source_sha256"]
+    assert current != previous
+    assert not module.dashboard_snapshot()["indicators"][0]["approved"]
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+    assert module.review_indicator("ip", "8.8.8.8", expected=previous)
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    assert module.review_indicator("ip", "8.8.8.8", expected=current)
+    module._process_commands()
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert bus.recent(1)[0].details["evidence"]["review_identity"] == current
+
+
+def test_unrelated_source_preserves_receipt_but_identical_refresh_never_renews_it():
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8", "selected", now=NOW)
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected_review(module))
+    module._process_commands()
+    module._intel.ingest("1.1.1.1", "unrelated", now=NOW)
+    assert next(row for row in module.dashboard_snapshot()["indicators"]
+                if row["source"] == "selected")["approved"]
+    module._intel.ingest("8.8.8.8", "selected", now=NOW)
+    assert not any(row["approved"] for row in module.dashboard_snapshot()["indicators"])
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+
+
+def test_review_queue_copies_evidence_values_without_retaining_ui_dictionary():
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8", "fixture", now=NOW)
+    selected = selected_review(module)
+    original = json.loads(json.dumps(selected))
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected)
+    selected["candidate"]["source"] = "changed-after-queue"
+    selected["candidate"]["source_sha256"] = "f" * 64
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicators"][0]["approved"]
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert bus.recent(1)[0].details["evidence"]["review_identity"] == original
+
+
+@pytest.mark.parametrize("bad", ["legacy", "unknown", "session", "boolean-generation",
+    "old-generation", "missing-candidate", "nonfinite-time", "boolean-revision", "object-source"])
+def test_legacy_or_malformed_review_never_grants_authority(bad):
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8", "fixture", now=NOW)
+    expected = selected_review(module)
+    if bad == "legacy":
+        expected = None
+    elif bad == "unknown":
+        expected["extra"] = True
+    elif bad == "session":
+        expected["session"] = "f" * 32
+    elif bad == "boolean-generation":
+        expected["generation"] = True
+    elif bad == "old-generation":
+        expected["generation"] -= 1
+    elif bad == "missing-candidate":
+        expected["candidate"].pop("source_sha256")
+    elif bad == "nonfinite-time":
+        expected["candidate"]["expires_at"] = float("nan")
+    elif bad == "boolean-revision":
+        expected["candidate"]["revision"] = True
+    else:
+        class Uncopyable:
+            def __str__(self):
+                raise AssertionError("untrusted object was converted")
+            def __deepcopy__(self, memo):
+                raise AssertionError("untrusted object was copied")
+        expected["candidate"]["source"] = Uncopyable()
+    assert not module.review_indicator("ip", "8.8.8.8", expected=expected)
+    assert module._commands.empty()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+
+
+def test_queued_legacy_and_retired_generation_reviews_are_explicitly_stale():
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8", "fixture", now=NOW)
+    assert module._enqueue("review", ("ip", "8.8.8.8", True))
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected_review(module))
+    module._lifecycle_generation += 1
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    assert not module.dashboard_snapshot()["indicators"][0]["approved"]
+    assert not bus.recent(10)
+
+
+@pytest.mark.parametrize("change", ["expiry", "store-session"])
+def test_queued_review_refuses_expiry_or_replaced_store_session(change):
+    now = [NOW]
+    module, bus = make_module(clock=lambda: now[0])
+    module._intel.ingest("8.8.8.8", "fixture", now=NOW, ttl_seconds=1)
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected_review(module))
+    if change == "expiry":
+        now[0] += 1
+    else:
+        module._intel = ThreatIntelStore()
+        module._intel.ingest("8.8.8.8", "fixture", now=NOW, ttl_seconds=1)
+    module._process_commands()
+    assert module.dashboard_snapshot()["indicator_review"]["state"] == "stale-review"
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+
+
+def test_review_compare_and_assignment_hold_store_before_module_lock(monkeypatch):
+    module, bus = make_module()
+    module._intel.ingest("8.8.8.8 original", "fixture", now=NOW)
+    assert module.review_indicator("ip", "8.8.8.8", expected=selected_review(module))
+    active = threading.local()
+    boundary, release, writer_started = threading.Event(), threading.Event(), threading.Event()
+    lock_order, failures = [], []
+    original_candidates = module._intel.review_candidates
+    original_module_lock = module._lock
+
+    @contextmanager
+    def tracked_candidates(*args, **kwargs):
+        with original_candidates(*args, **kwargs) as rows:
+            active.store_held = True
+            try:
+                yield rows
+            finally:
+                active.store_held = False
+
+    class ReviewBoundaryLock:
+        intercepted = False
+        def __enter__(self):
+            if threading.current_thread() is reviewer and not self.intercepted:
+                self.intercepted = True
+                lock_order.append(getattr(active, "store_held", False))
+                boundary.set()
+                if not release.wait(5):
+                    raise AssertionError("test did not release the review boundary")
+            return original_module_lock.__enter__()
+        def __exit__(self, *args):
+            return original_module_lock.__exit__(*args)
+
+    def refresh():
+        writer_started.set()
+        try:
+            module._intel.ingest("8.8.8.8 replacement", "fixture", now=NOW)
+        except Exception as exc:
+            failures.append(exc)
+
+    monkeypatch.setattr(module._intel, "review_candidates", tracked_candidates)
+    monkeypatch.setattr(module, "_lock", ReviewBoundaryLock())
+    reviewer = threading.Thread(target=module._process_commands, daemon=True)
+    writer = threading.Thread(target=refresh, daemon=True)
+    reviewer.start()
+    try:
+        assert boundary.wait(5)
+        writer.start()
+        assert writer_started.wait(5)
+    finally:
+        release.set()
+        reviewer.join(5)
+        if writer.ident is not None:
+            writer.join(5)
+    assert not reviewer.is_alive() and not writer.is_alive()
+    assert lock_order == [True] and not failures
+    assert not module.dashboard_snapshot()["indicators"][0]["approved"]
+    module._match_indicator({"remote_ip": "8.8.8.8"}, "ip", "8.8.8.8", local_authority=True)
+    assert not bus.recent(10)
+
+
+def test_dashboard_serializes_only_first_500_fresh_indicator_rows(monkeypatch):
+    from angerona.modules import spyware_guard
+    module, _ = make_module()
+    module._intel.ingest({"domains": [f"host-{index}.example" for index in range(650)]},
+                         "bounded-dashboard-fixture", now=NOW)
+    original_asdict = spyware_guard.asdict
+    converted_items, converted_identities = [], []
+
+    def counted_asdict(value):
+        if type(value) is Indicator:
+            converted_items.append(value.value)
+        elif type(value) is IndicatorReviewIdentity:
+            converted_identities.append(value.value)
+        return original_asdict(value)
+
+    monkeypatch.setattr(spyware_guard, "asdict", counted_asdict)
+    rows = module.dashboard_snapshot()["indicators"]
+    expected = [item.value for item in module._intel.indicators(now=NOW)[:500]]
+    assert len(rows) == 500
+    assert [row["value"] for row in rows] == expected
+    assert converted_items == expected
+    assert converted_identities == expected
+    assert not any(row["approved"] for row in rows)

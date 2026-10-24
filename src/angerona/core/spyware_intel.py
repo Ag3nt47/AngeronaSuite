@@ -27,12 +27,14 @@ import math
 import os
 import queue
 import re
+import secrets
 import socket
 import ssl
 import stat
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from html.parser import HTMLParser
@@ -91,6 +93,45 @@ class Indicator:
     def fresh(self, now: float | None = None) -> bool:
         timestamp = time.time() if now is None else _timestamp(now)
         return self.observed_at <= timestamp < self.expires_at
+
+
+@dataclass(frozen=True)
+class IndicatorReviewIdentity:
+    """In-memory evidence identity; refresh never renews an approval."""
+    kind: str
+    value: str
+    source: str
+    source_sha256: str
+    observed_at: float
+    expires_at: float
+    store_session: str
+    revision: int
+
+    def __post_init__(self):
+        if (type(self.kind) is not str or type(self.value) is not str
+                or normalize_indicator(self.kind, self.value) != self.value
+                or type(self.source) is not str or not 1 <= len(self.source) <= 4096
+                or type(self.source_sha256) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", self.source_sha256) is None
+                or type(self.observed_at) not in (int, float)
+                or type(self.expires_at) not in (int, float)
+                or not 0 < _timestamp(self.expires_at) - _timestamp(self.observed_at) <= _MAX_TTL
+                or type(self.store_session) is not str
+                or re.fullmatch(r"[0-9a-f]{32}", self.store_session) is None
+                or type(self.revision) is not int or self.revision < 1):
+            raise ValueError("invalid indicator review identity")
+
+
+def parse_indicator_review_identity(value) -> IndicatorReviewIdentity | None:
+    fields = {"kind", "value", "source", "source_sha256", "observed_at", "expires_at",
+              "store_session", "revision"}
+    if (type(value) is not dict or any(type(key) is not str for key in value)
+            or set(value) != fields):
+        return None
+    try:
+        return IndicatorReviewIdentity(**value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -570,10 +611,15 @@ class ThreatIntelStore:
         self.max_indicators = max_indicators
         self.network_enabled = network_enabled is True
         self._lock = threading.RLock()
+        self._review_session = secrets.token_hex(16)
+        self._review_revision = 0
+        self._item_revisions: dict[tuple[str, str, str], int] = {}
         self._items: dict[tuple[str, str, str], Indicator] = {}
         self._vulnerabilities: dict[tuple[str, str], Vulnerability] = {}
         if self.path is not None and self.path.exists():
             self._load()
+            self._review_revision = 1
+            self._item_revisions = {key: 1 for key in self._items}
 
     def _check_path(self):
         for part in (self.path, *self.path.parents):
@@ -647,11 +693,14 @@ class ThreatIntelStore:
         timestamp = time.time() if now is None else _timestamp(now)
         parsed = parse_threat_report(payload, source, format=format, now=timestamp,
                                     ttl_seconds=ttl_seconds, max_items=self.max_indicators)
-        return self._merge_result(parsed, timestamp)
+        return self._merge_result(parsed, timestamp, source=_text(source, 4096))
 
-    def _merge_result(self, parsed: ParseResult, timestamp: float) -> ParseResult:
+    def _merge_result(self, parsed: ParseResult, timestamp: float, *, source: str) -> ParseResult:
         with self._lock:
-            items = {key: item for key, item in self._items.items() if item.fresh(timestamp)}
+            # A successful report replaces that source's previous observation,
+            # including literals now absent/revoked. Failed parsing changes nothing.
+            items = {key: item for key, item in self._items.items()
+                     if item.source != source and item.fresh(timestamp)}
             vulnerabilities = {key: item for key, item in self._vulnerabilities.items() if item.observed_at <= timestamp < item.expires_at}
             for item in parsed.indicators:
                 items[(item.kind, item.value, item.source)] = item
@@ -663,9 +712,31 @@ class ThreatIntelStore:
                               key=lambda row: (row[0], str(row[1])), reverse=True)[:self.max_indicators]
             items = {key: item for _when, key, item, is_vuln in combined if not is_vuln}
             vulnerabilities = {key: item for _when, key, item, is_vuln in combined if is_vuln}
+            revision = self._review_revision + 1
+            refreshed = {(item.kind, item.value, item.source) for item in parsed.indicators}
+            revisions = {key: revision if key in refreshed else self._item_revisions[key]
+                         for key in items}
             self._persist(items, vulnerabilities)
             self._items, self._vulnerabilities = items, vulnerabilities
+            self._item_revisions, self._review_revision = revisions, revision
         return parsed
+
+    @contextmanager
+    def review_candidates(self, kind=None, value=None, *, clock=time.time):
+        """Hold candidate replacement stable; acquire this before a module lock.
+
+        Callers must release both locks before callbacks, network or publication.
+        Identities are runtime-only; loading a cache starts a new store session.
+        """
+        normalized = normalize_indicator(kind, value) if kind is not None else None
+        with self._lock:
+            timestamp = _timestamp(clock())
+            yield tuple((item, IndicatorReviewIdentity(
+                item.kind, item.value, item.source, item.source_sha256,
+                item.observed_at, item.expires_at, self._review_session, self._item_revisions[key],
+            )) for key, item in sorted(self._items.items())
+                if item.fresh(timestamp) and (kind is None or
+                    (item.kind == kind and item.value == normalized)))
 
     def indicators(self, *, now=None) -> tuple[Indicator, ...]:
         timestamp = time.time() if now is None else _timestamp(now)
@@ -695,7 +766,7 @@ class ThreatIntelStore:
     def refresh_url(self, url: str, *, now=None, timeout=15.0) -> ParseResult:
         timestamp = time.time() if now is None else _timestamp(now)
         parsed = fetch_report_url(url, network_enabled=self.network_enabled, now=timestamp, timeout=timeout)
-        return self._merge_result(parsed, timestamp)
+        return self._merge_result(parsed, timestamp, source=_text(url, 4096))
 
     def export_candidates(self, *, now=None) -> dict:
         return export_candidate_rules(self.indicators(now=now), now=now)

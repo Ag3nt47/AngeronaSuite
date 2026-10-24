@@ -205,6 +205,11 @@ class EmergencyBeacon:
         self._last_state = "disabled" if not _authorized(config) else "ready"
         self._last_reason = ""
         self._watch_process = None
+        self._watch_ready_reader = None
+        self._watch_retire_thread = None
+        self._watch_retire_result = None
+        self._watch_restart = False
+        self._watch_graceful_admitted = False
         self._watch_key = b""
         self._watch_run = ""
         self._watch_seq = 0
@@ -347,6 +352,7 @@ class EmergencyBeacon:
             return dict(self._last_snapshot, refreshing=True,
                         enabled=getattr(self.config, "spyware_beacon_enabled", False) is True)
         try:
+            self._harvest_watchdog()
             result = {"enabled": getattr(self.config, "spyware_beacon_enabled", False) is True,
                     "channel_configured": _channel_enabled(self.config),
                     "signal_configured": _signal_enabled(self.config),
@@ -372,12 +378,112 @@ class EmergencyBeacon:
             self._watch_state = "unavailable"
             return False
 
+    def _harvest_watchdog(self) -> None:
+        """Inspect completed cleanup without joining or blocking the caller."""
+        worker = self._watch_retire_thread
+        result = self._watch_retire_result
+        if worker is None or worker.is_alive() or result is None:
+            return
+        self._watch_retire_thread = None
+        self._watch_retire_result = None
+        if result[0] and self._watch_process is result[2]:
+            self._watch_process = None
+            self._watch_ready_reader = None
+            self._watch_key = b""
+            self._watch_config = {}
+            self._watch_graceful_admitted = False
+            self._watch_state = result[1]
+        else:
+            # Preserve the original process and reader for a later explicit
+            # close/retry. An expired wait is not an exit or closure receipt.
+            self._watch_state = "unavailable: watcher cleanup unresolved"
+
+    def _retire_watchdog(self, process, frame: bytes | None, reader,
+                         final_state: str) -> None:
+        complete = False
+        state = final_state
+        try:
+            if frame is not None and process.stdin is not None:
+                try:
+                    process.stdin.write(frame)
+                    process.stdin.flush()
+                except Exception:
+                    pass
+            if process.stdin is not None:
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    # Buffered close may report failed delivery after the
+                    # write end closed. Retirement still requires proof below.
+                    if not process.stdin.closed:
+                        raise
+            code = process.wait(timeout=5.0)
+            if type(code) is not int or process.poll() != code:
+                raise OSError("watcher exit remains unverified")
+            if reader is not None and reader.is_alive():
+                reader.join(timeout=0.5)
+            if reader is not None and reader.is_alive():
+                raise OSError("watcher READY reader is still active")
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None and not stream.closed:
+                    stream.close()
+                if stream is not None and not stream.closed:
+                    raise OSError("watcher stream closure unresolved")
+            if os.name == "nt":
+                # CPython's retained Popen handle, never a reopened PID.
+                handle = getattr(process, "_handle", None)
+                if handle is None or not callable(getattr(handle, "Close", None)):
+                    raise OSError("watcher process handle closure unavailable")
+                if not handle.closed:
+                    handle.Close()
+                if not handle.closed:
+                    raise OSError("watcher process handle closure unresolved")
+            if code != 0 and final_state == "stopped":
+                state = "stopped unexpectedly"
+            complete = True
+        except Exception:
+            state = "unavailable: watcher cleanup unresolved"
+        finally:
+            with self._lock:
+                self._watch_retire_result = (complete, state, process)
+
+    def _begin_watch_retirement(self, *, send_stop: bool,
+                                final_state: str = "stopped") -> None:
+        self._harvest_watchdog()
+        if self._watch_process is None or self._watch_retire_thread is not None:
+            return
+        frame = None
+        if send_stop:
+            self._watch_graceful_admitted = True
+            self._watch_seq += 1
+            frame = _canonical(_wrap({"run": self._watch_run,
+                "seq": self._watch_seq, "kind": "stop"}, self._watch_key)) + b"\n"
+        process = self._watch_process
+        self._watch_retire_result = None
+        self._watch_state = "stopping"
+        try:
+            worker = threading.Thread(target=self._retire_watchdog,
+                args=(process, frame, self._watch_ready_reader, final_state),
+                name="SpywareBeacon-retire", daemon=True)
+            self._watch_retire_thread = worker
+            worker.start()
+        except Exception:
+            self._watch_retire_thread = None
+            self._watch_state = "unavailable: watcher cleanup not started"
+
     def start_watchdog(self) -> bool:
         with self._lock:
+            self._harvest_watchdog()
             if self._closed or not _authorized(self.config):
                 return False
-            if self._watch_process is not None and self._watch_process.poll() is None:
-                return True
+            if self._watch_process is not None:
+                if self._watch_state == "running" and self._watch_process.poll() is None:
+                    return True
+                if self._watch_retire_thread is None:
+                    self._begin_watch_retirement(send_stop=False,
+                        final_state="stopped unexpectedly")
+                return False
+            self._watch_restart = False
             process = None
             try:
                 import psutil
@@ -391,8 +497,6 @@ class EmergencyBeacon:
                     raise ValueError("protected destination authorization unavailable")
                 if _path_traverses_reparse(settings.parent):
                     raise ValueError("unsafe data directory")
-                # Existing custody helper establishes a private per-user
-                # boundary before launch. No secrets or files are stored here.
                 private_directory(settings.parent / "spyware-beacon")
                 birth = psutil.Process(os.getpid()).create_time()
                 self._watch_key = secrets.token_bytes(32)
@@ -418,6 +522,7 @@ class EmergencyBeacon:
                 process = subprocess.Popen(command, **kwargs)
                 self._watch_process = process
                 self._watch_config = config
+                self._watch_ready_reader = None
                 startup = {"version": 1, "run": self._watch_run, "key": self._watch_key.hex(),
                            "pid": os.getpid(), "birth": birth,
                            "settings": str(settings), "config": config}
@@ -431,10 +536,14 @@ class EmergencyBeacon:
                 ready: queue.Queue = queue.Queue(maxsize=1)
                 def read_ready():
                     try:
-                        ready.put(process.stdout.readline(32))
+                        raw = process.stdout.readline(32)
                     except Exception:
-                        ready.put(b"")
-                threading.Thread(target=read_ready, daemon=True).start()
+                        raw = b""
+                    ready.put_nowait(raw)
+                reader = threading.Thread(target=read_ready,
+                    name="SpywareBeacon-ready", daemon=True)
+                self._watch_ready_reader = reader
+                reader.start()
                 if ready.get(timeout=5.0).strip() != b"READY":
                     raise OSError("watcher did not verify its bootstrap")
                 process.stdout.close()
@@ -443,33 +552,48 @@ class EmergencyBeacon:
             except Exception:
                 self._watch_state = "unavailable: protected settings or process identity required"
                 if process is not None:
-                    self._watch_write("stop")
-                    try:
-                        process.stdin.close()
-                    except Exception:
-                        pass
+                    self._begin_watch_retirement(send_stop=True,
+                        final_state=self._watch_state)
                 return False
 
     def heartbeat(self) -> None:
         with self._lock:
+            self._harvest_watchdog()
             if self._watch_process is None:
+                if self._watch_restart and not self._closed and _authorized(self.config):
+                    self.start_watchdog()
+                return
+            if self._watch_retire_thread is not None:
                 return
             if (not _authorized(self.config)
                     or _config_snapshot(self.config) != self._watch_config):
                 self._stop_watchdog(graceful=True)
-                if not self._closed and _authorized(self.config):
-                    self.start_watchdog()
+                self._watch_restart = not self._closed and _authorized(self.config)
                 return
             if self._watch_process.poll() is not None:
-                self._watch_state = "stopped unexpectedly"
+                self._begin_watch_retirement(send_stop=False,
+                    final_state="stopped unexpectedly")
                 return
-            self._watch_write("heartbeat")
+            if not self._watch_graceful_admitted:
+                self._watch_write("heartbeat")
 
     def _stop_watchdog(self, *, graceful: bool) -> None:
+        """Schedule graceful retirement; intentional detach is not retirement.
+
+        Once graceful cleanup is admitted, a later detach cannot unsend its
+        stop frame. Keep that worker/process owned in stopping/unavailable
+        state instead of dropping references or claiming emergency semantics.
+        """
+        self._harvest_watchdog()
+        self._watch_restart = False
+        if graceful:
+            self._begin_watch_retirement(send_stop=True)
+            return
+        if (self._watch_retire_thread is not None
+                or self._watch_graceful_admitted and self._watch_process is not None):
+            return
         process = self._watch_process
         if process is not None:
-            if graceful:
-                self._watch_write("stop")
             try:
                 process.stdin.close()
             except Exception:
@@ -477,7 +601,7 @@ class EmergencyBeacon:
         self._watch_process = None
         self._watch_key = b""
         self._watch_config = {}
-        self._watch_state = "stopped" if graceful else "detached"
+        self._watch_state = "detached"
 
     def close(self, graceful: bool = True) -> None:
         with self._lock:

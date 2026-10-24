@@ -249,8 +249,10 @@ class LsassGuardModule(BaseModule):
                         unreadable += 1
                         continue
                     readable += 1
+                    if identity in self._alerted:
+                        continue
                     reason = _looks_like_lsass_dump(cmd)
-                    if reason and identity not in self._alerted:
+                    if reason:
                         self._alerted.add(identity)
                         self._detections += 1
                         pid = identity[0]

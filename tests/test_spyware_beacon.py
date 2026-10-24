@@ -232,7 +232,10 @@ def test_pipe_eof_from_live_parent_still_sends_one_bounded_heartbeat_alert(monke
     assert waits == [1.0, 1.0, beacon._EOF_EXIT_GRACE]
 
 
-@pytest.mark.parametrize("raw", [b"", b"not-json\n", b"x" * (beacon._MAX_WIRE + 1)])
+@pytest.mark.parametrize(
+    "raw", [b"", b"not-json\n", b"x" * (beacon._MAX_WIRE + 1)],
+    ids=["empty-input", "malformed-json", "oversized-frame"],
+)
 def test_unauthenticated_or_invalid_state_never_sends(raw):
     result, sent = run_watch(raw)
     assert result in {"unauthenticated_state", "invalid_state"} and not sent
@@ -316,69 +319,22 @@ def _private_settings(tmp_path, cfg):
 
 @pytest.fixture
 def independent_watcher(tmp_path):
-    """Real independent processes, fake file-only sender, no egress path."""
+    """Two directly retained physical-interpreter children; file-only sender."""
+    from beacon_native_fixture import BeaconCase
     pytest.importorskip("psutil")
     cfg = config()
     settings = _private_settings(tmp_path, cfg)
     output = settings.parent / "fake-beacon.json"
-    source = str(Path(beacon.__file__).resolve().parents[2])
-    watcher_code = (
-        "import sys,json;from pathlib import Path;"
-        f"sys.path.insert(0,{source!r});"
-        "from angerona.core.spyware_beacon import _watch_loop;"
-        "initial=json.loads(sys.stdin.buffer.readline());"
-        f"sink=Path({str(output)!r});"
-        "_watch_loop(sys.stdin.buffer,initial,"
-        "sender=lambda event:sink.write_text(json.dumps(event)),"
-        "destination_probe=lambda *_:True,"
-        "on_ready=lambda:print('READY',flush=True),"
-        "heartbeat_timeout=2.0,poll_seconds=0.02)"
-    )
-    parent_code = (
-        "import sys,os,json,time,subprocess,psutil;"
-        f"sys.path.insert(0,{source!r});"
-        "from angerona.core.spyware_beacon import _wrap,_canonical;"
-        f"initial={startup()!r};"
-        f"initial['settings']={str(settings)!r};"
-        "initial['pid']=os.getpid();initial['birth']=psutil.Process().create_time();"
-        f"child=subprocess.Popen([sys.executable,'-I','-c',{watcher_code!r}],"
-        "stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,close_fds=True);"
-        "child.stdin.write(_canonical(initial)+bytes([10]));"
-        "message={'run':initial['run'],'seq':1,'kind':'heartbeat'};"
-        "child.stdin.write(_canonical(_wrap(message,bytes.fromhex(initial['key'])))+bytes([10]));"
-        "child.stdin.flush();ready=child.stdout.readline();"
-        "print(json.dumps({'pid':child.pid,'engine_pid':os.getpid(),'ready':ready.decode().strip()}),flush=True);"
-        "command=sys.stdin.buffer.readline();"
-        "message['seq']=2;message['kind']='stop';"
-        "child.stdin.write(_canonical(_wrap(message,bytes.fromhex(initial['key'])))+bytes([10]));"
-        "child.stdin.flush();child.stdin.close();child.wait(timeout=5)"
-    )
-    parent = subprocess.Popen([sys.executable, "-I", "-c", parent_code], stdin=subprocess.PIPE,
-                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True)
-    lines = queue.Queue()
-    threading.Thread(target=lambda: lines.put(parent.stdout.readline()), daemon=True).start()
-    watcher_pid = None
+    initial = startup()
+    initial["settings"] = str(settings)
+    case = None
     try:
-        raw = lines.get(timeout=8)
-        if not raw:
-            pytest.fail("fixture parent failed: " + parent.stderr.read(4000).decode())
-        info = json.loads(raw)
-        watcher_pid = info["pid"]
-        assert info["ready"] == "READY"
-        yield parent, watcher_pid, settings, output, info["engine_pid"]
+        case = BeaconCase(beacon, initial, output, settings.parent / "engine-ready.json")
+        case.start()
+        yield case, settings, output
     finally:
-        if parent.poll() is None:
-            parent.kill()
-        parent.wait(timeout=5)
-        if watcher_pid:
-            import psutil
-            try:
-                child = psutil.Process(watcher_pid)
-                child.wait(timeout=4)
-            except psutil.NoSuchProcess:
-                pass
-            except psutil.TimeoutExpired:
-                child.kill()
+        if case is not None:
+            case.close()
 
 
 def _wait_for(predicate, seconds=5):
@@ -390,56 +346,51 @@ def _wait_for(predicate, seconds=5):
     assert predicate(), "bounded subprocess condition did not occur"
 
 
-def _watcher_exited(pid):
-    import psutil
-    try:
-        # On POSIX the fixture engine still owns this child and may not have
-        # reaped it yet. A zombie has terminated and cannot retain stdin locks.
-        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return True
+def _watcher_result(case, reason):
+    deadline = time.monotonic() + 5.0
+    assert case.watcher.wait(deadline) == 0
+    assert case.watcher.next_frame(deadline) == {"result": reason, "reader_retired": True}
 
 
 def test_independent_watcher_survives_exact_parent_exit(independent_watcher):
-    import psutil
-    parent, _pid, _settings, output, engine_pid = independent_watcher
-    psutil.Process(engine_pid).kill()
-    parent.wait(timeout=5)
+    case, _settings, output = independent_watcher
+    case.engine.process.kill()
+    case.engine.wait(time.monotonic() + 5.0)
     _wait_for(output.exists)
     event = json.loads(output.read_text())
-    assert event == {"rule_code": "SPYWARE_ENGINE_EXIT", "severity": "CRITICAL", "pid": engine_pid}
+    assert event == {"rule_code": "SPYWARE_ENGINE_EXIT", "severity": "CRITICAL", "pid": case.engine_pid}
+    _watcher_result(case, "SPYWARE_ENGINE_EXIT")
 
 
 def test_independent_watcher_reports_stalled_heartbeat(independent_watcher):
-    parent, _pid, _settings, output, _engine_pid = independent_watcher
+    case, _settings, output = independent_watcher
     _wait_for(output.exists)
-    assert parent.poll() is None
+    assert case.engine.process.poll() is None
     assert json.loads(output.read_text())["rule_code"] == "SPYWARE_HEARTBEAT_LOST"
-    _wait_for(lambda: _watcher_exited(_pid))
-    assert parent.poll() is None
+    _watcher_result(case, "SPYWARE_HEARTBEAT_LOST")
+    assert case.engine.process.poll() is None
 
 
 def test_independent_watcher_normal_stop_never_sends(independent_watcher):
-    parent, _pid, _settings, output, _engine_pid = independent_watcher
-    parent.stdin.write(b"stop\n")
-    parent.stdin.flush()
-    assert parent.wait(timeout=5) == 0
+    case, _settings, output = independent_watcher
+    case.normal_stop()
     assert not output.exists()
 
 
 def test_independent_watcher_honors_saved_disable_before_parent_death(independent_watcher):
-    parent, watcher_pid, settings, output, _engine_pid = independent_watcher
+    case, settings, output = independent_watcher
     saved = json.loads(settings.read_text())
     saved["spyware_beacon_enabled"] = False
     settings.write_text(json.dumps(saved))
-    _wait_for(lambda: _watcher_exited(watcher_pid))
-    parent.kill()
-    parent.wait(timeout=5)
+    _watcher_result(case, "authorization_revoked")
+    case.engine.process.kill()
+    case.engine.wait(time.monotonic() + 5.0)
     assert not output.exists()
 
 
-def test_production_watchdog_launch_and_graceful_stop(tmp_path):
-    # Signal CLI does not exist, so even a regression cannot send a live message.
+def test_production_watchdog_launch_and_graceful_stop(tmp_path, monkeypatch):
+    from beacon_native_fixture import OwnedChildren
+    # A missing Signal binary precludes a live notification even on failure.
     cfg = config(spyware_beacon_channel=False, spyware_beacon_signal=True,
                  aria_push_enabled=False, mobile_enabled=True,
                  mobile_signal_cli=str(tmp_path / "DOES_NOT_EXIST_signal_cli.exe"),
@@ -447,12 +398,481 @@ def test_production_watchdog_launch_and_graceful_stop(tmp_path):
     settings = _private_settings(tmp_path, cfg)
     cfg.data_dir = settings.parent
     instance = beacon.EmergencyBeacon(cfg)
-    assert instance.start_watchdog()
-    process = instance._watch_process
+    owners = None
     try:
+        owners = OwnedChildren(beacon)
+        monkeypatch.setattr(beacon, "sys", SimpleNamespace(
+            executable=owners.contract["image"]["path"], frozen=False))
+        monkeypatch.setattr(beacon, "subprocess", SimpleNamespace(
+            Popen=owners.production_launcher(settings.parent / "production-ready.json"),
+            PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+            CREATE_NO_WINDOW=getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+        # Launch assertion is inside cleanup, including pre-READY failures.
+        assert instance.start_watchdog()
         assert instance.snapshot()["watchdog"] == "running"
         instance.heartbeat()
     finally:
         instance.close(graceful=True)
-    assert process.wait(timeout=6) == 0
+        try:
+            def retired():
+                instance.snapshot()  # Nonblocking harvest; never join.
+                return instance._watch_process is None and instance._watch_retire_thread is None
+            _wait_for(retired, seconds=6)
+        finally:
+            if owners is not None:
+                for child in owners.children:
+                    child.other_readers = [instance._watch_ready_reader, instance._watch_retire_thread]
+                owners.close()
     assert instance.snapshot()["watchdog"] == "stopped"
+    assert all(child.proof is not None for child in owners.children)
+    assert len(owners.physical_adaptations) == 1
+    assert owners.physical_adaptations[0]["unmodified_production_launcher"] is False
+
+
+class _WatchHandle:
+    def __init__(self):
+        self.closed = False
+        self.close_calls = 0
+
+    def Close(self):
+        self.close_calls += 1
+        self.closed = True
+
+
+class _WatchProcess:
+    def __init__(self, *, wait=None, ready=b"READY\n"):
+        self.stdin = io.BytesIO()
+        self.stdout = io.BytesIO(ready)
+        self.stderr = None
+        self.returncode = None
+        self._handle = _WatchHandle()
+        self.wait_calls = []
+        self._wait = wait
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, *, timeout):
+        self.wait_calls.append(timeout)
+        if self._wait is not None:
+            self._wait()
+        self.returncode = 0
+        return 0
+
+    def kill(self):
+        raise AssertionError("production cleanup must never force-kill")
+
+
+def _owned_instance(process):
+    instance = beacon.EmergencyBeacon(config())
+    instance._watch_process = process
+    instance._watch_key = b"x" * 32
+    instance._watch_run = "a" * 32
+    instance._watch_config = beacon._config_snapshot(instance.config)
+    instance._watch_state = "running"
+    return instance
+
+
+def _retirement_finished(instance):
+    instance.snapshot()
+    return instance._watch_retire_thread is None
+
+
+def test_graceful_cleanup_keeps_ownership_while_waiting_without_blocking_snapshot():
+    entered, release = threading.Event(), threading.Event()
+    def wait():
+        entered.set()
+        assert release.wait(2)
+    process = _WatchProcess(wait=wait)
+    instance = _owned_instance(process)
+    try:
+        before = time.monotonic()
+        instance.close(graceful=True)
+        assert time.monotonic() - before < 0.5
+        assert entered.wait(1)
+        assert instance.snapshot()["watchdog"] == "stopping"
+        assert instance._watch_process is process
+        assert instance.start_watchdog() is False
+        assert process.wait_calls == [5.0]
+    finally:
+        release.set()
+        _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance.snapshot()["watchdog"] == "stopped"
+    assert instance._watch_process is None
+    assert process.stdin.closed and process.stdout.closed
+    assert process._handle.close_calls == (1 if os.name == "nt" else 0)
+
+
+def test_expired_graceful_wait_keeps_original_child_and_can_retry():
+    def wait():
+        raise subprocess.TimeoutExpired("inert-owned-child", 5.0)
+    process = _WatchProcess(wait=wait)
+    instance = _owned_instance(process)
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is process
+    assert instance.snapshot()["watchdog"] == "unavailable: watcher cleanup unresolved"
+    assert not process.stdout.closed
+    assert instance.start_watchdog() is False
+    process._wait = None
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance.snapshot()["watchdog"] == "stopped"
+    assert process.wait_calls == [5.0, 5.0]
+
+
+def test_unretired_ready_reader_holds_ownership_and_stdout():
+    class Reader:
+        def __init__(self):
+            self.alive = True
+            self.joins = []
+        def is_alive(self):
+            return self.alive
+        def join(self, timeout):
+            self.joins.append(timeout)
+    reader = Reader()
+    process = _WatchProcess()
+    instance = _owned_instance(process)
+    instance._watch_ready_reader = reader
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is process
+    assert not process.stdout.closed
+    assert reader.joins == [0.5]
+    reader.alive = False
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is None
+
+
+def test_intentional_detach_never_waits_kills_or_sends_stop():
+    process = _WatchProcess()
+    instance = _owned_instance(process)
+    instance.close(graceful=False)
+    assert process.wait_calls == []
+    assert process.returncode is None
+    assert instance._watch_process is None
+    assert instance.snapshot()["watchdog"] == "detached"
+    assert process.stdin.closed
+    assert not process.stdout.closed
+    assert process._handle.close_calls == 0
+
+
+def test_detach_after_admitted_graceful_cleanup_does_not_discard_worker():
+    entered, release = threading.Event(), threading.Event()
+    def wait():
+        entered.set()
+        assert release.wait(2)
+    process = _WatchProcess(wait=wait)
+    instance = _owned_instance(process)
+    try:
+        instance.close(graceful=True)
+        assert entered.wait(1)
+        worker = instance._watch_retire_thread
+        instance.close(graceful=False)
+        assert instance._watch_process is process
+        assert instance._watch_retire_thread is worker
+        assert instance.snapshot()["watchdog"] == "stopping"
+        assert process.wait_calls == [5.0]
+    finally:
+        release.set()
+        _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance.snapshot()["watchdog"] == "stopped"
+
+
+@pytest.mark.parametrize("failure", ["construct", "start"])
+def test_cleanup_thread_setup_failure_keeps_ownership(monkeypatch, failure):
+    process = _WatchProcess()
+    instance = _owned_instance(process)
+    real_thread = threading.Thread
+    def thread(*args, **kwargs):
+        if failure == "construct":
+            raise RuntimeError("inert thread construction refusal")
+        result = real_thread(*args, **kwargs)
+        result.start = lambda: (_ for _ in ()).throw(RuntimeError("inert thread start refusal"))
+        return result
+    with monkeypatch.context() as scoped:
+        scoped.setattr(beacon, "threading", SimpleNamespace(Thread=thread))
+        instance.close(graceful=True)
+        assert instance.snapshot()["watchdog"] == "unavailable: watcher cleanup not started"
+        assert instance._watch_process is process
+        assert process.wait_calls == []
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is None
+
+
+@pytest.mark.parametrize("stream_name", ["stdin", "stdout"])
+def test_stream_close_failure_keeps_retirement_unresolved(stream_name):
+    class Broken(io.BytesIO):
+        fail = True
+        def close(self):
+            if self.fail:
+                raise OSError("inert close refusal")
+            return super().close()
+    process = _WatchProcess()
+    broken = Broken()
+    setattr(process, stream_name, broken)
+    instance = _owned_instance(process)
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is process
+    assert instance.snapshot()["watchdog"] == "unavailable: watcher cleanup unresolved"
+    broken.fail = False
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is None
+
+
+def _inert_launch(monkeypatch, tmp_path, popen):
+    from angerona.core import engine_transport, persistent_engine, secure_store
+    instance = beacon.EmergencyBeacon(config(data_dir=tmp_path))
+    monkeypatch.setattr(beacon, "_settings_authorized", lambda *_: True)
+    monkeypatch.setattr(beacon, "_stored_destination_current", lambda *_: True)
+    monkeypatch.setattr(secure_store, "_path_traverses_reparse", lambda *_: False)
+    monkeypatch.setattr(engine_transport, "private_directory", lambda path: path)
+    monkeypatch.setattr(persistent_engine, "_child_environment", lambda: {})
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
+        Process=lambda pid: SimpleNamespace(create_time=lambda: 100.0)))
+    monkeypatch.setattr(beacon, "subprocess", SimpleNamespace(Popen=popen,
+        PIPE=subprocess.PIPE, DEVNULL=subprocess.DEVNULL,
+        CREATE_NO_WINDOW=getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+    return instance
+
+
+def test_launch_failure_without_child_is_unavailable(tmp_path, monkeypatch):
+    def refuse(*_args, **_kwargs):
+        raise OSError("inert child launch refusal")
+    instance = _inert_launch(monkeypatch, tmp_path, refuse)
+    assert instance.start_watchdog() is False
+    assert instance._watch_process is None
+    assert instance._watch_retire_thread is None
+    assert instance.snapshot()["watchdog"].startswith("unavailable:")
+
+
+@pytest.mark.parametrize("failure", ["bootstrap-write", "invalid-ready"])
+def test_post_launch_failure_retires_original_child(tmp_path, monkeypatch, failure):
+    process = _WatchProcess(ready=b"NOT-READY\n")
+    if failure == "bootstrap-write":
+        class Broken(io.BytesIO):
+            def write(self, _raw):
+                raise OSError("inert bootstrap write refusal")
+        process.stdin = Broken()
+    instance = _inert_launch(monkeypatch, tmp_path, lambda *_a, **_kw: process)
+    try:
+        assert instance.start_watchdog() is False
+    finally:
+        instance.close(graceful=True)
+        _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is None
+    assert process.wait_calls == [5.0]
+    assert process.stdin.closed and process.stdout.closed
+
+
+def test_snapshot_never_joins_completed_cleanup_worker():
+    class Finished:
+        def is_alive(self):
+            return False
+        def join(self, *_args, **_kwargs):
+            raise AssertionError("snapshot must not join")
+    process = _WatchProcess()
+    instance = _owned_instance(process)
+    instance._watch_retire_thread = Finished()
+    instance._watch_retire_result = (True, "stopped", process)
+    assert instance.snapshot()["watchdog"] == "stopped"
+    assert instance._watch_process is None
+
+
+def test_detach_after_expired_graceful_cleanup_keeps_unresolved_child():
+    def wait():
+        raise subprocess.TimeoutExpired("inert-owned-child", 5.0)
+    process = _WatchProcess(wait=wait)
+    instance = _owned_instance(process)
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    state = instance.snapshot()["watchdog"]
+    instance.close(graceful=False)
+    assert instance._watch_process is process
+    assert instance.snapshot()["watchdog"] == state
+    assert process.wait_calls == [5.0]
+    process._wait = None
+    instance.close(graceful=True)
+    _wait_for(lambda: _retirement_finished(instance), seconds=3)
+    assert instance._watch_process is None
+
+
+class _RetirementPipe:
+    """Synthetic write-end failures; no descriptor, process or transport."""
+    def __init__(self, *, failure="close", error=BrokenPipeError, closes=True):
+        self.failure, self.error, self.closes = failure, error, closes
+        self.closed = False
+        self.operations = []
+
+    def write(self, raw):
+        assert type(raw) is bytes and not self.closed
+        self.operations.append("write")
+        if self.failure == "write":
+            raise BrokenPipeError("inert stop write refusal")
+        return len(raw)
+
+    def flush(self):
+        self.operations.append("flush")
+        if self.failure == "flush":
+            raise BrokenPipeError("inert stop flush refusal")
+
+    def close(self):
+        self.operations.append("close")
+        if self.closes:
+            self.closed = True
+        raise self.error("inert buffered close refusal")
+
+
+def _call_retirement(instance, process, monkeypatch, *, reader=None, frame=b"inert stop\n", platform="nt"):
+    # Replace only this module's os reference. No interpreter-wide OS patch.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(beacon, "os", SimpleNamespace(name=platform))
+        instance._retire_watchdog(process, frame, reader, "stopped")
+    return instance._watch_retire_result
+
+
+@pytest.mark.parametrize("failure", ["write", "flush", "close"])
+@pytest.mark.parametrize("platform", ["nt", "posix"])
+def test_closed_broken_pipe_still_requires_wait_reader_stream_and_handle_proof(monkeypatch, failure, platform):
+    process = _WatchProcess()
+    pipe = _RetirementPipe(failure=failure)
+    process.stdin = pipe
+    process.stderr = io.BytesIO()
+    instance = _owned_instance(process)
+
+    class Reader:
+        alive = True
+        joins = []
+        def is_alive(self):
+            return self.alive
+        def join(self, timeout):
+            assert process.returncode == 0
+            self.joins.append(timeout)
+            self.alive = False
+    reader = Reader()
+    instance._watch_ready_reader = reader
+    original_wait = process.wait
+    def wait(*, timeout):
+        assert pipe.closed, "retirement waited before write-end closure"
+        return original_wait(timeout=timeout)
+    process.wait = wait
+    original_close = process._handle.Close
+    def close_handle():
+        assert not reader.alive and all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+        original_close()
+    process._handle.Close = close_handle
+
+    assert _call_retirement(instance, process, monkeypatch, reader=reader, platform=platform) == (
+        True, "stopped", process)
+    assert process.wait_calls == [5.0] and reader.joins == [0.5]
+    assert pipe.operations == (["write", "close"] if failure == "write" else ["write", "flush", "close"])
+    assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
+    assert process._handle.close_calls == (1 if platform == "nt" else 0)
+    # Only a proven result may release the original ownership in GUI harvest.
+    instance._watch_retire_thread = SimpleNamespace(is_alive=lambda: False)
+    assert instance.snapshot()["watchdog"] == "stopped"
+    assert instance._watch_process is None and instance._watch_ready_reader is None
+
+
+@pytest.mark.parametrize("frame", [None, b"inert stop\n"], ids=["buffered-close", "stop-flush-and-close"])
+def test_real_cpython_buffered_broken_pipe_close_can_finish_owned_retirement(monkeypatch, frame):
+    class RefusingRaw(io.RawIOBase):
+        write_calls = 0
+        def writable(self):
+            return True
+        def write(self, raw):
+            assert len(raw) > 0
+            self.write_calls += 1
+            raise BrokenPipeError("inert raw write refusal")
+    raw = RefusingRaw()
+    buffered = io.BufferedWriter(raw, buffer_size=64)
+    buffered.write(b"pending inert bytes")
+    process = _WatchProcess()
+    process.stdin = buffered
+    process.stderr = io.BytesIO()
+    instance = _owned_instance(process)
+    try:
+        assert _call_retirement(instance, process, monkeypatch, frame=frame) == (True, "stopped", process)
+        assert buffered.closed and raw.closed and raw.write_calls >= 1
+        assert process.wait_calls == [5.0] and process.poll() == 0
+        assert process.stdout.closed and process.stderr.closed and process._handle.closed
+        assert process._handle.close_calls == 1
+    finally:
+        if not buffered.closed:
+            try:
+                buffered.close()
+            except (BrokenPipeError, ValueError):
+                pass
+        raw.close()  # The only real owned object is an in-memory RawIOBase.
+
+
+@pytest.mark.parametrize("error,closes", [
+    (BrokenPipeError, False), (OSError, False), (OSError, True), (RuntimeError, True),
+], ids=["broken-pipe-still-open", "oserror-still-open", "oserror-after-close", "runtime-error-after-close"])
+def test_other_pipe_close_faults_never_grant_retirement(monkeypatch, error, closes):
+    process = _WatchProcess()
+    pipe = _RetirementPipe(error=error, closes=closes)
+    process.stdin = pipe
+    instance = _owned_instance(process)
+    assert _call_retirement(instance, process, monkeypatch) == (
+        False, "unavailable: watcher cleanup unresolved", process)
+    assert pipe.closed is closes and process.wait_calls == []
+    assert not process.stdout.closed and not process._handle.closed
+    instance._watch_retire_thread = SimpleNamespace(is_alive=lambda: False)
+    assert instance.snapshot()["watchdog"] == "unavailable: watcher cleanup unresolved"
+    assert instance._watch_process is process and instance._watch_key == b"x" * 32
+
+
+@pytest.mark.parametrize("failure", [
+    "wait-timeout", "poll-mismatch", "reader-alive", "stdout-error", "stdout-unclosed",
+    "stderr-error", "stderr-unclosed", "handle-error", "handle-unclosed", "handle-missing",
+])
+def test_closed_broken_pipe_does_not_bypass_remaining_retirement_guards(monkeypatch, failure):
+    process = _WatchProcess()
+    process.stdin = _RetirementPipe()
+    process.stderr = io.BytesIO()
+    instance = _owned_instance(process)
+    class Reader:
+        def is_alive(self):
+            return failure == "reader-alive"
+        def join(self, timeout):
+            assert timeout == 0.5
+    reader = Reader()
+    instance._watch_ready_reader = reader
+    if failure == "wait-timeout":
+        def timeout():
+            raise subprocess.TimeoutExpired("inert-original-child", 5.0)
+        process._wait = timeout
+    elif failure == "poll-mismatch":
+        process.poll = lambda: 1
+    elif failure.startswith(("stdout-", "stderr-")):
+        class Unclosed(io.BytesIO):
+            def close(self):
+                if failure.endswith("-error"):
+                    raise OSError("inert stream close refusal")
+                # A close method returning without closure is not a receipt.
+        setattr(process, failure.split("-", 1)[0], Unclosed())
+    elif failure == "handle-error":
+        def refuse():
+            raise OSError("inert original-handle close refusal")
+        process._handle.Close = refuse
+    elif failure == "handle-unclosed":
+        process._handle.Close = lambda: None
+    elif failure == "handle-missing":
+        process._handle = None
+    try:
+        assert _call_retirement(instance, process, monkeypatch, reader=reader) == (
+            False, "unavailable: watcher cleanup unresolved", process)
+        assert process.stdin.closed and process.wait_calls == [5.0]
+        instance._watch_retire_thread = SimpleNamespace(is_alive=lambda: False)
+        assert instance.snapshot()["watchdog"] == "unavailable: watcher cleanup unresolved"
+        assert instance._watch_process is process and instance._watch_ready_reader is reader
+        assert instance._watch_key == b"x" * 32
+    finally:
+        for stream in (process.stdout, process.stderr):
+            if isinstance(stream, io.BytesIO):
+                io.BytesIO.close(stream)  # In-memory fake only, no OS handle.

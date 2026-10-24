@@ -710,10 +710,14 @@ class SpywareGuardPage(QWidget):
             return
         item = rows[row]
         kind, value = item.get("kind", item.get("type", "")), item.get("value", "")
-        if self._command("review_indicator", str(kind), str(value), approved=approved):
+        expected = item.get("review_identity")
+        if type(expected) is not dict:
+            self.status.setText("Indicator review is stale. Refresh and select the current evidence again.")
+            return
+        if self._command("review_indicator", kind, value, approved=approved, expected=expected):
             self.status.setText("Indicator review queued; applied state will appear in the next snapshot.")
         else:
-            self.status.setText("Indicator review was not queued. Check module health.")
+            self.status.setText("Indicator review was not queued. Refresh the evidence and check module health.")
 
     def _run_sandbox(self) -> None:
         scenario = self.sandbox_scenario.currentData()
@@ -802,6 +806,9 @@ class SpywareGuardPage(QWidget):
         state = _text(snapshot.get("status", getattr(module, "status", "available")), 140)
         if not self._settings_dirty and not self._pending_settings:
             self.status.setText(f"SpywareGuard: {state}. Showing the most recent { _ROW_LIMIT } records per view.")
+            review = snapshot.get("indicator_review")
+            if isinstance(review, dict) and review.get("state") == "stale-review":
+                self.status.setText("Indicator review is stale. Refresh and select the current evidence again.")
 
     @staticmethod
     def _rows(value) -> list[dict]:

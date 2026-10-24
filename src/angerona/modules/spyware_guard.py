@@ -25,7 +25,10 @@ from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import authorize_response
 from angerona.core.spyware_behavior import SpywareBehaviorEngine
-from angerona.core.spyware_intel import OFFICIAL_SOURCES, ThreatIntelStore, normalize_indicator
+from angerona.core.spyware_intel import (
+    OFFICIAL_SOURCES, IndicatorReviewIdentity, ThreatIntelStore, normalize_indicator,
+    parse_indicator_review_identity,
+)
 from angerona.core.spyware_sensors import collect_persistence, inspect_process_memory, parse_memory_identity
 from angerona.telemetry.sensors import connection_snapshot, process_snapshot
 
@@ -122,7 +125,10 @@ class SpywareGuardModule(BaseModule):
         self._news_pending: set[str] = set()
         self._news_status: dict = {"state": "disabled", "refreshing": False, "sources": {}}
         self._last_news = None
-        self._approved: OrderedDict[tuple[str, str], str] = OrderedDict()
+        self._review_session = secrets.token_hex(16)
+        self._approved: OrderedDict[
+            tuple[str, str], tuple[str, int, IndicatorReviewIdentity]
+        ] = OrderedDict()
         self._dedup: OrderedDict[str, float] = OrderedDict()
         self._coverage: dict = {"host": "not-yet-scanned", "memory": "disabled"}
         self._engine = SpywareBehaviorEngine(clock=clock)
@@ -175,11 +181,36 @@ class SpywareGuardModule(BaseModule):
             return False
         return self._enqueue("report", url)
 
-    def review_indicator(self, kind: str, value: str, approved: bool = True) -> bool:
-        normalized = normalize_indicator(kind, value)
-        if normalized is None or type(approved) is not bool:
+    def _indicator_review_state(self, state, reason, review=None):
+        with self._lock:
+            self._coverage["indicator_review"] = {"state": state, "reason": reason}
+            if review is not None:
+                self._coverage["indicator_review"]["candidate"] = asdict(review[2])
+
+    def review_indicator(self, kind: str, value: str, approved: bool = True, *, expected=None) -> bool:
+        """Queue only the exact displayed evidence; legacy requests grant nothing."""
+        normalized = (normalize_indicator(kind, value)
+                      if type(kind) is str and type(value) is str else None)
+        if (normalized is None or type(approved) is not bool or type(expected) is not dict
+                or any(type(key) is not str for key in expected)
+                or set(expected) != {"session", "generation", "candidate"}
+                or type(expected["session"]) is not str
+                or expected["session"] != self._review_session
+                or type(expected["generation"]) is not int
+                or expected["generation"] != self.lifecycle_generation):
+            self._indicator_review_state("stale-review", "missing-or-invalid-evidence")
             return False
-        return self._enqueue("review", (kind, normalized, approved))
+        identity = parse_indicator_review_identity(expected["candidate"])
+        if identity is None or (identity.kind, identity.value) != (kind, normalized):
+            self._indicator_review_state("stale-review", "missing-or-invalid-evidence")
+            return False
+        # Keep no caller-owned dictionaries or objects in the queued command.
+        review = (expected["session"], expected["generation"], identity)
+        self._indicator_review_state("queued", "awaiting-evidence-comparison", review)
+        if not self._enqueue("review", (review, approved)):
+            self._indicator_review_state("not-queued", "queue-full", review)
+            return False
+        return True
 
     def configure_settings(self, **kwargs) -> dict:
         if not kwargs or any(key not in _SETTINGS or type(value) is not bool
@@ -253,15 +284,36 @@ class SpywareGuardModule(BaseModule):
                     self._config.spyware_research_urls = list(dict.fromkeys([payload] + urls))[:32]
                     self._config.save()
                 elif command == "review":
-                    kind, value, approve = payload
-                    matches = self._intel.lookup(kind, value, now=self._clock())
-                    with self._lock:
-                        if approve and matches:
-                            self._approved[(kind, value)] = matches[0].source_sha256
-                            while len(self._approved) > 5000:
-                                self._approved.popitem(last=False)
-                        else:
-                            self._approved.pop((kind, value), None)
+                    if (type(payload) is not tuple or len(payload) != 2
+                            or type(payload[0]) is not tuple or len(payload[0]) != 3
+                            or type(payload[0][0]) is not str or type(payload[0][1]) is not int
+                            or type(payload[0][2]) is not IndicatorReviewIdentity
+                            or type(payload[1]) is not bool):
+                        self._indicator_review_state("stale-review", "invalid-queued-evidence")
+                        continue
+                    review, approve = payload
+                    session, generation, expected = review
+                    key = (expected.kind, expected.value)
+                    # Candidate replacement and receipt assignment share store -> module order.
+                    with self._intel.review_candidates(*key, clock=self._clock) as candidates:
+                        with self._lock:
+                            now = self._clock()
+                            current = next((item for item, identity in candidates
+                                            if identity == expected and item.fresh(now)), None)
+                            if session != self._review_session or generation != self.lifecycle_generation:
+                                self._indicator_review_state("stale-review", "module-session-changed", review)
+                            elif approve and current is None:
+                                self._indicator_review_state("stale-review", "evidence-changed-or-expired", review)
+                            elif approve:
+                                self._approved[key] = review
+                                while len(self._approved) > 5000:
+                                    self._approved.popitem(last=False)
+                                self._indicator_review_state("approved", "exact-evidence-reviewed", review)
+                            elif self._approved.get(key) in (None, review):
+                                self._approved.pop(key, None)
+                                self._indicator_review_state("revoked", "selected-evidence-revoked", review)
+                            else:
+                                self._indicator_review_state("stale-review", "different-evidence-approved", review)
                 elif command == "sandbox":
                     self._sandbox(payload)
                 elif command == "telemetry":
@@ -637,20 +689,22 @@ class SpywareGuardModule(BaseModule):
         return record
 
     def _match_indicator(self, record, kind, value, *, local_authority):
-        matches = self._intel.lookup(kind, value, now=self._clock())
-        if not matches:
-            return
         normalized = normalize_indicator(kind, value)
-        with self._lock:
-            approved_digest = self._approved.get((kind, normalized))
-        approved = approved_digest is not None and any(
-            item.source_sha256 == approved_digest for item in matches)
-        if not approved:
+        with self._intel.review_candidates(kind, value, clock=self._clock) as candidates:
+            with self._lock:
+                review = self._approved.get((kind, normalized))
+                now = self._clock()
+                approved = next((item for item, identity in candidates
+                    if review == (self._review_session, self.lifecycle_generation, identity)
+                    and item.fresh(now)), None)
+        if approved is None:
             return  # Research mentions do not become live detection rules before review.
         finding = {"kind": "reviewed_" + kind + "_indicator_match", "severity": "HIGH",
                    "summary": "Local evidence matched an explicitly reviewed intelligence indicator.",
                    "evidence": {"indicator_kind": kind, "indicator": normalized,
-                                "source": matches[0].source, "reviewed": True}}
+                                "source": approved.source, "source_sha256": approved.source_sha256,
+                                "review_identity": {"session": review[0], "generation": review[1],
+                                                    "candidate": asdict(review[2])}, "reviewed": True}}
         for key in ("pid", "process_create_time", "remote_ip", "path", "observed_content_sha256"):
             if key in record:
                 finding[key] = record[key]
@@ -960,7 +1014,6 @@ class SpywareGuardModule(BaseModule):
 
     def dashboard_snapshot(self) -> dict:
         with self._lock:
-            approved = dict(self._approved)
             result = {"hits": list(self._hits), "containments": list(self._containments),
                       "coverage": dict(self._coverage), "sources": list(self._sources),
                       "stats": dict(self._counts), "settings": dict(self._settings),
@@ -977,8 +1030,21 @@ class SpywareGuardModule(BaseModule):
             if not self._settings["spyware_network_enabled"]:
                 result["news_status"].update(state="disabled", refreshing=False)
             result["coverage"]["behavior_adapters"] = self._engine.coverage()
-        result["indicators"] = [dict(asdict(item), approved=approved.get((item.kind, item.value)) == item.source_sha256)
-                                 for item in self._intel.indicators(now=self._clock())[:500]]
+        with self._intel.review_candidates(clock=self._clock) as candidates:
+            with self._lock:
+                now = self._clock()
+                session, generation = self._review_session, self.lifecycle_generation
+                result["indicators"] = []
+                for item, identity in candidates:
+                    if not item.fresh(now):
+                        continue
+                    result["indicators"].append(dict(asdict(item),
+                        review_identity={"session": session, "generation": generation,
+                                         "candidate": asdict(identity)},
+                        approved=self._approved.get((item.kind, item.value)) == (session, generation, identity)))
+                    if len(result["indicators"]) >= 500:
+                        break
+                result["indicator_review"] = dict(self._coverage.get("indicator_review", {}))
         result["vulnerabilities"] = len(self._intel.vulnerabilities(now=self._clock()))
         result["beacon"] = self._beacon.snapshot() if self._beacon is not None else {"enabled": False, "status": "disabled"}
         # Returning detached JSON state prevents UI code from mutating detection evidence.

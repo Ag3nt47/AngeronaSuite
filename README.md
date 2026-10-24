@@ -32,42 +32,21 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-The [AI authority and benchmark review](analysis/live-debug-2026-10-22/README.md)
-adds fresh authority checks after broker waits and corrects the synthetic
-process-benchmark fixture. The scoped gate passed 253 tests with one exact
-Windows availability skip. A fresh 90.329-second passive observation retained
-17 coverage gaps and zero recorded errors. This library/tool maintenance adds
-no deployed response powers and establishes no speed gain or clean-host verdict.
+**Current v1.14 maintenance:** exact SpywareGuard review identities, less repeated
+pure LSASS matching and retained beacon cleanup have scoped regression evidence.
+The 34-suite gate passed 971 of 973 cases (zero failures/errors, two exact Windows
+availability skips); the 29-phase selfcheck passed with 18 module skips. Serial
+SpywareGuard, scanner and combined 15-module observations completed; the combined
+600.312-second window recorded no errors, drops, pending work or crashes while
+retaining 17 interval gap strings across nine modules. This is scoped evidence, with
+coverage and performance limits in the [current review](analysis/live-debug-2026-10-22/README.md).
 
-The published privacy checkpoint's manual AI consultation dialog prepares a bounded sanitized preview before any
-provider request. Review and edit the exact JSON, provider/model/endpoints and
-fallback order, then explicitly Send; retries and follow-ups require review too.
-See [AI consultation privacy](docs/ai-consult-privacy.md). The corrected cohort passed 182 tests with zero failures/errors/skips.
-A fresh 90.14-second passive 15-module observation retained 17 coverage gaps and
-zero recorded errors; it does not prove a clean host, redaction completeness or
-lower CPU use. The prior checkpoint's 786/29/600 results are a different scope.
-
-The prior published maintenance review added handle-bound memory identity, bounded private
-Black Box exports and serialized protected-key updates. It also makes legacy
-Bridge migration fail closed and labels SGX runtime hints as unverified. Read the
-[key and communication guide](docs/key-and-communication-integrity.md),
-[AI-aware defense priorities](docs/ai-aware-defense.md) and
-[scoped validation](analysis/live-debug-2026-10-22/key-and-memory-review.md).
-That earlier scope passed 786 tests with three exact POSIX skips and all 29
-isolated selfcheck phases. A fresh 600.531-second 15-module observation retained
-17 coverage gaps; it does not prove a clean host or lower CPU use. The broader
-v1.15 integration remains in progress; this is not a v1.15 release.
-
-Shared process scanning now avoids unused cached iterator objects while preserving
-fresh identity checks. **452 regression tests and all 29 isolated self-check phases
-passed**. A fresh 15-module observation retained 17 coverage gaps; it did not
-demonstrate a CPU reduction. See the [performance interaction map](analysis/live-debug-2026-10-22/process-inventory-performance.md).
-
-Live AI Review now retains explicit process-identity gaps, and publisher staging
-errors show sanitized numeric OS codes. These diagnostic improvements passed
-**229 tests across 12 complete suites**, with **one explicit Windows symlink skip**.
-See the [issue review](analysis/live-debug-2026-10-22/README.md) for scope and
-retained coverage gaps; this is separate from the updater validation below.
+Manual AI consultation provides a bounded sanitized preview and explicit Send;
+see [AI consultation privacy](docs/ai-consult-privacy.md). Broader v1.15 remains
+incomplete. The [changelog](CHANGELOG.md), [historical analysis](analysis/live-debug-2026-10-22/README.md)
+and [key/communication safeguards](docs/key-and-communication-integrity.md) retain
+prior findings and limits. Final source/documentation review, fresh offline
+checks and unchanged guarded publication remain mandatory completion gates.
 
 **Also in the [v1.14 security integration scope](docs/releases/v1.14-security-integration.md):**
 verified protection readiness, a UGCAP witness protocol requiring separate deployment,

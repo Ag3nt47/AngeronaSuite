@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.14.0 — SpywareGuard evidence review and beacon lifecycle
+
+The scoped R4 gate, fresh selfcheck and three serial observations are accepted
+with explicit coverage gaps; final offline checks and publication remain gated.
+This is 1.14 maintenance, not a 1.15 release or completed publication.
+
+- SEC-18 (LOW): frozen IndicatorReviewIdentity binds literal/source/digest/times,
+  CSPRNG store session/revision, and module session/lifecycle generation. Compare
+  and assign under store → module lock order. No expiry revival, same-byte-refresh
+  consent or duplicate-source substitution. Keep exact-receipt revocation/source
+  removal, receipt-aware dedup and detached JSON/500-row snapshots. Runtime
+  evidence is not a signature, actor attribution or permission from imported text.
+- PER-17: skip only the pure LSASS matcher for an already-alerted existing key,
+  after unchanged command/readability accounting. Preserve collection, identity
+  gaps, health/counters, freshness, eviction, events and response scopes. Recheck
+  negative commands. No native-query, benign-workload or wall-clock gain claimed.
+- DBG-17: retain original beacon Popen/READY reader/cleanup worker/streams/primary
+  handle through proved retirement; no snapshot wait/join, replacement overlap or
+  production kill fallback. Continue after BrokenPipeError from stdin.close only
+  if that same stream is closed, then require the unchanged wait/poll/reader/handle
+  proofs and explicit closure of all streams. Generic/unclosed faults stay
+  unresolved. Closed stdin does not prove authenticated stop-frame delivery.
+  Intentional early detach remains; admitted graceful work cannot be unsent.
+  Pipe I/O can block before finite waits, so total cleanup is NOT bounded; the
+  startup READY five-second wait and heartbeat/instance locking remain.
+- Test fixture: require live kernel-reported image admission, strict alias/PE/
+  fingerprint checks and retained direct child handles. Terminal proof separately
+  requires the same PID/raw FILETIME birth, WAIT0 and native exit agreement. A
+  failed proof stays sticky after resource cleanup; cached Popen status cannot
+  turn it into a pass. Test bootstrap explicitly supplies win32/win32/lib/Pythonwin
+  and retains the pywin32_system32 DLL-directory handle. These are fixture-only
+  changes; no unmodified production-launcher or unknown-descendant proof.
+  The 12 private product controls and 38 fixture controls passed separately:
+  a3738ecec2658723f5c0bc56296823f56c93e7bf95d7a5d6fe390c8b5cfdb740 / 3c26afc83e27b1e37f1bc136279e9175fe5ec8f48bcd8ee8f22d634534ee5e66.
+- Actual R4: 34 suites, 491 function occurrences, 973 collected, 971 passed,
+  zero failures/errors, two exact Windows availability skips; receipt
+  78b36785802635147855f0cbc8ce1cba88cc35b483c0ebfb319547b97b773f29. Ledger 52fbfd2b117a64f8a87880a59eb2164f3aab3c4fab0e335add3be7c59d30ca1a; independent multiplicity counter
+  3b1fb5396dc88316f56453600e351aefdf3cddf1d114bebf4debbe71c288ecde. All 75 privacy cases and seven named nested cases (including
+  all five native beacon scenarios and their in-test retirement checks) passed.
+  Exact independent outer attestation remains two generations: WAIT0/native0,
+  four handles closed, MainThread/noQApp, source/HEAD/indices/runtime stable.
+  This is not generalized independent attestation of every nested child.
+- Only unavailable Windows 8.3 alias (Volume has no distinct short filename) and
+  symlink creation (symlinks unavailable) skip. Acceptance is complete; coverage
+  is not. Preserve precollection be111aa05ef19cc995ae0bbfe39b8b5892c47a766b02ef2ce8814dfb2225ddc1, R2 failed (944 passed / 1 failed / 4 setup errors / 2 skips)
+  cf17c1f491117f540c0d73a2d8c3b60b96f4ba0d9c896628d8e19619529029c0, and R3 failed (944 passed / 1 failed / 4 setup errors / 2 skips) 38768982d0cd8d557b81c5c0636d831cd87086882931755ca1861e177d6a0b9e. R3 nested proof was absent,
+  and its exact historical cleanup API cause stays UNKNOWN. A passing combined
+  repair or isolated close mechanism cannot retroactively prove that cause.
+- R4 tested pre-documentation inventory 87acb370d9e68a75244b29da3297c3496d3330dc22a3bc2dc2f68fc7b31d4f47; final
+  documentation/source authority root-held final whole-source inventory after documentation review. New source cores are
+  beacon 20c8dd1f / tests 22563b45 / fixture 47ea3f12; source 1876/Python 1164 and
+  prospective 19 paths  = 11 code/test + 8 docs/two additions remain descriptors.
+  Selfcheck ACCEPTED 29 phases / 0 failed, 18 module skips; ecd25a52f7731aeff24b071a2e68f1cbbbb5326ea9324586cfb6270fe65dc572; SpywareGuard 30 OBSERVED_WITH_GAPS 30.094s; 65a957fc5ff7d73e7ced9ae34b64b51f53ba6108b9b6d75fb4c72417c64fe58e; scanner 30-second
+  OBSERVED 30.172s / 31 heartbeats; 840e5f87acecaec74b56ca8f8dfbcaa34f97953e3144f3c421906252f0b09fec; all-15 / 600-second OBSERVED_WITH_GAPS 600.312s / 1933 heartbeats / 369 events / 17 retained interval gap strings across nine modules; 42bc0a86bc8f3746c87aa82de109728e1a429c1294a7d7453da3bf22899c685f; offline REQUIRED after final documentation: fresh offline checks under root approval;
+  publication REQUIRED after a reviewed completed commit: the unchanged canonical guarded publisher.
+- PER-18 stays private-harness-only: 31 inert controls and one 8192-byte ABBA
+  fixture, eight old requests 703.7053 ms/eight new 5.0245 ms. Root review
+  8c3af5b0a8210e1be38ee58c734fc1c7e7a976ba1ea5668112062b0af97b388f. No product/whole-gate speed or earlier-failure cause.
+- Registry 181 keeps all 176 prior raw issue objects/order/status and the original
+  review_status unchanged under historical_review_status_before_spyware_lsass_beacon.
+  New SEC-18/PER-17/DBG-17/PER-18/OBS-07 remain scoped; HOST-03/HOST-04, older
+  failures, unknowns and gaps are not cleared. Broader 1.15 remains incomplete.
+
+
 ## 1.14.0 — AI broker authority and benchmark integrity
 
 - SEC-17: refresh execution-enabled, finite-time and expiry checks after

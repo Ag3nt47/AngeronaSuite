@@ -5,7 +5,67 @@ Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## AI broker authority and benchmark integrity — scoped gate accepted
+## Current Spyware / LSASS / Beacon maintenance — scoped evidence accepted
+
+- Product 1.14.0 maintenance; broader 1.15 INCOMPLETE. R4 accepted 971/973, zero
+  failures/errors, two exact Windows availability skips across 34 suites/491
+  function occurrences. Receipt 78b36785802635147855f0cbc8ce1cba88cc35b483c0ebfb319547b97b773f29; root review 92d47b23cce1e400fa4b3dcf6df00c26f6ee0c88eafc3c51eb982d7644d7797c.
+  Fresh ledger 52fbfd2b117a64f8a87880a59eb2164f3aab3c4fab0e335add3be7c59d30ca1a; independent full-multiplicity counter
+  3b1fb5396dc88316f56453600e351aefdf3cddf1d114bebf4debbe71c288ecde. All 75 privacy and 7 named nested cases, including 5 native
+  beacon scenarios with in-test ownership/retirement checks, passed.
+- Independent outer proof remains exactly 2 generations: same generation/WAIT0/
+  native0/four closed handles/MainThread/noQApp, source/HEAD/indices/runtime stable.
+  Do not generalize this independent attestation to all nested processes. Only
+  Windows 8.3 Volume has no distinct short filename and symlinks unavailable skip;
+  acceptance_complete=true, coverage_complete=false.
+- Tested pre-documentation source map 87acb370d9e68a75244b29da3297c3496d3330dc22a3bc2dc2f68fc7b31d4f47; final
+  docs/source root-held final whole-source inventory after documentation review, scope mandatory exact 19-path scope review (11 code/test and 8 documentation paths, two additions). The planned source
+  inventory 1876/Python 1164/scope 19 = 11 code + 8 docs/two additions is not final authority.
+  Source cores 20c8dd1f/22563b45/47ea3f12 include the two narrow closed-pipe blocks
+  and the separate native test-fixture bootstrap/terminal-proof repair.
+- SEC-18 LOW: kind/value/source/digest/times/store CSPRNG session+revision and
+  module session+lifecycle generation bind review. Comparison+assignment hold
+  store→module order. Expiry/same-byte refresh/source removal/restart/duplicate
+  source cannot inherit approval. Exact-receipt revoke and receipt-aware dedup,
+  detached JSON and 500-row cap stay. Runtime identity is not a signature/actor
+  verdict/permission from imported instructions.
+- PER-17 changes only repeated pure LSASS matching on the already-alerted existing
+  identity key after unchanged command/readability accounting. All collection/
+  identity/freshness/health/counters/eviction/events/response semantics stay.
+  No negative cache, native-query reduction, benign or measured product speed gain.
+- DBG-17 keeps original Popen/READY reader/cleanup worker/streams/primary handle
+  until verified retirement. Only a closed stdin after BrokenPipeError permits
+  the unchanged wait/poll/reader/handle proofs to continue; every stream must
+  actually close. Generic/unclosed faults remain unavailable. No production kill
+  fallback, snapshot join or overlap. Closed stdin is not stop-delivery proof.
+  Early intentional detach remains; admitted stop cannot be unsent. Pipe I/O may
+  block before waits: total cleanup NOT bounded; startup READY five-second wait/heartbeat lock
+  limits remain. Production redirector Popen is not full descendant proof.
+- Fixture-only bootstrap supplies explicit win32/win32-lib/Pythonwin paths and
+  retains the pywin32_system32 DLL-directory handle. Live image admission stays
+  strict. Terminal proof separately requires same PID/raw birth/WAIT0/native exit;
+  failed proof remains sticky after observer/resource cleanup, so cached Popen
+  returncode cannot green a retry. ProductionAPI uses an adapted test launcher,
+  NOT unmodified launcher coverage. Private 12 controls a3738ecec2658723f5c0bc56296823f56c93e7bf95d7a5d6fe390c8b5cfdb740; fixture 38
+  inert controls 3c26afc83e27b1e37f1bc136279e9175fe5ec8f48bcd8ee8f22d634534ee5e66 passed; groups are separate from the 973 cohort.
+- Preserve original precollection be111aa05ef19cc995ae0bbfe39b8b5892c47a766b02ef2ce8814dfb2225ddc1, failed R2 (944 passed / 1 failed / 4 setup errors / 2 skips)
+  cf17c1f491117f540c0d73a2d8c3b60b96f4ba0d9c896628d8e19619529029c0, and failed R3 38768982d0cd8d557b81c5c0636d831cd87086882931755ca1861e177d6a0b9e. R3's nested retirement was NOT PROVEN
+  and exact cleanup API cause stays UNKNOWN. New successful cases cannot supply
+  old missing proof or identify an historical cause from combined repairs.
+- Current selfcheck ACCEPTED 29 phases / 0 failed, 18 module skips; ecd25a52f7731aeff24b071a2e68f1cbbbb5326ea9324586cfb6270fe65dc572; SpywareGuard 30-second OBSERVED_WITH_GAPS 30.094s; 65a957fc5ff7d73e7ced9ae34b64b51f53ba6108b9b6d75fb4c72417c64fe58e; scanner 30-second
+  OBSERVED 30.172s / 31 heartbeats; 840e5f87acecaec74b56ca8f8dfbcaa34f97953e3144f3c421906252f0b09fec; all-15 / 600-second OBSERVED_WITH_GAPS 600.312s / 1933 heartbeats / 369 events / 17 retained interval gap strings across nine modules; 42bc0a86bc8f3746c87aa82de109728e1a429c1294a7d7453da3bf22899c685f; offline REQUIRED after final documentation: fresh offline checks under root approval;
+  guarded publication REQUIRED after a reviewed completed commit: the unchanged canonical guarded publisher. Do not reuse older 29/30/600 or
+  publication receipts. Optional cloud/GUI/host-response efficacy is not proved.
+- PER-18 private reader only: 31 inert controls; one 8192-byte fixture/eight old
+  reads 703.7053 ms/eight new 5.0245 ms ABBA (8c3af5b0a8210e1be38ee58c734fc1c7e7a976ba1ea5668112062b0af97b388f). No product/
+  whole-gate speed, native attribution or earlier-failure cause.
+- Registry 181 preserves all 176 old RAW objects/order/status and previous
+  review_status under historical_review_status_before_spyware_lsass_beacon.
+  Five new IDs remain scoped; HOST-03/HOST-04, unknowns and prior gaps stay open.
+  No new independent administration, whole-runtime attestation, clean-host or
+  1.15 completion claim. Older sections below are historical scopes.
+
+## Historical AI broker authority and benchmark integrity — scoped gate accepted
 
 - Four reviewed source/test candidates are applied unchanged. Actual 15-suite/
   156-function gate collected254/passed253/0failures/errors/one exact Windows8.3
