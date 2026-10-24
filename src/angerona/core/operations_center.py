@@ -87,20 +87,14 @@ def _decode_master_key(value: str) -> bytes:
 
 def load_or_create_master_key(data_root: Path) -> bytes:
     """Load a 256-bit master from the current user's protected OS store."""
-    from angerona.core.secure_store import read_secret_map, write_secret_map
+    from angerona.core.secure_store import get_or_create_secret
 
-    root = Path(data_root)
-    values = read_secret_map(root, strict=True)
-    existing = values.get(_MASTER_KEY_NAME)
-    if existing:
-        return _decode_master_key(existing)
-    created = secrets.token_bytes(32)
-    encoded = base64.urlsafe_b64encode(created).decode("ascii")
-    write_secret_map({_MASTER_KEY_NAME: encoded}, root)
-    verified = read_secret_map(root, strict=True).get(_MASTER_KEY_NAME, "")
-    if not hmac.compare_digest(verified, encoded):
-        raise RuntimeError("protected Local SOC key write did not verify")
-    return created
+    encoded = get_or_create_secret(
+        _MASTER_KEY_NAME,
+        lambda: base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii"),
+        Path(data_root),
+    )
+    return _decode_master_key(encoded)
 
 
 def _record(

@@ -101,7 +101,8 @@ def test_kind_strictly_controls_device_binding():
         credential(kind="tenant")
 
 
-@pytest.mark.parametrize("secret", (b"short", bytearray(b"x" * 32), b"x" * 4097))
+@pytest.mark.parametrize("secret", (b"short", bytearray(b"x" * 32), b"x" * 4097),
+                         ids=("short", "mutable", "oversized"))
 def test_secret_must_be_bounded_immutable_bytes(secret):
     with pytest.raises(ValueError, match="secret"):
         credential(secret=secret)

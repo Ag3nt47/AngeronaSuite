@@ -298,9 +298,17 @@ def fixture_drill(output_parent: Path, *, encryption_key: bytes, audit_key: byte
 def protected_keys(*, create: bool = False, data_root: Path | None = None) -> tuple[bytes, bytes]:
     """Load dedicated drill keys from the existing current-user OS secret store."""
     from .data_paths import data_dir
+    from .secure_store import secret_transaction
+
+    root = Path(data_root) if data_root is not None else data_dir()
+    with secret_transaction(root):
+        return _protected_keys_locked(create=create, data_root=root)
+
+
+def _protected_keys_locked(*, create: bool, data_root: Path) -> tuple[bytes, bytes]:
     from .file_lease import ExclusiveFileLease
     from .secure_store import read_secret_values, write_secret_map
-    root = Path(data_root) if data_root is not None else data_dir()
+    root = Path(data_root)
     with ExclusiveFileLease(root / "recovery-drill-keys.lock"):
         values = read_secret_values((ENCRYPTION_SECRET, AUDIT_SECRET), root, strict=True)
         if not values and create:

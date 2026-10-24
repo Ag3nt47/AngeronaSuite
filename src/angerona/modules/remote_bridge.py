@@ -76,43 +76,124 @@ _AAD = b"Angerona-Remote-Bridge-v3"
 _MAX_FRAME = 1_000_000
 
 
-def _shared_key() -> Optional[bytes]:
-    """Load the shared symmetric key from env or ``<data>/bridge.key``.
+_MAX_KEY_TEXT = 4096
 
-    Only a hex-encoded value of at least 32 bytes is accepted. Legacy plaintext
-    bridge.key files are migrated into Angerona's DPAPI store before use.
-    """
-    raw = os.environ.get(_KEY_ENV)
-    if not raw:
-        try:
-            from angerona.core.data_paths import data_dir
-            from angerona.core.secure_store import read_secret_values
 
-            raw = read_secret_values(
-                (_KEY_ENV,), data_dir(), strict=True
-            ).get(_KEY_ENV)
-        except Exception:
-            raw = None
-    if not raw:
-        try:
-            from angerona.core.data_paths import data_dir
-            kp = data_dir() / "bridge.key"
-            if kp.exists():
-                raw = kp.read_text(encoding="ascii").strip()
-                try:
-                    from angerona.core.secure_store import write_secret_map
-                    write_secret_map({_KEY_ENV: raw}, data_dir())
-                    kp.unlink(missing_ok=True)
-                except Exception:
-                    pass
-        except Exception:
-            raw = None
-    if not raw:
+def _decode_shared_key(raw: object) -> Optional[bytes]:
+    if not isinstance(raw, str) or not 64 <= len(raw) <= _MAX_KEY_TEXT:
         return None
     try:
-        b = bytes.fromhex(raw)
-        return b if len(b) >= 32 else None
+        value = bytes.fromhex(raw)
     except ValueError:
+        return None
+    return value if len(value) >= 32 else None
+
+
+def _key_refused(reason: str) -> None:
+    # Fixed reason codes only: never log credential values or raw exceptions.
+    import logging
+    logging.getLogger(__name__).warning("Remote Bridge key held: %s", reason)
+
+
+def _bridge_read_identity(info) -> tuple[int, int, int, int, int]:
+    # CPython 3.12 Windows path stat retains creation time in st_ctime while
+    # descriptor stat can expose native ChangeTime. Birth time is comparable
+    # across both APIs; older Windows Python falls back to its ctime contract.
+    # POSIX ctime remains the cross-API change stamp. These are exact values,
+    # not a timestamp tolerance or a substitute for the held descriptor guard.
+    stamp = (getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+             if os.name == "nt" else info.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, stamp)
+
+
+def _read_legacy_bridge_key(path: Path):
+    from angerona.core.secure_store import _legacy_source_identity
+
+    identity = _legacy_source_identity(path)
+    if identity is None or identity[2] > _MAX_KEY_TEXT:
+        raise ValueError("legacy key identity is unsafe")
+    named = path.lstat()
+    if (named.st_dev, named.st_ino, named.st_size,
+            named.st_mtime_ns, named.st_ctime_ns) != identity:
+        raise ValueError("legacy key named identity changed")
+    comparable = _bridge_read_identity(named)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    with os.fdopen(os.open(path, flags), "rb") as stream:
+        def current_identity():
+            info = os.fstat(stream.fileno())
+            if info.st_nlink != 1:
+                raise ValueError("legacy key is aliased")
+            # Keep native descriptor ctime/ChangeTime in addition to birth time:
+            # metadata-only changes during the read must still hold migration.
+            return (*_bridge_read_identity(info), info.st_ctime_ns)
+        before = current_identity()
+        if before[:5] != comparable:
+            raise ValueError("legacy key identity changed")
+        raw = stream.read(_MAX_KEY_TEXT + 1)
+        if (len(raw) > _MAX_KEY_TEXT or current_identity() != before
+                or _legacy_source_identity(path) != identity):
+            raise ValueError("legacy key changed during read")
+    return raw.decode("ascii").strip(), identity
+
+
+def _shared_key() -> Optional[bytes]:
+    """Use explicit strong configuration or verified OS-protected credentials.
+
+    Legacy plaintext is usable only after strict store access, verified migration
+    and removal of the unchanged legacy file. A locked or damaged store never
+    falls back to plaintext and an existing protected key is never replaced.
+    """
+    raw = os.environ.get(_KEY_ENV)
+    if raw:
+        key = _decode_shared_key(raw)
+        if key is None:
+            _key_refused("invalid_explicit_key")
+        return key
+    try:
+        from angerona.core.data_paths import data_dir
+        from angerona.core.secure_store import (
+            _legacy_source_identity,
+            read_secret_values,
+            secret_transaction,
+            write_secret_map,
+        )
+
+        root = data_dir()
+        with secret_transaction(root):
+            stored = read_secret_values((_KEY_ENV,), root, strict=True)
+            present = _KEY_ENV in stored
+            key = _decode_shared_key(stored.get(_KEY_ENV)) if present else None
+            if present and key is None:
+                _key_refused("invalid_protected_key")
+                return None
+            legacy = root / "bridge.key"
+            if not os.path.lexists(legacy):
+                return key
+            legacy_raw, identity = _read_legacy_bridge_key(legacy)
+            candidate = _decode_shared_key(legacy_raw)
+            if candidate is None:
+                _key_refused("invalid_legacy_key")
+                return None
+            if present and not hmac.compare_digest(key, candidate):
+                _key_refused("legacy_key_conflicts_with_protected_key")
+                return None
+            if not present:
+                write_secret_map({_KEY_ENV: legacy_raw}, root)
+            verified = read_secret_values((_KEY_ENV,), root, strict=True)
+            accepted = _decode_shared_key(verified.get(_KEY_ENV))
+            if accepted is None or not hmac.compare_digest(accepted, candidate):
+                _key_refused("protected_readback_mismatch")
+                return None
+            if _legacy_source_identity(legacy) != identity:
+                _key_refused("legacy_identity_changed")
+                return None
+            legacy.unlink()  # Failure keeps the bridge disabled; no best-effort success.
+            if os.path.lexists(legacy):
+                _key_refused("legacy_residue_remains")
+                return None
+            return accepted
+    except Exception:
+        _key_refused("protected_storage_or_migration_unavailable")
         return None
 
 
@@ -283,7 +364,8 @@ class RemoteBridge(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self._mode = (os.environ.get(_MODE_ENV) or "").strip().upper()
-        self._key = _shared_key()
+        # Disabled discovery must not acquire credentials or trigger OS-store UI.
+        self._key = _shared_key() if self._mode in ("SENDER", "RECEIVER") else None
         self._srv: Optional[socket.socket] = None
         self._inbox: DurableOutbox | None = None
         self._sender_outbox: DurableOutbox | None = None

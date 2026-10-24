@@ -26,7 +26,7 @@ from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import authorize_response
 from angerona.core.spyware_behavior import SpywareBehaviorEngine
 from angerona.core.spyware_intel import OFFICIAL_SOURCES, ThreatIntelStore, normalize_indicator
-from angerona.core.spyware_sensors import collect_persistence, inspect_process_memory
+from angerona.core.spyware_sensors import collect_persistence, inspect_process_memory, parse_memory_identity
 from angerona.telemetry.sensors import connection_snapshot, process_snapshot
 
 
@@ -137,6 +137,7 @@ class SpywareGuardModule(BaseModule):
         self._receipt_ids: OrderedDict[str, float | None] = OrderedDict()
         self._response_rows: list[dict] = []
         self._upstream_events: OrderedDict[tuple[str, float], None] = OrderedDict()
+        self._memory_receipts: OrderedDict[str, None] = OrderedDict()
         self._vault_state: dict = {"status": "not-used", "plaintext_quarantine_remains": True}
 
     def bind_manager(self, manager) -> None:
@@ -393,6 +394,14 @@ class SpywareGuardModule(BaseModule):
                 or finding.get("response_eligible") is False):
             return {}
         pid, birth = finding.get("pid"), finding.get("process_create_time")
+        if finding.get("kind") in {"private_executable_memory", "sensor_memory_injection_scanner"}:
+            if self.stopping:
+                return {}
+            receipt = parse_memory_identity(finding.get("memory_identity"))
+            if (finding.get("response_eligible") is not True or receipt is None
+                    or not receipt.bound or receipt.pid != pid
+                    or receipt.before.create_time != birth):
+                return {}  # Unbound memory evidence cannot reach host fallback.
         exact_process = (type(pid) is int and pid > 4 and pid not in {os.getpid(), os.getppid()}
                          and type(birth) in (int, float) and math.isfinite(birth) and birth > 0)
         actions = []
@@ -418,6 +427,22 @@ class SpywareGuardModule(BaseModule):
             actions.append("isolate_host")
         return authorize_response(actions, pid=pid, process_create_time=birth,
                                   remote_ips=peers, path=path, local_host=local_host) if actions else {}
+
+    def _publish_memory(self, finding: dict, stopped, *,
+                        response_already_requested: bool = False) -> None:
+        # Order memory response admission/emission against stop/restart. A
+        # retired generation may retain observations, never response authority.
+        with self._lifecycle_lock:
+            if stopped.is_set() or stopped is not self._stop:
+                finding = dict(finding, response_eligible=False,
+                    eligibility_reason="Memory collection owner generation stopped or was replaced; retained as advisory")
+                response_already_requested = False
+                if finding.get("kind") == "sensor_memory_injection_scanner":
+                    with self._lock:
+                        self._coverage["memory_sensor_identity"] = {"status": "partial",
+                            "detail": finding["eligibility_reason"]}
+            self._publish(finding, local_authority=True,
+                          response_already_requested=response_already_requested)
 
     def _publish(self, finding: dict, *, local_authority: bool,
                  response_already_requested: bool = False) -> None:
@@ -522,7 +547,8 @@ class SpywareGuardModule(BaseModule):
             details = event.details
             if event.module not in _LOCAL_PRODUCERS:
                 continue
-            record = self._adapt_event(event)
+            # Memory scan receipts cannot be relabelled as API/network telemetry.
+            record = {} if event.module == "Memory Injection Scanner" else self._adapt_event(event)
             event_type = record.get("event_type") if record else None
             if event_type in _TELEMETRY:
                 if event_type == "dns_query":
@@ -541,6 +567,28 @@ class SpywareGuardModule(BaseModule):
                            "evidence": {"producer": event.module, "source_event_ts": event.ts},
                            "pid": details.get("pid"),
                            "process_create_time": details.get("process_create_time")}
+                if event.module == "Memory Injection Scanner":
+                    receipt = parse_memory_identity(details.get("memory_identity"))
+                    fresh = (receipt is not None and receipt.source == "memory.windows.inject_scanner"
+                             and receipt.bound and receipt.pid == details["pid"]
+                             and 0 <= receipt.finished_at - receipt.started_at <= 300
+                             and -5 <= event.ts - receipt.finished_at <= 5
+                             and receipt.request_id not in self._memory_receipts)
+                    if receipt is not None:
+                        self._memory_receipts[receipt.request_id] = None
+                        self._memory_receipts.move_to_end(receipt.request_id)
+                        while len(self._memory_receipts) > 2048:
+                            self._memory_receipts.popitem(last=False)
+                    eligible = fresh and details.get("response_eligible") is True
+                    finding.update(response_eligible=eligible,
+                        process_create_time=receipt.before.create_time if eligible else None,
+                        memory_identity=details.get("memory_identity"),
+                        eligibility_reason="Fresh authenticated same-handle memory receipt" if eligible
+                            else "Memory source identity missing, stale, replayed, mismatched, or not response-eligible")
+                    with self._lock:
+                        self._coverage["memory_sensor_identity"] = {
+                            "status": "complete" if eligible else "partial",
+                            "detail": finding["eligibility_reason"]}
                 if event.module == "API Patch / Anti-Blinding Detector":
                     ticks = details.get("process_birth")
                     if type(ticks) is int and 116444736000000000 < ticks < 2650467744000000000:
@@ -549,13 +597,18 @@ class SpywareGuardModule(BaseModule):
                 if isinstance(remote, str):
                     finding["remote_ip"] = remote
                 from angerona.modules.adversary_combat import AdversaryCombat
-                upstream = (details.get("response_authorized") is True
+                upstream = (finding.get("response_eligible") is not False
+                            and details.get("response_authorized") is True
                             and AdversaryCombat._response_actions(event) is not None)
                 if upstream:
                     self._upstream_events[(event.module, event.ts)] = None
                     while len(self._upstream_events) > 2048:
                         self._upstream_events.popitem(last=False)
-                self._publish(finding, local_authority=True, response_already_requested=upstream)
+                if event.module == "Memory Injection Scanner":
+                    self._publish_memory(finding, self.generation_stop_event(),
+                                         response_already_requested=upstream)
+                else:
+                    self._publish(finding, local_authority=True, response_already_requested=upstream)
 
     @staticmethod
     def _adapt_event(event: Event) -> dict:
@@ -621,23 +674,80 @@ class SpywareGuardModule(BaseModule):
                       for index in range(min(4, len(rows)))]
             self._memory_cursor = (self._memory_cursor + len(chosen)) % len(rows)
             memory_coverage = {}
+            memory_stopped = self.generation_stop_event()
+            memory_cancelled = False
+            def retired():
+                return memory_stopped.is_set() or memory_stopped is not self._stop
             for row in chosen:
+                if retired():
+                    memory_cancelled = True
+                    break
                 pid = row.get("pid")
                 if type(pid) is not int or pid <= 4 or pid in {os.getpid(), os.getppid()}:
                     continue
-                result = self._memory(pid, max_regions=512)
-                memory_coverage[str(pid)] = {"process_create_time": row.get("create_time"),
-                                              "coverage": result.get("coverage", {})}
+                request_id = secrets.token_hex(16)
+                try:
+                    result = self._memory(pid, max_regions=512,
+                        expected_create_time=row.get("create_time"), request_id=request_id,
+                        cancelled=retired)
+                except Exception as exc:
+                    # Do not rerun a legacy collector after TypeError: it may
+                    # already have inspected a process before raising.
+                    result = {"findings": [], "coverage": {"memory.provider": {
+                        "status": "error", "detail": type(exc).__name__ +
+                        ": identity protocol collection failed; no legacy fallback executed"}}}
+                receipt = parse_memory_identity(result.get("memory_identity"))
+                bound = (not retired() and receipt is not None and receipt.bound
+                         and receipt.source == "memory.windows.virtualquery"
+                         and receipt.pid == pid and receipt.request_id == request_id
+                         and type(row.get("create_time")) in (int, float)
+                         and receipt.expected_create_time == row["create_time"]
+                         and receipt.expected_create_time is not None)
+                coverage = dict(result.get("coverage", {}))
+                if retired():
+                    identity_detail = "Memory collection owner generation stopped or was replaced; retained as advisory"
+                elif receipt is None:
+                    identity_detail = "Memory identity receipt missing or invalid"
+                elif not receipt.bound:
+                    identity_detail = receipt.reason
+                elif receipt.source != "memory.windows.virtualquery":
+                    identity_detail = "Unexpected memory identity source"
+                elif receipt.pid != pid:
+                    identity_detail = "Memory receipt PID differs from the requested process"
+                elif receipt.request_id != request_id:
+                    identity_detail = "Memory receipt belongs to another request or a replay"
+                elif not bound:
+                    identity_detail = "Memory receipt expected birth is missing or differs from the inventory generation"
+                else:
+                    identity_detail = receipt.reason
+                coverage["memory.identity"] = {"status": "complete" if bound else "partial",
+                    "detail": identity_detail}
+                memory_coverage[str(pid)] = {"expected_process_create_time": row.get("create_time"),
+                    "process_create_time": receipt.before.create_time if bound else None,
+                    "coverage": coverage}
                 for finding in result.get("findings", [])[:8]:
-                    finding = dict(finding, pid=pid, process_create_time=row.get("create_time"))
-                    self._publish(finding, local_authority=True)
-            complete = bool(memory_coverage) and all(
+                    finding = dict(finding, pid=pid,
+                        process_create_time=receipt.before.create_time if bound else None,
+                        memory_identity=result.get("memory_identity"),
+                        response_eligible=bound and finding.get("response_eligible") is not False,
+                        eligibility_reason=coverage["memory.identity"]["detail"])
+                    self._publish_memory(finding, memory_stopped)
+                if retired():
+                    memory_cancelled = True
+                    coverage["memory.identity"] = {"status": "partial",
+                        "detail": "Memory collection owner generation stopped or was replaced; retained as advisory"}
+                    break
+            complete = not memory_cancelled and bool(memory_coverage) and all(
                 entry["coverage"] and all(isinstance(source, dict) and source.get("status") == "complete"
                                           for source in entry["coverage"].values())
                 for entry in memory_coverage.values())
             with self._lock:
                 self._coverage["memory"] = {"status": "complete" if complete else "partial",
-                    "scope": "bounded-sample-only", "by_pid": memory_coverage}
+                    "scope": "bounded-sample-only", "cancelled": memory_cancelled, "by_pid": memory_coverage}
+                if memory_cancelled:
+                    self._coverage["host"] = "scan-cancelled-memory-owner-generation"
+            if memory_cancelled:
+                return
         else:
             with self._lock:
                 self._coverage["memory"] = "disabled" if not self._settings["spyware_memory_enabled"] else "no-processes"
@@ -769,14 +879,11 @@ class SpywareGuardModule(BaseModule):
             return self._vault
         if self._config is None:
             raise ValueError("archive-config-unavailable")
-        from angerona.core.secure_store import read_secret_values, write_secret_map
+        from angerona.core.secure_store import get_or_create_secret
         from angerona.core.spyware_quarantine import EncryptedQuarantine
         root = Path(self._config.data_dir)
         key_name = "SPYWAREGUARD_ARCHIVE_KEY"
-        existing = read_secret_values((key_name,), root, strict=True).get(key_name)
-        if existing is None:
-            existing = secrets.token_bytes(32).hex()
-            write_secret_map({key_name: existing}, root)
+        existing = get_or_create_secret(key_name, lambda: secrets.token_bytes(32).hex(), root)
         key = bytes.fromhex(existing)
         from angerona.core.engine_transport import private_directory
         private_directory(root / "spyware_guard")

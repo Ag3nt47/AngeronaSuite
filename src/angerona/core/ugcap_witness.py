@@ -113,20 +113,15 @@ def provision_host_identity(data_root):
     """Explicit worker action: retain private key only in the OS credential store."""
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from angerona.core.secure_store import read_secret_values, write_secret_map
+    from angerona.core.secure_store import get_or_create_secret
 
-    existing = read_secret_values((KEY_NAME,), Path(data_root), strict=True).get(KEY_NAME)
-    if existing:
-        signer = Ed25519PrivateSigner.from_pem(existing.encode("ascii"), key_id=CLIENT_KEY_ID)
-    else:
+    def create_pem():
         key = Ed25519PrivateKey.generate()
-        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
-                                serialization.NoEncryption()).decode("ascii")
-        write_secret_map({KEY_NAME: pem}, Path(data_root))
-        confirmed = read_secret_values((KEY_NAME,), Path(data_root), strict=True).get(KEY_NAME)
-        if confirmed != pem:
-            raise WitnessError("host-key-protected-storage-verification-failed")
-        signer = Ed25519PrivateSigner.from_pem(confirmed.encode("ascii"), key_id=CLIENT_KEY_ID)
+        return key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                 serialization.NoEncryption()).decode("ascii")
+
+    pem = get_or_create_secret(KEY_NAME, create_pem, Path(data_root))
+    signer = Ed25519PrivateSigner.from_pem(pem.encode("ascii"), key_id=CLIENT_KEY_ID)
     return signer.public_verifier()._public_key.public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode("ascii")
 

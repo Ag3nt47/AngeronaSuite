@@ -1056,6 +1056,92 @@
       "baseline_receipt_sha256": "67ab9a1ce4bd0f91535f6bac1c34aa5be84564e3e1886add880b31e609553a28",
       "fresh_observation_receipt_sha256": "05b8160d13377bb84d2b370bb7db0cf5fd73bd68e6c0b91b812028137f76f51c",
       "profile_ownership_sha256": "070c62757a54b55fc089f4f0e85c5164412421e839527372609a582302e42fcb"
+    },
+    {
+      "id": "SEC-10",
+      "status": "scoped-regressions-validated-passive-observed-with-gaps",
+      "cause_or_observation": "Sampled executable-region findings could use later inventory enrichment instead of identity from the same native inspection handle; obsolete workers must not retain response authority.",
+      "result_and_limits": "Bracket Windows metadata enumeration with PID and exact creation-time checks on the retained query-only handle. Missing, partial, inconsistent, unsupported or obsolete-owner evidence remains response-ineligible. Preserve existing process/region caps; no memory bytes, extra VM rights or kernel inspection. The preceding 18-suite cohort passed 505/0/0 skips and an earlier own-PID ABI gate passed, but neither establishes other-process efficacy or validates later key changes.",
+      "public_evidence": "key-and-memory-evidence.json",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "SIDE-09",
+      "status": "scoped-regressions-validated-passive-observed-with-gaps",
+      "cause_or_observation": "Private Black Box export could perform large formatting/archive work on the GUI path; saturated gap lists could obscure a distinct cap or cleanup failure.",
+      "result_and_limits": "Use a retained cancellable worker, bounded cached UI inputs, strict settings allowlist, .env hash-only handling, source identity checks, capped archive work and non-replacing output. Coalesce repeated identical gaps with counts and retain cleanup failure independently of the 64-row cap. Original450/3 cohort is retained; corrected 453/0 and subsequent 505/0/0 cohorts overlap. Blocking OS calls remain non-preemptible; no physical GUI latency or hostile QObject-deletion guarantee.",
+      "public_evidence": "key-and-memory-evidence.json",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "TST-40",
+      "status": "scoped-regressions-validated-passive-observed-with-gaps",
+      "cause_or_observation": "Published aa5b Python 3.11 GUI drill refused its second launch because it lacked a fresh healthy Process Monitor observation; the truncated hosted log does not establish the underlying cause.",
+      "result_and_limits": "Add real same-generation observation preflight and bounded typed refusal diagnostics before each click. Preserve all original assertions, production freshness/admission checks, launch/AAR deadlines and independent per-run witness. The subsequent 18-suite505/0/0 gate includes the actual GUI drill. Do not rewrite the old failure, claim a proven pacing race, weaken readiness, or equate outer supervisor proof with all nested-child attestation.",
+      "focused_receipt_sha256": "3139736d8502cf7dcb8c4462387c6f7e635c4bc76347e99e5c676dbc6fd36014",
+      "public_evidence": "key-and-memory-evidence.json",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "SEC-11",
+      "status": "scoped-regressions-validated-passive-observed-with-gaps",
+      "cause_or_observation": "Independent protected-map read/modify/write operations could discard a concurrent verified key, and competing first-time consumers could create different candidate keys.",
+      "result_and_limits": "Serialize the actual backing store with same-process reentrant transaction admission and an OS lease. Atomic first creation, strict presence and protected write/readback serve seven key consumers without replacing existing malformed state. Preserve exact store custody and visible contention. Retain R3's Fleet fixture identity-comparison failure and the reviewed stronger fixture; it passed in R4/R5. Final R5 accepted 786 passes/zero failures/three exact POSIX skips and same-source selfcheck 29 phases. Three fixed current-source observations completed, including 600.531 s/all 15 with 17 coverage strings. Guarded publication remains a separate mandatory gate. Cooperative locking does not defeat hostile same-user code, administrator/kernel compromise, whole-host rollback or Python key-copy recovery.",
+      "public_evidence": "key-and-memory-evidence.json",
+      "failed_r3_receipt_sha256": "99997f63f3a3b27ae302ccb428432eeb55fabc98f41d70d6cd15fcd09b081a65",
+      "fixture_refinement_manifest_sha256": "009415ee0388041b75db91e68d7c0aef32a3ba092033239bee7abed61e80bed7",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "SEC-12",
+      "status": "scoped-regressions-validated-passive-observed-with-gaps",
+      "cause_or_observation": "Legacy Bridge key migration could treat protected-storage or plaintext cleanup failures as usable configuration; disabled constructors should not acquire credential authority. A later native diagnostic captured Windows cross-API timestamp semantics causing a legacy-key false hold: path ctime is CreationTime while descriptor ctime is ChangeTime on CPython v3.12.10.",
+      "result_and_limits": "Disabled/invalid Bridge mode skips credential access; deliberate strong environment configuration remains supported. Protected migration refuses storage, conflict, identity, readback and leftover legacy-file uncertainty. R1/R2 collection failures and R3/R4 failures remain retained; original R4 exception cause is UNKNOWN. A separate 40-repetition capture returned 29 passes/11 failures with matching device/inode/size/mtime/birth but mismatched Windows path/descriptor ctime. Capture completion is not test success or retrospective R4 cause proof. The reviewed two-file repair compares Windows birth across APIs and retains full FD raw-change-time identity before/after, plus every original path/store/readback/unlink/residue hold. This timestamp repair leaves secure_store unchanged; broader key maintenance changes its transaction logic. R5 accepted 32 suites/451 functions, 789 collected/786 passed/0 failed/3 exact POSIX skips; 16 new Bridge cases and stronger Fleet passed. Same 8e09 selfcheck passed 29 phases/68modulePASS18SKIP+pipeline/native0. Fresh 30.203 s/30.079 s/600.531 s observations completed with retained gaps; guarded publication is a separate mandatory gate. No hostile-writer unlink lease, complete cached-runtime or native POSIX proof.",
+      "public_evidence": "key-and-memory-evidence.json",
+      "failed_r4_receipt_sha256": "9c5a38e5417ef1f528b05f588ebe499bf7936af3dc7031e9c4ee62135daa681c",
+      "bridge_diagnostic_receipt_sha256": "d19ef839c16342e1c491ca814032aca8a57ec476ff2efda9cea9acdc73d45366",
+      "bridge_stat_repair_manifest_sha256": "5778d56799789dbc1515c5c2609bffd68884a82bfac1369ed5be31d5a629a0b0",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "SEC-13",
+      "status": "R5-accepted-native-POSIX-coverage-unavailable",
+      "cause_or_observation": "An empty failed secret-tool lookup can represent a locked existing Secret Service item rather than key absence.",
+      "result_and_limits": "An exact eligible empty-not-found result may request bounded nonsecret gdbus SearchItems metadata. Require both locked and unlocked arrays empty before first creation; refuse missing tools, unsupported/custom backends, errors, malformed or unknown results. Successful existing lookups retain their backend. Default native Secret Service plus GLib gdbus is a new first-provisioning dependency. R5 inert adapter cases passed with exactly three POSIX-only skips retained: fork transaction lifecycle and Linux metadata-client overflow/timeout child retirement. Grader acceptance is complete, coverage is not. No native Linux, macOS Keychain or POSIX deployment proof is inferred.",
+      "public_evidence": "key-and-memory-evidence.json",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "SEC-14",
+      "status": "R5-accepted-no-hardware-attestation",
+      "cause_or_observation": "SGX runtime hints could appear as verified protection, and plain SQLite ignores unknown cipher PRAGMAs so a helper could falsely report encryption success; concurrent helper/singleton construction could create distinct state.",
+      "result_and_limits": "Report environment/pseudo-file hints as amber unverified status. Require a nonempty actual SQLCipher version and successful schema check, return false for plain SQLite, and serialize helper-key/singleton creation. Inert assurance cases passed within accepted R5. No quote verification, enclave measurement, production flight-cache helper caller, database migration, hardware key isolation or forensic memory-erasure claim.",
+      "public_evidence": "key-and-memory-evidence.json",
+      "current_validation_receipt_sha256": "6733a6fa05aa617f153993f48d985d7eec444302779db5b804294d1420c0a9b8"
+    },
+    {
+      "id": "OBS-06",
+      "status": "three-fixed-cases-completed-observed-with-gaps",
+      "cause_or_observation": "Fresh fixed-case observations distinguish current key-source behavior from earlier pre-key receipts, retain coverage/authority gaps and attribute primary-worker CPU without a clean-host verdict.",
+      "result_and_limits": "Current 8e09 SpywareGuard 30.203 s retained two gaps/2LOW+1MEDIUM; raw scanner 30.079 s retained 31 heartbeats/nine telemetry events/no gaps. Combined 15-module 600.531 s remained OBSERVED_WITH_GAPS with 17 coverage strings across nine modules and 364 events (1CRITICAL/2HIGH/342INFO/14LOW/5MEDIUM); zero recorded errors/crashes/capture/export/console loss/pending threads. Exact two supervisor-owned generations plus retained core retired at samegeneration WAIT0/native0 with handle closure, manager retirement, MainThread/noQApp and source/HEAD/bothindices/runtime/harness stable. Fifteen primary-worker segments/516rounds/16opened/16closed/gaps[] do not establish all-helper attribution. CPUtotal259.984375s/observation255.390625s is not a speedup or causal-regression result. Other 71 modules and optional memory/outbound research/cloud/response/beacon/quarantine/isolation/UGCAP stayed held/off. Capture375records=364events+11coverage controls; all364 marked original-integrity/live-receipt verified at export, but353omit response_authorized and0explicitly true. ThreeHIGH/CRIT and sevenSpywareGuard rows explicitly false. Filtered/omitted upstream detail prevents host/threat/FP adjudication. No alert clearing/baseline replacement. Earlier pre-key and fffd-selfcheck scopes and all failures remain separately retained; HOST-03/HOST-04 open. Guarded GitHub publication is a separate mandatory gate; these receipts alone do not prove it.",
+      "summary_receipt_sha256": "8dbf330f2fe0ab75f1744c5456227be657bb084aec5dd467b6ed163541538736",
+      "all15_receipt_sha256": "c5934d6031c37ef5a37b8a664073cafd2a5271ce84d64c1d8711d4808d0ecab2",
+      "public_evidence": "key-and-memory-evidence.json",
+      "fresh_solo_receipt_sha256s": [
+        "fa328817c38cf4b67d8e84d6b7bd1e369fc8a62ae2a0b683129a9a9e5530060b",
+        "41123d4a32aed93c3e14d841c43e4d5434012104c74936206d386f314dba527e"
+      ],
+      "final_observation_summary_sha256": "b3f8c499c3b89cc4047963328959baae2d75e592cc869894b2ce76c0ad2933ed",
+      "combined600_receipt_sha256": "8cc5d0dd04df63b50149f3e447be0f7b129abb5851110f2fbce6107c2fa18274",
+      "root_independent_review_sha256": "571d8ef507f0c22f58da94f8dede5d735237566f03896e750989815d85a1f334",
+      "filtered_capture_sha256": "17fddbbf4c3bd5e32af361e1f2dbcf05835ebaa32f371b6620ef9dbe62ad7558"
+    },
+    {
+      "id": "SEC-15",
+      "status": "OPEN_SOURCE_MANUAL_CLOUD_CONSULT_PRIVACY",
+      "cause_or_observation": "Source review confirms legacy alert Research and SOAR consult build prompts with raw event details and host/VPN/process-path/connection context; the dialog auto-starts the configured cloud worker without a pre-send payload preview.",
+      "result_and_limits": "Requires configured cloud credentials and explicit manual operator action; consent is separate from automatic-fallback flags. Source review confirms raw event/host/process context can reach configured providers without a pre-send payload preview. No actual secret transmission, autonomous upload, fallback-policy bypass or AI-to-host authority bypass was demonstrated. Separate 4-production-file/75-proposed-case repair is source-approved only, unactivated/untested. Earlier unsafe trusted-marker design was rejected before activation. The unactivated proposal restricts Ollama preview destinations to localhost/numeric loopback through existing attested transport; configured manual cloud routes remain available after review/Send within that proposal. AIConsultDialog adds no local-only toggle, universal provider-egress deny or global computer-only setting. Existing GUI context-enrichment latency is not repaired. No deployed host secrets or model provider were read/contacted for this source finding.",
+      "public_evidence": "key-and-memory-evidence.json"
     }
   ],
   "preserved_uncertainty": [
@@ -1071,5 +1157,6 @@
   "historical_review_status_before_upd06": "158 reviewed IDs; all156 prior raw issue objects/order retained. UPD-05 separates canonical servicing hardlinks from strict general asset custody; HOST-03 remains OPEN_NATIVE_OBSERVED from an applicable built-in Users Full Control grant on the OS-volume root. Native custody HELD/native_custody_accepted=false; no host ACL or validator relaxation. Initial217 productionPASS/one private acceptance-assumptionFAIL and separate31 capturePASS (30 overlap) are retained with exact retirement. Fresh seven-suite/expected-refusal proof: 218 passed/0 failed/errors/skips with exact retirement (a71e22da); native custody remains HELD_UNSAFE_VOLUME_ROOT. Static/archive/publication: separate post-freeze archive and post-commit guarded-publication receipts bind actual reviewed bytes; no future outcome is asserted here. Approved a156bdd/f848c01 histories and both llms.txt additions retained; a156bdd was not independently published. First private-only native3 confinement refusal is a separate retained harness error, not a product issue. The a3 Python3.13 one45-second/27-setup preflight failure remains cause UNKNOWN. No live UAC/install/restart health, persistent object lease, all86 efficacy, refreshed all15, performance gain, alert adjudication or historical-cause closure.",
   "historical_review_status_before_dbg15_dbg16_host04": "159 reviewed IDs; all158 prior raw objects/order and HOST-03 OPEN_NATIVE_OBSERVED retained. UPD-06 bounds transport handoff with scalar-budget validation and shared-deadline clamping. Combined gate/native-refusal result: 229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips. The first merge supervisor lacks a clean completion/native-retirement receipt; recovered exact staged/source/index evidence is separate. The remote guide retains historical CI/rerun and unexplained rename evidence without claiming current CI. No host ACL/policy relaxation, healthy custody, live install/restart health, whole-stage/provider deadline, publication success or old-cause closure is asserted.",
   "historical_review_status_before_per15_obs05": "162 reviewed IDs; all159 prior raw issue objects/order retained. DBG-15 preserves explicit boolean process identity gaps in advisory exports; DBG-16 retains sanitized numeric OS copy-error codes and original private causes. Twelve complete diagnostic/publication suites passed229/0 failures/errors/1 explicit Windows symlink skip; initial218pass/11fail/1skip fixture cohort retained. HOST-03 remains OPEN_NATIVE_OBSERVED with custody held; HOST-04 remains capacity risk after limited reversible recovery. Older e98 passive15-module observation remains OBSERVED_WITH_GAPS and does not validate later code. No physical protection/performance, new publication/CI/release/activation or historical timeout-cause closure is asserted.",
-  "review_status": "164 reviewed IDs; all162 prior raw issue objects/order retained. PER-15 uses public PID enumeration with both fresh identity passes and unchanged1.5-second freshness;452regressions and29isolated selfcheck phases passed. OBS-05 adds exact primary-worker CPU attribution. Fresh90.437s15-module observation remains OBSERVED_WITH_GAPS with17gap strings and no recorded errors/drops/pending threads. No demonstrated CPU reduction; measured later CPU55.59375 exceeds earlier52.46875 in uncontrolled observations. Both optional profiler attempts failed before scanning and remain retained. HOST-03/HOST-04 and historical causes remain open. Current publication/CI/release/activation need their separate receipts."
+  "historical_review_status_before_memory_key_review": "164 reviewed IDs; all162 prior raw issue objects/order retained. PER-15 uses public PID enumeration with both fresh identity passes and unchanged1.5-second freshness;452regressions and29isolated selfcheck phases passed. OBS-05 adds exact primary-worker CPU attribution. Fresh90.437s15-module observation remains OBSERVED_WITH_GAPS with17gap strings and no recorded errors/drops/pending threads. No demonstrated CPU reduction; measured later CPU55.59375 exceeds earlier52.46875 in uncontrolled observations. Both optional profiler attempts failed before scanning and remain retained. HOST-03/HOST-04 and historical causes remain open. Current publication/CI/release/activation need their separate receipts.",
+  "review_status": "173 reviewed IDs; all164 prior raw objects/order and preceding review_status preserved. Current8e09 R5 accepted32 suites/451functions:789collected/786passed/0failed/errors/3exactPOSIXskips; acceptance_complete=true, coverage_complete=false. Same-source final selfcheck passed29 phases,68modulePASS/18SKIP+separatepipeline. Three fixed observations completed:SpywareGuard30.203s/two gaps,scanner30.079s/no gaps,combined15-module600.531s/17coverage strings/nine modules/364events,0recorded errors/crashes/loss/pending threads. Exact outer2+retainedcore samegeneration WAIT0/native0/allhandlesclosed/managerretired/MainThread/noQApp and frozen source/head/bothindices/runtime/harness retained. Primary profile516rounds/16opened/16closed/gaps[] is not complete helper attribution or speed proof. Filtered375records=364events+11coverage controls; export verification flags do not authenticate redacted payload as original;353events omit response authority,0explicit true. ThreeHIGH/CRIT and sevenSpyGuard explicit false; coverage/assurance exposures and C2 advisory omissions remain, no host/FP verdict. All earlier failures,29/11 diagnostic and originalR4 UNKNOWN cause retained; HOST03/HOST04 remain open. SEC15 OPEN_SOURCE; separate4file/75case proposal source-approved only/unactivated/unrun, no local-only toggle/global computer-only setting/universal provider-egress deny. Guarded GitHub publication is a separate mandatory gate; these receipts alone do not prove it. No native Linux/Keychain/hardware-enclave/full86 efficacy/privileged mutation/WFP/external-witness or v1.15 completion claim; declared helper/runtime pins are not whole cached-runtime attestation."
 }

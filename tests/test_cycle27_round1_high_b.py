@@ -115,6 +115,10 @@ def test_jit_damper_requires_exact_path_and_digest(monkeypatch) -> None:
 
 
 def test_bound_jit_damper_still_emits_an_event(monkeypatch) -> None:
+    from angerona.core.spyware_sensors import MemoryIdentityReceipt, MemoryProcessIdentity
+    identity = MemoryProcessIdentity(801, 116444736000000000 + 123 * 10000000, 0)
+    receipt = MemoryIdentityReceipt("memory.windows.inject_scanner", "a" * 32, 801, None,
+        identity, identity, 123.0, 124.0, True, "bound", "Inert same-handle fixture")
     scanner = MemInjectScannerModule()
     bus = EventBus()
     scanner.bind(bus)
@@ -133,11 +137,14 @@ def test_bound_jit_damper_still_emits_an_event(monkeypatch) -> None:
             "image_identity_bound": True,
             "process_create_time": 123.0,
         },
+        memory_identity=receipt,
     )
 
     event = bus.recent(1)[0]
     assert event.severity == Severity.MEDIUM
     assert event.details["exact_identity_jit_damper"] is True
+    assert event.details["process_create_time"] == 123.0
+    assert event.details["response_eligible"] is True
 
 
 def _configured_bridge() -> MobileResponseBridge:

@@ -46,6 +46,8 @@ import math
 import os
 import re
 import shutil
+import stat
+import tempfile
 import sys
 import threading
 import time
@@ -2536,11 +2538,412 @@ class FirewallTab(QWidget):
 # ─────────────────────────────────────────────────────────────────────────────
 #  Main window
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Diagnostic exports are private copies, never evidence/response authority.
+BUNDLE_CHUNK_BYTES = 64 * 1024
+BUNDLE_FILE_BYTES = 4 * 1024 * 1024
+BUNDLE_CRASH_BYTES = 512 * 1024
+BUNDLE_SETTINGS_BYTES = 256 * 1024
+BUNDLE_ENV_BYTES = 1024 * 1024
+BUNDLE_TOTAL_BYTES = 16 * 1024 * 1024
+BUNDLE_READ_BYTES = 18 * 1024 * 1024
+BUNDLE_ARCHIVE_BYTES = 18 * 1024 * 1024
+BUNDLE_MANIFEST_BYTES = 64 * 1024
+BUNDLE_MEMBER_LIMIT = 32
+BUNDLE_SCAN_ENTRIES = 64
+BUNDLE_CRASH_FILES = 16
+BUNDLE_GUI_CHARS = 32 * 1024
+BUNDLE_GUI_NODES = 2048
+BUNDLE_SECONDS = 60.0
+_BUNDLE_SETTING_FLAGS = (
+    "live_debug_enabled", "spyware_auto_contain", "spyware_network_enabled",
+    "spyware_memory_enabled", "spyware_beacon_enabled", "spyware_beacon_channel",
+    "spyware_beacon_signal",
+)
+
+
+class _BundleCancelled(Exception):
+    pass
+
+
+class _BundleDeadline(Exception):
+    pass
+
+
+class _BundleSourceChanged(Exception):
+    pass
+
+
+class _BundleCapture:
+    """Copy existing GUI-owned values with bounds before formatting/encoding."""
+    def __init__(self):
+        self.chars = BUNDLE_GUI_CHARS
+        self.nodes = BUNDLE_GUI_NODES
+        self.omitted = 0
+
+    def copy(self, value, depth=0):
+        if self.nodes <= 0 or self.chars <= 0 or depth > 4:
+            self.omitted += 1
+            return None
+        self.nodes -= 1
+        if value is None or type(value) is bool:
+            return value
+        if type(value) is int:
+            if value.bit_length() <= 64:
+                return value
+            self.omitted += 1
+            return None
+        if type(value) is float:
+            if math.isfinite(value):
+                return value
+            self.omitted += 1
+            return None
+        if type(value) is str:
+            cap = min(self.chars, 512)
+            result = value[:cap]
+            self.chars -= len(result)
+            self.omitted += int(len(value) > len(result))
+            return result
+        if type(value) in (tuple, list):
+            result = []
+            for index, item in enumerate(value):
+                if index >= 64 or self.nodes <= 0 or self.chars <= 0:
+                    self.omitted += len(value) - index
+                    break
+                result.append(self.copy(item, depth + 1))
+            return result
+        if type(value) is dict:
+            result = {}
+            for index, (key, item) in enumerate(value.items()):
+                if index >= 32 or self.nodes <= 0 or self.chars <= 0:
+                    self.omitted += len(value) - index
+                    break
+                if type(key) is not str or len(key) > 64:
+                    self.omitted += 1
+                    continue
+                if len(key) > self.chars:
+                    self.omitted += len(value) - index
+                    break
+                self.chars -= len(key)
+                result[key] = self.copy(item, depth + 1)
+            return result
+        self.omitted += 1
+        return None
+
+    def document_tail(self, document):
+        # QTextDocument positions are UTF-16 units. Select a bounded tail in
+        # Qt before creating a Python string; never call full toPlainText().
+        end = max(0, document.characterCount() - 1)
+        count = min(self.chars, 16 * 1024, end)
+        cursor = QTextCursor(document)
+        cursor.setPosition(end - count)
+        cursor.setPosition(end, QTextCursor.KeepAnchor)
+        value = cursor.selectedText().replace("\u2029", "\n")
+        self.chars -= len(value)
+        self.omitted += int(end > count)
+        return value
+
+
+def _bundle_identity(info):
+    return info.st_dev, info.st_ino
+
+
+def _bundle_json(value):
+    return json.dumps(value, ensure_ascii=True, allow_nan=False,
+                      separators=(",", ":")).encode("ascii")
+
+
+class _BundleBuilder:
+    """Worker-only bounded source reads and ZIP construction, no widgets."""
+    def __init__(self, cancelled):
+        self.cancelled = cancelled
+        self.deadline = time.monotonic() + BUNDLE_SECONDS
+        self.read_left = BUNDLE_READ_BYTES
+        self.write_left = BUNDLE_TOTAL_BYTES - BUNDLE_MANIFEST_BYTES
+        self.members = 0
+        self._cleanup_gap = False
+        self.manifest = {
+            "schema": "angerona.blackbox.private-bundle.v2", "app": APP_NAME,
+            "generated": _dt.datetime.now().isoformat(timespec="seconds"),
+            "advisory_only": True, "private_export": True,
+            "privacy": "Raw diagnostics and UI copies can contain private data. "
+                       "Settings export is exact-boolean allowlist only; .env is hash-only. "
+                       "Review before sharing. Originals are unchanged.",
+            "gaps": [], "omitted_gap_count": 0, "sources": [],
+            "limits": {"read_bytes": BUNDLE_READ_BYTES, "zip_input_bytes": BUNDLE_TOTAL_BYTES,
+                       "file_bytes": BUNDLE_FILE_BYTES, "chunk_bytes": BUNDLE_CHUNK_BYTES,
+                       "crash_files": BUNDLE_CRASH_FILES, "scanned_entries": BUNDLE_SCAN_ENTRIES,
+                       "members": BUNDLE_MEMBER_LIMIT, "cooperative_seconds": BUNDLE_SECONDS},
+        }
+
+    def checkpoint(self):
+        if self.cancelled():
+            raise _BundleCancelled()
+        if time.monotonic() >= self.deadline:
+            raise _BundleDeadline()
+
+    def gap(self, source, reason):
+        if source == "partial_archive":
+            self._cleanup_gap = True
+        row = {"source": source[:128], "reason": reason[:80]}
+        # Repeated omissions must not crowd out distinct coverage gaps.
+        for existing in self.manifest["gaps"]:
+            if existing["source"] == row["source"] and existing["reason"] == row["reason"]:
+                existing["count"] = existing.get("count", 1) + 1
+                return
+        if len(self.manifest["gaps"]) < 64:
+            self.manifest["gaps"].append(row)
+        else:
+            self.manifest["omitted_gap_count"] += 1
+
+    def read_source(self, path, label, limit, *, tail=False, complete=False):
+        self.checkpoint()
+        cap = min(limit, self.read_left)
+        if cap <= 0:
+            self.gap(label, "aggregate-read-limit")
+            return None
+        descriptor = None
+        try:
+            before_path = path.lstat()
+            if (not stat.S_ISREG(before_path.st_mode)
+                    or getattr(before_path, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                self.gap(label, "nonregular-or-reparse-source-omitted")
+                return None
+            descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0)
+                                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = None
+                before = os.fstat(stream.fileno())
+                if not stat.S_ISREG(before.st_mode) or _bundle_identity(before) != _bundle_identity(before_path):
+                    raise _BundleSourceChanged()
+                if complete and before.st_size > cap:
+                    self.gap(label, "complete-source-exceeds-limit")
+                    return None
+                offset = max(0, before.st_size - cap) if tail else 0
+                stream.seek(offset)
+                remaining = min(before.st_size - offset, cap)
+                chunks = []
+                while remaining:
+                    self.checkpoint()
+                    chunk = stream.read(min(remaining, BUNDLE_CHUNK_BYTES))
+                    if not chunk:
+                        self.gap(label, "short-read")
+                        break
+                    self.read_left -= len(chunk)
+                    remaining -= len(chunk)
+                    chunks.append(chunk)
+                self.checkpoint()
+                after = os.fstat(stream.fileno())
+                after_path = path.lstat()
+                if (_bundle_identity(before) != _bundle_identity(after)
+                        or _bundle_identity(before) != _bundle_identity(after_path)
+                        or not stat.S_ISREG(after_path.st_mode)):
+                    raise _BundleSourceChanged()
+                changed = (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+                data = b"".join(chunks)
+                truncated = offset > 0 or len(data) < before.st_size
+                if changed:
+                    self.gap(label, "source-changed-during-read")
+                if truncated:
+                    self.gap(label, "source-byte-limit-or-short-read")
+                if complete and (changed or truncated):
+                    return None
+                receipt = {"source": label[:128], "bytes": len(data), "offset": offset,
+                           "size_at_open": before.st_size, "truncated": truncated,
+                           "changed_during_read": changed}
+                self.manifest["sources"].append(receipt)
+                return data
+        except FileNotFoundError:
+            self.gap(label, "source-unavailable")
+        except _BundleSourceChanged:
+            self.gap(label, "source-identity-changed-omitted")
+        except OSError as exc:
+            self.gap(label, "source-read-failed-" + type(exc).__name__)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        return None
+
+    def write_member(self, archive, name, data):
+        self.checkpoint()
+        if self.members >= BUNDLE_MEMBER_LIMIT - 1 or len(data) > self.write_left:
+            self.gap(name, "aggregate-zip-input-or-member-limit-omitted")
+            return
+        with archive.open(name, "w") as member:
+            for offset in range(0, len(data), BUNDLE_CHUNK_BYTES):
+                self.checkpoint()
+                member.write(data[offset:offset + BUNDLE_CHUNK_BYTES])
+        self.write_left -= len(data)
+        self.members += 1
+
+    def settings(self, archive):
+        raw = self.read_source(SETTINGS_JSON, "settings", BUNDLE_SETTINGS_BYTES, complete=True)
+        if raw is None:
+            return
+        def reject_duplicates(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate key")
+                result[key] = value
+            return result
+        try:
+            parsed = json.loads(raw, object_pairs_hook=reject_duplicates,
+                                parse_int=lambda _value: None, parse_float=lambda _value: None)
+            if type(parsed) is not dict:
+                raise ValueError("not an object")
+        except (ValueError, UnicodeError, RecursionError):
+            self.gap("settings", "invalid-settings-omitted")
+            return
+        included = {key: parsed[key] for key in _BUNDLE_SETTING_FLAGS
+                    if key in parsed and type(parsed[key]) is bool}
+        invalid = sum(key in parsed and type(parsed[key]) is not bool for key in _BUNDLE_SETTING_FLAGS)
+        if invalid:
+            self.gap("settings", "nonboolean-allowlisted-values-omitted")
+        self.write_member(archive, "settings.sanitized.json", _bundle_json({
+            "policy": "fixed-exact-boolean-allowlist; every other key/value omitted",
+            "flags": included, "omitted_top_level_fields": len(parsed) - len(included),
+        }))
+
+    def populate(self, archive, capture):
+        raw = _bundle_json(capture)
+        if len(raw) > 256 * 1024:
+            raise ValueError("GUI snapshot exceeded byte limit")
+        self.write_member(archive, "ui_snapshot.json", raw)
+        if capture.get("omitted", 0):
+            self.gap("ui_snapshot", "bounded-ui-snapshot-truncated")
+        self.settings(archive)
+        raw_env = self.read_source(ENV_FILE, "env", BUNDLE_ENV_BYTES, complete=True)
+        if raw_env is not None:
+            self.manifest["env_sha256"] = hashlib.sha256(raw_env).hexdigest()
+        for path in (NOT_RESPONDING, SELFTEST_FAILURES, CRASH_LOG, STATUS_JSON, FLOW_METRICS):
+            cap = min(BUNDLE_FILE_BYTES, self.write_left)
+            data = self.read_source(path, path.name, cap, tail=True)
+            if data is not None:
+                self.write_member(archive, "diagnostics/" + path.name + ".snapshot", data)
+        included = 0
+        try:
+            with os.scandir(CRASH_SNAP_DIR) as entries:
+                for index in range(BUNDLE_SCAN_ENTRIES):
+                    self.checkpoint()
+                    if included >= BUNDLE_CRASH_FILES:
+                        self.gap("crash_snapshots", "file-count-limit-remainder-unknown")
+                        break
+                    entry = next(entries, None)
+                    if entry is None:
+                        break
+                    if not entry.is_file(follow_symlinks=False):
+                        self.gap("crash_snapshots", "nonregular-entry-omitted")
+                        continue
+                    included += 1
+                    if len(entry.name) > 96:
+                        self.gap("crash_snapshots", "source-label-truncated")
+                    # Controlled member names avoid path traversal and duplicate
+                    # archive entries from untrusted diagnostic filenames.
+                    name = f"crash_snapshots/{included:04d}.snapshot"
+                    data = self.read_source(Path(entry.path), "crash:" + entry.name[:96],
+                                            min(BUNDLE_CRASH_BYTES, self.write_left), tail=True)
+                    if data is not None:
+                        self.write_member(archive, name, data)
+                else:
+                    self.gap("crash_snapshots", "entry-scan-limit-remainder-unknown")
+        except OSError as exc:
+            self.gap("crash_snapshots", "enumeration-failed-" + type(exc).__name__)
+        self.checkpoint()
+        raw_manifest = _bundle_json(self.manifest)
+        if len(raw_manifest) > BUNDLE_MANIFEST_BYTES:
+            raise ValueError("Manifest exceeded byte limit")
+        archive.writestr("manifest.json", raw_manifest)
+
+    def build(self, out, capture):
+        partial = None
+        owned_identity = None
+        published = False
+        descriptor = None
+        result = {"status": "failed", "published": False, "gap_count": 0}
+        try:
+            self.checkpoint()
+            # mkstemp creates only a new private export in the chosen directory.
+            # Source diagnostics, settings and environment are always read-only.
+            descriptor, name = tempfile.mkstemp(prefix=".Angerona_bundle_", suffix=".zip.partial", dir=out.parent)
+            partial = Path(name)
+            owned_identity = _bundle_identity(os.fstat(descriptor))
+            stream = os.fdopen(descriptor, "w+b")
+            descriptor = None  # stream now owns this exact descriptor
+            with stream:
+                with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                    self.populate(archive, capture)
+                self.checkpoint()
+                if stream.tell() > BUNDLE_ARCHIVE_BYTES:
+                    raise ValueError("Compressed archive exceeded byte limit")
+                stream.flush()
+                os.fsync(stream.fileno())
+                if _bundle_identity(partial.lstat()) != owned_identity:
+                    raise _BundleSourceChanged()
+                self.checkpoint()
+                # Atomic, no-replace publication. An existing destination or an
+                # unsupported filesystem is a visible failure, never a fallback
+                # overwrite or a silently partial final ZIP.
+                os.link(partial, out, follow_symlinks=False)
+                published = True
+            result["status"] = "created-with-gaps" if self.manifest["gaps"] else "created"
+        except _BundleCancelled:
+            result["status"] = "cancelled"
+        except _BundleDeadline:
+            result["status"] = "deadline-exceeded"
+        except Exception as exc:
+            result["error_type"] = type(exc).__name__
+        finally:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    self.gap("partial_archive", "descriptor-close-failed")
+            if partial is not None and owned_identity is None:
+                self.gap("partial_archive", "owned-identity-unavailable-cleanup-held")
+            if partial is not None and owned_identity is not None:
+                try:
+                    info = partial.lstat()
+                    if stat.S_ISREG(info.st_mode) and _bundle_identity(info) == owned_identity:
+                        partial.unlink()
+                    else:
+                        self.gap("partial_archive", "owned-path-identity-changed-cleanup-held")
+                except OSError as exc:
+                    self.gap("partial_archive", "cleanup-failed-" + type(exc).__name__)
+            result["published"] = published
+            result["gap_count"] = (sum(row.get("count", 1) for row in self.manifest["gaps"])
+                                   + self.manifest["omitted_gap_count"])
+            result["cleanup_gap"] = self._cleanup_gap
+            if published and result["gap_count"]:
+                result["status"] = "created-with-gaps"
+        return result
+
+
+class _BundleExportWorker(QThread):
+    def __init__(self, out, capture, parent=None):
+        super().__init__(parent)
+        self.out = out
+        self.capture = capture
+        self.result = None
+        self._cancel = threading.Event()
+        self.setObjectName("BlackBoxBundleExport")
+
+    def stop(self):
+        self._cancel.set()
+        self.requestInterruption()
+
+    def run(self):
+        builder = _BundleBuilder(lambda: self._cancel.is_set() or self.isInterruptionRequested())
+        self.result = builder.build(self.out, self.capture)
+
 class BlackBoxWindow(QMainWindow):
     close_completed = Signal()
     def __init__(self) -> None:
         super().__init__()
         self._closing = False
+        self._bundle_worker = None
+        self._bundle_dialog_open = False
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(make_icon())
         self.resize(1180, 820)
@@ -2600,13 +3003,17 @@ class BlackBoxWindow(QMainWindow):
         self.btn_export.setObjectName("Primary")
         self.btn_archive = QPushButton("Archive && Clear Logs")
         self.btn_sandbox = QPushButton("Launch Sandbox Editor")
+        self.btn_cancel_bundle = QPushButton("Cancel export")
+        self.btn_cancel_bundle.setEnabled(False)
         footer.addWidget(self.btn_export)
+        footer.addWidget(self.btn_cancel_bundle)
         footer.addWidget(self.btn_archive)
         footer.addStretch(1)
         footer.addWidget(self.btn_sandbox)
         outer.addLayout(footer)
 
         self.btn_export.clicked.connect(self.on_export_bundle)
+        self.btn_cancel_bundle.clicked.connect(self.on_cancel_bundle)
         self.btn_archive.clicked.connect(self.on_archive_clear)
         self.btn_sandbox.clicked.connect(self.on_launch_sandbox)
 
@@ -2681,6 +3088,10 @@ class BlackBoxWindow(QMainWindow):
                 if worker is not None:
                     worker.stop()
                     threads.append(worker)
+            bundle_worker = self._bundle_worker
+            if bundle_worker is not None:
+                bundle_worker.stop()
+                threads.append(bundle_worker)
             # Snapshot readers and optional detail/AI workers are owned by child
             # views, rather than the six always-present recorder attributes.
             from angerona.gui.async_snapshot import AsyncSnapshot
@@ -2738,78 +3149,127 @@ class BlackBoxWindow(QMainWindow):
             self.close()
 
     # -- footer actions -----------------------------------------------------
+    def _capture_bundle(self):
+        """GUI-thread DTO only: bounded selection/caches, no source file I/O."""
+        budget = _BundleCapture()
+        capture = {"schema": "angerona.blackbox.bounded-ui.v1", "advisory_only": True}
+        capture["console_tail"] = budget.document_tail(self.tab_logs.console.document())
+        views = {}
+        for name, value in (
+            ("host_telemetry", self.tab_host.latest), ("suite_health", self.tab_health.latest),
+            ("thread_state", self.tab_threads.latest), ("memory_profile", self.tab_mem.latest),
+            ("config_drift", self.tab_config.latest), ("firewall_rules", self.tab_firewall._all_rules),
+        ):
+            views[name] = budget.copy(value)
+        # SOAR cells already originate from capped 2,048-character fields.
+        # Bound rows/columns before copying, rather than formatting the table.
+        table = self.tab_soar.table
+        rows = []
+        for row in range(min(64, table.rowCount())):
+            if budget.chars <= 0 or budget.nodes <= 0:
+                break
+            values = []
+            for column in range(min(4, table.columnCount())):
+                item = table.item(row, column)
+                values.append(budget.copy(item.text() if item is not None else ""))
+            rows.append(values)
+        budget.omitted += max(0, table.rowCount() - len(rows))
+        views["soar_events"] = rows
+        panel = getattr(self, "tab_live_debug", None)
+        if panel is not None:
+            records = []
+            for row in panel.model.rows[-20:]:
+                if budget.nodes <= 0 or budget.chars <= 0:
+                    break
+                records.append(budget.copy({"original_view": row.record, "local_review": row.annotation}))
+            views["live_ai_review"] = {
+                "records": records, "omitted_visible_records": len(panel.model.rows) - len(records),
+                "status": budget.copy(panel._status_text), "server_pid": panel._connected_pid,
+                "client_gaps": budget.copy(panel._lost),
+                "history_evicted": budget.copy(panel.model.evicted),
+                "advisory_only": True,
+            }
+        capture["views"] = views
+        capture["omitted"] = budget.omitted
+        return capture
+
     @Slot()
     def on_export_bundle(self) -> None:
-        """Requirement #12 — comprehensive timestamped .zip diagnostic bundle."""
-        default = str(ARCHIVE_DIR / f"Angerona_DiagBundle_{now_stamp()}.zip")
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Save Diagnostic Bundle", default, "Zip archive (*.zip)")
-        if not path:
+        """Admit one private export; source reads/compression run off the GUI."""
+        if self._closing:
             return
+        if self._bundle_worker is not None or self._bundle_dialog_open:
+            self.status_chip.setText("Export already active; duplicate request held")
+            return
+        self._bundle_dialog_open = True
+        self.btn_export.setEnabled(False)
         try:
-            self._build_bundle(Path(path))
-        except Exception as exc:  # never crash the recorder on export
-            QMessageBox.critical(self, "Export failed", f"{exc}\n\n{traceback.format_exc()}")
-            return
-        QMessageBox.information(self, "Bundle created", f"Saved:\n{path}")
+            default = str(ARCHIVE_DIR / f"Angerona_DiagBundle_{now_stamp()}.zip")
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save private diagnostic bundle (choose a NEW filename)",
+                default, "Zip archive (*.zip)")
+            if not path or self._closing:
+                self.btn_export.setEnabled(not self._closing)
+                return
+            capture = self._capture_bundle()
+            worker = _BundleExportWorker(Path(path), capture, self)
+            self._bundle_worker = worker
+            worker.finished.connect(lambda: self._bundle_retired(worker))
+            self.btn_cancel_bundle.setEnabled(True)
+            self.status_chip.setText("Export running — private diagnostics; review before sharing")
+            try:
+                worker.start()
+            except Exception as exc:
+                worker.result = {"status": "failed", "published": False,
+                                 "error_type": type(exc).__name__, "gap_count": 0}
+                worker.stop()
+                self._bundle_retired(worker)
+        except Exception as exc:
+            self.btn_export.setEnabled(not self._closing)
+            self.status_chip.setText("Export setup failed: " + type(exc).__name__)
+        finally:
+            self._bundle_dialog_open = False
 
-    def _build_bundle(self, out: Path) -> None:
-        manifest = {
-            "app": APP_NAME,
-            "generated": _dt.datetime.now().isoformat(timespec="seconds"),
-            "angerona_pid": find_angerona_pid(),
-        }
-        with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-            # 1) live thread dump
-            z.writestr("thread_dump.txt", self.tab_threads.snapshot_text())
-            # 2) raw crash / diagnostic files
-            for p in (NOT_RESPONDING, SELFTEST_FAILURES, CRASH_LOG, STATUS_JSON,
-                      FLOW_METRICS):
-                if p.exists():
-                    try:
-                        # copy at most the last 4 MB of any huge log
-                        size = p.stat().st_size
-                        with open(p, "rb") as fh:
-                            if size > 4 * 1024 * 1024:
-                                fh.seek(size - 4 * 1024 * 1024)
-                                z.writestr(f"diagnostics/{p.name}.tail", fh.read())
-                            else:
-                                z.writestr(f"diagnostics/{p.name}", fh.read())
-                    except OSError:
-                        pass
-            if CRASH_SNAP_DIR.is_dir():
-                for f in CRASH_SNAP_DIR.glob("*"):
-                    if f.is_file():
-                        try:
-                            z.writestr(f"crash_snapshots/{f.name}", f.read_bytes())
-                        except OSError:
-                            pass
-            # 3) .env hash (NEVER the secret contents) + settings.json state
-            if ENV_FILE.exists():
-                try:
-                    digest = hashlib.sha256(ENV_FILE.read_bytes()).hexdigest()
-                    manifest["env_sha256"] = digest
-                    manifest["env_mtime"] = _dt.datetime.fromtimestamp(
-                        ENV_FILE.stat().st_mtime).isoformat()
-                except OSError:
-                    pass
-            if SETTINGS_JSON.exists():
-                try:
-                    z.writestr("settings.json", SETTINGS_JSON.read_bytes())
-                except OSError:
-                    pass
-            # 4) point-in-time snapshots
-            z.writestr("host_telemetry.txt",  self.tab_host.snapshot_text())
-            z.writestr("suite_health.txt",    self.tab_health.snapshot_text())
-            z.writestr("memory_profile.txt",  self.tab_mem.snapshot_text())
-            z.writestr("config_drift.txt",    self.tab_config.snapshot_text())
-            z.writestr("soar_events.txt",     self.tab_soar.snapshot_text())
-            z.writestr("firewall_rules.txt",  self.tab_firewall.snapshot_text())
-            z.writestr("console_tail.txt",    self.tab_logs.snapshot_text())
-            debug_panel = getattr(self, "tab_live_debug", None)
-            if debug_panel is not None:
-                z.writestr("live_ai_review.json", debug_panel.snapshot_text())
-            z.writestr("manifest.json", json.dumps(manifest, indent=2))
+    @Slot()
+    def on_cancel_bundle(self) -> None:
+        worker = self._bundle_worker
+        if worker is not None:
+            worker.stop()
+            self.btn_cancel_bundle.setEnabled(False)
+            self.status_chip.setText("Cancelling export… waiting for active I/O")
+
+    def _bundle_retired(self, worker) -> None:
+        from shiboken6 import isValid
+
+        if not isValid(self) or not isValid(worker) or self._bundle_worker is not worker:
+            return
+        # A result/finished signal alone is not proof of native thread exit.
+        if not worker.wait(0):
+            QTimer.singleShot(25, lambda: self._bundle_retired(worker))
+            return
+        if self._closing:
+            # stop_workers owns this object until its shutdown tuple retires.
+            # Parent deletion then releases this already-stopped QThread.
+            return
+        self._bundle_worker = None
+        self.btn_export.setEnabled(True)
+        self.btn_cancel_bundle.setEnabled(False)
+        result = worker.result or {"status": "failed", "published": False, "gap_count": 0}
+        destination = str(worker.out)[:1024]
+        worker.deleteLater()
+        self.status_chip.setText("Export: " + result["status"])
+        if result.get("published"):
+            QMessageBox.information(
+                self, "Private bundle created", f"Saved:\n{destination}\n\n"
+                f"Reported gaps: {result.get('gap_count', 0)}. Inspect manifest.json and "
+                "settings.sanitized.json. This ZIP can contain private diagnostic data. "
+                "Review before sharing. Existing destination files are never overwritten."
+                + ("\nTemporary-file cleanup needs review." if result.get("cleanup_gap") else ""))
+        elif result["status"] not in ("cancelled",):
+            QMessageBox.warning(
+                self, "Export incomplete", "No completed bundle was published. Status: "
+                + result["status"] + "; " + result.get("error_type", "")
+                + (". Temporary-file cleanup needs review." if result.get("cleanup_gap") else ""))
 
     @Slot()
     def on_archive_clear(self) -> None:

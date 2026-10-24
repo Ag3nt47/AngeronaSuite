@@ -39,12 +39,17 @@ import ctypes.wintypes
 import hmac
 import math
 import os
+import secrets
 import sys
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.spyware_sensors import (
+    MemoryIdentityReceipt, memory_identity_receipt, parse_memory_identity,
+    read_memory_process_identity,
+)
 from angerona.core.process_allowlist import (
     executable_sha256 as _executable_sha256,
     policy_snapshot as _process_policy_snapshot,
@@ -244,6 +249,8 @@ def _try_load_kernel32() -> Optional[ctypes.WinDLL]:
             ctypes.POINTER(ctypes.wintypes.DWORD),
         ]
         k32.QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
+        k32.GetProcessId.argtypes = [ctypes.wintypes.HANDLE]
+        k32.GetProcessId.restype = ctypes.wintypes.DWORD
         k32.GetProcessTimes.argtypes = [
             ctypes.wintypes.HANDLE,
             ctypes.POINTER(FILETIME),
@@ -471,6 +478,13 @@ class MemInjectScannerModule(BaseModule):
         """Walk the VAS of a single PID, looking for suspicious RWX regions."""
         stopped = self.generation_stop_event()
         handle = None
+        before = after = None
+        closed = False
+        started_at = time.time()
+        request_id = secrets.token_hex(16)
+        regions: list[tuple[int, int, int]] = []
+        pending_image = None
+        limit_reason = ""
         try:
             if not self._generation_active(stopped):
                 return _PidScanResult(False, False, "cancelled")
@@ -482,10 +496,10 @@ class MemInjectScannerModule(BaseModule):
                     False,
                     "denied" if ctypes.get_last_error() == 5 else "failed",
                 )
+            before = read_memory_process_identity(self._k32, handle, filetime_type=FILETIME)
             mbi = MEMORY_BASIC_INFORMATION()
             mbi_size = ctypes.sizeof(mbi)
             addr: int = 0
-            regions: list[tuple[int, int, int]] = []   # (base, size, protect)
             queried = 0
             deadline = time.monotonic() + self._PID_TRAVERSAL_SECONDS
             pacing_allowance = self._PID_PACING_ALLOWANCE_SECONDS
@@ -522,9 +536,16 @@ class MemInjectScannerModule(BaseModule):
                     return _PidScanResult(True, False, "cancelled")
                 if ret == 0:
                     if ctypes.get_last_error() not in (0, 87):
-                        return _PidScanResult(True, False, "failed")
+                        if not regions:
+                            return _PidScanResult(True, False, "failed")
+                        limit_reason = "Native metadata query failed after positive evidence"
                     break   # end of accessible VAS for this process
                 queried += 1
+                if ret != mbi_size:
+                    if not regions:
+                        return _PidScanResult(True, False, "failed")
+                    limit_reason = "Native query returned incomplete memory metadata"
+                    break
 
                 region_base = mbi.BaseAddress
                 region_size = mbi.RegionSize
@@ -543,12 +564,15 @@ class MemInjectScannerModule(BaseModule):
                 # Advance — if RegionSize is 0 we'd loop forever
                 next_address = int(region_base) + int(region_size)
                 if region_size == 0 or next_address <= addr:
-                    return _PidScanResult(True, False, "failed")
+                    if not regions:
+                        return _PidScanResult(True, False, "failed")
+                    limit_reason = "Native metadata query failed to advance"
+                    break
                 addr = next_address
 
             # One aggregated alert per process (not one per region) — this is what
             # turned a JIT app's dozens of RWX regions into an alert storm.
-            birth = self._bound_process_birth(handle) if regions else None
+            birth = before.create_time if regions and before is not None and before.pid == pid and before.exit_filetime == 0 else None
             cooldown_key = (pid, birth) if birth is not None else None
             if regions and (
                 cooldown_key is None
@@ -563,31 +587,41 @@ class MemInjectScannerModule(BaseModule):
                     bound_image = {**bound_image, "process_create_time": birth}
                 if not self._generation_active(stopped):
                     return _PidScanResult(True, False, "cancelled")
-                self._alert(
-                    pid,
-                    proc_name,
-                    regions,
-                    process_policy,
-                    bound_image=bound_image,
-                    scan_complete=not limit_reason,
-                    scan_limit_reason=limit_reason,
-                )
+                pending_image = bound_image
             if not self._generation_active(stopped):
                 return _PidScanResult(True, False, "cancelled")
             if limit_reason:
-                return _PidScanResult(True, False, "partial")
-            if queried <= 0:
-                return _PidScanResult(True, False, "failed")
-            return _PidScanResult(True, True, "scanned")
+                result = _PidScanResult(True, False, "partial")
+            elif queried <= 0:
+                result = _PidScanResult(True, False, "failed")
+            else:
+                result = _PidScanResult(True, True, "scanned")
 
-        except Exception:
-            return _PidScanResult(bool(handle), False, "failed")
+        except Exception as exc:
+            result = _PidScanResult(bool(handle), False, "partial" if regions else "failed")
+            if regions:
+                pending_image = {}
+                limit_reason = "Native metadata collection failed: " + type(exc).__name__
         finally:
             if handle:
                 try:
-                    self._k32.CloseHandle(handle)
-                except Exception:
-                    pass
+                    after = read_memory_process_identity(self._k32, handle, filetime_type=FILETIME)
+                finally:
+                    try:
+                        closed = bool(self._k32.CloseHandle(handle))
+                    except Exception:
+                        closed = False
+
+        if pending_image is not None:
+            identity = memory_identity_receipt(source="memory.windows.inject_scanner",
+                request_id=request_id, pid=pid, expected_create_time=None,
+                before=before, after=after, started_at=started_at, handle_closed=closed)
+            self._alert(pid, proc_name, regions, process_policy,
+                bound_image=pending_image, memory_identity=identity,
+                scan_complete=not limit_reason, scan_limit_reason=limit_reason)
+        if not self._generation_active(stopped):
+            return _PidScanResult(bool(handle), False, "cancelled")
+        return result
 
     # ── Enrichment helpers ────────────────────────────────────────────────────
     def _bound_process_birth(self, process_handle: int) -> float | None:
@@ -763,6 +797,7 @@ class MemInjectScannerModule(BaseModule):
         process_policy=None,
         *,
         bound_image: Optional[dict[str, object]] = None,
+        memory_identity: MemoryIdentityReceipt | None = None,
         scan_complete: bool = True,
         scan_limit_reason: str = "",
     ):
@@ -770,7 +805,10 @@ class MemInjectScannerModule(BaseModule):
         if not self._generation_active(stopped):
             return
         now = time.time()
-        birth = (bound_image or {}).get("process_create_time")
+        identity = parse_memory_identity(memory_identity)
+        identity_bound = (identity is not None and identity.bound and identity.pid == pid
+                          and identity.source == "memory.windows.inject_scanner")
+        birth = identity.before.create_time if identity_bound else None
         cooldown_key = (
             (pid, float(birth))
             if type(birth) in (int, float) and math.isfinite(birth) and birth > 0
@@ -798,8 +836,12 @@ class MemInjectScannerModule(BaseModule):
             if cooldown_key is not None and self._seen.get(cooldown_key) == now:
                 self._seen.pop(cooldown_key, None)
             return
+        # PID enrichment is advisory and may describe a later reused PID.
+        # Neither it nor image enrichment can stand in for inspected-object proof.
+        enrichment_birth = ctx.pop("process_create_time", None)
         if bound_image:
-            ctx.update(bound_image)
+            ctx.update({key: value for key, value in bound_image.items()
+                        if key != "process_create_time"})
         trusted_jit = self._trusted_jit_image(
             proc_name,
             str(ctx.get("exe") or ""),
@@ -860,7 +902,12 @@ class MemInjectScannerModule(BaseModule):
                 rss_kb=ctx.get("rss_kb"),
                 predicted_technique=prediction,
                 mitre_tags=["T1055", "T1055.001", "T1055.003", "T1055.012"],
-                process_create_time=ctx.get("process_create_time"),
+                process_create_time=birth,
+                pid_enrichment_create_time=enrichment_birth,
+                pid_enrichment_identity_bound=False,
+                memory_identity=identity.to_dict() if identity is not None else None,
+                memory_identity_status=identity.status if identity is not None else "unavailable",
+                response_eligible=bool(identity_bound),
                 active_attack=False,
                 disposition="observation",
                 detector_policy="rwx-memory-indicator-alert-only",

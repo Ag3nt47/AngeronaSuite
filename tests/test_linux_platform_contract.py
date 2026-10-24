@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from angerona.core.eventbus import EventBus
 from angerona.core.eventbus import Severity
 from angerona.core.module_manager import ModuleManager
@@ -160,6 +162,9 @@ def test_linux_secret_store_uses_secret_service_without_a_reference_file(
     from angerona.platforms.linux import secret_service
 
     stored: dict[str, bytes] = {}
+    lock_root = tmp_path / "inert-credential-locks"
+    lock_root.mkdir()
+    monkeypatch.setattr(secure_store, "_account_lock_directory", lambda: lock_root)
     monkeypatch.setattr(secure_store.sys, "platform", "linux")
     monkeypatch.setattr(
         secret_service,
@@ -192,6 +197,9 @@ def test_linux_secret_store_refuses_overwrite_when_keyring_is_locked(
     from angerona.platforms.linux import secret_service
 
     writes: list[bytes] = []
+    lock_root = tmp_path / "inert-credential-locks"
+    lock_root.mkdir()
+    monkeypatch.setattr(secure_store, "_account_lock_directory", lambda: lock_root)
     monkeypatch.setattr(secure_store.sys, "platform", "linux")
     monkeypatch.setattr(
         secret_service,
@@ -232,6 +240,186 @@ def test_secret_tool_receives_secret_on_stdin_never_argv(monkeypatch) -> None:
     assert secret_service.read_blob("service", "account") == b'{"A":"B"}'
     assert calls[0][1] == payload
     assert all(payload.decode() not in argument for argument in calls[0][0])
+
+
+@pytest.mark.parametrize("returncode,stdout,expected", [
+    (1, b"", None),
+    (0, b'{"A":"B"}\n', b'{"A":"B"}'),
+])
+def test_secret_tool_lookup_distinguishes_only_exact_missing_result(
+    monkeypatch, returncode, stdout, expected,
+) -> None:
+    import subprocess
+
+    from angerona.platforms.linux import secret_service
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=b"")
+
+    monkeypatch.setattr(secret_service, "_tool", lambda: "/inert/secret-tool")
+    monkeypatch.setattr(secret_service.subprocess, "run", run)
+    metadata = []
+    monkeypatch.setattr(secret_service, "_native_service_backend", lambda: True)
+    monkeypatch.setattr(secret_service.shutil, "which", lambda _name: "/inert/gdbus")
+    monkeypatch.setattr(secret_service, "_metadata_probe", lambda argv:
+                        (metadata.append(argv) or subprocess.CompletedProcess(argv, 0, b"(@ao [], @ao [])\n", b"")))
+    assert secret_service.read_blob("inert-service", "inert-account") == expected
+    assert calls[0][1]["timeout"] == 15 and calls[0][1]["check"] is False
+    assert "input" not in calls[0][1]
+    assert len(metadata) == (1 if returncode == 1 else 0)
+    if metadata:
+        assert "org.freedesktop.Secret.Service.SearchItems" in metadata[0]
+        assert metadata[0][-1] == "{'service': 'inert-service', 'account': 'inert-account'}"
+
+
+@pytest.mark.parametrize("returncode,stdout,stderr", [
+    (2, b"", b""),
+    (-9, b"", b""),
+    (1, b"", b"backend rejected lookup"),
+    (1, b"unexpected output", b""),
+    (1, b"\n", b""),
+    (1, b"", b" "),
+    (0, b"", b""),
+    (0, b"\r\n", b""),
+])
+def test_secret_tool_failed_or_empty_lookup_never_means_missing(
+    monkeypatch, returncode, stdout, stderr,
+) -> None:
+    import subprocess
+
+    from angerona.platforms.linux import secret_service
+
+    monkeypatch.setattr(secret_service, "_tool", lambda: "/inert/secret-tool")
+    monkeypatch.setattr(secret_service.subprocess, "run", lambda argv, **_kwargs:
+                        subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr))
+    with pytest.raises(secret_service.SecretServiceError):
+        secret_service.read_blob("inert-service", "inert-account")
+
+
+@pytest.mark.parametrize("returncode,stdout,stderr", [
+    (0, b"(@ao [], @ao [objectpath '/locked/item'])", b""),
+    (0, b"([objectpath '/unlocked/item'], @ao [])", b""),
+    (0, b"unknown tuple", b""),
+    (0, b"(@ao [], @ao [])", b"warning"),
+    (1, b"", b""),
+])
+def test_metadata_search_never_treats_existing_locked_or_unknown_items_as_absent(
+    monkeypatch, returncode, stdout, stderr,
+) -> None:
+    import subprocess
+
+    from angerona.platforms.linux import secret_service
+
+    monkeypatch.setattr(secret_service, "_native_service_backend", lambda: True)
+    monkeypatch.setattr(secret_service.shutil, "which", lambda _name: "/inert/gdbus")
+    monkeypatch.setattr(secret_service, "_metadata_probe", lambda argv:
+                        subprocess.CompletedProcess(argv, returncode, stdout, stderr))
+    with pytest.raises(secret_service.SecretServiceError, match="absence is unproven"):
+        secret_service._confirm_item_absent("inert-service", "inert-account")
+
+
+def test_missing_metadata_tool_refuses_ambiguous_absence(monkeypatch) -> None:
+    from angerona.platforms.linux import secret_service
+
+    monkeypatch.setattr(secret_service, "_native_service_backend", lambda: True)
+    monkeypatch.setattr(secret_service.shutil, "which", lambda _name: None)
+    with pytest.raises(secret_service.SecretServiceError, match="requires gdbus"):
+        secret_service._confirm_item_absent("inert-service", "inert-account")
+
+
+def test_metadata_identity_cannot_inject_gvariant_or_commands(monkeypatch) -> None:
+    from angerona.platforms.linux import secret_service
+
+    monkeypatch.setattr(secret_service, "_native_service_backend", lambda: True)
+    monkeypatch.setattr(secret_service.shutil, "which", lambda _name: pytest.fail("unsafe identity reached tool discovery"))
+    with pytest.raises(secret_service.SecretServiceError, match="identity is invalid"):
+        secret_service._confirm_item_absent("service'}; injected", "account")
+
+
+@pytest.mark.parametrize("backend,snap,flatpak", [
+    ("file", False, False), ("custom", False, False),
+    ("service", True, False), ("", False, True),
+])
+def test_direct_service_metadata_cannot_prove_other_backend_absence(monkeypatch, backend, snap, flatpak) -> None:
+    from types import SimpleNamespace
+
+    from angerona.platforms.linux import secret_service
+
+    monkeypatch.setenv("SECRET_BACKEND", backend)
+    monkeypatch.delenv("SNAP_NAME", raising=False)
+    if snap:
+        monkeypatch.setenv("SNAP_NAME", "")
+    monkeypatch.setattr(secret_service, "Path", lambda _path: SimpleNamespace(exists=lambda: flatpak))
+    with pytest.raises(secret_service.SecretServiceError, match="this Linux backend"):
+        secret_service._confirm_item_absent("inert-service", "inert-account")
+
+
+def test_successful_existing_key_lookup_does_not_switch_backend(monkeypatch) -> None:
+    import subprocess
+
+    from angerona.platforms.linux import secret_service
+
+    monkeypatch.setenv("SECRET_BACKEND", "file")
+    monkeypatch.setattr(secret_service, "_tool", lambda: "/inert/secret-tool")
+    monkeypatch.setattr(secret_service.subprocess, "run", lambda argv, **_kwargs:
+                        subprocess.CompletedProcess(argv, 0, b'{"EXISTING":"inert-key"}\n', b""))
+    monkeypatch.setattr(secret_service, "_confirm_item_absent", lambda *_args: pytest.fail("existing key switched backend"))
+    assert secret_service.read_blob("inert-service", "inert-account") == b'{"EXISTING":"inert-key"}'
+
+
+def test_locked_existing_item_cannot_authorize_persistent_key_creation(monkeypatch, tmp_path) -> None:
+    import subprocess
+    from types import SimpleNamespace
+
+    from angerona.core import secure_store
+    from angerona.platforms.linux import secret_service
+
+    lock_root = tmp_path / "inert-credential-locks"
+    lock_root.mkdir()
+    monkeypatch.setattr(secure_store, "sys", SimpleNamespace(platform="linux"))
+    monkeypatch.setattr(secure_store, "_account_lock_directory", lambda: lock_root)
+    monkeypatch.setattr(secret_service, "_native_service_backend", lambda: True)
+    monkeypatch.setattr(secret_service, "_tool", lambda: "/inert/secret-tool")
+    monkeypatch.setattr(secret_service.shutil, "which", lambda _name: "/inert/gdbus")
+    monkeypatch.setattr(secret_service.subprocess, "run", lambda argv, **_kwargs:
+                        subprocess.CompletedProcess(argv, 1, b"", b""))
+    monkeypatch.setattr(secret_service, "_metadata_probe", lambda argv:
+                        subprocess.CompletedProcess(argv, 0, b"(@ao [], [objectpath '/locked/item'])", b""))
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        secure_store.get_or_create_secret("INERT_AUTHORITY", lambda: pytest.fail("locked item was replaced"), tmp_path)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Linux metadata client pipe lifecycle")
+@pytest.mark.parametrize("mode", ["overflow", "timeout"])
+def test_metadata_client_caps_output_and_retires_its_owned_inert_process(monkeypatch, mode) -> None:
+    import subprocess
+    import sys
+
+    from angerona.platforms.linux import secret_service
+
+    original = subprocess.Popen
+    owned = []
+
+    def launch(*args, **kwargs):
+        child = original(*args, **kwargs)
+        owned.append(child)
+        return child
+
+    monkeypatch.setattr(secret_service.subprocess, "Popen", launch)
+    if mode == "overflow":
+        code = "import sys; sys.stdout.buffer.write(b'x' * 4096); sys.stdout.flush()"
+        expected = "exceeded its bound"
+    else:
+        monkeypatch.setattr(secret_service, "_METADATA_TIMEOUT_SECONDS", 0.05)
+        code = "import time; time.sleep(30)"
+        expected = "timed out"
+    with pytest.raises(secret_service.SecretServiceError, match=expected):
+        secret_service._metadata_probe([sys.executable, "-c", code])
+    assert len(owned) == 1 and owned[0].poll() is not None
+    assert owned[0].stdout.closed and owned[0].stderr.closed
 
 
 def test_linux_xdg_autostart_round_trip(monkeypatch, tmp_path: Path) -> None:

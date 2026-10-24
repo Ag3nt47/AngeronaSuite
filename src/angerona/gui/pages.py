@@ -9414,12 +9414,11 @@ class SettingsDialog(QDialog):
             _sgx_on = is_confidential_compute_active()
         except Exception:
             _sgx_on = False
-        sgx_lbl = QLabel(("ACTIVE — the flight cache runs inside an SGX enclave."
-                          if _sgx_on else
-                          "Not active — run under Gramine-SGX to hardware-encrypt the "
-                          "in-memory cache (see angerona.manifest.template)."))
+        sgx_lbl = QLabel(("SGX/Gramine runtime hints detected. "
+                          if _sgx_on else "No SGX/Gramine runtime hint detected. ") +
+                         "Hardware attestation and flight-cache encryption are unverified.")
         sgx_lbl.setWordWrap(True)
-        sgx_lbl.setStyleSheet(f"color: {'#22c55e' if _sgx_on else '#94a3b8'}; font-size: 11px;")
+        sgx_lbl.setStyleSheet(f"color: {'#f59e0b' if _sgx_on else '#94a3b8'}; font-size: 11px;")
         lay.addWidget(sgx_lbl)
 
         lay.addStretch()

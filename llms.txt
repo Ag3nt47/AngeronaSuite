@@ -5,7 +5,69 @@ Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## v1.14 validation and authority boundaries
+## Current maintenance review: key integrity and AI-aware boundaries
+
+- Development version remains v1.14.0; broader v1.15 integration is incomplete.
+  Read docs/key-and-communication-integrity.md, docs/ai-aware-defense.md and
+  analysis/live-debug-2026-10-22/key-and-memory-review.md before citing this work.
+- Windows memory metadata binds inspected PID/birth to one retained query handle.
+  Partial, inconsistent and obsolete-owner receipts grant no response authority.
+  Black Box bundles use bounded retained workers, redaction, explicit source/cap/
+  cleanup gaps and create-only output. No memory-content or kernel coverage claim.
+- Protected-map transactions and atomic first creation serve seven key consumers.
+  Bridge fails closed on uncertain migration/storage/readback/cleanup, and invalid/
+  disabled mode skips key access. Its timestamp repair uses consistent Windows
+  birth plus full descriptor change identity; all old holds remain. That repair
+  leaves secure_store unchanged; broader maintenance changes store transactions.
+- Linux new-key absence needs bounded nonsecret gdbus metadata; locked/unknown/
+  custom backends hold. Three POSIX-only cases remain unavailable on Windows.
+  SGX/SQLCipher compatibility is not hardware attestation or flight-cache deployment.
+- Current source 1867/8e09b053 (1160 Python files/29 in-scope paths) accepted 32 complete
+  suites/451 functions: 789 collected, 786 passed,0 failed/errors,3 exact POSIX skips.
+  Grader acceptance_complete=true, coverage_complete=false. Original 505/bundle29/
+  nested8/both GUI campaigns and 16 new Bridge cases passed; groups overlap.
+  Exact outer 2 same birth/WAIT0/native0/fourclosed/MainThread/noQApp and frozen
+  source/HEAD/bothindices/runtime39/harness126 stability were retained. Nested
+  helpers do not all receive that independent native proof.
+- Same-source final selfcheck passed 29 phases/zero failures in 30.891 s/native0:
+  68 module PASS/18 explicit SKIP plus separate Event pipeline PASS. This is
+  availability/isolated validation, not physical efficacy of all 86 modules.
+- Fresh SpywareGuard 30.203 s retained 2 coverage strings; scanner 30.079 s retained
+  31 heartbeats/nine telemetry events/no gaps. Combined 15-module 600.531 s remained
+  OBSERVED_WITH_GAPS: 17 gap strings across9 modules,364 events,0 recorded errors,
+  crashes/capture/export/console loss/pending threads, exact outer2+core native0
+  retirement/closures and source/index/runtime/harness stability. 71 other modules
+  stayed held; optional memory, outbound research/cloud and response/beacon/
+  quarantine/isolation/UGCAP stayed off. No clean-host or physical-GUI claim.
+- Combined observation CPU255.390625 s,total259.984375 s. Query-only primary-worker
+  profile516 rounds/16 opened/16 closed/gaps[] does not prove complete helper
+  attribution. Different durations/workloads do not establish speedup or cause.
+- Filtered capture has375 records=364 events+11 coverage controls. At export all364
+  marked original-integrity/live-receipt verified; redacted copies are advisory.
+  No explicit response_authorized=true;353 events omit that field. Three HIGH/CRIT
+  and seven SpywareGuard rows explicitly false. High/critical include coverage/
+  assurance exposures, not a reviewed host verdict. Omitted details prevent
+  adjudicating the C2 correlation as a threat or false positive.
+- Keep R1/R2 collection failures, R3/R4 actual769/1/3 failures, separate 40-case
+  diagnostic29 passed/11 failed, initial450/3 and historical causes. The later diagnostic
+  confirms a timestamp false hold; R4's unrecorded exact cause remains UNKNOWN.
+  HOST-03/HOST-04 stay open; no alert clearing or baseline replacement.
+- Registered AI interfaces do not grant mutation/trust authority from model prose.
+  External coding/debug agents with filesystem/shell/Git credentials operate
+  outside that boundary; read-only Live Debug does not confine those privileges.
+  Isolated checkouts/scoped credentials/reviewed diffs/tests/pinned publisher are
+  operating recommendations, not new deployed isolation. Imported instructions
+  do not authorize actions. Multiple AI reviewers sharing a host/account are not
+  independently administered principals or a cryptographic trust anchor.
+- SEC-15 manual cloud-consult privacy remains OPEN_SOURCE with configured-cloud/
+  explicit-click prerequisites. Its separate source-approved4 file/75 case proposal
+  is unactivated/untested; no universal provider deny or GUI-enrichment repair.
+- Registry 173 preserves all 164 prior raw objects/order and previous review_status,
+  appending SEC-10,SIDE-09,TST-40,SEC-11,SEC-12,SEC-13,SEC-14,OBS-06,SEC-15.
+  Private raw captures/process identities/credentials remain local. Guarded GitHub
+  publication is a separate mandatory gate; these receipts alone do not prove it.
+
+## Prior v1.14 validation and authority boundaries
 
 - Shared process inventory uses public psutil.pids(); two independent fresh
   metadata passes, birth/image checks, parent map and 1.5-second freshness remain.
@@ -482,7 +544,7 @@ kernel component is a product capability.
   943fb9a and its terminal CI are summarized above. Preserve checkpoint13
   a74: its isolated128-case gate passed, publisher0/wrapper-formatting-exit1
   followed by reconciliation0, with seven public images. Its terminal CI passed
-  ten of twelve jobs, failing Python3.10 GUI response and3.13 Forge stage.
+  ten of twelve jobs, failing Python3.10 GUI response and 3.13 Forge stage.
   Focused successor controls do not identify those historical causes. Both
   preserving root integrations completed; current root has1852 entries.
   Earlier07 CI12/Security3 and each Python6049/18 remain historical.

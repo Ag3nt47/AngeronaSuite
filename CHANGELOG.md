@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.14.0 — memory identity, private diagnostics and key integrity
+
+- Bind executable-region metadata to the same retained Windows query handle.
+  Partial, inconsistent or obsolete-owner evidence remains advisory; no memory
+  contents, stronger VM rights or kernel inspection are added.
+- Bound private Black Box exports in a retained cancellable worker, with redacted
+  settings, explicit cap/cleanup gaps and create-only output. Preserve duplicate
+  export and worker-retirement admission.
+- Serialize protected-map updates and atomic first-key creation for seven
+  consumers. Bridge migration fails closed, disabled mode avoids credential
+  access, and the timestamp repair compares consistent path/descriptor clocks
+  while retaining all custody/readback/cleanup holds. Explicit strong environment
+  configuration remains supported.
+- Linux first provisioning needs nonsecret absence proof and gdbus; native POSIX
+  cases remain unavailable on Windows. SGX hints stay unverified, plain SQLite
+  cannot report SQLCipher success, and helper/singleton key creation is locked.
+- Current R5 passed 786 tests/zero failures with three exact POSIX skips across
+  32 suites/451 functions. Acceptance is complete, coverage is not. Same-source
+  selfcheck passed 29 phases: 68 module passes/18 explicit skips plus pipeline.
+- Fresh SpywareGuard 30.203 s, scanner 30.079 s and 15-module 600.531 s observations
+  completed. The combined run retained 17 coverage strings and 364 events, with
+  zero recorded errors/crashes/loss/pending threads and exact outer/core retirement.
+  It remains OBSERVED_WITH_GAPS; no host verdict, speed gain or all 86-sensor claim.
+- Preserve all earlier failures, unknown R4 cause and open HOST-03/HOST-04.
+  SEC-15 manual cloud-consult privacy remains open for a separate repair.
+  See [scoped evidence](analysis/live-debug-2026-10-22/key-and-memory-review.md).
+- Guarded GitHub publication is a separate mandatory gate; these receipts alone
+  do not prove publication. The broader v1.15 integration remains incomplete.
+
 ## 1.14.0 — shared process inventory and measured worker CPU
 
 - Enumerate public PIDs without unused cached iterator objects. Keep both fresh

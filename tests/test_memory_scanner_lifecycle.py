@@ -17,11 +17,28 @@ class _Kernel:
         self.queries = 0
         self.closed = []
         self.query = lambda _address: None
+        self.birth = 1000.0
+        self.exit_filetime = 0
+        self.times_available = True
+        self.identity_reads = 0
 
     def OpenProcess(self, flags, inherit, pid):
         assert flags == memory.PROCESS_QUERY_INFORMATION | memory.PROCESS_VM_READ
         assert inherit is False
         return pid
+
+    def GetProcessId(self, handle):
+        self.identity_reads += 1
+        return handle
+
+    def GetProcessTimes(self, handle, created, exited, kernel, user):
+        if not self.times_available:
+            return False
+        ticks = 116444736000000000 + int(self.birth * 10000000)
+        for pointer, value in ((created, ticks), (exited, self.exit_filetime)):
+            pointer._obj.dwLowDateTime = value & 0xFFFFFFFF
+            pointer._obj.dwHighDateTime = value >> 32
+        return True
 
     def VirtualQueryEx(self, handle, address, pointer, size):
         self.queries += 1
@@ -37,6 +54,7 @@ class _Kernel:
 
     def CloseHandle(self, handle):
         self.closed.append(handle)
+        return True
 
 
 @pytest.fixture
@@ -253,7 +271,7 @@ def test_existing_cooldown_precedes_hash_and_enrichment_but_never_skips_memory_s
     now = [1000.0]
     monkeypatch.setattr(memory.time, "time", lambda: now[0])
     scanner._seen[(101, 900.0)] = now[0]
-    monkeypatch.setattr(scanner, "_bound_process_birth", lambda _handle: 900.0)
+    scanner._k32.birth = 900.0
     scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
     hashes, enrichments = [], []
     monkeypatch.setattr(scanner, "_bound_image_identity", lambda _handle: hashes.append(1) or {})
@@ -270,13 +288,12 @@ def test_existing_cooldown_precedes_hash_and_enrichment_but_never_skips_memory_s
 
 
 def test_reused_pid_has_independent_cooldown_bound_to_scanned_handle(scanner, monkeypatch):
-    birth = [100.0]
+    scanner._k32.birth = 100.0
     scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
-    monkeypatch.setattr(scanner, "_bound_process_birth", lambda _handle: birth[0])
     hashes = []
     monkeypatch.setattr(scanner, "_bound_image_identity", lambda _handle: hashes.append(1) or {})
     for created in (100.0, 200.0, 200.0):
-        birth[0] = created
+        scanner._k32.birth = created
         assert scanner._scan_pid(101, "fixture.exe", ()).scanned
     assert scanner._k32.queries == 6
     assert len(hashes) == 2
@@ -287,7 +304,7 @@ def test_reused_pid_has_independent_cooldown_bound_to_scanned_handle(scanner, mo
 
 def test_missing_birth_evidence_cannot_create_pid_only_cooldown(scanner, monkeypatch):
     scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
-    monkeypatch.setattr(scanner, "_bound_process_birth", lambda _handle: None)
+    scanner._k32.times_available = False
     for _ in range(2):
         assert scanner._scan_pid(101, "fixture.exe", ()).scanned
     assert len(scanner._bus.recent(10)) == 2
@@ -402,3 +419,95 @@ def test_optional_duplicate_memory_map_walk_is_explicitly_unavailable(scanner, m
     ctx = memory.MemInjectScannerModule._enrich_process(scanner, 101)
     assert "omitted" in ctx["memory_map_enrichment"]
     assert "dll_count" not in ctx
+
+
+def test_memory_alert_enrichment_cannot_supply_missing_inspected_birth(scanner, monkeypatch):
+    scanner._k32.times_available = False
+    scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
+    monkeypatch.setattr(scanner, "_enrich_process", lambda _pid: {"process_create_time": 2000.0})
+    assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    event, = scanner._bus.recent(10)
+    assert event.details["process_create_time"] is None
+    assert event.details["pid_enrichment_create_time"] == 2000.0
+    assert event.details["pid_enrichment_identity_bound"] is False
+    assert event.details["response_eligible"] is False
+    assert event.details["memory_identity_status"] == "unavailable"
+    assert scanner._seen == {} and scanner._k32.closed == [101]
+
+
+def test_memory_alert_retains_native_birth_and_closes_before_pid_enrichment(scanner, monkeypatch):
+    scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
+    def enrich(_pid):
+        assert scanner._k32.closed == [101]
+        return {"process_create_time": 2000.0}
+    monkeypatch.setattr(scanner, "_enrich_process", enrich)
+    monkeypatch.setattr(scanner, "_bound_image_identity", lambda _handle: {"process_create_time": 3000.0})
+    assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    event, = scanner._bus.recent(10)
+    assert event.details["process_create_time"] == 1000.0
+    assert event.details["pid_enrichment_create_time"] == 2000.0
+    assert event.details["response_eligible"] is True
+    identity = memory.parse_memory_identity(event.details["memory_identity"])
+    assert identity.bound and identity.before.pid == 101
+    assert identity.before == identity.after and identity.handle_closed is True
+    assert scanner._k32.identity_reads == 2
+
+
+@pytest.mark.parametrize("failure", ["birth-changed", "pid-mismatch", "exited", "recheck-denied", "close-failed"])
+def test_memory_scanner_unbound_native_receipt_never_uses_enriched_identity(scanner, monkeypatch, failure):
+    scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
+    original = scanner._k32.GetProcessId
+    def get_pid(handle):
+        pid = original(handle)
+        if scanner._k32.identity_reads == 2:
+            if failure == "birth-changed":
+                scanner._k32.birth = 2000.0
+            elif failure == "exited":
+                scanner._k32.exit_filetime = 116444736000000001
+            elif failure == "recheck-denied":
+                scanner._k32.times_available = False
+        return pid + 1 if failure == "pid-mismatch" else pid
+    scanner._k32.GetProcessId = get_pid
+    if failure == "close-failed":
+        def close(handle):
+            scanner._k32.closed.append(handle)
+            return False
+        scanner._k32.CloseHandle = close
+    monkeypatch.setattr(scanner, "_enrich_process", lambda _pid: {"process_create_time": 2000.0})
+    assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    event, = scanner._bus.recent(10)
+    assert event.details["region_count"] == 1
+    assert event.details["process_create_time"] is None and event.details["response_eligible"] is False
+    assert event.details["memory_identity_status"] in {"mismatch", "unavailable"}
+    assert scanner._seen == {} and scanner._k32.closed == [101]
+
+
+@pytest.mark.parametrize("failure", ["denied", "raised", "malformed"])
+def test_memory_scanner_partial_failure_preserves_positive_metadata_and_owned_cleanup(scanner, monkeypatch, failure):
+    original = scanner._k32.VirtualQueryEx
+    scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE)
+    def query(handle, address, pointer, size):
+        if scanner._k32.queries:
+            if failure == "raised":
+                raise OSError("inert metadata failure")
+            return 0 if failure == "denied" else 1
+        return original(handle, address, pointer, size)
+    scanner._k32.VirtualQueryEx = query
+    monkeypatch.setattr(memory.ctypes, "get_last_error", lambda: 5, raising=False)
+    result = scanner._scan_pid(101, "fixture.exe", ())
+    assert result.outcome == "partial" and not result.scanned
+    event, = scanner._bus.recent(10)
+    assert event.details["region_count"] == 1 and event.details["memory_scan_complete"] is False
+    assert event.details["response_eligible"] is True
+    assert scanner._k32.closed == [101]
+
+
+def test_direct_memory_alert_without_native_receipt_keeps_birth_hint_advisory(scanner, monkeypatch):
+    monkeypatch.setattr(scanner, "_enrich_process", lambda _pid: {"process_create_time": 2000.0})
+    scanner._alert(101, "fixture.exe", [(0, 8192, memory.PAGE_EXECUTE_READWRITE)],
+                   bound_image={"process_create_time": 1000.0})
+    event, = scanner._bus.recent(10)
+    assert event.details["process_create_time"] is None
+    assert event.details["pid_enrichment_create_time"] == 2000.0
+    assert event.details["memory_identity"] is None and event.details["response_eligible"] is False
+    assert scanner._seen == {}

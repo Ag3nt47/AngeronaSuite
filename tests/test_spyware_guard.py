@@ -488,3 +488,262 @@ def test_config_load_preserves_strict_boolean_and_bounded_research_urls(tmp_path
     assert cfg.spyware_beacon_enabled is True
     assert cfg.spyware_auto_contain is False
     assert cfg.spyware_research_urls == ["https://example.org/report"]
+
+
+def _memory_receipt_fixture(*, pid=45001, birth=NOW - 10, request_id="a" * 32,
+                            source="memory.windows.virtualquery", expected=None,
+                            finished_at=NOW, status="bound"):
+    from angerona.core.spyware_sensors import MemoryIdentityReceipt, MemoryProcessIdentity
+    obj = MemoryProcessIdentity(pid, 116444736000000000 + int(birth * 10000000), 0)
+    return MemoryIdentityReceipt(source, request_id, pid, expected, obj, obj,
+        finished_at - 1, finished_at, True, status, "Inert same-handle fixture").to_dict()
+
+
+def _memory_finding_fixture():
+    return {"kind": "private_executable_memory", "severity": "MEDIUM",
+            "reason": "Inert private executable metadata", "response_eligible": True}
+
+
+def test_memory_scan_uses_collector_receipt_instead_of_inventory_birth():
+    calls = []
+    row = {"pid": 45001, "create_time": NOW - 10}
+    def collect(pid, **kwargs):
+        calls.append((pid, kwargs))
+        finding = dict(_memory_finding_fixture(), process_create_time=NOW - 999, pid=45099)
+        return {"findings": [finding], "coverage": {"memory.windows.virtualquery": {"status": "partial"}},
+            "memory_identity": _memory_receipt_fixture(pid=pid, request_id=kwargs["request_id"],
+                expected=kwargs["expected_create_time"])}
+    module, bus = make_module(process_observer=lambda: ProcessSnapshot((row,), NOW, True, 0, 0),
+                              memory_collector=collect)
+    module._settings["spyware_memory_enabled"] = True
+    module._scan_once()
+    event, = bus.recent(10)
+    assert calls[0][0] == 45001 and calls[0][1]["max_regions"] == 512
+    assert calls[0][1]["expected_create_time"] == NOW - 10
+    assert len(calls[0][1]["request_id"]) == 32 and not calls[0][1]["cancelled"]()
+    assert event.details["process_create_time"] == NOW - 10
+    assert event.details["response_eligible"] is True
+    assert event.details["response_contract"]["targets"] == {"pid": 45001, "process_create_time": NOW - 10}
+    assert "isolate_host" not in event.details["response_contract"]["actions"]
+    assert module.dashboard_snapshot()["coverage"]["memory"]["status"] == "partial"
+
+
+@pytest.mark.parametrize("case", ["legacy", "wrong-request", "wrong-pid", "wrong-source",
+                                  "mismatch", "no-expected-birth", "malformed"])
+def test_unbound_memory_finding_is_ineligible_before_any_response_including_host_fallback(monkeypatch, case):
+    row = {"pid": 45001, "create_time": NOW - 10}
+    def collect(pid, **kwargs):
+        receipt = _memory_receipt_fixture(pid=pid, request_id=kwargs["request_id"],
+                                          expected=kwargs["expected_create_time"])
+        if case == "wrong-request":
+            receipt["request_id"] = "0" * 32
+        elif case == "wrong-pid":
+            receipt = _memory_receipt_fixture(pid=45099, request_id=kwargs["request_id"], expected=NOW - 10)
+        elif case == "wrong-source":
+            receipt["source"] = "memory.windows.inject_scanner"
+        elif case == "mismatch":
+            receipt = _memory_receipt_fixture(pid=pid, birth=NOW - 1, request_id=kwargs["request_id"],
+                                               expected=NOW - 10, status="mismatch")
+        elif case == "no-expected-birth":
+            receipt["expected_create_time"] = None
+        elif case == "malformed":
+            receipt["before"]["birth_filetime"] = True
+        result = {"findings": [dict(_memory_finding_fixture(), process_create_time=NOW - 10)],
+                  "coverage": {"memory.windows.virtualquery": {"status": "complete"}}}
+        if case != "legacy":
+            result["memory_identity"] = receipt
+        return result
+    module, bus = make_module(process_observer=lambda: ProcessSnapshot((row,), NOW, True, 0, 0),
+                              memory_collector=collect)
+    module._settings["spyware_memory_enabled"] = True
+    response = module._response
+    def require_ineligible(finding, local_authority):
+        assert finding["response_eligible"] is False
+        assert finding["process_create_time"] is None
+        return response(finding, local_authority)
+    monkeypatch.setattr(module, "_response", require_ineligible)
+    module._scan_once()
+    event, = bus.recent(10)
+    assert event.details["response_eligible"] is False
+    assert event.details["response_authorized"] is False and event.details["active_attack"] is False
+    assert "response_contract" not in event.details
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 0
+    assert module.dashboard_snapshot()["coverage"]["memory"]["status"] == "partial"
+
+
+def test_legacy_collector_signature_failure_is_explicit_and_never_retried():
+    calls = []
+    def collect(pid, max_regions):
+        calls.append(pid)
+        pytest.fail("Legacy signature must not be retried after protocol refusal")
+    rows = ({"pid": 45001, "create_time": NOW - 10},)
+    module, bus = make_module(process_observer=lambda: ProcessSnapshot(rows, NOW, True, 0, 0),
+                              memory_collector=collect)
+    module._settings["spyware_memory_enabled"] = True
+    module._scan_once()
+    assert calls == [] and bus.recent(10) == []
+    coverage = module.dashboard_snapshot()["coverage"]["memory"]["by_pid"]["45001"]["coverage"]
+    assert coverage["memory.provider"]["status"] == "error"
+    assert "no legacy fallback" in coverage["memory.provider"]["detail"]
+    assert coverage["memory.identity"]["status"] == "partial"
+
+
+def test_memory_rotating_sample_keeps_four_process_and_512_region_limits():
+    rows = tuple({"pid": 45001 + index, "create_time": NOW - 10} for index in range(10))
+    calls = []
+    def collect(pid, **kwargs):
+        calls.append((pid, kwargs["max_regions"]))
+        return {"findings": [], "coverage": {}, "memory_identity": _memory_receipt_fixture(
+            pid=pid, request_id=kwargs["request_id"], expected=kwargs["expected_create_time"])}
+    module, _ = make_module(process_observer=lambda: ProcessSnapshot(rows, NOW, True, 0, 0),
+                            memory_collector=collect)
+    module._settings["spyware_memory_enabled"] = True
+    module._scan_once()
+    module._scan_once()
+    assert calls == [(45001 + index, 512) for index in range(8)]
+
+
+@pytest.mark.parametrize("kind", ["private_executable_memory", "sensor_memory_injection_scanner"])
+def test_direct_memory_response_requires_receipt_even_with_a_birth_hint(kind):
+    module, _ = make_module()
+    finding = {"kind": kind, "pid": 45001, "process_create_time": NOW - 10,
+               "response_eligible": True, "remote_ip": "8.8.8.8"}
+    assert module._response(finding, True) == {}
+
+
+def test_authenticated_memory_source_uses_native_receipt_not_enriched_birth():
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture(source="memory.windows.inject_scanner")
+    bus.publish(Event("Memory Injection Scanner", "inert metadata", Severity.MEDIUM, NOW, {
+        "pid": 45001, "process_create_time": NOW - 999, "memory_identity": receipt,
+        "response_eligible": True}))
+    module._consume_events()
+    event = next(item for item in bus.recent(10) if item.module == module.name)
+    assert event.details["process_create_time"] == NOW - 10
+    assert event.details["response_contract"]["targets"]["process_create_time"] == NOW - 10
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 1
+
+
+@pytest.mark.parametrize("case", ["missing", "stale", "wrong-source", "ineligible", "legacy-upstream"])
+def test_authenticated_unbound_memory_source_remains_observation_and_cannot_launder_telemetry(case):
+    from angerona.core.response_contract import process_response
+    module, bus = make_module()
+    receipt = _memory_receipt_fixture(source="memory.windows.inject_scanner",
+        finished_at=NOW - 10 if case == "stale" else NOW)
+    details = {"pid": 45001, "process_create_time": NOW - 10, "memory_identity": receipt,
+               "response_eligible": case != "ineligible",
+               "event_type": "api_access", "api": "BitBlt", "authorized": False}
+    if case == "missing":
+        details.pop("memory_identity")
+    elif case == "wrong-source":
+        receipt["source"] = "memory.windows.virtualquery"
+    elif case == "legacy-upstream":
+        details.pop("memory_identity")
+        details.update(process_response(45001, NOW - 10))
+    bus.publish(Event("Memory Injection Scanner", "inert metadata", Severity.MEDIUM, NOW, details))
+    module._consume_events()
+    events = [item for item in bus.recent(10) if item.module == module.name]
+    assert len(events) == 1 and events[0].details["response_eligible"] is False
+    assert events[0].details["process_create_time"] is None
+    assert events[0].details["response_authorized"] is False
+    assert "response_contract" not in events[0].details
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 0
+    assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == "partial"
+
+
+def test_authenticated_memory_receipt_replay_cannot_authorize_a_second_response():
+    module, bus = make_module()
+    details = {"pid": 45001, "response_eligible": True,
+               "memory_identity": _memory_receipt_fixture(source="memory.windows.inject_scanner")}
+    bus.publish(Event("Memory Injection Scanner", "inert metadata", Severity.MEDIUM, NOW, details))
+    module._consume_events()
+    bus.publish(Event("Memory Injection Scanner", "replayed receipt", Severity.MEDIUM, NOW + 1, details))
+    module._consume_events()
+    events = [item for item in bus.recent(10) if item.module == module.name]
+    assert len(events) == 2
+    assert sum(item.details["response_authorized"] is True for item in events) == 1
+    replayed = next(item for item in events if item.details["evidence"]["source_event_ts"] == NOW + 1)
+    assert replayed.details["response_eligible"] is False
+    assert module.dashboard_snapshot()["stats"]["response_requests"] == 1
+    assert len(module._memory_receipts) == 1
+
+
+@pytest.mark.parametrize("extra", [{"drill": True}, {"origin": "remote"}, {"source_host": "elsewhere"}])
+def test_memory_receipt_cannot_override_remote_or_drill_provenance(extra):
+    module, bus = make_module()
+    bus.publish(Event("Memory Injection Scanner", "inert metadata", Severity.MEDIUM, NOW, {
+        "pid": 45001, "response_eligible": True,
+        "memory_identity": _memory_receipt_fixture(source="memory.windows.inject_scanner"), **extra}))
+    module._consume_events()
+    assert not module.dashboard_snapshot()["hits"] and not module._memory_receipts
+
+
+def test_memory_receipt_cannot_override_failed_channel_authentication(monkeypatch):
+    module, bus = make_module()
+    bus.publish(Event("Memory Injection Scanner", "inert metadata", Severity.MEDIUM, NOW, {
+        "pid": 45001, "response_eligible": True,
+        "memory_identity": _memory_receipt_fixture(source="memory.windows.inject_scanner")}))
+    monkeypatch.setattr(bus, "verify", lambda _event: False)
+    module._consume_events()
+    assert not module.dashboard_snapshot()["hits"] and not module._memory_receipts
+
+
+@pytest.mark.parametrize("retirement", ["stop", "replacement", "before-publish"])
+def test_retiring_memory_owner_keeps_positive_advisory_without_response_or_more_collection(monkeypatch, retirement):
+    rows = ({"pid": 45001, "create_time": NOW - 10}, {"pid": 45002, "create_time": NOW - 10})
+    calls = []
+    def collect(pid, **kwargs):
+        calls.append(pid)
+        receipt = _memory_receipt_fixture(pid=pid, request_id=kwargs["request_id"],
+                                          expected=kwargs["expected_create_time"])
+        if retirement == "stop":
+            module.stop()
+        elif retirement == "replacement":
+            module._stop = threading.Event()
+        if retirement != "before-publish":
+            assert kwargs["cancelled"]() is True
+        return {"findings": [_memory_finding_fixture()], "memory_identity": receipt,
+                "coverage": {"memory.windows.virtualquery": {"status": "partial"}}}
+    module, bus = make_module(process_observer=lambda: ProcessSnapshot(rows, NOW, True, 0, 0),
+        memory_collector=collect,
+        connection_observer=lambda: pytest.fail("No further collection after memory owner retirement"))
+    module._settings["spyware_memory_enabled"] = True
+    if retirement == "replacement":
+        module._run_context.stop_event = module._stop
+    if retirement == "before-publish":
+        publish_memory = module._publish_memory
+        def retire_before_publish(finding, stopped, **kwargs):
+            module.stop()
+            return publish_memory(finding, stopped, **kwargs)
+        monkeypatch.setattr(module, "_publish_memory", retire_before_publish)
+    response = module._response
+    admitted = []
+    def require_advisory(finding, local_authority):
+        admitted.append(finding["response_eligible"])
+        assert finding["response_eligible"] is False
+        return response(finding, local_authority)
+    monkeypatch.setattr(module, "_response", require_advisory)
+    module._scan_once()
+    event, = bus.recent(10)
+    assert calls == [45001] and admitted == [False]
+    assert event.details["response_eligible"] is False
+    assert event.details["response_authorized"] is False and "response_contract" not in event.details
+    assert "owner generation" in event.details["eligibility_reason"]
+    snapshot = module.dashboard_snapshot()
+    assert snapshot["stats"]["response_requests"] == 0
+    assert snapshot["coverage"]["memory"]["status"] == "partial"
+    assert snapshot["coverage"]["memory"]["cancelled"] is True
+    assert snapshot["coverage"]["host"] == "scan-cancelled-memory-owner-generation"
+
+
+def test_stopped_owner_cannot_admit_a_fresh_authenticated_memory_response():
+    module, bus = make_module()
+    bus.publish(Event("Memory Injection Scanner", "inert metadata", Severity.MEDIUM, NOW, {
+        "pid": 45001, "response_eligible": True,
+        "memory_identity": _memory_receipt_fixture(source="memory.windows.inject_scanner")}))
+    module.stop()
+    module._consume_events()
+    event = next(item for item in bus.recent(10) if item.module == module.name)
+    assert event.details["response_eligible"] is False and event.details["response_authorized"] is False
+    assert "response_contract" not in event.details
+    assert module.dashboard_snapshot()["coverage"]["memory_sensor_identity"]["status"] == "partial"

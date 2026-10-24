@@ -1,11 +1,27 @@
 # Live debugging and screenshot issue review
 
-Latest process-inventory review: [interaction and CPU map](process-inventory-performance.md)
+Latest maintenance review: [memory identity, private bundles and key integrity](key-and-memory-review.md)
+and [sanitized evidence](key-and-memory-evidence.json). Current R5 accepted 32
+complete suites/451 functions: 786 passes, zero failures/errors, three exact POSIX
+skips. Acceptance is complete; native platform coverage is not. Same-source
+selfcheck passed 29 phases with 68 module passes/18 explicit skips plus pipeline.
+
+Fresh SpywareGuard 30.203 s, scanner 30.079 s and 15-module 600.531 s observations
+completed with exact outer/core retirement and retained evidence gaps. The
+combined run remains OBSERVED_WITH_GAPS: 17 coverage strings/nine modules,
+364 events, zero recorded errors/crashes/loss/pending threads. It is not a host
+verdict, full 86-sensor or speedup claim. Four earlier failed key attempts and
+the separate 29/11 Bridge diagnostic remain; R4's exact cause is UNKNOWN.
+The 173-ID register preserves all 164 prior raw objects/order and open host
+findings. SEC-15 manual cloud-consult privacy remains open. Guarded GitHub
+publication is a separate mandatory gate; these receipts alone do not prove it.
+The broader v1.15 integration remains incomplete.
+
+Prior process-inventory review: [interaction and CPU map](process-inventory-performance.md)
 and [sanitized evidence](process-inventory-evidence.json). Fourteen complete
 regression suites passed 452 tests; all 29 isolated self-check phases passed.
-The fresh 90.437-second, 15-module observation retained 17 coverage gaps. It
-does not demonstrate lower CPU use. The issue registry now has 164 IDs and
-preserves every earlier issue object and unresolved host finding.
+The fresh 90.437-second, 15-module observation retained 17 coverage gaps and did not
+demonstrate lower CPU use. These remain historical revision-scoped results.
 
 This review follows the reported runtime-tamper alerts, persistence findings,
 Black Box diagnostics and five-second GUI heartbeat delays. The scope includes
@@ -377,7 +393,7 @@ separate evidence boundaries.
 | PRIV-01 | Username discovery failed in a sealed Windows environment and broke sessions and privacy exports | Published ffb41c4 adds bounded native username fallback for display/redaction, never identity authority. Session collection is independent; IR export refuses before collection/destination creation if no real redaction seed exists. Checkpoint 330 passed,2 platform skips. |
 | TST-13 | A connection-snapshot fixture hardcoded11434 while isolated configuration deliberately selected65534 | The product correctly followed its configured port. The fixture now explicitly supplies its inert11434 endpoint; original failure retained and full affected rerun recorded separately. |
 | TST-14 | A private focused runner omitted its temporary directory, causing four hardlink fixtures to fall back to another volume | Corrected private directory preparation without weakening runtime hardlink enumeration. Original163-case attempt retained:4 failed,1 skipped; corrected rerun passed 162 tests with 1 skip and native exit0. The full-suite driver already prepared its private temporary path. |
-| TST-15 | Refreshed selfchecks exceeded module deadlines or refused an unproved fresh Process observation | Latest actual module selfcheck at a74/1852 passed29 phases/native0 in31.485s, reconciling86 module rows (68PASS18SKIP), separate pipeline and9 verifiers. Both native generations retired/four handles closed/MainThread/no QApplication. Earlier failures and29.265s remain historical; this is not fullR8, a benchmark or R7 cause proof. |
+| TST-15 | Refreshed selfchecks exceeded module deadlines or refused an unproved fresh Process observation | Latest actual module selfcheck at a74/1852 passed 29 phases/native0 in31.485s, reconciling86 module rows (68PASS18SKIP), separate pipeline and9 verifiers. Both native generations retired/four handles closed/MainThread/no QApplication. Earlier failures and29.265s remain historical; this is not fullR8, a benchmark or R7 cause proof. |
 | TST-16 | A startup-response fixture assumed the expiration counter guaranteed completed diagnostic publication | A controlled barrier reproduced the legitimate intermediate state, then verified one response-inert diagnostic after publication. Corrected fixture and barrier are applied and included in366 passing focused checks. Production response code is unchanged. |
 | TST-17 | The repeated GUI campaign could not prove a later Process Monitor cycle before launch admission closed | Latest full R7 failed only the second GUI launch: fresh Process Monitor proof refused after 6.579 seconds, stage retry/waiting true, no red-team report run. First launch passed 37/37 signed simulated-response contracts plus OS witness; case-process evidence was time-correlated, not independently attested. Cause unknown. Earlier GUI r6 and R6c passes remain historical. Test-only capture is applied; one focused test/two actual GUI launches passed with exact retirement as a nonreproduction, but the failure-only branch was not exercised and cause/capture gap remain open; no health/readiness/pacing/deadline override or causal repair is claimed. Later frozen full R10 passed the same two-launch GUI call (122.2837177 seconds) and all 7603 cases had zero failures. Historical R7 pacing/last refusal/cause and the unexercised failure-capture branch remain unresolved; elapsed time is not a benchmark. |
 | TST-18 | UGCAP's slow-operation worker fixture failed during protected-channel startup | Startup preparation and bounded diagnostics are applied; strict authentication, expiry and deadlines remain. Private R7's 135 passes and two unexplained failures remain recorded. Private R8 and the subsequent main-tree gate each passed all 137 selected tests with native exit 0; the latter retained 1,190 unchanged inputs and actual kernel retirement. The earlier failures were not reproduced or causally explained. |

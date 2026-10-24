@@ -154,6 +154,34 @@ give a reader response authority. `status()` exposes `enabled`, `running`,
 `endpoint`, `pid`, `birth`, `run_id`, `cursor`, `first_seq`, `queue_dropped`,
 `client_count`, `error`, `transport`, `history_size` and `queued`.
 
+## Private Black Box diagnostic bundles
+
+Bundle formatting and archive I/O run on a retained cancellable worker. The UI
+captures a bounded cached snapshot and bounded text tail; closing the dialog
+requests cancellation without blocking the GUI, and another export is held
+while the existing worker retires. A result is not complete merely because the
+dialog disappeared.
+
+Aggregate source reads and final archive output are each capped at 18 MiB; total
+ZIP input is capped at 16 MiB. Normal files are capped at 4 MiB, crash tails at
+512 KiB, settings at 256 KiB and .env hashing at 1 MiB. Chunks are 64 KiB, with
+at most 32 members, 16 crash files, 64 scanned directory entries and 64 reported gap
+rows, under a cooperative 60-second budget. A blocking OS
+filesystem call cannot be preempted by that budget. Sources are checked through
+retained descriptors; truncation, changed identity, unavailable input, capped
+work and cleanup failures remain explicit. Repeated identical gaps are counted
+without crowding out distinct cap reasons; a full gap list cannot hide a cleanup
+failure.
+
+Only an exact allowlist of boolean settings is copied. Arbitrary settings,
+URLs and credentials are excluded; an eligible bounded .env contributes a hash,
+not its contents. Output uses a new filename and non-replacing atomic publication;
+existing destinations or unsupported filesystem operations fail visibly. Private
+archives can still contain sensitive diagnostic text: inspect them before sharing.
+No diagnostic export grants a signing-key, allowlist or response capability.
+See the [key review](key-and-communication-integrity.md) and
+[scoped maintenance evidence](../analysis/live-debug-2026-10-22/key-and-memory-review.md).
+
 ## Process inventory and worker CPU evidence
 
 The [process-inventory interaction map](../analysis/live-debug-2026-10-22/process-inventory-performance.md)

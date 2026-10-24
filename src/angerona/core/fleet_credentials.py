@@ -686,6 +686,22 @@ def load_or_migrate_local_credentials(
     legacy_secret: str = "",
     clock: Callable[[], float] = time.time,
 ) -> LocalFleetCredentialSet:
+    """Load or migrate one protected bundle without competing key creators."""
+    from angerona.core.secure_store import secret_transaction
+
+    with secret_transaction(Path(data_root)):
+        return _load_or_migrate_local_credentials_locked(
+            data_root, tenant_id, device_id, legacy_secret=legacy_secret, clock=clock,
+        )
+
+
+def _load_or_migrate_local_credentials_locked(
+    data_root: Path,
+    tenant_id: str,
+    device_id: str,
+    legacy_secret: str = "",
+    clock: Callable[[], float] = time.time,
+) -> LocalFleetCredentialSet:
     """Load V1 protected credentials or migrate a protected legacy secret.
 
     An existing V1 bundle always wins, including when it is corrupt: a legacy

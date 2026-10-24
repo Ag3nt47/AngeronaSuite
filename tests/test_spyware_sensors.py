@@ -528,3 +528,222 @@ def test_windows_denial_and_midquery_failure_are_not_clean(monkeypatch):
     kernel.CloseHandle = closed.append
     assert sensors.inspect_process_memory(42)["coverage"]["memory.windows.virtualquery"]["status"] == "access_denied"
     assert closed == [55]
+
+
+class _IdentityKernel:
+    """Query-only inert process object; no real process or address space access."""
+
+    def __init__(self, identities=None):
+        ticks = 116444736000000000 + 1800000000 * 10000000
+        self.identities = identities or [(42, ticks, 0), (42, ticks, 0)]
+        self.reads = 0
+        self.queries = 0
+        self.closed = []
+        self.calls = []
+        self.times_available = True
+        self.close_result = True
+        self.query_result = None
+
+    def OpenProcess(self, rights, inherit, pid):
+        self.calls.append(("open", rights, inherit, pid))
+        assert rights == 0x0400 and inherit is False
+        return 55
+
+    def GetProcessId(self, handle):
+        self.calls.append(("pid", handle))
+        assert handle == 55
+        self.reads += 1
+        return self.identities[min(self.reads - 1, len(self.identities) - 1)][0]
+
+    def GetProcessTimes(self, handle, created, exited, kernel, user):
+        self.calls.append(("times", handle))
+        assert handle == 55
+        if not self.times_available:
+            return False
+        _pid, birth, exit_time = self.identities[min(self.reads - 1, len(self.identities) - 1)]
+        for pointer, ticks in ((created, birth), (exited, exit_time)):
+            pointer._obj.dwLowDateTime = ticks & 0xFFFFFFFF
+            pointer._obj.dwHighDateTime = ticks >> 32
+        return True
+
+    def VirtualQueryEx(self, handle, address, pointer, size):
+        self.calls.append(("query", handle))
+        assert handle == 55
+        self.queries += 1
+        if self.query_result is not None:
+            return self.query_result(address, pointer, size)
+        info = pointer._obj
+        info.BaseAddress, info.RegionSize = int(address.value or 0), 4096
+        info.State, info.Protect, info.Type = 0x1000, 0x40, 0x20000
+        return size
+
+    def CloseHandle(self, handle):
+        self.calls.append(("close", handle))
+        self.closed.append(handle)
+        return self.close_result
+
+
+def _identity_scan(monkeypatch, kernel, **kwargs):
+    monkeypatch.setattr(sensors.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(sensors.time, "time", lambda: 1800000001.0)
+    monkeypatch.setattr(sensors, "_windows_kernel32", lambda: kernel)
+    monkeypatch.setattr(sensors.ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(sensors, "psutil", SimpleNamespace(
+        AccessDenied=sensors.psutil.AccessDenied,
+        Process=lambda *_: pytest.fail("PID enrichment must not provide inspection proof")))
+    return sensors.inspect_process_memory(42, kwargs.pop("max_regions", 2),
+        expected_create_time=kwargs.pop("expected_create_time", 1800000000.0),
+        request_id=kwargs.pop("request_id", "a" * 32), **kwargs)
+
+
+def test_memory_identity_proves_one_retained_query_handle_and_exact_raw_birth(monkeypatch):
+    kernel = _IdentityKernel()
+    result = _identity_scan(monkeypatch, kernel)
+    identity = sensors.parse_memory_identity(result["memory_identity"])
+    assert identity is not None and identity.bound
+    assert identity.before == identity.after
+    assert identity.before.birth_filetime == 134444736000000000
+    assert identity.before.pid == 42 and identity.before.exit_filetime == 0
+    assert identity.handle_closed is True and kernel.closed == [55]
+    assert kernel.calls == [("open", 0x0400, False, 42), ("pid", 55), ("times", 55),
+                            ("query", 55), ("query", 55), ("pid", 55), ("times", 55), ("close", 55)]
+    assert kernel.queries == 2
+    assert len(result["findings"]) == 2
+    assert all(finding["process_create_time"] == 1800000000.0 and finding["response_eligible"]
+               for finding in result["findings"])
+    assert result["coverage"]["memory.windows.virtualquery"]["status"] == "partial"
+    assert result["coverage"]["memory.identity"]["status"] == "complete"
+
+
+@pytest.mark.parametrize("change", ["reused-before-open", "changed-birth", "wrong-pid", "exited"])
+def test_memory_identity_mismatch_preserves_observations_without_response(monkeypatch, change):
+    old = 134444736000000000
+    identities = [(42, old, 0), (42, old, 0)]
+    if change == "reused-before-open":
+        identities = [(42, old + 10000000, 0)] * 2
+    elif change == "changed-birth":
+        identities[1] = (42, old + 10000000, 0)
+    elif change == "wrong-pid":
+        identities = [(43, old, 0)] * 2
+    else:
+        identities[1] = (42, old, old + 10000000)
+    kernel = _IdentityKernel(identities)
+    result = _identity_scan(monkeypatch, kernel)
+    assert result["memory_identity"]["status"] == "mismatch"
+    assert len(result["findings"]) == 2
+    assert all(finding["response_eligible"] is False and finding["process_create_time"] is None
+               for finding in result["findings"])
+    assert result["coverage"]["memory.identity"]["status"] == "partial"
+    assert kernel.closed == [55]
+
+
+@pytest.mark.parametrize("failure", ["times-unavailable", "pid-unavailable", "close-failed", "close-raised"])
+def test_unavailable_native_proof_and_close_failure_preserve_positive_evidence(monkeypatch, failure):
+    kernel = _IdentityKernel()
+    if failure == "times-unavailable":
+        kernel.times_available = False
+    elif failure == "pid-unavailable":
+        kernel.GetProcessId = lambda _handle: 0
+    elif failure == "close-failed":
+        kernel.close_result = False
+    else:
+        def close(handle):
+            kernel.closed.append(handle)
+            raise OSError("inert close failure")
+        kernel.CloseHandle = close
+    result = _identity_scan(monkeypatch, kernel)
+    assert len(result["findings"]) == 2 and kernel.closed == [55]
+    assert all(finding["response_eligible"] is False for finding in result["findings"])
+    assert result["coverage"]["memory.identity"]["status"] == "partial"
+
+
+@pytest.mark.parametrize("failure", ["denied", "malformed", "raised", "cancelled"])
+def test_partial_native_memory_collection_preserves_evidence_and_closes_exactly_once(monkeypatch, failure):
+    kernel = _IdentityKernel()
+    if failure != "cancelled":
+        original = kernel.VirtualQueryEx
+        def query(handle, address, pointer, size):
+            if kernel.queries == 1:
+                if failure == "raised":
+                    raise OSError("inert native query failure")
+                return 0 if failure == "denied" else 1
+            return original(handle, address, pointer, size)
+        kernel.VirtualQueryEx = query
+    kwargs = {"cancelled": lambda: kernel.queries >= 1} if failure == "cancelled" else {}
+    result = _identity_scan(monkeypatch, kernel, **kwargs)
+    assert len(result["records"]) == len(result["findings"]) == 1
+    assert result["coverage"]["memory.windows.virtualquery"]["status"] != "complete"
+    assert kernel.closed == [55]
+    assert sensors.parse_memory_identity(result["memory_identity"]).bound
+
+
+@pytest.mark.parametrize("where", ["query", "recheck"])
+def test_baseexception_cancellation_always_closes_owned_memory_handle(monkeypatch, where):
+    kernel = _IdentityKernel()
+    if where == "query":
+        def abort(*_args):
+            raise KeyboardInterrupt("inert cancellation")
+        kernel.VirtualQueryEx = abort
+    else:
+        original = kernel.GetProcessId
+        def abort(handle):
+            if kernel.reads:
+                raise KeyboardInterrupt("inert recheck cancellation")
+            return original(handle)
+        kernel.GetProcessId = abort
+    with pytest.raises(KeyboardInterrupt):
+        _identity_scan(monkeypatch, kernel)
+    assert kernel.closed == [55]
+
+
+def test_linux_metadata_without_procfs_generation_proof_is_visible_and_response_ineligible(monkeypatch):
+    monkeypatch.setattr(sensors.platform, "system", lambda: "Linux")
+    monkeypatch.setattr("builtins.open", lambda *a, **k: io.StringIO("1000-2000 rwxp 00000000 00:00 0\n"))
+    result = sensors.inspect_process_memory(42, 2, expected_create_time=1800000000.0, request_id="a" * 32)
+    finding, = result["findings"]
+    assert finding["response_eligible"] is False and finding["process_create_time"] is None
+    assert result["coverage"]["memory.linux.maps"]["status"] == "complete"
+    assert result["coverage"]["memory.identity"]["status"] == "partial"
+    assert result["memory_identity"]["status"] == "unsupported"
+
+
+def test_legacy_memory_call_without_request_protocol_preserves_unbound_findings(monkeypatch):
+    result = _identity_scan(monkeypatch, _IdentityKernel(), request_id="")
+    assert len(result["findings"]) == 2
+    assert all(finding["response_eligible"] is False for finding in result["findings"])
+    assert result["memory_identity"]["status"] == "unavailable"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("source", []), ("source", "forged.sensor"), ("status", []), ("pid", True),
+    ("request_id", ""), ("expected_create_time", True), ("expected_create_time", float("nan")),
+    ("expected_create_time", 10**1000), ("handle_closed", 1), ("finished_at", -1),
+    ("before", {"pid": 42, "birth_filetime": True, "exit_filetime": 0}),
+    ("after", {"pid": 43, "birth_filetime": 134444736000000000, "exit_filetime": 0}),
+])
+def test_memory_receipt_decoder_rejects_malformed_and_inconsistent_claims(monkeypatch, field, value):
+    document = _identity_scan(monkeypatch, _IdentityKernel())["memory_identity"]
+    document[field] = value
+    assert sensors.parse_memory_identity(document) is None
+
+
+def test_memory_receipt_rejects_unknown_fields_and_uses_no_birth_tolerance(monkeypatch):
+    import math
+    document = _identity_scan(monkeypatch, _IdentityKernel())["memory_identity"]
+    assert sensors.parse_memory_identity(dict(document, extra_authority=True)) is None
+    document["expected_create_time"] = math.nextafter(1800000000.0, math.inf)
+    assert sensors.parse_memory_identity(document) is None
+
+
+
+def test_memory_birth_after_inspection_clock_is_unbound_and_preserves_findings(monkeypatch):
+    ticks = 134444736000000000 + 2 * 10000000
+    kernel = _IdentityKernel([(42, ticks, 0)] * 2)
+    result = _identity_scan(monkeypatch, kernel, expected_create_time=1800000002.0)
+    assert len(result["findings"]) == 2 and kernel.closed == [55]
+    assert result["memory_identity"]["status"] == "unavailable"
+    assert "clock" in result["memory_identity"]["reason"]
+    assert all(finding["response_eligible"] is False for finding in result["findings"])
+    document = result["memory_identity"]
+    document["status"] = "bound"
+    assert sensors.parse_memory_identity(document) is None

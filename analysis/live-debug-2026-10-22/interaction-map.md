@@ -5,7 +5,42 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Current diagnostic evidence boundaries
+## Memory, bundle and credential interactions
+
+| Interaction | Scoped safeguard or retained finding | Evidence limit |
+| --- | --- | --- |
+| Windows query handle -> region metadata -> SpywareGuard/Memory Scanner -> response | Bind inspected PID/birth before and after one retained handle; partial/invalid identity and obsolete workers stay advisory | SEC-10; tested metadata contracts, no memory bytes, kernel walker or live broad-memory coverage |
+| GUI cached snapshot -> bundle worker -> private archive -> close | Bound/redact inputs, retain cancellation and worker retirement admission, preserve cap/cleanup gaps and create-only output | SIDE-09; OS calls remain cooperative; no physical GUI latency guarantee |
+| Per-click preflight -> real Process Monitor -> production admission -> signed AAR | Require real same-generation progress and bounded typed refusal diagnostics | TST-40; original assertions/gates retained, both campaigns passed in R5; old Python 3.11 cause UNKNOWN |
+| Protected map -> serialized transaction -> first-key factory -> readback | One backing-store transaction and atomic first creation across seven consumers; existing protected values win | SEC-11; R5 accepted with three exact POSIX skips; no hostile same-user/admin/kernel or rollback freshness claim |
+| Bridge mode -> protected/explicit key -> legacy read -> cleanup -> handshake | Disabled/invalid mode avoids key access. Fail closed on storage/conflict/readback/cleanup. Compare Windows birth across APIs and full FD change identity separately | SEC-12; 16 new cases passed; original R4 cause UNKNOWN, later 40-case diagnostic confirms a false-hold mode; no retained-object unlink lease |
+| secret-tool empty lookup -> gdbus metadata -> first creation | Require nonsecret proof of absent locked/unlocked items; hold unknown tools/backends | SEC-13; inert contracts passed; native Linux/Keychain/POSIX behavior remains unproven |
+| SGX hint -> amber unverified status -> optional SQLCipher helper | Require SQLCipher version/schema checks and serialize helper key/singleton creation | SEC-14; no hardware attestation or production flight-cache encryption claim |
+| Explicit legacy Research/SOAR click -> configured cloud AI | Source review confirms raw context can leave without a pre-send payload preview | SEC-15 OPEN_SOURCE; configured cloud credential and operator action required. Separate proposal is unactivated/untested, with no universal provider deny or local-only toggle |
+
+R5 accepted 32 suites/451 functions: 786 passed, zero failures/errors and three
+exact POSIX skips; acceptance_complete=true and coverage_complete=false. All
+505 original regressions/29 bundle/eight nested cases and both GUI campaigns
+passed; groups overlap. Same-source selfcheck passed 29 phases with 68 module
+passes/18 explicit skips plus separate pipeline.
+
+The fresh 30.203 s SpywareGuard and 30.079 s scanner solos completed. The combined
+15-module 600.531 s observation retained 17 coverage strings across nine modules,
+364 events and zero recorded errors/crashes/loss/pending threads. Exact two outer
+interpreter generations and retained core retired; inputs remained unchanged.
+CPU profiling covered primary workers, not every helper. Preserve the high/critical
+coverage/assurance exposures and filtered-view omissions; no host/FP or speedup
+verdict is established. 71 modules and optional memory/outbound research/cloud/
+response/beacon/quarantine/isolation/UGCAP remained held/off.
+
+The [scoped maintenance review](key-and-memory-review.md) keeps all earlier
+failures and pre-key scopes separate. Registry 173 preserves all 164 prior raw
+objects/order. HOST-03/HOST-04 and unknown causes remain open. Guarded GitHub
+publication is a separate mandatory gate; these receipts alone do not prove it.
+No mutating privileged service, WFP, external witness or universal authenticated
+module transport deployment is inferred from library support.
+
+## Prior diagnostic evidence boundaries
 
 Network Monitor attribution -> authenticated EventBus -> bounded Live Debug view
 now retains the producer’s explicit boolean identity-gap flag. No birth inference

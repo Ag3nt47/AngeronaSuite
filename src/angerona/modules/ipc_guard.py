@@ -46,6 +46,13 @@ _SECRET_NAME = "ANGERONA_IPC_AUTH_KEY"
 
 def _load_or_create_key(path: Path) -> bytes:
     """Load/create the key in the OS store, migrating one exact legacy file."""
+    from angerona.core.secure_store import secret_transaction
+
+    with secret_transaction(path.parent):
+        return _load_or_create_key_locked(path)
+
+
+def _load_or_create_key_locked(path: Path) -> bytes:
     from angerona.core.secure_store import read_secret_values, write_secret_map
 
     data_root = path.parent
@@ -80,7 +87,7 @@ def _load_or_create_key(path: Path) -> bytes:
                     "plaintext IPC key residue could not be removed"
                 ) from exc
             return key
-    if encoded:
+    if _SECRET_NAME in protected:
         raise RuntimeError("protected IPC authentication key has an invalid format")
 
     legacy: bytes | None = None

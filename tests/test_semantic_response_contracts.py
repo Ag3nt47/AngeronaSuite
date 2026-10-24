@@ -481,7 +481,11 @@ def test_memory_injection_indicator_is_alert_only(monkeypatch) -> None:
     assert details["active_attack"] is False
     assert details["disposition"] == "observation"
     assert _latest(bus).severity == Severity.MEDIUM
-    assert details["process_create_time"] == 4567.8
+    assert details["process_create_time"] is None
+    assert details["pid_enrichment_create_time"] == 4567.8
+    assert details["pid_enrichment_identity_bound"] is False
+    assert details["response_eligible"] is False
+    assert details["memory_identity_status"] == "unavailable"
     assert details["detector_policy"] == "rwx-memory-indicator-alert-only"
     assert "response_contract" not in details
 

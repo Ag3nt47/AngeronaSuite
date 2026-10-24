@@ -514,23 +514,15 @@ class DeviceSecurityLab:
 
     def _protected_authority(self) -> bytes:
         """Load/create the authority only through Angerona's OS-protected store."""
-        from angerona.core.secure_store import read_secret_map, write_secret_map
+        from angerona.core.secure_store import get_or_create_secret
 
         try:
-            values = read_secret_map(self.root, strict=True)
-            encoded = values.get(self._SECRET_NAME, "")
-            if encoded:
-                return _authority(base64.urlsafe_b64decode(encoded.encode("ascii")))
-            candidate = secrets.token_bytes(32)
-            write_secret_map(
-                {self._SECRET_NAME: base64.urlsafe_b64encode(candidate).decode("ascii")}, self.root
+            encoded = get_or_create_secret(
+                self._SECRET_NAME,
+                lambda: base64.urlsafe_b64encode(secrets.token_bytes(32)).decode("ascii"),
+                self.root,
             )
-            verified = read_secret_map(self.root, strict=True).get(self._SECRET_NAME, "")
-            if not verified or not hmac.compare_digest(
-                base64.urlsafe_b64decode(verified.encode("ascii")), candidate
-            ):
-                raise RuntimeError("protected authority verification failed")
-            return candidate
+            return _authority(base64.urlsafe_b64decode(encoded.encode("ascii")))
         except (OSError, ValueError, RuntimeError) as exc:
             raise DeviceLabError(
                 "protected_store_unavailable",

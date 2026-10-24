@@ -17,14 +17,19 @@ instead of silently creating another plaintext credential file.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
 import stat
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
+
+from angerona.core.file_lease import ExclusiveFileLease
 
 _ENTROPY = b"Angerona-SecretStore-v1"
 _FILENAME = "secrets.dpapi"
@@ -41,8 +46,8 @@ _NON_ENVIRONMENT_SECRETS = frozenset({
     # Consumers must read it directly from the OS-protected store so a launcher,
     # parent process, or stale shell can never inject control authority.
     "ANGERONA_JARVIS_CONTROL_TOKEN",
-    # Remote Bridge authentication is network authority. Consumers read it
-    # directly from protected storage and never republish it to child envs.
+    # Never republish a protected Remote Bridge key into child environments.
+    # Explicit strong-key configuration remains available where launch permits.
     "ANGERONA_BRIDGE_KEY",
     # Local IPC proof material is authority and must never be inherited by a
     # child process or left as a plaintext sidecar.
@@ -54,6 +59,53 @@ _NON_ENVIRONMENT_SECRETS = frozenset({
     "ANGERONA_UGCAP_WITNESS_PRIVATE_KEY",
 })
 _MAX_LEGACY_ENV_BYTES = 1024 * 1024
+_TRANSACTION_WAIT_SECONDS = 1.0
+_TRANSACTION_LOCK = threading.RLock()
+_TRANSACTION_LOCAL = threading.local()
+_ACTIVE_LEASE = None
+
+
+class _CredentialLease(ExclusiveFileLease):
+    """An inherited child closes its reference without unlocking its parent."""
+
+    def __init__(self, path: Path) -> None:
+        self._owner_pid = os.getpid()
+        super().__init__(path)
+
+    def close(self) -> None:
+        if self._owner_pid == os.getpid():
+            super().close()
+        elif not self._closed:
+            descriptor = self._descriptor
+            self._descriptor, self._closed = -1, True
+            # flock locks belong to the inherited open-file description. An
+            # explicit LOCK_UN here would release the live parent's lease.
+            os.close(descriptor)
+
+
+def _reset_transaction_after_fork() -> None:
+    global _TRANSACTION_LOCK, _TRANSACTION_LOCAL, _ACTIVE_LEASE
+    try:
+        if _ACTIVE_LEASE is not None:
+            _ACTIVE_LEASE.close()
+    finally:
+        _ACTIVE_LEASE = None
+        _TRANSACTION_LOCK = threading.RLock()
+        _TRANSACTION_LOCAL = threading.local()
+
+
+def _before_fork() -> None:
+    # A fork in another thread must not miss a lease being opened/closed.
+    _TRANSACTION_LOCK.acquire()
+
+
+def _after_fork_parent() -> None:
+    _TRANSACTION_LOCK.release()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(before=_before_fork, after_in_parent=_after_fork_parent,
+                        after_in_child=_reset_transaction_after_fork)
 
 
 def _remove_environment_secrets(keys) -> None:
@@ -119,6 +171,143 @@ def secure_store_path(data_root: Path | None = None) -> Path:
     else:
         filename = _FILENAME
     return Path(data_root) / filename
+
+
+def _backing_store_identity(data_root: Path | None) -> tuple[str, ...]:
+    if sys.platform == "darwin":
+        return ("keychain", _MACOS_KEYCHAIN_SERVICE, _MACOS_KEYCHAIN_ACCOUNT)
+    if sys.platform.startswith("linux"):
+        return ("secret-service", _LINUX_SECRET_SERVICE, _LINUX_SECRET_ACCOUNT)
+    path = secure_store_path(data_root)
+    if _path_traverses_reparse(path):
+        raise PermissionError("Credential transaction path traverses an alias")
+    return ("dpapi", os.path.normcase(os.path.realpath(path)))
+
+
+def _account_lock_directory() -> Path:
+    """Use the OS account home, never HOME/XDG or a caller's data root."""
+    import pwd
+
+    user_id = os.geteuid()
+    home = Path(pwd.getpwuid(user_id).pw_dir)
+    if not home.is_absolute() or _path_traverses_reparse(home):
+        raise PermissionError("Credential account home is not a plain absolute directory")
+    _private_posix_directory_chain(home, user_id)
+    home_info = home.stat()
+    if not stat.S_ISDIR(home_info.st_mode) or home_info.st_uid != user_id:
+        raise PermissionError("Credential account home is owned by another user")
+    directory = home / ".angerona-credential-locks"
+    if _path_traverses_reparse(directory):
+        raise PermissionError("Credential lock directory traverses an alias")
+    directory.mkdir(mode=0o700, exist_ok=True)
+    _private_posix_directory_chain(directory, user_id)
+    info = directory.lstat()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != user_id
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise PermissionError("Credential lock directory is not private to this user")
+    return directory
+
+
+def _private_posix_directory_chain(path: Path, user_id: int) -> None:
+    """Reject a namespace another account can rename or replace."""
+    for current in (path, *path.parents):
+        info = current.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in {0, user_id}
+                or stat.S_IMODE(info.st_mode) & 0o022):
+            raise PermissionError("Credential lock ancestry permits another account to replace it")
+
+
+def _transaction_path(identity: tuple[str, ...]) -> Path:
+    if identity[0] == "dpapi":
+        path = Path(identity[1]).with_name(_FILENAME + ".lock")
+        if _path_traverses_reparse(path):
+            raise PermissionError("Credential lock path traverses an alias")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        from angerona.core.hardening import ensure_sensitive_parent, key_acl_required
+
+        ensure_sensitive_parent(path, required=key_acl_required())
+        return path
+    digest = hashlib.sha256(json.dumps(identity).encode("utf-8")).hexdigest()
+    return _account_lock_directory() / (digest + ".lock")
+
+
+def _assert_transaction(data_root: Path | None) -> None:
+    current = getattr(_TRANSACTION_LOCAL, "record", None)
+    if current != (os.getpid(), _backing_store_identity(data_root)):
+        raise RuntimeError("Credential transaction is absent or belongs to another process/store")
+
+
+@contextmanager
+def secret_transaction(data_root: Path | None = None):
+    """Serialize one backing store's read/create/write/verify operation.
+
+    Threads wait at most one second for the local transaction. A competing process fails
+    visibly through ExclusiveFileLease rather than serving a divergent key.
+    Keychain and Secret Service share one account item across data roots, so
+    their OS lease is account/service scoped. Cooperating writers must use this
+    API; it does not constrain hostile code in the same trust boundary.
+    """
+    global _ACTIVE_LEASE
+    identity = _backing_store_identity(data_root)
+    owner_pid, lock = os.getpid(), _TRANSACTION_LOCK
+    if not lock.acquire(timeout=_TRANSACTION_WAIT_SECONDS):
+        raise TimeoutError("Credential store transaction is busy; credentials were not changed")
+    try:
+        current = getattr(_TRANSACTION_LOCAL, "record", None)
+        if current is not None:
+            if current != (owner_pid, identity):
+                raise RuntimeError("Nested credential transactions must name the same backing store")
+            yield
+            _assert_transaction(data_root)
+            return
+        lease = _CredentialLease(_transaction_path(identity))
+        _ACTIVE_LEASE = lease
+        _TRANSACTION_LOCAL.record = (owner_pid, identity)
+        try:
+            yield
+            _assert_transaction(data_root)
+        finally:
+            try:
+                lease.close()
+            finally:
+                if owner_pid == os.getpid():
+                    del _TRANSACTION_LOCAL.record
+                    _ACTIVE_LEASE = None
+    finally:
+        # A forked child received a fresh lock/local state in the at-fork hook.
+        # Never treat its inherited context as a current transaction.
+        if owner_pid == os.getpid():
+            lock.release()
+
+
+def get_or_create_secret(
+    name: str, factory: Callable[[], str], data_root: Path | None = None,
+) -> str:
+    """Return the existing value, or create and verify it exactly once.
+
+    Existing empty/malformed values are returned for the consumer to reject;
+    they never authorize automatic replacement of persistent key material.
+    """
+    if (not isinstance(name, str) or not name or len(name) > 256
+            or any(ord(character) < 33 or ord(character) == 127 for character in name)
+            or not callable(factory)):
+        raise ValueError("Protected secret creation request is invalid")
+    _remove_environment_secrets((*_NON_ENVIRONMENT_SECRETS, name))
+    with secret_transaction(data_root):
+        existing = read_secret_values((name,), data_root, strict=True)
+        _assert_transaction(data_root)
+        if name in existing:
+            return existing[name]
+        created = factory()
+        _assert_transaction(data_root)
+        if not isinstance(created, str) or not created:
+            raise ValueError("Protected secret factory must return a nonempty string")
+        write_secret_map({name: created}, data_root)
+        confirmed = read_secret_values((name,), data_root, strict=True).get(name)
+        _assert_transaction(data_root)
+        if confirmed != created:
+            raise RuntimeError("Protected secret creation did not survive readback")
+        return created
 
 
 def _protect_bytes(data: bytes) -> bytes | None:
@@ -390,6 +579,13 @@ def read_secret_values(
 
 
 def write_secret_map(updates: Mapping[str, object], data_root: Path | None = None) -> Path:
+    _remove_environment_secrets((*_NON_ENVIRONMENT_SECRETS, *updates))
+    with secret_transaction(data_root):
+        return _write_secret_map_locked(updates, data_root)
+
+
+def _write_secret_map_locked(updates: Mapping[str, object], data_root: Path | None = None) -> Path:
+    _assert_transaction(data_root)
     # Clear an inherited plaintext PIN even when this particular update does
     # not contain the PIN. It must only ever be read from protected storage.
     _remove_environment_secrets((*_NON_ENVIRONMENT_SECRETS, *updates))
@@ -401,6 +597,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
         if sys.platform.startswith("linux")
         else read_secret_map(data_root, strict=True)
     )
+    _assert_transaction(data_root)
     removed: set[str] = set()
     for key, value in updates.items():
         key = str(key).strip()
@@ -419,6 +616,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
             raise RuntimeError(
                 "macOS Keychain verification failed; credentials were not accepted"
             )
+        _assert_transaction(data_root)
         _remove_environment_secrets((*values, *removed))
         # Kept as a stable API return value; no secret is written at this path.
         return path
@@ -429,6 +627,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
             raise RuntimeError(
                 "Linux Secret Service verification failed; credentials were not accepted"
             )
+        _assert_transaction(data_root)
         _remove_environment_secrets((*values, *removed))
         return path
     blob = _protect_bytes(payload)
@@ -440,6 +639,7 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
     # problem must never destroy the only readable credential copy.
     if _unprotect_bytes(blob) != payload:
         raise RuntimeError("DPAPI verification failed; credentials were not written")
+    _assert_transaction(data_root)
     if _path_traverses_reparse(path.parent) or (
         os.path.lexists(path) and _is_link_or_reparse(path)
     ):
@@ -494,6 +694,9 @@ def write_secret_map(updates: Mapping[str, object], data_root: Path | None = Non
                 tmp.unlink(missing_ok=True)
         except OSError:
             pass
+    if read_secret_map(data_root, strict=True) != values:
+        raise RuntimeError("DPAPI credential write did not survive readback")
+    _assert_transaction(data_root)
     _remove_environment_secrets((*values, *removed))
     return path
 
@@ -552,13 +755,14 @@ def migrate_legacy_env(paths: list[Path], data_root: Path | None = None) -> list
             sources.append((candidate, identity))
     if not merged:
         return []
-    existing = read_secret_map(data_root)
-    write_secret_map({key: value for key, value in merged.items() if key not in existing},
-                     data_root)
-    stored = read_secret_map(data_root)
-    expected = {**merged, **existing}
-    if any(stored.get(key) != value for key, value in expected.items()):
-        raise RuntimeError("legacy credential migration did not verify")
+    with secret_transaction(data_root):
+        existing = read_secret_map(data_root, strict=True)
+        write_secret_map({key: value for key, value in merged.items() if key not in existing},
+                         data_root)
+        stored = read_secret_map(data_root, strict=True)
+        expected = {**merged, **existing}
+        if any(stored.get(key) != value for key, value in expected.items()):
+            raise RuntimeError("legacy credential migration did not verify")
     removed: list[Path] = []
     for source, identity in sources:
         # Never delete a path that was swapped, linked, or changed after the

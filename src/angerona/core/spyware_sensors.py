@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import platform
 import plistlib
 import re
 import stat
 import subprocess
+import time
+from dataclasses import asdict, dataclass, fields
 from itertools import islice
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from angerona.core.win import run_hidden
 
@@ -577,6 +580,178 @@ def _linux_memory(pid: int, limit: int) -> tuple[list[dict[str, Any]], dict[str,
     return records, _coverage("complete", count=len(records))
 
 
+
+_MEMORY_IDENTITY_SCHEMA = "angerona.memory-identity.v1"
+_MEMORY_IDENTITY_SOURCES = frozenset({
+    "memory.windows.virtualquery", "memory.windows.inject_scanner",
+    "memory.linux.maps", "memory",
+})
+_WINDOWS_MEMORY_SOURCES = frozenset({
+    "memory.windows.virtualquery", "memory.windows.inject_scanner",
+})
+_FILETIME_EPOCH = 116444736000000000
+_FILETIME_LIMIT = 2650467744000000000
+
+
+def _valid_create_time(value: Any) -> bool:
+    if type(value) not in (int, float):
+        return False
+    try:
+        return math.isfinite(value) and value > 0
+    except OverflowError:
+        return False
+
+
+def _matches_filetime(value: Any, ticks: int) -> bool:
+    # These existing epoch conversion orders can round differently. Accept
+    # exact canonical values only; native before/after FILETIME stays exact.
+    return (_valid_create_time(value) and value in {
+        (ticks - _FILETIME_EPOCH) / 10000000,
+        ticks / 10000000 - 11644473600,
+    })
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryProcessIdentity:
+    pid: int
+    birth_filetime: int
+    exit_filetime: int
+
+    @property
+    def create_time(self) -> float:
+        return (self.birth_filetime - _FILETIME_EPOCH) / 10000000
+
+
+def _valid_memory_object(value: Any) -> bool:
+    return (type(value) is MemoryProcessIdentity
+            and type(value.pid) is int and 0 < value.pid <= 0xFFFFFFFF
+            and type(value.birth_filetime) is int
+            and _FILETIME_EPOCH < value.birth_filetime < _FILETIME_LIMIT
+            and type(value.exit_filetime) is int
+            and 0 <= value.exit_filetime < 2**64)
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryIdentityReceipt:
+    source: str
+    request_id: str
+    pid: int
+    expected_create_time: float | None
+    before: MemoryProcessIdentity | None
+    after: MemoryProcessIdentity | None
+    started_at: float
+    finished_at: float
+    handle_closed: bool
+    status: str
+    reason: str
+    schema: str = _MEMORY_IDENTITY_SCHEMA
+
+    @property
+    def bound(self) -> bool:
+        return (self.source in _WINDOWS_MEMORY_SOURCES and self.status == "bound"
+                and self.handle_closed is True and _valid_memory_object(self.before)
+                and self.before == self.after and self.before.pid == self.pid
+                and self.before.exit_filetime == 0
+                and _valid_create_time(self.started_at) and _valid_create_time(self.finished_at)
+                and self.before.create_time <= self.started_at <= self.finished_at
+                and (self.expected_create_time is None
+                     or _matches_filetime(self.expected_create_time, self.before.birth_filetime)))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def parse_memory_identity(value: Any) -> MemoryIdentityReceipt | None:
+    """Decode a closed metadata receipt; this does not authenticate its source."""
+    if type(value) is MemoryIdentityReceipt:
+        value = value.to_dict()
+    if type(value) is not dict or set(value) != {field.name for field in fields(MemoryIdentityReceipt)}:
+        return None
+    if (value.get("schema") != _MEMORY_IDENTITY_SCHEMA
+            or type(value.get("source")) is not str
+            or value["source"] not in _MEMORY_IDENTITY_SOURCES
+            or not isinstance(value.get("request_id"), str)
+            or re.fullmatch(r"[0-9a-f]{32}", value["request_id"]) is None
+            or type(value.get("pid")) is not int or not 0 < value["pid"] <= 0xFFFFFFFF
+            or (value.get("expected_create_time") is not None
+                and not _valid_create_time(value["expected_create_time"]))
+            or not _valid_create_time(value.get("started_at"))
+            or not _valid_create_time(value.get("finished_at"))
+            or value["finished_at"] < value["started_at"]
+            or type(value.get("handle_closed")) is not bool
+            or type(value.get("status")) is not str
+            or value["status"] not in {"bound", "unavailable", "mismatch", "unsupported"}
+            or not isinstance(value.get("reason"), str) or len(value["reason"]) > 160):
+        return None
+    decoded = dict(value)
+    for key in ("before", "after"):
+        obj = decoded[key]
+        if obj is not None:
+            if type(obj) is not dict or set(obj) != {"pid", "birth_filetime", "exit_filetime"}:
+                return None
+            obj = MemoryProcessIdentity(**obj)
+            if not _valid_memory_object(obj):
+                return None
+            decoded[key] = obj
+    receipt = MemoryIdentityReceipt(**decoded)
+    if receipt.status == "bound" and not receipt.bound:
+        return None
+    return receipt
+
+
+class _MemoryFiletime(ctypes.Structure):
+    _fields_ = [("dwLowDateTime", ctypes.c_uint32), ("dwHighDateTime", ctypes.c_uint32)]
+
+
+def read_memory_process_identity(kernel: Any, handle: Any, *,
+                                 filetime_type: Any = _MemoryFiletime) -> MemoryProcessIdentity | None:
+    """Query identity from the retained inspection handle; never reopen by PID."""
+    try:
+        pid = kernel.GetProcessId(handle)
+        created, exited, kernel_time, user_time = (filetime_type() for _ in range(4))
+        if not kernel.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                      ctypes.byref(kernel_time), ctypes.byref(user_time)):
+            return None
+        ticks = lambda value: (int(value.dwHighDateTime) << 32) | int(value.dwLowDateTime)
+        identity = MemoryProcessIdentity(pid, ticks(created), ticks(exited))
+        return identity if _valid_memory_object(identity) else None
+    except (AttributeError, OSError, TypeError, ValueError, OverflowError, ctypes.ArgumentError):
+        return None
+
+
+def memory_identity_receipt(*, source: str, request_id: str, pid: int,
+                            expected_create_time: float | None,
+                            before: MemoryProcessIdentity | None,
+                            after: MemoryProcessIdentity | None,
+                            started_at: float, handle_closed: bool,
+                            finished_at: float | None = None) -> MemoryIdentityReceipt:
+    """Construct a receipt; missing expected birth never comes from enrichment."""
+    finished_at = time.time() if finished_at is None else finished_at
+    status, reason = "unavailable", "Same-handle process identity unavailable"
+    if before is not None and after is not None:
+        if before != after or before.pid != pid or before.exit_filetime != 0:
+            status, reason = "mismatch", "Inspected process object changed, exited, or has a different PID"
+        elif (expected_create_time is not None
+              and not _matches_filetime(expected_create_time, before.birth_filetime)):
+            status, reason = "mismatch", "Inspected process birth differs from the expected generation"
+        elif not handle_closed:
+            reason = "Inspection handle closure was not confirmed"
+        else:
+            status, reason = "bound", "Same retained query handle PID and raw FILETIME verified before and after inspection"
+    if (not _valid_create_time(started_at) or not _valid_create_time(finished_at)
+            or finished_at < started_at
+            or (before is not None and before.create_time > started_at)):
+        status, reason = "unavailable", "Inspection clock and process birth are inconsistent"
+    if not isinstance(request_id, str) or re.fullmatch(r"[0-9a-f]{32}", request_id) is None:
+        status, reason = "unavailable", "Collector request token missing or malformed"
+    if source not in _WINDOWS_MEMORY_SOURCES:
+        status, reason = "unsupported", "Native process-generation proof is unavailable for this collector"
+    return MemoryIdentityReceipt(source, request_id, pid,
+        expected_create_time if _valid_create_time(expected_create_time) else None,
+        before, after, started_at, finished_at,
+        handle_closed, status, reason)
+
+
 def _windows_kernel32() -> Any:
     from ctypes import wintypes
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -584,6 +759,10 @@ def _windows_kernel32() -> Any:
     kernel.OpenProcess.restype = wintypes.HANDLE
     kernel.VirtualQueryEx.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
     kernel.VirtualQueryEx.restype = ctypes.c_size_t
+    kernel.GetProcessId.argtypes = [wintypes.HANDLE]
+    kernel.GetProcessId.restype = wintypes.DWORD
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(_MemoryFiletime)] * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
     kernel.CloseHandle.argtypes = [wintypes.HANDLE]
     kernel.CloseHandle.restype = wintypes.BOOL
     return kernel
@@ -597,52 +776,109 @@ class _MemoryBasicInformation(ctypes.Structure):
     ]
 
 
-def _windows_memory(pid: int, limit: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _windows_memory(pid: int, limit: int, *, expected_create_time: float | None = None,
+                    request_id: str = "", cancelled: Callable[[], bool] | None = None
+                    ) -> tuple[list[dict[str, Any]], dict[str, Any], MemoryIdentityReceipt]:
     kernel = _windows_kernel32()
+    started_at = time.time()
+    before = after = None
+    closed = False
+    records: list[dict[str, Any]] = []
     # PROCESS_QUERY_INFORMATION only: no VM_READ/WRITE/OPERATION rights.
     handle = kernel.OpenProcess(0x0400, False, pid)
     if not handle:
         code = ctypes.get_last_error()
-        return [], _coverage("access_denied" if code == 5 else "error", f"OpenProcess failed ({code})")
-    records: list[dict[str, Any]] = []
-    address = 0
-    try:
-        for _index in range(limit):
-            info = _MemoryBasicInformation()
-            queried = kernel.VirtualQueryEx(handle, ctypes.c_void_p(address), ctypes.byref(info), ctypes.sizeof(info))
-            if not queried:
-                code = ctypes.get_last_error()
-                # ERROR_INVALID_PARAMETER marks the end of the accessible VAS.
-                if code == 87:
-                    return records, _coverage("complete", "Virtual address space enumeration ended", len(records))
-                return records, _coverage("access_denied" if code == 5 else "error", f"VirtualQueryEx failed ({code})", len(records))
-            base, size = int(info.BaseAddress or 0), int(info.RegionSize)
-            if size <= 0 or base + size <= address:
-                return records, _coverage("error", "Memory query failed to advance", len(records))
-            protection = int(info.Protect) & 0xFF
-            if int(info.State) == 0x1000:  # MEM_COMMIT
-                records.append({"source": "memory.windows.virtualquery", "id": f"{pid}:{base:x}",
-                    "base_address": base, "size": size, "protection": int(info.Protect),
-                    "executable": protection in {0x10, 0x20, 0x40, 0x80},
-                    "writable": protection in {0x04, 0x08, 0x40, 0x80},
-                    "private": int(info.Type) == 0x20000, "file_backed": int(info.Type) in {0x1000000, 0x40000}})
-            address = base + size
-        return records, _coverage("partial", "Memory query region bound exhausted", len(records))
-    finally:
-        kernel.CloseHandle(handle)
+        coverage = _coverage("access_denied" if code == 5 else "error", f"OpenProcess failed ({code})")
+    else:
+        address = 0
+        coverage = _coverage("partial", "Memory query region bound exhausted")
+        try:
+            before = read_memory_process_identity(kernel, handle)
+            for _index in range(limit):
+                if cancelled is not None and cancelled():
+                    coverage = _coverage("partial", "Memory metadata collection cancelled", len(records))
+                    break
+                info = _MemoryBasicInformation()
+                queried = kernel.VirtualQueryEx(handle, ctypes.c_void_p(address), ctypes.byref(info), ctypes.sizeof(info))
+                if not queried:
+                    code = ctypes.get_last_error()
+                    # ERROR_INVALID_PARAMETER marks the end of the accessible VAS.
+                    coverage = _coverage("complete" if code == 87 else "access_denied" if code == 5 else "error",
+                        "Virtual address space enumeration ended" if code == 87 else f"VirtualQueryEx failed ({code})",
+                        len(records))
+                    break
+                if queried != ctypes.sizeof(info):
+                    coverage = _coverage("error", "Memory query returned an incomplete metadata structure", len(records))
+                    break
+                base, size = int(info.BaseAddress or 0), int(info.RegionSize)
+                if size <= 0 or base + size <= address:
+                    coverage = _coverage("error", "Memory query failed to advance", len(records))
+                    break
+                protection = int(info.Protect) & 0xFF
+                if int(info.State) == 0x1000:  # MEM_COMMIT
+                    records.append({"source": "memory.windows.virtualquery", "id": f"{pid}:{base:x}",
+                        "base_address": base, "size": size, "protection": int(info.Protect),
+                        "executable": protection in {0x10, 0x20, 0x40, 0x80},
+                        "writable": protection in {0x04, 0x08, 0x40, 0x80},
+                        "private": int(info.Type) == 0x20000, "file_backed": int(info.Type) in {0x1000000, 0x40000}})
+                address = base + size
+            else:
+                coverage = _coverage("partial", "Memory query region bound exhausted", len(records))
+        except Exception as exc:
+            coverage = _failure(exc)
+            coverage["count"] = len(records)
+        finally:
+            # Recheck this retained object even when metadata collection fails.
+            # The query-only handle carries PID/times and cannot be replaced by
+            # a separately opened Process(pid) or cached inventory record.
+            try:
+                after = read_memory_process_identity(kernel, handle)
+            finally:
+                try:
+                    closed = bool(kernel.CloseHandle(handle))
+                except Exception:
+                    closed = False
+    identity = memory_identity_receipt(source="memory.windows.virtualquery", request_id=request_id,
+        pid=pid, expected_create_time=expected_create_time, before=before, after=after,
+        started_at=started_at, handle_closed=closed)
+    return records, coverage, identity
 
 
-def inspect_process_memory(pid: int, max_regions: int = 1024) -> dict[str, Any]:
-    """Inspect one PID's region metadata; permissions and unsupported OSes are explicit."""
+def inspect_process_memory(pid: int, max_regions: int = 1024, *,
+                           expected_create_time: float | None = None, request_id: str = "",
+                           cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
+    """Inspect bounded metadata; native object proof is separate from coverage.
+
+    Optional legacy callers without a request token receive observations only.
+    Linux procfs generation proof is deliberately unavailable in this collector.
+    """
     limit = _limit(max_regions)
     if isinstance(pid, bool) or not isinstance(pid, int) or pid < 1 or pid > 0xFFFFFFFF:
         raise ValueError("pid must be a positive 32-bit integer")
     system = platform.system().lower()
     source = "memory.windows.virtualquery" if system == "windows" else "memory.linux.maps" if system == "linux" else "memory"
+    started_at = time.time()
+    identity = memory_identity_receipt(source=source, request_id=request_id, pid=pid,
+        expected_create_time=expected_create_time, before=None, after=None,
+        started_at=started_at, handle_closed=False)
     if system not in {"windows", "linux"}:
-        return {"pid": pid, "records": [], "findings": [], "coverage": {source: _coverage("unsupported", "Process memory metadata is supported on Windows/Linux")}}
-    try:
-        records, coverage = (_windows_memory if system == "windows" else _linux_memory)(pid, limit)
-    except Exception as exc:
-        records, coverage = [], _failure(exc)
-    return {"pid": pid, "records": records, "findings": analyze_memory_regions(records, pid), "coverage": {source: coverage}}
+        records, coverage = [], _coverage("unsupported", "Process memory metadata is supported on Windows/Linux")
+    else:
+        try:
+            if system == "windows":
+                records, coverage, identity = _windows_memory(pid, limit,
+                    expected_create_time=expected_create_time, request_id=request_id, cancelled=cancelled)
+            else:
+                records, coverage = _linux_memory(pid, limit)
+        except Exception as exc:
+            records, coverage = [], _failure(exc)
+    validated = parse_memory_identity(identity)
+    bound = validated is not None and validated.bound
+    findings = analyze_memory_regions(records, pid)
+    for finding in findings:
+        finding.update(memory_identity=identity.to_dict(), response_eligible=bound,
+                       eligibility_reason=identity.reason,
+                       process_create_time=identity.before.create_time if bound else None)
+    return {"pid": pid, "records": records, "findings": findings,
+            "memory_identity": identity.to_dict(), "coverage": {source: coverage,
+                "memory.identity": _coverage("complete" if bound else "partial", identity.reason)}}

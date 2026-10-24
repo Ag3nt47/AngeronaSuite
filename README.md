@@ -32,6 +32,17 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
+The current maintenance review adds handle-bound memory identity, bounded private
+Black Box exports and serialized protected-key updates. It also makes legacy
+Bridge migration fail closed and labels SGX runtime hints as unverified. Read the
+[key and communication guide](docs/key-and-communication-integrity.md),
+[AI-aware defense priorities](docs/ai-aware-defense.md) and
+[scoped validation](analysis/live-debug-2026-10-22/key-and-memory-review.md).
+The current scope passed 786 tests with three exact POSIX skips and all 29
+isolated selfcheck phases. A fresh 600.531-second 15-module observation retained
+17 coverage gaps; it does not prove a clean host or lower CPU use. The broader
+v1.15 integration remains in progress; this is not a v1.15 release.
+
 Shared process scanning now avoids unused cached iterator objects while preserving
 fresh identity checks. **452 regression tests and all 29 isolated self-check phases
 passed**. A fresh 15-module observation retained 17 coverage gaps; it did not
@@ -40,7 +51,7 @@ demonstrate a CPU reduction. See the [performance interaction map](analysis/live
 Live AI Review now retains explicit process-identity gaps, and publisher staging
 errors show sanitized numeric OS codes. These diagnostic improvements passed
 **229 tests across 12 complete suites**, with **one explicit Windows symlink skip**.
-See the [164-issue review](analysis/live-debug-2026-10-22/README.md) for scope and
+See the [issue review](analysis/live-debug-2026-10-22/README.md) for scope and
 retained coverage gaps; this is separate from the updater validation below.
 
 **Also in the [v1.14 security integration scope](docs/releases/v1.14-security-integration.md):**

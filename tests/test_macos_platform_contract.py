@@ -315,6 +315,9 @@ def test_macos_secret_store_uses_keychain_without_writing_a_file(
     from angerona.platforms.macos import keychain
 
     stored: dict[str, bytes] = {}
+    lock_root = tmp_path / "inert-credential-locks"
+    lock_root.mkdir()
+    monkeypatch.setattr(secure_store, "_account_lock_directory", lambda: lock_root)
     monkeypatch.setattr(secure_store.sys, "platform", "darwin")
     monkeypatch.setattr(
         keychain,
@@ -344,6 +347,9 @@ def test_macos_secret_write_refuses_to_replace_an_unreadable_keychain_item(
     from angerona.platforms.macos import keychain
 
     writes: list[bytes] = []
+    lock_root = tmp_path / "inert-credential-locks"
+    lock_root.mkdir()
+    monkeypatch.setattr(secure_store, "_account_lock_directory", lambda: lock_root)
     monkeypatch.setattr(secure_store.sys, "platform", "darwin")
     monkeypatch.setattr(
         keychain,

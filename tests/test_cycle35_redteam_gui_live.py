@@ -1086,6 +1086,14 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 except Exception as exc:
                     log_note = "console log capture unavailable: " + type(exc).__name__[:80]
 
+                print("ANGERONA_GUI_LAUNCH_ADMISSION_FAILURE " + json.dumps({
+                    "diagnostic_only": True,
+                    "run_index": run_index,
+                    "console_preparing": console._launch_preparing,
+                    "console_run_pending": console._run_pending,
+                    "observation_diagnostic": diagnostic,
+                }, sort_keys=True), flush=True)
+
                 trace(
                     "launch_admission_failed", run_index=run_index,
                     diagnostic_only=True, observed_monotonic=time.monotonic(),
@@ -1108,8 +1116,65 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     pass
 
 
+        def await_real_process_preflight(run_index: int) -> None:
+            """Synchronize fixture work; the launch still needs its own proof."""
+            initial = process.operational_snapshot()
+            expected_generation = initial.get("lifecycle_generation")
+            baseline_cycle = initial.get("cycle_count")
+            assert type(expected_generation) is int and expected_generation > 0, initial
+            assert type(baseline_cycle) is int and baseline_cycle >= 1, initial
+            request = ProcessMonitorModule.request_fresh_observation(
+                process, expected_generation=expected_generation,
+            )
+            assert request is not None, initial
+            # Reuse the startup fixture's ten-second allowance. Do not alter
+            # launch preparation's budget, collection result or refusal gate.
+            preflight_deadline = time.monotonic() + 10.0
+            observed: dict[str, object] = {}
+            ready = False
+            while time.monotonic() < preflight_deadline:
+                observed = process.operational_snapshot()
+                ready = bool(
+                    observed.get("status") == "running"
+                    and observed.get("thread_alive") is True
+                    and observed.get("first_cycle_complete") is True
+                    and observed.get("lifecycle_generation") == expected_generation
+                    and type(observed.get("cycle_count")) is int
+                    and observed["cycle_count"] > baseline_cycle
+                    and type(observed.get("health")) is int
+                    and observed["health"] >= 50
+                    and observed.get("event_overflow_count") == 0
+                    and ProcessMonitorModule.fresh_observation_complete(process, request)
+                )
+                if ready:
+                    break
+                app.processEvents()
+                time.sleep(0.05)
+            summary = {
+                "schema": "angerona.gui-live-prelaunch-observation.v1",
+                "diagnostic_only": True,
+                "run_index": run_index,
+                "requested_token": list(request),
+                "baseline_cycle": baseline_cycle,
+                "process": {key: observed.get(key) for key in (
+                    "status", "thread_alive", "first_cycle_complete",
+                    "lifecycle_generation", "cycle_count", "health",
+                    "event_overflow_count",
+                )},
+                "observation_diagnostic": ProcessMonitorModule.fresh_observation_diagnostic(
+                    process, request,
+                ),
+            }
+            if not ready:
+                print("ANGERONA_GUI_PRELAUNCH_OBSERVATION_FAILURE " +
+                      json.dumps(summary, sort_keys=True), flush=True)
+                trace("prelaunch_observation_failed", summary=summary)
+            assert ready, summary
+            trace("prelaunch_observation_passed", summary=summary)
+
         try:
             for run_index in (1, 2):
+                await_real_process_preflight(run_index)
                 started = time.monotonic()
                 previous_deliveries = len(delivered)
                 QTest.mouseClick(console.launch_btn, Qt.MouseButton.LeftButton)

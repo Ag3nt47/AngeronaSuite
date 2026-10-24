@@ -62,6 +62,23 @@ up the detection loop. The visible dashboard refreshes its snapshot every
 three seconds; news motion stops when hidden, paused or disabled by UI motion
 preferences.
 
+### Memory identity and lifecycle
+
+Windows executable-region metadata now brackets collection with PID and exact
+process creation-time checks on the same retained query handle. Inventory or
+later psutil enrichment cannot replace that inspected identity. No memory bytes
+are read and no additional VM_READ/VM_WRITE rights are requested. The existing
+four-process/512-region sampling limits remain.
+
+Partial, unavailable, unsupported or inconsistent identity stays advisory with
+response_eligible=false. Linux region metadata has no equivalent native identity
+receipt in this path. An obsolete worker generation loses publication authority
+after stop/restart. A receipt is metadata, not a signature: authenticated producer
+provenance and the existing exact-target response boundary remain required.
+An executable private region can be legitimate JIT activity; this change does
+not identify an implant or prove a clean host. See the
+[identity and key review](key-and-communication-integrity.md).
+
 ## Intelligence, source links and news
 
 Enable **Network intelligence ingestion** to allow outbound research downloads.
@@ -128,6 +145,9 @@ this preview: it needs typed identity, a retained backup and verified rollback.
 After a successful SpywareGuard file-quarantine receipt, the module can create
 an AES-256-GCM encrypted forensic archive. Its key is read only from the
 OS-protected credential store and is excluded from child-process environments.
+First-key creation participates in the shared protected-store transaction;
+an existing malformed value is not silently replaced. Concurrent cooperative
+writers cannot install different archive keys or discard another credential.
 Archive metadata and contents are authenticated. Restore is an explicit
 non-overwriting operation in the archive API. The archive is an encrypted
 copy: the separately journaled plaintext combat quarantine remains and the

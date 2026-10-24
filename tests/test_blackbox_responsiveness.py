@@ -286,6 +286,7 @@ def firewall_detail_case(monkeypatch):
     monkeypatch.setattr(blackbox, "_FwDetailWorker", InertDetailWorker)
     state.window = ShutdownOwner()
     state.window._closing = False
+    state.window._bundle_worker = None
     state.window._shutdown_threads = None
     state.tab = blackbox.FirewallTab()
     state.window.setCentralWidget(state.tab)
