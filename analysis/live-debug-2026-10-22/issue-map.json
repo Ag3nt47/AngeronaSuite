@@ -2438,5 +2438,256 @@
       "fresh_offline_retry": "PENDING",
       "retry_success_commit_publication_or_CI_claimed": false
     }
+  },
+  "current_parser_normalization_review": {
+    "schema": "angerona.scoped-parser-normalization-review.v1",
+    "review_date": "2026-10-24",
+    "product_version": "1.14.0",
+    "broader_v1_15_complete": false,
+    "scope": {
+      "code_and_test_paths": 2,
+      "existing_document_paths": 7,
+      "total_reviewed_paths": 9,
+      "added_test_files": 1,
+      "new_modules": 0,
+      "new_documents": 0,
+      "active_pre_document_source_entries": 1883,
+      "active_pre_document_python_entries": 1170
+    },
+    "scoped_resolution": {
+      "issue_id": "SEC-20",
+      "status": "FIXED_LOWER_LEVEL_ERROR_NORMALIZATION",
+      "historical_issue_object_and_open_status_preserved": true,
+      "changes": "Three existing exception tuples normalize relevant ValueError, RecursionError and OverflowError paths at manifest, inventory and approved-baseline boundaries.",
+      "retained_contracts": [
+        "Hash and HMAC validation",
+        "Explicit approval and baseline byte preservation",
+        "Invalid evidence blocks inference and refuses activation"
+      ],
+      "limits": "No prior fail-open, HMAC bypass or runtime denial of service was reproduced; this does not prove all adversarial parser schedules."
+    },
+    "reviewed_source_artifacts": [
+      {
+        "path": "src/angerona/modules/ai_model_integrity.py",
+        "sha256": "616e66a03be8b698168e4a4ec81ad7a2b910f04c4a464e25983ed876feb4bfc3"
+      },
+      {
+        "path": "tests/test_ai_model_parser_normalization.py",
+        "sha256": "78a4572d34298718270067e27e80713874c3915b06973b1724def86d4b7c7f8c"
+      }
+    ],
+    "comparison": {
+      "result": {
+        "path": ".tmp/v115-model-parser-normalization-staged-preview-r3/run-parser83r3/result.json",
+        "sha256": "a201deb41dd844bd42a0c7bf1c6a42ef6bc4e66b25043adb09b3de7ea28d2096"
+      },
+      "root_review": {
+        "path": ".tmp/v115-model-parser-normalization-integration-root-r2/accepted-staged83-r3-root-review.json",
+        "sha256": "07f1ccbf6b4fc69a10771837bd0f546991f03b8c79014270d144e35278477a5b"
+      },
+      "functions_per_mode": 17,
+      "cases_per_mode": 83,
+      "phases_per_mode": 249,
+      "original": {
+        "passed": 60,
+        "failed": 23,
+        "errors": 0,
+        "skipped": 0
+      },
+      "corrected_candidate": {
+        "passed": 83,
+        "failed": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "real_deep_fixture": {
+        "actual_depth": 4256,
+        "probes": 3,
+        "runtime": "Python 3.12",
+        "bounded_real_json_decoder_probe": true,
+        "parser_mock": false,
+        "interpreter_limit_mutation": false,
+        "forced_success_or_new_skip_admission": false
+      },
+      "rejected_earlier_comparison": {
+        "original_passed": 60,
+        "original_failed": 23,
+        "candidate_passed": 74,
+        "candidate_failed": 9,
+        "shared_deep_fixture_failures": 9,
+        "preserved": true,
+        "classification": "Wrong assumed decoder depth; not evidence of product recursion failure."
+      }
+    },
+    "fresh_focused_integration": {
+      "result": {
+        "path": ".tmp/v115-model-parser-normalization-validation-preview-r2/run-updates-parser44r2/result.json",
+        "sha256": "a9ae95c87fa22c56ab5238ef12bdf5c464f8b6d1e49101fc137bd288b568afd3"
+      },
+      "root_review": {
+        "path": ".tmp/v115-model-parser-normalization-integration-root-r2/accepted-gate44-self29-root-review-r2.json",
+        "sha256": "89ee8038027ccaff31f58a659ee7cee15946fb45f6b67b7dd59442f37cb8a7de"
+      },
+      "suites": 44,
+      "functions": 606,
+      "cases": 1263,
+      "passed": 1258,
+      "failed": 0,
+      "errors": 0,
+      "unchanged_exact_native_availability_skips": 5,
+      "phases": 3789,
+      "new_parser_cases_passed": 83,
+      "configured_product_origins_loaded": 13,
+      "new_skip_admission": false,
+      "repository_wide_test_claim": false
+    },
+    "fresh_default_selfcheck": {
+      "result": {
+        "path": ".tmp/v115-model-parser-normalization-validation-preview-r2/run-selfcheck-parser44r2/result.json",
+        "sha256": "ece77fbea3063e20fac17dd2ff94dd857fce264056b2c90383a12d875893b14e"
+      },
+      "root_review_ref": "fresh_focused_integration.root_review",
+      "phases_passed": 29,
+      "failed": 0,
+      "module_PASS": 68,
+      "module_SKIP": 18,
+      "pipeline_PASS": 1,
+      "required_origins_loaded": 5,
+      "configured_origins_loaded": 7,
+      "configured_origins_naturally_unloaded": 6,
+      "IPC_naturally_unloaded": true,
+      "forced_import_or_ring_selftest_credit": false
+    },
+    "fresh_real_AMIG_observation": {
+      "result": {
+        "path": ".tmp/v115-model-parser-normalization-amig-solo-preview-r2/run-solo-ai-model-integrity-guard-observe-r1/result.json",
+        "sha256": "062a4b086fc25db2f087c2d4df963812779a7bae6b49b39994b43f748cb712d7"
+      },
+      "root_review": {
+        "path": ".tmp/v115-model-parser-normalization-integration-root-r2/accepted-amig-observation-root-review-r2.json",
+        "sha256": "d9ce513482a638b0e72f3e59c5ac36a3badc940175fe757eae6a400dc860f80b"
+      },
+      "independent_actual_peer": {
+        "path": ".tmp/v115-model-parser-normalization-amig-actual-peer-r2/manifest.json",
+        "sha256": "b3008aa24921ca2178842473b7f199b0f48fc5f899a5604c91374f0753a80363"
+      },
+      "state": "OBSERVED_WITH_GAPS",
+      "observation_seconds": 30.062,
+      "observer_heartbeats": 119,
+      "actual_first_check": true,
+      "retained_canonical_active_source_class_instance_worker_generation": true,
+      "before_start_state": "not-loaded",
+      "after_first_check_state": "approval-required",
+      "health": 25,
+      "signed_MEDIUM_availability_event_verified": true,
+      "real_private_EventBus_authority": true,
+      "default_key_override": null,
+      "private_empty_models_root": true,
+      "approved_baseline_absent_and_not_enrolled": true,
+      "normal_interval_seconds": 1800,
+      "normal_initial_delay_seconds": 0,
+      "before_observed_after_stop_receipts_complete": true,
+      "worker_normally_retired": true,
+      "availability_gap_count": 2,
+      "availability_gaps": [
+        "Reported health is not fully available",
+        "Sampled interval retains availability/evidence gaps"
+      ],
+      "matrix_errors": 0,
+      "recorded_drops": 0,
+      "export_queue": 0,
+      "gap_record_counter": 0,
+      "pending_threads": 0,
+      "healthy_attestation_claimed": false,
+      "host_model_provider_inference_parser_stress_GUI_observed": false,
+      "profile": {
+        "private_extension": true,
+        "tracked_audited_modules_unchanged": 15,
+        "tracked_pairs_unchanged": 105,
+        "tracked_all_eligible_modules_unchanged": 15,
+        "tracked_default_cases_unchanged": 123,
+        "inert_negative_profile_checks": 88,
+        "product_pass_or_adversarial_family_credit": false,
+        "failed_stale_pin_dry_plan_preserved": true,
+        "corrected_pin_dry_plan_passed": true,
+        "target_executed_on_failed_dry_plan": false
+      },
+      "legacy_health_state": "critical",
+      "normal_startup_cycle_timeout_seconds": 300,
+      "normal_watchdog_work_budget_seconds": 300,
+      "interval_samples_retaining_expected_availability_gap": 119,
+      "crash_stopped_worker_or_evidence_loss_observed": false,
+      "expected_availability_gap_is_confirmed_tampering": false,
+      "selected_capture": {
+        "records": 13,
+        "coverage_records": 11,
+        "AMIG_events": 2,
+        "event_severities": {
+          "INFO": 1,
+          "MEDIUM": 1
+        },
+        "both_original_event_HMACs_verified": true,
+        "complete_event_visibility_or_independent_continuity_claimed": false,
+        "advisory_detail_omissions": 1,
+        "post_redaction_event_MAC_reverification_claimed": false
+      }
+    },
+    "retirement_and_runtime_scope": {
+      "original_two_owned_outer_generations_retired": true,
+      "separately_held_core_retired": true,
+      "normal_MainThread_only_exit": true,
+      "Qt_application_created": false,
+      "root_runtime_files_checked_before_after": 39,
+      "observer_runtime_file_scope": 10,
+      "source_index_runtime_unchanged": true,
+      "complete_import_cache_dependency_attestation_claimed": false,
+      "all_descendant_retirement_claimed": false,
+      "postflight": {
+        "path": ".tmp/v115-model-parser-normalization-integration-root-r2/amig-group-postflight-after-r2.json",
+        "sha256": "8ed3cd9583eef16aa5222bf97674ee3803abf80f8f3f796fbdc88a23267b3b90"
+      }
+    },
+    "historical_published_IPC_CI": {
+      "commit": "9ade6652b39794049f0305a73100799c24f8018f",
+      "general_run": 40081759388,
+      "security_run": 40081759333,
+      "successful_jobs": 15,
+      "python_versions": [
+        "3.10",
+        "3.11",
+        "3.12",
+        "3.13"
+      ],
+      "each_python_job_passed": 8534,
+      "each_python_job_skipped": 22,
+      "current_parser_revision_certified": false,
+      "earlier_GUI_producer_failure_cause": "UNKNOWN"
+    },
+    "preservation": {
+      "old_raw_issue_objects": 191,
+      "old_raw_bytes_order_status_preserved": true,
+      "all_26_old_top_level_value_bytes_preserved": true,
+      "added_issues": [],
+      "total_issues": 191,
+      "only_added_root_field": "current_parser_normalization_review",
+      "historical_SEC20_open_record_preserved": true
+    },
+    "open_boundaries": [
+      "HOST-03 unsafe OS-volume custody exposure",
+      "HOST-04 requested 2 GiB OS-volume headroom",
+      "Actual user-app PID and creation-time attachment; saved hint belonged to a different generation",
+      "Independent alert continuity and current live threat/false-positive adjudication",
+      "Historical native, GUI, heartbeat, reader-retirement and competing-load causes",
+      "Unchanged native availability skips and optional selfcheck gaps",
+      "Comprehensive all-module operation, physical-host endurance and field efficacy",
+      "Administrator/kernel resistance, independent rollback assurance and perfect Python key erasure",
+      "Complete dependency/import-cache and all-descendant retirement assurance",
+      "Ollama Python 3.13 reserved-name warning proposal held for a separate loop"
+    ],
+    "raw_host_capture_published": false,
+    "annotation_or_documentation_grants_mutation_allowlist_trust_authority": false,
+    "host_clean_all_errors_gone_all_modules_or_speedup_claimed": false,
+    "completion_claimed": false,
+    "completion_boundary": "This descriptor records scoped local validation. Final-source offline checks, reviewed commit, unchanged guarded publication and exact-head Actions are verified separately."
   }
 }

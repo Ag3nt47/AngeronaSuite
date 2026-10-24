@@ -7,6 +7,33 @@ in development at v1.14.0; broader v1.15 integration is incomplete. Consult the
 [historical key/memory review](../analysis/live-debug-2026-10-22/key-and-memory-review.md)
 for their separate validation states.
 
+## Model manifest and approved-baseline parser integrity
+
+Manifest, inventory and approved-baseline readers now translate the relevant
+integer-limit ValueError, deeply nested JSON RecursionError and numeric
+OverflowError paths into their existing typed integrity refusal. Three
+exception tuples change; the hash, HMAC, explicit approval, baseline byte
+preservation and inference-blocking contracts do not. Malformed evidence does
+not authorize a new baseline or replacement key.
+
+The original source passed 60 and failed 23 of 83 controlled cases; the corrected
+source passed all 83 with zero errors/skips. The deep-input fixture uses a bounded
+probe against the real JSON decoder, rather than an assumed recursion depth.
+An earlier 74-pass/nine-fail candidate run is retained as rejected fixture
+evidence. Fresh integration passed 1258 of 1263 cases with five unchanged native
+availability skips; default selfcheck passed 29 phases with 18 module skips.
+These checks resolve the scoped SEC-20 normalization gap, not a demonstrated
+HMAC bypass, universal parser-exhaustion defense or administrator/kernel boundary.
+
+A real private AI Model Integrity Guard worker completed its first check during
+30.062 seconds of observation. The absent approved baseline remained
+approval-required, with health 25 and a verified signed MEDIUM availability
+event. No baseline was enrolled, default key handling and normal cadence stayed
+in place, and two health/interval availability gaps remained explicit. The
+outcome is OBSERVED_WITH_GAPS, not healthy attestation or a host-model verdict.
+Review notes and valid event signatures confer no approval or response authority.
+See the [current scoped evidence](../analysis/live-debug-2026-10-22/README.md).
+
 ## Credential creation and updates
 
 Protected credentials share a serialized transaction for their actual backing
@@ -74,8 +101,8 @@ Windows ACL enforcement were not demonstrated by this Windows checkpoint.
 The two-mode property check's Linux namespace is a private model using the real
 Windows lease, not a native Linux run.
 
-Fresh scoped validation accepted 1175 passes and five exact native availability
-skips across 43 suites/1180 cases. Separate staged negative controls and the
+At the preceding IPC checkpoint, scoped validation accepted 1175 passes and five
+exact native availability skips across 43 suites/1180 cases. Separate staged negative controls and the
 30.172-second raw process-telemetry observation are documented in the
 [current evidence reference](../analysis/live-debug-2026-10-22/README.md).
 Selfcheck's 29 phases passed with 18 module skips and IPC naturally unloaded;

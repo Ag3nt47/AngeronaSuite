@@ -32,7 +32,24 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance — IPC key and resource integrity:** Scanner IPC now
+**Current v1.14 maintenance — model parser integrity:** Malformed manifests,
+inventories and approved baselines now use the existing typed refusal path for
+integer conversion limits, excessive JSON nesting and timestamp overflow. Hash
+checks and Hash-based Message Authentication Code (HMAC) validation remain intact,
+along with approval and baseline-preservation rules. The original source
+failed 23 of 83 focused cases; the corrected source passed all 83 without skips.
+Fresh integration passed 1258 of 1263 cases, retaining five native availability
+skips, and all 29 selfcheck phases passed with optional module gaps visible.
+
+A real private AI Model Integrity Guard worker also completed its first check.
+Its absent approved baseline stayed **approval-required**, with a verified signed
+availability event and two explicit coverage gaps; it did not receive a healthy
+attestation. See [the evidence and remaining work](analysis/live-debug-2026-10-22/README.md)
+and [model integrity boundaries](docs/key-and-communication-integrity.md).
+These are scoped local checks. Guarded publication and exact-head Actions are
+verified separately; broader v1.15 remains incomplete.
+
+**Previous IPC maintenance checkpoint — key and resource integrity:** Scanner IPC now
 serializes cooperating key initializers, bounds key reads and checks the retained
 file's identity through readback. Failed ring construction closes its owned
 mapping and file. The fresh focused gate passed 1175 of 1180 cases, with five

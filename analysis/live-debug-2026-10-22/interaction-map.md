@@ -1,6 +1,40 @@
 # Component dependencies and interference review
 
-## Current IPC key, lease and resource handoffs
+## Current parser and attestation handoffs
+
+| Handoff | Verified behavior | Scope and remaining limits |
+| --- | --- | --- |
+| Manifest/inventory/baseline bytes → parser boundary → typed integrity refusal | Three exception-tuple edits normalize integer-limit, excessive nesting and timestamp-overflow failures | Hash/HMAC, explicit approval and baseline-preservation rules remain; no previous bypass or runtime denial of service established |
+| Real bounded JSON probe → deep-input fixture → original/candidate comparison | Actual failing depth 4256 after three probes; original 60 pass/23 fail versus corrected 83 pass, zero errors/skips | 17 functions/249 phases per mode; earlier candidate 74/9 rejected because nine shared fixture assumptions were invalid |
+| Invalid integrity evidence → readiness/triage/model-pack consumers | New controlled cases retain inference blocking and refusal before activation | Controlled private files and synchronous paths, not every adversarial schedule or live provider |
+| Active source → focused integration | 44 suites/606 functions/1263 cases: 1258 pass, five unchanged native availability skips, 3789 phases; all new 83 pass | All 13 configured product origins loaded; no new skip admission, repository-wide or universal executed-byte claim |
+| Default selfcheck → natural module readiness | 29 phases pass; 68 module PASS, 18 module SKIP, pipeline PASS; required five origins loaded | Seven configured origins loaded/six unloaded; IPC naturally unloaded, no forced import or ring self-test credit |
+| Captured canonical AMIG class → real private worker → first check | Same active-source class, instance, worker and generation; 30.062 s/119 observer heartbeats; first cycle completed | No host-model/provider/inference/parser-stress or GUI observation |
+| Missing approved baseline → signed availability event → explicit gap | Approval-required, health 25, signed MEDIUM event verified through real private authority | OBSERVED_WITH_GAPS with two health/interval availability gaps; no enrollment, key override or healthy attestation |
+| Observation → normal stop → retained native retirement proofs | Module worker and two owned outer generations plus separately held core retired; zero errors/drops/export queue/gap records/pending | Root 39-file and observer ten-file runtime scopes differ; not complete cache/dependency or all-descendant assurance |
+| Private solo profile → unchanged public matrix | Existing audited 15/pairs 105/all-eligible 15/default 123 preserved | 88 inert negative checks are profile verifier controls, not product passes or full-family testing |
+
+The guard retained its normal interval/startup/initial-delay configuration.
+A stale child-target pin stopped the first dry-plan check before target launch;
+the corrected pin passed a fresh dry plan. This is retained harness evidence,
+not an additional product defect. See [the current scoped evidence](README.md)
+and [model integrity boundaries](../../docs/key-and-communication-integrity.md).
+
+All 191 historical issue objects and existing root values remain exact; only
+current_parser_normalization_review is appended. Its scoped SEC-20 resolution
+supersedes the old open record without rewriting history. HOST-03/HOST-04,
+unverified user-app attachment/continuity and older native/GUI/heartbeat or
+competing-load causes remain unresolved. The prior published IPC revision's
+15 passing Actions jobs are historical; they neither certify this parser source
+nor establish the earlier GUI producer failure's cause.
+
+Exact scope: two code/test paths plus seven existing documents, one added test,
+1883 source/1170 Python entries before doc binding. This entry records scoped
+local validation; final-source offline checks, guarded publication and exact-head
+Actions are verified separately. Product v1.14.0 maintenance; broader v1.15
+incomplete. No host-security, efficacy, all-module or measured speedup claim.
+
+## Historical IPC key, lease and resource handoffs
 
 | Handoff | Current behavior | Evidence and remaining limits |
 | --- | --- | --- |

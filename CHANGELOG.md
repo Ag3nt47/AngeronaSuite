@@ -1,6 +1,46 @@
 # Changelog
 
-## 1.14.0 — IPC key custody and constructor recovery
+## 1.14.0 — model parser error normalization
+
+- Normalize malformed manifest, inventory and approved-baseline parsing failures
+  into the existing typed integrity error at three lower-level boundaries. Integer
+  conversion limits, excessive JSON nesting and baseline timestamp overflow now
+  follow the same refusal path. Hash, HMAC, approval and baseline-preservation
+  checks remain in place; invalid evidence continues to block inference.
+- Separate original/candidate comparison: 17 functions / 83 cases / 249 phases
+  per mode; original 60 passed / 23 failed, corrected candidate 83 passed, with
+  zero errors or skips. Preserve the rejected earlier run (candidate 74 passed /
+  nine failed): its nine shared deep-fixture failures came from an assumed JSON
+  depth and did not demonstrate a product recursion failure. A bounded real JSON
+  probe established a failing depth of 4256 after three probes on this Python 3.12
+  runtime without changing interpreter limits, mocking the parser or forcing skips.
+- Fresh focused integration: 44 suites / 606 functions / 1263 cases, 1258 passed,
+  zero failures/errors, five unchanged exact native availability skips and 3789
+  phases. All 83 parser cases passed and all 13 configured product origins loaded.
+  Default selfcheck passed all 29 phases: 68 module PASS, 18 module SKIP and one
+  pipeline PASS; IPC was naturally unloaded, with no forced import credit.
+- A real private AI Model Integrity Guard worker completed its first check during
+  a 30.062-second observation with 119 observer heartbeats. An absent approved
+  baseline produced approval-required state, health 25 and a verified signed
+  MEDIUM availability event. Two expected health/interval gaps remain explicit:
+  OBSERVED_WITH_GAPS is not healthy attestation. Normal cadence and default key
+  handling were retained; no baseline was enrolled or host model/provider used.
+- Preserve all 191 historical issue objects and old root values byte-for-byte;
+  append only current_parser_normalization_review. The historical SEC-20 open
+  record remains intact while the new descriptor resolves this scoped lower-level
+  normalization gap. HOST-03/HOST-04 and older native/GUI causes remain open.
+- The preceding published IPC revision passed all 15 Actions jobs, including
+  8534 passes / 22 skips on each Python 3.10–3.13 job. That historical result
+  neither certifies this parser revision nor explains the earlier GUI producer
+  failure. This entry records scoped local validation; final-source offline checks,
+  guarded publication and exact-head Actions are verified separately.
+
+Exact scope: two code/test paths plus seven existing documents; no new module,
+version bump or measured speedup. Product remains v1.14.0 maintenance; broader
+v1.15 is incomplete. See [the current evidence and limits](analysis/live-debug-2026-10-22/README.md)
+and [model integrity boundaries](docs/key-and-communication-integrity.md).
+
+## 1.14.0 — IPC key custody and constructor recovery (historical checkpoint)
 
 - Serialize cooperating scanner-ring key initialization through the existing
   public credential transaction. Permit two finite initialization rounds with

@@ -385,7 +385,7 @@ def verify_ollama_model_files(
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
     except ModelIntegrityError:
         raise
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError, OverflowError) as exc:
         raise ModelIntegrityError("Ollama manifest is not valid UTF-8 JSON") from exc
     if not isinstance(document, dict):
         raise ModelIntegrityError("Ollama manifest root is invalid")
@@ -620,7 +620,7 @@ class AIModelIntegrityGuardModule(BaseModule):
                 )
             except ModelIntegrityError:
                 raise
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            except (UnicodeDecodeError, ValueError, RecursionError, OverflowError) as exc:
                 raise ModelIntegrityError(
                     f"{relative} is not a valid Ollama manifest"
                 ) from exc
@@ -766,7 +766,8 @@ class AIModelIntegrityGuardModule(BaseModule):
                 or not hmac.compare_digest(supplied, expected)
             ):
                 raise ModelIntegrityError("baseline authentication failed")
-        except (ModelIntegrityError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        except (ModelIntegrityError, UnicodeError, ValueError, TypeError,
+                RecursionError, OverflowError) as exc:
             self.last_error = str(exc)
             self._baseline_status = "invalid"
             return False

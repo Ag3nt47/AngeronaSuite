@@ -1,6 +1,112 @@
 # Live debugging and screenshot issue review
 
-## Current IPC key and resource maintenance — scoped evidence accepted
+## Current model parser normalization — scoped validation accepted
+
+The v1.14.0 maintenance repair changes three exception tuples in
+src/angerona/modules/ai_model_integrity.py and adds one regression test file.
+Manifest, inventory and approved-baseline parsing now normalize the relevant
+ValueError, RecursionError and OverflowError paths into the existing typed
+integrity refusal. Hash/HMAC validation, explicit approval, baseline byte
+preservation and blocked inference on invalid evidence remain enforced. This
+closes the scoped lower-level normalization gap described by SEC-20; it does
+not establish a prior fail-open, runtime denial of service or HMAC bypass.
+
+The separate original/candidate comparison retained **17 functions / 83 cases /
+249 phases per mode: original 60 passed / 23 failed; corrected candidate 83
+passed, zero errors/skips**. The rejected earlier run remains evidence:
+original 60/23 versus candidate 74/9. Nine shared deep-input fixture failures
+came from an assumed decoder depth and cannot demonstrate product recursion
+failure. The corrected bounded real JSON probe reached actual failing depth
+4256 after three probes on this Python 3.12 runtime, without a parser mock,
+interpreter-limit changes, forced success or newly admitted skips. Controlled
+private files exercise malformed inputs, hash/HMAC and approval refusals,
+baseline preservation, blocked inference and guarded model-pack activation.
+They are not proof of every adversarial parser schedule.
+
+Fresh active-code integration accepted **44 suites / 606 functions / 1263 cases:
+1258 passed, zero failures/errors, five unchanged exact native availability
+skips and 3789 phases**. All 83 parser cases passed, all normalized function
+counters agree and all 13 configured product origins loaded. The skips retain
+the existing distinct-short-filename and native symlink availability gaps; no
+new parser skip was admitted. This is a focused gate, not repository-wide CI.
+Default selfcheck passed **29 phases**, with 68 module PASS, 18 module SKIP and
+one pipeline PASS. Five required origins loaded; seven configured origins
+loaded and six were naturally unloaded. IPC was naturally unloaded, so
+selfcheck adds no ring self-test execution credit.
+
+A fresh real AI Model Integrity Guard solo observation completed **30.062 s
+with 119 observer heartbeats**. Before start, the retained canonical class had
+no worker/check and not-loaded state. The same active-source instance and
+worker generation completed its first check, reported approval-required with
+health 25, and emitted a signed MEDIUM unavailability event verified through
+the real private EventBus authority. The private models directory was empty,
+the approved baseline remained absent, the default key override stayed None,
+and no enrollment, provider, inference or response was enabled. The normal
+1800-second interval, 300-second startup timeout/work budget and zero initial
+delay stayed unchanged. Before-start, observed and after-stop receipts completed, including
+normal worker retirement.
+
+The outcome is **OBSERVED_WITH_GAPS**, with two explicit health/interval
+availability gaps. Matrix errors, recorded drops, export queue, gap-record
+counter and pending threads were zero; those counters do not erase the two
+availability gaps or turn absence of an approved baseline into attestation.
+The legacy health-state label was critical; the approval-required baseline was
+an expected availability gap, not confirmed tampering. All 119 interval samples
+retained that gap, with no observed crash, stopped worker or evidence loss.
+The selected private capture has 13 rows: 11 coverage records and two AMIG
+events (INFO/MEDIUM), both original event HMACs verified. It does not establish
+complete live-event visibility or independent continuity. One advisory detail
+was omitted during redaction; no post-redaction MAC reverification is claimed.
+The private observation profile left the tracked matrix's 15 audited modules,
+105 pairs, all-eligible 15 and default 123 cases unchanged. Its 88 inert negative
+profile checks are verifier controls, not product passes or adversarial-family
+coverage. A failed first dry-plan check rejected a stale child-target pin before
+launching that target; the corrected pin passed a fresh dry plan. This was a
+private harness correction, not a product defect.
+
+Original two owned outer process generations and a separately held core retired
+with scoped native evidence; the retained module worker also retired normally.
+The root's before/after 39-file runtime checks and the observer's ten-file scope
+are separate. Stable source/index/runtime checks, MainThread-only normal exit
+and no Qt application do not prove complete dependency/cache attestation or
+retirement of every descendant. This observation does not exercise host models,
+malformed parser stress, provider inference, GUI behavior or all-module operation.
+It supplies no clean-host, field-efficacy, actor-attribution or speedup verdict.
+
+| Evidence | Result reference | Accepted review reference |
+| --- | --- | --- |
+| Corrected original/candidate 83-case comparison | a201deb4 | 07f1ccbf |
+| Fresh 44-suite integration | a9ae95c8 | 89ee8038 |
+| Fresh 29-phase default selfcheck | ece77fbe | 89ee8038 |
+| Real private AMIG first-check observation | 062a4b08 | d9ce5134 |
+| Independent runtime/source postflight | 8ed3cd95 | d9ce5134 |
+
+The preceding published IPC revision, 9ade665, passed all **15 Actions jobs**:
+12 general and three security. Each Python 3.10–3.13 job reported 8534 passes /
+22 skips. These are historical baseline results, not current-parser CI. The
+older 89c708 GUI validation-producer failure's cause remains UNKNOWN despite
+the later passing job. The separate Ollama Python 3.13 reserved-name warning
+proposal remains held for another loop.
+
+All **191 historical raw issue objects**, their order/status and every existing
+root value remain byte-identical. Only current_parser_normalization_review is
+added. The old SEC-20 open object is retained as history; the new descriptor
+records its scoped resolution and evidence. HOST-03 unsafe OS-volume custody,
+HOST-04 requested 2 GiB headroom, actual user-app PID/birth attachment, prior
+native/GUI/heartbeat causes, reader/competing-load unknowns and independent
+alert continuity remain unresolved. A saved application hint identified a
+different process generation; no current user-app attachment is claimed.
+Raw host captures remain private, and annotations grant no mutation, trust,
+allowlist, alert-clearing or baseline-replacement authority.
+
+The review scope is nine paths: two code/test plus seven existing documents,
+with one new test and no new module/document. The active pre-doc inventory has
+1883 source / 1170 Python entries. This entry records scoped local validation;
+final-source offline checks, reviewed commit, unchanged guarded publication
+and exact-head Actions are verified separately. Product remains **v1.14.0
+maintenance**; broader **v1.15 is incomplete**.
+
+## Historical IPC key and resource maintenance — scoped evidence accepted
 
 The current v1.14.0 maintenance changes scanner-ring key admission and failed
 constructor cleanup. It adds no module, does not encrypt ipc_ring.key in a new

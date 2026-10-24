@@ -5,7 +5,64 @@ Date: 2026-10-24
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.14.0 — IPC key and resource maintenance)
+## LATEST (v1.14.0 — model parser normalization maintenance)
+
+- Current product remains v1.14.0 maintenance; broader v1.15 is incomplete.
+  Scope: two code/test paths plus seven existing docs, one new regression test,
+  no new module/document or version bump. Active pre-doc map: 1883 source /
+  1170 Python entries. This block records scoped local validation; final-source
+  offline checks, guarded publication and exact-head Actions are verified separately.
+- Three lower-level exception tuples in ai_model_integrity normalize malformed
+  manifest, inventory and approved-baseline ValueError/RecursionError/OverflowError
+  paths into the existing typed refusal. Preserve hash/HMAC, approval, baseline
+  bytes and inference blocking. No prior bypass or runtime DoS is demonstrated.
+- Actual corrected comparison: 17 functions/83 cases/249 phases per mode;
+  original 60 pass/23 fail versus corrected 83 pass, zero errors/skips.
+  Result a201deb4/root 07f1ccbf. Keep rejected R2 original 60/23 versus candidate
+  74/9: nine shared depth-assumption fixture failures are not product recursion
+  proof. A bounded real JSON probe reached depth 4256 after three probes on
+  this Python 3.12 runtime; no parser mock, global-limit change or new skip admission.
+- Fresh focused gate: 44 suites/606 functions/1263 cases, 1258 pass, zero
+  failures/errors, five unchanged exact native availability skips, 3789 phases;
+  all 83 parser cases pass and all 13 configured product origins load.
+  Result a9ae95c8/root 89ee8038. Not repository-wide CI or universal import-byte proof.
+- Fresh default selfcheck: 29 phases pass; 68 module PASS, 18 module SKIP,
+  pipeline PASS. Required five origins loaded; seven configured loaded/six
+  naturally unloaded. IPC naturally unloaded: no forced import or ring self-test
+  credit. Result ece77fbe/root 89ee8038.
+- Real private AMIG first-check observation: 30.062 s/119 observer heartbeats,
+  same captured active-source class/instance/worker/generation. An absent approved
+  baseline stayed approval-required with health 25 and a signed MEDIUM availability
+  event verified through the real private authority. Default key override None,
+  no enrollment/provider/inference/response; normal cadence retained.
+  Result 062a4b08/root d9ce5134; OBSERVED_WITH_GAPS with two health/interval gaps.
+  Zero matrix errors/drops/export queue/gap records/pending does not erase them.
+- Before-start/observed/after-stop receipts complete; worker retired normally,
+  original two owned outer generations plus separate core retired. Root 39-file
+  runtime postflight 8ed3cd95 is separate from observer ten-file scope; neither
+  proves complete dependency/cache attestation or all-descendant retirement.
+  Private solo profile preserves tracked audited 15/pairs 105/all-eligible 15/
+  default 123. Its 88 negative profile checks are inert controls, not product
+  passes. First stale-pin dry-plan refusal preserved; corrected pin passed.
+- Keep all 191 historical raw issues/order/status and old root values exact;
+  append only current_parser_normalization_review. It resolves scoped SEC-20
+  normalization while preserving the original open object as history. HOST-03
+  custody/HOST-04 requested 2 GiB headroom, actual user-app attachment/continuity,
+  older native/GUI/heartbeat/reader and competing-load causes remain unresolved.
+  Saved app hint had a different process generation; no verified attachment.
+- Prior published IPC revision 9ade665 passed all 15 Actions jobs; Python 3.10–3.13
+  each reported 8534 pass/22 skip. Historical baseline only, not current parser
+  CI; earlier 89c708 GUI producer cause remains UNKNOWN despite the later pass.
+  Ollama reserved-name warning proposal stays held for a separate loop.
+- Read docs/live-debug-harness.md before runtime review; verify actual core PID
+  and creation time, retain authenticated originals/loss/coverage evidence and
+  keep raw host captures private. Annotations grant no mutation/allowlist/trust,
+  alert-clearing or baseline authority. No host-clean, field-efficacy, all-module,
+  endurance, kernel resistance or speedup claim. All seven README images remain.
+  See analysis/live-debug-2026-10-22/README.md, interaction-map.md and
+  docs/key-and-communication-integrity.md for current evidence and boundaries.
+
+## Historical IPC key and resource maintenance — scoped checkpoint
 
 - Current product remains v1.14.0 maintenance; broader v1.15 is incomplete.
   Exact scope: three code/test paths plus seven existing docs; one new test,
