@@ -32,47 +32,20 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance — SCN-06 ring self-test cleanup:** The ring
-self-test closes its writer and reader before removing its temporary directory.
-A fresh 42-suite gate passed 1132 of 1137 cases with five exact native
-availability gaps, and all 29 selfcheck phases passed. A separate 30.047 s
-process-telemetry observation retained 11 coverage notes and zero EventBus
-event records in its selected capture.
-[Scoped evidence and remaining limits](analysis/live-debug-2026-10-22/README.md)
-separate real-resource fixtures, passive telemetry and incomplete alert visibility.
-Final-source offline checks and guarded publication require separate receipts;
-product stays v1.14.0 maintenance and broader v1.15 remains incomplete.
-
-**Historical v1.14 maintenance — SCN-05 telemetry recovery:** ScannerHost rechecks
-queue occupancy before shedding events, allowing forwarding to resume after the
-core drains its ring. The 85% policy, authenticated frames and drop history stay
-intact. A fresh 41-suite gate passed 1128 of 1133 cases with five exact native
-availability skips; all 29 selfcheck phases passed.
-
-A separate 30.031 s process-telemetry observation recorded 31 heartbeats and four
-raw sensor frames. Its selected diagnostic capture contains 11 coverage notes
-and zero EventBus event records, preserving the limits on alert visibility.
-The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts; processing is complete only for that input, while continuity remains unverified and original dispositions/response authority are unchanged.
-[Scoped evidence and open findings](analysis/live-debug-2026-10-22/README.md)
-separate fixture recovery, passive observation and remaining coverage gaps.
-Final offline checks, guarded publication and current CI require their own
-fresh receipts. Product remains v1.14.0 maintenance; broader v1.15 is incomplete.
-
-**Prior v1.14 maintenance:** model-file admission checks the supplied root and
-each in-root component before canonical resolution. The fresh 40-suite gate
-passed 1108 of 1113 cases with five exact availability skips; all 29 selfcheck
-phases passed. Fresh scoped observations include a synthetic model worker,
-SpywareGuard, independent process telemetry and a 600.625 s combined run;
-18 combined interval gap strings remain.
-[Evidence and remaining limits](analysis/live-debug-2026-10-22/model-integrity-review.md)
-keep native coverage gaps, historical failures and host findings visible.
+**Current v1.14 maintenance — IPC key and resource integrity:** Scanner IPC now
+serializes cooperating key initializers, bounds key reads and checks the retained
+file's identity through readback. Failed ring construction closes its owned
+mapping and file. The fresh focused gate passed 1175 of 1180 cases, with five
+explicit native availability skips; all 29 selfcheck phases passed with optional
+module gaps retained. See [key custody and recovery](docs/key-and-communication-integrity.md)
+and the [scoped evidence and open findings](analysis/live-debug-2026-10-22/README.md).
+These checks do not establish complete sensor coverage or field efficacy.
 
 Manual AI consultation provides a bounded sanitized preview and explicit Send;
-see [AI consultation privacy](docs/ai-consult-privacy.md). Broader v1.15 remains
-incomplete. The [changelog](CHANGELOG.md), [historical analysis](analysis/live-debug-2026-10-22/README.md)
-and [key/communication safeguards](docs/key-and-communication-integrity.md) retain
-prior findings and limits. Final source/documentation review, fresh offline
-checks and unchanged guarded publication remain mandatory completion gates.
+see [AI consultation privacy](docs/ai-consult-privacy.md). Product remains
+v1.14.0 maintenance; broader v1.15 is incomplete. Historical maintenance results
+remain in the [changelog](CHANGELOG.md) and linked analysis. Final-source offline
+checks, reviewed commit and unchanged guarded publication require separate receipts.
 
 **Also in the [v1.14 security integration scope](docs/releases/v1.14-security-integration.md):**
 verified protection readiness, a UGCAP witness protocol requiring separate deployment,

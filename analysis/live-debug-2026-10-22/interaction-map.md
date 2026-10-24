@@ -1,6 +1,38 @@
 # Component dependencies and interference review
 
-## Current SCN-06 self-test resource ordering
+## Current IPC key, lease and resource handoffs
+
+| Handoff | Current behavior | Evidence and remaining limits |
+| --- | --- | --- |
+| Ring initializer → public credential transaction → key file | Serialize cooperating read/create/harden/readback in the actual namespace; two finite initialization rounds | Windows data-root custody and POSIX OS-account safe-home prerequisites remain; local admission is bounded, total filesystem latency is not |
+| Credential consumers ↔ scanner ring namespace | Reuse the same lock namespace without reading/writing protected credentials or encrypting the ring key in a new backend | Contention is a visible refusal; older/uncooperating peers need coordinated restart and are outside this serialization |
+| Named key → retained descriptor → final custody | Cap at 4096 bytes, read admitted size plus one, compare platform-compatible clocks across APIs and exact per-API raw drift guards | Corrected final staged 43 cases passed; native POSIX/ACL and malicious-writer exclusion unproved |
+| Create/collision/custody failure → explicit recovery | Bounded reclassification, preserve malformed/partial authority and never unlink a potentially substituted winner | Baseline ten-case characterization and rejected R1 26-pass/five-fail evidence remain; no field exploit/HMAC break established |
+| Ring constructor → mmap/header → failure propagation | Close acquired mapping and file before propagating the original tail failure | Actual closed flags checked before fixture fallback; cleanup-close failure injection untested |
+| Existing property → actual transaction paths → lease release | One native Windows namespace case plus one private Linux-namespace model case passed six phases total | Production lock/lease retained and released; both use Windows OS leases, not native POSIX/home/ACL proof |
+| Active source → selected fresh gate | 43 suites/589 functions/1180 cases: 1175 passed/five exact native availability skips, zero failures/errors; 3540 phases and full counter agree | All 13 configured origins loaded including IPC; named origins are not universal executed-byte proof; not repository-wide CI |
+| Selfcheck → natural module/origin outcomes | 29 phases passed, 68 module PASS plus pipeline PASS, 18 module SKIP; five required origins loaded | Seven of 13 configured origins loaded; IPC naturally unloaded, no forced import or self_test credit |
+| Real Windows ScannerHost → shared key namespace → passive process telemetry | 30.172 s/31 scanner heartbeats/two raw sensor frames/119 observer heartbeats, zero matrix errors/gap records/drops/pending | Original outer two plus separate core retired; runtime observer ten versus root 39 files are separate scopes; no all-descendant/import-byte assurance |
+| Selected diagnostic capture → unchanged offline summarizer → advisory review | Preserve 11 coverage notes/zero EventBus event records and 11 needs-review cases, zero parse omissions/overflow/identity conflicts | Processing complete only for selected input; continuity unverified, no automatic response/disposition changes; no complete live-alert or host verdict |
+
+Existing 32-byte/64-hex keys, HMAC/AAD/schema/frame/layout, pressure policy and
+recorded drops remain unchanged. See [key custody and recovery](../../docs/key-and-communication-integrity.md)
+and [the current evidence reference](README.md) for exact receipts. Legacy-peer,
+native POSIX/ACL, cross-process convergence, close-failure and admin/kernel
+boundaries remain. The user app's actual current PID/birth has not been verified
+by this isolated observation.
+
+The ten-path scope is three code/test paths and seven existing docs, with one
+new test and no new module/doc. Tested pre-doc map e28f2ecd covers 1882 source /
+1169 Python entries. Preserve all 188 old raw issues/root values and append only
+IPC-01/02/03 plus current_ipc_key_custody_review. SEC-20 remains unapplied;
+HOST-03/HOST-04, historical reader/competing-load/native/GUI causes and unverified
+continuity remain open. Published 89c708's Python 3.13 CI failure remains unresolved;
+its rerun returned 403 with no new attempt. Final-source offline checks, reviewed
+commit, unchanged guarded publication/assets and fresh CI require separate
+receipts. Product remains v1.14.0 maintenance; broader v1.15 remains incomplete.
+
+## Historical SCN-06 self-test resource ordering
 
 | Handoff | Applied change or retained contract | Scoped evidence and limits |
 | --- | --- | --- |

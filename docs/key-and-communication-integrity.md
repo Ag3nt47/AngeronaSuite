@@ -1,10 +1,11 @@
 # Key and communication integrity
 
-This maintenance review covers credential concurrency, key migration, memory
-identity and truthful encryption status. Angerona remains in development at
-v1.14.0; the broader v1.15 integration is incomplete. Consult the
-[scoped evidence](../analysis/live-debug-2026-10-22/key-and-memory-review.md)
-for the exact revision and validation state.
+This maintenance review covers credential concurrency, scanner-ring key custody,
+key migration, memory identity and truthful encryption status. Angerona remains
+in development at v1.14.0; broader v1.15 integration is incomplete. Consult the
+[current scoped evidence](../analysis/live-debug-2026-10-22/README.md) and the
+[historical key/memory review](../analysis/live-debug-2026-10-22/key-and-memory-review.md)
+for their separate validation states.
 
 ## Credential creation and updates
 
@@ -33,6 +34,53 @@ These are cooperative writer and custody protections. They do not exclude
 malicious code in the same user process, defeat an administrator or compromised
 kernel, prove independent freshness after a whole-host rollback, or guarantee
 forensic erasure of Python key copies.
+
+## Scanner IPC ring key custody
+
+The scanner ring keeps its existing 32-byte authority in ipc_ring.key as hexadecimal
+text. It is not newly encrypted by DPAPI or moved into a credential backend.
+Initialization now uses the public protected-store transaction only for its
+cooperative lock namespace; it does not read or write protected credentials.
+On Windows this shares the data root's credential-file lease. On macOS/Linux it
+uses the OS-account namespace and its existing safe-home prerequisites. Missing
+or unsafe custody, an unavailable account home or a contended lease is an explicit
+refusal. The one-second local admission budget does not bound all filesystem,
+hardening or backend latency.
+
+A loader admits at most 4096 bytes, opens and retains the file descriptor, and
+requests the admitted size plus one byte. Named-path and held-file identity,
+size and timestamps must stay stable through the read and final custody readback.
+On Windows the cross-API comparison uses the available comparable birth-time
+field; each API's own raw change time is still checked exactly. Links, reparse
+points, malformed encodings, unexpected key length and changed objects refuse
+admission. Existing valid 32-byte keys and supported hexadecimal whitespace
+remain compatible; frame HMAC, AAD, sequence, schema and ring layout do not change.
+
+Cooperating initialization uses two finite rounds, with bounded collision and
+custody reclassification. It never replaces a malformed existing key merely to
+recover availability. A failed or partial creation stays visible for explicit
+recovery; cleanup does not unlink a name that might belong to a successor.
+Stop the affected peers, preserve the failed artifact and diagnostic evidence,
+and review custody under the existing recovery/authorization workflow before
+retrying. Coordinate restarts when upgrading peers: older or uncooperating
+callers do not participate in the new transaction. This is not exclusion of a
+malicious same-user writer or a cross-process convergence guarantee.
+
+The constructor also owns its acquired file and mapping through header setup;
+on a tail failure it attempts to close both before propagating the original
+error. Tests inspect actual closed flags before fixture fallback cleanup.
+Cleanup-close failure injection, native POSIX home/lease behavior and elevated
+Windows ACL enforcement were not demonstrated by this Windows checkpoint.
+The two-mode property check's Linux namespace is a private model using the real
+Windows lease, not a native Linux run.
+
+Fresh scoped validation accepted 1175 passes and five exact native availability
+skips across 43 suites/1180 cases. Separate staged negative controls and the
+30.172-second raw process-telemetry observation are documented in the
+[current evidence reference](../analysis/live-debug-2026-10-22/README.md).
+Selfcheck's 29 phases passed with 18 module skips and IPC naturally unloaded;
+selfcheck does not establish execution of the ring self-test. These results do
+not prove field efficacy, a clean host, kernel resistance or complete telemetry.
 
 ## Remote Bridge migration
 

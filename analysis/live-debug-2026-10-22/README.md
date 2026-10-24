@@ -1,6 +1,124 @@
 # Live debugging and screenshot issue review
 
-## Current SCN-06 ring self-test lifetime — scoped validation accepted
+## Current IPC key and resource maintenance — scoped evidence accepted
+
+The current v1.14.0 maintenance changes scanner-ring key admission and failed
+constructor cleanup. It adds no module, does not encrypt ipc_ring.key in a new
+backend, and does not complete the broader v1.15 integration.
+
+IPC-01 serializes cooperating initialization through the existing public
+credential transaction, bounds initialization to two rounds and preserves
+malformed/failed authority for explicit recovery. IPC-02 caps key files at
+4096 bytes, reads admitted size plus one through a retained descriptor, and
+checks named/held identity before and after reading and final custody. The
+cross-API timestamp comparison uses platform-compatible fields; each API's
+raw change-time guard stays exact. IPC-03 closes the constructor's acquired
+file/mapping when mapping or header setup fails. Existing 32-byte/64-hex keys,
+frame HMAC/AAD/schema/layout, pressure policy and drop history stay intact.
+See [custody prerequisites and recovery](../../docs/key-and-communication-integrity.md).
+
+The original ten-case characterization demonstrated an incomplete key becoming
+visible to a second cooperating caller, an unbounded whole-file read, and real
+file/map references remaining open after constructor-tail failures until owned
+fixture fallback cleanup. It did not establish persistent field leaks, a key
+exposure, a successful exploit or an HMAC break. The first candidate is retained
+as **rejected: 26 passes / five failures**. Its four changed-before-read errors
+and one growth-read assertion do not measure the exact native timestamp cause.
+The corrected source uses the established comparable-clock contract and adds
+inert metadata positive/negative controls; there is no timestamp tolerance.
+
+The final staged comparison used 21 functions / 43 cases / 129 phases per mode:
+**original eight passes / 35 failures, candidate 43 passes**, zero errors/skips.
+Short stable parameter labels retain the original values/assertions and unchanged
+4096-character ledger bound. These are controlled fixtures with real private
+files/resources, not native ACL, hostile-peer or field-incident proof. A separate
+existing property passed in native Windows namespace mode and a private Linux
+namespace model: two cases / six passed phases. Both use actual Windows leases;
+the modeled namespace does not prove native POSIX home or permission behavior.
+
+Fresh active-code validation accepted **43 suites / 589 functions / 1180 cases:
+1175 passed, zero failures/errors, five exact native availability skips**.
+All 589 function counters and 3540 phases agree; all 13 configured product
+origins loaded, including IPC. Privacy 75, nested seven, pressure 20, lifetime
+four and new key/resource 43 are included subsets, not additive totals. The five
+skips cover an unavailable distinct short filename and four unavailable native
+symlink cases. Acceptance does not establish complete coverage or universal
+executed-byte identity; this is not the entire repository test suite.
+
+Fresh default selfcheck accepted **29 phases / zero failures**, with 68 module
+PASS, one pipeline PASS and 18 module SKIP. Required five origins loaded; seven
+of 13 configured products loaded. IPC was naturally unloaded, so no ring
+self-test execution credit is assigned to selfcheck and no import was forced.
+
+Fresh ordinary-user process-creation ScannerHost observation completed
+**30.172 s**, with 31 scanner heartbeats, two raw sensor frames and 119 observer
+heartbeats. Matrix errors, gap records, drops and pending threads were zero.
+This case uses the real Windows key namespace and OS lease without a namespace
+mock. Original outer two process generations and a separately held core retired
+with scoped native evidence. The observer's ten-file runtime scope is separate
+from the root's before/after 39-file checks; neither proves every dependency's
+executed bytes or all descendant/helper retirement.
+
+The selected **2757-byte capture retains 11 advisory coverage records and zero
+EventBus event records**, independently of the zero matrix gap counter. The
+unchanged offline summarizer mapped those 11 notes to 11 needs-review cases,
+with zero parse omissions, overflow or identity conflicts. Processing is complete
+only for that selected input; independent continuity remains unverified,
+automatic response is false and original dispositions stay intact. The mapping
+utility has original retained-Popen retirement evidence, not the observer's
+separate native two-generation/core or root 39-file/source-inventory scope. Two raw
+sensor frames are not two alert events. This is process telemetry, not a file
+scan, malware verdict, exercise of self_test or proof of the 85% pressure path.
+It does not prove complete live-alert visibility, a clean host, actor attribution,
+false-positive adjudication, GUI/all-module behavior, field efficacy or speed.
+
+| Evidence | Result SHA-256 | Root review SHA-256 |
+| --- | --- | --- |
+| Baseline ten-case characterization | 743cb7d43e01dd3e71e880cdeb15914945c8fbd9df69bcf8466aba6b9a8ae718 | 44a25384ecf9689f16d6c5ced9f5d898738a758925bcf211193035a4fafc9318 |
+| Rejected first candidate, 31-case stage | fc5a94964adcdc69d441ff7c0ee80fd5887a819740ad22a5d93db3a2d82ad475 | 9e835e4a82f661a07d1a8c47a34485db795281f680307bd697b77668df5536cc |
+| Corrected final 43-case comparison | 3bcc92140204acf3d835c2eb39f9ef60e3938a2444a805e2290663a3ac884413 | 78570e943e37075f9b2f5324e63d72156cb4099969b7fd2f9a7c740fa4af46aa |
+| Separate two-mode existing property | dca9d9fd33187d4728829d28bb2a367c4812c0a8015bc2278e1a839f9e92f865 | 90a04143f4296fbefa7fb647434ad1122bd5312c9f3918918e18da298279c910 |
+| Fresh 43-suite gate | 35b065db5dce6c3b0ea249b627a968d924e4bd69d6a2ce1f63bdde40c2416999 | aa7cd18ac36a5f1ad2324d575503894185d686001f95d22bf3e97dc3bb8174fe |
+| Fresh default selfcheck | ecc8fddf3889ca6efb777a1b1dc6918a1691d634f265c1a5ead95aa06443727c | 1daea1bdc97c44030c70a60efac97618cec314f98b7a3692e2e14f4dc5f0708c |
+| Fresh process-telemetry observation | 67c5e855f6ab89baf9963995ac3a02d7eb407985c183bef1399f3d5990047437 | e6f80bbdadaac94d23cc676e2c9a03e3a6257c06053278134da64182949c9270 |
+| Selected-capture advisory map | 5dddf8ceee070bbdd3b2a72105b412a87197919324f46da1de3fc11173882b2c | 39ba602406da86f4eb162254791d9022bc024f8493877e15281a36425f1603b5 |
+
+These fixes protect cooperating callers. They do not demonstrate native POSIX
+or elevated Windows ACL custody, cross-process convergence, exclusion of legacy
+or malicious peers, cleanup-close failure recovery, administrator/kernel
+resistance or perfect Python memory erasure. The shared transaction's local
+admission budget does not bound every filesystem/hardening operation. Recovery
+must retain failed key evidence and coordinate peers, not rotate authority to
+make a test green. Native Windows startup in this observation is narrower than
+all-platform compatibility or service-account deployment.
+
+Published 89c708e's [general CI run](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/40075548651)
+failed Python 3.13's test_mainwindow_arm_launch_and_deliver_signed_aar_twice:
+Process Monitor did not prove the fresh healthy observation required for the
+second launch. The exact validation-producer root cause remains UNKNOWN; no
+Qt starvation, timestamp or SCN-06 cause is assigned. The other 11 CI jobs and
+[all three security jobs](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/40075548571)
+succeeded. A single-job rerun request returned 403; no new attempt started.
+Those are published-revision results, not validation of the changed working tree.
+
+The tested pre-doc source map e28f2ecd contains 1882 source / 1169 Python entries.
+The current review scope is ten paths: three code/test plus seven existing docs,
+one added test and no new document. Preserve all 188 prior raw issue objects,
+order/status and every old root/history/review value; append IPC-01/02/03 as
+issues 189–191 and separate current_ipc_key_custody_review metadata. Historical
+entries retain the statements true at their checkpoint, including deferred work.
+SEC-20 remains unapplied; HOST-03 custody and HOST-04's requested 2 GiB headroom
+remain open. Actual user-app attachment, comprehensive all-module operation,
+alert continuity, older reader/competing-load and native/GUI causes remain
+unverified. Raw captures remain private; review annotations grant no response,
+allowlist, alert-clearing or baseline/trust authority.
+
+Final-source offline checks after reviewed documentation activation, reviewed
+commit, unchanged canonical guarded publication/README-asset proof and fresh
+current-revision CI need separate receipts. This reference claims none of those
+completion stages or a circular future source-map/commit hash.
+
+## Historical SCN-06 ring self-test lifetime — scoped validation accepted
 
 self_test now uses its existing writer/reader context managers before the
 unchanged outer directory cleanup. The pressure getter, explicit synthetic key,

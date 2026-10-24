@@ -565,7 +565,16 @@ def test_ipc_ring_discards_tampered_slot_and_rejects_header_corruption(tmp_path)
         writer.close()
 
 
-def test_ipc_ring_key_is_create_once_and_malformed_custody_fails(tmp_path):
+def test_ipc_ring_key_is_create_once_and_malformed_custody_fails(tmp_path, monkeypatch):
+    from angerona.core import secure_store
+
+    def private_account_locks():
+        directory = tmp_path / "account-locks"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        return directory
+
+    # This test's real raw-key loader must not touch the operator account home.
+    monkeypatch.setattr(secure_store, "_account_lock_directory", private_account_locks)
     path = tmp_path / "ipc_ring.key"
     first = _load_or_create_key(path)
     assert len(first) == 32

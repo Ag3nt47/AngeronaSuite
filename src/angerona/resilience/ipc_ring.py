@@ -60,6 +60,8 @@ MAX_SLOT_COUNT = 65_536
 MIN_SLOT_SIZE = 64
 MAX_SLOT_SIZE = 65_536
 MAX_RING_BYTES = 64 * 1024 * 1024
+_MAX_KEY_BYTES = 4096
+_KEY_INITIALIZATION_ROUNDS = 2
 
 
 class FrameError(ValueError):
@@ -85,46 +87,42 @@ def _key_path() -> Path:
     return _data_dir() / "ipc_ring.key"
 
 
-def _load_or_create_key(path: Path | None = None) -> bytes:
-    """Load the dedicated ring authority or atomically create it once."""
-    target = Path(path) if path is not None else _key_path()
-    from angerona.core.hardening import (
-        ensure_sensitive_parent,
-        key_acl_required,
-        prepare_sensitive_key,
-        secure_sensitive_file,
-    )
-    required = key_acl_required()
-    if target.exists() and not prepare_sensitive_key(target, required=required):
-        return _load_or_create_key(target)
+def _key_snapshot(info) -> tuple[int, int, int, int, int, int]:
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or getattr(info, "st_file_attributes", 0) & 0x400):
+        raise RuntimeError("IPC ring authority is not a single-link regular file")
+    # Windows 3.12 path ctime can be birth time while fstat exposes ChangeTime.
+    # Compare birth time across APIs, but keep each API's raw ctime exact below.
+    stamp = (getattr(info, "st_birthtime_ns", info.st_ctime_ns)
+             if os.name == "nt" else info.st_ctime_ns)
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, stamp, info.st_ctime_ns)
+
+
+def _read_ring_key(target: Path) -> tuple[bytes, tuple[int, int], bytes]:
+    """Read one bounded, unchanged named object; never create on read failure."""
+    descriptor = None
     try:
-        encoded = target.read_text(encoding="ascii").strip()
-    except FileNotFoundError:
-        key = secrets.token_bytes(32)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        ensure_sensitive_parent(target, required=required)
-        try:
-            descriptor = os.open(
-                str(target),
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-        except FileExistsError:
-            return _load_or_create_key(target)
-        try:
-            with os.fdopen(descriptor, "w", encoding="ascii") as stream:
-                stream.write(key.hex())
-                stream.flush()
-                os.fsync(stream.fileno())
-            secure_sensitive_file(target, required=required)
-        except Exception:
-            try:
-                target.unlink()
-            except OSError:
-                pass
-            raise
-        return key
-    except Exception as exc:
+        named = _key_snapshot(target.lstat())
+        if not 0 <= named[2] <= _MAX_KEY_BYTES:
+            raise RuntimeError("IPC ring authority exceeds its fixed byte budget")
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(target, flags)
+        opened = _key_snapshot(os.fstat(descriptor))
+        if opened[:5] != named[:5]:
+            raise RuntimeError("IPC ring authority changed before read")
+        raw = os.read(descriptor, opened[2] + 1)
+        after = _key_snapshot(os.fstat(descriptor))
+        if (len(raw) != opened[2] or after != opened
+                or _key_snapshot(target.lstat()) != named):
+            raise RuntimeError("IPC ring authority changed during read")
+    except OSError as exc:
+        raise RuntimeError(f"IPC ring authority is unreadable: {target}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    try:
+        encoded = raw.decode("ascii").strip()
+    except UnicodeError as exc:
         raise RuntimeError(f"IPC ring authority is unreadable: {target}") from exc
     try:
         key = bytes.fromhex(encoded)
@@ -134,8 +132,79 @@ def _load_or_create_key(path: Path | None = None) -> bytes:
         raise RuntimeError(
             f"IPC ring authority has invalid length ({len(key)} bytes): {target}"
         )
-    secure_sensitive_file(target, required=required)
-    return key
+    return key, opened[:2], raw
+
+
+def _load_or_create_key(path: Path | None = None) -> bytes:
+    """Serialize cooperating raw-key callers; keep malformed authority fail-closed."""
+    target = Path(path) if path is not None else _key_path()
+    from angerona.core.hardening import (
+        ensure_sensitive_parent,
+        key_acl_required,
+        prepare_sensitive_key,
+        secure_sensitive_file,
+    )
+    from angerona.core.secure_store import secret_transaction
+
+    required = key_acl_required()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    ensure_sensitive_parent(target, required=required)
+    # This reuses credential-store admission only, never a credential backend.
+    # POSIX uses its account-scoped lease; Windows shares this data root's lock.
+    with secret_transaction(target.parent):
+        ensure_sensitive_parent(target, required=required)
+        quarantines = collisions = 0
+        for _attempt in range(_KEY_INITIALIZATION_ROUNDS):
+            try:
+                target.lstat()
+            except FileNotFoundError:
+                exists = False
+            else:
+                exists = True
+            if exists:
+                if not prepare_sensitive_key(target, required=required):
+                    quarantines += 1
+                    if quarantines > 1:
+                        raise RuntimeError("IPC ring authority custody changed repeatedly")
+                    continue
+                key, identity, raw = _read_ring_key(target)
+                secure_sensitive_file(target, required=required)
+                verified, final_identity, final_raw = _read_ring_key(target)
+                if (identity != final_identity or not hmac.compare_digest(raw, final_raw)
+                        or not hmac.compare_digest(key, verified)):
+                    raise RuntimeError("IPC ring authority changed during final custody")
+                return verified
+
+            key = secrets.token_bytes(32)
+            flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                     | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                descriptor = os.open(target, flags, 0o600)
+            except FileExistsError:
+                collisions += 1
+                if collisions > 1:
+                    raise RuntimeError("IPC ring authority creation changed repeatedly")
+                continue
+            try:
+                identity = _key_snapshot(os.fstat(descriptor))[:2]
+                if _key_snapshot(target.lstat())[:2] != identity:
+                    raise RuntimeError("IPC ring authority changed before creation write")
+                encoded = key.hex().encode("ascii")
+                if os.write(descriptor, encoded) != len(encoded):
+                    raise RuntimeError("IPC ring authority creation was incomplete")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            # Do not unlink a failed final name: it may now belong to a successor.
+            if _key_snapshot(target.lstat())[:2] != identity:
+                raise RuntimeError("IPC ring authority changed before final custody")
+            secure_sensitive_file(target, required=required)
+            verified, final_identity, final_raw = _read_ring_key(target)
+            if (final_identity != identity or not hmac.compare_digest(encoded, final_raw)
+                    or not hmac.compare_digest(key, verified)):
+                raise RuntimeError("IPC ring authority creation readback failed")
+            return verified
+    raise RuntimeError("IPC ring authority did not settle within its initialization budget")
 
 
 def _validated_key(key: bytes) -> bytes:
@@ -359,17 +428,31 @@ class _RingBase:
         except Exception:
             os.close(descriptor)
             raise
-        self._mm = mmap.mmap(self._f.fileno(), self._total)
-        m, v, sc, ss, *_ = self._read_header()
-        if (
-            reset
-            or m != _MAGIC
-            or v != _VERSION
-            or sc != self.slot_count
-            or ss != self.slot_size
-        ):
-            # Re-initialise on layout mismatch (e.g., first attach to a stale file).
-            self._init_header()
+        owned_file, owned_map = self._f, None
+        try:
+            self._mm = owned_map = mmap.mmap(owned_file.fileno(), self._total)
+            m, v, sc, ss, *_ = self._read_header()
+            if (
+                reset
+                or m != _MAGIC
+                or v != _VERSION
+                or sc != self.slot_count
+                or ss != self.slot_size
+            ):
+                # Re-initialise on layout mismatch (e.g., first attach to a stale file).
+                self._init_header()
+        except BaseException as original:
+            cleanup_error = None
+            for resource in (owned_map, owned_file):
+                if resource is not None:
+                    try:
+                        resource.close()
+                    except BaseException as exc:
+                        if cleanup_error is None:
+                            cleanup_error = exc
+            if cleanup_error is not None:
+                raise original from cleanup_error
+            raise
 
     def _init_header(self) -> None:
         header = struct.pack(

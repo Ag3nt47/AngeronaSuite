@@ -5,7 +5,65 @@ Date: 2026-10-24
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## Current SCN-06 ring self-test lifetime — scoped validation accepted
+## LATEST (v1.14.0 — IPC key and resource maintenance)
+
+- Current product remains v1.14.0 maintenance; broader v1.15 is incomplete.
+  Exact scope: three code/test paths plus seven existing docs; one new test,
+  no new module/doc. Tested pre-doc map e28f2ecd: 1882 source / 1169 Python.
+  Final-source offline checks and guarded publication need separate receipts.
+- Scanner ring key callers now share the public secure_store.secret_transaction
+  namespace: one-second local admission plus fail-fast OS lease acquisition,
+  not a total filesystem/backend deadline. Windows data-root custody and POSIX
+  OS-account home/namespace prerequisites remain visible. No protected backend
+  read/write or new DPAPI encryption of ipc_ring.key is introduced.
+- Read at most admitted size plus one after a 4096-byte cap, with retained
+  descriptor and exact named/held guards. Compare platform-compatible clocks
+  across APIs while preserving each API's raw change-time drift checks. Two
+  finite initialization rounds replace recursive collision recovery. Preserve
+  malformed/failed authority and never unlink a potentially substituted winner.
+  Constructor tail failures close owned mapping/file resources. Keep existing
+  32-byte/64-hex keys, HMAC/AAD/frame/layout and pressure/drop contracts.
+- Preserve baseline ten-case characterization and rejected R1 26-pass/five-fail
+  result. Corrected R3: original eight pass/35 fail versus candidate 43 pass,
+  zero errors/skips; 21 functions/129 phases per mode. No exact measured native
+  timestamp cause is assigned to R1. Metadata/contended-path fixtures remain
+  scoped; native ACL/POSIX, cross-process convergence and cleanup-close failure
+  injection are unproved. Existing property separately passed two modes/two
+  cases/six phases; the Linux namespace is a model using actual Windows leases.
+- Fresh focused gate: 43 suites/589 functions/1180 cases, 1175 pass, zero fail/
+  error, five exact native availability skips; all 589 counters/3540 phases
+  agree and all 13 configured origins loaded including IPC. Result 35b065db,
+  root aa7cd18a. Not repository-wide tests, current CI or field efficacy.
+- Fresh selfcheck: 29 phases passed; 68 module PASS, pipeline PASS, 18 module
+  SKIP; required five loaded, seven of 13 configured loaded. IPC naturally
+  unloaded; no forced import or ring self_test credit. Result ecc8fddf,
+  root 1daea1bd. Separate focused tests supply changed-IPC execution evidence.
+- Fresh process-telemetry ScannerHost: 30.172 s/31 scanner heartbeats/two raw
+  sensor frames/119 observer heartbeats, zero matrix errors/gap records/drops/
+  pending. Retired original outer two and separately held core; no all-helper/
+  descendant assurance. Selected capture: 11 coverage notes/zero EventBus events,
+  not complete alert visibility. Result 67c5e855, root e6f80bbd. Runtime observer's
+  ten files and root's separate 39-file checks are different scopes. The existing
+  offline summarizer mapped 11 coverage notes to 11 needs-review cases with zero
+  parse omissions/overflow/identity conflicts; selected-input processing only,
+  continuity unverified, no automatic response or disposition changes.
+- Preserve all 188 historical raw issues/status/order and old root values;
+  append IPC-01/02/03 and current_ipc_key_custody_review. Keep SEC-20 unapplied,
+  HOST-03 custody/HOST-04 requested 2 GiB headroom open, historical causes,
+  continuity/reader/competing-load/import limits and all seven README assets.
+  Current user app attachment, all-module operation and threat/false-positive
+  adjudication remain unverified; annotations grant no mutation/trust authority.
+- Published 89c708 general CI 40075548651 failed Python 3.13's signed-AAR
+  two-launch test; exact producer root cause remains UNKNOWN. Security run
+  40075548571 succeeded. A rerun request returned 403; no new attempt exists.
+  No historical CI can certify changed source. Final offline, reviewed commit
+  and unchanged canonical guarded publication/assets remain separate gates.
+- Read docs/live-debug-harness.md before runtime review, verify core PID/birth,
+  keep raw host data private, and retain loss/coverage evidence. Preview plus
+  explicit Send and opt-in read-only Live AI Review remain the discovery path.
+  See docs/key-and-communication-integrity.md and the current analysis reference.
+
+## Historical SCN-06 ring self-test lifetime — scoped validation accepted
 
 - Product v1.14.0 maintenance; broader v1.15 incomplete. Eight paths = two
   code/test plus six existing docs, one added lifetime test and no new doc.

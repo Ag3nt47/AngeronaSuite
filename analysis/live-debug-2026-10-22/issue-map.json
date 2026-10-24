@@ -1416,6 +1416,72 @@
       "fresh_case_map_receipt_sha256": "7b3649b607a23a7a986356f51f55da51347422a7fe03b1e26b4179643bb72a27",
       "fresh_case_map_summary_sha256": "a8af09afd5594bede6ae3f2f1af46710862bdfbfd07ace606767586d756532c1",
       "fresh_case_map_root_review_sha256": "7889a35d370dafc4eae9d062a15eadbb661386a9c68fa2963160672c38e17778"
+    },
+    {
+      "id": "IPC-01",
+      "status": "applied-scoped-regressions-validated-with-platform-and-observation-limits",
+      "title": "Cooperative ring-key initialization and finite recovery",
+      "cause_or_observation": "Baseline private-file characterization shows the final key name visible while its creator holds an empty or partial file; a second cooperating caller refuses incomplete authority. No split-key acceptance, installed-key exposure or field exploit was established.",
+      "applied_repair": "Use public secure_store.secret_transaction over classification/read/create/hardening/readback. Limit initialization to two rounds with bounded collision/quarantine reclassification; preserve malformed/failed authority and never unlink a potentially substituted winner. Reuse the lease namespace without protected-credential backend IO.",
+      "evidence": {
+        "baseline_root_review_sha256": "44a25384ecf9689f16d6c5ced9f5d898738a758925bcf211193035a4fafc9318",
+        "rejected_first_candidate_root_review_sha256": "9e835e4a82f661a07d1a8c47a34485db795281f680307bd697b77668df5536cc",
+        "corrected_final_comparison_sha256": "3bcc92140204acf3d835c2eb39f9ef60e3938a2444a805e2290663a3ac884413",
+        "fresh_selected_gate_sha256": "35b065db5dce6c3b0ea249b627a968d924e4bd69d6a2ce1f63bdde40c2416999",
+        "fresh_raw_scanner_observation_sha256": "67c5e855f6ab89baf9963995ac3a02d7eb407985c183bef1399f3d5990047437"
+      },
+      "limits": [
+        "Cooperating callers only; older or malicious peers are outside the transaction.",
+        "Windows data-root and POSIX account-home custody prerequisites can visibly refuse admission.",
+        "One-second local admission and fail-fast OS lease do not bound all filesystem/hardening time.",
+        "No native POSIX/ACL, independent cross-process convergence or admin/kernel resistance proof."
+      ],
+      "existing_alert_or_baseline_dispositions_changed": false,
+      "final_offline_commit_publication_or_CI_completion_claimed": false,
+      "broader_1_15_complete": false
+    },
+    {
+      "id": "IPC-02",
+      "status": "applied-scoped-regressions-validated-with-platform-and-observation-limits",
+      "title": "Bounded stable reads of ring-key authority",
+      "cause_or_observation": "Baseline characterization demonstrates a whole-file unbounded read before rejection. R1 candidate is rejected at 26 passes/five failures; no raw native timestamp field was measured to prove its exact cause.",
+      "applied_repair": "Admit at most 4096 bytes and read admitted size plus one through a retained descriptor. Verify named/held identity and exact per-API raw timestamps through read and final custody; compare platform-compatible timestamp fields across APIs without tolerance. Preserve existing 32-byte/64-hex key and HMAC/AAD/frame contracts.",
+      "evidence": {
+        "baseline_root_review_sha256": "44a25384ecf9689f16d6c5ced9f5d898738a758925bcf211193035a4fafc9318",
+        "rejected_first_candidate_root_review_sha256": "9e835e4a82f661a07d1a8c47a34485db795281f680307bd697b77668df5536cc",
+        "corrected_final_comparison_sha256": "3bcc92140204acf3d835c2eb39f9ef60e3938a2444a805e2290663a3ac884413",
+        "fresh_selected_gate_sha256": "35b065db5dce6c3b0ea249b627a968d924e4bd69d6a2ce1f63bdde40c2416999",
+        "fresh_raw_scanner_observation_sha256": "67c5e855f6ab89baf9963995ac3a02d7eb407985c183bef1399f3d5990047437"
+      },
+      "limits": [
+        "Inert platform-metadata cases do not establish native POSIX or elevated Windows ACL behavior.",
+        "Metadata checks are not a malicious-writer-proof file lease or perfect key-memory erasure.",
+        "No HMAC break, forensic key exposure or field exploit was demonstrated."
+      ],
+      "existing_alert_or_baseline_dispositions_changed": false,
+      "final_offline_commit_publication_or_CI_completion_claimed": false,
+      "broader_1_15_complete": false
+    },
+    {
+      "id": "IPC-03",
+      "status": "applied-scoped-regressions-validated-with-platform-and-observation-limits",
+      "title": "Owned ring constructor resource cleanup",
+      "cause_or_observation": "Baseline constructor-tail failure fixtures observe real file/map references still open before owned fallback cleanup; the earlier fdopen failure control already closes its original descriptor. No persistent field leak or historical host residue was measured.",
+      "applied_repair": "Retain acquired file and mapping through mmap/header setup. On tail failure, attempt both closes before propagating the original exception, chaining a close failure if one occurs. Assert actual closed flags before test fallback cleanup.",
+      "evidence": {
+        "baseline_root_review_sha256": "44a25384ecf9689f16d6c5ced9f5d898738a758925bcf211193035a4fafc9318",
+        "rejected_first_candidate_root_review_sha256": "9e835e4a82f661a07d1a8c47a34485db795281f680307bd697b77668df5536cc",
+        "corrected_final_comparison_sha256": "3bcc92140204acf3d835c2eb39f9ef60e3938a2444a805e2290663a3ac884413",
+        "fresh_selected_gate_sha256": "35b065db5dce6c3b0ea249b627a968d924e4bd69d6a2ce1f63bdde40c2416999",
+        "fresh_raw_scanner_observation_sha256": "67c5e855f6ab89baf9963995ac3a02d7eb407985c183bef1399f3d5990047437"
+      },
+      "limits": [
+        "Close-failure injection and guaranteed successful cleanup after a failing close are not tested.",
+        "The focused gate and passive observation do not prove all-module/GUI behavior, field efficacy or speed."
+      ],
+      "existing_alert_or_baseline_dispositions_changed": false,
+      "final_offline_commit_publication_or_CI_completion_claimed": false,
+      "broader_1_15_complete": false
     }
   ],
   "preserved_uncertainty": [
@@ -2107,5 +2173,270 @@
     "alert_baseline_trust_or_response_authority": false,
     "offline_commit_publication_or_CI_completion_claimed": false,
     "review_date": "2026-10-24"
+  },
+  "current_ipc_key_custody_review": {
+    "schema": "angerona.current.ipc-key-custody-review.v1",
+    "review_date": "2026-10-24",
+    "status": "APPLIED_SCOPED_GATE_AND_PASSIVE_PROCESS_TELEMETRY_ACCEPTED_WITH_OPEN_BOUNDARIES",
+    "product_version": "1.14.0 maintenance",
+    "broader_1_15_complete": false,
+    "findings": [
+      "IPC-01",
+      "IPC-02",
+      "IPC-03"
+    ],
+    "scope": {
+      "reviewed_paths": 10,
+      "code_test_paths": 3,
+      "existing_documentation_paths": 7,
+      "added_tests": 1,
+      "new_modules": 0,
+      "new_documents": 0,
+      "source_entries": 1882,
+      "python_entries": 1169,
+      "tested_pre_documentation_source_map_sha256": "e28f2ecd992d4b5f97f637a9eae9bf5ca5ced0e492855fb557d02f78ac007303",
+      "final_source_map_sha256": null
+    },
+    "code_pins": [
+      {
+        "path": "src/angerona/resilience/ipc_ring.py",
+        "sha256": "fa097d54f0965d8a94131727c432780dd0e12533cb6201dad77afb43cf9295b6"
+      },
+      {
+        "path": "tests/test_ipc_key_custody.py",
+        "sha256": "ab4206a333c05d00c4571da96f5559ecea77b0d6ad7908f0d81617d2685b9cf5"
+      },
+      {
+        "path": "tests/test_property_fuzz_boundaries.py",
+        "sha256": "a10e7a6383fe7663b5e54bc1ffee3fe888bec7ad00d1cd97db867192f0432a7d"
+      }
+    ],
+    "behavior": {
+      "max_key_file_bytes": 4096,
+      "read_request": "admitted size plus one, retained original descriptor",
+      "initialization_rounds": 2,
+      "cooperative_transaction": "Existing public secure_store.secret_transaction namespace; no credential backend reads/writes or new DPAPI encryption of ipc_ring.key",
+      "platform_clocks": "Comparable Windows birth-time where available, exact fallback elsewhere, plus exact raw per-API before/after guards",
+      "failed_authority": "Malformed or failed key is retained for explicit recovery; never unlink a potentially substituted winner",
+      "constructor": "Attempt to close acquired mapping/file on mmap/header setup failure before original exception propagation",
+      "unchanged": [
+        "32-byte key and 64-hex representation",
+        "Frame HMAC and AAD",
+        "Schema/sequence/ring layout",
+        "Pressure policy and prior drop evidence",
+        "Response authority"
+      ]
+    },
+    "baseline_characterization": {
+      "cases": 10,
+      "functions": 5,
+      "phases": 30,
+      "result_sha256": "743cb7d43e01dd3e71e880cdeb15914945c8fbd9df69bcf8466aba6b9a8ae718",
+      "root_review_sha256": "44a25384ecf9689f16d6c5ced9f5d898738a758925bcf211193035a4fafc9318",
+      "scope": "Incomplete authority visible to a second cooperating caller, unbounded read, real constructor references open before owned fixture fallback; no persistent field leak/key exposure/HMAC break/exploit"
+    },
+    "rejected_first_candidate": {
+      "accepted": false,
+      "cases": 31,
+      "functions": 16,
+      "phases": 93,
+      "passed": 26,
+      "failed": 5,
+      "errors": 0,
+      "skipped": 0,
+      "root_review_sha256": "9e835e4a82f661a07d1a8c47a34485db795281f680307bd697b77668df5536cc",
+      "exact_native_timestamp_cause_measured": false
+    },
+    "corrected_final_comparison": {
+      "result_sha256": "3bcc92140204acf3d835c2eb39f9ef60e3938a2444a805e2290663a3ac884413",
+      "root_review_sha256": "78570e943e37075f9b2f5324e63d72156cb4099969b7fd2f9a7c740fa4af46aa",
+      "independent_actual_peer_manifest_sha256": "1754e1374dac02168323c4dd63929d5a716ff2789df45232e455175bc9e5fd40",
+      "per_mode": {
+        "functions": 21,
+        "cases": 43,
+        "phases": 129,
+        "errors": 0,
+        "skipped": 0
+      },
+      "original": {
+        "passed": 8,
+        "failed": 35,
+        "native_exit": 1
+      },
+      "candidate": {
+        "passed": 43,
+        "failed": 0,
+        "native_exit": 0
+      },
+      "short_parameter_ids_only_R3": true,
+      "ledger_limit_4096_unchanged": true,
+      "fixture_or_inert_metadata_scope": true
+    },
+    "separate_affected_property": {
+      "cases": 2,
+      "phases": 6,
+      "passed_cases": 2,
+      "mode_names": [
+        "native Windows namespace",
+        "private Linux-namespace model using actual Windows lease"
+      ],
+      "transaction_path_calls_per_mode": 3,
+      "production_lock_and_lease_preserved_and_released": true,
+      "selected_in_focused43_suite_gate": false,
+      "native_POSIX_home_or_ACL_assurance": false,
+      "result_sha256": "dca9d9fd33187d4728829d28bb2a367c4812c0a8015bc2278e1a839f9e92f865",
+      "root_review_sha256": "90a04143f4296fbefa7fb647434ad1122bd5312c9f3918918e18da298279c910"
+    },
+    "fresh_selected_gate": {
+      "suites": 43,
+      "functions": 589,
+      "cases": 1180,
+      "passed": 1175,
+      "failed": 0,
+      "errors": 0,
+      "native_availability_skips": 5,
+      "phase_count": 3540,
+      "full589_counter_match": true,
+      "configured_origins_loaded": 13,
+      "IPC_loaded": true,
+      "privacy75_nested7_pressure20_lifetime4_new43_are_included_subsets": true,
+      "acceptance_complete": true,
+      "coverage_complete": false,
+      "not_repository_wide_or_CI": true,
+      "owned_outer_two_generations_retired": true,
+      "result_sha256": "35b065db5dce6c3b0ea249b627a968d924e4bd69d6a2ce1f63bdde40c2416999",
+      "root_review_sha256": "aa7cd18ac36a5f1ad2324d575503894185d686001f95d22bf3e97dc3bb8174fe"
+    },
+    "fresh_selfcheck": {
+      "phases": 29,
+      "failed": 0,
+      "module_PASS": 68,
+      "pipeline_PASS": 1,
+      "module_SKIP": 18,
+      "required_loaded_origins": 5,
+      "configured_origins": 13,
+      "loaded_origins": 7,
+      "unloaded_origins": 6,
+      "IPC_naturally_unloaded": true,
+      "force_import": false,
+      "ring_self_test_execution_credit": false,
+      "result_sha256": "ecc8fddf3889ca6efb777a1b1dc6918a1691d634f265c1a5ead95aa06443727c",
+      "root_review_sha256": "1daea1bdc97c44030c70a60efac97618cec314f98b7a3692e2e14f4dc5f0708c"
+    },
+    "fresh_process_ScannerHost_observation": {
+      "requested_seconds": 30,
+      "actual_seconds": 30.17200000002049,
+      "scanner_heartbeats": 31,
+      "raw_sensor_frames": 2,
+      "observer_heartbeats": 119,
+      "matrix_errors": 0,
+      "matrix_gap_records": 0,
+      "drops": 0,
+      "pending_threads": 0,
+      "real_Windows_key_namespace_and_OS_lease": true,
+      "original_outer_two_and_separately_held_core_retired": true,
+      "observer_native_runtime_files": 10,
+      "root_separate_runtime_files": 39,
+      "all_descendant_or_executed_import_bytes_proved": false,
+      "result_sha256": "67c5e855f6ab89baf9963995ac3a02d7eb407985c183bef1399f3d5990047437",
+      "root_review_sha256": "e6f80bbdadaac94d23cc676e2c9a03e3a6257c06053278134da64182949c9270",
+      "selected_capture": {
+        "bytes": 2757,
+        "records": 11,
+        "coverage_records": 11,
+        "EventBus_event_records": 0,
+        "sha256": "4627a39d75bb8670e31b1c3856d027381f8f2fdb37fa35cdd3a72105e892e7fe",
+        "complete_alert_visibility_proved": false
+      },
+      "file_scan_malware_verdict_self_test_85percent_GUI_allmodules_hostclean_efficacy_or_speed_proved": false
+    },
+    "selected_capture_advisory_map": {
+      "records": 11,
+      "coverage_records": 11,
+      "event_records": 0,
+      "cases": 11,
+      "all_needs_review": true,
+      "parse_omissions": 0,
+      "overflow": 0,
+      "identity_conflicts": 0,
+      "processing_complete_for_selected_input_only": true,
+      "evidence_continuity_complete": false,
+      "automatic_response": false,
+      "original_dispositions_changed": false,
+      "owned_physical_Popen_waited_and_closed": true,
+      "independent_native2_or_descendant_full1882_runtime39_processing_claim": false,
+      "map_sha256": "5dddf8ceee070bbdd3b2a72105b412a87197919324f46da1de3fc11173882b2c",
+      "owned_result_sha256": "0ad2a057c61981513701b782938f57a06cf8f4888f39ea3c8d2a09672bad14d3",
+      "root_review_sha256": "39ba602406da86f4eb162254791d9022bc024f8493877e15281a36425f1603b5"
+    },
+    "published_base_CI": {
+      "revision": "89c708e83b2b41085a4715d3dbb17ca68f9bb1c9",
+      "general_run": 40075548651,
+      "conclusion": "failure",
+      "general_successful_jobs": 11,
+      "general_failed_jobs": 1,
+      "failed_Python": "3.13",
+      "failed_node": "tests/test_cycle35_redteam_gui_live.py::test_mainwindow_arm_launch_and_deliver_signed_aar_twice",
+      "exact_validation_producer_root_cause": "UNKNOWN",
+      "security_run": 40075548571,
+      "security_conclusion": "success",
+      "security_successful_jobs": 3,
+      "rerun_request": "403 Resource not accessible by integration",
+      "new_attempt_started": false,
+      "changed_source_CI_credit": false
+    },
+    "preservation": {
+      "old_raw_issue_objects": 188,
+      "old_raw_bytes_order_status_preserved": true,
+      "old_root_value_bytes_preserved_except_appending_issues": true,
+      "added_issues": [
+        "IPC-01",
+        "IPC-02",
+        "IPC-03"
+      ],
+      "total_issues": 191,
+      "only_added_root_field": "current_ipc_key_custody_review"
+    },
+    "open_boundaries": [
+      "SEC-20 parser normalization remains unapplied",
+      "HOST-03 unsafe OS-volume custody exposure",
+      "HOST-04 requested 2 GiB OS-volume headroom",
+      "Published base Python 3.13 validation-producer failure cause",
+      "Actual user-app PID/birth attachment and current live alerts",
+      "Comprehensive all-module operation and field efficacy",
+      "Native POSIX/home/elevated ACL validation and legacy/malicious peers",
+      "Cross-process convergence and close-failure injection",
+      "Historical native/GUI/heartbeat causes, reader retirement and competing diagnostic load",
+      "Independent alert continuity, import-cache/all-helper/descendant coverage limits"
+    ],
+    "raw_host_capture_published": false,
+    "annotation_or_documentation_grants_mutation_allowlist_trust_authority": false,
+    "final_offline_commit_publication_or_current_CI_completion_claimed": false,
+    "failed_offline_attempt": {
+      "status": "REJECTED_CHECKSUM_FALSE_POSITIVE_REPRESENTATION_CORRECTION_RETRY_PENDING",
+      "native_exit": 1,
+      "result_sha256": "37bcd3b0d7f5f9b29efc5709f0e8ac4a77706d55a086dc64b82f3f49956a4e05",
+      "root_review_sha256": "54e0a0eff49ca8ab20fd01fc7225038bce5a30cf428de42a1fb9bf3192f60742",
+      "actual": {
+        "fresh_python310_AST": 1169,
+        "ruff_exit": 0,
+        "documentation_drift_exit": 0,
+        "gitleaks_exit": 1,
+        "gitleaks_findings": 1
+      },
+      "finding": {
+        "rule": "generic-api-key",
+        "file": "analysis/live-debug-2026-10-22/issue-map.json",
+        "line": 2202,
+        "classification": "Verified public source-file SHA-256 checksum; not a credential",
+        "source_path": "tests/test_ipc_key_custody.py",
+        "checksum_verified_against_actual_file": true,
+        "secret_values_exported": false
+      },
+      "source_scan_result_preserved": true,
+      "scanner_exceptions_rule_or_allowlist_changes": false,
+      "fresh_offline_retry": "PENDING",
+      "retry_success_commit_publication_or_CI_claimed": false
+    }
   }
 }

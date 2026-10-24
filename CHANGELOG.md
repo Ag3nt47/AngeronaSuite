@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.14.0 — IPC key custody and constructor recovery
+
+- Serialize cooperating scanner-ring key initialization through the existing
+  public credential transaction. Permit two finite initialization rounds with
+  bounded collision/custody reclassification; preserve an existing malformed or
+  failed authority for explicit recovery instead of rotating it or deleting a
+  potentially substituted winner. This reuses the lock namespace, not credential
+  encryption or backend reads/writes.
+- Admit at most 4096 key-file bytes; read the admitted size plus one through the
+  retained descriptor and verify named/held identity before and after the read.
+  Compare platform-compatible timestamps across APIs while keeping each API's
+  raw change-time checks exact. Existing 32-byte keys, 64-hex representation,
+  HMAC/AAD/frame/schema/layout and pressure/drop contracts remain unchanged.
+- Close the constructor's owned file and mapping on failures after file-object
+  acquisition. Real closed-state assertions run before fixture fallback cleanup;
+  no persistent field leak or cleanup-error injection is claimed.
+- Preserve baseline ten-case characterization and the rejected first candidate
+  (26 passed / five failed). The corrected final 43-case comparison retained
+  original eight passes / 35 failures versus candidate 43 passes, zero errors or
+  skips, with 21 functions and 129 phases per mode. Short parameter labels keep
+  the unchanged 4096-character ledger limit; values and assertions remain.
+- A separate existing property passed once in native Windows namespace mode and
+  once in a private Linux-namespace model: two cases / six passed phases. Both
+  used actual Windows leases; this is not native POSIX, home-permission or ACL
+  assurance, and is separate from the focused gate totals.
+- Fresh focused gate: 43 suites / 589 functions / 1180 cases, 1175 passed,
+  zero failures/errors and five exact native availability skips. All 13 configured
+  origins loaded, including IPC; all 589 function counters and 3540 phases agree.
+  Selfcheck: 29 phases passed, 68 module PASS plus pipeline PASS and 18 module
+  SKIP. IPC was naturally unloaded in selfcheck; it adds no ring self-test credit.
+- Fresh ordinary-user process-telemetry observation completed 30.172 s with
+  31 scanner heartbeats, two raw sensor frames and 119 observer heartbeats;
+  zero matrix errors/gap records/drops/pending threads. Original outer two
+  generations and a separately held core retired. Its selected capture retains
+  11 advisory coverage records and zero EventBus event records; that does not
+  establish complete alert visibility, file scanning or a clean host. The
+  unchanged offline summarizer grouped those 11 coverage notes into 11
+  needs-review cases with zero parse omissions/overflow/identity conflicts;
+  selected-input processing only, continuity unverified and no disposition or
+  response-authority changes.
+- Preserve all 188 historical raw issues and append IPC-01/IPC-02/IPC-03 with
+  separate scoped review metadata. SEC-20 is unapplied; HOST-03/HOST-04 and
+  historical native/GUI causes remain open. Published 89c708's Python 3.13 CI
+  failure remains unresolved; the rerun request returned 403 with no new attempt.
+- Current scope: three code/test paths and seven existing docs, one added test,
+  no new module or document. Final-source offline checks, reviewed commit,
+  unchanged guarded publication and current CI need separate fresh receipts.
+  Product remains v1.14.0 maintenance; broader v1.15 remains incomplete.
+
+See [key custody and recovery](docs/key-and-communication-integrity.md) and
+[the current scoped review](analysis/live-debug-2026-10-22/README.md).
+
 ## 1.14.0 — SCN-06 ring self-test resource cleanup
 
 - Nest the existing writer/reader contexts inside the self-test's outer cleanup
