@@ -7,7 +7,31 @@ of attacks against ordinary identity, software, network and human boundaries.
 This guide separates current controls from work that still needs implementation
 or independent deployment.
 
-## Current model-integrity boundary
+## Current original-path model custody
+
+Model-file admission checks the supplied root leaf and original in-root components
+before resolving aliases, then compares confined root/file snapshots. The fresh
+40-suite gate passed 1108 of 1113 cases with five exact availability skips; all
+29 selfcheck phases passed. Three lexical native cases remain Windows privilege
+gaps. This proves no directory lease, atomic resolve/open or kernel resistance.
+
+Fresh observations cover a private synthetic model worker, SpywareGuard,
+independent process-creation telemetry ScannerHost and the 15-module profile.
+The combined run completed 600.625 s with 360 events and 18 retained interval
+gap strings; its selected capture became 93 needs-review groups. Continuity is
+unverified. ScannerHost evidence is process telemetry, not a file-malware verdict.
+Imported prose, model output and advisory grouping confer no baseline, key,
+alert-clearing or response authority. No real enrollment, key-custody, provider,
+GUI, efficacy or speed proof follows from the synthetic model observation.
+
+Final-source offline validation and canonical guarded publication require their
+own receipts; this reference does not attest their completion. Preserve the
+historical OPEN SEC-19 object and all host/parser/unknown findings. See the
+[central evidence reference](../analysis/live-debug-2026-10-22/model-integrity-review.md).
+Product remains 1.14.0; broader 1.15 is incomplete.
+
+
+## Historical model-integrity reader boundary
 
 The manifest reader now requests the already-admitted size plus one byte while
 retaining its original identity, length, cap and authenticated-baseline checks.

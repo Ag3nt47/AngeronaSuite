@@ -1,6 +1,24 @@
 # Component dependencies and interference review
 
-## Current model-integrity reader scope
+## Current original-path custody interaction
+
+| Interaction | Current behavior | Evidence boundary |
+| --- | --- | --- |
+| Supplied root and in-root names → resolve → file admission | No-follow metadata before canonicalization; confined root/file snapshots afterward | Scoped 40-suite gate accepted; three lexical native cases unavailable; no retained directory lease or race/kernel guarantee |
+| Hashes, HMAC baseline, key provider and worker cancellation | Existing controls unchanged | Fresh 29-phase selfcheck; separate 30 s synthetic worker read/verify and normal retirement, without real enrollment, key-custody, provider or blocking-I/O cancellation proof |
+| Process-creation ScannerHost → authenticated telemetry | Heartbeats, process events, drop counters and owned retirement | Fresh 30.047 s observation with 31 heartbeats; no file-scan request or file-malware verdict |
+| Observer → original events → case map → review | Preserve gaps, timestamps and unadjudicated evidence | Combined 600.625 s / 360 events / 18 interval gap strings; selected 371 records → 93 needs-review groups, continuity unverified and no alert-clearing or response authority |
+
+All 186 historical issue objects/statuses and old validation snapshots remain
+exact. SEC-19 source hardening is tracked separately from its OPEN historical
+object. SEC-20, host findings and earlier unknowns remain. See the
+[central model-integrity reference](model-integrity-review.md). Final-source
+offline validation and unchanged canonical guarded publication require separate
+fresh receipts for the exact ten-path scope; this reference does not attest
+their completion. Product 1.14.0; broader 1.15 remains incomplete.
+
+
+## Historical model-integrity reader scope
 
 | Interaction | Current behavior | Evidence and limit |
 | --- | --- | --- |

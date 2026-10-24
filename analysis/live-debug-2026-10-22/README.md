@@ -1,6 +1,36 @@
 # Live debugging and screenshot issue review
 
-## Current model-integrity maintenance
+## Current original-path model custody
+
+The original model-root leaf and in-root components are checked before resolve,
+with confined identity snapshots afterward. Fresh gate: **40 suites / 556
+functions / 1113 collected / 1108 passed / zero failures or errors / five exact
+availability skips**. All 29 selfcheck phases passed; coverage is incomplete.
+Three lexical native cases remain unavailable Windows privilege checks.
+
+Fresh observations completed: a 30 s synthetic model worker, SpywareGuard for
+30.172 s, independent process-creation telemetry ScannerHost for 30.047 s and
+15 admitted modules for 600.625 s. The combined run recorded 1723 heartbeats,
+360 events, zero errors/drops/pending threads and 18 retained interval gap
+strings across ten modules. Its selected 371-record capture became 93
+needs-review groups, with no parse omissions/overflow/conflicts. Continuity is
+unverified; advisory grouping changes no original disposition or authority.
+ScannerHost evidence covers process telemetry and retirement, not file scanning.
+
+Final-source offline validation and canonical guarded publication require their
+own fresh receipts for the exact ten-path scope; no offline, commit, publication
+or CI completion is attested here. Failed R2 acceptance and all historical proofs
+remain preserved. All 186 raw issue objects and old review/history/
+current_validation values remain exact; current_lexical_custody_review records
+this source separately from SEC-19's OPEN snapshot. SEC-20, HOST-03/HOST-04,
+historical heartbeat causes and other unknowns remain.
+
+[Model-integrity reference](model-integrity-review.md) holds exact current counts,
+receipt hashes, fixture/native/import limits and the historical 79db CI boundary.
+This is 1.14.0 maintenance; broader 1.15 remains incomplete.
+
+
+## Historical model-integrity reader maintenance
 
 The size-bounded manifest reader retains integrity checks. Fresh scoped evidence:
 **39 suites / 544 functions / 1061 collected / 1059 passed / zero failures or

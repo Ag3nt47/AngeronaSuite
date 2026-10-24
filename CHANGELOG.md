@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.14.0 — original-path model custody maintenance
+
+- Check the original model-root leaf and each in-root component before canonical
+  resolution; retain confinement and root/file identity snapshots. Trusted ambient
+  ancestors retain their existing assumptions. No directory lease, atomic
+  resolve/open, kernel resistance or previous SHA/HMAC bypass is claimed.
+- Fresh 40-suite / 556-function / 1113-case gate: 1108 passed, zero failures/errors,
+  five exact Windows availability skips. Three lexical native cases remain
+  privilege gaps. Failed R2 acceptance remains preserved. All 29 selfcheck phases
+  passed: 68 module PASS plus pipeline PASS, 18 module SKIP, five required origins.
+- Fresh synthetic model-worker observation completed 30 s with one 117-byte read,
+  two verified files and original-worker retirement. Separate SpywareGuard and
+  independent process-creation telemetry ScannerHost observations completed
+  30.172 s and 30.047 s. The ScannerHost case submits no file-scan request or
+  file-malware verdict. The 15-module combined run completed 600.625 s with
+  1723 heartbeats, 360 events and 18 retained interval gap strings across ten
+  modules; it recorded zero errors, drops or pending threads.
+- The selected combined capture mapped 371 records into 93 needs-review groups,
+  with zero parse omissions, overflow or conflicts. Continuity is unverified;
+  original dispositions and response authority are unchanged. Final-source
+  offline validation and the unchanged canonical guarded publisher require
+  separate receipts for the exact ten-path scope; this entry does not attest
+  offline, commit, publication or CI completion.
+- Preserve all 186 historical raw issue objects and the OPEN SEC-19 snapshot.
+  Current scope is recorded separately; native, host and historical unknowns remain.
+
+See [the model-integrity reference](analysis/live-debug-2026-10-22/model-integrity-review.md).
+Product remains v1.14.0 maintenance; broader v1.15 remains incomplete.
+
+
 ## 1.14.0 — model-manifest reader maintenance
 
 - PER-19: request an already-admitted manifest size plus one byte instead of the

@@ -194,32 +194,70 @@ def _is_reparse_point(path: Path) -> bool:
         return True
 
 
-def _require_confined_regular_file(path: Path, root: Path) -> tuple[Path, os.stat_result]:
-    """Resolve a model file while rejecting links/junctions and non-files."""
+def _require_model_root(root: Path) -> tuple[Path, os.stat_result]:
+    """Check the supplied root before resolution; this is a metadata snapshot."""
     try:
-        root_resolved = root.resolve(strict=True)
-        resolved = path.resolve(strict=True)
+        before = root.stat(follow_symlinks=False)
+        if (not stat.S_ISDIR(before.st_mode) or getattr(before, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+            raise ModelIntegrityError("Ollama model directory is not trusted")
+        resolved = root.resolve(strict=True)
+        after = resolved.stat(follow_symlinks=False)
+    except ModelIntegrityError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ModelIntegrityError("Ollama model directory is unavailable") from exc
+    if (not stat.S_ISDIR(after.st_mode) or getattr(after, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)):
+        raise ModelIntegrityError("Ollama model directory changed during resolution")
+    return resolved, after
+
+
+def _require_confined_regular_file(path: Path, root: Path) -> tuple[Path, os.stat_result]:
+    """Check original in-root components before resolving one regular file.
+
+    These named metadata snapshots do not retain a directory lease or close
+    the later resolution/open race. Ambient ancestors above the supplied root
+    retain the same trust assumptions as the module's existing root admission.
+    """
+    try:
+        root_resolved, root_before = _require_model_root(root)
+        lexical_root = root.absolute()
+        lexical_path = path.absolute()
+        relative = lexical_path.relative_to(lexical_root)
+        if not relative.parts or ".." in relative.parts:
+            raise ModelIntegrityError("Ollama model path is not confined")
+        current = lexical_root
+        for index, part in enumerate(relative.parts):
+            current = current / part
+            info = current.stat(follow_symlinks=False)
+            if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0)
+                    & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                raise ModelIntegrityError("Ollama model path contains a link or junction")
+            if index + 1 < len(relative.parts) and not stat.S_ISDIR(info.st_mode):
+                raise ModelIntegrityError("Ollama model path contains a non-directory")
+        resolved = lexical_path.resolve(strict=True)
         resolved.relative_to(root_resolved)
+        after = resolved.stat(follow_symlinks=False)
+        root_after = root_resolved.stat(follow_symlinks=False)
+    except ModelIntegrityError:
+        raise
     except (OSError, RuntimeError, ValueError) as exc:
         raise ModelIntegrityError("Ollama model path escaped or is unavailable") from exc
-
-    current = resolved.parent
-    while current != root_resolved:
-        if current.is_symlink() or _is_reparse_point(current):
-            raise ModelIntegrityError("Ollama model path contains a link or junction")
-        parent = current.parent
-        if parent == current:
-            raise ModelIntegrityError("Ollama model path is not confined")
-        current = parent
-    if resolved.is_symlink() or _is_reparse_point(resolved):
-        raise ModelIntegrityError("Ollama model file is a link or reparse point")
-    try:
-        info = resolved.stat()
-    except OSError as exc:
-        raise ModelIntegrityError("Ollama model file is unavailable") from exc
-    if not stat.S_ISREG(info.st_mode):
+    if not stat.S_ISREG(info.st_mode) or not stat.S_ISREG(after.st_mode):
         raise ModelIntegrityError("Ollama model object is not a regular file")
-    return resolved, info
+    if (getattr(after, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            or (info.st_dev, info.st_ino, info.st_size)
+            != (after.st_dev, after.st_ino, after.st_size)
+            or not stat.S_ISDIR(root_after.st_mode)
+            or getattr(root_after, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            or (root_before.st_dev, root_before.st_ino)
+            != (root_after.st_dev, root_after.st_ino)):
+        raise ModelIntegrityError("Ollama model path changed during resolution")
+    return resolved, after
 
 
 def _read_verified_file(path: Path, root: Path, *, maximum: int) -> bytes:
@@ -332,12 +370,7 @@ def verify_ollama_model_files(
         root = Path(models_root)
     if root is None:
         raise ModelIntegrityError("Ollama model directory is unavailable")
-    try:
-        root = root.resolve(strict=True)
-    except OSError as exc:
-        raise ModelIntegrityError("Ollama model directory is unavailable") from exc
-    if root.is_symlink() or _is_reparse_point(root) or not root.is_dir():
-        raise ModelIntegrityError("Ollama model directory is not trusted")
+    root, _root_info = _require_model_root(root)
 
     manifest_path = (
         root / "manifests" / "registry.ollama.ai" / "library" / name / tag

@@ -32,13 +32,14 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance:** model-manifest reads use the admitted size plus
-one byte, preserving integrity checks. A fresh 39-suite gate passed 1059 of
-1061 cases with two exact availability skips; all 29 selfcheck phases passed.
-A 600-second, 15-module observation retained 19 interval gaps, while a separate
-30-second synthetic-profile run exercised the actual model-integrity worker.
-[Evidence, open findings and limits](analysis/live-debug-2026-10-22/model-integrity-review.md)
-separate these results from real-model efficacy and product performance claims.
+**Current v1.14 maintenance:** model-file admission checks the supplied root and
+each in-root component before canonical resolution. The fresh 40-suite gate
+passed 1108 of 1113 cases with five exact availability skips; all 29 selfcheck
+phases passed. Fresh scoped observations include a synthetic model worker,
+SpywareGuard, independent process telemetry and a 600.625 s combined run;
+18 combined interval gap strings remain.
+[Evidence and remaining limits](analysis/live-debug-2026-10-22/model-integrity-review.md)
+keep native coverage gaps, historical failures and host findings visible.
 
 Manual AI consultation provides a bounded sanitized preview and explicit Send;
 see [AI consultation privacy](docs/ai-consult-privacy.md). Broader v1.15 remains

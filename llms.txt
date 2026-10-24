@@ -5,7 +5,50 @@ Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## Current model-manifest reader maintenance — v1.14, broader v1.15 incomplete
+## Current original-path model custody — v1.14 maintenance
+
+- Two source paths only: ai_model_integrity.py and the new lexical-custody test.
+  Check original root/in-root components before resolve; retain confinement,
+  identity snapshots, hashes, authenticated baseline/key and cancellation rules.
+  Ambient ancestors above the established root retain their trust assumptions.
+  No directory lease, race immunity, kernel protection or prior crypto bypass.
+- Fresh gate accepted: 40 suites / 556 functions / 1113 cases, 1108 passed, zero
+  failures/errors, five exact Windows availability skips. Lexical subset: 49
+  passes / three native privilege gaps. All 75 privacy and seven named nested
+  regressions are included subsets. Acceptance is not complete coverage.
+  Preserve failed R2 853885eb; a fresh policy/run does not overwrite it.
+- Fresh selfcheck accepted: 29 phases / zero failures, 68 module PASS + pipeline
+  PASS, 18 module SKIP; five required origins loaded, seven configured loaded /
+  five unloaded. Active model attestation was idle without a real model directory.
+- A separate 30 s synthetic model-worker observation read 117 bytes and verified
+  two files; four ordered records, 120 snapshots and one event were retained.
+  Original worker and two outer generations retired. No real enrollment, host
+  key-custody, provider, GUI, efficacy, blocking-I/O cancellation or speed proof.
+- Fresh SpywareGuard30 and independent process-creation telemetry ScannerHost30
+  observations completed 30.172 s and 30.047 s. SpywareGuard retained two gaps;
+  ScannerHost recorded 31 heartbeats and no gaps. These cases recorded zero
+  errors/drops/pending threads. ScannerHost supplies process telemetry, not a
+  file-scan request, file-malware verdict or file-scanner efficacy proof.
+- Default 15-module run: 600.625 s / 1723 heartbeats / 360 events, zero recorded
+  errors/drops/pending threads, 18 retained interval gap strings across ten modules.
+  Its selected capture alone mapped 371 records into 93 needs-review groups;
+  no parse omissions/overflow/conflicts. Continuity remains unverified and
+  advisory grouping grants no response or alert-clearing authority.
+- Final-source offline validation and unchanged canonical guarded publication
+  require their own fresh receipts for the exact ten-path scope. This reference
+  does not attest offline, commit, publication or CI completion.
+- Preserve all 186 RAW issue objects/order/status and old review/history/
+  current_validation fields. current_lexical_custody_review records current scope;
+  SEC-19's OPEN object remains historical. SEC-20, HOST-03/HOST-04, old heartbeat
+  causes, threat/false-positive/reader-retirement and import-cache unknowns remain.
+- Scope: 1879 source / 1166 Python, ten paths = two code/test + eight existing docs,
+  one added test. Published 79db CI 12/Security 3 and four Python jobs each
+  8415 passes/22 skips are historical only; no CI credit to this changed source.
+  Product 1.14.0; broader 1.15 incomplete. Sanitized receipt hashes and boundaries:
+  analysis/live-debug-2026-10-22/model-integrity-review.md.
+
+
+## Historical model-manifest reader maintenance — published 79db checkpoint
 
 - Scope: admitted manifest size+1 read only; retain native file identity/exact
   length/cap, growth rejection, hashes and authenticated baseline semantics.

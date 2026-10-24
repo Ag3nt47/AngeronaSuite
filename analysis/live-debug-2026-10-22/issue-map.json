@@ -1517,5 +1517,205 @@
     },
     "final_offline_and_publication": "Separate mandatory guarded proofs; no preclaimed result"
   },
-  "review_status": "186 reviewed IDs; all 181 prior raw issue objects/bytes/order/status and former review_status remain exact under historical_review_status_before_model_reader. Current one-expression manifest read change passed a fresh 39-suite/544-function/1061-case gate: 1059 passes/zero failures or errors/two exact availability skips; coverage incomplete. All 75 privacy/seven named nested/88 added-adjacent cases are included, not additive. Preserve initial failed stale-grader acceptance despite test/native success. Fresh 29-phase selfcheck passed, retaining 18 module skips, five required loaded origins and five configured optional unloaded. Default 15-module 600.297-second observation retained 19 interval gaps (18 strings / ten modules plus global 3.531-second heartbeat gap), 463 events and zero recorded errors/drops/pending threads. Heartbeat-persistence 3.2106547 s already used durable=False/no explicit fsync; disk/API/descheduling/GUI cause UNKNOWN. C2/Sysmon final 100 does not erase interval history. Separate 30-second actual worker used a synthetic baseline/key only: 117-byte read/two files/four ordered records/120 snapshots/one event; original worker and two outer generations retired, no real enrollment/key custody/provider/GUI/efficacy/speed proof. Allocation fixture peaks 16,787,510 versus 18,873 bytes are tracked Python only, not RSS/native/product gain. SEC-19 lexical alias and SEC-20 parser normalization remain OPEN; no confirmed lower-trust fail-open/DoS or host/false-positive verdict. HOST-03/HOST-04, historical unretired diagnostic/competing load, old unknowns and import-cache/helper limits remain. Exact final ten-path scope/full 1878 source / 1165 Python checks, offline validation and guarded publication need separate mandatory proofs; historical cf668 CI validates only that old revision. Product remains 1.14 maintenance; broader 1.15 incomplete."
+  "review_status": "186 reviewed IDs; all 181 prior raw issue objects/bytes/order/status and former review_status remain exact under historical_review_status_before_model_reader. Current one-expression manifest read change passed a fresh 39-suite/544-function/1061-case gate: 1059 passes/zero failures or errors/two exact availability skips; coverage incomplete. All 75 privacy/seven named nested/88 added-adjacent cases are included, not additive. Preserve initial failed stale-grader acceptance despite test/native success. Fresh 29-phase selfcheck passed, retaining 18 module skips, five required loaded origins and five configured optional unloaded. Default 15-module 600.297-second observation retained 19 interval gaps (18 strings / ten modules plus global 3.531-second heartbeat gap), 463 events and zero recorded errors/drops/pending threads. Heartbeat-persistence 3.2106547 s already used durable=False/no explicit fsync; disk/API/descheduling/GUI cause UNKNOWN. C2/Sysmon final 100 does not erase interval history. Separate 30-second actual worker used a synthetic baseline/key only: 117-byte read/two files/four ordered records/120 snapshots/one event; original worker and two outer generations retired, no real enrollment/key custody/provider/GUI/efficacy/speed proof. Allocation fixture peaks 16,787,510 versus 18,873 bytes are tracked Python only, not RSS/native/product gain. SEC-19 lexical alias and SEC-20 parser normalization remain OPEN; no confirmed lower-trust fail-open/DoS or host/false-positive verdict. HOST-03/HOST-04, historical unretired diagnostic/competing load, old unknowns and import-cache/helper limits remain. Exact final ten-path scope/full 1878 source / 1165 Python checks, offline validation and guarded publication need separate mandatory proofs; historical cf668 CI validates only that old revision. Product remains 1.14 maintenance; broader 1.15 incomplete.",
+  "current_lexical_custody_review": {
+    "schema": "angerona.current.lexical-model-custody-review.v1",
+    "status": "SCOPED_GATE_SELFCHECK_OBSERVATIONS_ACCEPTED_COMPLETION_SEPARATELY_GATED",
+    "reference": "model-integrity-review.md",
+    "product_version": "1.14.0 maintenance",
+    "broader_1_15_complete": false,
+    "history_policy": "All 186 existing RAW issue objects, order/status and every old review/history/current_validation field are unchanged historical snapshots; this appended section is current scope, not a silent status closure.",
+    "finding": "SEC-19",
+    "historical_SEC19_status_preserved": "open-source-contract-hardening",
+    "source": {
+      "paths": [
+        "src/angerona/modules/ai_model_integrity.py",
+        "tests/test_ai_model_lexical_custody.py"
+      ],
+      "module_sha256": "296c0388730852cd029ec465dcabfb069c259717d10e8a055383409e89e5e0cb",
+      "test_sha256": "2c68aa49cc8642970f600e878e747f18b97a0b237e9c59d75084c30b76ff1ff9",
+      "tested_pre_documentation_map_sha256": "157fb24374892f7467f379e46f9f595ba15630e7dec5e0df19722fcbc35dade0",
+      "change": "Original supplied root leaf/in-root component metadata before canonicalization, resolved confinement and root/file identity snapshots afterward.",
+      "limits": [
+        "Trusted ambient ancestors above supplied root remain.",
+        "No retained directory lease, atomic resolve/open, hardlink policy or race/kernel guarantee.",
+        "No prior SHA/HMAC or authenticated-baseline bypass proved.",
+        "Existing hash/key/baseline/cancellation/cap/cadence/response contracts unchanged."
+      ]
+    },
+    "gate": {
+      "acceptance_complete": true,
+      "coverage_complete": false,
+      "suites": 40,
+      "functions": 556,
+      "cases": 1113,
+      "passed": 1108,
+      "failures": 0,
+      "errors": 0,
+      "availability_skips": 5,
+      "lexical_subset": {
+        "passed": 49,
+        "native_unavailable": 3
+      },
+      "privacy_cases_subset": 75,
+      "nested_regressions_subset": 7,
+      "result_sha256": "aa8e6a755ac28674bf824e650c4dad763f748c4ce8bd1262be6212a33afb2c0e",
+      "root_review_sha256": "10a44da0cd00aa981f545f0595f0aaa615d5a04b73d0d7887b7ae45b50892dcd",
+      "independent_multiplicity_sha256": "1c593f5d2124f0005f29facf0709942feb2355939ecfadb7f42152e38f80e490",
+      "new_native_gap_policy": {
+        "platform": "nt",
+        "phase": "call",
+        "reason": "native symlink privilege unavailable (winerror=1314)",
+        "parameters": [
+          "root",
+          "manifest-directory",
+          "blob-leaf"
+        ],
+        "native_protection_coverage": false
+      },
+      "native_scope": "Exactly two independently attested outer generations; nested fixture ownership is separate."
+    },
+    "failed_R2": {
+      "acceptance_complete": false,
+      "result_sha256": "853885ebe8f1d65b20525d24419cf2db250489da34587dab9cc6376b384489b8",
+      "actual_test_passes": 1108,
+      "actual_test_skips": 5,
+      "native_exit": 0,
+      "reason": "Old two-row availability policy refused three new native skips; copied diagnostic regrade is not a fresh actual pass."
+    },
+    "selfcheck": {
+      "phases": 29,
+      "failures": 0,
+      "module_pass": 68,
+      "pipeline_pass": 1,
+      "module_skip": 18,
+      "discovered_modules": 86,
+      "configured_loaded": 7,
+      "configured_unloaded": 5,
+      "required_loaded": 5,
+      "model_attestation": "idle; no real model directory",
+      "result_sha256": "e264b4ab33acb9663f033901fba22662e04e3a1dbccda5604a1aa6097b6cae09",
+      "root_review_sha256": "2dcf5768e568382510b106cd2ab92f26b04518c94a865db52e308d9b39ed3343"
+    },
+    "raw_scanner30_scope": {
+      "producer": "Independent process-creation telemetry ScannerHost",
+      "command_case": "raw-scanner",
+      "evidence_scope": [
+        "authenticated heartbeats",
+        "process-creation events",
+        "drop counters",
+        "owned retirement"
+      ],
+      "file_scan_request_evidence": false,
+      "file_malware_verdict_evidence": false,
+      "file_scanner_efficacy_claimed": false,
+      "separate_SecurityScanCenter_scan_path": "Future gap review only; no positive file-scan workload is claimed by this checkpoint."
+    },
+    "scope": {
+      "source_entries": 1879,
+      "python_entries": 1166,
+      "reviewed_paths": 10,
+      "code_test_paths": 2,
+      "existing_documentation_paths": 8,
+      "added_test_paths": 1,
+      "new_documents": 0,
+      "final_source_proof": "REQUIRED_AFTER_FINAL_DOCUMENT_REVIEW"
+    },
+    "preserved_unknowns": [
+      "SEC-20 parser normalization",
+      "HOST-03 updater custody",
+      "HOST-04 requested 2 GiB capacity buffer not established",
+      "Historical reader utility retirement and competing diagnostic load",
+      "Import-cache/executed-byte limits",
+      "Threat/false-positive/actor and clean-host verdicts remain unknown",
+      "Historical heartbeat delay cause remains unknown"
+    ],
+    "current_CI_credit": false,
+    "raw_host_capture_published": false,
+    "alert_or_baseline_mutation_authority": false,
+    "observations": {
+      "model_worker": {
+        "synthetic_fixture_only": true,
+        "seconds": 30,
+        "read_bytes": 117,
+        "verified_files": 2,
+        "ordered_records": 4,
+        "snapshots": 120,
+        "events": 1,
+        "recorded_errors": 0,
+        "audit_denials": 0,
+        "original_worker_retired": true,
+        "outer_generations_retired": 2,
+        "blocking_IO_cancellation_proved": false,
+        "real_enrollment_key_provider_GUI_efficacy_or_speed_proved": false,
+        "result_sha256": "a2ef3dce205feed285aafaf5bc8d22351433acf7b2082c8e1d2aeba0bad0061e",
+        "root_review_sha256": "9d37bbc4894f18c4c94e4356704d2a9adaadff00efcd6d41751df6f31a3445e8"
+      },
+      "spywareguard": {
+        "seconds": 30.172,
+        "events": 3,
+        "event_severities": {
+          "LOW": 2,
+          "MEDIUM": 1
+        },
+        "retained_gap_strings": 2,
+        "recorded_errors": 0,
+        "recorded_drops": 0,
+        "pending_threads": 0,
+        "outer_generations_and_separate_core_retired": true,
+        "result_sha256": "9988db1778e29b5dc2a26bf68a72bdbee6e3b6be96b29d8a8c48275b9515ca1d"
+      },
+      "process_telemetry_ScannerHost": {
+        "seconds": 30.047,
+        "scanner_heartbeats": 31,
+        "retained_gap_strings": 0,
+        "recorded_errors": 0,
+        "recorded_drops": 0,
+        "pending_threads": 0,
+        "outer_generations_and_separate_core_retired": true,
+        "file_scan_request_or_malware_verdict_proved": false,
+        "result_sha256": "70e0df08af592048cacd64abc13e509b922625e65edbb40c6b72b311b5413939"
+      },
+      "serial_root_review_sha256": "00ec03f8df16d1de989c79e55b689b973c9c0b17f41cb2cf74e6410f838f8f03",
+      "combined15": {
+        "seconds": 600.625,
+        "heartbeats": 1723,
+        "events": 360,
+        "retained_interval_gap_strings": 18,
+        "gap_modules": 10,
+        "recorded_errors": 0,
+        "recorded_console_capture_export_drops": 0,
+        "pending_threads": 0,
+        "clean_shutdown": true,
+        "outer_generations_and_separate_core_retired": true,
+        "old_19_gaps_and_heartbeat_cause_resolved": false,
+        "helper_complete_CPU_or_speed_proved": false,
+        "result_sha256": "ccb5867c933b8f991fdfc0e17198024c28259e4c43885209c1c8e5dcad84e010",
+        "root_review_sha256": "0848d8169bd8aecbeac33a5a9555ba2963382068c43b6030eb9d03f194025f33"
+      },
+      "selected_combined_case_map": {
+        "records": 371,
+        "event_records": 360,
+        "coverage_records": 11,
+        "groups": 93,
+        "all_needs_review": true,
+        "parse_omissions": 0,
+        "overflow": 0,
+        "identity_conflicts": 0,
+        "processing_complete": true,
+        "independent_continuity_verified": false,
+        "automatic_response": false,
+        "original_dispositions_changed": false,
+        "map_sha256": "77966b4a52dd05e2c34aafd06943347f1232c7de1d2c2673d6fd6e0129024d24",
+        "owned_result_sha256": "5ac5ff6041e721c1ad152958d84315137e7260fb71f765bbb65df1b7e15cfa72",
+        "root_review_sha256": "1a484855bc3637c3da361d5f4506734e92e6f5ea4722f541b465e6e74ec09e42",
+        "scope": "Only the selected combined capture; separate serial/model receipts are not this map, and this does not cover every host alert."
+      }
+    },
+    "release_completion": {
+      "status": "SEPARATE_MANDATORY_FRESH_PROOFS",
+      "offline": "Requires final-source offline receipt for the exact ten-path scope; this documentation does not attest completion.",
+      "publication": "Requires the unchanged canonical guarded publisher and its separate completed receipt; this documentation does not attest commit, publication or CI completion."
+    }
+  }
 }

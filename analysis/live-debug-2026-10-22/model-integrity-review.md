@@ -1,4 +1,139 @@
-# Model-integrity reader maintenance
+# Model-integrity maintenance
+
+## Current original-path custody — v1.14 maintenance
+
+This checkpoint checks a supplied model-root leaf and each original in-root path
+component before canonical resolution. It refuses original links/reparse points,
+lexical escape, parent components below the supplied root and non-directory
+intermediates; resolved confinement and root/file identity snapshots follow.
+Trusted ambient ancestors above the established root retain their assumptions.
+SHA/HMAC, baseline/key custody, size caps, reader size+1, cancellation, cadence
+and response rules are unchanged.
+
+The two source paths are the existing model-integrity module and one new
+lexical-custody test. This is metadata hardening, not a retained directory lease,
+atomic resolve/open, hardlink policy, race/kernel defense or proof of a previous
+cryptographic bypass. SEC-19's OPEN issue object remains an exact historical
+snapshot; this section tracks the changed source separately. SEC-20 parser
+normalization, HOST-03/HOST-04 and earlier unknowns remain unresolved.
+
+| Fresh evidence | Scoped result |
+| --- | --- |
+| Full gate | 40 suites / 556 functions / 1113 cases: 1108 passed, zero failures/errors, five exact availability skips; coverage incomplete |
+| Lexical subset | 49 passed / three native symlink privilege cases unavailable; no native alias-prevention proof |
+| Selfcheck | 29 phases / zero failures; 68 module PASS plus pipeline PASS, 18 module SKIP; five required origins loaded |
+| Synthetic model worker | 30 s; one 117-byte read, two verified files, four ordered records, 120 snapshots and one event; zero errors/audit denials |
+| SpywareGuard | 30.172 s; three events, two retained coverage gap strings; zero errors/drops/pending threads |
+| Independent process-creation telemetry ScannerHost | 30.047 s; 31 scanner heartbeats, no gap strings; zero errors/drops/pending threads |
+| Default 15 modules | 600.625 s; 1723 heartbeats, 360 events, 18 retained interval gap strings across ten modules; zero errors/drops/pending threads |
+| Selected combined-capture case map | 371 records → 93 needs-review groups; zero parse omissions/overflow/conflicts; continuity unverified and no new authority |
+| Final-source offline checks | Separate mandatory fresh receipt for the final source and exact ten-path scope; no completion attested by this reference |
+| Guarded commit/publication | Separate mandatory receipt from the unchanged canonical publisher; no commit, publication or CI completion attested here |
+
+The synthetic model case ran the actual unchanged worker against a new private
+two-file tree, synthetic authenticated baseline and fixture-only key. One reader
+call/return and one verification call/return form the four ordered records; all
+four required observer source origins loaded. The original worker retired after
+normal post-pass sleep cancellation. Separate native proof covers exactly two
+outer generations and closed handles. This proves no real operator enrollment,
+production key custody, model/provider efficacy, GUI behavior, cancellation during
+blocking filesystem I/O or speed improvement. Historical harness controls retain
+their own receipts and are not added to the 1113-case gate.
+
+The two serial telemetry cases retired their exactly admitted outer generations
+and separately witnessed cores with genuine zero exits. SpywareGuard's three
+events were two LOW and one MEDIUM; its two gap strings remain. The raw-scanner
+case observes independent process-creation telemetry from ScannerHost: authenticated
+heartbeats, process events, drop counters and owned retirement. It submits no
+file-scan request and proves no file-malware verdict or file-scanner efficacy.
+A separate SecurityScanCenter.scan_path workload remains future gap review.
+
+The combined ordinary-user profile covers only its 15 admitted modules. Its
+360 events were one CRITICAL, two HIGH, 340 INFO, 14 LOW and three MEDIUM.
+Eighteen retained interval gap strings span ten modules; a collector finishing
+healthy does not erase its earlier gap. The original two outer generations and
+separately admitted core retired with genuine zero exits and closed retained
+handles. Worker query-handle closure is not worker-retirement proof or complete
+helper CPU attribution. No GUI, all-86-module, overnight, host-clean, threat,
+false-positive, actor or field-efficacy verdict follows. The earlier reader
+checkpoint's 19 gaps, global heartbeat delay and unknown disk/API/descheduling
+cause remain historical evidence; this run does not resolve that cause or
+establish a speed improvement.
+
+The unchanged offline grouping tool processed only the selected combined capture:
+371 records (360 events plus 11 coverage records) became 93 case groups. Processing
+completed without parse omissions, overflow or identity conflicts; every group
+remains needs-review. Independent evidence continuity is unverified. Original
+alert dispositions remain unchanged, with no automatic response, baseline
+replacement or trust authority. Separate synthetic-model and serial captures
+have their own receipts; this map does not represent every host alert.
+
+The three new native gaps are exact Windows call-phase “native symlink privilege
+unavailable (winerror=1314)” cases for root, manifest-directory and blob-leaf.
+Existing distinct 8.3 filename and quarantine-symlink availability gaps remain.
+Other errors/reasons, setup skips for the new three, changed nodes and non-Windows
+evidence refuse. Acceptance retains coverage=false. All 75 privacy and seven
+named nested regressions are included subsets of 1113; the independent complete
+per-function counter agrees and grants no additional protection coverage.
+
+Preserve failed R2 acceptance: actual tests recorded 1108 passes/five skips and
+native zero, but its old two-row policy refused three new native gaps. The new
+policy and fresh R3 run do not overwrite that failure. Diagnostic regrading is
+not a replacement run. Outer proof covers exactly two generations; named nested
+fixtures retain their separate in-test ownership scope. No all-launched-generation
+or import-cache immunity is implied.
+
+The selfcheck discovered 86 modules, with seven configured products loaded and
+five unloaded; all five required origins loaded. Active model attestation stayed
+idle without a real model directory. This is not all 86 modules running together
+or real model/provider/enrollment proof. No alerts, baselines or authority are
+cleared to manufacture a healthy dashboard.
+
+Current sanitized receipt references:
+
+| Evidence | SHA-256 |
+| --- | --- |
+| Tested pre-documentation source map | 157fb24374892f7467f379e46f9f595ba15630e7dec5e0df19722fcbc35dade0 |
+| Failed R2 acceptance, retained | 853885ebe8f1d65b20525d24419cf2db250489da34587dab9cc6376b384489b8 |
+| Fresh accepted R3 gate | aa8e6a755ac28674bf824e650c4dad763f748c4ce8bd1262be6212a33afb2c0e |
+| R3 gate root review | 10a44da0cd00aa981f545f0595f0aaa615d5a04b73d0d7887b7ae45b50892dcd |
+| Independent full-function multiplicity counter | 1c593f5d2124f0005f29facf0709942feb2355939ecfadb7f42152e38f80e490 |
+| Exact 29-phase selfcheck | e264b4ab33acb9663f033901fba22662e04e3a1dbccda5604a1aa6097b6cae09 |
+| Selfcheck root review | 2dcf5768e568382510b106cd2ab92f26b04518c94a865db52e308d9b39ed3343 |
+| Synthetic model-worker result | a2ef3dce205feed285aafaf5bc8d22351433acf7b2082c8e1d2aeba0bad0061e |
+| Model-worker root review | 9d37bbc4894f18c4c94e4356704d2a9adaadff00efcd6d41751df6f31a3445e8 |
+| SpywareGuard serial result | 9988db1778e29b5dc2a26bf68a72bdbee6e3b6be96b29d8a8c48275b9515ca1d |
+| Process-telemetry ScannerHost result | 70e0df08af592048cacd64abc13e509b922625e65edbb40c6b72b311b5413939 |
+| Serial observations root review | 00ec03f8df16d1de989c79e55b689b973c9c0b17f41cb2cf74e6410f838f8f03 |
+| Combined 15-module result | ccb5867c933b8f991fdfc0e17198024c28259e4c43885209c1c8e5dcad84e010 |
+| Combined root review | 0848d8169bd8aecbeac33a5a9555ba2963382068c43b6030eb9d03f194025f33 |
+| Selected capture case map | 77966b4a52dd05e2c34aafd06943347f1232c7de1d2c2673d6fd6e0129024d24 |
+| Case-map owned result | 5ac5ff6041e721c1ad152958d84315137e7260fb71f765bbb65df1b7e15cfa72 |
+| Case-map root review | 1a484855bc3637c3da361d5f4506734e92e6f5ea4722f541b465e6e74ec09e42 |
+
+All 186 prior raw issue objects, order/status and old review/history/
+current_validation values remain byte-identical; current_lexical_custody_review
+records current scope separately. The final scope is 1879 source entries /
+1166 Python entries, ten reviewed paths (two code/test plus eight existing docs),
+one added test and no new document. The tested source map predates the final
+documentation edits; all Python pins must remain unchanged. Final-source offline
+validation and the unchanged canonical guarded publisher require separate fresh
+receipts for that final scope. These observations do not attest offline, commit,
+publication or CI completion and do not replace release gates with a claim here.
+
+Published 79db CI/Security belongs only to the earlier reader revision: 12 CI
+jobs, three Security jobs and four Python jobs each reporting 8415 passes /
+22 skips. It gives no CI credit to this changed source. Historical cf668 counts
+and reader observations remain below. Product remains 1.14.0 maintenance;
+broader v1.15 is incomplete.
+
+
+## Historical model-manifest reader checkpoint — published 79db
+
+All following reader-specific findings, measurements, receipts and completion
+wording describe that earlier snapshot. Current observations have separate
+receipts above; final-source offline/publication gates and historical issue
+statuses retain their own independent evidence boundaries.
 
 This v1.14.0 maintenance change reduces a manifest read request to the already
 admitted file size plus one byte. The extra byte still detects growth; file
