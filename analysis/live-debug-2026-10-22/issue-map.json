@@ -1400,6 +1400,22 @@
       "raw_observation_root_review_sha256": "f20e84e2405178e10b93327b1b985258d615d3fa087891e971d3350955d30a28",
       "advisory_map_sha256": "2c332e6fbca0542bc52c28690aa9f25c8ef8e513cf23f482996d82193b21802c",
       "advisory_map_root_review_sha256": "42a0bbc7bc9d1db3fc14c592f5548446ad66d4d92a3b5d37349e272a8dc466d0"
+    },
+    {
+      "id": "SCN-06",
+      "status": "applied-scoped-regressions-validated-passive-observed-with-coverage-records",
+      "cause_or_observation": "ipc_ring.self_test attempted outer directory removal while writer/reader mapping and file references remained open; no field residue or host leak was measured.",
+      "result_and_limits": "Use nested existing RingWriter/RingReader contexts before unchanged outer cleanup; retain pressure recovery, explicit synthetic key, schema/layout/assertions and frame/drop behavior. Separate staged original zero pass/four fail/native exit 1 versus candidate four pass/native exit 0, zero errors/skips. Fresh 42-suite/568-function/1137-case gate accepted 1132 passes, zero failures/errors and five exact native availability gaps; all four lifetime and 20 pressure cases passed as subsets. Fresh 29-phase selfcheck passed but retained 18 module skips and naturally unloaded IPC, with no forced import/self_test execution credit. A fresh 30.047-second process-telemetry observation recorded 31 heartbeats/six raw sensor frames and zero matrix interval gaps/errors/drops/pending; selected capture retains 11 coverage records/zero EventBus events. The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts. Processing is complete only for that input; continuity remains unverified, original statuses stay intact and no response authority is granted. No historical host-residue/leak, internal post-acquisition constructor, GUI/clean-host/efficacy/speed or complete-alert-visibility proof. Final offline/commit/publication/CI need separate fresh receipts.",
+      "staged_comparison_sha256": "22f27b27ede7a88b35e66fe6162bd997718b089f1c1491bec21dd78dd99382ef",
+      "staged_root_review_sha256": "737f30f9360de175d474638ab44423b553861ecf34d20027ebb102d81b67d169",
+      "fresh_validation_receipt_sha256": "39231e59a55152cbf3eba42021d442418cb4909ed66c80672b160f9ea0ea225c",
+      "fresh_observation_receipt_sha256": "f1cc29b8924de4f8ce446d0be32698c5d4ee5d727e28345455ab68a0ab0a90cf",
+      "final_completion_claimed": false,
+      "broader_1_15_complete": false,
+      "fresh_selfcheck_receipt_sha256": "9b3553d4d07f996540c979b6ea293742e13bb3c3ba952eb6a2fac527210f0332",
+      "fresh_case_map_receipt_sha256": "7b3649b607a23a7a986356f51f55da51347422a7fe03b1e26b4179643bb72a27",
+      "fresh_case_map_summary_sha256": "a8af09afd5594bede6ae3f2f1af46710862bdfbfd07ace606767586d756532c1",
+      "fresh_case_map_root_review_sha256": "7889a35d370dafc4eae9d062a15eadbb661386a9c68fa2963160672c38e17778"
     }
   ],
   "preserved_uncertainty": [
@@ -1922,5 +1938,174 @@
     "alert_baseline_or_trust_mutation_authority": false,
     "review_date": "2026-10-24",
     "documentation_results_bound": true
+  },
+  "current_ipc_selftest_lifetime_review": {
+    "schema": 1,
+    "status": "FRESH_SCOPED_REGRESSIONS_AND_PROCESS_TELEMETRY_ACCEPTED_WITH_COVERAGE_LIMITS",
+    "product_version": "1.14.0 maintenance",
+    "broader_1_15_complete": false,
+    "scope": {
+      "source_entries": 1881,
+      "python_entries": 1168,
+      "reviewed_paths": 8,
+      "code_test_paths": 2,
+      "existing_documentation_paths": 6,
+      "added_tests": 1,
+      "new_documents": 0,
+      "pre_doc_context_sha256": "fadd88462a2e6f0705b7b20b46617eb43bd7e240fb726716fc5fc5f2e1ac319a",
+      "final_source_map_sha256": null
+    },
+    "code_pins": {
+      "src/angerona/resilience/ipc_ring.py": "3e607bba92cbdeecc524476366eb814065b253843c8d988acadabd431477e134",
+      "tests/test_ipc_ring_selftest_lifetime.py": "a8391feb7076f04d7ae7a3bbaf6108db3635a0b935101daf80c764bee99a1dc6"
+    },
+    "preserved_backpressure_test_sha256": "6336eddad97aa2958bf7d120915358da7e86d272918d66aa9463bb478adcf197",
+    "staged_comparison": {
+      "result_sha256": "22f27b27ede7a88b35e66fe6162bd997718b089f1c1491bec21dd78dd99382ef",
+      "root_review_sha256": "737f30f9360de175d474638ab44423b553861ecf34d20027ebb102d81b67d169",
+      "baseline": {
+        "cases": 4,
+        "passed": 0,
+        "failed": 4,
+        "native_exit": 1
+      },
+      "candidate": {
+        "cases": 4,
+        "passed": 4,
+        "failed": 0,
+        "native_exit": 0
+      },
+      "both_errors": 0,
+      "both_skips": 0,
+      "real_mapping_file_closed_flags_checked_before_test_fallback": true,
+      "early_reader_rejection_before_allocation": true,
+      "internal_post_acquisition_constructor_cleanup_proved": false,
+      "deployed_source_or_full_cohort_proof": false,
+      "field_residue_host_leak_or_speed_proved": false
+    },
+    "fresh_evidence": {
+      "focused_42_suite_gate": {
+        "status": "ACCEPTED_WITH_FIVE_EXACT_NATIVE_AVAILABILITY_GAPS",
+        "actual_suites": 42,
+        "actual_functions": 568,
+        "actual_cases": 1137,
+        "passed": 1132,
+        "failed": 0,
+        "errors": 0,
+        "platform_skipped": 5,
+        "coverage_complete": false,
+        "lifetime_cases_passed": 4,
+        "pressure_cases_passed": 20,
+        "privacy75_and_nested7_are_included_subsets": true,
+        "configured_origins_loaded": 13,
+        "IPC_loaded": true,
+        "origin_names_not_universal_executed_byte_proof": true,
+        "receipt_sha256": "39231e59a55152cbf3eba42021d442418cb4909ed66c80672b160f9ea0ea225c",
+        "root_review_sha256": "f8eaf67fad43534cb8bb95dad9f94021896d7b6c81c32312c89cdb6ee817669a"
+      },
+      "selfcheck_29_phase": {
+        "status": "ACCEPTED_WITH_OPTIONAL_ORIGIN_AND_MODULE_GAPS",
+        "phases": 29,
+        "failed": 0,
+        "module_PASS": 68,
+        "pipeline_PASS": 1,
+        "module_SKIP": 18,
+        "configured_origins": 13,
+        "required_origins_loaded": 5,
+        "origins_loaded": 7,
+        "origins_unloaded": 6,
+        "IPC_naturally_unloaded": true,
+        "forced_import": false,
+        "changed_IPC_self_test_execution_credit": false,
+        "receipt_sha256": "9b3553d4d07f996540c979b6ea293742e13bb3c3ba952eb6a2fac527210f0332",
+        "root_review_sha256": "a1a930675cf09caa60cc16b5d43dcc29bc96f180ff7714a6e39079578eb7939c"
+      },
+      "process_creation_ScannerHost_30_second_observation": {
+        "status": "ACCEPTED_SCOPED_PROCESS_TELEMETRY_OBSERVATION",
+        "requested_seconds": 30,
+        "actual_seconds": 30.04700000002049,
+        "scanner_heartbeats": 31,
+        "raw_sensor_frames": 6,
+        "matrix_interval_gaps": 0,
+        "errors": 0,
+        "capture_export_console_drops": 0,
+        "pending_threads": 0,
+        "capture_sha256": "c3b1cff15a526daae155a48e8a23d177ae7e3c1c8cc2b12430446498bc05444e",
+        "capture_bytes": 2753,
+        "capture_coverage_records": 11,
+        "capture_EventBus_event_records": 0,
+        "owned_outer_two_and_separate_core_retired": true,
+        "all_helpers_or_descendants_proved": false,
+        "file_scan_malware_verdict_or_self_test_credit": false,
+        "passive_85_percent_pressure_trigger_proved": false,
+        "receipt_sha256": "f1cc29b8924de4f8ce446d0be32698c5d4ee5d727e28345455ab68a0ab0a90cf",
+        "root_review_sha256": "85ca1282d3d58fdda45954261b7a9d41cdad042e27bd3d3a7c45f8abf847beba"
+      },
+      "new_selected_capture_advisory_map": {
+        "status": "ACCEPTED_ADVISORY_PROCESSING_ONLY",
+        "records": 11,
+        "coverage_records": 11,
+        "event_records": 0,
+        "case_groups": 11,
+        "all_needs_review": true,
+        "parse_omissions": 0,
+        "overflow": 0,
+        "identity_conflicts": 0,
+        "processing_complete": true,
+        "independent_evidence_continuity_verified": false,
+        "automatic_response": false,
+        "original_statuses_retained": true,
+        "physical_only_utility_retired_and_closed": true,
+        "independent_two_generation_or_descendant_proof": false,
+        "map_sha256": "a8af09afd5594bede6ae3f2f1af46710862bdfbfd07ace606767586d756532c1",
+        "receipt_sha256": "7b3649b607a23a7a986356f51f55da51347422a7fe03b1e26b4179643bb72a27",
+        "root_review_sha256": "7889a35d370dafc4eae9d062a15eadbb661386a9c68fa2963160672c38e17778"
+      },
+      "reviewed_documentation_activation": {
+        "status": "REQUIRES_SEPARATE_FRESH_ROOT_RECEIPT",
+        "receipt_sha256": null,
+        "completion_claimed": false
+      },
+      "final_source_offline_checks": {
+        "status": "REQUIRES_SEPARATE_FRESH_ROOT_RECEIPT",
+        "receipt_sha256": null,
+        "completion_claimed": false
+      },
+      "reviewed_commit": {
+        "status": "REQUIRES_SEPARATE_FRESH_ROOT_RECEIPT",
+        "receipt_sha256": null,
+        "completion_claimed": false
+      },
+      "canonical_guarded_publication": {
+        "status": "REQUIRES_SEPARATE_FRESH_ROOT_RECEIPT",
+        "receipt_sha256": null,
+        "completion_claimed": false
+      },
+      "current_CI": {
+        "status": "REQUIRES_SEPARATE_FRESH_ROOT_RECEIPT",
+        "receipt_sha256": null,
+        "completion_claimed": false
+      }
+    },
+    "preservation": {
+      "old_raw_issue_objects": 187,
+      "old_order_and_status_preserved": true,
+      "old_root_value_bytes_preserved_except_appending_issues": true,
+      "new_total_issue_records": 188,
+      "only_new_issue": "SCN-06",
+      "only_new_root_field": "current_ipc_selftest_lifetime_review"
+    },
+    "open_boundaries_preserved": [
+      "SEC-20",
+      "HOST-03",
+      "HOST-04",
+      "Historical native/GUI/heartbeat causes",
+      "Unverified alert continuity, reader retirement, competing-load and import-cache/helper limits"
+    ],
+    "separate_key_audit_deferred": true,
+    "raw_host_capture_published": false,
+    "alert_baseline_trust_or_response_authority": false,
+    "offline_commit_publication_or_CI_completion_claimed": false,
+    "review_date": "2026-10-24"
   }
 }

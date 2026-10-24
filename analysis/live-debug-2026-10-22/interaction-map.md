@@ -1,6 +1,29 @@
 # Component dependencies and interference review
 
-## Current SCN-05 ring-pressure interaction
+## Current SCN-06 self-test resource ordering
+
+| Handoff | Applied change or retained contract | Scoped evidence and limits |
+| --- | --- | --- |
+| Writer → reader → body → context exits → outer rmtree | Close existing real mapping/file pairs before removal | Staged original zero pass/four fail/native exit 1 versus candidate four pass/native exit 0; zero errors/skips |
+| Genuine early reader rejection or deliberate post-I/O body failure → cleanup | Already-owned resources close before removal | Reader rejection precedes its allocation; no constructor-internal post-acquisition cleanup proof |
+| Applied IPC → fresh focused gate | Preserve pressure getter/key/layout/frame/drop assertions | 42 suites / 568 functions / 1137 cases; 1132 pass/five exact unavailable native gaps; all four lifetime and 20 pressure cases passed, subsets not extra totals |
+| Fresh selfcheck → natural origins | 29 phases / zero failures; 68 module PASS plus pipeline PASS, 18 module SKIP | Required five loaded; seven loaded / six unloaded of 13; IPC naturally unloaded, no forced import or self_test credit |
+| Independent process-creation ScannerHost → interval counters → native retirement | 30.047 s / 31 heartbeats / six raw sensor frames; zero matrix errors/gaps/drops/pending | Scoped outer two+core retirement; no assumed 85% trigger, self_test, file scan/verdict, GUI or speed proof |
+| Selected coverage capture → advisory map | Retain 11 coverage records/zero EventBus events; raw frames are not alert records | The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts. Processing is complete only for that input; continuity remains unverified, original statuses stay intact and no response authority is granted. |
+
+Exact scope: eight paths = two code/test plus six existing docs, one new test, no new
+doc. Tested pre-doc descriptor fadd8846 has 1881 source / 1168 Python entries. Preserve
+all 187 old RAW issue objects and prior root values/order/status; append only
+SCN-06 as 188 and its scoped current review. Existing pressure test 6336 remains.
+No complete alert visibility/continuity, host verdict, field residue, internal
+constructor or all-helper/descendant/import-byte assurance follows. Key audits
+remain deferred. The [current evidence reference](README.md) retains exact
+receipts and open boundaries. Final-source offline checks, reviewed commit,
+unchanged canonical guarded publication/assets and current CI require separate
+fresh receipts; none is preclaimed here. Product v1.14.0 maintenance; broader
+v1.15 incomplete.
+
+## Historical SCN-05 ring-pressure interaction
 
 | Handoff | Current behavior | Scoped evidence and limits |
 | --- | --- | --- |

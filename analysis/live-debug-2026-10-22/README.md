@@ -1,6 +1,69 @@
 # Live debugging and screenshot issue review
 
-## Current SCN-05 telemetry backpressure maintenance
+## Current SCN-06 ring self-test lifetime — scoped validation accepted
+
+self_test now uses its existing writer/reader context managers before the
+unchanged outer directory cleanup. The pressure getter, explicit synthetic key,
+layout/frame/drop contract, assertions and result contents are unchanged.
+
+The separate staged comparison retained the original zero passes / four failures
+(native exit 1) and candidate four passes (native exit 0), with zero errors/skips.
+Three functions check four cases: normal return, genuine reader rejection before
+its file/map allocation, and deliberate exceptions after genuine third-write or
+first-read work. Real closed flags are sampled before independent fixture
+cleanup. This is not internal post-acquisition constructor cleanup or evidence
+of historical persistent field residue, host leaks, GUI behavior or speed.
+
+Fresh active-code validation accepted **42 suites / 568 functions / 1137 cases,
+1132 passed, zero failures/errors and five exact native availability gaps**.
+All four lifetime and 20 pressure cases passed. Privacy 75 and seven named nested
+cases are included subsets. All 13 configured origins loaded, including IPC.
+Acceptance is complete; unavailable native coverage and import-byte limits remain.
+
+Fresh default selfcheck accepted **29 phases / zero failures**: 68 module PASS
+plus pipeline PASS, with 18 module SKIP. Five required origins loaded; configured
+products split seven loaded / six unloaded of 13. IPC was naturally unloaded,
+with no forced import and no changed-IPC self_test execution credit.
+
+The independent process-creation telemetry ScannerHost observation completed
+**30.047 s**, recording 31 heartbeats and six raw sensor frames. Its matrix
+reported zero interval gaps/errors/drops/pending threads. The original outer
+two generations and separately retained core retired with scoped native proof;
+this does not establish retirement of every helper/descendant or all imported bytes.
+
+The selected **2753-byte capture contains 11 advisory coverage records and zero
+EventBus event records**, independently of zero matrix interval gaps. Six raw
+sensor frames are not six alert events. This selected input does not establish
+complete alert visibility or absence of threats. The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts. Processing is complete only for that input; continuity remains unverified, original statuses stay intact and no response authority is granted.
+
+| Evidence | Result SHA-256 | Root review SHA-256 |
+| --- | --- | --- |
+| Separate staged comparison | 22f27b27ede7a88b35e66fe6162bd997718b089f1c1491bec21dd78dd99382ef | 737f30f9360de175d474638ab44423b553861ecf34d20027ebb102d81b67d169 |
+| Fresh 42-suite gate | 39231e59a55152cbf3eba42021d442418cb4909ed66c80672b160f9ea0ea225c | f8eaf67fad43534cb8bb95dad9f94021896d7b6c81c32312c89cdb6ee817669a |
+| Fresh default selfcheck | 9b3553d4d07f996540c979b6ea293742e13bb3c3ba952eb6a2fac527210f0332 | a1a930675cf09caa60cc16b5d43dcc29bc96f180ff7714a6e39079578eb7939c |
+| Process-telemetry observation | f1cc29b8924de4f8ce446d0be32698c5d4ee5d727e28345455ab68a0ab0a90cf | 85ca1282d3d58fdda45954261b7a9d41cdad042e27bd3d3a7c45f8abf847beba |
+| New selected advisory map | a8af09afd5594bede6ae3f2f1af46710862bdfbfd07ace606767586d756532c1 | 7889a35d370dafc4eae9d062a15eadbb661386a9c68fa2963160672c38e17778 |
+
+The passive observation does not call self_test, need not reach 85% pressure,
+submit a file scan or deliver a malware verdict. No all-86-module, GUI, clean-host,
+actor/false-positive, field-efficacy or product-speed inference follows.
+Preserve HOST-03/HOST-04, SEC-20 and historical causes, reader/competing-load,
+continuity/import-cache/helper limits. The separate key audit remains deferred.
+
+Current source/test SHA-256 values are IPC 3e607bba and lifetime test a8391feb; the
+unchanged pressure test remains 6336edda. The tested pre-doc map fadd8846 has 1881
+source / 1168 Python entries. Exact final review scope is eight paths: two code/test
+plus six existing docs, one added test, no new doc. All 187 prior RAW issue objects,
+order/status and old root/history/review/current_validation values remain exact;
+append SCN-06 as issue 188 and current_ipc_selftest_lifetime_review only.
+
+Final-source offline checks after reviewed documentation activation, reviewed
+commit, unchanged canonical guarded publication/README-asset proof and current
+CI require their own separate fresh receipts. This reference preclaims none of
+those stages or its own final-source hash. Product remains v1.14.0 maintenance;
+broader v1.15 is incomplete.
+
+## Historical SCN-05 telemetry backpressure maintenance
 
 The producer now samples live ring occupancy before deciding to shed telemetry.
 After the consumer drains, forwarding can resume without an extra write to

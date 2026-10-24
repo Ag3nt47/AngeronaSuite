@@ -583,29 +583,29 @@ def self_test() -> tuple[bool, str]:
         p = d / "t.ring"
         sc, ss = 8, 64
         key = b"r" * 32
-        w = RingWriter(p, slot_count=sc, slot_size=ss, key=key)
-        r = RingReader(p, slot_count=sc, slot_size=ss, key=key)
+        with RingWriter(p, slot_count=sc, slot_size=ss, key=key) as w:
+            with RingReader(p, slot_count=sc, slot_size=ss, key=key) as r:
 
-        for i in range(5):
-            assert w.write(f"evt-{i}".encode(), sensor_id=7)
-        batch = r.read_batch()
-        rt_ok = ([b["payload"] for b in batch] == [f"evt-{i}".encode() for i in range(5)]
-                 and all(b["sensor_id"] == 7 for b in batch))
+                for i in range(5):
+                    assert w.write(f"evt-{i}".encode(), sensor_id=7)
+                batch = r.read_batch()
+                rt_ok = ([b["payload"] for b in batch] == [f"evt-{i}".encode() for i in range(5)]
+                         and all(b["sensor_id"] == 7 for b in batch))
 
-        # Overrun: write 20 into an 8-slot ring; oldest must be dropped.
-        for i in range(20):
-            w.write(f"x-{i}".encode())
-        drops_before = w.drops
-        batch2 = r.read_batch()
-        overrun_ok = drops_before > 0 and len(batch2) <= sc and batch2 and batch2[0]["missed"] >= 0
+                # Overrun: write 20 into an 8-slot ring; oldest must be dropped.
+                for i in range(20):
+                    w.write(f"x-{i}".encode())
+                drops_before = w.drops
+                batch2 = r.read_batch()
+                overrun_ok = drops_before > 0 and len(batch2) <= sc and batch2 and batch2[0]["missed"] >= 0
 
-        # Too-large payload is rejected, not stored.
-        big_ok = (w.write(b"z" * (ss)) is False)
+                # Too-large payload is rejected, not stored.
+                big_ok = (w.write(b"z" * (ss)) is False)
 
-        ok = rt_ok and overrun_ok and big_ok
-        return ok, ("ring round-trip + overwrite-oldest/drop-accounting + oversize "
-                    "rejection verified" if ok else
-                    f"failed: rt={rt_ok} overrun={overrun_ok} big={big_ok}")
+                ok = rt_ok and overrun_ok and big_ok
+                return ok, ("ring round-trip + overwrite-oldest/drop-accounting + oversize "
+                            "rejection verified" if ok else
+                            f"failed: rt={rt_ok} overrun={overrun_ok} big={big_ok}")
     finally:
         import shutil
         shutil.rmtree(d, ignore_errors=True)

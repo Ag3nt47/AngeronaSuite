@@ -32,7 +32,18 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-**Current v1.14 maintenance — SCN-05 telemetry recovery:** ScannerHost rechecks
+**Current v1.14 maintenance — SCN-06 ring self-test cleanup:** The ring
+self-test closes its writer and reader before removing its temporary directory.
+A fresh 42-suite gate passed 1132 of 1137 cases with five exact native
+availability gaps, and all 29 selfcheck phases passed. A separate 30.047 s
+process-telemetry observation retained 11 coverage notes and zero EventBus
+event records in its selected capture.
+[Scoped evidence and remaining limits](analysis/live-debug-2026-10-22/README.md)
+separate real-resource fixtures, passive telemetry and incomplete alert visibility.
+Final-source offline checks and guarded publication require separate receipts;
+product stays v1.14.0 maintenance and broader v1.15 remains incomplete.
+
+**Historical v1.14 maintenance — SCN-05 telemetry recovery:** ScannerHost rechecks
 queue occupancy before shedding events, allowing forwarding to resume after the
 core drains its ring. The 85% policy, authenticated frames and drop history stay
 intact. A fresh 41-suite gate passed 1128 of 1133 cases with five exact native

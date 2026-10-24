@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.14.0 — SCN-06 ring self-test resource cleanup
+
+- Nest the existing writer/reader contexts inside the self-test's outer cleanup
+  so real mappings/files close before directory removal. Preserve the pressure
+  getter, explicit synthetic key, layout, frame/drop semantics and assertions.
+- Actual staged comparison: original zero passes / four failures / native exit 1;
+  candidate four passes / native exit 0, both zero errors/skips. Three functions
+  check normal return, genuine reader rejection before allocation and two body
+  failures after genuine I/O. No internal post-acquisition constructor cleanup
+  or historical field-residue/host-leak conclusion is claimed.
+- Fresh gate: 42 suites / 568 functions / 1137 cases, 1132 passed, zero
+  failures/errors and five exact native availability gaps. All four lifetime
+  and 20 pressure cases passed; privacy 75 and nested seven are included subsets.
+  Selfcheck: 29 phases / zero failures, 68 module PASS plus pipeline PASS and
+  18 module SKIP. IPC was naturally unloaded in selfcheck; no import was forced.
+- Independent process-creation telemetry ScannerHost 30 s completed 30.047 s with
+  31 heartbeats and six raw sensor frames, zero matrix errors/gaps/drops/pending.
+  Its selected capture retains 11 coverage records and zero EventBus event
+  records. The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts. Processing is complete only for that input; continuity remains unverified, original statuses stay intact and no response authority is granted. No file scan, malware verdict, assumed 85%
+  trigger, GUI, clean-host, field-efficacy or speed conclusion follows.
+- Preserve all 187 historical issue objects/root values and append only SCN-06
+  as issue 188 with a separate scoped review. Exact scope is eight paths: two
+  code/test plus six existing docs, one added test and no new doc. Final-source
+  offline checks, reviewed commit, unchanged canonical guarded publication and
+  current CI each require their own fresh receipt; none is preclaimed here.
+  Product v1.14.0 maintenance; broader v1.15 remains incomplete.
+  [Current evidence and open findings](analysis/live-debug-2026-10-22/README.md).
+
 ## 1.14.0 — SCN-05 telemetry backpressure maintenance
 
 - Re-evaluate live occupancy before the producer's shedding decision so a

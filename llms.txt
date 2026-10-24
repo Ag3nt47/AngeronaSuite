@@ -5,7 +5,44 @@ Date: 2026-10-24
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## Current SCN-05 telemetry maintenance — scoped evidence accepted
+## Current SCN-06 ring self-test lifetime — scoped validation accepted
+
+- Product v1.14.0 maintenance; broader v1.15 incomplete. Eight paths = two
+  code/test plus six existing docs, one added lifetime test and no new doc.
+  Tested pre-doc map: 1881 source / 1168 Python, fadd8846. Final-source evidence
+  requires a separate receipt after reviewed docs activation.
+- Existing nested writer/reader contexts close the real mmap/file pairs before
+  outer rmtree. Pressure getter/key/layout/frame/drop/assertion contracts remain.
+  Actual four-case stage: original zero pass/four fail/native exit 1 versus candidate
+  four pass/native exit 0, zero errors/skips. Real closed-state sampling precedes test
+  fallback cleanup; early reader rejection is before allocation. No internal
+  post-acquisition constructor, historical residue/host-leak or speed proof.
+- Fresh 42-suite / 568-function / 1137-case gate: 1132 pass, zero fail/error,
+  five exact native availability gaps. All four lifetime and 20 pressure cases
+  pass; privacy 75/nested seven are included subsets. All 13 configured origins loaded
+  including IPC; names and cached imports are not universal executed-byte proof.
+  Result 39231e59 / root review f8eaf67f; acceptance does not mean complete coverage.
+- Fresh 29-phase selfcheck: zero failures, 68 module PASS plus pipeline PASS,
+  18 module SKIP;
+  required five loaded, configured seven loaded / six unloaded of 13. IPC naturally unloaded;
+  no forced import or self_test execution credit. Result 9b3553d4 / root review a1a93067.
+- Fresh independent process-creation ScannerHost 30 s: 30.047 s / 31 heartbeats / six raw
+  sensor frames, zero matrix errors/gaps/drops/pending. Original outer two plus
+  separately retained core retired under scoped native checks; no all-descendant
+  or cached-import-byte assurance. Result f1cc29b8 / root review 85ca1282. Selected capture
+  retains 11 coverage records/zero EventBus events; six sensor frames are not six
+  alert events or complete alert visibility. The selected 11 coverage records mapped to 11 needs-review groups, with zero parse omissions, overflow or identity conflicts. Processing is complete only for that input; continuity remains unverified, original statuses stay intact and no response authority is granted.
+- No passive self_test/85% pressure exercise, file scan, malware verdict, GUI,
+  all-86-module coverage, clean-host/actor/false-positive/efficacy or speed inference.
+- Preserve all 187 old RAW issues/status/order and old root/history/review/current
+  validation bytes. Append SCN-06 as 188 and current_ipc_selftest_lifetime_review.
+  Keep SEC-20/HOST-03/HOST-04, prior causes, reader/competing-load/import/helper
+  unknowns and all 7 README assets plus Preview/Send. Key audits remain deferred.
+- Final offline, reviewed commit, unchanged canonical guarded publication/assets
+  and current CI need separate fresh root receipts; no historical CI substitution.
+  Scoped proofs: analysis/live-debug-2026-10-22/README.md and interaction-map.md.
+
+## Historical SCN-05 telemetry maintenance — scoped evidence accepted
 
 - Product 1.14.0 maintenance; broader 1.15 incomplete. Exact scope: two code/test
   paths + six existing docs = eight paths, one added test, no new docs. Active
