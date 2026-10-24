@@ -463,6 +463,12 @@ class AISecurityBroker:
         ):
             raise PermissionError("AI tool response was not authorized by this broker")
         with self._execution_lock:
+            # Waiting for this lock can outlive the earlier authority check.
+            if not self.execution_enabled:
+                raise PermissionError("AI tool execution is disabled")
+            stamp = float(self._clock())
+            if not math.isfinite(stamp) or stamp > response.expires_at:
+                raise PermissionError("AI tool authorization is expired or invalid")
             expired = [tag for tag, expires in self._consumed.items() if expires < stamp]
             for tag in expired:
                 self._consumed.pop(tag, None)
@@ -482,6 +488,12 @@ class AISecurityBroker:
             with self._execution_lock:
                 if self._tools.get(response.tool_name) is not tool:
                     raise PermissionError("AI tool registration changed before execution")
+                # File custody and this lock can block; admit only fresh authority.
+                if not self.execution_enabled:
+                    raise PermissionError("AI tool execution is disabled")
+                stamp = float(self._clock())
+                if not math.isfinite(stamp) or stamp > response.expires_at:
+                    raise PermissionError("AI tool authorization is expired or invalid")
             result = tool.handler(**arguments)
         if len(_canonical_json(result)) > MAX_TOOL_RESULT_CHARS:
             raise ValueError("AI tool result exceeds the bound")

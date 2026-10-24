@@ -5,7 +5,51 @@ Date: 2026-10-23
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## AI consultation privacy maintenance — scoped validation accepted
+## AI broker authority and benchmark integrity — scoped gate accepted
+
+- Four reviewed source/test candidates are applied unchanged. Actual 15-suite/
+  156-function gate collected254/passed253/0failures/errors/one exact Windows8.3
+  unavailable skip. acceptance_complete=true, coverage_complete=false.
+  Current receipt a8d83da65e1fab165cf6b8c2d40ac717ba5ab5d313f6b906b922e5a5b81f72d3.
+  Exact outer-two same-birth/WAIT0/native0/fourclosures/MainThread/noQApp and
+  source1874/1162Python map4f7d2982/HEAD/bothindices/runtime39 stable.
+  JUnit27.381s/supervisor32.859s. Fresh90.329s passive15eligible/71held observation
+  completed OBSERVED_WITH_GAPS:17gapstrings/nine modules,97events,zero recorded
+  errors/crashes/capture/export/consoleloss/pendingthreads; exactouter2+admitted
+  core birth/WAIT0/exit0/closures/MainThread/noQApp and frozen inputs retained.
+  Observation receipt399b9e505e8942c8e334678da6b6e8aa872993fd9ece62fd621f5b934a49f0d8.
+  Filtered108records=97events+11coverage;0responseauthoritytrue/7false/90absent.
+  No host/threat/FP/speed/all86/overnight/cloud/GUI efficacy claim.
+  Offline checks and guarded publication need separate receipts.
+- SEC-17 (LOW, library/API only): AISecurityBroker has no current deployed
+  consumer under src. Recheck execution enablement and a fresh finite clock/expiry
+  after the initial lock, before consumption; recheck after agent-file custody
+  and final lock, before handler admission. Preserve HMAC/schema/exact typed
+  arguments, definition/code custody, consume-before-plugin and one-shot behavior.
+  Guard-entered late refusals spend the nonce; initial-lock refusals do not.
+  Existing inclusive expiry equality stays valid; no clock-rollback/disable-reenable
+  epoch or cancellation of an already admitted/running handler is added.
+  All23broker cases passed, including14fake-clock/Event cases. No deployed prompt-to-host
+  exploit, new mutation authority or native protection is demonstrated.
+- PER-16: the poll benchmark patches unused list_processes while Process Monitor
+  uses typed process_snapshot. Supply immutable typed rows, require full fixture
+  reads/cohorts, latch accidental host-access denials, and restore scoped cache/API/
+  sys.modules changes. All seven functions/28cases passed. This is benchmark
+  integrity, not a collector optimization or speed claim. Dedicated interpreter
+  only; process-global guards are not a hostile-code sandbox or complete host
+  access denial. Optional CLI Git source retrieval is outside the measured guard.
+- Preserve every prior 174 raw issue object and order; SEC-17/PER-16 make176.
+  The actual Windows skip 'Volume has no distinct short filename' remains
+  unavailable coverage, never a passing case. Agent integrity20pass/1skip; all75
+  privacy cases retained/passed. These groups overlap the253, not additive totals.
+- Published 24ed22c2e92564c2e9c455bed357ef514ab29437 and proof2af946e3
+  establish the preceding privacy checkpoint only; its182/90.14 evidence is not
+  this patch's validation. At the parent-reported CI snapshot, Security40049715884
+  passed3/3 and CI40049715883 was running; no terminal CI pass is claimed.
+- Version1.14.0 remains development; broader1.15 incomplete. Read
+  analysis/live-debug-2026-10-22/README.md and docs/ai-aware-defense.md.
+
+## Published privacy checkpoint — scoped validation accepted
 
 - Version stays v1.14.0; broader v1.15 integration is incomplete. Read
   docs/ai-consult-privacy.md and docs/ai-aware-defense.md for scope and limits.

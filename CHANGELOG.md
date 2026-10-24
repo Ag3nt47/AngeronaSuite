@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.14.0 — AI broker authority and benchmark integrity
+
+- SEC-17: refresh execution-enabled, finite-time and expiry checks after
+  both broker waits, immediately before capability consumption and handler
+  admission. Keep signed typed arguments, code custody and one-shot semantics.
+  This LOW library/API finding has no current deployed broker consumer under src;
+  it does not demonstrate a model-to-host response route. All 23 broker cases
+  passed, including 14 new wait/race cases. Equality at expiry remains valid; no clock rollback,
+  disable/re-enable epoch or atomic in-flight revocation guarantee is added.
+- PER-16: repair the benchmark's stale list_processes fixture to supply the actual
+  typed process_snapshot seam. Require complete reads/cohorts, latch guarded host
+  access even when caught, and restore patched APIs/cache bindings/module entries.
+  All seven functions/28 cases passed. This repairs measurement
+  integrity, not production collectors; it proves no speed improvement. Use only
+  a separate single-purpose interpreter. It is not a hostile-Python sandbox, and
+  the optional CLI Git baseline retrieval remains outside the measured guard.
+- Actual 15-suite/156-function gate: 254 collected, 253 passed, zero failures/errors
+  and one exact Windows skip: Volume has no distinct short filename. Acceptance
+  is complete, coverage is not. All 75 privacy cases remained passing; exact
+  outer-two retirement and source/HEAD/both indices/runtime39 stability retained.
+  A fresh 90.329 s passive 15-eligible/71-held observation completed with 17 gap
+  strings across nine modules, 97 events and zero recorded errors/crashes/loss/
+  pending threads. Exact outer/core retirement and frozen inputs were retained;
+  this does not exercise real cloud/GUI privacy or prove host cleanliness/speed.
+  Offline checks and guarded publication remain separate mandatory gates.
+- Preserve all 174 earlier raw issue objects/order and prior review status; append
+  SEC-17 and PER-16 for 176 unique IDs. Published 24ed22c privacy evidence
+  (182 cases and 90.14 s) is historical and does not validate this later change.
+  Development version remains v1.14.0; broader v1.15 remains incomplete.
+
 ## 1.14.0 — reviewed AI consultation privacy
 
 - Prepare bounded sanitized system/user JSON before manual alert Research/SOAR

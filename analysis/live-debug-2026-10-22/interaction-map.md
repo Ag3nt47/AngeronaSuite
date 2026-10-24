@@ -5,7 +5,34 @@ known code or resource dependency; it does not mean that every observed delay
 has an established cause. Validation uses private diagnostic profiles and inert
 security regressions. Original host evidence is retained separately.
 
-## Later AI consultation privacy boundary
+## Broker and measurement boundaries
+
+| Interaction | Applied scoped repair | Evidence and limits |
+| --- | --- | --- |
+| Signed typed capability -> execution lock -> replay ledger | Refresh enabled state, finite time and expiry after the lock, before consumption | SEC-17 LOW library/API only; no current deployed broker consumer under src; initial refusal keeps nonce unused |
+| Consumed nonce -> agent-file custody -> final lock -> handler | Keep registration/code custody, refresh enabled state and finite expiry at final admission | Late refusal leaves nonce spent; expiry equality remains valid; no atomic in-flight cancellation, clock rollback or disable/re-enable epoch |
+| Synthetic benchmark rows -> actual process_snapshot seam | Supply immutable typed ProcessSnapshot and require every requested read/full cohort | PER-16 source-confirmed stale fixture; no production collector optimization or speed proof |
+| Reviewed benchmark source -> scoped host-access guard -> cleanup | Latch caught denials and restore API/cache/sys.modules bindings | Dedicated interpreter only, not hostile-code sandbox/complete host-access denial; optional CLI Git retrieval outside measured guard |
+
+The actual 15-suite/156-function gate collected 254 cases: 253 passed, zero
+failures/errors, one exact Windows skip (Volume has no distinct short filename).
+Broker23/23, including14newwait cases, benchmark28/28, agent20pass/1skip and
+all75privacy cases passed; these groups overlap. Acceptance is complete; coverage
+is not. Source/HEAD/both indices/runtime39 stayed stable, exact two outer
+generations retired at the retained births/WAIT0/native0/fourclosed handles,
+MainThread/noQApp remained. Fresh90.329s passive15eligible/71held observation
+completed OBSERVED_WITH_GAPS with17gapstrings/nine modules,97events and zero
+recorded errors/crashes/loss/pendingthreads; exactouter2+admittedcore retirement
+and frozen inputs retained. Filtered108records=97events+11coverage; response
+authority0true/7false/90absent, so absence is not denial. Threehigh/critical
+coverage/assurance exposures and threeSpyGuard rows explicitly deny response;
+spyware remains unconfirmed. Omissions prevent threat/FP adjudication. Query-only
+primary-worker profile73rounds/16handlesopenedclosed/gaps[] is not complete helper
+attribution or independent retirement proof. No speed gain or regression attribution. Old privacy182/90.14 and integrity786/29/600 receipts are historical;
+none validate this changed source. Offline checks and guarded publication are
+separate mandatory gates. See the [issue review](README.md).
+
+## Published privacy checkpoint boundary
 
 | Interaction | Source-applied repair | Evidence and limits |
 | --- | --- | --- |

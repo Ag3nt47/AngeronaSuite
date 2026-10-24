@@ -1,6 +1,51 @@
 # Live debugging and screenshot issue review
 
-Latest source maintenance: [reviewed AI consultation privacy](../../docs/ai-consult-privacy.md)
+Current maintenance review: **SEC-17 broker authority lifetime** (LOW library/API
+only) and **PER-16 benchmark fixture integrity**. Applied reviewed repairs
+refresh authority after waits and bind measurement to the actual typed synthetic
+process seam. No current deployed AISecurityBroker consumer was found under src;
+this is not a deployed prompt-to-host exploit. The benchmark change does not
+optimize production collectors or establish a speed gain.
+
+The actual 15-suite/156-function gate collected 254 cases: 253 passed, zero
+failures/errors and one exact Windows skip (Volume has no distinct short
+filename). Acceptance is complete; coverage is not. Broker23/23, including14new
+wait/race cases, benchmark28/28, agent20pass/1skip and all75privacy cases passed;
+groups overlap. Exact outer-two retirement/MainThread/noQApp and source/HEAD/
+both indices/runtime39 stability retained. JUnit27.381s/supervisor32.859s;
+current_validation_receipt_sha256:
+a8d83da65e1fab165cf6b8c2d40ac717ba5ab5d313f6b906b922e5a5b81f72d3.
+
+The fresh90.329s passive15eligible/71held observation completed OBSERVED_WITH_GAPS:
+17gapstrings/nine modules,97events (1critical,2high,88info,4low,2medium), zero
+recorded errors/crashes/capture/export/consoleloss/pendingthreads. Exactouter2
+and admittedcore samebirth/WAIT0/native0/closedhandles, MainThread/noQApp and
+fullsource/HEAD/bothindices/runtime39/helper stability were retained.
+current_observation_receipt_sha256:
+399b9e505e8942c8e334678da6b6e8aa872993fd9ece62fd621f5b934a49f0d8.
+
+The filtered108records contain97events and11coveragecontrols. All97carry
+original-integrity/live-receipt verification flags at export; redacted content
+is not the complete authenticated original. Responseauthority is explicitfalse
+for7, absentfor90, truefor0. The threehigh/critical records describe unavailable
+Aegis graph, unbound Fleet store and unmet Recovery evidence; each denies response.
+The threeSpyGuard rows deny response and mark spyware unconfirmed. Omitted
+evidence prevents host-compromise or false-positive adjudication. Query-only
+primary-worker sampling73rounds/16opened/16closed/gaps[] is not full helper
+attribution or separate retirement proof. CPU58.265625s observation/63.171875s
+total is a measurement, not speedup or regression-cause evidence.
+
+Optional provider/cloud/GUI privacy and response work remained off. No whole-suite,
+all86/overnight, efficacy, deployed-broker, complete-sandbox or clean-host claim.
+Offline checks and guarded GitHub publication are separate mandatory gates.
+
+All174 prior raw issue objects/order/status are preserved; SEC-17 and PER-16 make
+176 unique IDs. [AI-aware defense](../../docs/ai-aware-defense.md) and the
+[interaction map](interaction-map.md) describe scope and limits. Published
+24ed22c privacy182/90.14 evidence below is historical, not new-patch validation.
+Version stays v1.14.0 development; broader v1.15 is incomplete.
+
+Published privacy checkpoint: [reviewed AI consultation privacy](../../docs/ai-consult-privacy.md)
 adds bounded shared sanitization, exact editable payload/destination review and
 explicit Send for Research/SOAR initial/retry/follow-up requests. SEC-16 links
 the repair to historical SEC-15 without rewriting its finding. The first focused

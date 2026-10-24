@@ -76,6 +76,39 @@ evidence. Keep local inference listeners loopback-bound and verify the actual
 listener process. Do not send raw captures, secrets, browser contents or private
 memory to an external model as an implicit debugging step.
 
+## Broker authority lifetime review
+
+SEC-17 is a LOW library/API lifetime finding in AISecurityBroker. Source review
+found no current deployed instantiation or registered handler under src, so this
+is not evidence of a deployed model-to-host mutation route. A valid signed typed
+capability can wait on execution locks and agent-file custody after its initial
+authority sample. The applied repair refreshes execution enablement, finite
+time and expiry after each wait and at the last safe handler-admission check.
+It retains authenticated exact arguments, tool-definition/code custody and
+consume-before-plugin one-shot behavior. A late refusal after guard entry leaves
+the nonce spent; an initial-lock refusal happens before consumption.
+
+The existing expiry equality remains valid. This does not introduce clock-rollback
+protection, a disable/re-enable revocation epoch or atomic cancellation of an
+already admitted/running handler. All 23 broker cases passed, including 14 new
+inert fake-clock/Event cases. The combined 15-suite gate passed 253 of 254 cases,
+with no failures/errors and one exact Windows short-filename availability skip.
+Coverage remains incomplete. A fresh 90.329-second passive 15-module observation
+retained 17 gap strings across nine modules and zero recorded errors; optional
+cloud/GUI privacy work stayed off. This establishes no deployed broker protection,
+complete sandbox, clean-host verdict or speed improvement.
+
+PER-16 separately corrects the process benchmark's obsolete fixture seam; it
+measures supplied immutable rows and refuses incomplete cohorts or latched
+accidental host access. Scoped patches/caches/module entries must be restored.
+All 28 benchmark cases passed. This is measurement integrity, not a
+production collector speedup. Use a dedicated interpreter: process-global
+patches are not safe in the live application, do not sandbox hostile Python, and
+do not prove complete host-access denial. Optional CLI baseline Git retrieval
+is outside the measured guard. The [review map](../analysis/live-debug-2026-10-22/README.md)
+keeps both scopes and their current test/passive observation evidence separate from published
+privacy results.
+
 ## External coding agents and reviewer independence
 
 A coding or debugging agent granted filesystem, shell or Git credentials operates

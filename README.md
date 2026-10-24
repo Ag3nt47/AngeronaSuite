@@ -32,7 +32,14 @@ Review notes do not grant response authority or silently dismiss detections.
 See the [issue map and validation evidence](analysis/live-debug-2026-10-22/README.md)
 for reproduced defects, measured improvements and unresolved observations.
 
-The manual AI consultation dialog now prepares a bounded sanitized preview before any
+The [AI authority and benchmark review](analysis/live-debug-2026-10-22/README.md)
+adds fresh authority checks after broker waits and corrects the synthetic
+process-benchmark fixture. The scoped gate passed 253 tests with one exact
+Windows availability skip. A fresh 90.329-second passive observation retained
+17 coverage gaps and zero recorded errors. This library/tool maintenance adds
+no deployed response powers and establishes no speed gain or clean-host verdict.
+
+The published privacy checkpoint's manual AI consultation dialog prepares a bounded sanitized preview before any
 provider request. Review and edit the exact JSON, provider/model/endpoints and
 fallback order, then explicitly Send; retries and follow-ups require review too.
 See [AI consultation privacy](docs/ai-consult-privacy.md). The corrected cohort passed 182 tests with zero failures/errors/skips.
