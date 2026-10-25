@@ -216,7 +216,7 @@ def _minimal_git_environment(
         )
         trusted_path = (
             staged.root / "cmd",
-            staged.root / "mingw64" / "bin",
+            staged.root / "ucrt64" / "bin",
             staged.git_exec_path,
             staged.shell_path,
             system32,

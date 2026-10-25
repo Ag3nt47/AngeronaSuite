@@ -40,8 +40,8 @@ def _internally_consistent_addition(raw: bytes) -> bytes:
 def _fixture_profile(source: Path) -> runtime.RuntimeProfile:
     payloads = {
         "cmd/git.exe": b"reviewed-git-image",
-        "mingw64/bin/git-credential-manager.exe": b"reviewed-gcm-image",
-        "mingw64/libexec/git-core/git-remote-https.exe": b"reviewed-https-image",
+        "ucrt64/bin/git-credential-manager.exe": b"reviewed-gcm-image",
+        "ucrt64/libexec/git-core/git-remote-https.exe": b"reviewed-https-image",
         "usr/bin/msys-2.0.dll": b"reviewed-shell-runtime",
         "usr/bin/sh.exe": b"reviewed-shell-image",
     }

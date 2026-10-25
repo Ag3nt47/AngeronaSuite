@@ -35,22 +35,18 @@ PROFILE_PLATFORM = "win32-x86_64"
 # These values are reviewed code authority, deliberately independent of the
 # mutable JSON document.  The profile is accepted only when its exact bytes and
 # the security-relevant aggregate fields agree with this already-loaded module.
-REVIEWED_PROFILE_SHA256 = (
-    "3126566f54ba955f1b36debc2bb292c9cfaefcab9094e1d801663d9442cb89ed"
-)
-REVIEWED_PROFILE_SIZE = 54_008
-REVIEWED_GIT_VERSION = "2.55.0.windows.5"
-REVIEWED_GIT_BUILD_COMMIT = "32c4f7689275d233577576630e1ac5b7eb354eb0"
-REVIEWED_FILE_COUNT = 312
+REVIEWED_PROFILE_SHA256 = "24197c661d04fcae0585fe02b74d0e079eb46ddb109a833fad3432f2ac7b0b8c"
+REVIEWED_PROFILE_SIZE = 54026
+REVIEWED_GIT_VERSION = "2.56.0.windows.3"
+REVIEWED_GIT_BUILD_COMMIT = "0e9926caea36270e3e9067b5ac512ac0335a004a"
+REVIEWED_FILE_COUNT = 314
 REVIEWED_DIRECTORY_COUNT = 8
-REVIEWED_TREE_BYTES = 191_092_436
-REVIEWED_TREE_SHA256 = (
-    "efc90e1480e2a0c66c726cbb721f77218bbe8516b863d6695ea3c089dcb16474"
-)
+REVIEWED_TREE_BYTES = 193726694
+REVIEWED_TREE_SHA256 = "de2401ecbf6b350c14356734f45dc5781f54935beba53db56286a59e3c22d88b"
 TREE_ROOTS = (
     "cmd",
-    "mingw64/bin",
-    "mingw64/libexec/git-core",
+    "ucrt64/bin",
+    "ucrt64/libexec/git-core",
 )
 REQUIRED_SINGLE_FILES = (
     "usr/bin/msys-2.0.dll",
@@ -1633,9 +1629,9 @@ class StagedWindowsRuntime:
         self.scratch_root = scratch_root
         self.executable = root / "cmd" / "git.exe"
         self.credential_helper = (
-            root / "mingw64" / "bin" / "git-credential-manager.exe"
+            root / "ucrt64" / "bin" / "git-credential-manager.exe"
         )
-        self.git_exec_path = root / "mingw64" / "libexec" / "git-core"
+        self.git_exec_path = root / "ucrt64" / "libexec" / "git-core"
         self.shell_path = root / "usr" / "bin"
         self._parent_handle = parent_handle
         self._scratch_handle = scratch_handle

@@ -234,6 +234,23 @@ update activation or packaged-recovery authority.
 
 ## Maintainer publication staging errors
 
+The reviewed Windows publication runtime now pins Git for Windows
+`2.56.0.windows.3` and its UCRT layout: 314 exact files, eight directories and
+193,726,694 bytes. The compiled profile digest and aggregate tree authority
+remain independent of the JSON document. Runtime discovery does not authorize
+an installed binary or a different Git version. A later machine Git upgrade
+can therefore hold publication until another reviewed profile update.
+
+This pin was checked against official release archive bytes and selected
+payloads from the validly signed official installer. Four preexisting packaging
+alias names were individually derived from their exact official Git executable
+bytes and checked against the previous reviewed alias relationships; the
+published profile contains only literal paths and hashes. It adds no runtime
+rename rule, alternate toolchain, downgrade or installed-only trust fallback.
+Source/staged handle sealing, credential isolation, canonical origin,
+fast-forward-only publication, clean-worktree and public README asset proofs
+retain their existing checks.
+
 The guarded publisher may report `private publication runtime copy failed` with
 a numeric `errno` and/or `winerror`. These bounded codes distinguish OS failures
 without exposing private filenames or raw error text. For example, confirmed

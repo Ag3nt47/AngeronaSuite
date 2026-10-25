@@ -95,6 +95,32 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   postflight cutoff. No evidence deletion or authority migration occurred.
   A private runtime capacity/publication-health warning and reviewed cleanup
   discovery are pending; capacity alone cannot prove durable recording.
+- The next committed selection authenticated all 26 additional serious records:
+  24 HIGH and two CRITICAL. The criticals reported ledger recovery exhaustion
+  and quarantine after repeated no-space failures. At the independent cutoff
+  around 00:59:56 UTC, the journal still had 479 authenticated records, matching
+  checkpoint/witness, no pending phase and unchanged authority bytes. Status
+  publication was about 31 minutes stale; Full/ARMED remained historical.
+- A fresh unchanged-runtime profile exported 845 execution-lock samples, with
+  74 nonblocking read-race errors. Sentinel Lens represented 44.38%; orb paint
+  represented 74 of 89 main-thread samples. Host CPU averaged 87.96% across
+  eight logical CPUs. These are workload observations, not measured click
+  latency or an isolated causal speedup. A private normalization shortcut failed
+  semantic review at truncation/collision boundaries and was held; corrected
+  normalization and static orb-paint reuse require independent gates and fresh
+  runtime observation before a live improvement claim.
+- Further private candidates passed Sentinel 82/one existing skip, orb 72,
+  AI request-boundary 61 and storage-health 45/one existing skip plus two
+  affected mesh cases. They remain unapplied while the configured volume is
+  full. Private/offscreen performance is not changed-runtime evidence. Adoption
+  must expand the source scope to 36 files, adding orb and AI triage.
+- The publisher runtime review replaces the obsolete machine-incompatible pin
+  with official Git 2.56.0.windows.3 UCRT bytes: 314 exact files/eight directories,
+  193,726,694 bytes. Compiled authority and all custody, credential, origin,
+  fast-forward, clean-worktree and public-asset checks retain their existing
+  rules. All 102 affected actual-source publication/launcher/documentation
+  cases passed with normal repository imports and native exit 0. This is a
+  reviewed fixed pin, not automatic installed-runtime trust or publication proof.
 - Current work is v1.14.0 maintenance; broader v1.15 remains incomplete. Preserve
   the existing 191-issue register, historical blocks and historical root values.
   The ten-minute and gateway-corrected five-minute observations are complete.

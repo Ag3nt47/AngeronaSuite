@@ -1317,9 +1317,160 @@ candidate is being prepared. Free capacity alone will not prove successful
 journal or recorder writes. No deletion, data-root migration, baseline reset,
 fallback signing authority or response bypass is authorized by such a warning.
 
-The operator requested cleanup candidates for review. Discovery is limited to
-bounded metadata checks of known cache/dump locations and top-level downloads;
-contents, active security evidence and unknown trees are excluded. Any selected
-cleanup or move remains a separate reviewed action. A new non-suspending
-profile of the unchanged runtime is also in progress, with storage pressure
-and competing diagnostic work retained as timing context.
+The operator requested cleanup candidates for review. Discovery used bounded
+metadata checks of 26 known cache/dump/model/system locations and top-level
+downloads; contents, active security evidence and unknown trees were excluded.
+Relocated, inaccessible and excluded cache trees remained unknown rather than
+being reported empty. The ordinary Windows Disk Cleanup review offered about
+42.4 MB. A separate bounded logical-path metadata check counted 477,633,947
+bytes in Windows setup remnants, with 1,521 files and no traversal errors.
+A stricter native-volume follow-up skipped ten descendant entries across
+volume/reparse boundaries. None of that logical total is proved reclaimable
+space on the exhausted volume. The earlier size-only review is preserved with
+this correction; skipped descendants remain unknown. Four additional fixed
+driver-installer locations were absent or crossed the same boundary, with no
+proved nonzero candidate on the exhausted volume. System cleanup assessment and
+any deletion remained pending operator review; no selections, deletion, move
+or storage-policy change were performed. System paging and swap files were
+identified as managed memory resources, not cleanup candidates.
+
+### Contention profile and held optimization candidates
+
+A fresh nonblocking, execution-lock-only profile sampled the unchanged core
+for 60 seconds at 20 Hz. It obtained 845 successful samples and retained 74
+nonblocking read-race errors. Sentinel Lens accounted for 375 samples (44.38%),
+including repeated normalization in snapshot/anomaly analysis. The main thread
+accounted for 89 samples; 74 were within orb painting (83.15% of main-thread
+samples, 8.76% overall). These are proportions of successfully exported
+execution-lock samples, not wall-time latency or whole-process CPU attribution.
+
+Whole-window counters covered 63.203 seconds. The eight-CPU host averaged
+87.96% CPU with a 100% peak; the core used 101.48% of one logical CPU and its
+inventory worker 75.20%. The ten application processes together used about
+1.825 logical CPUs. Other system activity was substantial but was not assigned
+to individual applications. Memory headroom remained about 4.98 GB or more;
+the configured data volume reported zero free bytes throughout all 62 samples.
+Root documentation/Git/volume queries were declared competing diagnostic load.
+This observation does not isolate the cause of a historical freeze or establish
+a before/after improvement. All 34 scoped runtime hashes matched. Profiler,
+helper, console and independent coordinator receipts proved terminal native
+generations and closed held handles; no target suspension was used.
+
+One private normalization-reuse proposal failed independent semantic review:
+bounded text normalization is not idempotent at truncation boundaries. It
+changed anomaly reason strings and could accept a second-pass key collision
+that previously failed. That candidate was held, its failure preserved and
+production source left unchanged. A corrected candidate must preserve exact
+second-pass values, collision failures and complete snapshot semantics before
+adoption. Static orb-paint reuse and the observation-only storage warning also
+remain private candidates. Their tests do not establish changed live behavior.
+
+### Fresh committed evidence during the storage incident
+
+The next committed-archive cutoff at approximately 00:59:54 UTC on 25 October
+selected all 26 additional serious originals, with valid HMACs: 24 HIGH and
+two CRITICAL. The critical records explicitly reported exhausted bounded
+restart recovery and quarantine of Kernel-Boundary Posture Ledger after
+repeated no-space failures. Fourteen additional ledger crash records, six
+watchdog recovery records and a Fleet Health database-full finding supported
+the availability diagnosis. The remaining findings were the existing HVCI
+exposure, AI provider URL refusal and one telemetry-canary coverage miss with
+an unconfirmed cause. None of these selected findings establishes active
+malware. This does not cover uncommitted or never-collected evidence.
+
+At the independent journal cutoff around 00:59:56 UTC, all 479 records again
+authenticated with matching checkpoint/witness, no legacy or pending phase,
+no new tail and all four authority objects byte-identical to the earlier
+post-client check. The exact core and VPN generations remained alive and their
+query handles closed. All 34 scoped runtime source hashes were unchanged.
+The status publication was about 31 minutes old, so its earlier Full/ARMED
+label remained historical. Six retained diagnostic generations exited 0 with
+closed handles, no custody gaps and no forced cleanup. The outer coordinator
+and wrapper were separately absent after tool exit; they did not have an
+independently retained native-wait witness.
+
+A later finite diagnostic snapshot reached its full retained cursor with
+2,000 event frames, two heartbeats and no client/reader errors. Its explicit
+initial history gap of 26,756 records remained; zero reported ingress drops
+does not erase that loss. The 21 serious diagnostic views included eight
+CRITICAL canary-coverage findings, three incomplete-network-evidence findings,
+two AI provider URL crashes and eight individual canary misses. The critical
+views retained health disposition, an unconfirmed cause and no response
+authority. These are bounded diagnostic copies, not newly HMAC-verified archive
+originals. Exact retained client/helper generations retired and their handles
+closed; the outer coordinator and wrapper were separately absent.
+
+### Reviewed runtime proposals awaiting storage recovery
+
+The final private Sentinel proposal passed 82 cases with one existing platform
+skip. Its tests now carry frozen original snapshot outcomes rather than
+importing an untracked private reference module. Public validation remains in
+an ordinary loop, preserving caller `StopIteration` failures as well as the
+strict second-pass collision and text behavior. Independent source review
+found no blocker. An earlier corrected private revision reduced median full
+2,000-record snapshot CPU by 18% over eight alternating offline pairs; that
+benchmark does not measure the later ordinary-loop adjustment or live latency.
+
+The private orb proposal caches one bounded static shell raster and three
+latitude rectangles. Live glow, sweep, longitudes, badges, hit targets, status
+and actions retain their original painting path and timers. Its 72-case gate
+passed; 108 original/candidate rendering cases differed by at most one
+premultiplied color unit, and five fallback cases matched exactly. Median
+offscreen paint CPU was 6.458 versus 5.313 ms (17.7% lower) under uncontrolled
+host load. All 29 final held diagnostic generations retired naturally with
+closed handles and no custody gap. This is not changed-runtime click evidence.
+
+The private storage-health reporter passed 45 cases with one existing platform
+skip, followed by two affected health/mesh assertion cases. It samples only the
+already configured volume in its existing background worker, exposes cached
+capacity separately from actual snapshot-publication success and never treats
+free space as durable-recording proof. Ordinary bus publication does not gain
+mesh enrollment or response authority.
+
+A separate private AI triage correction moved request construction into the
+existing circuit-breaker exception boundary. Five rejected URL cases reproduced
+uncaught failures in the original; all 61 focused candidate cases passed.
+Loopback/URL restrictions and model attestation remain. The correction would
+hold failed inference without crashing the worker; it does not repair the
+operator's configured base URL or grant inference/response authority.
+
+All nine proposed runtime/test files were frozen with matching current-source
+and candidate digests. None was copied into the production tree or the running
+process while the configured data volume remained exhausted. Adoption still
+requires capacity admission, exact app-generation retirement, normal-repository
+validation, a fresh restart and observation, then guarded publication. The
+observation source scope must grow from 34 to 36 to include the orb and AI
+triage files; earlier 34-file claims did not include those files.
+
+### Publication runtime review
+
+The completed maintenance commit's first guarded publication attempt refused
+the obsolete pinned Git runtime before pushing. The machine's new official
+Git release uses UCRT, while the previous profile required the older layout.
+The replacement profile was derived from the official release archive and
+selected payloads in its validly signed installer: 314 files, eight directories
+and 193,726,694 bytes. All installed scoped bytes matched authenticated expected
+bytes. Four fixed, historically reviewed packaging aliases were individually
+checked; 47 archive-only packaging DLLs were explicitly outside the installed
+profile. An unsigned upstream unpacker was pinned by the official release-asset
+digest and used only for bounded private extraction; the Git installer was
+never executed. This retains an upstream extractor trust boundary.
+
+Earlier archive-only comparison attempts, the SFX's denied post-install child,
+and two list runs with unresolved second job-accounting entries remain explicit
+failed proofs. Later detached listing and selected extraction each proved one
+admitted process before execution, zero active processes at completion, exact
+child wait/exit and both native/Popen handle closure. These later results do
+not establish the identity of the earlier second entries. The reviewed product
+change updates compiled profile authority and exact UCRT paths; it does not
+relax origin, credentials, handle sealing, downgrade, fast-forward, clean-tree
+or public-asset checks. The six reviewed tool/test files were then applied with
+original/candidate digest checks, leaving all 34 runtime hashes unchanged.
+All 102 actual-source publication/launcher/documentation cases passed through
+normal repository imports with native exit 0. Native subprocess instrumentation
+retained the original assertions while admitting owned detached test children;
+218 direct child generations had terminal, closed native and original Popen
+handles, and their jobs were empty before close. Transitive child exit codes
+without retained handles remain unclaimed. The outer helper pair and console
+also retired with closed native handles; coordinator/wrapper absence was checked
+separately. Guarded publication remains a separate completion step.

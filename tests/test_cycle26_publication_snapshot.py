@@ -805,8 +805,8 @@ def test_runtime_group_copy_second_open_failure_closes_prior_destination(monkeyp
 def _fixture_runtime_profile(source: Path) -> windows_runtime.RuntimeProfile:
     payloads = {
         "cmd/git.exe": b"reviewed-git-image",
-        "mingw64/bin/git-credential-manager.exe": b"reviewed-gcm-image",
-        "mingw64/libexec/git-core/git-remote-https.exe": b"reviewed-https-image",
+        "ucrt64/bin/git-credential-manager.exe": b"reviewed-gcm-image",
+        "ucrt64/libexec/git-core/git-remote-https.exe": b"reviewed-https-image",
         "usr/bin/msys-2.0.dll": b"reviewed-shell-runtime",
         "usr/bin/sh.exe": b"reviewed-shell-image",
     }
@@ -872,10 +872,10 @@ def _fixture_hardlink_profile(
 
 def test_reviewed_windows_runtime_profile_is_closed_and_content_addressed() -> None:
     profile = windows_runtime.load_runtime_profile()
-    assert profile.git_version == "2.55.0.windows.5"
-    assert profile.git_build_commit == "32c4f7689275d233577576630e1ac5b7eb354eb0"
-    assert len(profile.files) == 312
-    assert profile.total_bytes == 191_092_436
+    assert profile.git_version == "2.56.0.windows.3"
+    assert profile.git_build_commit == "0e9926caea36270e3e9067b5ac512ac0335a004a"
+    assert len(profile.files) == 314
+    assert profile.total_bytes == 193726694
     assert profile.tree_sha256 == windows_runtime._tree_digest(
         profile.directories,
         profile.files,
@@ -883,8 +883,8 @@ def test_reviewed_windows_runtime_profile_is_closed_and_content_addressed() -> N
     assert {item.relative for item in profile.files}.issuperset(
         {
             "cmd/git.exe",
-            "mingw64/bin/git-credential-manager.exe",
-            "mingw64/libexec/git-core/git-remote-https.exe",
+            "ucrt64/bin/git-credential-manager.exe",
+            "ucrt64/libexec/git-core/git-remote-https.exe",
             "usr/bin/msys-2.0.dll",
             "usr/bin/sh.exe",
         }
@@ -1177,8 +1177,8 @@ def test_profiled_hardlink_alias_swap_is_denied_or_detected(
 @pytest.mark.parametrize(
     "relative",
     (
-        "mingw64/bin/preloaded-sidecar.dll",
-        "mingw64/libexec/git-core/extra-helper.exe",
+        "ucrt64/bin/preloaded-sidecar.dll",
+        "ucrt64/libexec/git-core/extra-helper.exe",
     ),
 )
 def test_unreviewed_runtime_sidecar_or_helper_addition_fails(
@@ -1256,10 +1256,10 @@ def test_private_stage_acl_seals_files_and_handle_cleanup_is_exact(
     with pytest.raises(OSError):
         (root / "cmd" / "git.exe").write_bytes(b"replacement")
     with pytest.raises(OSError):
-        (root / "mingw64" / "bin" / "unreviewed.dll").write_bytes(b"addition")
+        (root / "ucrt64" / "bin" / "unreviewed.dll").write_bytes(b"addition")
     for path, directory in (
         (root / "cmd" / "git.exe", False),
-        (root / "mingw64" / "bin", True),
+        (root / "ucrt64" / "bin", True),
     ):
         with pytest.raises(
             windows_runtime.WindowsRuntimeError,
