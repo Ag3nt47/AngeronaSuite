@@ -51,6 +51,20 @@ interface and gateway in both samples; collection loss remains a coverage alert.
 SpywareGuard's new
 [Definitions workflow](docs/spyware-guard.md#updating-local-spyware-definitions)
 supports local versioned indicator-pack import, activation and rollback.
+Mixed VPN and physical-interface sockets now remain an exposure observation
+unless separate evidence establishes a threat; topology alone cannot authorize
+containment. Live Debug batches retained frames to reduce native handoffs, and
+Sentinel Lens coalesces graph rebuilds with a default one-second pause after
+each completed advisory build; explicit caller intervals remain supported.
+Rich process inventory now runs in an owned child process so its native Windows
+queries cannot hold the dashboard's Python execution lock. Missing or failed
+inventory remains an explicit coverage gap. SpywareGuard also preserves the
+beacon producer's uncorroborated timing observations without granting response
+authority; corroborated detections retain automatic response.
+Purple Guard likewise keeps unverified test-marker text observation-only;
+automatic practice response requires its existing live issuer lease and exact
+owned control evidence. Failed sensor probes retain their alert priority while
+reporting unavailable coverage and an unconfirmed cause.
 
 **Previous model parser integrity maintenance:** Malformed manifests,
 inventories and approved baselines now use the existing typed refusal path for

@@ -20,10 +20,8 @@ from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Callable, Iterable
 
-import psutil
-
 from angerona.core import drill_resolution
-from angerona.core.eventbus import Event, EventBus, Severity
+from angerona.core.eventbus import Event, EventBus
 from angerona.core.practice_scope import (
     register_artifact,
     register_process,
@@ -84,7 +82,7 @@ def _emit_progress(progress: Callable[[int, str], None] | None,
         pass
 
 
-def _write_registered_marker(path: Path, body: str, run_id: str) -> None:
+def _write_registered_marker(path: Path, body: str, run_id: str, *, lease) -> None:
     """Create one inert control exclusively, then bind its held file ID."""
     descriptor = os.open(
         path,
@@ -101,6 +99,101 @@ def _write_registered_marker(path: Path, body: str, run_id: str) -> None:
             descriptor=stream.fileno(),
         ):
             raise OSError("practice marker could not be bound to its created file ID")
+        # Registry provenance is advisory; only the issuer's retained file
+        # identity may authorize this positive control's eventual response.
+        from angerona.modules.purple_guard import RedTeamValidationLease
+        RedTeamValidationLease.register_artifact_handle(lease, path, run_id=run_id)
+
+
+def _cleanup_markers(paths, *, lease, run_id: str) -> bool:
+    """Delete only controls still matching this issuer's retained file IDs."""
+    from angerona.modules.purple_guard import RedTeamValidationLease
+    complete = True
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            complete = False
+            continue
+        try:
+            removed = RedTeamValidationLease.remove_registered_artifact(
+                lease, path, run_id=run_id,
+            )
+        except Exception:
+            removed = False
+        complete = bool(removed) and complete
+    return complete
+
+
+def _pending_marker_handoff(lease, event, *, manager, bus, guard, recorder) -> bool:
+    """Permit bounded observation of an exact pending handoff, never response."""
+    from angerona.modules.purple_guard import _lease_authority
+    try:
+        state = _lease_authority(lease)
+        details = event.details if isinstance(event.details, dict) else {}
+        path = Path(os.path.abspath(str(details.get("path") or "")))
+        key = os.path.normcase(str(path))
+        with state.lock:
+            record = (state.artifact_handles or {}).get(key)
+            modules = getattr(manager, "modules", {})
+            return bool(
+                state.manager is manager and state.bus is bus
+                and state.module is guard and state.recorder is recorder
+                and getattr(manager, "bus", None) is bus
+                and getattr(manager, "recorder", None) is recorder
+                and isinstance(modules, dict) and modules.get(guard.name) is guard
+                and getattr(guard, "_bus", None) is bus
+                and getattr(guard, "_validation_lease", None) is lease
+                and event.module == guard.name and bus.verify(event)
+                and not state.released and not state.artifact_custody_failed
+                and state.consumed and time.monotonic() <= state.run_deadline_monotonic
+                and details.get("receipt_type") == "purple_simulation_validation"
+                and details.get("evidence_kind") == "inert_file_marker"
+                and details.get("lease_id") == state.lease_id
+                and details.get("receipt_id") == state.receipt_id
+                and details.get("run_id") == state.bound_run_id
+                and details.get("target") == str(state.target) and path.parent == state.target
+                and key in (state.artifact_handoffs or set())
+                and record is not None and record[0] is None
+            )
+    except Exception:
+        return False
+
+
+def _retire_process(process: subprocess.Popen | None, *, progress=None) -> bool:
+    """Wait for only the fixed, unreaped child owned by this Popen object."""
+    if process is None:
+        return True
+    try:
+        if process.poll() is None:
+            process.terminate()
+        process.wait(timeout=1.0)
+        return True
+    except (OSError, subprocess.TimeoutExpired):
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=2.0)
+            return True
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    # The verifier's existing worker retains the Popen/native handle. Do not
+    # return, release its issuer, start a replacement, or repeat a host action
+    # while exact termination is uncertain. The fixed probe itself sleeps for
+    # only 30 seconds; an externally suspended/unverifiable child remains held.
+    _emit_progress(progress, 95, "Waiting for the owned practice process to retire")
+    while True:
+        try:
+            process.wait(timeout=1.0)
+            return True
+        except subprocess.TimeoutExpired:
+            continue
+        except OSError:
+            threading.Event().wait(0.1)
 
 
 @contextmanager
@@ -192,40 +285,36 @@ def _recorded(db_path: Path, event: Event, timeout: float) -> bool:
     return False
 
 
-def _publish_process_probe(bus: EventBus, verification_id: str) -> tuple[Event, subprocess.Popen]:
+def _publish_process_probe(bus: EventBus, verification_id: str, *, lease) -> tuple[dict, subprocess.Popen]:
+    from angerona.modules.purple_guard import RedTeamValidationLease
+
+    if getattr(sys, "frozen", False):
+        raise RuntimeError("this runtime has no admitted inert Python probe interpreter")
     tag = f"ANGERONA_REDTEAM_{verification_id[-8:]}"
+    RedTeamValidationLease.enroll_process_challenge(
+        lease, token=tag, run_id=verification_id,
+    )
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     register_process(tag, verification_id, kind="practice-verification")
+    # A venv redirector can outlive or detach from its child. The base runtime
+    # executes this stdlib-only fixed program directly, with no helper child.
+    executable = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True))
     process = subprocess.Popen(  # noqa: S603 - fixed interpreter/argv, inert sleep only
-        [sys.executable, "-c", "import time; time.sleep(30)", tag],
+        [executable, "-c", "import time; time.sleep(30)", tag],
         creationflags=flags,
     )
-    register_process(
-        tag,
-        verification_id,
-        pid=int(process.pid),
-        kind="practice-verification",
-    )
-    live = psutil.Process(int(process.pid))
-    process_create_time = float(live.create_time())
-    process_exe = str(live.exe())
-    event = Event(
-        "Red Team Practice Lab",
-        "PRACTICE TEST: benign tagged process positive control.",
-        Severity.INFO,
-        details={
-            "event_type": "process_creation",
-            "pid": int(process.pid),
-            "process_create_time": process_create_time,
-            "exe": process_exe,
-            "cmdline": f"{sys.executable} -c <inert sleep> {tag}",
-            "correlation_token": tag,
-            "practice_verification_id": verification_id,
-            "run_id": verification_id,
-        },
-    )
-    bus.publish(event)
-    return event, process
+    try:
+        register_process(tag, verification_id, pid=int(process.pid), kind="practice-verification")
+        # This issuer API independently observes and publishes the exact native
+        # child through the enrolled Process Monitor. No synthetic bus row may
+        # substitute for that producer's signed receipt.
+        binding = RedTeamValidationLease.bind_process_challenge(
+            lease, token=tag, pid=int(process.pid), run_id=verification_id,
+        )
+        return binding, process
+    except BaseException:
+        _retire_process(process)
+        raise
 
 
 def verify_practice_fixes(
@@ -237,6 +326,8 @@ def verify_practice_fixes(
     bus: EventBus,
     purple_guard,
     active_response,
+    manager=None,
+    recorder=None,
     progress: Callable[[int, str], None] | None = None,
     recorder_timeout: float = 10.0,
 ) -> dict:
@@ -254,6 +345,19 @@ def verify_practice_fixes(
             "error": "Purple Guard and Active Response SOAR must both be running",
             "results": [],
         }
+    modules = getattr(manager, "modules", None)
+    if (not isinstance(modules, dict)
+            or modules.get("Purple Remediation Guard") is not purple_guard
+            or modules.get("Active Response SOAR") is not active_response
+            or getattr(manager, "bus", None) is not bus
+            or recorder is None or getattr(manager, "recorder", None) is not recorder
+            or Path(getattr(recorder, "_path", "")).resolve(strict=False)
+            != Path(db_path).resolve(strict=False)):
+        return {"ok": False, "verified": 0, "total": len(requested), "results": [],
+                "error": "exact manager, module, EventBus and recorder binding is required"}
+    from angerona.modules.purple_guard import (
+        RedTeamValidationLease, acquire_redteam_validation_lease,
+    )
 
     results = []
     total = len(requested)
@@ -267,18 +371,31 @@ def verify_practice_fixes(
         positive: Path | None = None
         negative = root / f"_redteam_benign_note_practice_{verification_id}.txt"
         process: subprocess.Popen | None = None
+        lease = None
         detection = response = None
         checks = {}
-        readiness = _readiness_begin(bus, purple_guard, active_response, mitre, verification_id)
+        readiness = (None, None)
         error = ""
         base_pct = 8 + int(index / max(1, total) * 84)
         _emit_progress(progress, base_pct, f"Testing {mitre} positive control")
         try:
+            lease = acquire_redteam_validation_lease(
+                manager, bus, recorder, Path(data_dir), root,
+                timeout=min(8.0, max(0.1, float(recorder_timeout))),
+            )
+            RedTeamValidationLease.consume_for_run(
+                lease, run_id=verification_id, target=root,
+                data_root=Path(data_dir), run_ttl_seconds=120.0,
+            )
+            readiness = _readiness_begin(
+                bus, purple_guard, active_response, mitre, verification_id,
+            )
             priority_cursor = bus.priority_revision()
             _write_registered_marker(
                 negative,
                 "PRACTICE NEGATIVE CONTROL — ordinary benign note.\n",
                 verification_id,
+                lease=lease,
             )
             if mitre in _FILE_TOKENS:
                 token = _FILE_TOKENS[mitre]
@@ -289,9 +406,10 @@ def verify_practice_fixes(
                     positive,
                     "ANGERONA PRACTICE TEST — inert positive marker; never executed.\n",
                     verification_id,
+                    lease=lease,
                 )
             elif mitre == _PROCESS_TECHNIQUE:
-                _probe, process = _publish_process_probe(bus, verification_id)
+                _probe, process = _publish_process_probe(bus, verification_id, lease=lease)
             else:
                 raise ValueError("no registered inert practice control")
 
@@ -314,6 +432,20 @@ def verify_practice_fixes(
                 verification_id=verification_id,
                 events=detector_events,
             )
+            # The running detector may have consumed its native queue just
+            # before this manual scan. Wait for that one exact issuer-bound
+            # result rather than publishing a synthetic replacement event.
+            detector_deadline = time.monotonic() + min(10.0, max(0.1, float(recorder_timeout)))
+            while detection is None and time.monotonic() < detector_deadline:
+                time.sleep(0.025)
+                _det_revision, detector_events, detector_overflow = bus.priority_since(priority_cursor)
+                if detector_overflow:
+                    raise RuntimeError("priority evidence lane overflowed during detector test")
+                detection = _find_event(
+                    bus, module="Purple Remediation Guard", mitre=mitre,
+                    since=started, path=positive, verification_id=verification_id,
+                    events=detector_events,
+                )
             negative_hit = any(
                 event.module == "Purple Remediation Guard"
                 and str((event.details or {}).get("path") or "") == str(negative)
@@ -326,6 +458,32 @@ def verify_practice_fixes(
                 raise RuntimeError("benign negative control produced a detection")
             if not bus.verify(detection):
                 raise RuntimeError("detector event signature verification failed")
+            issuer_verified = RedTeamValidationLease.verify_purple_event(
+                lease, detection, {"attack_ids": [mitre]},
+            )
+            # The registered response owner may already be moving this exact
+            # file. Its exclusive handoff temporarily makes historical file
+            # proof unavailable. Observe the same opaque lease and receipt;
+            # no response or closure can use a pending/unverified proof.
+            while not issuer_verified and time.monotonic() < detector_deadline:
+                pending = _pending_marker_handoff(
+                    lease, detection, manager=manager, bus=bus,
+                    guard=purple_guard, recorder=recorder,
+                )
+                # An exact handoff may have finished between the preceding
+                # proof and the pending check. One immediate recheck is safe;
+                # unavailable/released/wrongly-bound proof otherwise fails now.
+                issuer_verified = RedTeamValidationLease.verify_purple_event(
+                    lease, detection, {"attack_ids": [mitre]},
+                )
+                if issuer_verified or not pending:
+                    break
+                time.sleep(0.025)
+                issuer_verified = RedTeamValidationLease.verify_purple_event(
+                    lease, detection, {"attack_ids": [mitre]},
+                )
+            if not issuer_verified:
+                raise RuntimeError("detector event lacks the exact issuer-backed control receipt")
 
             _emit_progress(progress, base_pct + 4, f"Testing {mitre} response and cleanup")
             with _scoped_practice_response(root):
@@ -348,6 +506,9 @@ def verify_practice_fixes(
                 not positive.exists() if positive is not None
                 else process is not None and process.poll() is not None
             )
+            controls_cleaned = _cleanup_markers(
+                (positive, negative), lease=lease, run_id=verification_id,
+            )
             checks = {
                 "positive_control_detected": True,
                 "negative_control_quiet": not negative_hit,
@@ -355,7 +516,9 @@ def verify_practice_fixes(
                 # to be valid and durable, not merely visible in memory.
                 "recorder_persisted": detection_persisted and response_persisted,
                 "response_succeeded": response_verified and response_persisted,
-                "postcondition_satisfied": postcondition,
+                "postcondition_satisfied": postcondition and controls_cleaned,
+                "owned_marker_cleanup": controls_cleaned,
+                "issuer_lease_verified": True,
                 "detector_event_persisted": detection_persisted,
                 "response_event_persisted": response_persisted,
             }
@@ -399,22 +562,14 @@ def verify_practice_fixes(
                 "error": error,
             })
         finally:
-            for path in (positive, negative):
-                if path is not None:
-                    try:
-                        path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-            if process is not None and process.poll() is None:
-                try:
-                    process.terminate()
-                    process.wait(timeout=1.0)
-                except Exception:
-                    try:
-                        process.kill()
-                    except Exception:
-                        pass
-            unregister_run(verification_id)
+            try:
+                if lease is not None:
+                    _cleanup_markers((positive, negative), lease=lease, run_id=verification_id)
+                _retire_process(process, progress=progress)
+            finally:
+                if lease is not None:
+                    RedTeamValidationLease.release(lease)
+                unregister_run(verification_id)
         _emit_progress(
             progress,
             8 + int((index + 1) / max(1, total) * 84),

@@ -369,14 +369,20 @@ def test_private_practice_observer_failure_cannot_change_verifier_outcome(monkey
     practice_verification._readiness_finish((service, object()), bus=object())
 
 
-def test_real_inert_marker_verifier_publishes_readiness_only_after_durable_cleanup(tmp_path):
+def test_real_inert_marker_verifier_publishes_readiness_only_after_durable_cleanup(tmp_path, monkeypatch):
     from angerona.core import drill_resolution
     from angerona.core.practice_verification import verify_practice_fixes
     from angerona.core.storage import FlightRecorder
     from angerona.modules.purple_guard import install_policies
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+    from angerona.modules.adversary_combat import AdversaryCombat, CombatPolicy
+    monkeypatch.setattr(process_monitor, "process_snapshot", lambda *a, **k:
+        ProcessSnapshot((), time.time(), True, 0, 0, 0, 0, "", True))
     (tmp_path / "bus.key").write_text(bytes(range(32)).hex(), encoding="ascii")
     manager = _Manager()
     recorder = FlightRecorder(tmp_path / "flight-recorder.db")
+    manager.recorder = recorder
     manager.bus.arm(recorder.authority)
     manager.bus.subscribe(recorder.record_bus)
     service = manager.verified_readiness = VerifiedReadiness(manager)
@@ -394,19 +400,53 @@ def test_real_inert_marker_verifier_publishes_readiness_only_after_durable_clean
         manager.modules[module.name] = module
         manager.module_trust[module.name] = {"origin": "builtin"}
         service.register(module)
+    # This integration must acquire a fresh issuer lease, so its detector uses
+    # a real owned module lifecycle rather than a never-ticking alive stub.
+    guard._thread = None
+    guard._status = "stopped"
+    combat = AdversaryCombat(tmp_path, rollback_anchor={})
+    combat.bind(manager.bus)
+    combat.bind_manager(manager)
+    combat.policy = lambda: CombatPolicy(
+        block_network=False, isolate_host=False, activate_honeypots=False,
+    )
+    manager.modules[combat.name] = combat
+    response.bind_manager(manager)
+    combat.start()
+    deadline = time.monotonic() + 5
+    while not combat.response_ready() and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert combat.response_ready(), combat.health_note
     install_policies([{"mitre": "T1003"}], "readiness-inert-source", tmp_path)
     drill_resolution.apply_contracts(
         [{"mitre": "T1003", "name": "Inert credential marker"}],
         "readiness-inert-source", tmp_path, installed=["T1003"],
     )
     assert _row(service, "T1003")["stage"] == "declared"
+    guard.start()
+    assert guard._first_cycle_complete.wait(2)
     try:
         result = verify_practice_fixes(
             ["T1003"], source_run_id="readiness-inert-source", data_dir=tmp_path,
             db_path=tmp_path / "flight-recorder.db", bus=manager.bus,
             purple_guard=guard, active_response=response, recorder_timeout=5,
+            manager=manager, recorder=recorder,
         )
-        assert result["ok"], result
+        assert result["ok"], json.dumps(result, indent=2)
+        events = manager.bus.recent(500)
+        detection = next(event for event in events
+            if event.module == "Purple Remediation Guard"
+            and event.details.get("practice_verification_id")
+            == result["results"][0]["verification_id"])
+        response_event = next(event for event in events
+            if event.module == "Active Response SOAR"
+            and event.details.get("trigger_ts") == detection.ts
+            and event.details.get("mitigated") is True)
+        assert manager.bus.verify(detection) and manager.bus.verify(response_event)
+        assert response_event.details["delegation_mode"] == "issuer-original-event"
+        assert response_event.details["origin_event_digest"] == detection.hmac_sig
+        assert response_event.details["queue_request_id"] is None
+        assert guard._validation_lease is None
         row = _row(service, "T1003")
         assert row["stage"] == "response-verified", row
         assert not list((tmp_path / "drill-sandbox").glob("*_practice_*.txt"))
@@ -417,6 +457,7 @@ def test_real_inert_marker_verifier_publishes_readiness_only_after_durable_clean
         BaseModule.stop(guard)
         assert _row(service, "T1003")["stage"] == "declared"
     finally:
+        combat.stop()
         recorder.close()
         BaseModule.stop(guard)
         BaseModule.stop(response)

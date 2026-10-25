@@ -28,6 +28,7 @@ from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.module_manager import ModuleManager
 from angerona.core.platforms import current_platform
 from angerona.core.status_report import StatusReporter
+from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
 from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 
 
@@ -36,6 +37,7 @@ def run_headless(
     stop_event: threading.Event | None = None,
     runtime_control=None,
     force_chill: bool = False,
+    process_snapshot_lifecycle: ProcessSnapshotLifecycle | None = None,
 ) -> int:
     """Build core services (no Qt), start modules, and block until signalled."""
     config = Config.load()
@@ -145,6 +147,11 @@ def run_headless(
                 flush=True,
             )
 
+    if process_snapshot_lifecycle is not None:
+        process_snapshot_lifecycle.start()
+        if not process_snapshot_lifecycle.wait_started():
+            print("[Angerona] Process inventory collector unavailable; local fallback is disabled.",
+                  flush=True)
     manager.discover()
     if chill is not None:
         deferred = chill.prepare_modules()
@@ -206,7 +213,13 @@ def run_headless(
             except Exception:
                 pass
         reporter.stop()
-        manager.stop_all()
+        try:
+            manager.stop_all()
+        finally:
+            if process_snapshot_lifecycle is not None:
+                process_snapshot_lifecycle.request_stop()
+                if not process_snapshot_lifecycle.wait_retired():
+                    print("[Angerona] Process inventory retirement remains worker-owned.", flush=True)
         alert_retention.stop(timeout=2.0)
         if metrics_publisher is not None:
             metrics_publisher.stop()

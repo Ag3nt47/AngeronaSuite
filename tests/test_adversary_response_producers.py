@@ -75,7 +75,7 @@ def test_office_child_without_process_identity_is_not_response_authorized() -> N
     assert "response_authorized" not in emitted[-1]
 
 
-def test_reviewed_purple_file_policy_contracts_only_exact_artifact(tmp_path: Path) -> None:
+def test_reviewed_purple_file_policy_without_lease_has_no_response_authority(tmp_path: Path) -> None:
     install_policies([{"mitre": "T1003"}], "producer-test", tmp_path)
     sandbox = tmp_path / "drill-sandbox"
     sandbox.mkdir()
@@ -86,9 +86,14 @@ def test_reviewed_purple_file_policy_contracts_only_exact_artifact(tmp_path: Pat
     module.emit = lambda message, severity, **details: emitted.append(details)
 
     assert module.scan_once() == 1
-    contract = emitted[-1]["response_contract"]
-    assert contract["actions"] == ["quarantine_file"]
-    assert contract["targets"] == {"path": str(marker)}
+    observed = emitted[-1]
+    assert observed["path"] == str(marker)
+    assert observed["disposition"] == "observation"
+    assert observed["active_attack"] is False
+    assert observed["response_authorized"] is False
+    assert "response_contract" not in observed
+    assert "practice_verification_id" not in observed
+    assert marker.read_text(encoding="utf-8") == "inert"
 
 
 def test_suspicious_port_alone_has_no_firewall_authority() -> None:

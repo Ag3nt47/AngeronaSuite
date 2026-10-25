@@ -36,7 +36,9 @@ MAX_JSON_DEPTH = 8
 MAX_JSON_VALUES = MAX_IMPORT_RECORDS * (MAX_DETAIL_FIELDS + 2)
 DEFAULT_SERVICE_QUEUE_CAPACITY = 1_024
 MAX_SERVICE_QUEUE_CAPACITY = 16_384
-DEFAULT_SERVICE_ANALYSIS_INTERVAL = 0.20
+# Advisory graph rebuilds wait one second after the previous build completes.
+# Ingestion/retention remain continuous; explicit intervals and stop flushes remain.
+DEFAULT_SERVICE_ANALYSIS_INTERVAL = 1.0
 
 _SYSLOG = re.compile(
     r"^(?:<(?P<pri>[0-9]{1,3})>)?(?P<body>[^\r\n]+)$"
@@ -1006,8 +1008,7 @@ class SentinelLensService:
                         break
 
                 if dirty and (
-                    self._queue.empty()
-                    or time.monotonic() - last_analysis >= self._analysis_interval
+                    time.monotonic() - last_analysis >= self._analysis_interval
                     or self._stop_requested.is_set()
                 ):
                     self._analyze()

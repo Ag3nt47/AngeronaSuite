@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import time
+import json
+from types import SimpleNamespace
 
 from angerona.core import drill_resolution
 from angerona.core.eventbus import Event, EventBus, Severity
@@ -14,6 +16,51 @@ from angerona.shark.aar_report import StepVerdict, evaluate
 
 def _key(root) -> None:
     (root / "bus.key").write_text(bytes(range(32)).hex(), encoding="ascii")
+
+
+def _offline_practice_inventory(monkeypatch):
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+    # This fixture supplies only general readiness. The exact owned child is
+    # still independently observed by the real native issuer API.
+    monkeypatch.setattr(process_monitor, "process_snapshot", lambda *a, **k:
+        ProcessSnapshot((), time.time(), True, 0, 0, 0, 0, "", True))
+
+
+def _shared_practice_combat(root, manager, response):
+    from angerona.modules.adversary_combat import AdversaryCombat, CombatPolicy
+    combat = AdversaryCombat(root, rollback_anchor={})
+    combat.bind(manager.bus)
+    combat.bind_manager(manager)
+    combat.policy = lambda: CombatPolicy(
+        block_network=False, isolate_host=False, activate_honeypots=False,
+    )
+    manager.modules[combat.name] = combat
+    response.bind_manager(manager)
+    combat.start()
+    deadline = time.monotonic() + 5
+    while not combat.response_ready() and time.monotonic() < deadline:
+        time.sleep(.01)
+    assert combat.response_ready(), combat.health_note
+    return combat
+
+
+def _assert_issuer_original_response(bus, result):
+    verification_id = result["results"][0]["verification_id"]
+    events = bus.recent(500)
+    detection = next(event for event in events
+        if event.module == "Purple Remediation Guard"
+        and event.details.get("practice_verification_id") == verification_id)
+    response = next(event for event in events
+        if event.module == "Active Response SOAR"
+        and event.details.get("trigger_ts") == detection.ts
+        and event.details.get("mitigated") is True)
+    assert bus.verify(detection) and bus.verify(response)
+    assert response.details["delegation_mode"] == "issuer-original-event"
+    assert response.details["origin_event_digest"] == detection.hmac_sig
+    assert response.details["queue_request_id"] is None
+    assert not any(event.module in {"Active Response SOAR Request", "Red Team Practice Lab"}
+                   for event in events)
 
 
 def test_active_response_processes_burst_oldest_first(monkeypatch) -> None:
@@ -275,8 +322,9 @@ def test_one_purple_hit_cannot_hide_a_repeated_technique_miss(tmp_path) -> None:
 
 
 def test_practice_fix_requires_detection_recorder_response_and_cleanup(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
+    _offline_practice_inventory(monkeypatch)
     _key(tmp_path)
     recorder = FlightRecorder(tmp_path / "flight-recorder.db")
     bus = EventBus()
@@ -286,6 +334,10 @@ def test_practice_fix_requires_detection_recorder_response_and_cleanup(
     guard.bind(bus)
     response = ActiveResponseSOAR()
     response.bind(bus)
+    manager = SimpleNamespace(bus=bus, recorder=recorder, modules={
+        guard.name: guard, response.name: response,
+    })
+    combat = _shared_practice_combat(tmp_path, manager, response)
     install_policies([{"mitre": "T1003"}], "source-run", tmp_path)
     drill_resolution.apply_contracts(
         [{"mitre": "T1003", "name": "Credential Access"}],
@@ -302,15 +354,19 @@ def test_practice_fix_requires_detection_recorder_response_and_cleanup(
             bus=bus,
             purple_guard=guard,
             active_response=response,
+            manager=manager, recorder=recorder,
             # The production budget is 10 seconds. Keep the test bounded while
             # allowing a loaded Windows runner to finish its SQLite WAL commit.
             recorder_timeout=5.0,
         )
     finally:
+        combat.stop()
         recorder.close()
 
-    assert result["ok"], result
+    assert result["ok"], json.dumps(result, indent=2)
     assert result["verified"] == result["total"] == 1
+    _assert_issuer_original_response(bus, result)
+    assert guard._validation_lease is None
     checks = result["results"][0]["checks"]
     assert all(checks.values())
     assert not list((tmp_path / "drill-sandbox").glob("*_practice_*.txt"))
@@ -321,8 +377,9 @@ def test_practice_fix_requires_detection_recorder_response_and_cleanup(
 
 
 def test_process_practice_fix_kills_only_its_tagged_child_and_closes(
-    tmp_path,
+    tmp_path, monkeypatch,
 ) -> None:
+    _offline_practice_inventory(monkeypatch)
     _key(tmp_path)
     recorder = FlightRecorder(tmp_path / "flight-recorder.db")
     bus = EventBus()
@@ -332,6 +389,10 @@ def test_process_practice_fix_kills_only_its_tagged_child_and_closes(
     guard.bind(bus)
     response = ActiveResponseSOAR()
     response.bind(bus)
+    manager = SimpleNamespace(bus=bus, recorder=recorder, modules={
+        guard.name: guard, response.name: response,
+    })
+    combat = _shared_practice_combat(tmp_path, manager, response)
     install_policies([{"mitre": "T1059"}], "source-run", tmp_path)
     drill_resolution.apply_contracts(
         [{"mitre": "T1059", "name": "Benign Execution"}],
@@ -348,12 +409,16 @@ def test_process_practice_fix_kills_only_its_tagged_child_and_closes(
             bus=bus,
             purple_guard=guard,
             active_response=response,
+            manager=manager, recorder=recorder,
             recorder_timeout=5.0,
         )
     finally:
+        combat.stop()
         recorder.close()
 
-    assert result["ok"], result
+    assert result["ok"], json.dumps(result, indent=2)
+    _assert_issuer_original_response(bus, result)
+    assert guard._validation_lease is None
     assert result["results"][0]["checks"]["response_succeeded"] is True
     assert result["results"][0]["checks"]["postcondition_satisfied"] is True
     closure = drill_resolution.resolution_snapshot(tmp_path)["t1059"]

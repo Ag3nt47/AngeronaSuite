@@ -563,11 +563,21 @@ class SpywareGuardModule(BaseModule):
         return (finding.get("source") == "windows.run"
                 and finding.get("kind") == "persistence_transient_payload")
 
+    @staticmethod
+    def _cadence_observation_only(finding: dict) -> bool:
+        # A locally authenticated cadence observation remains an observation.
+        # Only this producer's explicit corroborated policy can justify its
+        # existing direct sensor response; origin authentication alone cannot.
+        return (finding.get("kind") == "sensor_c2_beacon_detector"
+                and not (finding.get("detector_policy") == "cadence-plus-threat-intel"
+                         and finding.get("threat_intel_corroborated") is True))
+
     def _response(self, finding: dict, local_authority: bool) -> dict:
         if (not local_authority or not self._settings["spyware_auto_contain"]
                 or finding.get("response_eligible") is False
                 or self._memory_observation_only(finding)
-                or self._startup_configuration_only(finding)):
+                or self._startup_configuration_only(finding)
+                or self._cadence_observation_only(finding)):
             return {}
         pid, birth = finding.get("pid"), finding.get("process_create_time")
         if finding.get("kind") in {"private_executable_memory", "sensor_memory_injection_scanner"}:
@@ -623,11 +633,14 @@ class SpywareGuardModule(BaseModule):
     def _publish(self, finding: dict, *, local_authority: bool,
                  response_already_requested: bool = False) -> None:
         memory_observation = self._memory_observation_only(finding)
-        if memory_observation or self._startup_configuration_only(finding):
+        cadence_observation = self._cadence_observation_only(finding)
+        if memory_observation or cadence_observation or self._startup_configuration_only(finding):
             finding = dict(finding, response_eligible=False, finding_kind="exposure",
                 classification_reason=("Memory permissions alone are an exposure lead; "
                     "JIT runtimes overlap and independent threat evidence is required"
-                    if memory_observation else "Startup configuration alone is an exposure lead; "
+                    if memory_observation else "Connection timing alone is an exposure lead; "
+                    "maliciousness is unconfirmed and no corroborated producer policy was supplied"
+                    if cadence_observation else "Startup configuration alone is an exposure lead; "
                     "payload existence, execution and maliciousness are unconfirmed"))
             finding.pop("single_rule_host_fallback", None)
             response_already_requested = False
@@ -794,6 +807,16 @@ class SpywareGuardModule(BaseModule):
                         self._coverage["memory_sensor_identity"] = {
                             "status": "complete" if fresh else "partial",
                             "detail": identity_reason}
+                if event.module == "C2 Beacon Detector":
+                    finding.update(
+                        detector_policy=details.get("detector_policy"),
+                        threat_intel_corroborated=details.get("threat_intel_corroborated"),
+                    )
+                    finding["evidence"]["producer_policy"] = {key: details.get(key)
+                        for key in ("detector_policy", "threat_intel_corroborated",
+                                    "active_attack", "disposition")}
+                    if self._cadence_observation_only(finding):
+                        finding.update(response_eligible=False, finding_kind="exposure")
                 if event.module == "API Patch / Anti-Blinding Detector":
                     ticks = details.get("process_birth")
                     if type(ticks) is int and 116444736000000000 < ticks < 2650467744000000000:

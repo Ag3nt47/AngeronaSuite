@@ -174,6 +174,8 @@ def test_live_debug_switch_reaches_app_and_is_removed_before_qt(monkeypatch):
     import angerona.app as application
     from angerona import branding
     from angerona.core import crashlog, data_paths, hardening, privilege, singleton, win
+    from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
+    from angerona.telemetry import sensors
 
     calls = {}
 
@@ -193,9 +195,17 @@ def test_live_debug_switch_reaches_app_and_is_removed_before_qt(monkeypatch):
     class App:
         def __init__(self, qt, **kwargs):
             calls["application_arguments"] = kwargs
+            self.inventory = kwargs["process_snapshot_lifecycle"]
+            assert isinstance(self.inventory, ProcessSnapshotLifecycle)
+            assert sensors._process_snapshot_provider is self.inventory.provider
+            assert self.inventory._thread is None
 
         def start(self):
             calls["started"] = True
+
+        def shutdown(self):
+            calls["shutdown"] = calls.get("shutdown", 0) + 1
+            self.inventory.request_stop()
 
     monkeypatch.setattr(sys, "argv", ["angerona", "--chill", "--live-debug"])
     monkeypatch.delattr(sys, "frozen", raising=False)
@@ -217,3 +227,8 @@ def test_live_debug_switch_reaches_app_and_is_removed_before_qt(monkeypatch):
     assert calls["application_arguments"]["live_debug"] is True
     assert calls["application_arguments"]["force_chill"] is True
     assert calls["started"] is True
+    owner = calls["application_arguments"]["process_snapshot_lifecycle"]
+    assert calls["shutdown"] == 1
+    assert owner._thread is None and owner._stop_requested.is_set()
+    assert owner.lifecycle_snapshot()["retired"] is True
+    assert sensors._process_snapshot_provider is owner.provider

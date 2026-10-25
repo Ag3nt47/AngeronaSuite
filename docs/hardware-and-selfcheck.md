@@ -125,8 +125,22 @@ and Python versions.
 Run `run-selfcheck.bat` from the installation directory. It writes
 `selfcheck_report.txt` and returns a nonzero exit code for an unexpected
 failure. The harness constructs the application and investigation views
-offscreen using disposable state. It does not start live sensors or native
-Ollama, and does not perform real containment actions.
+offscreen using disposable state. It does not perform general host sensor
+collection or start native Ollama, and grants no host-containment authority.
+
+Its owned-controls drill supplies a fresh immutable empty general inventory
+only within a disposable workspace `.tmp` profile, with no previously running
+Process Monitor. The real issuer lease, native reads of its tagged children,
+artifact custody, drill assertions and cleanup remain. The exact supplier is
+restored on success or failure. The report labels this fixture explicitly;
+passing it does not prove complete host inventory or collector availability.
+Only the drill's own inert controls may be created and retired.
+
+The offline harness supplies a fixed loopback HTTP URL for its provider fixture
+instead of inheriting `OLLAMA_HOST`. Ollama also uses that variable for a server
+bind address, which need not be a client URL ([Ollama configuration](https://docs.ollama.com/faq#how-do-i-configure-ollama-server)).
+This changes only the checker process; normal application settings and URL
+validation remain intact. It neither starts Ollama nor adds an expected skip.
 
 The module runner adds shared identity, metadata and health checks to each
 selected module's existing self test. Results include durations and explicit

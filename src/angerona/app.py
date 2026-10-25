@@ -66,8 +66,12 @@ class AngeronaApp:
         live_debug: bool = False,
         high_water_provider: IndependentHighWater | None = None,
         startup_endpoint: str | None = None,
+        process_snapshot_lifecycle=None,
     ) -> None:
         self.qt = qt
+        # Production entry supplies a register-only owner before constructing
+        # GUI readers. Direct/offline constructors do not create a collector.
+        self._process_snapshot_lifecycle = process_snapshot_lifecycle
         self._startup_endpoint = startup_endpoint
         self._dashboard_ready_scheduled = False
         self._dashboard_ready_sent = False
@@ -671,6 +675,18 @@ class AngeronaApp:
     def _load_modules_guarded(self, loading_token: str | None = None) -> None:
         """Keep a loader failure observable instead of losing a daemon thread."""
         try:
+            inventory = getattr(self, "_process_snapshot_lifecycle", None)
+            if inventory is not None and not self._startup_cancelled():
+                inventory.start()
+                ready = inventory.wait_started()
+                if not ready and not self._startup_cancelled():
+                    self._record_startup_degradation(
+                        "Process Inventory",
+                        "isolated inventory is unavailable; local fallback is disabled",
+                        RuntimeError("process inventory did not become ready"),
+                    )
+            # Waiting for the child happens before the startup/teardown lock,
+            # so a closing GUI never waits for native bootstrap to finish.
             lifecycle_lock = getattr(self, "_startup_lifecycle_lock", None)
             if lifecycle_lock is None:
                 self._load_modules()
@@ -1208,7 +1224,12 @@ class AngeronaApp:
                 pass
             self._admin_audit = None
         self._endpoint_identity = None
-        self.manager.stop_all()
+        try:
+            self.manager.stop_all()
+        finally:
+            inventory = getattr(self, "_process_snapshot_lifecycle", None)
+            if inventory is not None:
+                inventory.request_stop()
         debug_service = getattr(self, "live_debug_service", None)
         if debug_service is not None:
             try:

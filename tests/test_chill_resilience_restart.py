@@ -176,6 +176,8 @@ def test_actual_engine_entry_dispatch_preserves_force(monkeypatch, flag, module_
 def test_actual_headless_cli_dispatch_preserves_runtime_force(monkeypatch, forced):
     from angerona import __main__ as entry
     from angerona.core import data_paths, hardening, headless, privilege, singleton, win, crashlog
+    from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
+    from angerona.telemetry import sensors
 
     calls = []
     closed = []
@@ -188,9 +190,27 @@ def test_actual_headless_cli_dispatch_preserves_runtime_force(monkeypatch, force
     monkeypatch.setattr(hardening, "apply_process_mitigations", lambda: None)
     monkeypatch.setattr(singleton, "acquire_single_instance", lambda:
                         SimpleNamespace(close=lambda: closed.append(True)))
-    monkeypatch.setattr(headless, "run_headless", lambda **kwargs: calls.append(kwargs) or 29)
+    def headless_route(**kwargs):
+        owner = kwargs["process_snapshot_lifecycle"]
+        assert isinstance(owner, ProcessSnapshotLifecycle)
+        assert sensors._process_snapshot_provider is owner.provider
+        assert owner._thread is None  # The inert route must not start a child.
+        assert not owner.lifecycle_snapshot()["retired"]
+        calls.append(kwargs)
+        return 29
+
+    monkeypatch.setattr(headless, "run_headless", headless_route)
     assert entry.main() == 29
-    assert calls == [{"force_chill": True} if forced else {}]
+    assert len(calls) == 1
+    owner = calls[0]["process_snapshot_lifecycle"]
+    assert calls[0] == {
+        "process_snapshot_lifecycle": owner,
+        **({"force_chill": True} if forced else {}),
+    }
+    assert owner._thread is None and owner._stop_requested.is_set()
+    assert owner.lifecycle_snapshot()["retired"] is True
+    # Production teardown must not silently select the local collector.
+    assert sensors._process_snapshot_provider is owner.provider
     assert closed == [True]
 
 

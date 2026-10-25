@@ -2141,6 +2141,23 @@ class AdversaryCombat(BaseModule):
         details = event.details or {}
         pid = details.get("pid")
 
+        process_first = (
+            policy.mode == "maximum"
+            and policy.process_action == "terminate"
+            and "terminate_process" in response_actions
+        )
+        if process_first:
+            # A slow remote-firewall provider must not postpone an already
+            # authorized exact-process termination. Existing native custody and
+            # journal gates remain inside the process transaction.
+            process_action = self._act_on_process(
+                pid, policy, event, combat_id, allowed_actions=response_actions
+            )
+            if process_action is not None:
+                actions.extend(process_action)
+            if self._mutation_blocked:
+                return
+
         if policy.block_network and "block_remote_ip" in response_actions:
             for remote_ip in self._remote_ips(event):
                 action = self._block_remote_ip(remote_ip, event, combat_id)
@@ -2149,13 +2166,14 @@ class AdversaryCombat(BaseModule):
                 if self._mutation_blocked:
                     return
 
-        process_action = self._act_on_process(
-            pid, policy, event, combat_id, allowed_actions=response_actions
-        )
-        if process_action is not None:
-            actions.extend(process_action)
-        if self._mutation_blocked:
-            return
+        if not process_first:
+            process_action = self._act_on_process(
+                pid, policy, event, combat_id, allowed_actions=response_actions
+            )
+            if process_action is not None:
+                actions.extend(process_action)
+            if self._mutation_blocked:
+                return
         if (
             policy.quarantine_files
             and path

@@ -755,3 +755,571 @@ exit 0; compilation and whitespace checks passed. No product, workflow,
 timeout, exclusion or parser security policy changed. Local validation used
 Python 3.12; corrected cross-version results require the new public-head run.
 Historical failed runs remain historical and were not rerun on their old SHA.
+
+### VPN and diagnostic-throughput follow-up
+
+The mixed-interface Fast Path rule treated a process with established VPN and
+public physical-address sockets as critical split-tunnel abuse. The sampler
+does not establish actual routing, the operator's split-tunnel policy, malicious
+content or an exact process generation. An isolated authenticated EventBus
+fixture reproduced the critical from that topology alone. This check now emits
+MEDIUM exposure with no response authority. Bounded socket context and dedup
+remain; independent credential-theft IOC matching still emits CRITICAL in the
+same event. No vendor or executable-name exemption was added.
+
+The operator authorized allowing the installed VPN. Four exact ordinary
+installed executables were independently reviewed with valid publisher
+signatures and current SHA-256 values, then approved through the existing manual
+path-and-digest policy while Angerona was stopped. The previous policy was
+absent; no existing entries were discarded. Stronger behavior and activated
+SpywareGuard definition matching retain their response policy. Reviewed files,
+digests and private receipts stay outside the public repository. A separate
+Windows PowerShell signature adapter returned unavailable because its security
+module failed to load duplicate extended type data; that failure does not prove
+invalid signatures, an execution-policy denial or spyware. No host module,
+execution-policy or environment repair was attempted.
+
+The unchanged Live Debug transport could quickly deliver an inert snapshot
+without contention, but an actual-core memory-first reader remained incomplete
+after 30 seconds. Removing per-record output I/O therefore did not resolve the
+observed delivery limit. In a controlled admitted-client native contention
+fixture, individual writes delivered only 370 of 2,001 sequences in 12.22 seconds
+before the snapshot deadline; coalesced writes delivered all 2,001 in 3.27
+seconds, reducing writes from 374 to 22. These are fixture results, not measured
+host CPU savings or proof of the old unrecorded disconnect's cause. A client
+starved before reading still fails the unchanged native I/O deadline.
+
+The server now batches its existing pages of at most 100 records and their
+preceding retention notice into writes of at most 64 KiB. Per-frame 32 KiB bounds,
+newline framing, ordering, gap notices, cursor advancement after complete page
+writes, process identity, same-user ACL, cancellation and I/O deadlines remain.
+Tests cover near-limit split/coalesced frames, native synchronous and pending
+completion, retained-buffer drain, independent slow/fast clients and explicit
+disconnect failure. Independent static review found no blocker.
+
+### Warm observation and graph rebuild correction
+
+A further 300-second window on the unchanged preceding generation used a frozen
+scope of **22 source files**, unchanged before and after the observation.
+All 41 qualified status samples were ARMED with pending zero, Chill enabled,
+ordinary privilege and no active critical. Whole-window core CPU was 92.609% of
+one logical CPU (11.576% of the eight-CPU machine); Black Box was 0.823% of one
+CPU. GUI heartbeat lag peaked at 2,187 ms; recent tick-body measurements peaked
+at 52.0966 ms, with 12 available and eight missing publications. No new watchdog
+entry or queue drop was observed. The guarded publisher overlapped part of this
+window and consumed substantial CPU; these observations do not isolate causes.
+
+The hottest previously unmapped native thread remains unattributed. Source
+review independently found that the app-owned Sentinel Lens worker rebuilt its
+complete retained graph whenever a consumed batch emptied its queue, bypassing
+the declared 200 ms interval. A deterministic inert fixture reproduced three
+builds for three arrivals at 0, 62.5 and 125 ms. Removing that early condition
+coalesces dirty input at the nominal cadence; idle polling can add up to 50 ms,
+followed by scheduling and build time. Every accepted record, bounded retention,
+drop accounting and final dirty shutdown publication remain. This is an
+advisory snapshot freshness change, with no threat-response or collector TTL
+change. It does not identify the retired hot thread or establish a live speedup.
+
+Protected-original review from the preceding cutoff through exact core exit
+covered all serious findings in the interval: **zero HIGH and zero CRITICAL**.
+All 70 selected originals verified with unchanged existing signing-key identity
+and bytes. Thirty SpywareGuard rows were configuration-only exposures without
+response authority; the newest 40 of 426 Sysmon rows explicitly reported the
+process-diff fallback. The other 386 older INFO Sysmon rows were outside this
+selection. This bounded archive review is distinct from continuous live
+delivery and does not establish host cleanliness.
+
+Before runtime edits, all eight exact suite generations retired under the
+reviewed, fully authenticated 458-record journal with matching checkpoint and
+witness, no pending phases and byte-identical authority before and after. Its
+two new records were paired startup Smart Deception activation, not a
+threat-triggered PID action. The four substantive processes had retained native
+termination receipts; their wrappers exited naturally. Every held handle closed.
+The stopped validation interval is a runtime coverage gap.
+
+### Follow-up offline validation
+
+The actual-source VPN gate passed 127 cases with two existing platform skips;
+the Live Debug gate passed 154 with one existing platform skip; Sentinel Lens
+passed 26 with one existing skip. All returned native exit 0, with owned process
+retirement evidence. Five deterministic cadence regressions cover spaced-input
+coalescing, dirty idle publication, due backlog, quiet idle and final stop flush.
+
+The first broader smoke check passed 28 phases and failed AI Triage readiness
+because a user environment bind address was not a valid client URL. The offline
+checker now uses its fixed loopback HTTP fixture and continues to forbid native
+Ollama startup. It changes no persistent environment, production URL validation
+or expected-skip rules. The final fresh disposable-profile run passed all 29
+phases; its runner reported 69 passes and 18 optional/unstarted skips. Both
+native selfcheck generations retired with exit 0 and every held handle closed;
+Qt verification retired 13 widget owners, 13 readers and eight Python workers.
+Compilation, documentation drift and whitespace checks passed.
+
+### Continuing freezes and verified response promotion
+
+The next frozen 25-source generation disproved a complete responsiveness fix.
+Its first 300-second observation remained in Chill with 39 current ARMED status
+samples and no pending actions, but the tail recorded a 9,156 ms GUI heartbeat
+delay and a new watchdog entry. The sampled Python main-thread stack ended in
+`qt.exec()` and did not identify a callback or lock cycle. A later 90-second
+window included 12 failed native window-pump probes and status as old as 103
+seconds. A stale ARMED sample does not establish current protection readiness.
+The operator subsequently disabled Chill; those workloads must be distinguished.
+
+Batching improved the controlled transport fixture, but actual finite delivery
+remains intermittent: one finite reader exited 2 with incomplete coverage,
+whereas a subsequent 90-second follow completed and a separate memory-first
+reader reached diagnostics in 3.19 seconds. Different time and load prevent
+attributing those differences to output persistence alone. Retention gaps and
+client failures remain explicit. No continuous or lossless coverage is claimed.
+
+A bounded external, non-suspending 60-second profiler collected 1,070 Python
+execution-lock-owner samples, with 71 sampling errors retained. Of those, 558
+followed the shared rich process collector into protected-process creation-time
+fallback and psutil's native whole-system process query. The profiler consumed
+about 2% of one logical CPU. This establishes an actual lock-holding hotspot;
+its compressed per-thread timelines cannot identify the duration or cause of a
+particular earlier GUI pause. Moving this collector across a process boundary
+addresses that mechanism without weakening process-generation or freshness
+checks. The existing detached console omits parts of the full dashboard and was
+not substituted for it.
+
+Authenticated originals also proved a distinct false-positive chain. The beacon
+producer marked a process's connection timing as observation-only, without
+corroborated threat intelligence or a response contract. SpywareGuard preserved
+the source digest but promoted that finding into an active response contract.
+The fully authenticated action journal proved a real exact-generation process
+termination. Neither a publisher signature nor endpoint ownership proves host
+cleanliness, but the original producer evidence did not authorize that response.
+No vendor or executable allowlist was added to solve this promotion bug.
+
+Later critical watchdog exhaustion and missing probe echoes are genuine
+protection-availability failures. They do not independently prove malware or
+API hooking. Subsequent fresh status showed containment recovery; stale status
+was not counted as proof of availability. Production AI readiness also retained
+its environment URL-policy failure; the offline fixture correction did not
+repair that production configuration. One intended 600-second observer stopped
+after 90 seconds near the process termination; its incomplete interval and
+missing native exit receipt remain a coverage gap.
+
+The published fixture-only commit `d7123b05` completed all 12 CI jobs and all
+three Security jobs. Each Windows Python 3.10–3.13 job passed 9,037 tests with
+22 skips. Those results validate that exact published revision, not subsequent
+runtime candidates; historical failures were neither deleted nor rerun.
+
+### Collector isolation and response-boundary correction
+
+The embedded dashboard and direct headless entry now register one retained
+inventory owner before constructing consumers. Native rich process collection
+runs in its child; the original collector body and independent birth/image
+checks remain intact. Qt admission is refused before acquiring the shared cache
+lock. Existing collection-start TTL is unchanged, and failed or timed-out
+collection stays unavailable instead of falling back to native work in Qt.
+The private inherited-stdio protocol uses bounded strict JSON, an ephemeral
+direction-separated MAC, exact parent/wrapper/worker generation bindings, and
+request sequence/nonces. It carries observations, not response commands or an
+installation credential. No external endpoint or new installed service exists.
+
+Startup and retirement remain off Qt, with one owner retained through uncertain
+cleanup. Native regression fixtures hold the child's Python execution lock
+while a parent Qt timer and GUI admission continue. Tests also exercise malformed
+and replayed receipts, deadlines, startup failures, cancellation during spawn,
+and forced parent exit after worker admission. Windows creates its new owned
+wrapper suspended, assigns its private job, then resumes its independently
+verified sole initial thread; this closes the pre-hello redirector inheritance
+gap identified during review. No running target is suspended. An abrupt parent
+exit within native creation before job assignment remains an unproved creation
+boundary; post-admission job closure tests do not prove atomic creation.
+See Microsoft's [job inheritance rules](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+
+SpywareGuard now carries the beacon producer's policy and corroboration evidence
+through its signed wrapper. Missing, unknown and alert-only cadence policies
+remain exposure without process, peer or host fallback authority, even when
+conflicting response hints are supplied. The explicitly corroborated producer
+policy retains automatic response, including existing upstream-owner dedup.
+The original source failed eight of ten focused cases; both corroborated
+positive cases already passed. The applied six-suite gate passed 202 cases.
+
+Maximum/terminate dispatch now attempts the authorized exact process transaction
+before remote-IP firewall work as well as program isolation. A held firewall
+provider no longer delays that attempt. Existing authenticity, typed action
+capabilities, native generation custody, journal and uncertain-effect holds
+remain. Other modes and contracts preserve their previous behavior. The
+original dispatch failed three of 13 new inert scheduling cases; the applied
+70-case process/contract/checkpoint gate passed without skips.
+
+Canary misses retain their original HIGH/CRITICAL availability priority and
+counters but explicitly report coverage failure with unconfirmed cause. Other
+trusted process activity, especially polling fallback, cannot establish ETW
+hooking or deliberate suppression. The signed record carries no active-attack
+or response authority; the existing synthetic-producer practice classification
+still applies. Two new authenticated polling/missing-probe cases and four
+durable-pipeline cases passed on the applied source. Existing generic miss
+health calculation can overwrite the critical branch's health-10 call with 40
+after two misses; that separate health-policy limitation remains unchanged.
+
+### Fresh isolated-collector observations
+
+The first restarted generation kept all 30 scoped source hashes unchanged over
+300 seconds. After excluding startup publications, 51 current status samples
+were ARMED in Chill, with no pending response. Core CPU was 35.766% of one
+logical CPU (4.471% of this eight-CPU host), while the separate inventory worker
+used 56.912% (7.114% of the host). Black Box used 1.563% of one CPU. Collection
+cost moved across the process boundary; it was not eliminated. Of 121 bounded
+core window-pump probes, 119 responded and two early probes timed out. GUI
+heartbeat lag peaked at 2,172 ms, and a startup tick at 1,303 ms. No new hang
+watchdog entry appeared. These workloads differ from the preceding run and do
+not establish an isolated causal speedup.
+
+A second 300-second window on the same generation was actually in Full mode:
+61 qualified samples showed Chill off, ARMED and no pending work. Its mode-change
+origin was not exported and was not inferred as a manual unlock. Core CPU was
+94.458% of one CPU (11.807% of the host), inventory worker 55.849% (6.981%), and
+Black Box 0.927%. The core answered 114 window-pump probes and timed out eight;
+heartbeat lag peaked at 875 ms and recent tick duration at 243 ms. The watchdog
+file again remained unchanged. This demonstrates remaining intermittent window
+pump delays, not a guarantee that every click is responsive. Observer CPU and
+the competing validation load remain in the private receipts.
+
+Authenticated archive review verified all 184 selected originals, including all
+42 serious findings across that generation's reviewed interval. Thirty-three
+serious rows preceded the second window. Its nine new serious findings were
+failed probe/coverage checks and platform hardening exposure. Missing recovery
+copies, missing audit/Sysmon access, unavailable graph evidence, aggregate
+unverified driver inventory, and claimed vulnerability candidates did not prove
+malicious drivers or exploited vulnerabilities. These coverage failures remain
+open; no alert or baseline was cleared.
+
+### Unleased marker false positives and supported practice authority
+
+The same review uncovered a second actual false-positive response chain. A
+separate disposable-profile checker launched three owned, fixed sleep probes.
+The live Purple Guard recognized their marker text but had no issuer lease for
+them. It nevertheless produced process response contracts. Signed originals,
+the checker's authenticated history and independent native producer receipts
+bound all three controls to that isolated test. The live action journal proved
+two exact-generation native terminations. A third attempt failed before a
+verified effect when the native image query failed; it was not counted as a
+successful kill. The controls' inert ownership is established by that combined
+evidence, not by accepting a marker label or executable signature as trust.
+
+Purple Guard now treats unleased lexical process and file markers as HIGH
+observations: no active-attack flag, response authority, response contract or
+copied practice lineage. Independent bounded observation dedup does not consume
+a future issuer-attested hit. Valid issuer-backed controls retain their normal
+contracts, and independent malicious indicators retain their response policy.
+This also prevents an ordinary marker observation from entering SOAR's active
+attack count or waking modes as an asserted attack.
+
+The next diagnostic generation launched with 33 scoped runtime source hashes.
+A native accessibility invocation switched Chill off in about 209 ms; a fresh
+generation-bound status confirmed Full mode. Later archive review authenticated
+170 selected originals, including all 28 HIGH/CRITICAL rows and both unleased
+Purple process observations. Both observations explicitly refused response
+authority, and the journal remained at 477 fully authenticated records with a
+matching checkpoint/witness and no pending action. The only records added after
+the previous generation's 475 were startup Smart Deception activation. There
+was no new PID/IP containment in that reviewed interval. The three critical
+findings concerned recovery exposure and failed sensor probes. This is bounded
+evidence for the calibrated marker path, not a complete host-security verdict.
+
+Automated attempts to open an alert detail initially failed in the diagnostic
+selector: Qt exposes the checkable Details control as a checkbox, and accessible
+row selection did not establish the table's current row. Subsequent attempts
+also did not establish a newly opened owned detail dialog. Every helper had a
+native terminal/closed-handle receipt; no successful alert-detail latency is
+claimed from those attempts. The successful Full-mode invocation is distinct
+from validation of the alert-detail path.
+
+Before each runtime source change, the reviewed suite generations retired under
+fresh full-history authentication, matching witness/checkpoint, no pending
+phases, and byte-identical journal authority before and after. The last completed
+retirement covered ten exact native generations; five substantive processes
+were terminated through retained handles and their five wrappers exited
+naturally. Diagnostic handles closed. The following restart left an 11 minute
+13 second protection gap while stopped validation ran. The VPN GUI remained
+alive, and its four exact approved executable digests still matched; unavailable
+SYSTEM process queries were retained as coverage gaps. No encrypted-traffic
+efficacy claim follows from service/adapter liveness.
+
+### Full-mode Black Box follow-up
+
+A further 300-second observation kept all 33 scoped runtime source hashes
+unchanged. Whole-window native CPU counters measured the core at 98.266% of one
+logical CPU, the separate inventory worker at 57.724%, and Black Box at 0.984%.
+These correspond to 12.283%, 7.215% and 0.123% of the eight-CPU host. The core
+answered 109 native window-pump probes and timed out 13; Black Box answered all
+61 of its probes. Heartbeat lag peaked at 1,141 ms and recent GUI tick duration
+at 352 ms. No new hang-watchdog entry appeared. All 61 distinct, generation-bound
+status samples confirmed Full and ARMED; their maximum age was 3.941 seconds.
+The latest sample had no pending response. Window-pump replies do not measure
+click, tab, alert-detail or paint latency, and the timeouts remain open
+responsiveness evidence.
+
+All 206 selected archived originals verified, including the complete set of 48
+serious findings across the reviewed generation interval: 37 HIGH and 11
+CRITICAL. The 300-second window itself added six HIGH and four CRITICAL rows.
+Four repeated canary misses and their four critical coverage-failure reports
+retained an unconfirmed cause; the remaining HIGH rows were an unleased marker
+observation and a platform-hardening exposure. These findings supplied no
+response authority or proof of active compromise. Selected lower-priority
+module tails were capped, so complete serious-event selection does not imply a
+continuous or complete event stream.
+
+The authenticated action journal remained at 477 records with matching
+checkpoint and witness, no pending phases, and unchanged bytes across all four
+authority objects. No new journaled containment action was established in this
+window. No alerts, baselines or authority were cleared to obtain that result.
+The observer's native generations retired and its query handles closed while
+the application continued running.
+
+A private 24-case integration gate and an inert SOAR baseline overlapped this
+window. Their wall-time boundaries are preserved, but exact native CPU for
+those helpers was not collected. Earlier integration and accessibility helpers
+were confirmed to precede the window. These competing workloads and differing
+runtime phases prevent attributing timing differences to a single change.
+
+### Remaining execution-lock hotspot
+
+A fresh bounded, non-suspending profile yielded 800 weighted Python
+execution-lock-owner samples and retained 75 sampling read-race errors. Sentinel
+Lens accounted for 421 of those samples (52.625%); its analysis function for 415
+(51.875%). These are sampled stack proportions, not CPU-time measurements or
+the duration of a particular GUI pause. They identify remaining advisory
+analysis work for investigation without proving the cause of an earlier freeze.
+The applied Sentinel Lens change now pauses one second after a completed
+advisory rebuild by default. Explicit intervals, retained evidence, queue/loss
+accounting and final stop flush remain. This changes no response policy or
+collector TTL and supplies no hard freshness or click-latency guarantee. Its
+actual Sentinel/causal gate passed 33 cases with one existing platform skip;
+the subsequent frozen-source observation is recorded below.
+
+### Issuer-backed practice verification and original response receipts
+
+The marker-authority correction exposed a compatibility gap in the supported
+practice verifier: its advisory file/process registrations did not supply a
+live issuer lease. The applied integration now acquires the existing lease
+through the exact manager, EventBus and bound flight recorder before creating
+controls. It enrolls the created file identity or a native process challenge,
+then requires the real Process Monitor observation and issuer-attested Purple
+receipt. A synthetic practice event, tag, run label or registration string
+cannot substitute for that proof.
+
+The applied SOAR bridge preserves the original authenticated Purple event when
+delegating to the exact registered, running Combat owner. Combat's existing
+original-event admission and HMAC dedup remain responsible for one-shot
+response. There is no copied publisher identity or fallback response actor.
+If Combat already completed that original action, SOAR can adopt only its
+signed matching receipt and verified, committed, applied, non-undone journal
+entry. File adoption additionally binds the original target and content digest;
+process adoption binds the original permitted action, native PID and birth,
+image, retained-handle custody, signaled wait and terminal exit. A completed
+old-generation receipt cannot authorize another action against a reused PID.
+Without a completed proof, new process work still requires the existing exact
+live-process identity check.
+
+An exclusive file handoff can briefly make the issuer's historical file proof
+unavailable. The applied code permits bounded observation only of that same
+registered pending handoff, with its descriptor released for Combat custody.
+Released or failed custody, changed bindings, and absent or completed handoffs
+do not grant a retry window. Full issuer proof is still mandatory before SOAR
+submission or success credit; pending state supplies neither authority nor a
+successful receipt.
+
+Practice closure still requires the positive control, a quiet negative control,
+both exact signed events durably recorded, verified response, and the action's
+postcondition before verifier cleanup. Marker cleanup is restricted to the
+issuer's retained identity; a replaced file is not removed by pathname fallback.
+An uncertain probe retirement retains the existing owner until terminal proof,
+without respawning or repeating host actions. Frozen packaged runtimes
+explicitly refuse the Python process probe because the application executable
+is not an admitted Python interpreter; file-marker practice remains supported.
+
+The unchanged legacy file-practice baseline failed. On frozen private candidate
+bytes, the integration gate then passed 25 cases, including real file, native
+process and readiness positives; the independent SOAR security gate passed 42.
+Both returned native exit 0 with owned diagnostic retirement and closed-handle
+proofs. General inventory was supplied by controlled offline fixtures only;
+the exact native child proof remained real, and incomplete production readiness
+was not relaxed. These private candidate results are distinct from the applied
+validation attempts and fresh 34-source observation below.
+
+The first maintenance validation of the applied runtime code passed 139 cases
+and failed four during general process-inventory readiness setup. The proper
+practice file, process and readiness integrations passed. A separate offline
+checker passed 28 of 29 phases and failed its drill at the same strict lease
+boundary. The host inventory reported incomplete enumeration and many unreadable
+processes; production readiness correctly refused to treat it as complete. These
+failed attempts remain recorded and do not establish either malware or a
+successful host-coverage check.
+
+The applied harness-only correction now labels that phase as an offline general
+inventory fixture with native owned controls. A temporary standard-library
+patch supplies fresh immutable empty general snapshots only while that
+disposable-profile phase owns its controls; the existing issuer, real native
+child/artifact proof, response, history and cleanup remain. The fixture refuses
+a non-disposable profile or a preexisting running/alive Process Monitor, and
+restores the exact original supplier on success or error. Five focused fixture
+cases and the five existing drill-cleanup cases passed privately with native
+exit 0 and no diagnostic child processes. This is not a repaired host inventory,
+an additional production trust source, or a completed 29-phase host assessment.
+The applied harness tests subsequently passed all ten on normal repository
+paths, with native exit 0 and both diagnostic generations retired. Initial
+fixture-location failures remain recorded; test input now uses its explicit
+disposable data root instead of assuming the ambient pytest temporary directory
+falls within that boundary. The profile guard was unchanged.
+
+The four affected lease-setup tests and an incomplete-enumeration negative
+subsequently passed a five-case actual-source follow-up. Controlled general
+inventory was supplied only to those offline contract setups; exact owned
+native target proofs and the negative coverage hold remained. This focused
+follow-up does not relabel the earlier 139-pass/four-failure run as a passing
+full-suite rerun.
+
+The final disposable-profile offline checker passed all 29 phases with native
+exit 0. The module runner reported 69 passes, zero failures and 18 optional or
+unstarted skips. The explicitly labelled owned-controls phase completed its
+real issuer/native controls and cleanup using the scoped general-inventory
+fixture. Teardown retired 13 widget owners, 13 readers and eight Python workers;
+both native checker generations had terminal, closed-handle receipts. These
+results validate the offline harness, not whole-host inventory availability.
+The preceding 28-pass/one-failure attempt remains part of the record.
+
+### Fresh 34-source Full-mode observation
+
+The exact maintenance stop and restart left a 6 minute 44.096 second protection
+gap. After a fresh Full-mode confirmation, the final 300-second window ran from
+23:46:02.456 to 23:51:02 UTC on 24 October. All 34 scoped runtime source hashes
+matched before and after. All 61 distinct generation-bound status samples were
+fresh, Full and ARMED, with maximum age 3.702 seconds and no response pending,
+queue backlog or drops. The application remained running after observation.
+
+Whole-window native counters measured core CPU at 91.0729% of one logical CPU
+(11.3841% of the eight-CPU machine), the inventory worker at 56.8906%, and Black
+Box at 1.0%. The core answered 116 window-pump probes and timed out six in six
+turns. Black Box answered all 61 probes, with a maximum measured response of
+1.552 ms. GUI heartbeat lag peaked at 625 ms and tick duration at 114.868 ms;
+all 30 retained metric samples supplied tick data. The flight-recorder queue
+peaked at four, other sampled queue depths at zero, and all sampled drop counts
+were zero. There were no new watchdog-log changes. A corrected derived report
+excludes unsampled rows from its watchdog-change count; the earlier report was
+preserved.
+
+These measurements are not instrumented click, navigation or paint latency.
+Workload, startup phase and module timing differ from previous windows, so no
+isolated CPU reduction or causal before/after ratio is claimed. The operator
+subsequently answered both the earlier collector-fix question and the latest
+Full-mode question with “Responsive” for tabs and alert details. That is useful
+operator-reported corroboration, separate from measured interaction latency.
+The operator then qualified it as “still a little laggy but a lot better” and
+requested responsiveness while using other programs. Remaining contention and
+interaction latency are unresolved; the six probe timeouts still preclude a
+universal no-freeze claim. All four native observer/witness/wrapper generations
+retired with exit 0 and closed
+handles; the applications were intentionally left running.
+
+All 186 selected archive originals verified. The complete serious selection
+contained 47 findings: 45 HIGH and two CRITICAL across startup, pre-Full and
+observation time. The critical rows concerned recovery-evidence exposure and
+missing CHAOS collector echoes; neither established active malware. The only
+serious finding timestamped within the 300-second performance window was a HIGH
+HVCI-not-running exposure. All 24 Purple marker observations lacked active or
+response authority. The newest 40 of 69 SpywareGuard rows were inactive,
+response-ineligible exposures; 29 older lower-priority rows were outside that
+selection. Unavailable audit/graph evidence, production AI URL configuration,
+posture and other collector gaps remain open. Archive completeness applies to
+the committed serious selection, not uncommitted or never-collected events,
+and does not supply missing per-row core-generation provenance.
+
+The full authenticated journal reached 479 records with matching checkpoint and
+witness and no pending phase. Its only additions after the preserved 477-record
+prefix were the paired startup Smart Deception activation; that prefix and the
+existing signing authority were unchanged. No new PID/IP containment was
+established from the selected observations. Four exact VPN executable approvals
+still matched their digests, with the expected processes, two running services,
+adapter and GUI present. Liveness does not prove encrypted-traffic efficacy.
+
+A bounded committed-archive continuation through 00:02:10 UTC on 25 October
+found exactly three additional HIGH HVCI exposures, all authenticated, and no
+new CRITICAL. The independent authority check at 00:02:24 UTC authenticated all
+479 records again, with matching checkpoint/witness, no pending phase and all
+four authority objects byte-identical to postflight. It found no new tail or
+actions. This is a named archive/journal cutoff, not a continuous live-feed or
+host-cleanliness claim.
+
+### Live Debug CLI continuity checks
+
+Two fresh post-window clients failed before reaching their initial cursor: the
+finite reader after about 8.4 seconds and the intended 90-second follow after
+about 8.3 seconds. They retained about 409/410 records and 130.8 KiB before a
+generic read error. Their captures and errors remain preserved; neither run
+establishes current alert-feed continuity.
+
+The CLI output-batching correction is now applied outside the unchanged
+34-source runtime scope. A broader 121-case gate passed its preceding revision;
+after a minimal interrupt/BrokenPipe correction, the 31 affected actual-source
+tests passed with normal repository imports and native exit 0. All four retained
+diagnostic generations had terminal/closed-handle evidence, and the outer helper
+and wrapper were independently absent. These gates are not interchangeable
+revision claims. Transport custody/protocol checks are separate from original
+event-HMAC verification.
+
+The fresh standard finite client then succeeded with native exit 0. Its phase
+wall time was 3.695 seconds and client interval 3.100649 seconds, reaching its
+full initial cursor with 2,000 event frames and no client/reader errors. Its
+explicit initial retention gap of 7,959 records and zero reported queue drops
+were preserved. The fresh follow also completed with native exit 0 over
+90.942388 seconds, reaching its initial cursor and retaining 2,280 event frames
+and 43 heartbeats without client/reader errors. Its initial retention gap was
+also retained. Neither successful mode restores evicted history or establishes
+lossless session coverage; the earlier failed readers remain failed.
+
+All 34 runtime hashes matched before and after these client checks. Retained
+diagnostic children and reader threads retired, with no reported native custody
+gap, and the core query handle closed while the application remained running.
+The transport results do not replace original-event authentication or expand
+the named committed-archive cutoff above. Further current-build profiling and
+responsiveness under competing applications remain separate ongoing work.
+
+### Subsequent storage exhaustion and publication gaps
+
+Post-client review selected 18 new serious committed originals, all HMAC
+verified: 12 CRITICAL and six HIGH. Two live-module self-test summaries each
+reported 71 passes, six failures and 11 skips. Failures included no-space errors
+in Compliance Mapper and Kernel-Boundary Posture Ledger, a database-open failure
+in Posture Hardening, ETW lifecycle/health unavailability and the existing AI
+provider URL refusal. Their caller was not established from the original
+events. These are availability and coverage failures, not proof of malware.
+
+An independent volume query confirmed zero available bytes on the configured
+source-data volume, while the workspace volume retained capacity. The three
+failing file/database fixtures use Python temporary storage under the expected
+canonical source-data root. This routing is intentional source policy, not an
+established regression. A missing cleanup in the Posture self-test was found,
+but no large disposable artifact with proved ownership was established; it
+does not explain the exhausted volume. No files or evidence were deleted.
+
+The post-client authority check at 00:14:36 UTC still authenticated all 479
+journal records with matching checkpoint/witness, unchanged authority bytes
+and no pending phase. VPN processes and services remained present. However,
+the selected status file was already 55.57 seconds old. At 00:17:47 UTC, the
+same core generation remained alive while status and runtime-metric evidence
+were about 248 and 252 seconds old. These stale files cannot establish current
+Full/ARMED state or current GUI timing. Committed archive selection also cannot
+recover events that could not be persisted during storage exhaustion.
+
+Source review found a startup capacity check but no periodic production check
+of the configured data volume. Storage Hygiene checks spill locations and
+intentionally accepts the source profile; it is not a capacity monitor. Status
+Reporter retains write-failure evidence in memory, which cannot update files
+on a full destination. A private, observation-only capacity/publication-health
+candidate is being prepared. Free capacity alone will not prove successful
+journal or recorder writes. No deletion, data-root migration, baseline reset,
+fallback signing authority or response bypass is authorized by such a warning.
+
+The operator requested cleanup candidates for review. Discovery is limited to
+bounded metadata checks of known cache/dump locations and top-level downloads;
+contents, active security evidence and unknown trees are excluded. Any selected
+cleanup or move remains a separate reviewed action. A new non-suspending
+profile of the unchanged runtime is also in progress, with storage pressure
+and competing diagnostic work retained as timing context.

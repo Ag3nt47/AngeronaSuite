@@ -8,7 +8,10 @@ before the AAR can report detection or remediation.
 
 It never reads red-team history and it deliberately ignores the benign-noise
 marker.  Policies are local, reviewable JSON and affect only ``_redteam_*``
-files in Angerona's dedicated drill sandbox.
+files in Angerona's dedicated drill sandbox. Marker text alone is an
+unverified observation; a live issuer-backed validation lease must attest
+the exact held artifact or process observation before it carries a response
+contract.
 """
 from __future__ import annotations
 
@@ -2866,6 +2869,7 @@ class RedTeamValidationLease:
             artifact_identity: dict[str, object] = {}
             process_identity: dict[str, object] = {}
             source_observation_sha256 = ""
+            validated_process_exe = ""
             if evidence_kind == "inert_file_marker":
                 artifact_identity = RedTeamValidationLease._validated_artifact_identity(
                     state, observed_target
@@ -2890,6 +2894,16 @@ class RedTeamValidationLease:
                 ):
                     return {}
                 source_details = getattr(source_event, "details", {}) or {}
+                observed_exe = source_details.get("exe")
+                if (
+                    not isinstance(observed_exe, str)
+                    or not observed_exe
+                    or hashlib.sha256(
+                        os.path.normcase(observed_exe).encode("utf-8")
+                    ).hexdigest() != process_identity.get("executable_sha256")
+                ):
+                    return {}
+                validated_process_exe = observed_exe
                 source_observation_sha256 = _sha256({
                     key: source_details.get(key)
                     for key in (
@@ -2937,6 +2951,8 @@ class RedTeamValidationLease:
                 "_validated_process_create_time": process_identity.get(
                     "process_create_time"
                 ),
+                **({"_validated_process_exe": validated_process_exe}
+                   if validated_process_exe else {}),
             }
 
     def verify_purple_event(self, event: object, step: dict) -> bool:
@@ -3943,6 +3959,8 @@ class PurpleGuard(BaseModule):
         self.data_root = Path(data_root or canonical_data_dir())
         self.sandbox = self.data_root / "drill-sandbox"
         self._seen: set[tuple[str, int, int]] = set()
+        self._marker_observations: set[tuple[str, int, int]] = set()
+        self._process_observations: set[tuple[float, str, object, str]] = set()
         self._seen_events: set[tuple[float, str, object, str]] = set()
         # Keep total callback retention at 256 while reserving 64 slots for
         # native receipt envelopes. Merely nonce-shaped rows cannot evict every
@@ -4156,6 +4174,24 @@ class PurpleGuard(BaseModule):
                 )
                 validation_details: dict[str, object] = {}
                 lease = self._validation_lease
+                if lease is None:
+                    if key in self._marker_observations:
+                        continue
+                    self._marker_observations.add(key)
+                    self.emit(
+                        f"Purple Guard observed an unleased {label} ({mitre}); "
+                        "marker text does not establish a validated drill or threat.",
+                        Severity.HIGH,
+                        path=str(path), artifact_path=str(path), mitre=mitre,
+                        drill_target=str(target),
+                        detector_policy="simulation-marker-observation",
+                        evidence_type="unleased_simulation_marker",
+                        detector_verdict="unverified",
+                        disposition="observation", active_attack=False,
+                        response_authorized=False,
+                    )
+                    hits += 1
+                    continue
                 if lease is not None:
                     validation_details = RedTeamValidationLease.attest_purple_detection(
                         lease,
@@ -4192,6 +4228,8 @@ class PurpleGuard(BaseModule):
                 )
                 self.detected += 1
                 hits += 1
+        if len(self._marker_observations) > 4096:
+            self._marker_observations.clear()
         return hits
 
     def scan_process_once(self, policy: dict | None = None) -> int:
@@ -4219,29 +4257,35 @@ class PurpleGuard(BaseModule):
                 or details.get("create_time")
                 or details.get("process_start_time")
             )
-            response = {}
             try:
                 created = float(raw_created)
             except (TypeError, ValueError, OverflowError):
                 created = 0.0
-            if isinstance(pid, int) and pid > 0 and created > 0:
-                response = {
-                    "response_authorized": True,
-                    "response_contract": {
-                        "version": 1,
-                        "actions": [
-                            "isolate_program",
-                            "suspend_process",
-                            "terminate_process",
-                        ],
-                        "targets": {
-                            "pid": pid,
-                            "process_create_time": created,
-                        },
-                    },
-                }
-            validation_details: dict[str, object] = {}
             lease = self._validation_lease
+            if lease is None:
+                if key in self._process_observations:
+                    continue
+                self._process_observations.add(key)
+                self.emit(
+                    f"Purple Guard observed an unleased {label} ({mitre}); "
+                    "a command-line tag does not establish a validated drill or threat.",
+                    Severity.HIGH, pid=pid, cmdline=command,
+                    process_create_time=(
+                        created if math.isfinite(created) and created > 0 else None
+                    ),
+                    event_type="purple_process_observation", mitre=mitre,
+                    correlation_token=token,
+                    detector_policy="simulation-marker-observation",
+                    evidence_type="unleased_simulation_marker",
+                    detector_verdict="unverified",
+                    disposition="observation", active_attack=False,
+                    response_authorized=False,
+                )
+                hits += 1
+                continue
+            if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+                continue
+            validation_details: dict[str, object] = {}
             if lease is not None:
                 validation_details = RedTeamValidationLease.attest_purple_detection(
                     lease,
@@ -4261,9 +4305,17 @@ class PurpleGuard(BaseModule):
                 verified_created = validation_details.pop(
                     "_validated_process_create_time", None
                 )
+                verified_exe = validation_details.pop("_validated_process_exe", None)
+                if not isinstance(verified_exe, str) or not verified_exe:
+                    continue
+                attested_run = validation_details.get("run_id")
+                if isinstance(attested_run, str) and re.fullmatch(r"[0-9a-f]{32}", attested_run):
+                    validation_details["practice_verification_id"] = attested_run
                 try:
                     created = float(verified_created)
                 except (TypeError, ValueError, OverflowError):
+                    continue
+                if not math.isfinite(created) or created <= 0:
                     continue
                 response = {
                     "response_authorized": True,
@@ -4283,7 +4335,7 @@ class PurpleGuard(BaseModule):
             self._seen_events.add(key)
             self.emit(
                 f"Purple Guard detected {label} ({mitre}) in process telemetry.",
-                Severity.HIGH, pid=pid, cmdline=command,
+                Severity.HIGH, pid=pid, cmdline=command, exe=verified_exe,
                 process_create_time=created or raw_created,
                 event_type="purple_process_detection", mitre=mitre,
                 correlation_token=token,
@@ -4298,6 +4350,8 @@ class PurpleGuard(BaseModule):
             )
             self.detected += 1
             hits += 1
+        if len(self._process_observations) > 4096:
+            self._process_observations.clear()
         if len(self._seen_events) > 4096:
             self._seen_events.clear()
         return hits

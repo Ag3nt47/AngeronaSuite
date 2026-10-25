@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -448,6 +449,11 @@ class ActiveResponseSOAR(BaseModule):
         t0 = time.time()
         pid = ev.details.get("pid")
         path = self._event_path(ev) or None
+        details = ev.details if isinstance(ev.details, dict) else {}
+        if details.get("receipt_type") == "purple_simulation_validation":
+            self._delegate_issuer_original(ev, t0=t0, path=path)
+            return
+
         if not self._exact_process_binding_ok(ev):
             self.emit(
                 "Refusing kill/rollback: process contract is not bound to the "
@@ -576,6 +582,264 @@ class ActiveResponseSOAR(BaseModule):
                 else "verified-no-action" if receipt is not None else "pending-timeout"
             ),
             mitigation_seconds=elapsed, trigger_module=ev.module, trigger_ts=ev.ts,
+        )
+
+    def _issuer_original_combat(self, event, *, pending_handoff: bool = False):
+        """Preserve the issuer's original identity and exact registered actor."""
+        from angerona.core.eventbus import Event, EventBus
+        from angerona.modules.adversary_combat import AdversaryCombat
+        from angerona.modules.purple_guard import (
+            PurpleGuard, RedTeamValidationLease, _lease_authority,
+        )
+
+        bus, manager = self._bus, self._manager
+        modules = getattr(manager, "modules", None)
+        if (
+            type(event) is not Event or type(bus) is not EventBus
+            or not bus.integrity_enabled or not bus.verify(event)
+            or not isinstance(modules, dict)
+            or getattr(manager, "bus", None) is not bus
+            or modules.get(self.name) is not self
+        ):
+            return None
+        guard, combat = modules.get("Purple Remediation Guard"), modules.get("Adversary Combat")
+        details = event.details if isinstance(event.details, dict) else {}
+        lease = getattr(guard, "_validation_lease", None)
+        if (
+            type(guard) is not PurpleGuard or type(combat) is not AdversaryCombat
+            or type(lease) is not RedTeamValidationLease
+            or getattr(guard, "_bus", None) is not bus
+            or getattr(combat, "_bus", None) is not bus
+            or getattr(combat, "_manager", None) is not manager
+            or combat.status != "running" or combat.stopping
+            or event.module != guard.name
+        ):
+            return None
+        actions = AdversaryCombat._response_actions(event)
+        contract = details.get("response_contract")
+        targets = (contract.get("targets") or {}) if isinstance(contract, dict) else {}
+        file_marker = details.get("evidence_kind") == "inert_file_marker"
+        process_marker = details.get("evidence_kind") == "nonce_tagged_process"
+        if not (
+            (file_marker and actions == frozenset({"quarantine_file"}) and set(targets) == {"path"})
+            or (process_marker and actions and actions.issubset({
+                "isolate_program", "suspend_process", "terminate_process",
+            }) and set(targets) == {"pid", "process_create_time"})
+        ):
+            return None
+        try:
+            state = _lease_authority(lease)
+            if state.manager is not manager or state.bus is not bus or state.module is not guard:
+                return None
+            if pending_handoff:
+                # This return permits bounded observation only. No caller may
+                # submit or credit a response until the default full proof wins.
+                key = os.path.normcase(os.path.abspath(self._event_path(event)))
+                if (
+                    not file_marker or state.released or state.artifact_custody_failed
+                    or not state.consumed or time.monotonic() > state.run_deadline_monotonic
+                    or details.get("lease_id") != state.lease_id
+                    or details.get("receipt_id") != state.receipt_id
+                    or details.get("run_id") != state.bound_run_id
+                    or details.get("target") != str(state.target)
+                    or key not in (state.artifact_handoffs or set())
+                    or key not in (state.artifact_handles or {})
+                    or state.artifact_handles[key][0] is not None
+                ):
+                    return None
+                return combat
+            if not RedTeamValidationLease.verify_purple_event(
+                lease, event, {"attack_ids": [details.get("technique")]}
+            ):
+                return None
+            if process_marker:
+                identity = RedTeamValidationLease._validated_process_identity(
+                    state, pid=details.get("pid"), token=details.get("correlation_token"),
+                    process_create_time=details.get("process_create_time"), require_live=False,
+                )
+                executable = details.get("exe")
+                if not isinstance(executable, str) or not executable or hashlib.sha256(
+                    os.path.normcase(executable).encode("utf-8")
+                ).hexdigest() != identity.get("executable_sha256"):
+                    return None
+        except Exception:
+            return None
+        return combat
+
+    def _verified_origin_receipt(self, combat, event):
+        """Adopt only a signed receipt backed by this exact journaled target."""
+        bus = self._bus
+        if (
+            bus is None or not bus.integrity_enabled or not bus.verify(event)
+            or self._issuer_original_combat(event) is not combat
+        ):
+            return None
+        details = event.details if isinstance(event.details, dict) else {}
+        file_marker = details.get("evidence_kind") == "inert_file_marker"
+        expected_action = "quarantine_file" if file_marker else "terminate_process"
+        if expected_action not in details["response_contract"]["actions"]:
+            return None
+        expected_digest = details.get("observed_content_sha256")
+        if file_marker and (not isinstance(expected_digest, str)
+                            or not re.fullmatch(r"[0-9a-f]{64}", expected_digest)):
+            return None
+        candidates = []
+        negative = None
+        for receipt in bus.recent(500):
+            claim = receipt.details if isinstance(receipt.details, dict) else {}
+            if (
+                receipt.module != "Adversary Combat" or not bus.verify(receipt)
+                or receipt.ts < event.ts
+                or claim.get("trigger_module") != event.module
+                or claim.get("trigger_ts") != event.ts
+                or claim.get("trigger_event_digest") != event.hmac_sig
+            ):
+                continue
+            ids, actions = claim.get("action_ids"), claim.get("actions")
+            if claim.get("action_succeeded") is True:
+                if (
+                    claim.get("mitigated") is True and claim.get("postcondition_verified") is True
+                    and isinstance(ids, list) and bool(ids)
+                    and all(isinstance(value, str) and value for value in ids)
+                    and len(set(ids)) == len(ids)
+                    and isinstance(actions, list) and actions == [
+                        "quarantine_file" if file_marker else "terminate_process"
+                    ] * len(ids)
+                ):
+                    candidates.append(receipt)
+            elif (
+                claim.get("action_succeeded") is False and claim.get("mitigated") is False
+                and ids == [] and actions == [] and negative is None
+            ):
+                negative = receipt
+        if not candidates:
+            return negative
+        # Pending polls inspect only the bounded bus lane. The authenticated
+        # journal is read once only when a success claim needs committed proof.
+        try:
+            expected_path = os.path.normcase(str(Path(self._event_path(event)).resolve(strict=False)))
+            rows = combat.list_actions(limit=500)
+        except Exception:
+            return None
+        bound = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            record = row.get("details")
+            if (
+                not isinstance(record, dict)
+                or row.get("integrity_status") != "verified"
+                or row.get("status") != "applied" or row.get("undone") is not False
+                or row.get("action") != ("quarantine_file" if file_marker else "terminate_process")
+                or row.get("trigger_module") != event.module or row.get("trigger_ts") != event.ts
+                or record.get("aar_trigger_event_digest") != event.hmac_sig
+                or record.get("postcondition_verified") is not True
+                or not isinstance(row.get("action_id"), str) or not row["action_id"]
+            ):
+                continue
+            if file_marker:
+                try:
+                    target = os.path.normcase(str(Path(row["target"]).resolve(strict=False)))
+                except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+                    continue
+                if target != expected_path or record.get("sha256") != expected_digest:
+                    continue
+            else:
+                if not self._native_origin_termination(record, details):
+                    continue
+            bound[row["action_id"]] = row
+        for receipt in candidates:
+            if all(value in bound for value in receipt.details["action_ids"]):
+                return receipt
+        return negative
+
+    @staticmethod
+    def _native_origin_termination(record, details) -> bool:
+        """Native commit pins the raw generation; issuer birth has float precision."""
+        try:
+            birth = details.get("process_create_time")
+            recorded_birth = record.get("create_time")
+            ticks = record.get("native_birth_ticks")
+            code = record.get("native_exit_code")
+            image, expected_image = record.get("native_image"), details.get("exe")
+            return bool(
+                type(details.get("pid")) is int and 0 < details["pid"] <= 0xFFFFFFFF
+                and type(record.get("pid")) is int and record["pid"] == details["pid"]
+                and type(record.get("native_pid")) is int and record["native_pid"] == details["pid"]
+                and type(birth) in (int, float) and math.isfinite(birth) and birth > 0
+                and type(recorded_birth) in (int, float) and math.isfinite(recorded_birth)
+                and abs(recorded_birth - birth) <= 0.001
+                and type(ticks) is int and 0 < ticks <= 0xFFFFFFFFFFFFFFFF
+                and abs(ticks / 10_000_000 - 11_644_473_600 - birth) <= 0.001
+                and record.get("process_custody") == "windows-retained-handle-v1"
+                and record.get("native_wait_signaled") is True
+                and record.get("native_image_observation") == "before-termination"
+                and type(code) is int and 0 <= code <= 0xFFFFFFFF
+                and isinstance(image, str) and bool(image)
+                and isinstance(expected_image, str) and bool(expected_image)
+                and os.path.normcase(os.path.abspath(image)) == os.path.normcase(os.path.abspath(expected_image))
+            )
+        except (OSError, TypeError, ValueError, OverflowError):
+            return False
+
+    def _delegate_issuer_original(self, event, *, t0: float, path):
+        """Use existing Combat admission/dedup, without republishing the source."""
+        deadline = time.monotonic() + 3.0
+        try:
+            combat = self._issuer_original_combat(event)
+            while combat is None and time.monotonic() < deadline:
+                if self._issuer_original_combat(event, pending_handoff=True) is None:
+                    # Completion may race the read-only pending predicate.
+                    combat = self._issuer_original_combat(event)
+                    break
+                time.sleep(0.05)
+                combat = self._issuer_original_combat(event)
+        except Exception:
+            combat = None
+        if combat is None:
+            self.emit(
+                "Refusing leased marker response without its exact issuer and registered Combat actor.",
+                Severity.HIGH, disposition="health", response_authorized=False,
+            )
+            return
+        try:
+            receipt = self._verified_origin_receipt(combat, event)
+            if receipt is None:
+                if not self._exact_process_binding_ok(event):
+                    self.emit(
+                        "Refusing a new issuer response without the exact live process identity.",
+                        Severity.HIGH, disposition="health", response_authorized=False,
+                    )
+                    return
+                # Combat may already have this original in its subscriber queue.
+                # Its existing HMAC admission identity makes this one-shot.
+                combat._submit(event)
+                while time.monotonic() < deadline:
+                    receipt = self._verified_origin_receipt(combat, event)
+                    if receipt is not None:
+                        break
+                    time.sleep(0.05)
+        except Exception as exc:
+            self.emit(
+                f"Original issuer response delegation failed safely: {type(exc).__name__}.",
+                Severity.HIGH, disposition="health", response_authorized=False,
+            )
+            return
+        claim = receipt.details if receipt is not None else {}
+        mitigated = bool(receipt is not None and claim.get("action_succeeded") is True
+                         and claim.get("postcondition_verified") is True)
+        self.emit(
+            f"Exact issuer response for {event.module} was delegated to registered Combat.",
+            Severity.HIGH if mitigated else Severity.MEDIUM,
+            response_target_path=path, mitigated=mitigated,
+            combat_action_ids=list(claim.get("action_ids") or []) if mitigated else [],
+            origin_event_digest=event.hmac_sig, trigger_module=event.module, trigger_ts=event.ts,
+            receipt_status="verified-applied" if mitigated else (
+                "verified-no-action" if receipt is not None else "pending-timeout"
+            ),
+            delegation_mode="issuer-original-event", queue_request_id=None,
+            response_authorized=False,
+            mitigation_seconds=round(time.time() - t0, 3),
         )
 
     @staticmethod

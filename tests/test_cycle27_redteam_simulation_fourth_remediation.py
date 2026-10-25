@@ -38,6 +38,27 @@ def _install_keys(monkeypatch, root: Path) -> None:
     monkeypatch.setattr(BusAuthority, "_key_path", staticmethod(lambda: key_path))
 
 
+def _supply_contract_inventory(monkeypatch):
+    """Explicit offline input; no claim about this host's inventory coverage.
+
+    The real current-generation Process Monitor still consumes the typed input;
+    issuer, native owned-target observation, recorder and readiness gates remain.
+    """
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    ages = []
+    def inventory(*, max_age=None):
+        ages.append(max_age)
+        return ProcessSnapshot(
+            processes=(), collected_at=time.time(), complete=True,
+            enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+            error="", enumeration_complete=True,
+        )
+    monkeypatch.setattr(process_monitor, "process_snapshot", inventory)
+    return ages
+
+
 def _runtime(root: Path, monkeypatch, *, include_fim: bool = False):
     _install_keys(monkeypatch, root)
     bus = EventBus(ring_size=4096)
@@ -157,12 +178,14 @@ def test_target_same_path_new_inode_is_rejected(tmp_path: Path, monkeypatch) -> 
 def test_arbitrary_info_publisher_without_live_enrollment_gets_no_receipt(
     tmp_path: Path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
     try:
+        assert 0.0 in inventory_ages  # Real fresh observation consumed supplied input.
         RedTeamValidationLease.consume_for_run(
             lease, run_id="no-process-oracle", target=target, data_root=tmp_path
         )

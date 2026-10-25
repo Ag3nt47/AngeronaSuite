@@ -4,14 +4,18 @@ import json
 import hashlib
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from angerona.core import drill_resolution, report_attest
 from angerona.core.eventbus import EventBus
 from angerona.core.storage import FlightRecorder
+from angerona.modules.adversary_combat import AdversaryCombat, CombatPolicy
 from angerona.modules.posture_hardening import PostureHardening
-from angerona.modules.purple_guard import PurpleGuard, policy_path
+from angerona.modules.purple_guard import (
+    PurpleGuard, RedTeamValidationLease, acquire_redteam_validation_lease, policy_path,
+)
 from angerona.modules.soar_engine import ActiveResponseSOAR
 from angerona.shark.aar_report import evaluate
 
@@ -124,6 +128,16 @@ def test_caught_but_unremediated_step_is_an_actionable_response_gap(strict_modul
 def test_response_only_gap_candidate_closes_on_fresh_inert_full_drill(
     strict_module, monkeypatch,
 ) -> None:
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    # Only the explicit fixture inventory is supplied. Real issuer lifecycle,
+    # fresh-request handling, held artifact and quarantine receipts remain real.
+    monkeypatch.setattr(process_monitor, "process_snapshot", lambda **_kwargs: ProcessSnapshot(
+        processes=(), collected_at=time.time(), complete=True,
+        enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+        error="", enumeration_complete=True,
+    ))
     module, root, _emitted = strict_module
     source = _verdict("T1003", caught=True, ts_start=time.time() - 5)
     source["remediated"] = False
@@ -147,17 +161,62 @@ def test_response_only_gap_candidate_closes_on_fresh_inert_full_drill(
     monkeypatch.setenv("ANGERONA_SOAR_KILL_AND_ROLLBACK", "1")
     monkeypatch.setenv("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY", "HIGH")
     monkeypatch.setenv("ANGERONA_SOAR_RESPONSE_SCOPE", str(sandbox))
+    manager = SimpleNamespace(modules={guard.name: guard, response.name: response}, bus=bus)
+    combat = AdversaryCombat(root, rollback_anchor={})
+    combat.bind(bus)
+    combat.bind_manager(manager)
+    combat.policy = lambda: CombatPolicy(
+        block_network=False, isolate_host=False, activate_honeypots=False,
+    )
+    manager.modules[combat.name] = combat
+    response.bind_manager(manager)
+    combat.start()
+    readiness_deadline = time.monotonic() + 5
+    while not combat.response_ready() and time.monotonic() < readiness_deadline:
+        time.sleep(.01)
+    assert combat.response_ready(), combat.health_note
+    lease = None
     try:
-        assert guard.scan_once(guard._policy_snapshot()) == 1
+        lease = acquire_redteam_validation_lease(
+            manager, bus, recorder, root, sandbox, timeout=3,
+        )
+        RedTeamValidationLease.consume_for_run(
+            lease, run_id="fresh-proof-run", target=sandbox, data_root=root,
+        )
+        RedTeamValidationLease.register_artifact_handle(
+            lease, marker, run_id="fresh-proof-run",
+        )
+        guard.scan_once(guard._policy_snapshot())
         # Windows' wall clock commonly gives back-to-back publications an
         # identical timestamp. Freeze the response receipt at the detector's
         # timestamp so this remains a deterministic correlation regression,
         # independent of host timer granularity.
-        detector = bus.recent(1)[0]
+        detector = next(
+            event for event in reversed(bus.recent(100))
+            if event.module == guard.name
+            and (event.details or {}).get("path") == str(marker)
+            and (event.details or {}).get("receipt_type") == "purple_simulation_validation"
+        )
         monkeypatch.setattr(time, "time", lambda: detector.ts)
         assert response.process_pending_once() == 1
+        assert RedTeamValidationLease.verify_purple_event(
+            lease, detector, {"attack_ids": ["T1003"]},
+        )
         events = bus.recent(100)
+        committed = [row for row in combat.list_actions() if row.get("status") == "applied"]
+        assert len(committed) == 1
+        assert committed[0]["details"]["aar_trigger_event_digest"] == detector.hmac_sig
+        assert not any(event.module == "Active Response SOAR Request" for event in events)
     finally:
+        combat.stop()
+        threads = [getattr(item, "_thread", None) for item in manager.modules.values()]
+        if lease is not None:
+            RedTeamValidationLease.release(lease)
+        guard.stop()
+        for thread in threads:
+            if thread is not None:
+                thread.join(timeout=3)
+                assert not thread.is_alive()
         recorder.close()
 
     verdicts = evaluate(

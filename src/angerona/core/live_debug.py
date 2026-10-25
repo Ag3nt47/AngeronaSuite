@@ -27,6 +27,7 @@ PROTOCOL = "angerona-live-debug-v1"
 MAX_FRAME_BYTES = 32 * 1024
 MAX_TEXT = 8192
 MAX_CLIENTS = 4
+PIPE_WRITE_BATCH_BYTES = 64 * 1024
 LOG_READ_BYTES = 64 * 1024
 LOG_INITIAL_BYTES = 128 * 1024
 LOG_RECORDS_PER_TURN = 128
@@ -427,6 +428,25 @@ class _NamedPipeServer:
             # discarding a genuinely outstanding kernel operation.
             pipe.close()
 
+    @staticmethod
+    def _write_records(pipe, records):
+        """Coalesce bounded newline frames without changing per-frame limits.
+
+        Kernel I/O releases the GIL. One operation per short frame creates a
+        repeated handoff to busy sensor threads while draining retained history.
+        Each completed write admits all its bytes; the caller advances its
+        cursor only after every frame in this bounded page has been written.
+        """
+        pending = bytearray()
+        for record in records:
+            raw = _encode(record)
+            if pending and len(pending) + len(raw) > PIPE_WRITE_BATCH_BYTES:
+                pipe.write(bytes(pending))
+                pending.clear()
+            pending.extend(raw)
+        if pending:
+            pipe.write(bytes(pending))
+
     def _serve_client_loop(self, pipe):
         import win32pipe
         while not self.stop_event.is_set():
@@ -443,14 +463,14 @@ class _NamedPipeServer:
                 last_heartbeat = time.monotonic()
                 while not self.stop_event.is_set():
                     snapshot = self.service.recent(cursor, limit=100)
+                    records = snapshot["records"]
                     if snapshot["gap"]:
-                        pipe.write(_encode(dict(
+                        records = [dict(
                             protocol=PROTOCOL, kind="gap", run_id=self.service.run_id,
                             seq=snapshot["first_seq"] - 1, ts=time.time(),
                             reason="retention", lost_records=snapshot["gap"], after=cursor,
-                        )))
-                    for record in snapshot["records"]:
-                        pipe.write(_encode(record))
+                        ), *records]
+                    self._write_records(pipe, records)
                     cursor = snapshot["cursor"]
                     if time.monotonic() - last_heartbeat >= 2.0:
                         pipe.write(_encode(dict(

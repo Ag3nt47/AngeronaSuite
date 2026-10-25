@@ -36,6 +36,18 @@ from angerona.shark.run_manifest import (
 _KEY = bytes.fromhex("93" * 32)
 
 
+def _supply_contract_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Supply an offline inventory; native owned-child observations stay real."""
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    monkeypatch.setattr(process_monitor, "process_snapshot", lambda **_kwargs: ProcessSnapshot(
+        processes=(), collected_at=time.time(), complete=True,
+        enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+        error="", enumeration_complete=True,
+    ))
+
+
 def _install_keys(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     key_path = root / "bus.key"
     key_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,6 +122,7 @@ def _history(root: Path, receipt: dict, decision, *, empty: bool = False) -> dic
 def test_direct_canonical_fim_evaluator_cannot_mint_proof_without_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, fim, manager = _runtime(tmp_path, monkeypatch, fim=True)
     assert fim is not None
     keep_alive = threading.Event()
@@ -163,6 +176,7 @@ def test_direct_canonical_fim_evaluator_cannot_mint_proof_without_scan(
 def test_t1059_readiness_and_os_receipt_reject_receipt_free_exact_tuple(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     assert "Process Monitor" not in manager.modules
@@ -754,6 +768,7 @@ def test_cleanup_disposes_original_if_replacement_lands_after_delete_handle_open
 def test_history_longer_than_authenticated_ttl_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
@@ -784,6 +799,7 @@ def test_history_longer_than_authenticated_ttl_is_rejected(
 def test_zero_step_signed_history_keeps_full_denominator_and_null_score(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(

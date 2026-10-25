@@ -36,7 +36,9 @@ Design
 Maintenance
 -----------
   Add new rules to the _RULES list below.  Keep rules specific enough to avoid
-  false positives — these go straight to CRITICAL without LLM review.
+  false positives — these go straight to CRITICAL without LLM review. The
+  separate mixed-interface socket check reports MEDIUM exposure: connection
+  topology alone does not establish unauthorized VPN bypass or maliciousness.
 """
 from __future__ import annotations
 
@@ -216,7 +218,7 @@ class FastPathModule(BaseModule):
             self._check_event(ev)
 
     def _check_event(self, ev) -> None:
-        # Rule #18 (behavioural, not regex): split-tunnel abuse. Only run the
+        # Mixed-interface socket context (not a malicious IOC). Only run the
         # per-PID connection scan for network-bearing events to stay cheap.
         pid_val = ev.details.get("pid")
         if pid_val is not None and ("raddr" in ev.details or "interface_type" in ev.details):
@@ -264,9 +266,11 @@ class FastPathModule(BaseModule):
             break   # one rule match per event is enough
 
     def _check_split_tunnel(self, ev, pid) -> None:
-        """FPTH rule #18 — split-tunnel abuse: one PID with concurrent connections
-        over a Virtual_VPN interface AND a physical interface to an untrusted
-        external host. Deterministic, deduped, fail-open."""
+        """Report mixed-interface sockets without inferring unauthorized bypass.
+
+        A VPN controller or a user-approved split tunnel can have this topology.
+        The sampler does not bind process birth or establish actual routing.
+        """
         try:
             pid_int = int(pid)
         except (TypeError, ValueError):
@@ -280,11 +284,19 @@ class FastPathModule(BaseModule):
             return
         self._seen[key] = now
         self.emit(
-            f"[FAST-PATH] Split-tunnel abuse — pid {pid_int} holds concurrent VPN and "
-            f"physical-external connections (bypass / exfil pattern).",
-            Severity.CRITICAL,
+            f"[FAST-PATH] Concurrent VPN and physical sockets observed for pid {pid_int}; "
+            f"unauthorized bypass and maliciousness are unconfirmed.",
+            Severity.MEDIUM,
             fast_path=True,
-            rule_label="Split-tunnel abuse (VPN + physical external)",
+            rule_label="Concurrent VPN and physical sockets (observation)",
+            finding_kind="exposure",
+            disposition="exposure",
+            active_attack=False,
+            response_authorized=False,
+            response_authority="observe-only",
+            observation_only=True,
+            process_identity_bound=False,
+            detector_policy="concurrent-interface-sockets-observe-only",
             matched_field="connections",
             source_module=ev.module,
             mitre_tags=["T1572", "T1090"],

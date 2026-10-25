@@ -79,6 +79,21 @@ def keep_qt_application_alive():
 
 
 @pytest.fixture(autouse=True)
+def isolate_process_inventory_provider(monkeypatch):
+    """Entry fixtures must not select an unavailable provider for later tests.
+
+    Runtime shutdown deliberately keeps its provider registered to prevent a
+    local fallback. Tests own and retire any started worker separately; this
+    fixture restores only process-global routing and cached observations.
+    """
+    from angerona.telemetry import sensors
+
+    monkeypatch.setattr(sensors, "_process_snapshot_provider", None)
+    monkeypatch.setattr(sensors, "_process_snapshot_provider_generation", 0)
+    monkeypatch.setattr(sensors, "_proc_cache", (0.0, None))
+
+
+@pytest.fixture(autouse=True)
 def isolate_runtime_chill_profile(monkeypatch):
     """Each test owns quiet pacing and the persistent operator AI lock."""
     from angerona.core import background_pacing

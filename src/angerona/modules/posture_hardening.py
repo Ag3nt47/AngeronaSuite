@@ -772,17 +772,21 @@ class PostureHardening(BaseModule):
         ]
         if not techniques:
             return {"ok": True, "verified": 0, "total": 0, "results": []}
-        from angerona.core.config import Config
         from angerona.core.practice_verification import verify_practice_fixes
 
+        recorder = getattr(manager, "recorder", None)
+        if recorder is None:
+            return {"ok": False, "error": "bound flight recorder unavailable", "results": []}
         result = verify_practice_fixes(
             techniques,
             source_run_id=str(resolution.get("run_id") or ""),
             data_dir=self.data_dir,
-            db_path=Path(Config.load().db_path),
+            db_path=Path(getattr(recorder, "_path", "")),
             bus=self._bus,
             purple_guard=manager.modules.get("Purple Remediation Guard"),
             active_response=manager.modules.get("Active Response SOAR"),
+            manager=manager,
+            recorder=recorder,
             progress=progress,
         )
         verified_ids = [

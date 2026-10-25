@@ -7,12 +7,94 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.14.0 — live review, response recovery and runtime corrections)
 
+- Continuing GUI stalls exposed a shared process-inventory native call holding
+  Python's execution lock. Embedded GUI and direct headless entries now register
+  an owned, asynchronous inventory child before readers/modules. Qt refuses admission
+  before the cache lock; authenticated bounded observations retain existing
+  rich collection, identity checks and collection-start TTL. Failure stays an
+  explicit gap, never local native fallback. Windows private job lifetime and
+  exact-generation retirement cover child/venv/owned-console processes.
+- Authenticated originals proved SpywareGuard promoted a timing-only beacon
+  observation into actual termination. Missing, unknown or alert-only beacon
+  policy now remains exposure without process, peer or host authority. The
+  producer's explicit corroborated policy retains automatic response and
+  existing upstream response ownership. No vendor allowlist or baseline reset.
+- Live review also proved two real native terminations of another isolated
+  checker's inert probes from unleased Purple marker text. Unleased process and
+  file markers now remain HIGH observations without response contracts, attack
+  classification or copied drill lineage. Bounded observation dedup preserves
+  later issuer-attested hits; supported practice response retains live issuer
+  authority and independent native evidence. Do not restore marker-text trust.
+- Fresh 300-second observations recorded both Chill and Full workloads. The
+  final Full window held all 34 scoped runtime hashes unchanged and all 61
+  status samples fresh, Full and ARMED. Core CPU was 91.073% of one logical CPU,
+  the collector 56.891%, and Black Box 1.000%; collection cost remains material.
+  Core window probes had six brief timeouts; Black Box answered all 61. GUI
+  heartbeat lag peaked at 625 ms, with no new watchdog entry. These probes do
+  not establish alert-detail click latency or isolate a causal speedup.
+  The operator subsequently reported responsive tabs and alert details in both
+  follow-up checks, including Full mode; click latency was not instrumented.
+  Authenticated current-generation originals kept unleased Purple markers and
+  reviewed SpywareGuard findings observational. The journal showed no new
+  PID/IP response; unavailable collectors prevent a host-clean claim.
+- Maximum/terminate dispatch now prioritizes exact process termination before
+  remote-IP firewall work as well as program isolation. Existing native custody,
+  authenticated journal, action capabilities and uncertain-effect holds remain.
+  Canary misses retain severity/counters but explicitly describe unavailable
+  coverage with an unconfirmed cause, without active-attack/response authority.
+- The next live-review correction classifies concurrent VPN/physical sockets as
+  MEDIUM exposure: socket topology has no verified route, authorization policy,
+  maliciousness or process-generation binding. Separate strong IOC rules retain
+  CRITICAL behavior. Operator-approved VPN trust uses four individually reviewed
+  installed paths and exact current digests; no vendor/name wildcard was added.
+- Live Debug coalesces existing 100-record pages plus their gap notice into
+  writes bounded to 64 KiB; each frame remains bounded to 32 KiB. Cursor, order,
+  gap, identity, cancellation and I/O-deadline rules remain intact. Controlled
+  admitted-client contention delivered all 2,001 sequences with batching versus
+  370 before its deadline without batching. Historical disconnect cause remains
+  unproved; fresh runtime delivery is reviewed separately.
+- The CLI now batches output to at most 100 frames/64 KiB while retaining
+  per-append-segment custody/header checks and whole-frame rotation. Its
+  affected actual-source gate passed 31 cases. A fresh finite snapshot reached
+  its full retained cursor, and a 90.94-second follow delivered new records
+  without client/reader errors. Both retained explicit initial history gaps;
+  neither restores evicted records. Earlier failed readers remain failures.
+  Capture-file checks are not original-event HMAC verification.
+- Sentinel Lens no longer rebuilds its full retained graph merely because a
+  consumed batch empties the queue. Dirty events coalesce at the configured
+  interval, plus idle polling/scheduling/build latency; final shutdown flush
+  remains immediate. This advisory read-model cadence changes no response path.
+- A later profile still assigned 421/800 weighted execution-lock samples to
+  Sentinel Lens, with 75 nonblocking read-race errors. Its default rebuild pause
+  is now one second after a completed build; explicit intervals, all retained
+  evidence, queue/loss accounting and final stop flush remain. One second is
+  scheduling policy, not a hard freshness or click-latency guarantee. The applied
+  Sentinel/causal gate passed 33 cases with one existing platform skip.
+- Focused gates passed: VPN 127/two existing skips, Live Debug 154/one existing
+  skip, Sentinel Lens 26/one existing skip, all native exit 0. Final offline
+  selfcheck passed 29 phases with both native process generations witnessed
+  retired and all held handles closed. The checker now fixes its own offline
+  provider URL instead of inheriting a native Ollama bind-address environment
+  value. Its explicitly labelled owned-controls drill uses a disposable offline
+  general-inventory fixture while retaining real issuer leases, native owned
+  controls and cleanup. This does not prove host inventory availability;
+  production policy, environment and skip rules were not relaxed.
 - Follow-up GitHub CI review found the same two obsolete Sysmon XML fixtures
   failing on all four Windows Python versions. Fixtures now provide the verified
   provider and prove unsafe XML reaches the hardened parser, oversized XML does
   not reach either parser, and coverage findings grant no response authority.
   The focused 25-case gate passed; production and workflow policy are unchanged.
-  A new public-head CI result is required before claiming remote success.
+  Exact published fixture-only head d7123b05 subsequently passed all 12 CI and
+  three Security jobs; all four Python jobs passed 9,037 tests with 22 skips.
+  Those results do not validate later unpublished runtime changes.
+- A later live check found the configured source-data volume exhausted. Two
+  module self-test runs reported no-space/database and collector/configuration
+  failures; their serious committed originals authenticated. Status and metric
+  files became stale, so their last Full/ARMED state is not current readiness
+  proof. Journal authority remained authenticated and unchanged at the named
+  postflight cutoff. No evidence deletion or authority migration occurred.
+  A private runtime capacity/publication-health warning and reviewed cleanup
+  discovery are pending; capacity alone cannot prove durable recording.
 - Current work is v1.14.0 maintenance; broader v1.15 remains incomplete. Preserve
   the existing 191-issue register, historical blocks and historical root values.
   The ten-minute and gateway-corrected five-minute observations are complete.

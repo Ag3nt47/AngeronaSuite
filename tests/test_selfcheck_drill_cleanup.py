@@ -17,7 +17,7 @@ def live_phase(namespace):
         and any(isinstance(decorator, ast.Call)
                 and decorator.args
                 and isinstance(decorator.args[0], ast.Constant)
-                and str(decorator.args[0].value).startswith("Red Team drill — LIVE run")
+                and str(decorator.args[0].value).startswith("Red Team drill — offline inventory fixture")
                 for decorator in node.decorator_list)
     )
     phase.decorator_list = []

@@ -1,9 +1,9 @@
-"""net_interfaces.py — VPN-adapter intelligence + split-tunnel detection.
+"""net_interfaces.py — VPN-adapter intelligence + mixed-interface socket observations.
 
 Shared, dependency-light helper imported by three call sites:
   * NMON / WFPC — tag each NET event with an ``interface_type``.
   * ATRG (ai_triage) — pass ``interface_type`` into the Ollama prompt.
-  * FPTH — the 18th deterministic IOC rule (split-tunnel abuse).
+  * FPTH — mixed-interface socket context, reported as exposure only.
 
 Design constraints (from the brief):
   * Standard library + psutil only. No third-party VPN/API libraries.
@@ -165,9 +165,10 @@ def detect_split_tunnel(pid: int) -> Optional[dict]:
     """Stateless per-call check for one PID.
 
     Returns a finding dict if the PID holds concurrent ESTABLISHED connections
-    over BOTH a Virtual_VPN interface AND a Physical interface to an untrusted
-    external IP — the classic split-tunnel exfil/bypass pattern. Returns None
-    otherwise. Never raises; on any error returns None (fail open).
+    whose local addresses classify as BOTH Virtual_VPN and Physical, with a
+    public destination on the latter. Adapter labels are heuristic; sockets do
+    not prove route traversal, unauthorized bypass, or exfiltration. Returns
+    None otherwise or when collection is unavailable.
     """
     try:
         conns = psutil.Process(pid).net_connections(kind="inet")
@@ -192,8 +193,17 @@ def detect_split_tunnel(pid: int) -> Optional[dict]:
             "pid": pid,
             "vpn_destinations": vpn_dsts[:10],
             "physical_external_destinations": phys_ext_dsts[:10],
-            "reason": ("Process holds concurrent connections over a VPN interface "
-                       "and a physical interface to an untrusted external host "
-                       "(split-tunnel bypass / exfil pattern)."),
+            "finding_kind": "exposure",
+            "disposition": "exposure",
+            "active_attack": False,
+            "response_authorized": False,
+            "response_authority": "observe-only",
+            "observation_only": True,
+            "process_identity_bound": False,
+            "detector_policy": "concurrent-interface-sockets-observe-only",
+            "reason": ("Concurrent sockets use local addresses heuristically "
+                       "classified as VPN and physical, with a public physical "
+                       "destination; route traversal, unauthorized bypass and "
+                       "maliciousness are unconfirmed."),
         }
     return None

@@ -38,6 +38,11 @@ faulthandler.enable(all_threads=True)
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")   # no real display needed
 os.environ.setdefault("ANGERONA_SELFCHECK", "1")
+# Keep the offline fixture independent of ambient provider configuration. Native
+# Ollama accepts a bind-address OLLAMA_HOST, which is not necessarily a client
+# URL. This harness uses a fixed loopback URL and forbids service startup below;
+# it must not probe a user-selected remote provider or relax URL validation.
+os.environ["OLLAMA_HOST"] = "http://127.0.0.1:11434"
 
 # ``run-selfcheck.bat`` is intentionally a non-admin diagnostic.  Production
 # runtime data is protected by an Administrators/SYSTEM-only ACL, so pointing
@@ -567,7 +572,47 @@ def _():
     return f"complexity={cfg['complexity']}, one-button sim wired, custom captured"
 
 
-@phase("Red Team drill — LIVE run (complexity + custom + target)")
+def _offline_owned_inventory_fixture(function):
+    """Supply only this disposable harness phase's general inventory."""
+    from functools import wraps
+
+    @wraps(function)
+    def wrapped():
+        from unittest.mock import patch
+        from angerona.modules import process_monitor
+        from angerona.telemetry.sensors import ProcessSnapshot
+
+        private_root = (Path(__file__).resolve().parents[1] / ".tmp").resolve()
+        data_root = Path(config.data_dir).resolve()
+        assert data_root != private_root and data_root.is_relative_to(private_root), (
+            "Owned-control inventory fixture requires a disposable workspace .tmp profile"
+        )
+        producer = manager.modules.get("Process Monitor")
+        worker = getattr(producer, "_thread", None)
+        assert (getattr(producer, "status", "stopped") != "running"
+                and (worker is None or not worker.is_alive())), (
+            "Owned-control inventory fixture cannot replace a running Process Monitor"
+        )
+
+        def inventory(*_args, **_kwargs):
+            return ProcessSnapshot(
+                processes=(), collected_at=time.time(), complete=True,
+                enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+                error="", enumeration_complete=True,
+            )
+
+        # Only general readiness is supplied. The real lease, native challenge,
+        # held artifact/process proof, response and authenticated history remain.
+        # The existing phase finally releases its lease before this restores the
+        # exact original supplier, including on cancellation or failed assertions.
+        with patch.object(process_monitor, "process_snapshot", inventory):
+            return function()
+
+    return wrapped
+
+
+@phase("Red Team drill — offline inventory fixture + native owned controls")
+@_offline_owned_inventory_fixture
 def _():
     # Actually run a drill in-process (zero jitter, temp target) to exercise the
     # new complexity loop, custom-technique step, and target_dir override — this
@@ -628,7 +673,8 @@ def _():
                 os.rmdir(tmp)
             except OSError:
                 pass
-    return f"{len(eng.steps)} steps over 2 phases; custom marker inert + cleaned"
+    return (f"Offline general-inventory fixture; native owned controls: "
+            f"{len(eng.steps)} steps over 2 phases; custom marker inert + cleaned")
 
 
 @phase("Reliability fixes (watchdog, self-test log, SOAR guard, fixes log)")

@@ -11,6 +11,27 @@ from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
 from angerona.modules import purple_guard
 
 
+def _supply_contract_inventory(monkeypatch):
+    """Explicit offline input; no claim about this host's inventory coverage.
+
+    The real current-generation Process Monitor still consumes the typed input;
+    issuer, native owned-target observation, recorder and readiness gates remain.
+    """
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    ages = []
+    def inventory(*, max_age=None):
+        ages.append(max_age)
+        return ProcessSnapshot(
+            processes=(), collected_at=time.time(), complete=True,
+            enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+            error="", enumeration_complete=True,
+        )
+    monkeypatch.setattr(process_monitor, "process_snapshot", inventory)
+    return ages
+
+
 def _runtime(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(
         BusAuthority,
@@ -35,6 +56,7 @@ def _runtime(tmp_path: Path, monkeypatch):
 def test_validation_lease_temporarily_starts_sensor_and_proves_recorder(
     tmp_path: Path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "selected-target"
     try:
@@ -46,6 +68,7 @@ def test_validation_lease_temporarily_starts_sensor_and_proves_recorder(
             target,
             timeout=3.0,
         )
+        assert 0.0 in inventory_ages  # Real fresh observation consumed supplied input.
         assert lease.started_temporarily is True
         assert lease.readiness["policy_count"] == 13
         assert lease.readiness["recorder"]["authenticated"] is True
@@ -519,6 +542,7 @@ def test_lease_is_exact_target_bound_and_single_use(
 def test_lease_release_revokes_unconsumed_nonce(
     tmp_path: Path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
@@ -526,6 +550,7 @@ def test_lease_release_revokes_unconsumed_nonce(
     )
     lease.release()
     try:
+        assert 0.0 in inventory_ages  # Real fresh observation consumed supplied input.
         with pytest.raises(purple_guard.RedTeamValidationError, match="released"):
             lease.consume_for_run(
                 run_id="revoked",

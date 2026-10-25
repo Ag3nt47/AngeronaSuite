@@ -100,16 +100,13 @@ def test_purple_guard_detects_registered_custom_target_only(tmp_path: Path) -> N
                 "path": str(marker),
                 "artifact_path": str(marker),
                 "mitre": "T1003",
-                    "drill_target": str(custom_target.resolve()),
-                    "detector_policy": "reviewed-redteam-candidate",
-                    "evidence_type": "simulation_contract_validation",
-                    "detector_verdict": "positive",
-                    "response_authorized": True,
-                "response_contract": {
-                    "version": 1,
-                    "actions": ["quarantine_file"],
-                    "targets": {"path": str(marker)},
-                },
+                "drill_target": str(custom_target.resolve()),
+                "detector_policy": "simulation-marker-observation",
+                "evidence_type": "unleased_simulation_marker",
+                "detector_verdict": "unverified",
+                "disposition": "observation",
+                "active_attack": False,
+                "response_authorized": False,
             }
         ]
     finally:
@@ -152,7 +149,7 @@ def test_preregistered_target_is_scanned_after_bounded_drill_creates_it(
         purple_guard.unregister_runtime_target(future)
 
 
-def test_purple_guard_propagates_safe_practice_and_process_lineage(
+def test_purple_guard_does_not_promote_unleased_practice_or_process_lineage(
     tmp_path: Path,
 ) -> None:
     sandbox = tmp_path / "drill-sandbox"
@@ -165,7 +162,10 @@ def test_purple_guard_propagates_safe_practice_and_process_lineage(
     guard.emit = lambda _message, severity=None, **details: emitted.append(details)
 
     assert guard.scan_once({"T1003": {"state": "CANDIDATE_READY"}}) == 1
-    assert emitted[0]["practice_verification_id"] == practice_id
+    assert emitted[0]["disposition"] == "observation"
+    assert emitted[0]["response_authorized"] is False
+    assert "practice_verification_id" not in emitted[0]
+    assert "response_contract" not in emitted[0]
 
     source = type(
         "ProcessEvent",
@@ -187,9 +187,11 @@ def test_purple_guard_propagates_safe_practice_and_process_lineage(
     assert guard.scan_process_once(
         {purple_guard._PROCESS_TECHNIQUE: {"state": "CANDIDATE_READY"}}
     ) == 1
-    assert emitted[1]["practice_verification_id"] == "practice-01234567"
-    assert emitted[1]["run_id"] == "redteam-123-safe"
-    assert emitted[1]["step_id"] == "DSTEP-ABC123"
+    assert emitted[1]["disposition"] == "observation"
+    assert emitted[1]["active_attack"] is False
+    assert emitted[1]["response_authorized"] is False
+    for key in ("practice_verification_id", "run_id", "step_id", "response_contract"):
+        assert key not in emitted[1]
 
 
 def test_rapid_rerun_cancels_stale_cleanup_without_deleting_unheld_markers(

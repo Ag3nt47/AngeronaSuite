@@ -53,6 +53,10 @@ def _install_fast_pyside_feature_detection() -> bool:
         return False
 
 def main() -> int:
+    process_worker = "--process-snapshot-worker" in sys.argv[1:]
+    if process_worker and sys.argv[1:] != ["--process-snapshot-worker"]:
+        print("[Angerona] Invalid process inventory worker arguments.", file=sys.stderr, flush=True)
+        return 2
     setup_requested = "--setup" in sys.argv
     chill_requested = "--chill" in sys.argv
     engine_flags = {"--engine-console", "--engine-serve", "--engine-service", "--response-service"}.intersection(sys.argv)
@@ -77,6 +81,11 @@ def main() -> int:
                 flush=True,
             )
             return 2
+        if process_worker:
+            # The child inherits its parent's token. It must verify packaged
+            # authority, but must never trigger a separate UAC handoff.
+            from angerona.telemetry.process_snapshot_worker import worker_main
+            return worker_main()
         # The detachable desktop console is an ordinary-user client. A signed
         # SCM package enters through its own native dispatcher. Neither route
         # requests elevation implicitly or bypasses the exact package pin.
@@ -117,6 +126,12 @@ def main() -> int:
             flush=True,
         )
         return 2
+
+    if process_worker:
+        # The ordinary-source privilege guard above still applies. No Config,
+        # Qt, singleton, resilience service or module graph is constructed.
+        from angerona.telemetry.process_snapshot_worker import worker_main
+        return worker_main()
 
     if "--spyware-beacon-watch" in sys.argv:
         from angerona.core.spyware_beacon import watch_main
@@ -182,9 +197,15 @@ def main() -> int:
             print("[Angerona] Already running — refusing a second instance.", flush=True)
             return 0
         from angerona.core.headless import run_headless
+        from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
+        inventory = ProcessSnapshotLifecycle()
         try:
-            return run_headless(**({"force_chill": True} if chill_requested else {}))
+            return run_headless(
+                process_snapshot_lifecycle=inventory,
+                **({"force_chill": True} if chill_requested else {}),
+            )
         finally:
+            inventory.request_stop()
             try:
                 lock.close()
             except Exception:
@@ -220,16 +241,26 @@ def main() -> int:
     qt.setQuitOnLastWindowClosed(False)  # keep running in the system tray
 
     from angerona.app import AngeronaApp
-    app = AngeronaApp(
-        qt, force_chill=chill_requested, startup_endpoint=startup_endpoint,
-        **({"live_debug": True} if "--live-debug" in application_args else {}),
-    )
+    from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
+    inventory = ProcessSnapshotLifecycle()
+    try:
+        app = AngeronaApp(
+            qt, force_chill=chill_requested, startup_endpoint=startup_endpoint,
+            process_snapshot_lifecycle=inventory,
+            **({"live_debug": True} if "--live-debug" in application_args else {}),
+        )
+    except BaseException:
+        inventory.request_stop()
+        raise
     app._instance_lock = lock  # keep the lock socket alive for the app's lifetime
-    app.start()
-    if setup_requested:
-        from PySide6.QtCore import QTimer
-        QTimer.singleShot(700, app.window._open_setup)
-    return qt.exec()
+    try:
+        app.start()
+        if setup_requested:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(700, app.window._open_setup)
+        return qt.exec()
+    finally:
+        app.shutdown()
 
 
 def _run_engine_mode(mode: str, *, force_chill: bool = False) -> int:

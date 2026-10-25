@@ -1,13 +1,13 @@
 """canary_drill.py — Telemetry Canary Drill Engine (Code: DRILL).
 
 Purpose
-    Detect user-space telemetry blinding in real time.
+    Validate canary coverage and report availability failures with unconfirmed cause.
 
     An adversary that patches ``ntdll!EtwEventWrite`` (or blocks the Windows
     Security event channel) can blind the ETWG module so that process-creation
     events stop flowing to the EventBus — Angerona keeps running but sees nothing.
 
-    DRILL detects this by firing **synthetic canary probes** at a configurable
+    DRILL checks the echo path with **synthetic canary probes** at a configurable
     interval:
 
     1. Spawn a very short-lived, benign subprocess (``cmd /c exit 0`` with a
@@ -15,8 +15,9 @@ Purpose
     2. Subscribe to the EventBus and wait up to ``CANARY_TIMEOUT_S`` seconds for
        an ETWG 4688 event whose details contain the canary tag.
     3. If the canary arrives → pipeline is healthy; reset the miss counter.
-    4. If the timeout expires with no matching event → presume telemetry blinding;
-       emit CRITICAL and escalate the threat level.
+    4. A missing echo is a coverage failure. Repeated misses on a previously
+       verified path remain CRITICAL availability evidence; they do not prove
+       ETW hooking, channel suppression or an active attack.
 
     DRILL also validates the FlightRecorder write path by verifying that the
     canary event (once confirmed) was persisted to the SQLite ledger.
@@ -117,8 +118,8 @@ class CanaryDrillModule(BaseModule):
     description = (
         "Fires synthetic benign canary subprocesses at regular intervals and "
         "listens for the corresponding ETWG 4688 echo on the EventBus.  A missed "
-        "canary signals user-space telemetry blinding (e.g. ntdll!EtwEventWrite "
-        "hooking) and raises a CRITICAL alert."
+        "canary reports an availability gap with unconfirmed cause; repeated "
+        "misses on a previously verified path retain CRITICAL priority."
     )
     category = "Resilience"
     version = "1.14.0"
@@ -192,10 +193,9 @@ class CanaryDrillModule(BaseModule):
         type_ok = str(details.get("type") or details.get("event_type") or "") == "process_creation"
         if not (eid_ok or type_ok):
             return
-        # ANY trusted process-creation event proves the telemetry pipeline is
-        # alive right now — even if it isn't our canary. We use this to tell real
-        # blinding (events flowing, but our canary suppressed) apart from our own
-        # sensor being down (nothing flowing at all → operational, not an attack).
+        # Recent trusted activity distinguishes activity from a silent source.
+        # It does not prove that the canary used the same provider or that a
+        # missing echo was deliberately suppressed (polling can miss a probe).
         self._last_trusted_event = time.monotonic()
 
         def tag_in(value: object) -> str | None:
@@ -498,8 +498,9 @@ class CanaryDrillModule(BaseModule):
                 #   • our telemetry SOURCE is silent (no trusted process events at
                 #     all recently → scanner/ETW down, SAFE_MODE, or Eco-paused)
                 #                               → MEDIUM operational, NOT blinding
-                #   • events ARE flowing but our canary was suppressed
-                #                               → HIGH → CRITICAL (real blinding)
+                #   • other events flow but the canary echo is missing
+                #                               → HIGH → CRITICAL availability;
+                #                                 cause remains unconfirmed
                 source_silent = self._ever_caught and (
                     time.monotonic() - self._last_trusted_event) > (CANARY_TIMEOUT_S * 3)
                 if not self._ever_caught:
@@ -509,7 +510,7 @@ class CanaryDrillModule(BaseModule):
                     miss_msg = " — telemetry source is silent (a sensor may be down or paused)."
                     miss_sev = Severity.MEDIUM
                 else:
-                    miss_msg = " — possible telemetry blinding."
+                    miss_msg = " — canary coverage failure; cause unconfirmed."
                     miss_sev = Severity.HIGH
                 self.emit(
                     f"⚠️ DRILL MISS: canary {tag} not echoed within "
@@ -519,20 +520,36 @@ class CanaryDrillModule(BaseModule):
                     consecutive_misses=self._consecutive_misses,
                     echo_path_verified=self._ever_caught,
                     source_silent=source_silent,
+                    disposition="health",
+                    active_attack=False,
+                    active_detection=False,
+                    response_authorized=False,
+                    cause_unconfirmed=True,
+                    coverage_failure=True,
                 )
                 if self._consecutive_misses >= MAX_CONSECUTIVE_MISSES:
                     if self._ever_caught and not source_silent:
-                        # Path worked earlier, events still flow, but our canary is
-                        # gone → real signal.
+                        # Preserve critical availability priority without
+                        # attributing a missing echo to hostile interference.
                         self.emit(
-                            f"\U0001f6a8 TELEMETRY BLINDING DETECTED — "
+                            f"\U0001f6a8 CANARY COVERAGE FAILURE — "
                             f"{self._consecutive_misses} consecutive canaries missed.  "
-                            "EtwEventWrite hooking or Security channel suppression suspected.",
+                            "Cause unconfirmed; other process activity does not prove "
+                            "ETW hooking or channel suppression.",
                             Severity.CRITICAL,
                             consecutive_misses=self._consecutive_misses,
-                            mitigation="Check APID for ntdll hooks; inspect audit policy.",
+                            canary_tag=tag,
+                            echo_path_verified=self._ever_caught,
+                            source_silent=source_silent,
+                            disposition="health",
+                            active_attack=False,
+                            active_detection=False,
+                            response_authorized=False,
+                            cause_unconfirmed=True,
+                            coverage_failure=True,
+                            mitigation="Check provider coverage, polling cadence and echo delivery.",
                         )
-                        self.set_health(10, "telemetry blinding suspected")
+                        self.set_health(10, "canary coverage failure; cause unconfirmed")
                     elif source_silent:
                         # Our OWN telemetry source stopped reporting — operational,
                         # not an attack. Warn once (reuse the throttle) at MEDIUM.
