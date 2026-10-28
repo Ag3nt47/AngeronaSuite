@@ -1,7 +1,8 @@
 # Angerona Security Suite
 
-A local security workbench for seeing what happened, following the evidence and
-reviewing a governed response. Angerona combines Endpoint Detection and Response
+Angerona provides a unified desktop environment for security monitoring,
+evidence-based investigation, and policy-governed incident response.
+Angerona combines Endpoint Detection and Response
 (EDR), Network Detection and Response (NDR), Security Orchestration, Automation,
 and Response (SOAR), forensics and defensive practice in one desktop application.
 
