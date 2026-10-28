@@ -28,6 +28,9 @@ def test_recovery_command_preserves_chill_during_alert(monkeypatch, quiet, block
         def stop(self, **_kwargs):
             pass
 
+        def request_stop(self):
+            pass
+
     monkeypatch.setattr(resilience, "ProcessSupervisor", Supervisor)
     monkeypatch.setattr(resilience.hb, "HeartbeatWriter", lambda _name:
                         SimpleNamespace(beat=lambda: None, close=lambda: None))

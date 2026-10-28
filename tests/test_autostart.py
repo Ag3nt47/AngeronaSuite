@@ -7,6 +7,15 @@ from angerona.core import data_paths
 from angerona.core import windows_package_identity
 
 
+def _package_manifest(path, entry="AngeronaStartup.exe"):
+    path.write_text(
+        '<Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10">'
+        '<Applications><Application Id="Angerona" Executable="' + entry
+        + '" EntryPoint="Windows.FullTrustApplication" /></Applications></Package>',
+        encoding="utf-8",
+    )
+
+
 def test_source_autostart_uses_windowed_python_and_project_working_directory(
         tmp_path, monkeypatch):
     python = tmp_path / "venv" / "Scripts" / "python.exe"
@@ -22,7 +31,7 @@ def test_source_autostart_uses_windowed_python_and_project_working_directory(
 
     executable, arguments, working_directory = autostart._target_action()
     assert executable == str(pythonw)
-    assert arguments == "-m angerona.startup --chill"
+    assert arguments == "-m angerona.startup --chill --automatic-start"
     assert working_directory == str(tmp_path)
 
 
@@ -38,6 +47,8 @@ def test_frozen_windows_autostart_requires_bundled_trusted_helper(
         helper.hardlink_to(dashboard)
     elif condition != "missing":
         helper.write_bytes(b"test-only-helper")
+    _package_manifest(tmp_path / "AppxManifest.xml")
+    monkeypatch.setattr(autostart, "_current_msix_package_root", lambda: tmp_path)
     monkeypatch.setattr(autostart.sys, "executable", str(dashboard))
     monkeypatch.setattr(autostart.sys, "platform", "win32")
     monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
@@ -59,13 +70,63 @@ def test_frozen_windows_autostart_requires_bundled_trusted_helper(
             autostart._target_action()
 
 
+@pytest.mark.parametrize("condition", [
+    "ready", "missing", "directory", "hardlink", "root-mismatch", "manifest-malformed",
+    "manifest-oversized", "manifest-unknown-entry", "manifest-duplicate-entry", "manifest-wrong-id",
+])
+def test_modern_msix_autostart_uses_native_entry_and_never_falls_through_to_legacy(
+        tmp_path, monkeypatch, condition):
+    dashboard = tmp_path / "Angerona.exe"
+    dashboard.write_bytes(b"test-only-dashboard")
+    legacy = tmp_path / "AngeronaStartup.exe"
+    legacy.write_bytes(b"valid-legacy-fixture-must-not-bypass-modern-entry")
+    native = tmp_path / "AngeronaSafeStart.exe"
+    if condition == "directory":
+        native.mkdir()
+    elif condition == "hardlink":
+        native.hardlink_to(dashboard)
+    elif condition != "missing":
+        native.write_bytes(b"test-only-native-entry")
+    manifest = tmp_path / "AppxManifest.xml"
+    _package_manifest(manifest, "AngeronaSafeStart.exe")
+    if condition == "manifest-malformed":
+        manifest.write_text("<broken>")
+    elif condition == "manifest-oversized":
+        manifest.write_bytes(b"x" * (autostart._MAX_PACKAGE_MANIFEST_BYTES + 1))
+    elif condition == "manifest-unknown-entry":
+        _package_manifest(manifest, "Angerona.exe")
+    elif condition == "manifest-duplicate-entry":
+        raw = manifest.read_text()
+        entry = raw[raw.index("<Application "):raw.index("</Applications>")]
+        manifest.write_text(raw.replace("</Applications>", entry + "</Applications>"))
+    elif condition == "manifest-wrong-id":
+        manifest.write_text(manifest.read_text().replace('Id="Angerona"', 'Id="Other"'))
+    monkeypatch.setattr(autostart.sys, "executable", str(dashboard))
+    monkeypatch.setattr(autostart.sys, "platform", "win32")
+    monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(data_paths, "project_root", lambda: tmp_path)
+    monkeypatch.setattr(autostart, "_current_msix_package_root",
+                        lambda: tmp_path / "other-package" if condition == "root-mismatch" else tmp_path)
+    monkeypatch.setattr(windows_package_identity, "verify_current_msix_authority",
+                        lambda: SimpleNamespace(trusted=True, reason="test package authority"))
+    if condition == "ready":
+        assert autostart._target_action() == (str(native), "--automatic-start", str(tmp_path))
+        assert autostart._windows_task_xml_is_current(_windows_task_xml(
+            command=str(native), arguments="--automatic-start", working_directory=str(tmp_path)))
+        assert not autostart._windows_task_xml_is_current(_windows_task_xml(
+            command=str(legacy), arguments="--chill", working_directory=str(tmp_path)))
+    else:
+        with pytest.raises(RuntimeError, match="Repair the signed installation"):
+            autostart._target_action()
+
+
 def test_posix_frozen_autostart_retains_native_dashboard_entry(tmp_path, monkeypatch):
     dashboard = str(tmp_path / "Angerona")
     monkeypatch.setattr(autostart.sys, "executable", dashboard)
     monkeypatch.setattr(autostart.sys, "platform", "linux")
     monkeypatch.setattr(autostart.sys, "frozen", True, raising=False)
     monkeypatch.setattr(data_paths, "project_root", lambda: tmp_path)
-    assert autostart._target_action() == (dashboard, "--chill", str(tmp_path))
+    assert autostart._target_action() == (dashboard, "--chill --automatic-start", str(tmp_path))
 
 
 def test_enable_autostart_registers_hidden_resilient_task(monkeypatch):

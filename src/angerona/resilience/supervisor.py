@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 from collections import deque
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
@@ -60,12 +61,24 @@ def _invocation_matches(process, command, expected: tuple[str, ...]) -> bool:
     This establishes liveness identity, not signed-build or runtime integrity.
     Resolve a relative script against that process's cwd, not our own cwd.
     """
-    if (not isinstance(command, (list, tuple)) or len(command) < len(expected)
+    if not _invocation_arguments_match(process, command, expected):
+        return False
+    normalize = lambda path: os.path.normcase(os.path.realpath(path))
+    executable = normalize(expected[0])
+    allowed = {executable}
+    basename = os.path.basename(executable)
+    if os.name == "nt" and basename in {"python.exe", "pythonw.exe"}:
+        sibling = "pythonw.exe" if basename == "python.exe" else "python.exe"
+        allowed.add(normalize(os.path.join(os.path.dirname(executable), sibling)))
+    return normalize(process.exe()) in allowed
+
+
+def _invocation_arguments_match(process, command, expected) -> bool:
+    if (not expected or not isinstance(command, (list, tuple)) or len(command) < len(expected)
             or not all(isinstance(part, str) for part in command)):
         return False
     if len(expected) == 1:
-        return (os.path.normcase(os.path.realpath(process.exe()))
-                == os.path.normcase(os.path.realpath(expected[0])))
+        return True
     # Presentation launches may add harmless interpreter options. Never scan
     # past -c/stdin or treat their code text as a script path.
     index = 1
@@ -95,13 +108,48 @@ def _invocation_matches(process, command, expected: tuple[str, ...]) -> bool:
         if (normalize(script) != normalize(expected[1])
                 or tuple(command[2:len(expected)]) != expected[2:]):
             return False
-    executable = normalize(expected[0])
-    allowed = {executable}
-    basename = os.path.basename(executable)
-    if os.name == "nt" and basename in {"python.exe", "pythonw.exe"}:
-        sibling = "pythonw.exe" if basename == "python.exe" else "python.exe"
-        allowed.add(normalize(os.path.join(os.path.dirname(executable), sibling)))
-    return normalize(process.exe()) in allowed
+    return True
+
+
+def _invocation_identity(process, expected):
+    """Capture one exact invocation generation, including a venv redirector."""
+    command = process.cmdline() or []
+    birth, image = float(process.create_time()), str(process.exe())
+    parent_identity = None
+    if not _invocation_matches(process, command, expected):
+        if (os.name != "nt" or len(expected) < 2
+                or os.path.basename(expected[0]).casefold() not in {"python.exe", "pythonw.exe"}
+                or not _invocation_arguments_match(process, command, expected)):
+            return None
+        # Shared base Python alone never authorizes adoption. It must be a
+        # live child of the exact expected venv redirector and invocation.
+        base = Path(getattr(sys, "_base_executable", sys.executable))
+        allowed_base = {os.path.normcase(str(base.resolve())),
+                        os.path.normcase(str(base.with_name("pythonw.exe").resolve()))}
+        if os.path.normcase(str(Path(image).resolve())) not in allowed_base:
+            return None
+        import psutil
+        parent = psutil.Process(process.ppid())
+        if not _invocation_matches(parent, parent.cmdline() or [], expected):
+            return None
+        parent_identity = (int(parent.pid), float(parent.create_time()), str(parent.exe()))
+        if birth < parent_identity[1] or not parent.is_running():
+            return None
+    if not process.is_running():
+        return None
+    return {"pid": int(process.pid), "birth": birth, "image": image,
+            "parent": parent_identity}
+
+
+def _venv_redirector(process, expected):
+    if os.name != "nt" or len(expected) < 2:
+        return False
+    executable = Path(process.exe())
+    return (executable.name.casefold() in {"python.exe", "pythonw.exe"}
+            and executable.parent.name.casefold() == "scripts"
+            and (executable.parent.parent / "pyvenv.cfg").is_file()
+            and os.path.normcase(str(executable.resolve())) != os.path.normcase(
+                str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
 
 
 def cached_cmdline_probe(*needles: str, psutil_module=None,
@@ -118,6 +166,7 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
     ``psutil_module`` is an injection seam for deterministic regression tests.
     """
     cached_process = None
+    cached_identity = None
     loaded_psutil = psutil_module
     expected = tuple(expected_argv) if expected_argv is not None else None
     if expected is not None and (not expected or not all(
@@ -125,7 +174,7 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
         raise ValueError("An exact executable or module/script invocation is required")
 
     def _probe() -> bool:
-        nonlocal cached_process, loaded_psutil
+        nonlocal cached_process, cached_identity, loaded_psutil
         if cached_process is not None:
             try:
                 status_reader = getattr(cached_process, "status", None)
@@ -138,6 +187,7 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
             except Exception:
                 pass
             cached_process = None
+            cached_identity = None
         try:
             if loaded_psutil is None:
                 import psutil as loaded_psutil_module
@@ -146,13 +196,19 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
                 try:
                     command = process.info.get("cmdline") or []
                     if expected is not None:
-                        if not _invocation_matches(process, command, expected):
+                        if not _invocation_arguments_match(process, command, expected):
+                            continue
+                        # Capture the actual interpreter child, whose proof
+                        # includes this redirector's exact generation. Killing
+                        # only a redirector would strand the real sidecar.
+                        if _venv_redirector(process, expected):
                             continue
                         # process_iter info can be cached: confirm fresh argv
                         # and PID generation before adopting this sidecar.
-                        if (not _invocation_matches(process, process.cmdline(), expected)
-                                or not process.is_running()):
+                        identity = _invocation_identity(process, expected)
+                        if identity is None:
                             continue
+                        cached_identity = identity
                     elif not command or not all(needle in command for needle in needles):
                         continue
                     cached_process = process
@@ -164,12 +220,13 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
             cached_process = None
         return False
 
+    _probe.retained_identity = lambda: dict(cached_identity) if cached_identity else None
     return _probe
 
 
 # ── detached, windowed spawning ──────────────────────────────────────────────
 def spawn_detached(argv: list[str], env: Optional[dict] = None,
-                   window: str = "minimized") -> subprocess.Popen:
+                   window: str = "minimized", *, cwd=None):
     """Start a process fully detached from this one's process group/tree.
 
     window: 'minimized' (own console, minimized), 'hidden' (no window), or
@@ -184,21 +241,16 @@ def spawn_detached(argv: list[str], env: Optional[dict] = None,
         "env": sanitized_child_environment(env),
         "close_fds": True,
     }
+    if cwd is not None:
+        kwargs["cwd"] = cwd
     if os.name == "nt":
-        DETACHED_PROCESS = 0x00000008
-        CREATE_NEW_PROCESS_GROUP = 0x00000200
-        CREATE_NEW_CONSOLE = 0x00000010
-        CREATE_NO_WINDOW = 0x08000000
-        if window == "hidden":
-            kwargs["creationflags"] = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-        else:
-            # Own console window so the process is independently visible.
-            kwargs["creationflags"] = CREATE_NEW_CONSOLE | CREATE_NEW_PROCESS_GROUP
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            # 7 = SW_SHOWMINNOACTIVE (minimized, don't steal focus); 1 = SW_SHOWNORMAL
-            si.wShowWindow = 7 if window == "minimized" else 1
-            kwargs["startupinfo"] = si
+        from angerona.core.windows_child_job import launch_windows_child
+
+        # A peer watchdog survives a core crash. Its private job closes without
+        # killing; explicit STOP terminates the retained job and descendants.
+        return launch_windows_child(
+            argv, kwargs["env"], cwd=cwd, window=window, kill_on_close=False,
+        )
     else:
         kwargs["start_new_session"] = True
     return subprocess.Popen(argv, **kwargs)
@@ -339,6 +391,7 @@ class Component:
     state_fault: bool = False
     restarts: int = 0
     adopted: bool = False
+    adopted_identity: Optional[dict] = None
     auth_notice: str = ""
 
 
@@ -367,6 +420,7 @@ class ProcessSupervisor:
                 clock=clock,
             )
         self._stop = threading.Event()
+        self._lifecycle_lock = threading.RLock()
         self._thread: Optional[threading.Thread] = None
 
     # ── registration ─────────────────────────────────────────────────────────
@@ -467,8 +521,20 @@ class ProcessSupervisor:
 
     # ── spawning (adopt-if-alive + cross-process lock) ───────────────────────
     def _spawn(self, c: Component) -> bool:
+        with self._lifecycle_lock:
+            return self._spawn_locked(c)
+
+    def _respawn_blocked(self) -> bool:
+        return self._stop.is_set() or tok.is_standdown_requested()
+
+    def _spawn_locked(self, c: Component) -> bool:
+        if self._respawn_blocked():
+            return False
         # Already up (perhaps started by the other supervisor)? Adopt it.
         if self._is_running(c):
+            captured = getattr(c.running_probe, "retained_identity", None)
+            if callable(captured):
+                c.adopted_identity = captured()
             c._dead = False
             if not c.adopted:
                 c.adopted = True
@@ -495,9 +561,20 @@ class ProcessSupervisor:
         try:
             if self._is_running(c):     # double-check under the lock
                 return True
-            c.proc = spawn_detached(c.argv, window=c.window)
+            if self._respawn_blocked():
+                return False
+            # This flag only inhibits startup. It grants no trust or privilege.
+            # A child launched just before STOP must never clear its stop token.
+            env = dict(os.environ)
+            if c.name == "core":
+                env["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+            c.proc = spawn_detached(c.argv, env=env, window=c.window)
+            if self._respawn_blocked():
+                self._terminate(c)
+                return False
             c._dead = False
             c.adopted = False
+            c.adopted_identity = None
             c.restarts += 1
             threading.Thread(target=self._waiter, args=(c, c.proc), daemon=True,
                              name=f"wait-{c.name}").start()
@@ -529,6 +606,15 @@ class ProcessSupervisor:
             c._dead = True
 
     def start(self) -> None:
+        with self._lifecycle_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._start_locked()
+
+    def _start_locked(self) -> None:
+        self._stop.clear()
+        if tok.is_standdown_requested():
+            return
         # Adopt-if-alive: never start a second instance of something already up.
         for c in self.components.values():
             if c.safe_mode and not self._is_running(c):
@@ -539,7 +625,6 @@ class ProcessSupervisor:
                 )
                 continue
             self._spawn(c)
-        self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name="supervisor")
         self._thread.start()
 
@@ -552,9 +637,15 @@ class ProcessSupervisor:
 
     # ── one monitoring pass (public for tests) ───────────────────────────────
     def tick(self) -> dict:
+        with self._lifecycle_lock:
+            return self._tick_locked()
+
+    def _tick_locked(self) -> dict:
         actions: dict = {}
-        standdown = tok.is_standdown_requested()
+        standdown = self._respawn_blocked()
         forced = self._pop_restart_requests()       # operator/console manual restart
+        if standdown:
+            return {name: "standdown" for name in self.components}
         now = self._clock()
         for name, c in self.components.items():
             # Manual restart: force a respawn now, clearing SAFE_MODE.
@@ -843,6 +934,18 @@ class ProcessSupervisor:
             self._emit("INFO", f"{c.name} left SAFE_MODE (healthy again).", component=c.name)
 
     def _terminate(self, c: Component) -> bool:
+        if c.proc is not None and getattr(c.proc, "owns_descendants", False):
+            try:
+                c.proc.terminate()
+                c.proc.wait(timeout=3.0)
+                c.proc.wait_tree(timeout=3.0)
+                c.proc.close()
+                c.proc = None
+                c._dead = True
+                return True
+            except Exception:
+                # Keep custody for retry; do not discover shared siblings.
+                return False
         if c.proc and c.proc.poll() is None:
             try:
                 c.proc.terminate()
@@ -850,6 +953,7 @@ class ProcessSupervisor:
                     c.proc.wait(timeout=3)
                 except Exception:
                     c.proc.kill()
+                    c.proc.wait(timeout=3)
                 c._dead = True
                 return True
             except Exception:
@@ -860,50 +964,61 @@ class ProcessSupervisor:
         # otherwise the fresh heartbeat makes _spawn() re-adopt it and the
         # restart button appears to do nothing.
         try:
-            rec, auth = self._authenticated_record(c)
-            if auth != "authenticated":
-                self._report_auth_state(c, auth)
-                return False
-            pid = int((rec or {}).get("pid") or 0)
+            adopted = c.adopted_identity
+            if adopted is not None:
+                pid = int(adopted["pid"])
+            else:
+                rec, auth = self._authenticated_record(c)
+                if auth != "authenticated":
+                    self._report_auth_state(c, auth)
+                    return False
+                pid = int((rec or {}).get("pid") or 0)
             if not pid or not hb.pid_alive(pid):
                 return True
             import psutil
             proc = psutil.Process(pid)
-            actual_exe = os.path.normcase(os.path.abspath(proc.exe()))
-            expected_exe = (
-                os.path.normcase(os.path.abspath(str(c.argv[0])))
-                if c.argv else ""
-            )
-            cmdline = [str(part) for part in (proc.cmdline() or [])]
-            joined = " ".join(cmdline).casefold()
-            # Bind the heartbeat PID to the configured executable. For the Core,
-            # also require the Angerona module/app identity before terminating an
-            # adopted process. A tampered heartbeat file must not become an
-            # arbitrary elevated PID-kill primitive.
-            if expected_exe and actual_exe != expected_exe:
+            expected = tuple(str(part) for part in c.argv)
+            # Full/Chill is presentation intent, not a distinct core identity.
+            if c.name == "core":
+                expected = tuple(part for part in expected if part != "--chill")
+            identity = _invocation_identity(proc, expected)
+            if identity is None or (adopted is not None and identity != adopted):
                 self._emit(
                     "HIGH",
-                    f"Refused to terminate adopted {c.name}: executable identity mismatch.",
+                    f"Refused to terminate adopted {c.name}: invocation identity mismatch.",
                     component=c.name,
                     pid=pid,
                 )
                 return False
-            if c.name == "core":
-                frozen_app = os.path.basename(actual_exe).casefold().startswith("angerona")
-                module_app = "angerona" in joined and "-m" in cmdline
-                if not (frozen_app or module_app):
-                    self._emit(
-                        "HIGH",
-                        "Refused to terminate adopted core: command identity mismatch.",
-                        component=c.name,
-                        pid=pid,
-                    )
+            if os.name == "nt":
+                from angerona.core.windows_process_lease import WindowsProcessLease
+
+                # Birth/image checks and termination use one retained native
+                # handle. A reused heartbeat PID cannot target a shared Python.
+                with ExitStack() as stack:
+                    parent = identity["parent"]
+                    parent_lease = (stack.enter_context(WindowsProcessLease(
+                        parent[0], parent[1], parent[2], lifetime=10.0,
+                    )) if parent is not None else None)
+                    lease = stack.enter_context(WindowsProcessLease(
+                        pid, identity["birth"], identity["image"], lifetime=10.0,
+                    ))
+                    if _invocation_identity(proc, expected) != identity:
+                        return False
+                    lease.terminate()
+                    lease.wait_terminated(timeout=3.0)
+                    if parent_lease is not None:
+                        parent_lease.wait_terminated(timeout=3.0)
+            else:
+                # psutil's signal methods revalidate this cached PID generation.
+                if not proc.is_running() or proc.create_time() != identity["birth"]:
                     return False
-            proc.terminate()
-            try:
-                proc.wait(timeout=3)
-            except Exception:
-                proc.kill()
+                proc.terminate()
+                try:
+                    proc.wait(timeout=3)
+                except Exception:
+                    proc.kill()
+                    proc.wait(timeout=3)
             c._dead = True
             return True
         except Exception as exc:
@@ -916,9 +1031,17 @@ class ProcessSupervisor:
 
     def stop(self, terminate_children: bool = True) -> None:
         self._stop.set()
-        if terminate_children:
-            for c in self.components.values():
-                self._terminate(c)
+        with self._lifecycle_lock:
+            if terminate_children:
+                for c in self.components.values():
+                    self._terminate(c)
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    def request_stop(self) -> None:
+        """Close respawn admission without waiting on an in-flight launch."""
+        self._stop.set()
 
 
 def self_test() -> tuple[bool, str]:

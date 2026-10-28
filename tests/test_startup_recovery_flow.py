@@ -50,6 +50,15 @@ foreach($node in $ast.FindAll({param($n) $n -is [Management.Automation.Language.
 _FAKE_SOURCE = r"""
 $script:Events=[Collections.Generic.List[string]]::new()
 $script:Passes=0; $script:Repairs=0; $script:Dashboards=0; $script:Lease=0
+function Write-SourceStartupStatus {}
+function Write-SourceStartupEvent {}
+function Add-SourceStartupAttempt {}
+function Invoke-SourceCodeAction {
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    return 0
+}
+function Protect-SourceStartupText { param($Value,$Limit=2000) return [string]$Value }
+function Invoke-SourceRecoveryWindow { $script:Events.Add('recovery'); return 0 }
 function Assert-SourceStartupBoundary { param($Root) $script:Passes++; $script:Events.Add('boundary'); if($env:ANGERONA_TEST_CASE -in @('elevated','integrity','custody','low-disk')) { throw $env:ANGERONA_TEST_CASE } }
 function Initialize-SourceStartupStorage { return 'D:\fixture\state' }
 function Enter-RepairLease { param($Root) if($env:ANGERONA_TEST_CASE -eq 'busy') { throw 'busy' }; $script:Lease++; $script:Events.Add('lease'); return 'fake-lease' }
@@ -85,12 +94,12 @@ function Invoke-OwnedRepairProcess {
     return 0
 }
 function Invoke-SourceStartupAssistant {
-    param($Python,$Root,$Environment,$Scratch)
+    param($Python,$Root,$Environment,$Scratch,[switch]$SoftwareRenderer)
     if($script:Lease -ne 1) {throw 'helper escaped lease'}
     if($Environment.ContainsKey('QT_QPA_PLATFORM')) {throw 'offscreen leaked to dashboard'}
     $script:Events.Add('helper')
     if($env:ANGERONA_TEST_CASE -in @('unknown','timeout-live','cancel-live')) {return 1}
-    if($env:ANGERONA_TEST_CASE -eq 'repair-recheck-failed') {return 82}
+    if($env:ANGERONA_TEST_CASE -in @('repair-recheck-failed','repair-failed')) {return 82}
     if($script:Passes -eq 1 -and $env:ANGERONA_TEST_CASE -notin @('normal','runtime','pip')) {return 83}
     $script:Dashboards++; return 0
 }
@@ -111,24 +120,24 @@ Write-Output ('RESULT:'+(@{code=$code;passes=$script:Passes;repairs=$script:Repa
     ("normal", 1, 0, 1, 0),
     ("runtime", 2, 1, 1, 0),
     ("pip", 2, 1, 1, 0),
-    ("gui", 2, 1, 1, 0),
-    ("repair-failed", 1, 1, 0, 1),
-    ("repair-recheck-failed", 2, 1, 0, 1),
-    ("unknown", 1, 0, 0, 1),
-    ("source-trust", 1, 0, 0, 1),
-    ("timeout-live", 1, 0, 0, 1),
-    ("cancel-live", 1, 0, 0, 1),
-    ("elevated", 1, 0, 0, 1),
-    ("integrity", 1, 0, 0, 1),
-    ("custody", 1, 0, 0, 1),
-    ("low-disk", 1, 0, 0, 1),
-    ("busy", 1, 0, 0, 1),
-    ("live-dashboard", 1, 0, 0, 1),
+    ("gui", 2, 0, 1, 0),
+    ("repair-failed", 1, 1, 0, 1223),
+    ("repair-recheck-failed", 2, 1, 0, 1223),
+    ("unknown", 1, 0, 0, 1223),
+    ("source-trust", 1, 0, 0, 1223),
+    ("timeout-live", 1, 0, 0, 1223),
+    ("cancel-live", 1, 0, 0, 1223),
+    ("elevated", 1, 0, 0, 1223),
+    ("integrity", 1, 0, 0, 1223),
+    ("custody", 1, 0, 0, 1223),
+    ("low-disk", 1, 0, 0, 1223),
+    ("busy", 1, 0, 0, 1223),
+    ("live-dashboard", 1, 0, 0, 1223),
     ("pending-old-renamed", 2, 1, 1, 0),
     ("pending-candidate-renamed", 2, 1, 1, 0),
     ("pending-refresh", 2, 1, 1, 0),
-    ("pending-corrupt", 1, 0, 0, 1),
-    ("pending-tampered", 1, 0, 0, 1),
+    ("pending-corrupt", 1, 0, 0, 1223),
+    ("pending-tampered", 1, 0, 0, 1223),
 ])
 def test_actual_source_supervisor_rechecks_and_launches_at_most_once(
     tmp_path, monkeypatch, case, passes, repairs, dashboards, code,
@@ -262,14 +271,17 @@ def test_temp_flush_failure_never_claims_a_healthy_directory(tmp_path, monkeypat
             fixed=lambda _drive: True, inherited={})
 
 
-def test_source_delegation_has_one_budget_and_keeps_chill_and_full_checks():
+def test_source_delegation_bounds_distinct_strategies_and_keeps_chill_checks():
     text = SOURCE.read_text(encoding="utf-8")
     bat = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
     assert "setlocal DisableDelayedExpansion" in bat
-    assert "Invoke-AngeronaSourceStartup.ps1" in bat
-    assert "-FailureCategory $Category -Attempt 1" in text
-    assert "Start-Process -FilePath $Python -ArgumentList @('-m', 'angerona.startup', '--chill')" in text
-    assert "while ($true)" in text and "$attempt -ge 1" in text
+    assert "__ANGERONA_PINNED_BOOTSTRAP__" in bat
+    assert "'-RunSupervisor'" in bat
+    assert "Invoke-AngeronaSourceStartup.ps1" in (ROOT / "tools/verify_startup_recovery_bundle.ps1").read_text(encoding="utf-8")
+    assert "'-FailureCategory', $Category, '-Attempt', '1'" in text
+    assert "$arguments = @('-m', 'angerona.startup', '--chill')" in text
+    assert "while ($true)" in text and "$repairs.ContainsKey($code)" in text
+    assert "$sourceStrategies.ContainsKey($sourceStrategy)" in text
     assert "-Verb RunAs" not in text and "start-angerona.bat\"" not in text
     assert "HEAL" not in text and "pull" not in text.casefold()
 

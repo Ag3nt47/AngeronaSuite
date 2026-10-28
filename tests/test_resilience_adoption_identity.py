@@ -9,6 +9,8 @@ from angerona.resilience.supervisor import cached_cmdline_probe
 
 
 class Process:
+    pid = 101
+
     def __init__(self, argv, *, executable=None, cwd=None, fresh=None):
         self.info = {"cmdline": argv}
         self.argv = fresh if fresh is not None else argv
@@ -29,6 +31,9 @@ class Process:
 
     def is_running(self):
         return self.alive
+
+    def create_time(self):
+        return 100.0
 
 
 class Table:

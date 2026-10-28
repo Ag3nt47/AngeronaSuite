@@ -57,6 +57,36 @@ that must be introduced as an explicit versioned signature scheme with runtime
 verification and migration tests; silently changing the signed message is not
 permitted.
 
+## Independent packaged startup
+
+The MSIX entry is `AngeronaSafeStart.exe`, an independent .NET Framework
+Windows Forms bootstrap. It embeds the exact SHA-256 of its sibling
+`AngeronaStartup.exe`, keeps native file and ancestor leases through execution,
+and retains the created helper's process handle and creation time. A failed
+helper pin, startup error or 180-second deadline leaves an independent recovery
+view. A timeout preserves the helper and any possible core; another attempt
+requires proof that the retained helper generation exited. This interface does
+not attest protection or replace signed package bytes from a public GitHub file.
+
+The unsigned preparation workflow embeds the unsigned helper digest only to
+validate the prepared request. The external authority must use this final order:
+
+1. Independently review and sign the final `AngeronaStartup.exe` bytes.
+2. Rebuild SafeStart from independently accepted bootstrap source, embedding
+   that final helper digest. Candidate-provided build scripts remain untrusted
+   inputs under the provisioning contract above.
+3. Sign the resulting SafeStart executable. Verify its embedded helper pin
+   against the final signed helper before constructing the MSIX.
+4. Recompute the final payload manifest, catalog, provenance and authorization
+   statement after all executable changes, then sign and independently accept
+   the final MSIX and release assets.
+
+Any subsequent helper signing or byte change requires rebuilding and rechecking
+its parent bootstrap. The repository's pre-packaging bootstrap check is a
+consistency check for an untrusted prepared request; it does not replace the
+external authority's independent verification. That authority remains
+unprovisioned, so these source changes do not constitute a signed release.
+
 ## Repository-enforced invariants
 
 The checked-in workflow contains no exportable threshold or Windows publisher

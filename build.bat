@@ -33,7 +33,14 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 if not exist dist\Angerona\AngeronaStartup.exe exit /b 1
 
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive ^
+    -File "%~dp0tools\build_packaged_safe_start.ps1" -PayloadRoot "%~dp0dist\Angerona"
+if errorlevel 1 exit /b 1
+if not exist dist\Angerona\AngeronaSafeStart.exe exit /b 1
+"%~dp0dist\Angerona\AngeronaSafeStart.exe" --verify-bootstrap
+if errorlevel 1 exit /b 1
+
 echo.
-echo [+] Build complete - start dist\Angerona\AngeronaStartup.exe
+echo [+] Build complete - start dist\Angerona\AngeronaSafeStart.exe
 pause
 exit /b 0

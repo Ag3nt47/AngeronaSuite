@@ -39,11 +39,11 @@ def test_strict_full_trust_manifest_is_rendered_with_exact_external_identity(tmp
     capability = root.find(f".//{{{RESCAP}}}Capability")
     assert capability is not None and capability.attrib == {"Name": "runFullTrust"}
     assert b"Windows.FullTrustApplication" in raw
-    assert b'Executable="AngeronaStartup.exe"' in raw
+    assert b'Executable="AngeronaSafeStart.exe"' in raw
     assert b"ForceUpdateFromAnyVersion" not in raw
     with pytest.raises(ValueError, match="full-trust application"):
         validate_manifest(
-            raw.replace(b'Executable="AngeronaStartup.exe"', b'Executable="Angerona.exe"'),
+            raw.replace(b'Executable="AngeronaSafeStart.exe"', b'Executable="Angerona.exe"'),
             package_name="Angerona.SecuritySuite",
             publisher_dn="CN=Angerona Release, O=Angerona Project, C=US",
             version="1.11.0.0",

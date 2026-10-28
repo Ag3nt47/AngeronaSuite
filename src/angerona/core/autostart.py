@@ -14,6 +14,7 @@ mistaken for a crash.
 """
 from __future__ import annotations
 
+import ctypes
 import ntpath
 import os
 import plistlib
@@ -30,6 +31,9 @@ TASK_NAME = "AngeronaAutostart"
 LAUNCH_AGENT_LABEL = "org.angerona.security-suite"
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 _MAX_TASK_XML_CHARS = 1_000_000
+_MAX_PACKAGE_PATH_CHARS = 32768
+_MAX_PACKAGE_MANIFEST_BYTES = 64 * 1024
+_PACKAGE_NS = "{http://schemas.microsoft.com/appx/manifest/foundation/windows10}"
 _SYSTEM_ROOT = Path(os.environ.get("SystemRoot", r"C:\Windows"))
 _SCHTASKS = _SYSTEM_ROOT / "System32" / "schtasks.exe"
 _POWERSHELL = (
@@ -38,10 +42,16 @@ _POWERSHELL = (
 
 _REGISTER_TASK_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction `
-    -Execute $env:ANGERONA_AUTOSTART_EXE `
-    -Argument $env:ANGERONA_AUTOSTART_ARGS `
-    -WorkingDirectory $env:ANGERONA_AUTOSTART_CWD
+if ([string]::IsNullOrEmpty($env:ANGERONA_AUTOSTART_ARGS)) {
+    $action = New-ScheduledTaskAction `
+        -Execute $env:ANGERONA_AUTOSTART_EXE `
+        -WorkingDirectory $env:ANGERONA_AUTOSTART_CWD
+} else {
+    $action = New-ScheduledTaskAction `
+        -Execute $env:ANGERONA_AUTOSTART_EXE `
+        -Argument $env:ANGERONA_AUTOSTART_ARGS `
+        -WorkingDirectory $env:ANGERONA_AUTOSTART_CWD
+}
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:ANGERONA_AUTOSTART_USER
 $principal = New-ScheduledTaskPrincipal `
     -UserId $env:ANGERONA_AUTOSTART_USER `
@@ -72,6 +82,85 @@ def _target_command() -> str:
     return f'"{executable}" {arguments}'.rstrip()
 
 
+def _current_msix_package_root() -> Path:
+    """Read the process-bound installed root without environment/argv hints."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    query = kernel.GetCurrentPackagePath
+    query.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.c_wchar_p]
+    query.restype = ctypes.c_long
+    length = ctypes.c_uint32(0)
+    if (
+        int(query(ctypes.byref(length), None)) != 122
+        or not 2 <= length.value <= _MAX_PACKAGE_PATH_CHARS
+    ):
+        raise OSError("Windows could not prove the current package path")
+    buffer = ctypes.create_unicode_buffer(length.value)
+    if int(query(ctypes.byref(length), buffer)) != 0:
+        raise OSError("Windows could not read the current package path")
+    value = buffer.value
+    if not value or len(value) >= _MAX_PACKAGE_PATH_CHARS or any(ord(c) < 32 for c in value):
+        raise OSError("Windows returned an invalid package path")
+    root = Path(value)
+    if not root.is_absolute():
+        raise OSError("Windows returned a relative package path")
+    return root
+
+
+def _plain_package_file(path: Path):
+    for component in (*path.parents, path):
+        metadata = component.lstat()
+        if stat.S_ISLNK(metadata.st_mode) or getattr(metadata, "st_file_attributes", 0) & 0x400:
+            raise OSError("the installed package path is redirected")
+        if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
+            raise OSError("the installed package file is linked")
+    metadata = path.lstat()
+    if not stat.S_ISREG(metadata.st_mode):
+        raise OSError("the installed package entry is not a regular file")
+    return metadata
+
+
+def _msix_startup_target() -> tuple[Path, str]:
+    """Resolve the entry after the caller proves package family/publisher."""
+    root = _current_msix_package_root()
+    if Path(sys.executable).absolute().parent != root:
+        raise OSError("the frozen image is outside its OS-proved package root")
+    manifest = root / "AppxManifest.xml"
+    before = _plain_package_file(manifest)
+    if not 1 <= before.st_size <= _MAX_PACKAGE_MANIFEST_BYTES:
+        raise OSError("the installed package manifest exceeds its byte bound")
+
+    def generation(value):
+        return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_nlink
+
+    with manifest.open("rb") as stream:
+        if generation(os.fstat(stream.fileno())) != generation(before):
+            raise OSError("the installed package manifest generation changed")
+        raw = stream.read(_MAX_PACKAGE_MANIFEST_BYTES + 1)
+        if generation(os.fstat(stream.fileno())) != generation(before):
+            raise OSError("the installed package manifest changed during reading")
+    if len(raw) > _MAX_PACKAGE_MANIFEST_BYTES or generation(_plain_package_file(manifest)) != generation(before):
+        raise OSError("the installed package manifest changed after reading")
+    document = ET.fromstring(raw)
+    applications = document.findall(_PACKAGE_NS + "Applications/" + _PACKAGE_NS + "Application")
+    if document.tag != _PACKAGE_NS + "Package" or len(applications) != 1:
+        raise OSError("the installed package application contract is unknown")
+    entry = applications[0]
+    if (
+        set(entry.attrib) != {"Id", "Executable", "EntryPoint"}
+        or entry.get("Id") != "Angerona"
+        or entry.get("EntryPoint") != "Windows.FullTrustApplication"
+    ):
+        raise OSError("the installed package startup identity is unknown")
+    name = entry.get("Executable")
+    if name not in {"AngeronaSafeStart.exe", "AngeronaStartup.exe"}:
+        raise OSError("the installed package startup entry is unsupported")
+    helper = root / name
+    _plain_package_file(helper)
+    # The modern helper carries automatic admission through to the core. Legacy
+    # authenticated packages retain their original argument contract.
+    return helper, "--automatic-start" if name == "AngeronaSafeStart.exe" else "--chill"
+
+
 def _target_action() -> tuple[str, str, str]:
     """Return executable, arguments, and working directory for Task Scheduler.
 
@@ -92,28 +181,20 @@ def _target_action() -> tuple[str, str, str]:
             authority = verify_current_msix_authority()
             if not authority.trusted:
                 raise RuntimeError(f"Startup package authority is unavailable: {authority.reason}")
-            helper = Path(sys.executable).absolute().with_name("AngeronaStartup.exe")
             try:
-                if not helper.is_file():
-                    raise OSError("the startup helper is missing or not a file")
-                for path in (*helper.parents, helper):
-                    metadata = path.lstat()
-                    if stat.S_ISLNK(metadata.st_mode) or (
-                        getattr(metadata, "st_file_attributes", 0) & 0x400
-                    ) or (stat.S_ISREG(metadata.st_mode) and metadata.st_nlink > 1):
-                        raise OSError("the startup helper path is redirected")
-            except OSError as exc:
+                helper, arguments = _msix_startup_target()
+            except (AttributeError, OSError, ValueError, ET.ParseError, DefusedXmlException) as exc:
                 raise RuntimeError(
                     "The bundled startup helper is unavailable. Repair the signed installation."
                 ) from exc
-            return str(helper), "--chill", str(helper.parent)
-        return sys.executable, "--chill", working_directory
+            return str(helper), arguments, str(helper.parent)
+        return sys.executable, "--chill --automatic-start", working_directory
 
     interpreter = Path(sys.executable)
     windowed = interpreter.with_name("pythonw.exe")
     executable = windowed if windowed.is_file() else interpreter
     module = "angerona.startup" if sys.platform == "win32" else "angerona"
-    return str(executable), f"-m {module} --chill", working_directory
+    return str(executable), f"-m {module} --chill --automatic-start", working_directory
 
 
 def _target_argv() -> list[str]:

@@ -7,7 +7,7 @@ many files. The cache now defaults to 2,048 MiB, with a 2,048 MiB free-space
 reserve on its volume. New copies must fit both limits, including staging and
 source-mapping metadata. Existing copies count after restart.
 
-Open **Settings > General > Drive space and recovery data** to change the cache
+Open **Settings > System > Drive space and recovery data** to change the cache
 limit, reserve or permission to create recovery copies. The cache limit accepts
 64–16,384 MiB; the reserve accepts 512–65,536 MiB. Save Settings to persist the
 choice. Reducing a limit holds new copies; it does not automatically delete

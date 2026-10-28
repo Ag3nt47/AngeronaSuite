@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import hmac
+import html
 import json
 import os
 import platform
@@ -38,8 +39,8 @@ from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGridLayout, QFrame, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem,
-    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
-    QSizePolicy, QSplitter, QStyle, QStyleOption, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QToolButton,
+    QSizePolicy, QSplitter, QStyle, QStyleOption, QStyleOptionViewItem, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
     QTextEdit,
 )
 
@@ -1455,7 +1456,89 @@ class _FittingCardValue(QLabel):
                                                      self.contentsRect().width()))
 
 
-class StatCard(QFrame):
+class _PanelMinimizeButton(QToolButton):
+    """A view-only disclosure control, separate from a heading's detail action."""
+
+    def __init__(self, label: str, parent=None) -> None:
+        super().__init__(parent)
+        self._panel_label = label
+        self.setObjectName("DashboardMinimize")
+        self.setCheckable(True)
+        self.setAutoRaise(True)
+        self.setStyleSheet("QToolButton {padding:0; border:none; background:transparent;}")
+        self.toggled.connect(self._update_presentation)
+        self.setChecked(True)
+        self._update_presentation(True)
+
+    def _update_presentation(self, expanded: bool) -> None:
+        self.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        label = ("Minimize " if expanded else "Restore ") + self._panel_label
+        self.setToolTip(label)
+        self.setAccessibleName(label)
+        self._fit_control()
+
+    def _fit_control(self) -> None:
+        side = max(18, self.fontMetrics().height() + 4)
+        self.setFixedSize(side, side)
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() == QEvent.FontChange:
+            self._fit_control()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.click()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class _MinimizableDashboardFrame(QFrame):
+    collapsed_changed = Signal(bool)
+
+    def _init_minimizer(self, label: str) -> None:
+        self._expanded_maximum_height = self.maximumHeight()
+        self._minimize_button = _PanelMinimizeButton(label, self)
+        self._minimize_button.toggled.connect(self._set_expanded)
+
+    def is_collapsed(self) -> bool:
+        return not self._minimize_button.isChecked()
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._minimize_button.setChecked(not collapsed)
+
+    def _set_expanded(self, expanded: bool) -> None:
+        self._collapse_caption_changed()
+        self._body.setVisible(expanded)
+        if expanded:
+            self.setMaximumHeight(self._expanded_maximum_height)
+        else:
+            self._expanded_maximum_height = self.maximumHeight()
+            self._fit_collapsed_height()
+        self.updateGeometry()
+        self.collapsed_changed.emit(not expanded)
+
+    def _collapse_caption_changed(self) -> None:
+        pass
+
+    def _fit_collapsed_height(self) -> None:
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            height = layout.minimumSize().height()
+            if self.maximumHeight() != height:
+                self.setMaximumHeight(height)
+
+    def event(self, event) -> bool:
+        handled = super().event(event)
+        if (event.type() == QEvent.LayoutRequest and hasattr(self, "_minimize_button")
+                and self.is_collapsed()):
+            self._fit_collapsed_height()
+        return handled
+
+
+class StatCard(_MinimizableDashboardFrame):
     """A dashboard summary tile. Now clickable — emits `clicked` on left press."""
 
     clicked = Signal()
@@ -1465,23 +1548,38 @@ class StatCard(QFrame):
         self.setObjectName("Card")
         self.setProperty("alert", False)
         self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAccessibleName(label)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(18, 14, 18, 14)
+        lay.setContentsMargins(12, 6, 12, 6)
+        lay.setSpacing(2)
         self.value = _FittingCardValue("—")
+        self._body = self.value
         self.value.setObjectName("CardValue")
         self._rendered: tuple[str, str] | None = None
         lay.addWidget(self.value)
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
-        cap = QLabel(label)
+        self._label = label
+        cap = self._caption = QLabel(label)
         cap.setObjectName("CardLabel")
+        cap.setTextFormat(Qt.PlainText)
         cap.setWordWrap(True)
         cap.setMinimumWidth(0)
         row.addWidget(cap, 1)
         chevron = QLabel("›")          # ›  affordance: this tile opens a view
         chevron.setStyleSheet("color:#6b7280; font-size:14px; font-weight:bold;")
         row.addWidget(chevron)
+        self._init_minimizer(label)
+        row.addWidget(self._minimize_button)
         lay.addLayout(row)
+
+    def _collapse_caption_changed(self) -> None:
+        self._caption.setText(
+            f"{self._label}: {self.value.text()}" if self.is_collapsed() else self._label
+        )
+        self._caption.setToolTip(f"{self._label}: {self.value.text()}")
 
     def set(self, text: str, color: str = "#ffffff") -> None:
         rendered = (str(text), str(color))
@@ -1491,6 +1589,7 @@ class StatCard(QFrame):
         self._rendered = rendered
         self.value.setText(text)
         self.value.setToolTip(str(text))
+        self._collapse_caption_changed()
         if previous is None or previous[1] != rendered[1]:
             self.value.setStyleSheet(f"color: {color};")
         alert = rendered[1].lower() in {"#ef4444", "#b91c1c"}
@@ -1505,6 +1604,13 @@ class StatCard(QFrame):
             self.clicked.emit()
         super().mousePressEvent(e)
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
 
 class DashboardCards(QWidget):
     def __init__(self, bus, storage, manager) -> None:
@@ -1513,7 +1619,7 @@ class DashboardCards(QWidget):
         self._accept_async_results = True
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(14)
+        lay.setSpacing(10)
         self.c_modules = StatCard("Modules running")
         self.c_alerts = StatCard("Alerts (24h)")
         self.c_crit = StatCard("Active critical (10m)")
@@ -3263,6 +3369,83 @@ class RedTeamSimulationDialog(QDialog):
 
 
 # ── Modules panel ────────────────────────────────────────────────────────────
+def _table_text_tooltip(text: object) -> str:
+    """Show complete cell text without interpreting imported markup."""
+    return "<qt>" + html.escape(str(text)).replace("\n", "<br>") + "</qt>"
+
+
+def _summary_column_width(table: QTableWidget, column: int, sample: str, minimum: int,
+                          *, measure_content: bool = True) -> int:
+    """Include styled cell/header chrome rather than only bare text advances."""
+    header = table.horizontalHeader()
+    heading = table.horizontalHeaderItem(column)
+    label = heading.text().upper() if heading is not None else ""
+    width = max(
+        minimum,
+        table.fontMetrics().horizontalAdvance(sample) + 32,
+        header.fontMetrics().horizontalAdvance(label) + 32,
+        header.sectionSizeHint(column),
+    )
+    # Inspect a bounded visible-data sample. This includes check indicators and
+    # item padding with the actual delegate/font, without scanning the ledger.
+    for row in range(min(8, table.rowCount()) if measure_content else 0):
+        index = table.model().index(row, column)
+        option = QStyleOptionViewItem()
+        option.initFrom(table)
+        option.widget = table
+        option.font = table.font()
+        option.fontMetrics = table.fontMetrics()
+        delegate = table.itemDelegateForIndex(index)
+        width = max(width, delegate.sizeHint(option, index).width() + 4)
+    return width
+
+
+class _ResponsiveModulesTable(QTableWidget):
+    """Keep the summary readable while optional contract columns stay available."""
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.fit_summary_columns()
+
+    def viewportEvent(self, event) -> bool:  # noqa: N802
+        handled = super().viewportEvent(event)
+        if event.type() == QEvent.Resize:
+            self.fit_summary_columns()
+        return handled
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self.fit_summary_columns()
+
+    def fit_summary_columns(self) -> None:
+        if self.columnCount() != 7 or getattr(self, "_fitting_columns", False):
+            return
+        self._fitting_columns = True
+        try:
+            self._fit_summary_columns()
+        finally:
+            self._fitting_columns = False
+
+    def _fit_summary_columns(self) -> None:
+        metrics = self.fontMetrics()
+        widths = {
+            0: _summary_column_width(self, 0, "Off", 44),
+            2: _summary_column_width(self, 2, "running 100%", 80),
+            3: _summary_column_width(self, 3, "100%", 72),
+            4: _summary_column_width(self, 4, "Category", 110),
+            5: _summary_column_width(self, 5, "protect", 76),
+            6: _summary_column_width(self, 6, "1.14.0", 76),
+        }
+        for column, width in widths.items():
+            self.setColumnWidth(column, width)
+        fixed = sum(width for column, width in widths.items() if not self.isColumnHidden(column))
+        minimum_name = 160 if not self.isColumnHidden(4) else 100
+        self.setColumnWidth(1, max(minimum_name, self.viewport().width() - fixed))
+        row_height = max(26, metrics.height() + 10)
+        self.verticalHeader().setDefaultSectionSize(row_height)
+
+
 class _ModuleNameTableItem(QTableWidgetItem):
     """Keep decorative category avatars out of module-name ordering."""
 
@@ -3270,27 +3453,42 @@ class _ModuleNameTableItem(QTableWidgetItem):
         return str(self.data(Qt.UserRole)).casefold() < str(other.data(Qt.UserRole)).casefold()
 
 
-class ModulesPanel(QFrame):
+class ModulesPanel(_MinimizableDashboardFrame):
     def __init__(self, manager, bus) -> None:
         super().__init__()
         self.setObjectName("Panel")
         self.manager = manager
         self.bus = bus
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
         self._title = _ClickableSection(
             "Modules",
             "Open the expanded live status matrix for every defensive module.",
         )
         self._title.clicked.connect(self._open_overview)
-        lay.addWidget(self._title)
-        hint = QLabel("Select a module for details · check to enable")
-        hint.setStyleSheet("color:#6b7280; font-size:11px;")
-        hint.setWordWrap(True)
-        hint.setToolTip("Click a row to inspect its capability contract. Toggle to enable or disable.")
-        lay.addWidget(hint)
+        title_row = QHBoxLayout()
+        title_row.addWidget(self._title, 1)
+        self._columns_button = QPushButton("Columns")
+        self._columns_button.setCheckable(True)
+        self._columns_button.setToolTip(
+            "Show category, capability mode and implementation version. "
+            "Select a module or press Enter for its complete contract and evidence."
+        )
+        self._columns_button.toggled.connect(self._toggle_contract_columns)
+        title_row.addWidget(self._columns_button)
+        self._init_minimizer("Modules")
+        title_row.addWidget(self._minimize_button)
+        lay.addLayout(title_row)
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(6)
+        lay.addWidget(self._body, 1)
 
-        sort_row = QHBoxLayout()
+        self._filters_row = QWidget()
+        sort_row = QHBoxLayout(self._filters_row)
+        sort_row.setContentsMargins(0, 0, 0, 0)
         sort_row.addWidget(QLabel("Sort by:"))
         self._sort_combo = QComboBox()
         self._sort_combo.addItems(["Name", "On/Off", "Status", "Assurance", "Category"])
@@ -3304,29 +3502,47 @@ class ModulesPanel(QFrame):
         self._mode_combo.addItems(
             ["All modes", "unknown", "observe", "detect", "protect", "respond"]
         )
-        self._mode_combo.currentIndexChanged.connect(lambda *_: self._build())
+        self._mode_combo.currentIndexChanged.connect(self._filter_changed)
         sort_row.addWidget(self._mode_combo)
-        lay.addLayout(sort_row)
-        lay.addWidget(self._module_search)
+        body.addWidget(self._filters_row)
+        self._filters_row.hide()
+        search_row = QHBoxLayout()
+        search_row.addWidget(self._module_search, 1)
+        self._filters_button = QPushButton("Filters")
+        self._filters_button.setCheckable(True)
+        self._filters_button.toggled.connect(self._filters_row.setVisible)
+        search_row.addWidget(self._filters_button)
+        body.addLayout(search_row)
 
-        self.table = QTableWidget(0, 7)
+        self.table = _ResponsiveModulesTable(0, 7)
         self.table.setHorizontalHeaderLabels(
             ["On", "Module", "Status", "Assurance", "Category", "Mode", "Impl."]
         )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        self.table.horizontalHeader().setMinimumSectionSize(62)
+        self.table.horizontalHeader().setMinimumSectionSize(36)
         self.table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setTextElideMode(Qt.ElideRight)
+        self.table.setWordWrap(False)
+        self.table.setAccessibleDescription(
+            "Module summary. Select a name or press Enter for full details; "
+            "the On checkbox enables or disables a module. Columns reveals the remaining contract fields."
+        )
         self.table.setSortingEnabled(True)
         self.table.sortItems(1, Qt.AscendingOrder)
         self.table.cellClicked.connect(self._on_click)
         self.table.itemChanged.connect(self._on_toggle)
-        self.table.setColumnWidth(0, 72)
-        for column, width in ((1, 230), (2, 110), (3, 100), (4, 135), (5, 90), (6, 110)):
-            self.table.setColumnWidth(column, width)
-        lay.addWidget(self.table)
+        self.table.horizontalHeader().sortIndicatorChanged.connect(self._update_filter_summary)
+        for column in (4, 5, 6):
+            self.table.setColumnHidden(column, True)
+        self.table.fit_summary_columns()
+        for key in (Qt.Key_Return, Qt.Key_Enter):
+            shortcut = QShortcut(QKeySequence(key), self.table)
+            shortcut.setContext(Qt.WidgetShortcut)
+            shortcut.activated.connect(self._open_selected_module)
+        body.addWidget(self.table)
         self._rendered_rows = None
         self._refresh_items = []
         self._refresh_rows = {}
@@ -3335,6 +3551,40 @@ class ModulesPanel(QFrame):
         self._refresh_timer.setInterval(1)
         self._refresh_timer.timeout.connect(self._advance_refresh)
         self._build()
+        self._update_filter_summary()
+
+    def _toggle_contract_columns(self, expanded: bool) -> None:
+        if not hasattr(self, "table"):
+            return
+        for column in (4, 5, 6):
+            self.table.setColumnHidden(column, not expanded)
+        self.table.fit_summary_columns()
+
+    def _filter_changed(self, *_args) -> None:
+        self._build()
+        self._update_filter_summary()
+
+    def _update_filter_summary(self, *_args) -> None:
+        if not hasattr(self, "table"):
+            return
+        mode = self._mode_combo.currentText()
+        header = self.table.horizontalHeader()
+        column = header.sortIndicatorSection()
+        sort = self.table.horizontalHeaderItem(column).text() if column >= 0 else "Module"
+        active = mode != "All modes"
+        ascending = header.sortIndicatorOrder() == Qt.AscendingOrder
+        sorted_summary = column != 1 or not ascending
+        summary_label = f"Filters: {mode}" if active else "Filters · sorted" if sorted_summary else "Filters"
+        self._filters_button.setText(summary_label)
+        direction = "ascending" if ascending else "descending"
+        summary = f"Mode: {mode}. Sort: {sort}, {direction}. Expand to change these controls."
+        self._filters_button.setToolTip(summary)
+        self._filters_button.setAccessibleName("Module filters. " + summary)
+
+    def _open_selected_module(self) -> None:
+        row = self.table.currentRow()
+        if row >= 0:
+            self._on_click(row, 1)
 
     def _sort_changed(self, *_args) -> None:
         column, order = {
@@ -3471,6 +3721,13 @@ class ModulesPanel(QFrame):
                     on_item.setCheckState(check)
                 if on_item.toolTip() != usage_note:
                     on_item.setToolTip(usage_note)
+                for column in (1, 2, 4, 5, 6):
+                    value = texts[column]
+                    if column == 1:
+                        value += f"\nCategory: {category}\nMode: {mode}\nImplementation: {version}"
+                    full_text = _table_text_tooltip(value)
+                    if table.item(row, column).toolTip() != full_text:
+                        table.item(row, column).setToolTip(full_text)
                 status_item = table.item(row, 2)
                 status_color = QColor(color)
                 if status_item.foreground().color() != status_color:
@@ -3494,6 +3751,7 @@ class ModulesPanel(QFrame):
             table.setSortingEnabled(sorting)
             table.setUpdatesEnabled(updates)
             table.blockSignals(blocked)
+        table.fit_summary_columns()
 
     def _cancel_refresh(self) -> None:
         self._refresh_timer.stop()
@@ -5214,27 +5472,75 @@ class AlertDetailDialog(QDialog):
 
 
 class _ResponsiveAlertsTable(QTableWidget):
-    """Reserve readable action columns and share spare width between evidence fields."""
+    """Give the summary message available width; details expand on request."""
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.fit_evidence_columns()
 
+    def viewportEvent(self, event) -> bool:  # noqa: N802
+        handled = super().viewportEvent(event)
+        if event.type() == QEvent.Resize:
+            self.fit_evidence_columns()
+        return handled
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
+            self.fit_evidence_columns()
+
     def fit_evidence_columns(self) -> None:
-        if self.columnCount() != 8:
+        if self.columnCount() != 8 or getattr(self, "_fitting_columns", False):
             return
-        fixed = sum(self.columnWidth(column) for column in (0, 1, 2, 5, 6, 7))
+        self._fitting_columns = True
+        try:
+            self._fit_evidence_columns()
+        finally:
+            self._fitting_columns = False
+
+    def _fit_evidence_columns(self) -> None:
+        metrics = self.fontMetrics()
+        widths = {
+            0: _summary_column_width(self, 0, "23:59:59", 72),
+            1: max(_summary_column_width(self, 1, "Module", 110, measure_content=False),
+                   min(180, round(self.viewport().width() * 0.18))),
+            2: _summary_column_width(self, 2, "Critical", 78),
+            5: _summary_column_width(self, 5, "Allow", 62),
+            6: _summary_column_width(self, 6, "Block", 62),
+            7: _summary_column_width(self, 7, "Analyze", 76),
+        }
+        for column, width in widths.items():
+            self.setColumnWidth(column, width)
+        fixed = sum(width for column, width in widths.items() if not self.isColumnHidden(column))
         if self.isColumnHidden(4):
-            self.setColumnWidth(3, max(280, self.viewport().width() - fixed))
-            return
-        available = max(460, self.viewport().width() - fixed)
-        message_width = max(280, round(available * 0.6))
-        path_width = max(180, available - message_width)
-        self.setColumnWidth(3, message_width)
-        self.setColumnWidth(4, path_width)
+            self.setColumnWidth(3, max(140, self.viewport().width() - fixed))
+        else:
+            available = max(360, self.viewport().width() - fixed)
+            message_width = max(200, round(available * 0.6))
+            path_width = max(160, available - message_width)
+            self.setColumnWidth(3, message_width)
+            self.setColumnWidth(4, path_width)
+        self.verticalHeader().setDefaultSectionSize(max(26, metrics.height() + 10))
 
 
-class AlertsPanel(QFrame):
+class _CompactStatusLabel(QLabel):
+    """A feedback row takes space only while there is something to report."""
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        super().setText(text)
+        self.setVisible(bool(text.strip()))
+
+    def clear(self) -> None:
+        self.setText("")
+
+
+class _CompactUndoButton(QPushButton):
+    def setEnabled(self, enabled: bool) -> None:  # noqa: N802
+        super().setEnabled(enabled)
+        self.setVisible(enabled)
+
+
+class AlertsPanel(_MinimizableDashboardFrame):
     scan_requested = Signal()
     analysis_status = Signal(str, str)
     suppression_changed = Signal()
@@ -5274,7 +5580,8 @@ class AlertsPanel(QFrame):
         self._max_analyze_queue = 6
         self._preview_event = None
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 14)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(6)
         self._title = _ClickableSection(
             "Live Alerts",
             "Open a full-size newest-first alert evidence window. "
@@ -5294,6 +5601,24 @@ class AlertsPanel(QFrame):
         )
         self._details_button.toggled.connect(self._toggle_preview)
         title_row.addWidget(self._details_button)
+        self._columns_button = QPushButton("Columns")
+        columns_menu = QMenu(self._columns_button)
+        self._artifact_column_action = QAction("Artifact path", columns_menu)
+        self._artifact_column_action.setCheckable(True)
+        self._artifact_column_action.setToolTip("Show artifact locations in the table; full paths are also in alert details.")
+        self._artifact_column_action.toggled.connect(self._update_optional_columns)
+        columns_menu.addAction(self._artifact_column_action)
+        self._inline_actions_action = QAction("Inline Allow / Block / Analyze", columns_menu)
+        self._inline_actions_action.setCheckable(True)
+        self._inline_actions_action.setToolTip("Show per-row response shortcuts. The usual confirmations still apply.")
+        self._inline_actions_action.toggled.connect(self._update_optional_columns)
+        columns_menu.addAction(self._inline_actions_action)
+        self._columns_button.setMenu(columns_menu)
+        self._columns_button.setToolTip(
+            "The summary keeps space for the alert message. Show paths or response shortcuts here, "
+            "or select an alert and press Enter for complete evidence and guarded actions."
+        )
+        title_row.addWidget(self._columns_button)
         scan_button = QPushButton("🛡  Scan Center")
         scan_button.setToolTip(
             "Scan this computer with bounded Angerona checks, Microsoft Defender, "
@@ -5303,7 +5628,14 @@ class AlertsPanel(QFrame):
             lambda _checked=False: self.scan_requested.emit()
         )
         title_row.addWidget(scan_button)
+        self._init_minimizer("Live Alerts")
+        title_row.addWidget(self._minimize_button)
         lay.addLayout(title_row)
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(6)
+        lay.addWidget(self._body, 1)
         self.table = _ResponsiveAlertsTable(0, 8)
         self.table.setHorizontalHeaderLabels(
             [
@@ -5312,31 +5644,33 @@ class AlertsPanel(QFrame):
             ]
         )
         hdr = self.table.horizontalHeader()
-        hdr.setMinimumSectionSize(76)
+        hdr.setMinimumSectionSize(36)
         hdr.setSectionResizeMode(1, QHeaderView.Interactive)
         hdr.setSectionResizeMode(3, QHeaderView.Interactive)
         hdr.setSectionResizeMode(4, QHeaderView.Interactive)
         hdr.setSectionResizeMode(5, QHeaderView.Fixed)
         hdr.setSectionResizeMode(6, QHeaderView.Fixed)
         hdr.setSectionResizeMode(7, QHeaderView.Fixed)
-        self.table.setColumnWidth(0, 92)
-        self.table.setColumnWidth(1, 168)
-        self.table.setColumnWidth(2, 96)
-        self.table.setColumnWidth(3, 380)
-        self.table.setColumnWidth(4, 280)
-        self.table.setColumnWidth(5, 82)
-        self.table.setColumnWidth(6, 82)
-        self.table.setColumnWidth(7, 94)
         self.table.setHorizontalScrollMode(QTableWidget.ScrollPerPixel)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setTextElideMode(Qt.ElideRight)
+        self.table.setWordWrap(False)
+        self.table.setAccessibleDescription(
+            "Live alert summaries. Select a row or press Enter for full evidence and guarded actions. "
+            "Columns optionally shows artifact paths and inline response shortcuts."
+        )
         self.table.cellClicked.connect(self._on_click)
         self.table.cellDoubleClicked.connect(self._on_double_click)
         self.table.itemSelectionChanged.connect(self._update_preview)
         # Ctrl+C copies the selected alert row to the clipboard instantly.
         _sc = QShortcut(QKeySequence.Copy, self.table)
         _sc.activated.connect(self._copy_selected)
+        for key in (Qt.Key_Return, Qt.Key_Enter):
+            shortcut = QShortcut(QKeySequence(key), self.table)
+            shortcut.setContext(Qt.WidgetShortcut)
+            shortcut.activated.connect(self._open_selected_details)
         # Enable click-to-sort on all column headers; default = newest first.
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(0, Qt.DescendingOrder)
@@ -5349,21 +5683,37 @@ class AlertsPanel(QFrame):
         self._evidence_splitter.setStretchFactor(0, 1)
         self._evidence_splitter.setStretchFactor(1, 0)
         self._preview.hide()
-        lay.addWidget(self._evidence_splitter)
+        body.addWidget(self._evidence_splitter)
         # Status line for Allow/Block feedback
-        self._status = QLabel("")
+        self._status = _CompactStatusLabel("")
+        self._status.setTextFormat(Qt.PlainText)
+        self._status.hide()
         self._status.setWordWrap(True)
         self._status.setStyleSheet("color:#94a3b8; font-size:12px; padding:2px 0;")
         status_row = QHBoxLayout()
         status_row.addWidget(self._status, 1)
-        self._undo_allow = QPushButton("Undo Allow")
+        self._undo_allow = _CompactUndoButton("Undo Allow")
         self._undo_allow.setToolTip(
             "Remove the most recent temporary alert-pattern suppression."
         )
         self._undo_allow.setEnabled(False)
         self._undo_allow.clicked.connect(self._undo_last_suppression)
         status_row.addWidget(self._undo_allow)
-        lay.addLayout(status_row)
+        body.addLayout(status_row)
+        self._update_optional_columns()
+
+    def _update_optional_columns(self, *_args) -> None:
+        if not hasattr(self, "table"):
+            return
+        preview_visible = hasattr(self, "_preview") and not self._preview.isHidden()
+        show_paths = self._artifact_column_action.isChecked() and not preview_visible
+        show_actions = self._inline_actions_action.isChecked()
+        self.table.setColumnHidden(4, not show_paths)
+        for column in (5, 6, 7):
+            self.table.setColumnHidden(column, not show_actions)
+        self.table.fit_evidence_columns()
+        enabled = int(self._artifact_column_action.isChecked()) + int(show_actions)
+        self._columns_button.setText("Columns" + (f" ({enabled})" if enabled else ""))
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -5380,8 +5730,7 @@ class AlertsPanel(QFrame):
         self._preview.setVisible(expanded)
         # Artifact paths remain fully available for the selected alert in the
         # preview; reclaim this table column so response actions stay reachable.
-        self.table.setColumnHidden(4, expanded)
-        self.table.fit_evidence_columns()
+        self._update_optional_columns()
         if expanded:
             self._evidence_splitter.setSizes([max(460, self.width() - 350), 320])
             self._update_preview()
@@ -5852,17 +6201,22 @@ class AlertsPanel(QFrame):
         details = e.details if isinstance(getattr(e, "details", None), dict) else {}
         origin = details.get("node_origin")
         mod_item = QTableWidgetItem(f"{e.module}  ⇠{origin}" if origin else e.module)
-        if origin:
-            mod_item.setToolTip(f"Forwarded from remote node: {origin}")
+        mod_item.setToolTip(_table_text_tooltip(
+            f"{e.module}\nForwarded from remote node: {origin}" if origin else e.module
+        ))
         self.table.setItem(pos, 1, mod_item)
         self.table.setItem(pos, 2, _SeverityItem(e.severity))
-        self.table.setItem(pos, 3, QTableWidgetItem(e.message))
+        message_item = QTableWidgetItem(e.message)
+        self.table.setItem(pos, 3, message_item)
         path_text, path_tooltip = (
             (prepared.path_text, prepared.path_tooltip) if prepared is not None
             else _event_path_display(e)
         )
         path_item = QTableWidgetItem(path_text)
-        path_item.setToolTip(path_tooltip)
+        path_item.setToolTip(_table_text_tooltip(path_tooltip))
+        message_item.setToolTip(_table_text_tooltip(
+            f"{e.message}\n\nArtifact locations:\n{path_tooltip}"
+        ))
         self.table.setItem(pos, 4, path_item)
         # Action buttons — must use setCellWidget, not setItem
         # Lightweight clickable items replace three QWidget buttons per row.
@@ -6054,6 +6408,7 @@ class AlertsPanel(QFrame):
         if done and job is self._alert_render_job:
             self._rendered_event_ids = job["identities"]
             self._cancel_alert_render()
+            self.table.fit_evidence_columns()
             self._update_preview()
 
     def _rebuild_event_rows(self, events, *, force: bool = False) -> None:
@@ -6098,6 +6453,7 @@ class AlertsPanel(QFrame):
             )
             self.table.setUpdatesEnabled(True)
         self._rendered_event_ids = identities
+        self.table.fit_evidence_columns()
         self._update_preview()
 
 
@@ -9028,6 +9384,25 @@ class SettingsDialog(QDialog):
             self._update_check_reader = AsyncSnapshot(
                 self, self._prepare_update_check, self._apply_update_check,
                 name="Settings GitHub Update Check", status=self._update_check_status)
+        lay.addWidget(self._section("Automatic startup recovery"))
+        self._startup_recovery_enabled = QCheckBox("Automatically try verified recovery when source startup fails")
+        self._startup_recovery_enabled.setChecked(self._cfg.startup_recovery_enabled)
+        lay.addWidget(self._startup_recovery_enabled)
+        self._startup_recovery_github_enabled = QCheckBox("Allow public GitHub source candidates during startup recovery")
+        self._startup_recovery_github_enabled.setChecked(self._cfg.startup_recovery_github_enabled)
+        self._startup_recovery_github_enabled.setEnabled(self._startup_recovery_enabled.isChecked())
+        self._startup_recovery_enabled.toggled.connect(self._startup_recovery_github_enabled.setEnabled)
+        lay.addWidget(self._startup_recovery_github_enabled)
+        recovery_note = QLabel(
+            "Changes apply at the next source startup. Automatic recovery can try verified runtime repair "
+            "and preserved local working source; the GitHub option also permits downloads of public "
+            "Angerona source candidates. Host logs, files and credentials are never uploaded. "
+            "Turning recovery off keeps startup checks and the independent recovery screen available. "
+            "Turning only GitHub off keeps local recovery available. Original edits are preserved privately; "
+            "startup recovery never clears alerts or resets security baselines.")
+        recovery_note.setWordWrap(True)
+        recovery_note.setStyleSheet("color: #94a3b8; font-size: 11px;")
+        lay.addWidget(recovery_note)
         lay.addStretch()
         return w
 
@@ -11450,6 +11825,8 @@ class SettingsDialog(QDialog):
         candidate.ollama_model = self._ollama_model.text().strip()
         candidate.github_repo = self._github_repo.text().strip()
         candidate.github_daily_check_enabled = self._github_daily_check.isChecked()
+        candidate.startup_recovery_enabled = self._startup_recovery_enabled.isChecked()
+        candidate.startup_recovery_github_enabled = self._startup_recovery_github_enabled.isChecked()
         theme_key = self._theme_combo.currentData() or self._theme_combo.currentText()
         candidate.theme = theme_key or candidate.theme
         scale = self._ui_scale_combo.currentData()

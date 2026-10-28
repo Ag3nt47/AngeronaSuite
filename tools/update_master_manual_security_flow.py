@@ -1,0 +1,420 @@
+"""Update the security-flow chapter while preserving unrelated DOCX ZIP parts.
+
+Run with the managed document runtime for --build-assets (Pillow). Ordinary
+update/--check uses only the standard library. Rendering is a separate required
+publication gate; this script never declares visual QA complete.
+"""
+from __future__ import annotations
+
+import argparse
+import ast
+from html import unescape
+import re
+import struct
+from pathlib import Path
+from xml.etree import ElementTree as ET
+from xml.sax.saxutils import escape
+from zipfile import ZipFile
+
+ROOT = Path(__file__).resolve().parents[1]
+MANUAL = ROOT / "Angerona_Master_Manual.docx"
+DOCS = (ROOT / "docs/security-flow.md", ROOT / "docs/safe-startup-recovery.md")
+ASSETS = ("security-flow-overview.png", "security-flow-startup.png", "security-flow-response.png")
+START = b"<!-- ANGERONA_SECURITY_FLOW_START -->"
+END = b"<!-- ANGERONA_SECURITY_FLOW_END -->"
+TITLE = "Security flow and dependable startup"
+W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+REL = "http://schemas.openxmlformats.org/package/2006/relationships"
+CONTENT = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+
+def capability_rows():
+    rows = []
+    for path in sorted((ROOT / "src/angerona/modules").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        constants = {}
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    if isinstance(target, ast.Name):
+                        try:
+                            constants[target.id] = ast.literal_eval(statement.value)
+                        except (ValueError, TypeError):
+                            pass
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef) or not any(
+                isinstance(base, ast.Name) and base.id == "BaseModule" for base in node.bases
+            ):
+                continue
+            values = {}
+            for field in node.body:
+                if isinstance(field, ast.Assign):
+                    for target in field.targets:
+                        if isinstance(target, ast.Name):
+                            try:
+                                values[target.id] = (constants[field.value.id]
+                                    if isinstance(field.value, ast.Name) and field.value.id in constants
+                                    else ast.literal_eval(field.value))
+                            except (ValueError, TypeError):
+                                pass
+            rows.append((str(values.get("name", node.name)), path.relative_to(ROOT).as_posix(),
+                         str(values.get("capability_mode", "inherited contract")),
+                         str(values.get("response_authority", "inherited contract"))))
+    return rows
+
+
+def refresh_inventory(check=False):
+    path = DOCS[0]
+    text = path.read_text(encoding="utf-8")
+    marker = "<!-- CAPABILITY_SOURCE_INVENTORY -->"
+    if text.count(marker) != 1:
+        raise ValueError("capability inventory marker is missing or ambiguous")
+    prefix = text.split(marker)[0] + marker
+    rows = capability_rows()
+    lines = [f"\n\n**{len(rows)} built-in capability declarations.**\n",
+             "| Capability | Source | Declared mode | Declared response authority |",
+             "| --- | --- | --- | --- |"]
+    for name, relative, mode, authority in rows:
+        clean = lambda value: value.replace("|", "/").replace("\n", " ")
+        lines.append(f"| {clean(name)} | [{Path(relative).name}](../{relative}) | {clean(mode)} | {clean(authority)} |")
+    result = prefix + "\n".join(lines) + "\n"
+    if check and result != text:
+        raise ValueError("capability inventory differs from current source declarations")
+    if not check:
+        path.write_text(result, encoding="utf-8", newline="\n")
+
+
+def build_assets():
+    from PIL import Image, ImageDraw, ImageFont
+
+    fonts = Path("C:/Windows/Fonts")
+    font = lambda size, bold=False: ImageFont.truetype(str(fonts / ("arialbd.ttf" if bold else "arial.ttf")), size)
+    colors = dict(ink="#17263B", blue="#235A86", pale="#EDF4FA", border="#8BA4BA", muted="#41566C")
+
+    def diagram(name, title, subtitle, steps, foot, row_height=184, stop_branch=None):
+        width, height = 1600, 280 + 4 * row_height + 150
+        canvas = Image.new("RGB", (width, height), "white")
+        draw = ImageDraw.Draw(canvas)
+        draw.text((62, 42), title, fill=colors["ink"], font=font(49, True))
+        draw.text((64, 108), subtitle, fill=colors["muted"], font=font(28))
+        y0 = 200
+        for index, (heading, lines) in enumerate(steps):
+            column, row = index % 2, index // 2
+            x, y = 62 + column * 770, y0 + row * row_height
+            draw.rounded_rectangle((x, y, x + 704, y + row_height - 44), radius=14,
+                                   fill=colors["pale"], outline=colors["border"], width=2)
+            draw.text((x + 22, y + 17), heading, fill=colors["blue"], font=font(33, True))
+            for n, line in enumerate(lines):
+                draw.text((x + 22, y + 64 + n * 35), line, fill=colors["ink"], font=font(29))
+            if column == 0:
+                mid = y + (row_height - 44) // 2
+                draw.line((x + 716, mid, x + 748, mid), fill=colors["blue"], width=4)
+                draw.polygon(((x + 748, mid), (x + 737, mid - 8), (x + 737, mid + 8)), fill=colors["blue"])
+            if column == 1 and row < 3:
+                bottom, center = y + row_height - 44, x + 352
+                next_center, next_top = 62 + 352, y + row_height
+                middle = bottom + 22
+                draw.line(((center, bottom), (center, middle), (next_center, middle),
+                           (next_center, next_top)), fill=colors["blue"], width=3)
+                draw.polygon(((next_center, next_top), (next_center - 7, next_top - 10),
+                              (next_center + 7, next_top - 10)), fill=colors["blue"])
+        footer_y = y0 + 4 * row_height + 4
+        if stop_branch:
+            # An explicit operator branch is separate from the numbered
+            # evidence/response sequence and fits the existing footer space.
+            if stop_branch == "left":
+                origin = (62, y0 + 2 * row_height + (row_height - 44) // 2)
+                route = (origin, (30, origin[1]), (30, 904), (94, 904), (94, 955))
+            else:
+                origin = (1536, y0 + row_height + (row_height - 44) // 2)
+                route = (origin, (1568, origin[1]), (1568, 904), (94, 904), (94, 955))
+            draw.line(route, fill=colors["blue"], width=3)
+            draw.polygon(((94, 955), (87, 945), (101, 945)), fill=colors["blue"])
+            draw.text((440, 914), "Operator STOP / tray Quit branch", fill=colors["blue"], font=font(29, True))
+            stop_steps = (
+                ("Persist stop intent", "HMAC before teardown"),
+                ("Fence new starts", "AI • modules • respawn"),
+                ("Retire owned work", "AI • helpers • owned jobs"),
+                ("Exit this run", "Normal launch resumes"),
+            )
+            for index, (heading, detail) in enumerate(stop_steps):
+                x = 64 + index * 386
+                draw.text((x, 962), heading, fill=colors["blue"], font=font(27, True))
+                draw.text((x, 1000), detail, fill=colors["ink"], font=font(23))
+                if index < 3:
+                    arrow = x + 330
+                    draw.line((arrow, 982, arrow + 34, 982), fill=colors["blue"], width=3)
+                    draw.polygon(((arrow + 34, 982), (arrow + 24, 975), (arrow + 24, 989)), fill=colors["blue"])
+            footer_y = 1070
+        for n, line in enumerate(foot):
+            draw.text((64, footer_y + n * 38), line, fill=colors["muted"], font=font(28, n == 0))
+        output = ROOT / "assets" / name
+        output.parent.mkdir(exist_ok=True)
+        canvas.save(output, optimize=True)
+
+    diagram(ASSETS[0], "Angerona security flow", "User-mode workbench • evidence, authority and readiness are separate", [
+        ("1  Verify startup", ["Source Observe or signed installed scope", "Paths • runtime • storage • fresh readiness"]),
+        ("2  Collect observations", ["Process • files • memory • network • logs", "Platform, privilege, age and loss stay visible"]),
+        ("3  Authenticate evidence", ["Producer schema • continuity • replay", "Record authentication is a separate check"]),
+        ("4  Detect and correlate", ["86 declared capabilities • shared services", "Lead, exposure, detection and gap differ"]),
+        ("5  Investigate and authorize", ["Dashboard • cases • optional advisory AI", "Typed target • policy • approval • capability"]),
+        ("6  Act and verify outcome", ["Authorized adapter • durable action journal", "Exact target • result receipt • supported Undo"]),
+        ("7  Retain and recover", ["Cases and keys differ from disposable cache", "Bounded budgets • preserved originals"]),
+        ("8  Show independent recovery", ["No application imports • Tk / Forms fallback", "Retry safely • never claim engine protection"]),
+    ], ["Ring 3 boundary: no kernel immunity or universal coverage claim.",
+        "A ready window does not prove live sensors, installed authority or successful response."], stop_branch="left")
+    diagram(ASSETS[1], "Safe Startup recovery flow", "Each round is bounded • all candidates repeat fresh checks", [
+        ("1  Read explicit controls", ["STOP state • recovery / GitHub controls", "Automatic retries never clear STOP"]),
+        ("2  Verify exclusion and trust", ["Canonical paths • no active engine", "Operational pins • disk reserve • runtime"]),
+        ("3  Try safe launch alternatives", ["Ordinary • software Qt • no Tk window", "Recognized failure may use verified repair"]),
+        ("4  Preserve source edits", ["Private original archive • manifest • journal", "Concurrent editor changes cause a hold"]),
+        ("5  Try eligible source candidates", ["Last ready • exact GitHub HEAD / parent", "STOP-contract floor • no baseline authority"]),
+        ("6  Prove dashboard readiness", ["Fresh nonce • live PID generation", "Event loop responding • full gates retained"]),
+        ("7  Review after recovery", ["Keep working • review later", "Try preserved edits at NEXT startup only"]),
+        ("8  Recovery remains available", ["Bounded phase logs • missing logs explicit", "Retry / Close • protection unverified"]),
+    ], ["Trust, active processes, pending work, STOP or low space can hold startup.",
+        "Recovery never clears alerts, replaces keys or silently enrolls an altered baseline."])
+    diagram(ASSETS[2], "Governed response flow", "Observations and AI text do not grant mutation authority", [
+        ("1  Establish evidence", ["Enrolled producer and typed event contract", "Freshness • continuity • explicit coverage"]),
+        ("2  Bind the exact target", ["PID + birth / file identity + digest", "Recheck at action time • refuse ambiguity"]),
+        ("3  Apply policy and scope", ["Observe vs supported response capability", "Risk, platform and deployment prerequisites"]),
+        ("4  Verify operator authority", ["Authenticated approval where required", "Role and operation are independently checked"]),
+        ("5  Write durable intent", ["Retain custody and original recovery data", "Do not replace unknown pending transactions"]),
+        ("6  Execute authorized adapter", ["Narrow operation • no model shell commands", "Privilege/service boundary remains explicit"]),
+        ("7  Verify observed outcome", ["Completed • partial • denied • failed • held", "A UI success label cannot replace evidence"]),
+        ("8  Support review and Undo", ["Signed/authenticated receipt and history", "Reconcile only proven original/target state"]),
+    ], ["Installed Protect needs trusted signing, identities and native deployment acceptance.",
+        "User-mode source tests cannot create privileged or independent authorities."], stop_branch="right")
+
+
+def plain(text):
+    text = re.sub(r"!?\[([^\]]*)\]\([^)]+\)", r"\1", text)
+    return text.replace("**", "").replace("`", "").replace("\\|", "/")
+
+
+def paragraph(text, style="Normal", *, first=False, small=False):
+    props = f'<w:pStyle w:val="{style}"/>'
+    if first:
+        props += '<w:pageBreakBefore/>'
+    if style.startswith("Heading"):
+        props += '<w:keepNext/>'
+    props += '<w:spacing w:after="120" w:line="264" w:lineRule="auto"/>'
+    size = 19 if small else 22
+    run = f'<w:rPr><w:color w:val="000000"/><w:sz w:val="{size}"/></w:rPr>'
+    if style.startswith("Heading"):
+        run = '<w:rPr><w:color w:val="000000"/></w:rPr>'
+    return f'<w:p><w:pPr>{props}</w:pPr><w:r>{run}<w:t xml:space="preserve">{escape(plain(text))}</w:t></w:r></w:p>'.encode()
+
+
+def table(rows):
+    count = len(rows[0])
+    # Three/four-column technical tables are set intentionally and allowed to wrap.
+    widths = {2: [2200, 7160], 3: [2400, 3480, 3480], 4: [2000, 2600, 2400, 2360]}[count]
+    border = ''.join(f'<w:{edge} w:val="single" w:sz="4" w:color="D9D9D9"/>'
+                     for edge in ("top", "left", "bottom", "right", "insideH", "insideV"))
+    body = ['<w:tbl><w:tblPr><w:tblW w:w="9360" w:type="dxa"/><w:tblLayout w:type="fixed"/>'
+            f'<w:tblBorders>{border}</w:tblBorders><w:tblCellMar><w:top w:w="100" w:type="dxa"/>'
+            '<w:left w:w="110" w:type="dxa"/><w:bottom w:w="100" w:type="dxa"/>'
+            '<w:right w:w="110" w:type="dxa"/></w:tblCellMar></w:tblPr><w:tblGrid>']
+    body += [f'<w:gridCol w:w="{width}"/>' for width in widths]
+    body.append('</w:tblGrid>')
+    for index, row in enumerate(rows):
+        body.append('<w:tr><w:trPr><w:cantSplit/>' + ('<w:tblHeader/>' if index == 0 else '') + '</w:trPr>')
+        for width, value in zip(widths, row):
+            shade = 'DCE7F0' if index == 0 else ('F4F6F8' if index % 2 == 0 else 'FFFFFF')
+            cell = paragraph(value, small=True).decode()
+            if index == 0:
+                cell = cell.replace('<w:rPr>', '<w:rPr><w:b/>')
+            body.append(f'<w:tc><w:tcPr><w:tcW w:w="{width}" w:type="dxa"/>'
+                        f'<w:shd w:fill="{shade}"/><w:vAlign w:val="center"/></w:tcPr>{cell}</w:tc>')
+        body.append('</w:tr>')
+    body.append('</w:tbl>')
+    return ''.join(body).encode() + paragraph("")
+
+
+def picture(name, number):
+    data = (ROOT / "assets" / name).read_bytes()
+    width, height = struct.unpack('>II', data[16:24])
+    cx, cy = 5943600, round(5943600 * height / width)
+    rid = f"rIdAngeronaSecurityFlow{number}"
+    description = name.replace("-", " ").replace(".png", "")
+    return f'''<w:p><w:pPr><w:keepNext/><w:spacing w:after="120"/></w:pPr><w:r><w:drawing>
+<wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" distT="0" distB="0" distL="0" distR="0">
+<wp:extent cx="{cx}" cy="{cy}"/><wp:docPr id="{9000 + number}" name="{name}" descr="{description}"/>
+<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">
+<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="{name}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill>
+<a:blip r:embed="{rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>
+<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline>
+</w:drawing></w:r></w:p>'''.encode()
+
+
+def markdown_parts(text, *, include_catalog=False):
+    lines = text.splitlines()
+    output, buffer = [], []
+    def flush():
+        if buffer:
+            output.append(paragraph(" ".join(buffer)))
+            buffer.clear()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        if line.startswith('<!-- CAPABILITY_SOURCE_INVENTORY'):
+            flush()
+            if not include_catalog:
+                break
+        elif line.startswith('<!--'):
+            pass
+        elif line.startswith('!['):
+            flush()
+            for number, name in enumerate(ASSETS, 1):
+                if name in line:
+                    output.append(picture(name, number))
+                    display_number = {ASSETS[0]: 1, ASSETS[2]: 2, ASSETS[1]: 3}[name]
+                    output.append(paragraph("Figure " + str(display_number) + " " + name.replace('security-flow-', '').replace('.png', '') + " flow", "Caption"))
+        elif line.startswith('#'):
+            flush()
+            level = len(line) - len(line.lstrip('#'))
+            heading = line.lstrip('# ').replace("1 ", "1 ", 1)
+            output.append(paragraph(heading, "Heading" + str(min(level + 1, 3))))
+        elif line.startswith('|'):
+            flush()
+            rows = []
+            while index < len(lines) and lines[index].strip().startswith('|'):
+                cells = [value.strip() for value in lines[index].strip().strip('|').split('|')]
+                if not all(re.fullmatch(r'[-: ]+', cell) for cell in cells):
+                    rows.append(cells)
+                index += 1
+            output.append(table(rows))
+            continue
+        elif line.startswith('- '):
+            flush()
+            output.append(paragraph("• " + line[2:]))
+        elif not line:
+            flush()
+        else:
+            buffer.append(line)
+        index += 1
+    flush()
+    return b''.join(output)
+
+
+def chapter():
+    result = paragraph(TITLE, "Heading1", first=True)
+    result += paragraph("Current operating guidance 28 October 2026")
+    result += paragraph("This chapter explains the suite from launch to evidence, governed response, retention and recovery. Source Observe and signed installed Protect have distinct authority. A visible dashboard does not attest working sensors or protection. The current security flow and Safe Startup sections below apply to the maintained source profile; earlier dated validation results remain historical evidence.")
+    result += markdown_parts(DOCS[0].read_text(encoding="utf-8"))
+    result += paragraph("Complete built in capability inventory", "Heading2")
+    result += paragraph("The repository guide docs/security-flow.md lists every built-in BaseModule source declaration with its explicit mode and response authority, where declared. Capability Center provides the validated live contract, platform, freshness, loss, dependencies and actual coverage for each capability. Catalog membership or a compatibility declaration is not independent efficacy evidence.")
+    result += table([("Capability", "Built in source file")] + [
+        (name, relative) for name, relative, _mode, _authority in capability_rows()
+    ])
+    result += markdown_parts(DOCS[1].read_text(encoding="utf-8"))
+    result += paragraph("Primary platform and protocol references", "Heading2")
+    for url in (
+        "https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/user-mode-and-kernel-mode",
+        "https://www.microsoft.com/en-us/msrc/windows-security-servicing-criteria",
+        "https://docs.github.com/en/rest/git/blobs",
+        "https://docs.github.com/en/rest/git/commits",
+        "https://docs.github.com/en/rest/git/trees",
+    ):
+        result += paragraph(url, small=True)
+    return START + result + END
+
+
+def replace_paragraph(document, before, after, properties=None):
+    for match in re.finditer(rb'<w:p(?:\s[^>]*)?(?<!/)>.*?</w:p>', document, re.DOTALL):
+        text = unescape(''.join(part.decode('utf-8') for part in re.findall(
+            rb'<w:t(?:\s[^>]*)?>(.*?)</w:t>', match.group(0), re.DOTALL)))
+        if text == before:
+            replacement = paragraph(after)
+            retained = re.search(rb'<w:pPr>.*?</w:pPr>', match.group(0), re.DOTALL)
+            props = properties if properties is not None else (retained.group(0) if retained else None)
+            if props is not None:
+                replacement = re.sub(rb'<w:pPr>.*?</w:pPr>', lambda _: props, replacement, count=1, flags=re.DOTALL)
+            return document[:match.start()] + replacement + document[match.end():]
+    return document
+
+
+def update(check=False):
+    refresh_inventory(check)
+    with ZipFile(MANUAL) as archive:
+        entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
+    mapping = {info.filename: data for info, data in entries}
+    document = mapping['word/document.xml']
+    if START in document or END in document:
+        if document.count(START) != 1 or document.count(END) != 1:
+            raise ValueError("security flow chapter markers are ambiguous")
+        first, last = document.index(START), document.index(END)
+        if last < first:
+            raise ValueError("security flow chapter markers are reversed")
+        document = document[:first] + document[last + len(END):]
+    document = replace_paragraph(document,
+        "Run Windows Protect with elevation when full telemetry and response are required. Use macOS and Linux according to their Observe contracts.",
+        "Windows Protect requires the trusted signed installed distribution and its accepted authority; elevating a writable source checkout does not establish Protect. Normal source startup is unelevated Observe/development. Use macOS and Linux according to their platform contracts.")
+    current_posture = "Windows Protect requires the trusted signed installed distribution and its accepted authority; elevating a writable source checkout does not establish Protect. Normal source startup is unelevated Observe/development. Use macOS and Linux according to their platform contracts."
+    # The retained manual's operating-posture list uses numId 12. Keep its exact
+    # numbering/spacing when upgrading a manual produced by an earlier updater.
+    document = replace_paragraph(document, current_posture, current_posture,
+        b'<w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="12"/></w:numPr>'
+        b'<w:spacing w:before="0" w:after="20" w:line="252" w:lineRule="auto"/></w:pPr>')
+    # Preserve every other historical paragraph and package part.
+    insertion = document.rfind(b'<w:sectPr')
+    if insertion < 0:
+        raise ValueError("manual has no final section properties")
+    updated = document[:insertion] + chapter() + document[insertion:]
+    ET.fromstring(updated)
+    if check:
+        if updated != mapping['word/document.xml']:
+            raise ValueError("master manual security-flow chapter differs from reviewed guides/assets")
+        for name in ASSETS:
+            if mapping.get('word/media/' + name) != (ROOT / 'assets' / name).read_bytes():
+                raise ValueError("master manual security-flow media is stale")
+        print("Master manual chapter, inventory and diagrams are current; visual render QA remains separate")
+        return
+    relationships = mapping['word/_rels/document.xml.rels']
+    for number, name in enumerate(ASSETS, 1):
+        rid = f'rIdAngeronaSecurityFlow{number}'
+        relationships = re.sub(rb'<Relationship\b[^>]*\bId="' + rid.encode() + rb'"[^>]*/>', b'', relationships)
+        addition = f'<Relationship Id="{rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/{name}"/>'.encode()
+        relationships = relationships.replace(b'</Relationships>', addition + b'</Relationships>')
+    types = mapping['[Content_Types].xml']
+    if b'Extension="png"' not in types:
+        types = types.replace(b'</Types>', b'<Default Extension="png" ContentType="image/png"/></Types>')
+    mapping['word/document.xml'] = updated
+    mapping['word/_rels/document.xml.rels'] = relationships
+    mapping['[Content_Types].xml'] = types
+    mapping['docProps/core.xml'] = re.sub(rb'(<dcterms:modified\b[^>]*>).*?(</dcterms:modified>)', rb'\g<1>2026-10-28T00:00:00Z\g<2>', mapping['docProps/core.xml'])
+    for name in ASSETS:
+        mapping['word/media/' + name] = (ROOT / 'assets' / name).read_bytes()
+    temporary = MANUAL.with_suffix('.security-flow.tmp')
+    try:
+        with ZipFile(temporary, 'w') as archive:
+            for info, original in entries:
+                archive.writestr(info, mapping.pop(info.filename, original))
+            for name, data in mapping.items():
+                archive.writestr(name, data)
+        with ZipFile(temporary) as archive:
+            if archive.testzip() is not None:
+                raise ValueError("master manual ZIP validation failed")
+            ET.fromstring(archive.read('word/document.xml'))
+        temporary.replace(MANUAL)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    print("Updated master manual security flow; render every page before publication")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true')
+    parser.add_argument('--build-assets', action='store_true')
+    options = parser.parse_args()
+    if options.check and options.build_assets:
+        parser.error('--check cannot rebuild assets')
+    if options.build_assets:
+        build_assets()
+    update(options.check)
+
+
+if __name__ == '__main__':
+    main()

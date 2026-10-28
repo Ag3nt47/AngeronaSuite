@@ -16,10 +16,11 @@ from angerona.core.startup_protocol import notify_dashboard_ready
 
 
 @pytest.fixture(autouse=True)
-def _isolate_model_environment(monkeypatch):
+def _isolate_model_environment(monkeypatch, tmp_path):
     # Startup tests must never validate the developer's live model directory.
-    for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS"):
+    for name in ("ANGERONA_OLLAMA_MODELS", "OLLAMA_MODELS", "ANGERONA_STARTUP_SUPERVISED"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(startup, "canonical_storage", lambda: tmp_path / "startup-errors")
 
 
 def _plan(tmp_path: Path, *, frozen: bool = False) -> startup.LaunchPlan:
@@ -720,7 +721,7 @@ def test_closing_helper_retains_worker_until_its_owned_probe_is_reaped(tmp_path,
 
 
 @pytest.mark.parametrize("code", [81, 82, 83])
-def test_closed_pre_dashboard_failure_exits_helper_for_parent_owned_repair(monkeypatch, code):
+def test_closed_pre_dashboard_failure_exits_helper_for_parent_owned_repair(monkeypatch, code, capsys):
     window, widgets = _fake_tk(monkeypatch)
 
     def failed_probe(*_args, **_kwargs):
@@ -733,6 +734,32 @@ def test_closed_pre_dashboard_failure_exits_helper_for_parent_owned_repair(monke
     assert window.destroyed
     assert 250 in window.scheduled_delays
     assert any("one verified repair" in text for widget in widgets for text in widget.text)
+    stderr = capsys.readouterr().err
+    assert "Synthetic reviewed startup failure" in stderr
+    assert "startup-diagnostics.jsonl" in stderr and "startup-preflight.log" in stderr
+
+
+def test_supervised_generic_failure_closes_only_after_logging_and_worker_handoff(monkeypatch, capsys):
+    window, widgets = _fake_tk(monkeypatch)
+    events = []
+    def failed(*_args, **_kwargs):
+        events.append("worker-unwinding")
+        raise startup.StartupError("Synthetic supervised startup error")
+    original_record = startup._record_startup_failure
+    def record(*args, **kwargs):
+        events.append("persist-and-print")
+        return original_record(*args, **kwargs)
+    monkeypatch.setenv("ANGERONA_STARTUP_SUPERVISED", "1")
+    monkeypatch.setattr(startup, "run_startup", failed)
+    monkeypatch.setattr(startup, "_record_startup_failure", record)
+    monkeypatch.setattr(startup.threading, "Thread", lambda **kwargs: SimpleNamespace(start=kwargs["target"]))
+    monkeypatch.setattr(startup.sys, "argv", ["startup"])
+    assert startup.main() == 1
+    assert window.destroyed and not window.closed_by_user
+    assert 250 in window.scheduled_delays
+    assert events == ["worker-unwinding", "persist-and-print"]
+    assert "Synthetic supervised startup error" in capsys.readouterr().err
+    assert any("Synthetic supervised startup error" in text for widget in widgets for text in widget.text)
 
 
 def test_check_only_runs_all_startup_checks_without_constructing_tk(monkeypatch):

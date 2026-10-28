@@ -163,6 +163,9 @@ def test_core_heartbeat_is_published_before_watchdog_supervision(monkeypatch) ->
         def stop(self, terminate_children=True) -> None:
             pass
 
+        def request_stop(self) -> None:
+            pass
+
     monkeypatch.setattr(resilience.hb, "HeartbeatWriter", lambda _name: FakeBeat())
     monkeypatch.setattr(resilience, "ProcessSupervisor", FakeSupervisor)
     monkeypatch.setattr(resilience.ipc_ring, "RingReader", lambda _path: FakeReader())

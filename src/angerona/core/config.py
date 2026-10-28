@@ -102,6 +102,24 @@ def _bool_setting(data: dict, key: str, default: bool) -> bool:
     return value if type(value) is bool else bool(default)
 
 
+def _startup_recovery_settings(raw: str) -> tuple[bool, bool]:
+    """Missing preferences use authorized defaults; ambiguous consent is off."""
+    try:
+        if len(raw) > 64 * 1024 or len(raw.encode("utf-8")) > 64 * 1024:
+            return False, False
+        # Tuples distinguish JSON objects from arrays and retain duplicate keys.
+        pairs = json.loads(raw, object_pairs_hook=tuple)
+        if type(pairs) is not tuple:
+            return False, False
+        result = []
+        for name in ("startup_recovery_enabled", "startup_recovery_github_enabled"):
+            values = [value for key, value in pairs if key == name]
+            result.append(True if not values else values[0] if len(values) == 1 and type(values[0]) is bool else False)
+        return result[0], result[1]
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return False, False
+
+
 def _data_dir() -> Path:
     from angerona.core.data_paths import data_dir
     p = data_dir()
@@ -126,6 +144,8 @@ class Config:
     ollama_model: str = "llama3"
     github_repo: str = "Ag3nt47/AngeronaSuite"  # canonical update source
     github_daily_check_enabled: bool = False  # opt-in public GitHub metadata; never auto-installs
+    startup_recovery_enabled: bool = True     # user-authorized verified source recovery after failed startup
+    startup_recovery_github_enabled: bool = True  # public canonical source downloads; never host uploads
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
@@ -494,8 +514,13 @@ class Config:
         cfg = cls()
         cls._load_dotenv(cfg)
         if cfg.settings_path.exists():
+            cfg.startup_recovery_enabled = False
+            cfg.startup_recovery_github_enabled = False
             try:
-                data = json.loads(cfg.settings_path.read_text(encoding="utf-8"))
+                raw_settings = cfg.settings_path.read_text(encoding="utf-8")
+                (cfg.startup_recovery_enabled,
+                 cfg.startup_recovery_github_enabled) = _startup_recovery_settings(raw_settings)
+                data = json.loads(raw_settings)
                 cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
                 cfg.ollama_model = data.get("ollama_model", cfg.ollama_model)
                 cfg.github_repo = data.get("github_repo", cfg.github_repo)
@@ -951,6 +976,9 @@ class Config:
                 raise ValueError(f"{name} must be between {low} and {high} MiB")
 
     def save(self) -> None:
+        for name in ("startup_recovery_enabled", "startup_recovery_github_enabled"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
         self.validate_shadow_storage_settings()
         self.validate_integration_settings()
         from angerona.core.alert_retention import RetentionPolicy
@@ -974,6 +1002,8 @@ class Config:
                     "ollama_model": self.ollama_model,
                     "github_repo": self.github_repo,
                     "github_daily_check_enabled": self.github_daily_check_enabled,
+                    "startup_recovery_enabled": self.startup_recovery_enabled,
+                    "startup_recovery_github_enabled": self.startup_recovery_github_enabled,
                     "theme": self.theme,
                     "accent": self.accent,
                     "module_states":     self.module_states,

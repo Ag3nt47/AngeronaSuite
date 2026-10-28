@@ -49,6 +49,7 @@ _POSIX_COPIED_ENVIRONMENT = (
     "XDG_STATE_HOME",
 )
 _SAFE_ANGERONA_CHILD_ENVIRONMENT = frozenset({
+    "ANGERONA_SUPERVISED_RECOVERY",
     "ANGERONA_ACL_PATH",
     "ANGERONA_BLACKBOX_ENABLED",
     "ANGERONA_CORE_CMD",
@@ -469,6 +470,10 @@ def sanitize_privileged_bootstrap_environment() -> None:
         except (OSError, ValueError):
             startup_ready = ""
     environment = _minimal_environment(os.environ)
+    # Inhibition carries no trust/privilege authority. Preserve only exact '1'
+    # so privileged recovery cannot accidentally become an explicit resume.
+    if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+        environment["ANGERONA_SUPERVISED_RECOVERY"] = "1"
     os.environ.clear()
     os.environ.update(environment)
     if startup_ready:

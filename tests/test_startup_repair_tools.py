@@ -130,12 +130,58 @@ if ([IO.File]::ReadAllText((Join-Path $venv 'identity')) -ne 'old-environment') 
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_core_singleton_outside_venv_refuses_runtime_mutation(tmp_path: Path) -> None:
+    result = _run(LIBRARY + r"""
+$core=Open-PrivateRepairFile -Path (Join-Path (Get-CanonicalSourceStartupStorage) 'angerona.instance.lock') -Mode OpenOrCreate -Share ReadWrite
+$core.Lock(0,1)
+$blocked=$false
+try {
+    try {[void](Invoke-RepairTransaction)} catch {$blocked=$_.Exception.Message -match 'core owns the instance lease'}
+} finally {$core.Unlock(0,1);$core.Dispose()}
+if(!$blocked){throw 'Runtime repair bypassed the canonical core singleton.'}
+if([IO.File]::ReadAllText((Join-Path $venv 'identity')) -ne 'old-environment'){throw 'Active core runtime moved.'}
+if(Get-ChildItem -LiteralPath (Join-Path $root '.tmp\repair-wheels') -Filter 'startup-repair.*' -Directory){throw 'Mutation scratch created while core lease was occupied.'}
+$lease=Enter-CanonicalCoreMutationLease;Exit-RepairLease $lease
+""", tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_private_atomic_receipt_retries_short_native_delete_sharing_conflict(tmp_path: Path) -> None:
+    result = _run(LIBRARY + r"""
+Add-Type -TypeDefinition @'
+using System.IO;
+using System.Threading;
+public static class ReceiptSharingFixture {
+    public static Thread Release(FileStream stream) {
+        var worker=new Thread(()=>{Thread.Sleep(250);stream.Dispose();});
+        worker.IsBackground=true;worker.Start();return worker;
+    }
+}
+'@
+$path=Join-Path (Get-CanonicalSourceStartupStorage) 'receipt.json'
+Write-DurableRepairJson $path @{schema=1;phase='old'}
+$held=[IO.File]::Open($path,'Open','Read','Read')
+$worker=[ReceiptSharingFixture]::Release($held)
+try {Write-DurableRepairJson $path @{schema=1;phase='new'} -Replace}
+finally {if(!$worker.Join(2000)){throw 'Owned sharing fixture did not retire.'};$held.Dispose()}
+$result=[IO.File]::ReadAllText($path)|ConvertFrom-Json
+if($result.phase -ne 'new'){throw 'Atomic receipt did not publish after the owned short conflict retired.'}
+""", tmp_path)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_process_scan_refuses_live_venv_and_uninspectable_python(tmp_path: Path) -> None:
     result = _run(r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
 $target = Join-Path $env:ANGERONA_TEST_SCRATCH 'venv'
 function Get-CimInstance {
     [pscustomobject]@{ ExecutablePath = (Join-Path $target 'Scripts\python.exe'); Name='python.exe'; ProcessId=123 }
+}
+function Get-LiveRepairProcessIdentity([uint32]$ProcessId) {
+    $identity=[pscustomobject]@{State='live';ImagePath=(Join-Path $target 'Scripts\python.exe');CreationFileTime=123456789;NativeError=0}
+    if($ProcessId -eq 124){$identity.State='unknown';$identity.ImagePath=$null;$identity.NativeError=5}
+    $identity|Add-Member ScriptMethod Dispose {}
+    return $identity
 }
 $failed = $false
 try { Assert-NoActiveVenv $target } catch { $failed = $_.Exception.Message -match 'still active' }
@@ -412,11 +458,11 @@ function Get-CanonicalSourceStartupStorage { return (Join-Path $root 'SourceData
 
 def _crash_transaction(scratch: Path, phase: str = "during-refresh") -> Path:
     script = LIBRARY + f"\n$env:ANGERONA_TEST_FAULT = '{phase}'\n" + r"""
-function Move-Item {
-    param($LiteralPath, $Destination)
-    [IO.Directory]::Move($LiteralPath, $Destination)
-    if (($env:ANGERONA_TEST_FAULT -eq 'after-backup' -and $LiteralPath -eq $venv) -or
-        ($env:ANGERONA_TEST_FAULT -eq 'after-promotion' -and $Destination -eq $venv)) {
+function Invoke-RepairDirectoryRename {
+    param($From, $To)
+    [IO.Directory]::Move($From, $To)
+    if (($env:ANGERONA_TEST_FAULT -eq 'after-backup' -and $From -eq $venv) -or
+        ($env:ANGERONA_TEST_FAULT -eq 'after-promotion' -and $To -eq $venv)) {
         [Environment]::Exit(99)
     }
 }

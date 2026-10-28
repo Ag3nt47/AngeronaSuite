@@ -27,11 +27,13 @@
 package main
 
 import (
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -78,6 +80,7 @@ type config struct {
 	agentArgs    []string
 	dataDir      string
 	expectedHash string // lowercase hex, or "" to learn on first run
+	recovery     bool   // automatic attempts may not clear an operator STOP
 }
 
 var (
@@ -254,10 +257,16 @@ func chillAgentArgs(args []string) []string {
 func launchAgent(cfg config, token, wdMmapPath string) (*exec.Cmd, error) {
 	cmd := exec.Command(cfg.agentExe, chillAgentArgs(cfg.agentArgs)...)
 	cmd.Env = append(os.Environ(),
+		"ANGERONA_EXTERNAL_WATCHDOG=1",
 		"ANGERONA_WATCHDOG_TOKEN="+token,
 		"ANGERONA_WATCHDOG_MMAP="+wdMmapPath,
 		"ANGERONA_WD_DATADIR="+cfg.dataDir,
 	)
+	if cfg.recovery {
+		cmd.Env = append(cmd.Env, "ANGERONA_SUPERVISED_RECOVERY=1")
+	} else {
+		cmd.Env = append(cmd.Env, "ANGERONA_SUPERVISED_RECOVERY=0")
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: createNoWindow | detachedProcess | createNewProcessGroup,
 	}
@@ -274,9 +283,10 @@ func supervise(cfg config) {
 	stopFile := filepath.Join(cfg.dataDir, "watchdog.stop")
 
 	var restarts []time.Time
+	var previousToken []byte
 
 	for {
-		if atomic.LoadInt32(&shuttingDwn) == 1 || fileExists(stopFile) {
+		if atomic.LoadInt32(&shuttingDwn) == 1 || authenticatedStop(stopFile, previousToken) {
 			_ = os.Remove(stopFile)
 			logLine("INFO", "shutdown requested — watchdog exiting, no relaunch")
 			return
@@ -291,8 +301,10 @@ func supervise(cfg config) {
 		tok := make([]byte, 32)
 		_, _ = rand.Read(tok)
 		token := hex.EncodeToString(tok)
+		previousToken = tok
 
 		cmd, err := launchAgent(cfg, token, wdMmap)
+		cfg.recovery = true
 		if err != nil {
 			logLine("CRIT", "launch failed: "+err.Error())
 			if giveUp(&restarts) {
@@ -323,7 +335,7 @@ func supervise(cfg config) {
 		died := make(chan struct{})
 		go func() { _ = cmd.Wait(); close(died) }()
 
-		reason := monitor(cmd, agentMmap, died, stopFile)
+		reason := monitor(cmd, agentMmap, died, stopFile, tok)
 		close(beatStop)
 
 		switch reason {
@@ -354,7 +366,7 @@ func supervise(cfg config) {
 
 // monitor returns why the current agent instance ended: "died", "suspended",
 // "clean" (agent flag=0), or "stop" (admin stop file / signal).
-func monitor(cmd *exec.Cmd, agentMmap string, died <-chan struct{}, stopFile string) string {
+func monitor(cmd *exec.Cmd, agentMmap string, died <-chan struct{}, stopFile string, token []byte) string {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	lastTs, _, _ := readAgentBeat(agentMmap)
@@ -363,12 +375,17 @@ func monitor(cmd *exec.Cmd, agentMmap string, died <-chan struct{}, stopFile str
 	for {
 		select {
 		case <-died:
+			// Death can win the select immediately after the core durably saved
+			// STOP. Check authority before classifying that exit as a crash.
+			if atomic.LoadInt32(&shuttingDwn) == 1 || authenticatedStop(stopFile, token) {
+				return "stop"
+			}
 			return "died"
 		case <-ticker.C:
 			if atomic.LoadInt32(&shuttingDwn) == 1 {
 				return "stop"
 			}
-			if fileExists(stopFile) {
+			if authenticatedStop(stopFile, token) {
 				return "stop"
 			}
 			ts, flags, ok := readAgentBeat(agentMmap)
@@ -383,6 +400,43 @@ func monitor(cmd *exec.Cmd, agentMmap string, died <-chan struct{}, stopFile str
 			}
 		}
 	}
+}
+
+// A stop file alone confers no authority. Only this launch's 256-bit token
+// authenticates the bounded instruction from the proven native child.
+func authenticatedStop(path string, token []byte) bool {
+	if len(token) != 32 {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil || len(raw) > 4096 {
+		return false
+	}
+	var command struct {
+		Schema int    `json:"schema"`
+		Nonce  string `json:"nonce"`
+		Ts     int64  `json:"ts"`
+		Sig    string `json:"sig"`
+	}
+	if json.Unmarshal(raw, &command) != nil || command.Schema != 1 || len(command.Nonce) != 32 || len(command.Sig) != 64 {
+		return false
+	}
+	if _, err := hex.DecodeString(command.Nonce); err != nil {
+		return false
+	}
+	sig, err := hex.DecodeString(command.Sig)
+	age := time.Now().Unix() - command.Ts
+	if err != nil || age < -30 || age > 3600 {
+		return false
+	}
+	mac := hmac.New(sha256.New, token)
+	fmt.Fprintf(mac, "angerona-watchdog-stop-v1\x00%s\x00%d", command.Nonce, command.Ts)
+	return hmac.Equal(mac.Sum(nil), sig)
 }
 
 // restart throttle -----------------------------------------------------------

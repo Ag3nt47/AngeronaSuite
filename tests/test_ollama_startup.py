@@ -217,6 +217,7 @@ def test_compute_override_cannot_change_launch_trust_or_network_policy(monkeypat
 @pytest.mark.skipif(os.name != "nt", reason="Windows executable custody semantics")
 def test_windows_launch_holds_executable_and_parent_custody(tmp_path, monkeypatch):
     from angerona.core import privilege
+    from angerona.core import ollama_owned_process
 
     # Restore the real spawn helper replaced by the default isolation fixture.
     spawn = _REAL_SPAWN
@@ -229,20 +230,19 @@ def test_windows_launch_holds_executable_and_parent_custody(tmp_path, monkeypatc
     monkeypatch.setattr(lifecycle, "_trusted_ollama_image", lambda path: path == image)
     calls = []
 
-    def launch(args, **kwargs):
+    def launch(image_arg, environment, **kwargs):
         with pytest.raises(OSError):
             image.write_bytes(b"replacement")
         with pytest.raises(OSError):
             image.unlink()
-        calls.append((args, kwargs))
+        calls.append((image_arg, environment, kwargs))
         return object()
 
-    monkeypatch.setattr(lifecycle.subprocess, "Popen", launch)
+    monkeypatch.setattr(ollama_owned_process, "launch_owned_ollama", launch)
     spawn("http://127.0.0.1:11434", time.monotonic() + 5)
-    assert calls[0][0] == [str(image), "serve"]
-    assert calls[0][1]["creationflags"] == lifecycle.subprocess.CREATE_NO_WINDOW
-    assert calls[0][1].get("shell", False) is False
-    assert calls[0][1]["env"]["OLLAMA_NO_CLOUD"] == "1"
+    assert calls[0][0] == image
+    assert calls[0][1]["OLLAMA_NO_CLOUD"] == "1"
+    assert calls[0][2]["deadline"] > time.monotonic()
     image.write_bytes(b"custody released")
 
 

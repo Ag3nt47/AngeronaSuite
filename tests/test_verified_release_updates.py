@@ -805,7 +805,8 @@ def test_preflight_and_uac_bridge_use_sanitized_environment_and_quote_paths(monk
     )
 
 
-def test_installed_frozen_watchdog_holds_by_exact_path_pid_and_birth(tmp_path, monkeypatch):
+@pytest.mark.parametrize("executable", ["frz_watchdog_v2.exe", "AngeronaSafeStart.exe"])
+def test_installed_frozen_watchdog_holds_by_exact_path_pid_and_birth(tmp_path, monkeypatch, executable):
     import psutil
 
     root = tmp_path / "installed"
@@ -815,7 +816,7 @@ def test_installed_frozen_watchdog_holds_by_exact_path_pid_and_birth(tmp_path, m
             self.pid, self.path = pid, path
 
         def name(self):
-            return "frz_watchdog_v2.exe"
+            return executable
 
         def exe(self):
             return str(self.path)
@@ -827,17 +828,18 @@ def test_installed_frozen_watchdog_holds_by_exact_path_pid_and_birth(tmp_path, m
         psutil,
         "process_iter",
         lambda: [
-            Watchdog(12, root / "frz_watchdog_v2.exe"),
-            Watchdog(13, tmp_path / "frz_watchdog_v2.exe"),
+            Watchdog(12, root / executable),
+            Watchdog(13, tmp_path / executable),
         ],
     )
     assert updates.installed_processes(root) == [
-        updates.ProcessEvidence(12, str(root / "frz_watchdog_v2.exe"), 1234.5)
+        updates.ProcessEvidence(12, str(root / executable), 1234.5)
     ]
 
 
+@pytest.mark.parametrize("candidate", ["Angerona.exe", "AngeronaSafeStart.exe"])
 def test_denied_unrelated_process_executable_does_not_block_but_denied_candidate_holds(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, candidate
 ):
     import psutil
 
@@ -857,7 +859,7 @@ def test_denied_unrelated_process_executable_does_not_block_but_denied_candidate
         psutil, "process_iter", lambda: [DeniedProcess("unrelated-system-service.exe")]
     )
     assert updates.installed_processes(tmp_path) == []
-    monkeypatch.setattr(psutil, "process_iter", lambda: [DeniedProcess("Angerona.exe")])
+    monkeypatch.setattr(psutil, "process_iter", lambda: [DeniedProcess(candidate)])
     with pytest.raises(updates.ReleaseUpdateError, match="identity coverage is denied"):
         updates.installed_processes(tmp_path)
 

@@ -179,6 +179,11 @@ class _Native:
     def resume(self, thread):
         return self.process.ResumeThread(thread)
 
+    def create_job(self):
+        from angerona.core.ollama_owned_process import OwnedOllamaJob
+
+        return OwnedOllamaJob()
+
     def terminate(self, process):
         # Only the exact handle returned by our suspended creation is accepted.
         self.api.TerminateProcess(process, 1)
@@ -195,28 +200,34 @@ class _Native:
 
 
 class _MediumOllamaProcess:
-    def __init__(self, native, handle, pid):
+    def __init__(self, native, handle, pid, job):
         self._native = native
         self._handle = handle
         self.pid = pid
+        self._job = job
 
     def poll(self):
         return self._native.poll(self._handle)
 
     def terminate(self):
         """Cancel this exact launched process without a PID lookup."""
-        if self.poll() is None:
-            self._native.terminate(self._handle)
+        self._job.terminate()
+
+    def close(self):
+        self._job.close()
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            self._native.close(handle)
 
     def __del__(self):
         try:
-            self._native.close(self._handle)
+            self.close()
         except Exception:
             pass
 
 
 def _launch(native, image, environment, deadline, *, check_cancelled=None):
-    current = linked = primary = child_token = process = thread = None
+    current = linked = primary = child_token = process = thread = job = None
     try:
         current = native.current_token()
         parent = native.identity(current)
@@ -251,14 +262,17 @@ def _launch(native, image, environment, deadline, *, check_cancelled=None):
         _require_medium(parent, native.identity(child_token))
         if native.image(process).resolve(strict=True) != image.resolve(strict=True):
             raise ValueError(_UNAVAILABLE)
+        job = native.create_job()
+        job.assign(process)
         if time.monotonic() >= deadline:
             raise TimeoutError
         if check_cancelled is not None:
             check_cancelled()
         if native.resume(thread) != 1:
             raise ValueError(_UNAVAILABLE)
-        result = _MediumOllamaProcess(native, process, pid)
+        result = _MediumOllamaProcess(native, process, pid, job)
         process = None  # Ownership transfers only after the medium child resumes.
+        job = None
         return result
     except (TimeoutError, InterruptedError):
         raise
@@ -269,6 +283,11 @@ def _launch(native, image, environment, deadline, *, check_cancelled=None):
         if process is not None:
             try:
                 native.terminate(process)
+            except Exception as exc:
+                cleanup_error = exc
+        if job is not None:
+            try:
+                job.close()
             except Exception as exc:
                 cleanup_error = exc
         for handle in (process, child_token, thread, primary, linked, current):

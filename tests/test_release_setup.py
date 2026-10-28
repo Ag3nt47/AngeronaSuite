@@ -186,11 +186,12 @@ def test_release_powershell_and_every_workflow_pwsh_block_parse() -> None:
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell is required")
 @pytest.mark.parametrize("case", ["absent", "present", "directory", "unsigned", "unprotected"])
-def test_existing_startup_helper_requires_custody_and_signature(tmp_path, case) -> None:
+@pytest.mark.parametrize("helper_name", ["AngeronaStartup.exe", "AngeronaSafeStart.exe"])
+def test_existing_startup_helper_requires_custody_and_signature(tmp_path, case, helper_name) -> None:
     target = tmp_path / "installed"
     target.mkdir()
     (target / "publisher-certificate.sha256").write_text("a" * 64, encoding="ascii")
-    helper = target / "AngeronaStartup.exe"
+    helper = target / helper_name
     if case == "directory":
         helper.mkdir()
     elif case != "absent":
@@ -216,14 +217,14 @@ $script:helperProtected = $false
 $script:helperSigned = $false
 function Assert-ProtectedPath {
     param([string]$Path, [bool]$Directory)
-    if ($Path.EndsWith('AngeronaStartup.exe')) {
+    if ($Path.EndsWith($env:ANGERONA_CUSTODY_HELPER)) {
         $script:helperProtected = $true
         if ($env:ANGERONA_CUSTODY_CASE -eq 'unprotected') { throw 'unprotected helper' }
     }
 }
 function Assert-PublisherSignature {
     param([string]$Path, [string]$Certificate)
-    if ($Path.EndsWith('AngeronaStartup.exe')) {
+    if ($Path.EndsWith($env:ANGERONA_CUSTODY_HELPER)) {
         $script:helperSigned = $true
         if ($env:ANGERONA_CUSTODY_CASE -eq 'unsigned') { throw 'unsigned helper' }
     }
@@ -245,6 +246,7 @@ if ($env:ANGERONA_CUSTODY_CASE -eq 'absent' -and
     env["ANGERONA_CUSTODY_SCRIPT"] = str(ROOT / "Install-Angerona-Release.ps1")
     env["ANGERONA_CUSTODY_TARGET"] = str(target)
     env["ANGERONA_CUSTODY_CASE"] = case
+    env["ANGERONA_CUSTODY_HELPER"] = helper_name
     result = subprocess.run(
         [powershell, "-NoProfile", "-NonInteractive", "-Command", harness],
         check=False,
@@ -438,6 +440,10 @@ def test_local_startup_build_uses_checkout_absolute_icon() -> None:
     assert "--name AngeronaStartup" in text
     assert "--distpath dist\\Angerona" in text
     assert "pip install pyinstaller" not in text
+    assert "build_packaged_safe_start.ps1" in text
+    assert text.index("AngeronaStartup.exe exit /b 1") < text.index("build_packaged_safe_start.ps1")
+    assert 'AngeronaSafeStart.exe" --verify-bootstrap' in text
+    assert "Build complete - start dist\\Angerona\\AngeronaSafeStart.exe" in text
 
 
 def test_release_workflow_builds_only_wheel_locked_posix_architectures() -> None:
@@ -573,8 +579,12 @@ def test_portable_release_installer_is_protected_upgrade_only() -> None:
     assert "Assert-ProtectedPath $floor $false" in text
     assert "Assert-PublisherSignature $trustedAuthorizationVerifier" in text
     assert "Assert-PublisherSignature $installedStartup $certificate" in text
-    assert "$shortcut.TargetPath = Join-Path $target 'AngeronaStartup.exe'" in text
-    assert "Start-Process -FilePath (Join-Path $target 'AngeronaStartup.exe')" in text
+    assert "$shortcut.TargetPath = $installedStartupPath" in text
+    assert "Start-Process -FilePath $installedStartupPath" in text
+    assert "Assert-PublisherSignature $installedSafeStart $certificate" in text
+    assert "$authenticatedStartupPaths = @{} + $seen" in text
+    assert text.index("--floor-output $nextFloor") < text.index("$authenticatedStartupPaths =")
+    assert text.index("Assert-AuthenticatedStartupBinding $installedStartupPath") < text.index("$shortcut.TargetPath")
     assert "--candidate-root $payloadRoot" in text
     assert "--floor-output $nextFloor" in text
     assert "release-floor.json" in text

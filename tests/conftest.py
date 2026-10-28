@@ -12,6 +12,7 @@ import hashlib
 import importlib
 import os
 import secrets
+import threading
 from pathlib import Path
 
 import pytest
@@ -186,6 +187,17 @@ def isolate_angerona_runtime(request: pytest.FixtureRequest, monkeypatch):
     monkeypatch.setenv("TMP", str(temp))
     monkeypatch.setenv("ANGERONA_BLACKBOX_ENABLED", "0")
     _clear_data_path_caches()
+    # Startup resolves canonical OS storage deliberately, ignoring ANGERONA_DATA.
+    # Synthetic startup cases must replace that consumer alias too; custody tests
+    # exercise the real implementation in core.startup_diagnostics separately.
+    from angerona import startup
+
+    monkeypatch.setattr(startup, "canonical_storage", lambda: root)
+    monkeypatch.setattr(startup, "_STARTUP_CONTEXT", threading.local())
+    # STOP is terminal for a real process generation, but pytest exercises
+    # several independent generations in one interpreter.
+    from angerona.core import ollama_lifecycle
+    monkeypatch.setattr(ollama_lifecycle, "_ai_shutdown", threading.Event())
     try:
         yield
     finally:

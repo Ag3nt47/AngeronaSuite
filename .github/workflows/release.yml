@@ -217,6 +217,11 @@ jobs:
             src/angerona/startup.py
           if ($LASTEXITCODE -ne 0) { throw 'Startup helper build failed.' }
 
+          & "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+            -NoProfile -NonInteractive -File tools/build_packaged_safe_start.ps1 `
+            -PayloadRoot (Join-Path $PWD 'dist/Angerona')
+          if ($LASTEXITCODE -ne 0) { throw 'Independent native SafeStart build failed.' }
+
           pyinstaller --noconfirm --clean --console --onefile `
             --name AngeronaReleaseVerifier `
             --distpath "dist/Angerona" `
@@ -246,6 +251,11 @@ jobs:
           if (-not (Test-Path "dist/Angerona/AngeronaStartup.exe")) {
             throw 'Frozen startup helper was not created.'
           }
+          if (-not (Test-Path "dist/Angerona/AngeronaSafeStart.exe")) {
+            throw 'Independent native SafeStart entry was not created.'
+          }
+          & "dist/Angerona/AngeronaSafeStart.exe" --verify-bootstrap
+          if ($LASTEXITCODE -ne 0) { throw 'Native SafeStart helper pin verification failed.' }
           $startupListing = (& pyi-archive_viewer --recursive "dist/Angerona/AngeronaStartup.exe" | Out-String)
           if ($LASTEXITCODE -ne 0 -or $startupListing -notmatch 'tkinter') {
             throw 'Frozen startup helper is missing its independent Tk interface.'
@@ -387,6 +397,16 @@ jobs:
           }
 
           $msix = "Angerona-$tag-win64-unsigned.msix"
+          # This self-check proves launchable binding of the prepared request;
+          # it grants no signing or publication authority.
+          $safeStart = Join-Path $stage 'AngeronaSafeStart.exe'
+          if (-not (Test-Path -LiteralPath $safeStart -PathType Leaf)) {
+            throw 'MSIX stage is missing its independent SafeStart entry.'
+          }
+          & $safeStart --verify-bootstrap
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Final MSIX stage helper bytes no longer match the SafeStart pin.'
+          }
           & $makeAppx pack /d $stage /p $msix /o
           if ($LASTEXITCODE -ne 0) { throw 'Pinned MakeAppx package build failed.' }
           New-Item -ItemType Directory -Force -Path $unpacked | Out-Null

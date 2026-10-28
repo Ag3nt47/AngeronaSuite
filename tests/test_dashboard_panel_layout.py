@@ -28,17 +28,21 @@ def test_summary_value_fits_card_without_changing_its_meaning(width, scale):
         card.close()
 
 
-def test_module_search_has_own_readable_row_and_names_do_not_collapse():
+def test_module_summary_keeps_search_and_defers_contract_columns():
     panel = ModulesPanel(SimpleNamespace(modules={}), SimpleNamespace())
     panel.setStyleSheet(build_qss())
     panel.resize(370, 350)
     panel.show()
     QApplication.instance().processEvents()
     try:
-        assert panel._module_search.width() > 300
+        assert panel._module_search.width() > 180
+        assert panel._filters_row.isHidden()
+        assert panel.table.columnWidth(1) >= 100
+        assert all(panel.table.isColumnHidden(column) for column in (4, 5, 6))
+        panel._filters_button.click()
+        QApplication.instance().processEvents()
+        assert not panel._filters_row.isHidden()
         assert panel._module_search.y() > panel._sort_combo.y()
-        assert panel.table.columnWidth(1) >= 230
-        assert panel.table.horizontalScrollBar().maximum() > 0
     finally:
         panel.close()
 
@@ -56,8 +60,8 @@ def test_condensed_panel_titles_retain_action_explanations_and_keyboard_access()
         assert "currently off" in console._title.toolTip()
         QTest.keyClick(panel._title, Qt.Key_Return)
         assert opened == [True]
-        assert panel.table.columnWidth(3) >= 380
-        assert panel.table.columnWidth(4) >= 280
+        assert not any(panel.table.isColumnHidden(column) for column in (0, 1, 2, 3))
+        assert all(panel.table.isColumnHidden(column) for column in (4, 5, 6, 7))
     finally:
         panel.close()
         console.close()
@@ -77,16 +81,18 @@ def test_card_caption_uses_available_width_before_wrapping():
 
 
 @pytest.mark.parametrize("width,overflows", [(1260, False), (820, True)])
-def test_alert_actions_fit_desktop_while_narrow_panels_keep_readable_evidence(width, overflows):
+def test_expanded_alert_columns_fit_desktop_and_scroll_when_requested_in_narrow_panels(width, overflows):
     panel = AlertsPanel(SimpleNamespace())
     panel.setStyleSheet(build_qss())
+    panel._artifact_column_action.setChecked(True)
+    panel._inline_actions_action.setChecked(True)
     panel.resize(width, 400)
     panel.show()
     QApplication.instance().processEvents()
     try:
         assert (panel.table.horizontalScrollBar().maximum() > 0) is overflows
-        assert panel.table.columnWidth(3) >= 280
-        assert panel.table.columnWidth(4) >= 180
+        assert panel.table.columnWidth(3) >= 200
+        assert panel.table.columnWidth(4) >= 160
         if not overflows:
             header = panel.table.horizontalHeader()
             assert header.sectionViewportPosition(7) + header.sectionSize(7) <= panel.table.viewport().width()

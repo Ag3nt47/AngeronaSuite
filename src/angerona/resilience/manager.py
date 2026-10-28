@@ -166,6 +166,8 @@ class ResilienceManager:
             state_namespace="core-manager",
         )
         self._stop = threading.Event()
+        self._shutdown_lock = threading.RLock()
+        self._closed = False
         self._threads: list[threading.Thread] = []
         self.frames_ingested = 0
         self.frames_rejected = 0
@@ -359,19 +361,24 @@ class ResilienceManager:
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
             })
 
-    def stop(self, terminate_children: bool = False) -> None:
-        if self._stop.is_set():
-            return
+    def request_stop(self) -> None:
         self._stop.set()
-        try:
-            self._sup.stop(terminate_children=terminate_children)
-        finally:
+        self._sup.request_stop()
+
+    def stop(self, terminate_children: bool = False) -> None:
+        self.request_stop()
+        with self._shutdown_lock:
             try:
-                self._core_beat.close()
+                self._sup.stop(terminate_children=terminate_children)
             finally:
-                if self._reader:
-                    self._reader.close()
-        self.status = "stopped"
+                if not self._closed:
+                    self._closed = True
+                    try:
+                        self._core_beat.close()
+                    finally:
+                        if self._reader:
+                            self._reader.close()
+                        self.status = "stopped"
 
 
 def start_resilience(bus=None, **kw) -> ResilienceManager:

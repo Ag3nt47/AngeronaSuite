@@ -290,6 +290,34 @@ function Invoke-ReleasePayloadReplacement(
     $RecoveryState.Phase = 'files-copied-startup-unverified'
 }
 
+function Select-AuthenticatedReleaseStartup {
+    param([string]$TargetRoot, [hashtable]$ManifestPaths, [string]$Certificate)
+    $name = if ($ManifestPaths.ContainsKey('angeronasafestart.exe')) {
+        'AngeronaSafeStart.exe'
+    } elseif ($ManifestPaths.ContainsKey('angeronastartup.exe')) {
+        'AngeronaStartup.exe'
+    } else {
+        throw 'The authenticated release has no approved startup entry.'
+    }
+    $path = Join-Path $TargetRoot $name
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw 'The authenticated startup entry is missing or has an invalid type.'
+    }
+    Assert-ProtectedPath $path $false
+    Assert-PublisherSignature $path $Certificate
+    return $path
+}
+
+function Assert-AuthenticatedStartupBinding {
+    param([string]$StartupPath)
+    if ([IO.Path]::GetFileName($StartupPath) -ceq 'AngeronaSafeStart.exe') {
+        & $StartupPath --verify-bootstrap
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The authenticated native startup entry does not match its final startup helper bytes.'
+        }
+    }
+}
+
 function Assert-InstalledCustody {
     if (-not (Test-Path -LiteralPath $target -PathType Container)) {
         throw ('The portable package is upgrade-only. First installation requires the ' +
@@ -312,6 +340,13 @@ function Assert-InstalledCustody {
         }
         Assert-ProtectedPath $installedStartup $false
     }
+    $installedSafeStart = Join-Path $target 'AngeronaSafeStart.exe'
+    if (Test-Path -LiteralPath $installedSafeStart) {
+        if (-not (Test-Path -LiteralPath $installedSafeStart -PathType Leaf)) {
+            throw 'The protected installed native startup entry has an invalid path type.'
+        }
+        Assert-ProtectedPath $installedSafeStart $false
+    }
     $floor = Join-Path $target 'release-floor.json'
     if (Test-Path -LiteralPath $floor) {
         if (-not (Test-Path -LiteralPath $floor -PathType Leaf)) {
@@ -330,6 +365,9 @@ function Assert-InstalledCustody {
     Assert-PublisherSignature (Join-Path $target 'Angerona.exe') $certificate
     if (Test-Path -LiteralPath $installedStartup -PathType Leaf) {
         Assert-PublisherSignature $installedStartup $certificate
+    }
+    if (Test-Path -LiteralPath $installedSafeStart -PathType Leaf) {
+        Assert-PublisherSignature $installedSafeStart $certificate
     }
     Assert-PublisherSignature (Join-Path $target 'release-payload.cat') $certificate
     return $certificate
@@ -390,6 +428,7 @@ $recoveryState = [pscustomobject]@{
     Entries = [Collections.Generic.List[object]]::new()
 }
 $upgradeFailure = $null
+$installedStartupPath = $null
 try {
     $stagedArchive = Join-Path $stage ([IO.Path]::GetFileName($archive))
     Copy-Item -LiteralPath $archive -Destination $stagedArchive
@@ -533,6 +572,10 @@ try {
             throw "The signed release payload omits required file $name."
         }
     }
+    if ($seen.ContainsKey('angeronasafestart.exe')) {
+        Assert-PublisherSignature (
+            Join-Path $payloadRoot 'AngeronaSafeStart.exe') $publisherCertificate
+    }
 
     # Reconstruct exactly the set signed by the Windows catalog, excluding all
     # later authorization metadata, and validate it before any target mutation.
@@ -571,6 +614,15 @@ try {
     Assert-NotReparse $nextFloor
     Set-Acl -LiteralPath $nextFloor -AclObject (New-ProtectedAcl $false)
 
+    # Only authenticated manifest membership selects a launch entry. An absent
+    # declared modern wrapper never authorizes falling through to an old helper.
+    $authenticatedStartupPaths = @{} + $seen
+    # Execute only from the catalog reconstruction. The raw archive directory
+    # can contain unlisted CLR configuration or assemblies beside a valid EXE.
+    $stagedStartupPath = Select-AuthenticatedReleaseStartup -TargetRoot $catalogPayload `
+        -ManifestPaths $authenticatedStartupPaths -Certificate $publisherCertificate
+    Assert-AuthenticatedStartupBinding $stagedStartupPath
+
     $installPaths = @($entries | ForEach-Object { $_.path }) + @(
         'release-payload-manifest.json',
         'release-payload.cat',
@@ -583,6 +635,9 @@ try {
     Invoke-ReleasePayloadReplacement -TargetRoot $target -PayloadRoot $payloadRoot `
         -StageRoot $stage -InstallPaths $installPaths -RecoveryState $recoveryState
     Set-Acl -LiteralPath $target -AclObject (New-ProtectedAcl $true)
+    $installedStartupPath = Select-AuthenticatedReleaseStartup -TargetRoot $target `
+        -ManifestPaths $authenticatedStartupPaths -Certificate $publisherCertificate
+    Assert-AuthenticatedStartupBinding $installedStartupPath
 } catch {
     $upgradeFailure = $_
     if ($recoveryState.DestinationMutationAttempted) {
@@ -626,11 +681,11 @@ try {
 $shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Angerona.lnk'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = Join-Path $target 'AngeronaStartup.exe'
+$shortcut.TargetPath = $installedStartupPath
 $shortcut.WorkingDirectory = $target
 $shortcut.IconLocation = (Join-Path $target 'Angerona.exe') + ',0'
 $shortcut.Save()
 
 Write-Host "Authorized Angerona upgrade files copied to $target; startup verification pending." `
     -ForegroundColor Yellow
-Start-Process -FilePath (Join-Path $target 'AngeronaStartup.exe')
+Start-Process -FilePath $installedStartupPath

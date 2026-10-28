@@ -204,6 +204,14 @@ def test_adopted_core_is_terminated_by_verified_heartbeat_identity(
     calls = []
 
     class FakeProcess:
+        pid = 4242
+
+        def create_time(self):
+            return 123.0
+
+        def is_running(self):
+            return True
+
         def exe(self):
             return expected
 
@@ -218,6 +226,24 @@ def test_adopted_core_is_terminated_by_verified_heartbeat_identity(
 
         def kill(self):
             calls.append("kill")
+
+    class Lease:
+        def __init__(self, pid, birth, image, *, lifetime):
+            assert (pid, birth, image, lifetime) == (4242, 123.0, expected, 10.0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def terminate(self):
+            calls.append("terminate")
+
+        def wait_terminated(self, timeout):
+            calls.append(("wait", timeout))
+
+    monkeypatch.setattr("angerona.core.windows_process_lease.WindowsProcessLease", Lease)
 
     monkeypatch.setitem(
         sys.modules,

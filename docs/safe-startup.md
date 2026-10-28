@@ -1,5 +1,12 @@
 # Windows Safe Startup
 
+The current source supervisor has ordered recovery alternatives and an
+independent recovery interface. Read [Safe Startup recovery](safe-startup-recovery.md)
+for the automatic/GitHub controls, persistent diagnostics, preserved source
+edits, transaction holds and storage budgets. The helper checks and signed
+installed boundary below still apply; a helper's failed attempt is no longer
+the end of the source supervisor's recovery round.
+
 Use `start-angerona.bat` in a source checkout. Its trusted supervisor verifies
 the runtime and source checks, then opens **Angerona Safe Startup**.
 The release build includes **AngeronaStartup.exe**, and the Windows package,
@@ -24,6 +31,13 @@ The helper uses Tk, independently of the dashboard's Qt runtime. It:
    The dashboard sends readiness from a worker only after its visible window
    has yielded back to the Qt event loop. The helper then closes automatically.
 
+New package builds prepare an independent `AngeronaSafeStart.exe` MSIX entry
+outside that Python/Tk helper. Its OS .NET/Windows Forms interface can display
+recovery even if the frozen helper cannot import or execute. Exact helper pins,
+native leases and the unchanged signed release boundary still apply; signing
+and accepted release deployment are not provisioned by a source build. See
+[the packaged entry contract](safe-startup-recovery.md#independent-entry-for-signed-package-builds).
+
 The readiness receipt is a small, one-way message on an ephemeral IPv4 loopback
 socket. It accepts no commands or file paths and grants no security authority.
 Source launches require the launched PID or its fresh Windows venv interpreter
@@ -40,8 +54,11 @@ before repair begins. Repair builds a candidate with PSF-signed CPython 3.12
 x64, hash-locked dependencies and reviewed local packages. It preserves the
 previous environment, refreshes launchers at their final path, and independently
 checks ABI, dependencies, Tk and native Qt before accepting the replacement.
-The supervisor then repeats every startup check once. A second failure stops.
-The manual `Repair-Angerona-Python.bat` entry point retains its confirmation.
+The supervisor then repeats the startup checks and can continue through its
+other eligible fixed strategies. After a bounded round is exhausted, the
+independent recovery UI offers diagnostics, Retry and Close. It does not claim
+the protection engine is active. The manual `Repair-Angerona-Python.bat` entry
+point retains its confirmation.
 
 Repair holds both checkout and canonical helper locks, so direct helper,
 check-only and launcher startup cannot overlap replacement. A flushed private
@@ -70,8 +87,12 @@ Source helper logs are under `%LOCALAPPDATA%\Angerona\SourceData\logs`:
 - `startup-dashboard.log`: dashboard stdout/stderr from the helper launch.
 - The immediately preceding copy of each log uses `.previous.log`.
 
-Supervisor and repair command logs use the selected private scratch under
-`SourceData\tmp` or the checkout's `.tmp`. Failed transaction evidence and the
+Supervisor diagnostics also persist under
+`SourceData\logs\startup-recovery`, with bounded journal rotation and command
+capture. Selected private scratch is under `SourceData\tmp` or the checkout's
+`.tmp`; its dedicated attempt budgets hold new work when full rather than
+deleting unreviewed evidence. The dashboard's direct output and native installer
+logs are not hard-capped for their entire lifetime. Failed transactions and the
 preserved environment remain available for diagnosis. See the
 [automatic repair engineering record](../analysis/startup-repair-2026-10-21/README.md)
 for test scope and limitations.

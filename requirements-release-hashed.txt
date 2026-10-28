@@ -2,9 +2,6 @@
 # Target: CPython 3.12, Windows x86-64. Refresh only after review.
 --only-binary=:all:
 
-pycdlib==1.20.0 \
-    --hash=sha256:cb675959dd6d61e94f02560ed7e9a5d368a3188b5f7f31813bc25a750cff0863
-
 PySide6==6.11.1 \
     --hash=sha256:0968877ab1fb4ef3587a284da6fe05e8647ada56a6a3750b6395188e01f4aba6
 
@@ -52,6 +49,9 @@ urllib3==2.8.0 \
 
 pywin32==312 \
     --hash=sha256:b457f6d628a47e8a7346ce22acb7e1a46a4a78b52e1d17e1af56871bd19a93bc
+
+pycdlib==1.20.0 \
+    --hash=sha256:cb675959dd6d61e94f02560ed7e9a5d368a3188b5f7f31813bc25a750cff0863
 
 WMI==1.5.1 \
     --hash=sha256:1d6b085e5c445141c475476000b661f60fff1aaa19f76bf82b7abb92e0ff4942
@@ -211,6 +211,9 @@ six==1.17.0 \
 
 sortedcontainers==2.4.0 \
     --hash=sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0
+
+typing-extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
 
 tzdata==2026.3 \
     --hash=sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931

@@ -108,10 +108,16 @@ def test_certifi_security_fix_binds_the_same_universal_wheel(lock: str) -> None:
         }]
 
 
-def _wheel(path: Path, name: str, version: str, payload: bytes = b"wheel") -> Path:
+def _wheel(path: Path, name: str, version: str, payload: bytes = b"wheel", *,
+           requires=(), extras=(), python=">=3.9") -> Path:
     target = path / f"{name}-{version}-py3-none-any.whl"
     with zipfile.ZipFile(target, "w") as archive:
-        archive.writestr(f"{name}-{version}.dist-info/WHEEL", payload)
+        archive.writestr(f"{name}-{version}.dist-info/WHEEL", "Wheel-Version: 1.0\nTag: py3-none-any\n")
+        archive.writestr("fixture/payload", payload)
+        metadata = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\nRequires-Python: {python}\n"
+        metadata += "".join(f"Provides-Extra: {extra}\n" for extra in extras)
+        metadata += "".join(f"Requires-Dist: {requirement}\n" for requirement in requires)
+        archive.writestr(f"{name}-{version}.dist-info/METADATA", metadata + "\n")
     return target
 
 
@@ -133,6 +139,99 @@ def test_hash_lock_fails_when_selected_wheel_is_missing(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="expected exactly one selected wheel"):
         build_lock(constraints, tmp_path)
+
+
+@pytest.mark.parametrize("name,requirement", [
+    ("cyclonedx_python_lib", 'typing_extensions>=4.6,<5; python_version < "3.13"'),
+    ("referencing", 'typing-extensions>=4.4; python_version < "3.13"'),
+])
+def test_target_only_typing_dependency_cannot_disappear_on_a_python313_host(tmp_path, monkeypatch, name, requirement):
+    from packaging import markers
+    host = markers.default_environment()
+    host.update(python_version="3.13", python_full_version="3.13.7", sys_platform="linux", os_name="posix")
+    monkeypatch.setattr(markers, "default_environment", lambda: dict(host))
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text(f"{name}==1.0\n")
+    _wheel(tmp_path, name, "1.0", requires=(requirement, 'unused-posix; sys_platform == "linux"'))
+    with pytest.raises(ValueError, match="missing target dependency typing"):
+        build_lock(constraints, tmp_path)
+    _wheel(tmp_path, "typing_extensions", "4.16.0")
+    constraints.write_text(f"{name}==1.0\ntyping-extensions==4.16.0\n")
+    assert "typing-extensions==4.16.0" in build_lock(constraints, tmp_path)
+
+
+def test_target_dependency_version_and_transitive_extra_closure_are_required(tmp_path):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("parent==1\nchild==2\nleaf==2\n")
+    _wheel(tmp_path, "parent", "1", requires=("child[feature]>=2",))
+    _wheel(tmp_path, "child", "2", requires=('leaf>=3; extra == "feature"',), extras=("feature",))
+    _wheel(tmp_path, "leaf", "2")
+    with pytest.raises(ValueError, match="does not satisfy leaf>=3"):
+        build_lock(constraints, tmp_path)
+    constraints.write_text("parent==1\nchild==2\n")
+    with pytest.raises(ValueError, match="missing target dependency leaf"):
+        build_lock(constraints, tmp_path)
+    _wheel(tmp_path, "leaf", "3")
+    constraints.write_text("parent==1\nchild==2\nleaf==3\n")
+    assert "leaf==3" in build_lock(constraints, tmp_path)
+
+
+def test_local_reviewed_provider_is_explicit_and_cannot_shadow_an_external_pin(tmp_path):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("parent==1\n")
+    _wheel(tmp_path, "parent", "1", requires=("local-shim",))
+    local = _wheel(tmp_path, "local_shim", "2")
+    with pytest.raises(ValueError, match="missing target dependency local-shim"):
+        build_lock(constraints, tmp_path)
+    lock = build_lock(constraints, tmp_path, provided_wheels=(local,))
+    assert "local-shim==" not in lock
+    constraints.write_text("parent==1\nlocal-shim==2\n")
+    with pytest.raises(ValueError, match="duplicate selected/provided"):
+        build_lock(constraints, tmp_path, provided_wheels=(local,))
+
+
+@pytest.mark.parametrize("failure", ["python", "platform", "duplicate"])
+def test_target_python_tags_and_duplicate_pins_fail_closed(tmp_path, failure):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("example==1\n")
+    wheel = _wheel(tmp_path, "example", "1", python=">=3.13" if failure == "python" else ">=3.9")
+    if failure == "platform":
+        wheel.rename(wheel.with_name("example-1-cp313-cp313-win_amd64.whl"))
+    elif failure == "duplicate":
+        constraints.write_text("example==1\nExample==1\n")
+    with pytest.raises(ValueError, match="Requires-Python|incompatible|duplicate"):
+        build_lock(constraints, tmp_path)
+
+
+def test_vendored_metadata_is_not_confused_with_the_selected_wheel_metadata(tmp_path):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("example==1\n")
+    wheel = _wheel(tmp_path, "example", "1")
+    with zipfile.ZipFile(wheel, "a") as archive:
+        archive.writestr("example/_vendor/other-9.dist-info/METADATA", "Name: other\nVersion: 9\n")
+    assert "example==1" in build_lock(constraints, tmp_path)
+
+
+@pytest.mark.parametrize("failure", ["wrong-tags", "missing-wheel", "wrong-dist-info"])
+def test_wheel_headers_and_dist_info_must_match_the_selected_filename(tmp_path, failure):
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("example==1\n")
+    path = tmp_path / "example-1-py3-none-any.whl"
+    prefix = "unrelated-9" if failure == "wrong-dist-info" else "example-1"
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(prefix + ".dist-info/METADATA", "Name: example\nVersion: 1\n")
+        if failure != "missing-wheel":
+            tag = "cp311-cp311-linux_x86_64" if failure == "wrong-tags" else "py3-none-any"
+            archive.writestr(prefix + ".dist-info/WHEEL", "Wheel-Version: 1.0\nTag: " + tag + "\n")
+    with pytest.raises(ValueError, match="WHEEL|dist-info directory identity"):
+        build_lock(constraints, tmp_path)
+
+
+def test_reviewed_windows_typing_pin_has_the_official_exact_wheel_hash():
+    constraints = (ROOT / "constraints-release.txt").read_text()
+    lock = (ROOT / "requirements-release-hashed.txt").read_text()
+    assert "typing-extensions==4.16.0\n" in constraints
+    assert "typing-extensions==4.16.0 \\\n    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8" in lock
 
 
 def test_release_workflow_requires_committed_hash_lock() -> None:
@@ -199,7 +298,10 @@ def test_windows_pip_bootstrap_is_exact_hash_locked_and_ordered() -> None:
 
     launcher = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
     supervisor = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
-    assert "Invoke-AngeronaSourceStartup.ps1" in launcher
+    assert "verify_startup_recovery_bundle.ps1" in launcher
+    verifier = (ROOT / "tools" / "verify_startup_recovery_bundle.ps1").read_text(encoding="utf-8")
+    assert "Invoke-AngeronaSourceStartup.ps1" in verifier
+    assert "-RunSupervisor" in launcher
     assert "Invoke-AngeronaStartupRepair.ps1" in supervisor
     assert "pip install --upgrade" not in launcher.casefold()
 
@@ -251,8 +353,9 @@ def test_unelevated_source_bootstrap_has_no_unhashed_dependency_path() -> None:
     assert "requirements-release-hashed.txt" in text
     assert "'--no-build-isolation', '--no-deps', '-e'" in text
     assert "srt-0.0.0+angerona.1-py3-none-any.whl" in text
-    assert "Invoke-AngeronaSourceStartup.ps1" in launcher
-    assert "-FailureCategory $Category -Attempt 1" in source
+    assert "verify_startup_recovery_bundle.ps1" in launcher
+    assert "-RunSupervisor" in launcher
+    assert "'-FailureCategory', $Category, '-Attempt', '1'" in source
     assert "-c constraints-release.txt" not in text
     assert "-r requirements.txt" not in text
     assert "--upgrade \"pip==" not in text
@@ -267,7 +370,8 @@ def test_source_installer_is_an_unelevated_exact_setup_delegate() -> None:
 
     assert 'call "%~dp0start-angerona.bat" --source-setup' in installer
     source = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
-    assert "Invoke-AngeronaSourceStartup.ps1" in launcher
+    assert "verify_startup_recovery_bundle.ps1" in launcher
+    assert "-RunSupervisor" in launcher
     assert "-SetupOnly" in launcher
     assert "sys.version_info[:2] == (3, 12)" in source
     assert "sysconfig.get_platform() == 'win-amd64'" in source

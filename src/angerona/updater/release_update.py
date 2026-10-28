@@ -719,6 +719,7 @@ def installed_processes(install_root: Path) -> list[ProcessEvidence]:
 
     names = (
         "Angerona.exe",
+        "AngeronaSafeStart.exe",
         "AngeronaStartup.exe",
         "AngeronaBlackBox.exe",
         "AngeronaReleaseVerifier.exe",

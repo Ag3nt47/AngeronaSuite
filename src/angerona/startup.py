@@ -26,10 +26,39 @@ from typing import Callable
 from angerona.core.startup_recovery import (
     REPAIR_EXIT_CODES, private_directory, private_repair_file, select_temporary, write_read_proof,
 )
+from angerona.core.startup_diagnostics import (
+    StartupDiagnostics, canonical_storage, process_identity, safe_text,
+)
+
+_STARTUP_CONTEXT = threading.local()
+STARTUP_INTERFACE_FAILURE = 84
+
+
+def _record_startup_failure(error: BaseException, phase: str, *, exit_code: int | None = None) -> str:
+    """Always disclose handled failures, including the Tk return-code path."""
+    try:
+        phase = getattr(_STARTUP_CONTEXT, "phase", None) or phase
+        storage = getattr(_STARTUP_CONTEXT, "storage", None) or canonical_storage()
+        message = StartupDiagnostics(storage).failure(
+            phase, error, exit_code=getattr(error, "exit_code", 1) if exit_code is None else exit_code)
+    except Exception as diagnostic_error:
+        message = (f"Startup failed in {safe_text(phase, 64)}: {safe_text(error)}\n"
+                   f"Diagnostic persistence unavailable: {type(diagnostic_error).__name__}: "
+                   f"{safe_text(diagnostic_error, 512)}. Keep the launcher stderr log.")
+    if sys.stderr is not None:
+        try:
+            print(message, file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            pass  # The independent parent still retains the nonzero outcome.
+    return message
 
 
 class StartupError(RuntimeError):
     """A startup condition requiring a visible, actionable explanation."""
+
+
+class OperatorStopped(StartupError):
+    """An authenticated operator stop intentionally superseded this launch."""
 
 
 class RepairableStartupError(StartupError):
@@ -134,6 +163,7 @@ class LaunchPlan:
     command: tuple[str, ...]
     frozen: bool
     temporary: Path | None = None
+    rendering: str = "default"
 
 
 def _assert_no_pending_repair(plan: LaunchPlan) -> None:
@@ -195,6 +225,7 @@ def _assert_no_pending_repair(plan: LaunchPlan) -> None:
 def _interface_lease() -> StartupLease:
     """Claim canonical helper custody before Tcl/Tk can load runtime files."""
     plan = platform_plan()
+    _STARTUP_CONTEXT.storage = plan.storage
     prepare_storage(plan.storage)
     lease = StartupLease(plan.storage)
     try:
@@ -283,6 +314,13 @@ def child_environment(plan: LaunchPlan) -> dict[str, str]:
         "TMP": str(plan.temporary or plan.storage / "tmp"),
         "PYINSTALLER_RESET_ENVIRONMENT": "1",
     })
+    if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+        environment["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+    if plan.rendering == "software":
+        environment["QT_OPENGL"] = "software"
+        environment["QT_QUICK_BACKEND"] = "software"
+    elif plan.rendering != "default":
+        raise StartupError("Unknown startup renderer strategy; no dashboard was started.")
     if not plan.frozen:
         environment.update({
             "ANGERONA_DATA": str(plan.storage),
@@ -312,21 +350,42 @@ def _log_file(root: Path, name: str):
     return path.open("wb")
 
 
-_PROBE = """import sys, sysconfig, importlib.metadata as m
+_PROBE = """import sys, sysconfig, importlib.metadata as m, json, re
 if sys.version_info[:2] != (3, 12) or sysconfig.get_platform() != 'win-amd64':
+    print('ANGERONA_RUNTIME '+json.dumps({'expected':'CPython 3.12 win-amd64','actual':str(sys.version_info[:3])+' '+sysconfig.get_platform()}),flush=True)
     raise SystemExit(81)
 try:
     from pathlib import Path
-    for line in Path('constraints-release.txt').read_text(encoding='utf-8').splitlines():
+    raw=Path('constraints-release.txt').read_bytes()
+    if len(raw)>262144:
+        raise ValueError('Reviewed dependency list exceeds its bounded size')
+    checked=0; mismatches=0
+    for line in raw.decode('utf-8').splitlines():
         if line.strip() and not line.lstrip().startswith('#'):
+            if checked>=256 or not re.fullmatch(r'[A-Za-z0-9_.-]{1,128}==[A-Za-z0-9_.+!-]{1,128}',line.strip()):
+                raise ValueError('Reviewed dependency list is malformed or exceeds its entry limit')
             name, version = line.strip().split('==')
-            if m.version(name) != version:
-                print('Reviewed dependency version is missing:', name, flush=True)
-                raise SystemExit(82)
+            try:
+                actual=m.version(name)
+            except m.PackageNotFoundError:
+                actual='<not installed>'
+            if not isinstance(actual,str): actual='<invalid version metadata>'
+            checked+=1
+            mismatch=actual!=version
+            mismatches+=int(mismatch)
+            print('ANGERONA_DEPENDENCY '+json.dumps({'package':name,'expected':version,'actual':actual[:256],'match':not mismatch,'actual_truncated':len(actual)>256}),flush=True)
+    print('ANGERONA_DEPENDENCY_SUMMARY '+json.dumps({'checked':checked,'mismatches':mismatches}),flush=True)
+    if mismatches:
+        print('Reviewed dependency versions do not match; expected and actual values are above.',flush=True)
+        raise SystemExit(82)
     import angerona, psutil, yaml, dotenv, cryptography, requests
 except (ImportError, m.PackageNotFoundError) as exc:
-    print(type(exc).__name__, str(exc), flush=True)
+    print(type(exc).__name__, str(exc)[:2048], flush=True)
     raise SystemExit(82)
+except Exception as exc:
+    import traceback
+    print('ANGERONA_PROBE_ERROR '+json.dumps({'exception_type':type(exc).__name__,'reason':str(exc)[:2048],'traceback':''.join(traceback.format_exception(type(exc),exc,exc.__traceback__,limit=8))[:8192]}),flush=True)
+    raise SystemExit(1)
 print('Reviewed runtime and dependency versions are ready', flush=True)
 """
 _QT_PROBE = """import sys
@@ -339,8 +398,23 @@ except (ImportError, OSError) as exc:
     raise SystemExit(83)
 print('Offscreen native Qt is ready', flush=True)
 """
-_PIP_CHECK = """from pip._internal.commands.check import CheckCommand
-result = CheckCommand(name='check', summary='Check installed dependencies').main(['--isolated'])
+_PIP_CHECK = """import contextlib,sys
+from pip._internal.commands.check import CheckCommand
+class BoundedOutput:
+    def __init__(self, target): self.target=target; self.remaining=65536; self.omitted=False
+    encoding='utf-8'
+    def isatty(self): return False
+    def write(self,text):
+        value=str(text)
+        kept=value[:self.remaining]
+        if kept: self.target.write(kept); self.remaining-=len(kept)
+        if len(kept)<len(value) and not self.omitted:
+            self.target.write('\\n[startup pip output limit reached; further text omitted]\\n'); self.omitted=True
+        return len(value)
+    def flush(self): self.target.flush()
+sink=BoundedOutput(sys.stdout)
+with contextlib.redirect_stdout(sink),contextlib.redirect_stderr(sink):
+    result = CheckCommand(name='check', summary='Check installed dependencies').main(['--isolated'])
 raise SystemExit(82 if result == 1 else result)
 """
 # Only these documented native loader/crash statuses from the dedicated Qt
@@ -352,13 +426,18 @@ def probe_source(plan: LaunchPlan, environment: dict[str, str], cancel: threadin
     if plan.frozen:
         return  # Main executable independently verifies package/UAC and imports Qt.
     probe_env = dict(environment, QT_QPA_PLATFORM="offscreen", PIP_CONFIG_FILE=os.devnull)
+    diagnostics = StartupDiagnostics(plan.storage)
+    diagnostics.record("preflight", "started", strategy=plan.rendering, root=str(plan.root),
+                       executable=plan.command[0], **process_identity())
     deadline = time.monotonic() + 30
     with _log_file(plan.storage, "startup-preflight.log") as log:
-        for phase, arguments in (
+        for index, (phase, arguments) in enumerate((
             ("Dependencies", ["-c", _PROBE]),
             ("Dependencies", ["-c", _PIP_CHECK]),
             ("GuiRuntime", ["-c", _QT_PROBE]),
-        ):
+        )):
+            detail_phase = ("dependency-pins", "dependency-consistency", "gui-runtime")[index]
+            _STARTUP_CONTEXT.phase = detail_phase
             if cancel.is_set() or time.monotonic() >= deadline:
                 raise StartupError("The dependency check was cancelled or timed out. No dashboard was started.")
             process = subprocess.Popen(
@@ -366,15 +445,25 @@ def probe_source(plan: LaunchPlan, environment: dict[str, str], cancel: threadin
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            diagnostics.record(detail_phase, "started", attempt=index + 1,
+                               process_role="probe-bootstrap", **process_identity(process))
             while process.poll() is None:
                 if cancel.wait(0.1) or time.monotonic() >= deadline:
                     # Only this disposable probe is terminated, never a dashboard.
                     process.kill()
                     process.wait(timeout=5)
+                    diagnostics.record(detail_phase, "cancelled" if cancel.is_set() else "timed-out",
+                                       exit_code=process.returncode, **process_identity(process))
                     raise StartupError("The dependency check was cancelled or timed out. See startup-preflight.log; no dashboard was started.")
             if cancel.is_set():
                 raise StartupError("Startup cancelled before launching the dashboard.")
             code = process.returncode
+            log.flush()
+            details = {} if code == 0 else {"output_tail": _probe_failure_tail(plan.storage / "logs" / "startup-preflight.log")}
+            diagnostics.record(detail_phase, "passed" if code == 0 else "failed", attempt=index + 1,
+                               exit_code=code, **process_identity(process), **details)
+            if index == 0:
+                _record_dependency_audit(diagnostics, plan.storage / "logs" / "startup-preflight.log")
             if code != 0:
                 repair_code = code if code in REPAIR_EXIT_CODES else None
                 if phase == "GuiRuntime" and (code & 0xFFFFFFFF) in _QT_NATIVE_FAILURES:
@@ -383,6 +472,49 @@ def probe_source(plan: LaunchPlan, environment: dict[str, str], cancel: threadin
                 if repair_code is not None:
                     raise RepairableStartupError(repair_code, message)
                 raise StartupError(message)
+
+
+def _record_dependency_audit(diagnostics: StartupDiagnostics, path: Path) -> None:
+    """Interpret only the fixed probe's bounded metadata rows as advisory data."""
+    try:
+        _plain_path(path)
+        with path.open("rb") as stream:
+            raw = stream.read(128 * 1024 + 1)
+        omitted = len(raw) > 128 * 1024
+        checked = 0
+        mismatches = []
+        for line in raw[:128 * 1024].decode("utf-8", "replace").splitlines()[:512]:
+            if not line.startswith("ANGERONA_DEPENDENCY "):
+                continue
+            value = json.loads(line[len("ANGERONA_DEPENDENCY "):])
+            if not isinstance(value, dict) or type(value.get("match")) is not bool:
+                continue
+            if not all(isinstance(value.get(key), str) for key in ("package", "expected", "actual")):
+                continue
+            checked += 1
+            if not value["match"]:
+                mismatches.append(f"{value['package']}: expected={value['expected']}, actual={value['actual']}")
+        coverage = "probe output truncated" if omitted else "bounded fixed-probe rows"
+        if len(mismatches) > 24:
+            coverage += f"; {len(mismatches) - 24} mismatches omitted from this summary; see preflight log"
+        if not checked:
+            coverage = "no fixed-probe dependency rows were emitted"
+        diagnostics.record("dependency-audit", "failed" if mismatches else "checked" if checked else "unavailable",
+                           packages_checked=checked, mismatches_total=len(mismatches), mismatches=mismatches,
+                           coverage=coverage)
+    except (OSError, ValueError, TypeError) as exc:
+        diagnostics.record("dependency-audit", "unavailable", exception_type=type(exc).__name__, reason=str(exc))
+
+
+def _probe_failure_tail(path: Path) -> str:
+    try:
+        _plain_path(path)
+        with path.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, stream.tell() - 4096))
+            return safe_text(stream.read(4096).decode("utf-8", "replace"), 4096)
+    except (OSError, StartupError) as exc:
+        return "Probe output unavailable: " + type(exc).__name__
 
 
 class ReadyListener:
@@ -473,14 +605,14 @@ def _ready_process(pid: int, process, plan: LaunchPlan, started: float) -> bool:
 
 
 def wait_dashboard(listener: ReadyListener, process, plan: LaunchPlan, started: float,
-                   cancel: threading.Event, timeout: float = 120) -> None:
+                   cancel: threading.Event, timeout: float = 120) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if cancel.is_set():
             raise StartupError("Startup monitoring closed. The dashboard process was left running; do not launch another copy while it opens.")
         pid = listener.receive()
         if pid is not None and _ready_process(pid, process, plan, started):
-            return
+            return pid
         code = process.poll()
         if code is not None and (not plan.frozen or code != 0):
             raise StartupError(f"Angerona exited before confirming its dashboard (code {code}). It may already be running; check the tray. Otherwise inspect startup-dashboard.log and the crash log before retrying.")
@@ -488,38 +620,64 @@ def wait_dashboard(listener: ReadyListener, process, plan: LaunchPlan, started: 
 
 
 def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup: bool = False,
-                check_only: bool = False, _interface_lease: StartupLease | None = None) -> Path:
+                check_only: bool = False, _interface_lease: StartupLease | None = None,
+                software_renderer: bool = False) -> Path:
     report("Checking the installation and Windows startup authority...")
+    _STARTUP_CONTEXT.phase = "installation-authority"
     plan = platform_plan()
+    _STARTUP_CONTEXT.storage = plan.storage
+    plan = replace(plan, rendering="software" if software_renderer else "default")
     report("Preparing startup folders and checking available disk space...")
+    _STARTUP_CONTEXT.phase = "storage-capacity"
     prepare_storage(plan.storage)
+    diagnostics = StartupDiagnostics(plan.storage)
+    diagnostics.record("storage", "verified", root=str(plan.root), executable=plan.command[0],
+                       strategy=plan.rendering, **process_identity())
     if _interface_lease is not None and type(_interface_lease) is not StartupLease:
         raise StartupError("Startup helper custody requires an actual retained OS lease.")
+    _STARTUP_CONTEXT.phase = "startup-lease"
     lease = _interface_lease.borrow(plan.storage) if _interface_lease is not None else StartupLease(plan.storage)
     try:
         _assert_no_pending_repair(plan)
         report(f"Startup logs: {plan.storage / 'logs'}")
         from angerona.core.data_paths import _fixed_volume_available
 
+        _STARTUP_CONTEXT.phase = "temporary-storage"
         plan = replace(plan, temporary=select_temporary(
             plan.storage, plan.root, validate=_plain_path,
             fixed=_fixed_volume_available if sys.platform == "win32" else lambda _root: True,
             inherited=dict(os.environ),
         ))
+        diagnostics.record("temporary-storage", "verified", strategy=plan.rendering)
         environment = child_environment(plan)
         report("Checking dependencies in a separate process...")
         probe_source(plan, environment, cancel)
+        diagnostics.record("preflight", "verified", strategy=plan.rendering)
         if cancel.is_set():
             raise StartupError("Startup cancelled before launching the dashboard.")
         if check_only:
             report("All source startup checks passed. No dashboard was requested.")
             return plan.storage
+        from angerona.resilience.shutdown_token import (
+            clear_standdown_for_storage, standdown_active_for_storage,
+        )
+        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+            if standdown_active_for_storage(plan.storage):
+                raise OperatorStopped("Authenticated STOP is active; automatic startup remains stopped.")
+        else:
+            # A user launch may resume only after its complete preflight. A
+            # check-only run and every automatic retry leave STOP untouched.
+            clear_standdown_for_storage(plan.storage)
+        # The helper has consumed this explicit resume exactly once. Its
+        # child must honor a NEW stop written during construction or warmup.
+        environment["ANGERONA_SUPERVISED_RECOVERY"] = "1"
         listener = ReadyListener()
         try:
             command = [*plan.command, "--chill", f"--startup-ready={listener.endpoint}"]
             if setup:
                 command.append("--setup")
             report("Opening the dashboard in Chill Mode...")
+            _STARTUP_CONTEXT.phase = "dashboard-launch"
             started = time.time()
             with _log_file(plan.storage, "startup-dashboard.log") as log:
                 process = subprocess.Popen(
@@ -527,8 +685,22 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
                     stdout=log, stderr=log,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
+            diagnostics.record("dashboard", "launched-awaiting-readiness", strategy=plan.rendering,
+                               dashboard_log=str(plan.storage / "logs" / "startup-dashboard.log"),
+                               process_role="dashboard-launcher",
+                               **process_identity(process))
             report("Waiting for the dashboard to paint and respond...")
-            wait_dashboard(listener, process, plan, started, cancel)
+            _STARTUP_CONTEXT.phase = "dashboard-readiness"
+            try:
+                ready_pid = wait_dashboard(listener, process, plan, started, cancel)
+            except StartupError:
+                if standdown_active_for_storage(plan.storage):
+                    raise OperatorStopped("Authenticated STOP was requested during startup; no retry will reopen the dashboard.") from None
+                raise
+            identity = (process_identity(process) if ready_pid == process.pid else
+                        {"pid": ready_pid, "coverage": "Ready PID verified; raw native birth not retained for redirected/elevated child"})
+            diagnostics.record("dashboard", "readiness-verified", strategy=plan.rendering,
+                               process_role="core-dashboard", bootstrap_pid=process.pid, **identity)
         finally:
             listener.close()
         report("Dashboard ready. Closing the startup assistant.")
@@ -564,28 +736,67 @@ def _startup_window(tk):
 
 
 def main() -> int:
+    _STARTUP_CONTEXT.storage = None
+    _STARTUP_CONTEXT.phase = "startup-interface-authority"
     parser = argparse.ArgumentParser(description="Angerona Safe Startup")
     parser.add_argument("--setup", action="store_true", help="Open setup after the dashboard starts")
     parser.add_argument("--chill", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--check-only", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--software-renderer", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-startup-window", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--automatic-start", action="store_true", help=argparse.SUPPRESS)
     options = parser.parse_args()
+    # This marker controls only this assistant window's lifetime. It never
+    # authorizes a repair/retry and child_environment does not forward it.
+    supervised = os.environ.get("ANGERONA_STARTUP_SUPERVISED") == "1"
+    automatic = options.automatic_start or os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
+    if automatic:
+        os.environ["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+        if not options.check_only:
+            try:
+                plan = platform_plan()
+                from angerona.resilience.shutdown_token import standdown_active_for_storage
+                if standdown_active_for_storage(plan.storage):
+                    print("Authenticated STOP is active; automatic startup remains stopped.")
+                    return 86 if supervised else 0
+            except Exception as exc:
+                _record_startup_failure(exc, "automatic-stop-admission", exit_code=85)
+                return 85
+    strategy = {"software_renderer": True} if options.software_renderer else {}
     if options.check_only:
+        _STARTUP_CONTEXT.phase = "source-check-only"
         try:
-            run_startup(print, threading.Event(), check_only=True)
+            run_startup(print, threading.Event(), check_only=True, **strategy)
             return 0
         except RepairableStartupError as exc:
-            print(str(exc), file=sys.stderr)
+            _record_startup_failure(exc, "source-check-only")
             return exc.exit_code
         except (StartupError, OSError) as exc:
-            print(str(exc), file=sys.stderr)
+            _record_startup_failure(exc, "source-check-only")
+            return 1
+        except Exception as exc:
+            _record_startup_failure(exc, "source-check-only")
+            return 1
+    if options.no_startup_window:
+        _STARTUP_CONTEXT.phase = "no-startup-window"
+        try:
+            run_startup(print, threading.Event(), setup=options.setup, **strategy)
+            return 0
+        except OperatorStopped:
+            return 86 if supervised else 0
+        except RepairableStartupError as exc:
+            _record_startup_failure(exc, "no-startup-window")
+            return exc.exit_code
+        except Exception as exc:
+            _record_startup_failure(exc, "no-startup-window")
             return 1
     try:
         interface_lease = _interface_lease()
     except (StartupError, OSError) as exc:
-        if sys.stderr is not None:
-            print(str(exc), file=sys.stderr)
+        _record_startup_failure(exc, "startup-interface-authority")
         return 1
     try:
+        _STARTUP_CONTEXT.phase = "startup-interface"
         _configure_tk_environment()
         import tkinter as tk
         from tkinter import ttk
@@ -593,26 +804,22 @@ def main() -> int:
         window = _startup_window(tk)
     except Exception as exc:
         interface_lease.close()
+        frozen = bool(getattr(sys, "frozen", False))
+        code = 1 if frozen else STARTUP_INTERFACE_FAILURE
+        _record_startup_failure(exc, "startup-interface", exit_code=code)
         message = (
-            f"The startup interface could not open ({type(exc).__name__}). "
-            "Repair the signed installation, or use Repair-Angerona-Python.bat "
-            "for a source checkout. The dashboard was not started."
+            f"The startup interface could not open ({type(exc).__name__}). " +
+            ("Repair the signed installation. No dashboard was started by this failed interface."
+             if frozen else "The verified source supervisor can retry without the startup window; "
+             "the same dependency, Qt and dashboard-readiness checks still apply. "
+             "No dashboard was started by this failed interface.")
         )
-        repairable = not getattr(sys, "frozen", False) and (
-            isinstance(exc, (ImportError, OSError))
-            or type(exc).__name__ == "TclError"
-        )
-        if repairable:
-            if sys.stderr is not None:
-                print(message, file=sys.stderr)
-            return 83
-        if sys.platform == "win32":
+        if sys.stderr is not None:
+            print(message, file=sys.stderr, flush=True)
+        if frozen and sys.platform == "win32":
             import ctypes
-
             ctypes.windll.user32.MessageBoxW(None, message, "Angerona Safe Startup", 0x10)
-        elif sys.stderr is not None:
-            print(message, file=sys.stderr)
-        return 1
+        return code
     window.title("Angerona Safe Startup")
     window.geometry("650x350")
     window.minsize(540, 300)
@@ -639,15 +846,20 @@ def main() -> int:
     window.protocol("WM_DELETE_WINDOW", close)
 
     def worker() -> None:
+        _STARTUP_CONTEXT.storage = getattr(interface_lease, "root", None)
+        _STARTUP_CONTEXT.phase = "startup-worker"
         try:
             run_startup(lambda text: messages.put(("progress", text)), cancel,
-                        setup=options.setup, _interface_lease=interface_lease)
+                        setup=options.setup, _interface_lease=interface_lease, **strategy)
             messages.put(("ready", ""))
+        except OperatorStopped as exc:
+            messages.put(("operator-stopped", str(exc)))
         except Exception as exc:
+            detail = _record_startup_failure(exc, "startup-worker")
             if isinstance(exc, RepairableStartupError) and not cancel.is_set():
-                messages.put((f"repair:{exc.exit_code}", str(exc)))
+                messages.put((f"repair:{exc.exit_code}", detail))
                 return
-            messages.put(("error", str(exc) if isinstance(exc, (StartupError, OSError)) else f"Startup check failed ({type(exc).__name__}). Review the startup logs."))
+            messages.put(("error", detail))
 
     def drain() -> None:
         while True:
@@ -657,6 +869,10 @@ def main() -> int:
                 break
             if kind == "ready":
                 outcome["code"] = 0
+                window.after(250, close)
+                return
+            if kind == "operator-stopped":
+                outcome["code"] = 86 if supervised else 0
                 window.after(250, close)
                 return
             if kind in {f"repair:{code}" for code in REPAIR_EXIT_CODES} and not cancel.is_set():
@@ -674,6 +890,13 @@ def main() -> int:
             if kind == "error":
                 progress.stop()
                 window.title("Angerona Safe Startup - needs attention")
+                if supervised:
+                    # The worker has unwound its probe/lease before queuing
+                    # this error. Non-daemon ownership still prevents an
+                    # interpreter exit while that worker is finishing.
+                    outcome["code"] = 1
+                    window.after(250, close)
+                    return
         window.after(100, drain)
 
     # A cancelled window must allow the worker to reap its disposable probe.

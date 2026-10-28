@@ -46,6 +46,56 @@ function Assert-RepairBoundary {
     }
 }
 
+function Get-RepairAvailableBytes([string]$Path) {
+    Assert-PlainRepairPath $Path
+    $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($Path)))
+    if (!$drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed) {
+        throw 'Runtime repair storage requires a ready fixed local drive.'
+    }
+    return [long]$drive.AvailableFreeSpace
+}
+
+function Get-RepairRetainedDirectoryCount([string]$Parent, [string]$Pattern, [string]$NamePattern) {
+    Assert-PlainRepairPath $Parent
+    if (!(Test-Path -LiteralPath $Parent)) { return 0 }
+    $count = 0
+    # Inspect only immediate known-prefix directories. Stop on the ninth entry;
+    # never recurse through a retained runtime, wheel cache or unknown evidence.
+    $entries = [IO.Directory]::EnumerateDirectories($Parent, $Pattern).GetEnumerator()
+    try {
+        while ($entries.MoveNext()) {
+            if (++$count -gt 8) {
+                throw "Runtime repair storage inventory exceeds eight retained entries: $Parent ($Pattern). Review the retained artifacts before Retry."
+            }
+            $path = [string]$entries.Current
+            Assert-PlainRepairPath $path
+            if ([IO.Path]::GetFileName($path) -cnotmatch $NamePattern) {
+                throw "Runtime repair storage has an unrecognized retained directory: $path. Preserve it for review before Retry."
+            }
+        }
+    } finally { $entries.Dispose() }
+    return $count
+}
+
+function Assert-RepairStorageAdmission {
+    $transactions = Join-Path $root '.tmp\repair-wheels'
+    $locations = "Retained backups: $root\venv.incompatible.repair.<id>; retained transactions: $transactions\startup-repair.<id>."
+    $backups = Get-RepairRetainedDirectoryCount $root 'venv.incompatible.repair.*' '^venv\.incompatible\.repair\.[0-9a-f]{32}$'
+    $retained = Get-RepairRetainedDirectoryCount $transactions 'startup-repair.*' '^startup-repair\.[0-9a-f]{32}$'
+    if ($backups -ge 1) {
+        throw "Runtime repair storage held: one full previous runtime is already retained; another repair would exceed the one-backup limit. $locations Review the original backup before allowing another full copy; nothing was deleted."
+    }
+    # The new transaction has not been created yet. One retained transaction
+    # plus this attempt reaches the two-directory limit; two already fills it.
+    if ($retained -ge 2) {
+        throw "Runtime repair storage held: two transaction directories are already retained. $locations Review their diagnostics and preserved payloads before Retry; nothing was deleted."
+    }
+    $available = Get-RepairAvailableBytes $root
+    if ($available -lt (2GB + 3GB)) {
+        throw "Runtime repair storage held: at least 5 GiB free is required for a 2 GiB reserve plus 3 GiB transaction capacity. $locations Free space and review storage choices before Retry; no candidate, download or runtime promotion was admitted."
+    }
+}
+
 function Invoke-RepairCommand {
     param([string]$Executable, [string[]]$Arguments, [string]$Label,
         [int]$TimeoutSeconds = 180, [switch]$AllowFailure)
@@ -55,35 +105,168 @@ function Invoke-RepairCommand {
     $script:RepairCommandNumber++
     $log = Join-Path $script:RepairScratch ("command-{0:D3}.log" -f $script:RepairCommandNumber)
     Write-Host "[repair] $Label (command limit ${limit}s; transaction limit 900s)"
-    $code = Invoke-OwnedRepairProcess -FilePath $Executable -Arguments $Arguments `
-        -WorkingDirectory $root -Environment $script:RepairEnvironment `
-        -TimeoutSeconds $limit -LogPath $log
+    Write-RepairDiagnostic 'command' 'started' $Label ([IO.Path]::GetFileName($log))
+    try {
+        if ($script:ReviewedPythonBinding -and
+            [string]::Equals($Executable, $script:ReviewedPythonBinding.PhysicalPath,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $script:ReviewedPythonBinding.AssertBound()
+        }
+        $code = Invoke-OwnedRepairProcess -FilePath $Executable -Arguments $Arguments `
+            -WorkingDirectory $root -Environment $script:RepairEnvironment `
+            -TimeoutSeconds $limit -LogPath $log
+        if ($script:ReviewedPythonBinding -and
+            [string]::Equals($Executable, $script:ReviewedPythonBinding.PhysicalPath,
+                [StringComparison]::OrdinalIgnoreCase)) {
+            $script:ReviewedPythonBinding.AssertBound()
+        }
+        Write-RepairDiagnostic 'command' ('exit-' + $code) $Label ([IO.Path]::GetFileName($log))
+    } catch {
+        Write-RepairDiagnostic 'command' 'failed' ($Label + ': ' + $_.Exception.Message) ([IO.Path]::GetFileName($log))
+        throw
+    }
     if ($code -ne 0 -and !$AllowFailure) { throw "$Label failed (exit $code). Output: $log" }
     return $code
 }
 
-function Test-ReviewedPython([string]$Path) {
-    if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
-    Assert-PlainRepairPath $Path -AllowHardLinks
-    $signature = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($signature.Status -ne 'Valid' -or
-        $signature.SignerCertificate.Subject -notmatch '(?:CN|O)=Python Software Foundation(?:,|$)') {
-        return $false
+function Write-RepairDiagnostic([string]$Phase, [string]$Outcome, [string]$Detail = '', [string]$CommandLog = '') {
+    if (!$script:RepairScratch -or !(Test-Path -LiteralPath $script:RepairScratch -PathType Container)) { return }
+    try {
+        Assert-PrivateRepairCustody $script:RepairScratch
+        $phaseText = ($Phase -replace '[\x00-\x1f\x7f]', ' ')
+        $outcomeText = ($Outcome -replace '[\x00-\x1f\x7f]', ' ')
+        $detailText = ($Detail -replace '[\x00-\x1f\x7f]', ' ')
+        if ($phaseText.Length -gt 64) { $phaseText = $phaseText.Substring(0,64) }
+        if ($outcomeText.Length -gt 64) { $outcomeText = $outcomeText.Substring(0,64) }
+        if ($detailText.Length -gt 1024) { $detailText = $detailText.Substring(0,1024) }
+        $record = [ordered]@{ Schema=1; Utc=[DateTime]::UtcNow.ToString('o');
+            Phase=$phaseText; Outcome=$outcomeText; Detail=$detailText; CommandLog=$CommandLog }
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($record | ConvertTo-Json -Compress) + [Environment]::NewLine)
+        $path = Join-Path $script:RepairScratch 'repair-events.jsonl'
+        $stream = Open-PrivateRepairFile -Path $path -Mode ([IO.FileMode]::OpenOrCreate)
+        try {
+            if ($stream.Length + $bytes.Length -gt 65536) {
+                if (!$script:RepairDiagnosticCapped) { Write-Warning 'Repair event log reached its 64 KiB limit; command logs remain separate.' }
+                $script:RepairDiagnosticCapped = $true
+                return
+            }
+            [void]$stream.Seek(0,[IO.SeekOrigin]::End)
+            $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true)
+        } finally { $stream.Dispose() }
+    } catch {
+        Write-Warning 'Repair diagnostic persistence was unavailable; retain the supervisor output and private command logs.'
     }
-    $code = Invoke-RepairCommand $Path @('-I', '-c',
-        "import sys,sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64' and sys.prefix == sys.base_prefix else 1)") `
-        'Verify independently installed PSF CPython 3.12 x64' 30 -AllowFailure
-    return $code -eq 0
 }
 
-function Find-ReviewedPython {
+function Write-RepairFailureDiagnostic([string]$Phase, $Failure) {
+    $cause = $Failure.Exception
+    while ($cause.InnerException) { $cause = $cause.InnerException }
+    $native = if ($cause -is [ComponentModel.Win32Exception]) {
+        $cause.NativeErrorCode
+    } else { $cause.HResult -band 0xffff }
+    $location = $Failure.InvocationInfo
+    $detail = 'type={0}; hresult=0x{1:x8}; native={2}; file={3}; line={4}; error={5}; message={6}' -f `
+        $cause.GetType().FullName, ([long]$cause.HResult -band 0xffffffffL),
+        $native, $location.ScriptName, $location.ScriptLineNumber,
+        $Failure.FullyQualifiedErrorId, $cause.Message
+    Write-RepairDiagnostic $Phase 'failed' $detail
+    if ($Failure.ScriptStackTrace) {
+        Write-RepairDiagnostic ($Phase + '-stack') 'failed' $Failure.ScriptStackTrace
+    }
+}
+
+function Test-ReviewedPython([string]$Path) {
+    $binding = $null
+    try {
+        if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+        $binding = Open-RepairPythonHint $Path
+        $physical = $binding.PhysicalPath
+        if (![string]::Equals([IO.Path]::GetFileName($physical),'python.exe',
+                [StringComparison]::OrdinalIgnoreCase)) {
+            Write-RepairDiagnostic 'python-discovery' 'rejected' ('Physical image is not python.exe: ' + $physical)
+            return $false
+        }
+        Assert-PlainRepairPath $physical -AllowHardLinks
+        $binding.AssertBound()
+        $signature = Get-AuthenticodeSignature -LiteralPath $physical
+        if ($signature.Status -ne 'Valid' -or
+            $signature.SignerCertificate.Subject -notmatch '(?:CN|O)=Python Software Foundation(?:,|$)') {
+            Write-RepairDiagnostic 'python-discovery' 'rejected' ('PSF signature proof failed: ' + $Path)
+            return $false
+        }
+        $binding.AssertBound()
+        $code = Invoke-RepairCommand $physical @('-I', '-c',
+            "import sys,sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64' and sys.prefix == sys.base_prefix else 1)") `
+            'Verify independently installed PSF CPython 3.12 x64' 30 -AllowFailure
+        $binding.AssertBound()
+        if ($code -ne 0) {
+            Write-RepairDiagnostic 'python-discovery' 'rejected' ('ABI/base-install proof failed: ' + $physical)
+            return $false
+        }
+        $script:ReviewedPythonBinding = $binding
+        $binding = $null # Session retains image/namespace custody through repair.
+        Write-RepairDiagnostic 'python-discovery' 'accepted' $script:ReviewedPythonBinding.PhysicalPath
+        return $true
+    } catch {
+        # A missing, redirected, unavailable or wrong candidate cannot prevent
+        # independent candidates from being checked. No refused pathname runs.
+        Write-RepairDiagnostic 'python-discovery' 'rejected' ($Path + ': ' + $_.Exception.Message)
+        return $false
+    } finally {
+        if ($binding) { $binding.Dispose() }
+    }
+}
+
+function Get-RepairPythonHints {
     $programFiles = [Environment]::GetFolderPath('ProgramFiles')
     $localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+    $hints = [Collections.Generic.List[string]]::new()
     foreach ($candidate in @((Join-Path $programFiles 'Python312\python.exe'),
             (Join-Path $localAppData 'Python\pythoncore-3.12-64\python.exe'),
             (Join-Path $localAppData 'Programs\Python\Python312\python.exe'))) {
-        if (Test-ReviewedPython $candidate) { return $candidate }
+        $hints.Add($candidate)
     }
+    # Registry strings are discovery hints only. They never grant execution
+    # authority and are not environment-expanded or passed to a shell.
+    foreach ($hive in @([Microsoft.Win32.RegistryHive]::CurrentUser,[Microsoft.Win32.RegistryHive]::LocalMachine)) {
+        foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64,[Microsoft.Win32.RegistryView]::Registry32)) {
+            $base = $null; $core = $null
+            try {
+                $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($hive,$view)
+                $core = $base.OpenSubKey('Software\Python\PythonCore')
+                if (!$core) { continue }
+                foreach ($tag in @('3.12','3.12-64')) {
+                    if ($hints.Count -ge 32) { break }
+                    $install = $null
+                    try {
+                        $install = $core.OpenSubKey($tag + '\InstallPath')
+                        if (!$install) { continue }
+                        foreach ($name in @('ExecutablePath','')) {
+                            $value = $install.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+                            if ($value -isnot [string] -or $value.Length -gt 4096 -or $value -notmatch '^[A-Za-z]:\\') { continue }
+                            $hint = if ($name -eq '') { Join-Path $value 'python.exe' } else { $value }
+                            if ($hints.Count -lt 32 -and !$hints.Contains($hint)) { $hints.Add($hint) }
+                        }
+                    } finally { if ($install) { $install.Dispose() } }
+                }
+            } catch { Write-RepairDiagnostic 'python-registry' 'unavailable' $_.Exception.GetType().Name }
+            finally { if ($core) { $core.Dispose() }; if ($base) { $base.Dispose() } }
+        }
+    }
+    return $hints.ToArray()
+}
+
+function Find-ReviewedPython {
+    if ($script:ReviewedPythonBinding) { $script:ReviewedPythonBinding.Dispose() }
+    $script:ReviewedPythonBinding = $null
+    $seen = @{}; $count = 0
+    foreach ($candidate in Get-RepairPythonHints) {
+        if ($count++ -ge 32) { break }
+        if ($candidate -isnot [string] -or $candidate.Length -gt 4096 -or $seen.ContainsKey($candidate)) { continue }
+        $seen[$candidate] = $true
+        if (Test-ReviewedPython $candidate) { return $script:ReviewedPythonBinding.PhysicalPath }
+    }
+    Write-RepairDiagnostic 'python-discovery' 'unavailable' 'No independently verified CPython candidate was admitted.'
     return $null
 }
 
@@ -140,7 +323,7 @@ function Get-LockedRepairArtifacts {
             }
         }
     }
-    $prefix = @('-I', '-m', 'pip', 'download', '--isolated', '--only-binary', ':all:',
+    $prefix = @('-I', '-m', 'pip', 'download', '--isolated', '--no-cache-dir', '--only-binary', ':all:',
         '--require-hashes', '--no-deps', '--dest', $Destination)
     $offline = $prefix + @('--no-index', '--find-links', $Destination, '-r', $RequirementsPath)
     $code = Invoke-RepairCommand $Python $offline 'Resolve reviewed artifacts from verified local cache' 120 -AllowFailure
@@ -156,17 +339,17 @@ function Get-LockedRepairArtifacts {
 function Install-LockedRepairArtifacts {
     param([string]$Python, [string]$RequirementsPath, [string]$Wheelhouse)
     # Fixed pip guarantees: --require-hashes --no-deps; every install is offline.
-    [void](Invoke-RepairCommand $Python @('-I', '-m', 'pip', 'install', '--isolated',
+    [void](Invoke-RepairCommand $Python @('-I', '-m', 'pip', 'install', '--isolated', '--no-cache-dir', '--no-compile',
         '--only-binary', ':all:', '--require-hashes', '--no-deps', '--no-index',
         '--find-links', $Wheelhouse, '--force-reinstall', '-r', $RequirementsPath) `
-        'Install exact reviewed wheels offline' 180)
+        'Install exact reviewed wheels offline' 300)
 }
 
 function Install-LocalRepairPackages([string]$Python, [string]$SpeechWheel) {
-    [void](Invoke-RepairCommand $Python @('-I', '-m', 'pip', 'install', '--isolated',
+    [void](Invoke-RepairCommand $Python @('-I', '-m', 'pip', 'install', '--isolated', '--no-cache-dir', '--no-compile',
         '--no-index', '--no-build-isolation', '--no-deps', '-e', $root) `
         'Install reviewed local editable Angerona source offline' 120)
-    [void](Invoke-RepairCommand $Python @('-I', '-m', 'pip', 'install', '--isolated',
+    [void](Invoke-RepairCommand $Python @('-I', '-m', 'pip', 'install', '--isolated', '--no-cache-dir', '--no-compile',
         '--no-index', '--only-binary', ':all:', '--no-deps', '--force-reinstall', $SpeechWheel) `
         'Install reviewed local speech compatibility wheel offline' 60)
 }
@@ -261,6 +444,63 @@ function Get-RepairDirectoryIdentity([string]$Path) {
     return [Angerona.StartupRepairProcess]::DirectoryIdentity($Path)
 }
 
+function Invoke-RepairDirectoryRename([string]$From, [string]$To, [string]$ExpectedIdentity) {
+    # The native operation binds the exact source identity and destination
+    # parent, and atomically refuses an existing destination. Move-Item can
+    # instead nest a runtime inside a container created after the precheck.
+    Initialize-OwnedRepairProcess
+    [Angerona.StartupRepairProcess]::RenameDirectoryExact($From, $To, $ExpectedIdentity)
+}
+
+function Move-RepairRuntimeDirectory([string]$From, [string]$To, [string]$ExpectedIdentity,
+    [switch]$Reconcile) {
+    $source = [IO.Path]::GetFullPath($From)
+    $destination = [IO.Path]::GetFullPath($To)
+    $prefix = [IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+    if (!$ExpectedIdentity -or $source -eq $destination -or
+        !$source.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+        !$destination.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Runtime move escaped the reviewed transaction boundary.'
+    }
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        Assert-PlainRepairPath $source
+        Assert-PlainRepairPath $destination
+        if ((Get-RepairDirectoryIdentity $source) -cne $ExpectedIdentity -or
+            (Test-Path -LiteralPath $destination)) {
+            throw 'Runtime move identities changed or the destination is occupied; mutation is held.'
+        }
+        Assert-NoActiveVenv -VenvPath $venv
+        if (!$Reconcile -and $script:RepairClock -and $script:RepairClock.Elapsed.TotalSeconds -ge 900) {
+            throw 'The 900-second runtime repair transaction deadline expired before a runtime move.'
+        }
+        try {
+            Invoke-RepairDirectoryRename $source $destination $ExpectedIdentity
+            if ((Get-RepairDirectoryIdentity $destination) -cne $ExpectedIdentity -or
+                (Test-Path -LiteralPath $source)) {
+                throw 'Runtime move could not prove its resulting directory identities.'
+            }
+            return
+        } catch {
+            $failure = $_
+            $cause = $failure.Exception
+            while ($cause.InnerException) { $cause = $cause.InnerException }
+            $native = if ($cause -is [ComponentModel.Win32Exception]) {
+                $cause.NativeErrorCode
+            } else { $cause.HResult -band 0xffff }
+            # Short-lived readers can hold Windows directory renames after all
+            # disposable commands have exited. Never overwrite, close another
+            # process's handle, or retry changed/ambiguous transaction state.
+            if ($attempt -ge 12 -or $native -notin @(5,32,33)) {
+                Write-RepairFailureDiagnostic 'runtime-move' $failure
+                throw
+            }
+            Write-RepairDiagnostic 'runtime-move' 'retry' `
+                ("attempt=$attempt; native=$native; source=$source; destination=$destination")
+            [Threading.Thread]::Sleep(250)
+        }
+    }
+}
+
 function Write-DurableRepairJson([string]$Path, $Value, [switch]$Replace) {
     Assert-PlainRepairPath $Path
     $temporary = $Path + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
@@ -269,7 +509,23 @@ function Write-DurableRepairJson([string]$Path, $Value, [switch]$Replace) {
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
     finally { $stream.Dispose() }
     if ($Replace -and (Test-Path -LiteralPath $Path)) {
-        [IO.File]::Replace($temporary, $Path, [NullString]::Value)
+        $before = Get-RepairFileSha256 $Path
+        for ($attempt = 0; ; $attempt++) {
+            Assert-PrivateRepairCustody $Path -AllowInherited
+            Assert-PrivateRepairCustody $temporary -AllowInherited
+            if ((Get-RepairFileSha256 $Path) -cne $before) { throw 'Repair receipt changed during atomic publication; mutation is held.' }
+            try { [IO.File]::Replace($temporary, $Path, [NullString]::Value); break }
+            catch {
+                $cause = $_.Exception
+                while ($cause.InnerException) { $cause = $cause.InnerException }
+                $native = $cause.HResult -band 0xffff
+                # A short-lived read/delete-sharing conflict must not undo a
+                # verified runtime. Revalidate custody and old bytes on retry;
+                # malformed/tampered receipts never become retry authority.
+                if ($attempt -ge 5 -or $native -notin @(5,32,33,1175)) { throw }
+                [Threading.Thread]::Sleep(100)
+            }
+        }
     } else { [IO.File]::Move($temporary, $Path) }
 }
 
@@ -338,9 +594,9 @@ function Restore-InterruptedRepair {
     }
     Set-RepairIntentPhase $pending $intent.Id 'RollingBack'
     if ($current -eq $intent.CandidateId) {
-        Move-Item -LiteralPath $venv -Destination $intent.Stage
+        Move-RepairRuntimeDirectory $venv $intent.Stage $intent.CandidateId -Reconcile
     }
-    if ($backup) { Move-Item -LiteralPath $intent.Backup -Destination $venv }
+    if ($backup) { Move-RepairRuntimeDirectory $intent.Backup $venv $intent.OriginalId -Reconcile }
     if ((Get-RepairDirectoryIdentity $venv) -ne $intent.OriginalId) {
         throw 'The preserved original runtime could not be restored exactly.'
     }
@@ -352,11 +608,22 @@ function Restore-InterruptedRepair {
 
 function Close-RepairSession($Transaction) {
     if ($Transaction.Closed) { return }
-    try { Exit-RepairLease $Transaction.HelperLease } finally {
+    try {
+        if ($Transaction.PythonBinding) {
+            $Transaction.PythonBinding.Dispose()
+            if ([Object]::ReferenceEquals($script:ReviewedPythonBinding,$Transaction.PythonBinding)) {
+                $script:ReviewedPythonBinding = $null
+            }
+        }
+    } finally {
+      try { Exit-RepairLease $Transaction.CoreLease } finally {
+      try { Exit-RepairLease $Transaction.HelperLease } finally {
       try { Exit-RepairLease $Transaction.Lease } finally {
         [Environment]::SetEnvironmentVariable('TEMP', $Transaction.OldTemp, 'Process')
         [Environment]::SetEnvironmentVariable('TMP', $Transaction.OldTmp, 'Process')
         $Transaction.Closed = $true
+      }
+      }
       }
     }
 }
@@ -375,6 +642,7 @@ function Undo-RepairTransaction($Transaction) {
 
 function Complete-RepairTransaction($Transaction) {
     try {
+        Write-RepairDiagnostic 'transaction' 'independently-verified' 'Final-path ABI, exact dependencies, Tk and Qt checks passed.'
         $pending = Get-StartupRepairPendingPath $root
         Set-RepairIntentPhase $pending $Transaction.Id 'Verified'
         $marker = Join-Path $venv '.angerona-startup-repair.json'
@@ -395,10 +663,17 @@ function Invoke-RepairTransaction {
     Assert-RepairBoundary
     $lease = Enter-RepairLease -Root $root
     $helperLease = $null
+    $coreLease = $null
     $transaction = $null
     try {
         $helperLease = Enter-CanonicalSourceHelperLease
+        $coreLease = Enter-CanonicalCoreMutationLease
         Assert-NoActiveVenv -VenvPath $venv
+        # Reconcile an already-owned interrupted transaction before applying
+        # new-copy quotas. Reconciliation uses its existing private receipts;
+        # rejected fresh attempts must not accumulate empty scratch directories.
+        Restore-InterruptedRepair
+        Assert-RepairStorageAdmission
         $id = [Guid]::NewGuid().ToString('N')
         $scratch = Join-Path $root ('.tmp\repair-wheels\startup-repair.' + $id)
         New-PrivateRepairDirectory $scratch
@@ -410,9 +685,10 @@ function Invoke-RepairTransaction {
             DependencyWheels = (Join-Path $scratch 'dependency-wheels')
             LocalWheels = (Join-Path $scratch 'local-wheels')
             SpeechWheel = (Join-Path $scratch 'local-wheels\srt-0.0.0+angerona.1-py3-none-any.whl')
-            SpeechHash = ''; Python = ''; PreviousMoved = $false; Promoted = $false
+            SpeechHash = ''; Python = ''; PythonBinding = $null; PreviousMoved = $false; Promoted = $false
             HasIntent = $false; PendingOwned = $false
-            Lease = $lease; HelperLease = $helperLease; Closed = $false; OldTemp = $env:TEMP; OldTmp = $env:TMP
+            Lease = $lease; HelperLease = $helperLease; CoreLease = $coreLease
+            Closed = $false; OldTemp = $env:TEMP; OldTmp = $env:TMP
         }
         [void][IO.Directory]::CreateDirectory((Join-Path $scratch 'temp'))
         $env:TEMP = Join-Path $scratch 'temp'; $env:TMP = $env:TEMP
@@ -421,10 +697,15 @@ function Invoke-RepairTransaction {
         $script:RepairEnvironment['QT_QPA_PLATFORM'] = 'offscreen'
         $script:RepairClock = [Diagnostics.Stopwatch]::StartNew()
         $script:RepairCommandNumber = 0
+        $script:RepairDiagnosticCapped = $false
+        Write-DurableRepairJson (Join-Path $scratch 'repair-session.json') `
+            ([ordered]@{Schema=1;Id=$id;PhaseLog='repair-events.jsonl';
+                CommandLogs='command-NNN.log';CommandBudgetSeconds=900;EventLogMaxBytes=65536})
+        Write-RepairDiagnostic 'transaction' 'started' 'No runtime move occurs before independently verified candidate creation.'
         Initialize-OwnedRepairProcess
-        Restore-InterruptedRepair
         Write-Host '[repair] One runtime transaction; 900s overall command budget; no AI/model tools.'
         $transaction.Python = Find-ReviewedPython
+        $transaction.PythonBinding = $script:ReviewedPythonBinding
         if (!$transaction.Python) {
             $winget = Find-TrustedWinget
             if (!$winget) { throw 'Trusted PSF CPython 3.12 x64 and Microsoft-signed winget are unavailable.' }
@@ -432,33 +713,49 @@ function Invoke-RepairTransaction {
                 '--scope', 'user', '--silent', '--disable-interactivity', '--accept-package-agreements',
                 '--accept-source-agreements') 'Obtain signed PSF CPython 3.12 x64' 300)
             $transaction.Python = Find-ReviewedPython
+            $transaction.PythonBinding = $script:ReviewedPythonBinding
             if (!$transaction.Python) { throw 'Installed CPython signature/ABI could not be verified.' }
         }
+        Write-RepairDiagnostic 'candidate' 'started' 'Create and verify isolated candidate before promotion.'
         New-VerifiedRepairCandidate $transaction
+        Write-RepairDiagnostic 'candidate' 'verified' 'Candidate proof passed; original environment still retained at its original path.'
         Assert-RepairBoundary
         Assert-NoActiveVenv -VenvPath $venv
         if (Test-Path -LiteralPath $transaction.Backup) { throw 'Unique venv backup path is already occupied.' }
         New-PendingRepairIntent $transaction
         $pending = Get-StartupRepairPendingPath $root
+        $intent = (Read-PendingRepairIntent $root).Intent
         Set-RepairIntentPhase $pending $transaction.Id 'BeforeBackup'
+        Write-RepairDiagnostic 'promotion' 'prepared' 'Durable intent recorded before any runtime move.'
         if (Test-Path -LiteralPath $venv) {
-            Move-Item -LiteralPath $venv -Destination $transaction.Backup
+            Move-RepairRuntimeDirectory $venv $transaction.Backup $intent.OriginalId
             $transaction.PreviousMoved = $true
         }
         Set-RepairIntentPhase $pending $transaction.Id 'BeforePromotion'
-        Move-Item -LiteralPath $transaction.Stage -Destination $venv
+        Move-RepairRuntimeDirectory $transaction.Stage $venv $intent.CandidateId
         $transaction.Promoted = $true
         Set-RepairIntentPhase $pending $transaction.Id 'Refreshing'
         Repair-PromotedEnvironment $transaction
+        Write-RepairDiagnostic 'promotion' 'refreshed' 'Final-path scaffold refreshed; independent recheck remains required.'
         return $transaction
     } catch {
+        $failure = $_
+        Write-RepairFailureDiagnostic 'transaction' $failure
         if ($transaction) {
             Write-Host "Repair failed; owned command logs remain at $($transaction.Scratch)" -ForegroundColor Red
-            Undo-RepairTransaction $transaction
+            Write-Host ("[repair] reason=" + $failure.Exception.Message) -ForegroundColor Red
+            try { Undo-RepairTransaction $transaction }
+            catch {
+                Write-RepairDiagnostic 'rollback' 'failed-or-refused' $_.Exception.Message
+                Write-Host ("[repair] rollback-refused=" + $_.Exception.Message) -ForegroundColor Red
+                throw
+            }
         } else {
+            try { Exit-RepairLease $coreLease } finally {
             try { Exit-RepairLease $helperLease } finally { Exit-RepairLease $lease }
+            }
         }
-        throw
+        throw $failure
     }
 }
 

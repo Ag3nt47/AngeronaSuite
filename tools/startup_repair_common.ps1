@@ -29,6 +29,187 @@ function Get-RepairFileSha256([string]$Path) {
     finally { $digest.Dispose(); $stream.Dispose() }
 }
 
+function Initialize-RepairPythonDiscovery {
+    if ('Angerona.RepairPythonImage' -as [type]) { return }
+    # Discovery may follow an installed-location hint, but execution uses only
+    # its independently verified physical path. Retained image/ancestor handles
+    # exclude replacement while signature/ABI checks and the transaction run.
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Angerona {
+public sealed class RepairPythonImage : IDisposable {
+    [StructLayout(LayoutKind.Sequential)] struct FILE_INFORMATION {
+        public uint attributes,createdLow,createdHigh,accessLow,accessHigh,writeLow,writeHigh;
+        public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow;
+    }
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+    static extern IntPtr CreateFileW(string path,uint access,uint share,IntPtr security,
+        uint creation,uint flags,IntPtr template);
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern bool GetFileInformationByHandle(IntPtr file,out FILE_INFORMATION info);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)]
+    static extern uint GetFinalPathNameByHandleW(IntPtr file,StringBuilder path,uint size,uint flags);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern uint GetDriveTypeW(string root);
+    [DllImport("kernel32.dll",SetLastError=true)]
+    static extern bool DeviceIoControl(IntPtr file,uint code,IntPtr input,uint inputSize,
+        byte[] output,uint outputSize,out uint returned,IntPtr overlapped);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+    readonly List<IntPtr> handles=new List<IntPtr>();
+    readonly string identity;
+    public string PhysicalPath { get; private set; }
+    bool closed;
+    static void Check(bool ok) { if(!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+    static string Identity(FILE_INFORMATION info) {
+        return info.volume.ToString("x8")+":"+info.indexHigh.ToString("x8")+info.indexLow.ToString("x8");
+    }
+    static FILE_INFORMATION RawInformation(IntPtr handle) {
+        FILE_INFORMATION info; Check(GetFileInformationByHandle(handle,out info));
+        return info;
+    }
+    static FILE_INFORMATION Information(IntPtr handle,bool directory) {
+        FILE_INFORMATION info=RawInformation(handle);
+        if ((info.attributes&0x400)!=0 || (((info.attributes&0x10)!=0)!=directory))
+            throw new IOException("Runtime discovery requires a plain file/directory.");
+        return info;
+    }
+    IntPtr Open(string path,uint access,uint share,uint flags) {
+        IntPtr handle=CreateFileW(path,access,share,IntPtr.Zero,3,flags,IntPtr.Zero);
+        Check(handle!=new IntPtr(-1)); handles.Add(handle); return handle;
+    }
+    static string LocalPath(string path) {
+        if(String.IsNullOrWhiteSpace(path) || path.Length>4096 || path.Length<3 ||
+           !Char.IsLetter(path[0]) || path[1]!=':' || path[2]!='\\' || path.IndexOf('\0')>=0)
+            throw new IOException("Runtime hint target must be an absolute local DOS path.");
+        string value=Path.GetFullPath(path);
+        if(GetDriveTypeW(Path.GetPathRoot(value))!=3)
+            throw new IOException("Runtime hint target requires a fixed local volume.");
+        return value;
+    }
+    static string ReparseTarget(IntPtr handle,string path) {
+        byte[] buffer=new byte[16384]; uint returned;
+        Check(DeviceIoControl(handle,0x900A8,IntPtr.Zero,0,buffer,16384,out returned,IntPtr.Zero));
+        return DecodeReparseTarget(buffer,returned,path);
+    }
+    static string DecodeReparseTarget(byte[] buffer,uint returned,string path) {
+        if(returned>buffer.Length) throw new IOException("Runtime hint data length is invalid.");
+        if(returned<16 || BitConverter.ToUInt16(buffer,4)+8>returned)
+            throw new IOException("Runtime hint reparse data is incomplete.");
+        uint tag=BitConverter.ToUInt32(buffer,0); int start; bool relative=false;
+        if(tag==0xA0000003) start=16;
+        else if(tag==0xA000000C) {
+            if(returned<20) throw new IOException("Runtime symlink data is incomplete.");
+            uint flags=BitConverter.ToUInt32(buffer,16);
+            if(flags>1) throw new IOException("Runtime symlink flags are unsupported.");
+            relative=flags==1; start=20;
+        } else throw new IOException("Runtime hint uses an unsupported reparse type.");
+        int offset=BitConverter.ToUInt16(buffer,8),length=BitConverter.ToUInt16(buffer,10);
+        if(length==0 || (offset&1)!=0 || (length&1)!=0 || start+offset+length>returned ||
+           start+offset+length>BitConverter.ToUInt16(buffer,4)+8)
+            throw new IOException("Runtime hint target is malformed.");
+        string target=new UnicodeEncoding(false,false,true).GetString(buffer,start+offset,length);
+        if(relative) {
+            if(Path.IsPathRooted(target)) throw new IOException("Relative runtime hint is ambiguous.");
+            return LocalPath(Path.Combine(Path.GetDirectoryName(path),target));
+        }
+        if(target.StartsWith(@"\??\",StringComparison.Ordinal) ||
+           target.StartsWith(@"\\?\",StringComparison.Ordinal)) target=target.Substring(4);
+        // UNC/device targets are refused before any open can contact them.
+        return LocalPath(target);
+    }
+    IntPtr ResolveHint(string hint) {
+        string pending=LocalPath(hint);
+        for(int redirects=0;redirects<=8;redirects++) {
+            string root=Path.GetPathRoot(pending),current=root;
+            Information(Open(root,0x80|1,1,0x02000000|0x00200000),true);
+            string[] parts=pending.Substring(root.Length).Split(new[]{'\\'},StringSplitOptions.RemoveEmptyEntries);
+            if(parts.Length==0 || parts.Length>64) throw new IOException("Runtime hint component bound exceeded.");
+            bool redirected=false;
+            for(int index=0;index<parts.Length;index++) {
+                current=Path.Combine(current,parts[index]);
+                IntPtr handle=Open(current,0x80|1,1,0x02000000|0x00200000);
+                FILE_INFORMATION info=RawInformation(handle);
+                if((info.attributes&0x400)!=0) {
+                    if(redirects==8) throw new IOException("Runtime hint redirect bound exceeded.");
+                    string target=ReparseTarget(handle,current);
+                    for(int rest=index+1;rest<parts.Length;rest++) target=Path.Combine(target,parts[rest]);
+                    pending=LocalPath(target); redirected=true; break;
+                }
+                Information(handle,index<parts.Length-1);
+                if(index==parts.Length-1) return handle;
+            }
+            if(!redirected) break;
+        }
+        throw new IOException("Runtime hint could not resolve a plain local image.");
+    }
+    static string FinalPath(IntPtr handle) {
+        var text=new StringBuilder(32768);
+        uint length=GetFinalPathNameByHandleW(handle,text,32768,0);
+        Check(length!=0);
+        if(length>=32768) throw new IOException("Runtime discovery path exceeds its bound.");
+        string value=text.ToString();
+        if(!value.StartsWith(@"\\?\",StringComparison.Ordinal) || value.Length<7 ||
+           !Char.IsLetter(value[4]) || value[5]!=':' || value[6]!='\\')
+            throw new IOException("Runtime discovery requires a local DOS-volume path.");
+        value=Path.GetFullPath(value.Substring(4));
+        if(GetDriveTypeW(Path.GetPathRoot(value))!=3)
+            throw new IOException("Runtime discovery requires a fixed local volume.");
+        return value;
+    }
+    public RepairPythonImage(string hint) {
+        try {
+            if(String.IsNullOrWhiteSpace(hint) || hint.Length>4096 || !Path.IsPathRooted(hint) ||
+               hint.StartsWith(@"\\",StringComparison.Ordinal))
+                throw new IOException("Runtime discovery hint must be an absolute local path.");
+            // Resolve each component without following it first. Only bounded,
+            // checked local targets may be traversed; UNC/unknown reparses never run.
+            // FILE_READ_DATA is intentional: metadata-only opens do not
+            // establish the sharing exclusion needed to pin executable bytes.
+            IntPtr original=ResolveHint(hint);
+            identity=Identity(Information(original,false));
+            PhysicalPath=FinalPath(original);
+            string parent=Path.GetDirectoryName(PhysicalPath);
+            string root=Path.GetPathRoot(PhysicalPath);
+            var directories=new List<string>();
+            directories.Add(root);
+            string current=root;
+            foreach(string part in parent.Substring(root.Length).Split(new[]{'\\'},StringSplitOptions.RemoveEmptyEntries)) {
+                current=Path.Combine(current,part); directories.Add(current);
+            }
+            foreach(string directory in directories)
+                Information(Open(directory,0x80|1,1,0x02000000|0x00200000),true);
+            AssertBound();
+        } catch { Dispose(); throw; }
+    }
+    public void AssertBound() {
+        if(closed) throw new ObjectDisposedException("RepairPythonImage");
+        IntPtr named=CreateFileW(PhysicalPath,0x80|1,1,IntPtr.Zero,3,0x00200000,IntPtr.Zero);
+        Check(named!=new IntPtr(-1));
+        try {
+            if(Identity(Information(named,false))!=identity ||
+               !String.Equals(FinalPath(named),PhysicalPath,StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Physical runtime image changed during discovery.");
+        } finally { CloseHandle(named); }
+    }
+    public void Dispose() {
+        if(closed) return; closed=true;
+        for(int index=handles.Count-1;index>=0;index--) CloseHandle(handles[index]);
+        handles.Clear();
+    }
+}
+}
+'@
+}
+
+function Open-RepairPythonHint([string]$Path) {
+    Initialize-RepairPythonDiscovery
+    return [Angerona.RepairPythonImage]::new($Path)
+}
+
 function Get-RepairPathAcl([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force
     return $(if ($item.PSIsContainer) { [IO.Directory]::GetAccessControl($Path) }
@@ -108,6 +289,69 @@ function Get-StartupRepairPendingPath([string]$Root) {
     return Join-Path ([IO.Path]::GetFullPath($Root)) '.tmp\repair-wheels\startup-repair.pending'
 }
 
+function Enter-CanonicalCoreMutationLease {
+    # The same byte-range lock used by SingletonLease, including cores launched
+    # outside this checkout's venv. Never replace its inode or singleton record.
+    $storage = Get-CanonicalSourceStartupStorage
+    Assert-PrivateRepairCustody $storage -AllowInherited
+    $path = Join-Path $storage 'angerona.instance.lock'
+    $lease = Open-PrivateRepairFile -Path $path -Mode OpenOrCreate -Share ReadWrite
+    try { $lease.Lock(0, 1); return $lease }
+    catch { $lease.Dispose(); throw 'A core owns the instance lease; runtime/source mutation is held.' }
+}
+
+function Read-SourceStartupRecoveryPreferences([string]$Storage) {
+    $result = @{ Enabled = $true; Github = $true }
+    try {
+        $path = Join-Path $Storage 'settings.json'
+        Assert-PlainRepairPath $path
+        if (!(Test-Path -LiteralPath $path)) { return $result }
+        Assert-PrivateRepairCustody $path -AllowInherited
+        $stream = [IO.File]::Open($path, 'Open', 'Read', 'Read')
+        try {
+            if ($stream.Length -gt 64KB) { throw 'Recovery preferences exceed 64 KiB.' }
+            # Match Config's strict UTF-8 JSON contract. StreamReader's BOM
+            # detection would accept UTF-16/UTF-8-BOM settings that Config
+            # refuses, incorrectly enabling recovery from ambiguous consent.
+            $bytes = New-Object byte[] ([int]$stream.Length)
+            $offset = 0
+            while ($offset -lt $bytes.Length) {
+                $count = $stream.Read($bytes, $offset, $bytes.Length-$offset)
+                if (!$count) { throw 'Recovery preferences changed during read.' }
+                $offset += $count
+            }
+            $raw = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        } finally { $stream.Dispose() }
+        # First validate JSON, then retain top-level duplicate keys which the
+        # PowerShell deserializer would otherwise discard. Nested values have
+        # no authority over these preferences. Unknown/ambiguous consent is off.
+        $parsed = $raw | ConvertFrom-Json
+        if ($null -eq $parsed -or $parsed -isnot [pscustomobject] -or $raw -notmatch '^\s*\{') { throw 'Settings must be a JSON object.' }
+        $tokens = [regex]::Matches($raw, '"(?:[^"\\\x00-\x1f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"|[{}\[\]:,]|true|false|null|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?')
+        $position = 0; $depth = 0; $counts = @{}; $values = @{}
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            $token = $tokens[$i]
+            if ($raw.Substring($position, $token.Index-$position).Trim().Length) { throw 'Invalid JSON token.' }
+            $position = $token.Index + $token.Length
+            if ($token.Value -in @('{','[')) { $depth++; continue }
+            if ($token.Value -in @('}',']')) { $depth--; continue }
+            if ($depth -eq 1 -and $token.Value.StartsWith('"') -and $i+2 -lt $tokens.Count -and $tokens[$i+1].Value -eq ':') {
+                $name = ConvertFrom-Json ('['+$token.Value+']')
+                if ($name -cin @('startup_recovery_enabled','startup_recovery_github_enabled')) {
+                    if (!$counts.ContainsKey([string]$name)) { $counts[[string]$name] = 0 }
+                    $counts[[string]$name]++
+                    $values[[string]$name] = $tokens[$i+2].Value
+                }
+            }
+        }
+        if ($raw.Substring($position).Trim().Length -or $raw -match ',\s*[}\]]') { throw 'Invalid JSON suffix or trailing comma.' }
+        foreach ($pair in @(@('startup_recovery_enabled','Enabled'),@('startup_recovery_github_enabled','Github'))) {
+            if ($counts.ContainsKey($pair[0])) { $result[$pair[1]] = ($counts[$pair[0]] -eq 1 -and $values[$pair[0]] -ceq 'true') }
+        }
+        return $result
+    } catch { return @{ Enabled = $false; Github = $false } }
+}
+
 function Read-PendingRepairIntent([string]$Root) {
     $canonical = [IO.Path]::GetFullPath($Root)
     $pending = Get-StartupRepairPendingPath $canonical
@@ -169,7 +413,11 @@ function Assert-NoPendingRepair([string]$Root) {
     }
     $parent = Join-Path ([IO.Path]::GetFullPath($Root)) '.tmp\repair-wheels'
     if (Test-Path -LiteralPath $parent -PathType Container) {
-        foreach ($directory in Get-ChildItem -LiteralPath $parent -Directory -Filter 'startup-repair.*') {
+          $seen = 0
+          foreach ($entry in [IO.Directory]::EnumerateDirectories($parent, 'startup-repair.*')) {
+              if (++$seen -gt 8) { throw 'Retained runtime transaction inventory exceeds its review bound; preserve it for review.' }
+              Assert-PlainRepairPath $entry
+              $directory = Get-Item -LiteralPath $entry -Force
             if ($directory.Name -notmatch '^startup-repair\.([0-9a-f]{32})$') { continue }
             $id = $Matches[1]
             $witness = Join-Path $directory.FullName 'intent.witness.json'
@@ -251,18 +499,116 @@ function Exit-RepairLease($Lease) {
     }
 }
 
+function Get-RepairProcessCompilerScratch {
+    $storage = Get-CanonicalSourceStartupStorage
+    $fixedRoot = Split-Path -Parent $PSScriptRoot
+    foreach ($path in @((Join-Path $storage 'tmp\process-compiler'),
+            (Join-Path $fixedRoot '.tmp\process-compiler'))) {
+        try {
+            Assert-PlainRepairPath $path
+            $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($path)))
+            if (!$drive.IsReady -or $drive.DriveType -ne 'Fixed' -or $drive.AvailableFreeSpace -lt (2GB+2MB)) { continue }
+            if (!(Test-Path -LiteralPath $path)) { New-PrivateRepairDirectory $path }
+            Assert-PrivateRepairCustody $path
+            $count = 0; $bytes = 0L
+            foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($path)) {
+                if (++$count -gt 120) { throw 'Process compiler scratch has reached its retained-file capacity.' }
+                Assert-PrivateRepairCustody $entry -AllowInherited
+                $item = Get-Item -LiteralPath $entry -Force
+                if ($item.PSIsContainer) { throw 'Process compiler scratch contains an unexpected nested directory.' }
+                $bytes += $item.Length
+                if ($bytes+128KB -gt 2MB) { throw 'Process compiler scratch has reached its 2 MiB retained-byte capacity.' }
+            }
+            return $path
+        } catch { Write-Verbose 'A private process compiler scratch location is unavailable or requires retained-artifact review.' }
+    }
+    throw 'Private bounded process compiler scratch is unavailable. Review retained process-compiler artifacts or restore the 2 GiB drive reserve before Retry; nothing was deleted.'
+}
+
+function Initialize-RepairLiveProcessIdentity {
+    if ('Angerona.RepairLiveProcessIdentity' -as [type]) { return }
+    $scratch = Get-RepairProcessCompilerScratch
+    $savedTemp, $savedTmp = $env:TEMP, $env:TMP
+    try {
+        $env:TEMP = $scratch; $env:TMP = $scratch
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Angerona {
+public sealed class RepairLiveProcessIdentity : IDisposable {
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr handle,out long birth,out long exit,out long kernel,out long user);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr handle,uint flags,StringBuilder image,ref uint length);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    IntPtr handle;
+    public string State {get;private set;}
+    public string ImagePath {get;private set;}
+    public long CreationFileTime {get;private set;}
+    public int NativeError {get;private set;}
+    public uint ProcessId {get;private set;}
+    bool Retired() {
+        uint state=WaitForSingleObject(handle,0);
+        if(state==0){State="retired";return true;}
+        if(state!=258){State="unknown";NativeError=Marshal.GetLastWin32Error();}
+        return false;
+    }
+    public RepairLiveProcessIdentity(uint pid) {
+        State="unknown";ProcessId=pid;
+        // QUERY_LIMITED_INFORMATION | SYNCHRONIZE, no mutation/termination right.
+        handle=OpenProcess(0x00101000,false,pid);
+        if(handle==IntPtr.Zero){NativeError=Marshal.GetLastWin32Error();if(NativeError==87)State="retired";return;}
+        if(Retired() || NativeError!=0)return;
+        long birth,exit,kernel,user;
+        if(!GetProcessTimes(handle,out birth,out exit,out kernel,out user)) {
+            NativeError=Marshal.GetLastWin32Error();Retired();return;
+        }
+        var image=new StringBuilder(32768);uint length=32768;
+        if(!QueryFullProcessImageNameW(handle,0,image,ref length)) {
+            NativeError=Marshal.GetLastWin32Error();Retired();return;
+        }
+        string path=image.ToString();
+        if(path.StartsWith(@"\\?\",StringComparison.Ordinal) && path.Length>=7 && path[5]==':')path=path.Substring(4);
+        if(birth<=0 || String.IsNullOrEmpty(path) || !Path.IsPathRooted(path)){NativeError=13;Retired();return;}
+        try {ImagePath=Path.GetFullPath(path);}catch(Exception){NativeError=13;Retired();return;}
+        CreationFileTime=birth;
+        if(!Retired() && NativeError==0)State="live";
+    }
+    public void Dispose(){if(handle!=IntPtr.Zero){CloseHandle(handle);handle=IntPtr.Zero;}}
+}
+}
+'@
+    } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
+}
+
+function Get-LiveRepairProcessIdentity([uint32]$ProcessId) {
+    Initialize-RepairLiveProcessIdentity
+    return [Angerona.RepairLiveProcessIdentity]::new($ProcessId)
+}
+
 function Assert-NoActiveVenv([string]$VenvPath) {
     $prefix = [IO.Path]::GetFullPath($VenvPath).TrimEnd('\') + '\'
-    # Do not infer process identity from untrusted command-line/log text.
+    # CIM supplies discovery hints only. A retained native handle proves the
+    # actual generation, liveness and image; stale rows/PID reuse are not busy.
     foreach ($process in Get-CimInstance Win32_Process -OperationTimeoutSec 10) {
-        if ($process.ExecutablePath -and
-            $process.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "An Angerona runtime process is still active (PID $($process.ProcessId)); repair refused."
+        $hint = $process.ExecutablePath -is [string] -and
+            $process.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+        if (!$hint -and $process.Name -notin @('python.exe', 'pythonw.exe', 'Angerona.exe', 'pip.exe')) { continue }
+        if (!$process.ProcessId -or [long]$process.ProcessId -lt 1 -or [long]$process.ProcessId -gt [uint32]::MaxValue) {
+            throw 'A Python/runtime process identity could not be inspected (invalid PID); repair refused.'
         }
-        if (!$process.ExecutablePath -and
-            $process.Name -in @('python.exe', 'pythonw.exe', 'Angerona.exe', 'pip.exe')) {
-            throw 'A Python/runtime process identity could not be inspected; repair refused.'
-        }
+        $identity = Get-LiveRepairProcessIdentity ([uint32]$process.ProcessId)
+        try {
+            if ($identity.State -eq 'retired') { continue }
+            if ($identity.State -ne 'live' -or !$identity.ImagePath -or $identity.CreationFileTime -le 0) {
+                throw "A Python/runtime process identity could not be inspected (PID $($process.ProcessId), native error $($identity.NativeError)); repair refused."
+            }
+            if ($identity.ImagePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "An Angerona runtime process is still active (PID $($process.ProcessId), native creation FILETIME $($identity.CreationFileTime)); repair refused."
+            }
+        } finally { $identity.Dispose() }
     }
 }
 
@@ -273,7 +619,7 @@ function New-RepairChildEnvironment([string]$Scratch) {
     }
     $system = [Environment]::SystemDirectory
     $windows = Split-Path -Parent $system
-    return @{
+    $environment = @{
         SystemRoot = $windows; WINDIR = $windows
         SystemDrive = [IO.Path]::GetPathRoot($windows).TrimEnd('\')
         ComSpec = (Join-Path $system 'cmd.exe')
@@ -287,6 +633,11 @@ function New-RepairChildEnvironment([string]$Scratch) {
         PYTHONNOUSERSITE = '1'; PYTHONSAFEPATH = '1'; PYTHONDONTWRITEBYTECODE = '1'
         PIP_CONFIG_FILE = 'nul'; PIP_DISABLE_PIP_VERSION_CHECK = '1'
     }
+    if ([Environment]::GetEnvironmentVariable('ANGERONA_SUPERVISED_RECOVERY') -ceq '1') {
+        # Inhibition only: never a trust, privilege or response authority.
+        $environment['ANGERONA_SUPERVISED_RECOVERY'] = '1'
+    }
+    return $environment
 }
 
 function Initialize-OwnedRepairProcess {
@@ -331,6 +682,10 @@ public static class StartupRepairProcess {
         public uint attributes,createdLow,createdHigh,accessLow,accessHigh,writeLow,writeHigh;
         public uint volume,sizeHigh,sizeLow,links,indexHigh,indexLow;
     }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct REPAIR_RENAME_INFO {
+        [MarshalAs(UnmanagedType.U1)] public bool replace;
+        public IntPtr parent; public uint nameBytes; public char firstCharacter;
+    }
     [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
     static extern IntPtr CreateJobObjectW(IntPtr security,string name);
     [DllImport("kernel32.dll", SetLastError=true)]
@@ -352,6 +707,12 @@ public static class StartupRepairProcess {
         uint creation,uint flags,IntPtr template);
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool GetFileInformationByHandle(IntPtr file,out FILE_INFORMATION info);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    static extern uint GetFinalPathNameByHandleW(IntPtr file,StringBuilder path,uint size,uint flags);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool SetFileInformationByHandle(IntPtr file,int kind,IntPtr info,uint size);
+    [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    static extern uint GetFileAttributesW(string path);
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
@@ -368,6 +729,135 @@ public static class StartupRepairProcess {
             }
             return info.volume.ToString("x8")+":"+info.indexHigh.ToString("x8")+info.indexLow.ToString("x8");
         } finally { CloseHandle(file); }
+    }
+    static string RenameDirectoryPath(string path) {
+        if (String.IsNullOrEmpty(path) || path.Length>32700 || path.Length<4 ||
+            !Char.IsLetter(path[0]) || path[1]!=':' || path[2]!='\\' ||
+            path.IndexOf('/')>=0 || path.IndexOf('\0')>=0) {
+            throw new InvalidOperationException("Runtime rename requires a fixed local absolute path.");
+        }
+        string full=System.IO.Path.GetFullPath(path).TrimEnd('\\');
+        if (full.Length<4 || !String.Equals(full,path.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase)) {
+            throw new InvalidOperationException("Runtime rename path is not canonical.");
+        }
+        string[] parts=full.Substring(3).Split('\\');
+        if (parts.Length>128) throw new InvalidOperationException("Runtime rename ancestry exceeds its bound.");
+        foreach (string part in parts) {
+            if (part.Length==0 || part=="." || part==".." || part.EndsWith(".",StringComparison.Ordinal) ||
+                part.EndsWith(" ",StringComparison.Ordinal) ||
+                part.IndexOfAny(System.IO.Path.GetInvalidFileNameChars())>=0) {
+                throw new InvalidOperationException("Runtime rename contains an unsafe path component.");
+            }
+            string stem=part.Split('.')[0].ToUpperInvariant();
+            if (stem=="CON" || stem=="PRN" || stem=="AUX" || stem=="NUL" ||
+                (stem.Length==4 && (stem.StartsWith("COM",StringComparison.Ordinal) ||
+                    stem.StartsWith("LPT",StringComparison.Ordinal)) && stem[3]>='1' && stem[3]<='9')) {
+                throw new InvalidOperationException("Runtime rename contains a reserved device name.");
+            }
+        }
+        return full;
+    }
+    static string RepairDirectoryKey(FILE_INFORMATION info) {
+        return info.volume.ToString("x8")+":"+info.indexHigh.ToString("x8")+info.indexLow.ToString("x8");
+    }
+    static FILE_INFORMATION RequireRenameDirectory(IntPtr handle,string expectedPath) {
+        FILE_INFORMATION info; Check(GetFileInformationByHandle(handle,out info));
+        if ((info.attributes & 0x400)!=0 || (info.attributes & 0x10)==0) {
+            throw new InvalidOperationException("Runtime rename directory is redirected or not a directory.");
+        }
+        var finalName=new StringBuilder(32768);
+        uint length=GetFinalPathNameByHandleW(handle,finalName,(uint)finalName.Capacity,0);
+        if (length==0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        if (length>=(uint)finalName.Capacity) throw new InvalidOperationException("Runtime rename final path exceeds its bound.");
+        string finalPath=finalName.ToString();
+        if (finalPath.StartsWith(@"\\?\",StringComparison.Ordinal) && finalPath.Length>=7 && finalPath[5]==':') {
+            finalPath=finalPath.Substring(4);
+        }
+        if (!String.Equals(finalPath.TrimEnd('\\'),expectedPath.TrimEnd('\\'),StringComparison.OrdinalIgnoreCase)) {
+            throw new InvalidOperationException("Runtime rename directory no longer has its expected final path.");
+        }
+        return info;
+    }
+    static IntPtr OpenRenameDirectory(string path,uint access,uint share) {
+        var sa=new SECURITY_ATTRIBUTES(); sa.length=Marshal.SizeOf(sa);
+        IntPtr handle=CreateFileW(path,access,share,ref sa,3,0x02200000,IntPtr.Zero);
+        Check(handle!=new IntPtr(-1));
+        return handle;
+    }
+    static IntPtr PinRenameParent(string parent,System.Collections.Generic.List<IntPtr> handles,
+        System.Collections.Generic.List<string> paths) {
+        string cursor=System.IO.Path.GetPathRoot(parent);
+        IntPtr last=IntPtr.Zero;
+        string remainder=parent.Substring(cursor.Length);
+        string[] parts=remainder.Length==0 ? new string[0] : remainder.Split('\\');
+        for (int index=-1;index<parts.Length;index++) {
+            if (index>=0) cursor=System.IO.Path.Combine(cursor,parts[index]);
+            // Traverse/read-attributes only; child entries may change, but the
+            // retained ancestor cannot be renamed/deleted (no SHARE_DELETE).
+            last=OpenRenameDirectory(cursor,0xA0,3);
+            handles.Add(last); paths.Add(cursor);
+            RequireRenameDirectory(last,cursor);
+        }
+        return last;
+    }
+    public static void RenameDirectoryExact(string source,string destination,string expectedIdentity) {
+        source=RenameDirectoryPath(source); destination=RenameDirectoryPath(destination);
+        if (String.Equals(source,destination,StringComparison.OrdinalIgnoreCase) ||
+            !System.Text.RegularExpressions.Regex.IsMatch(expectedIdentity ?? "",@"\A[0-9a-f]{8}:[0-9a-f]{16}\z")) {
+            throw new InvalidOperationException("Runtime rename identity or destination is invalid.");
+        }
+        string targetParent=System.IO.Path.GetDirectoryName(destination);
+        var handles=new System.Collections.Generic.List<IntPtr>();
+        var paths=new System.Collections.Generic.List<string>();
+        IntPtr sourceHandle=IntPtr.Zero, targetHandle=IntPtr.Zero, renameInfo=IntPtr.Zero;
+        try {
+            PinRenameParent(System.IO.Path.GetDirectoryName(source),handles,paths);
+            IntPtr parentHandle=PinRenameParent(targetParent,handles,paths);
+            // This handle both proves and performs the mutation. Denying new
+            // DELETE opens prevents a source pathname swap after validation.
+            sourceHandle=OpenRenameDirectory(source,0x10080,3);
+            FILE_INFORMATION sourceInfo=RequireRenameDirectory(sourceHandle,source);
+            FILE_INFORMATION parentInfo=RequireRenameDirectory(parentHandle,targetParent);
+            if (RepairDirectoryKey(sourceInfo)!=expectedIdentity || sourceInfo.volume!=parentInfo.volume) {
+                throw new InvalidOperationException("Runtime rename source identity or target volume changed.");
+            }
+            for (int index=0;index<handles.Count;index++) RequireRenameDirectory(handles[index],paths[index]);
+            if (RepairDirectoryKey(RequireRenameDirectory(sourceHandle,source))!=expectedIdentity) {
+                throw new InvalidOperationException("Runtime rename source changed before publication.");
+            }
+            byte[] name=Encoding.Unicode.GetBytes(destination);
+            int nameOffset=Marshal.OffsetOf(typeof(REPAIR_RENAME_INFO),"firstCharacter").ToInt32();
+            int bufferSize=checked(nameOffset+name.Length+2);
+            renameInfo=Marshal.AllocHGlobal(bufferSize);
+            Marshal.Copy(new byte[bufferSize],0,renameInfo,bufferSize);
+            // Win32 absolute-target form, RootDirectory=NULL and no overwrite.
+            // All validated ancestors remain pinned without SHARE_DELETE;
+            // no POSIX/ignore-readonly flags or pathname-move fallback.
+            Marshal.WriteIntPtr(renameInfo,Marshal.OffsetOf(typeof(REPAIR_RENAME_INFO),"parent").ToInt32(),IntPtr.Zero);
+            Marshal.WriteInt32(renameInfo,Marshal.OffsetOf(typeof(REPAIR_RENAME_INFO),"nameBytes").ToInt32(),name.Length);
+            Marshal.Copy(name,0,IntPtr.Add(renameInfo,nameOffset),name.Length);
+            Check(SetFileInformationByHandle(sourceHandle,3,renameInfo,(uint)bufferSize));
+            if (RepairDirectoryKey(RequireRenameDirectory(sourceHandle,destination))!=expectedIdentity) {
+                throw new InvalidOperationException("Runtime rename retained-source identity changed after publication.");
+            }
+            // SHARE_DELETE is needed only on this additional observation
+            // handle, to coexist with our retained source DELETE access.
+            targetHandle=OpenRenameDirectory(destination,0x80,7);
+            if (RepairDirectoryKey(RequireRenameDirectory(targetHandle,destination))!=expectedIdentity ||
+                RepairDirectoryKey(RequireRenameDirectory(parentHandle,targetParent))!=RepairDirectoryKey(parentInfo)) {
+                throw new InvalidOperationException("Runtime rename destination identity changed after publication.");
+            }
+            for (int index=0;index<handles.Count;index++) RequireRenameDirectory(handles[index],paths[index]);
+            uint remaining=GetFileAttributesW(source);
+            if (remaining!=0xffffffff) throw new InvalidOperationException("Runtime rename source pathname is occupied after publication.");
+            int absentError=Marshal.GetLastWin32Error();
+            if (absentError!=2 && absentError!=3) throw new Win32Exception(absentError);
+        } finally {
+            if (renameInfo!=IntPtr.Zero) Marshal.FreeHGlobal(renameInfo);
+            if (targetHandle!=IntPtr.Zero) CloseHandle(targetHandle);
+            if (sourceHandle!=IntPtr.Zero) CloseHandle(sourceHandle);
+            for (int index=handles.Count-1;index>=0;index--) CloseHandle(handles[index]);
+        }
     }
     static string Quote(string value) {
         var result = new StringBuilder("\""); int slashes = 0;
@@ -408,7 +898,20 @@ public static class StartupRepairProcess {
             env=Marshal.StringToHGlobalUni(environment);
             Check(CreateProcessW(file,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref startup,out pi));
             Check(ResumeThread(pi.thread)!=0xFFFFFFFF);
-            uint waited=WaitForSingleObject(pi.process,checked((uint)timeout));
+            var clock=System.Diagnostics.Stopwatch.StartNew();
+            uint waited=258;
+            var volumes=new string[]{System.IO.Path.GetPathRoot(directory),System.IO.Path.GetPathRoot(log)};
+            while(clock.ElapsedMilliseconds<timeout) {
+                waited=WaitForSingleObject(pi.process,(uint)Math.Min(100,timeout-clock.ElapsedMilliseconds));
+                if(waited!=258) break;
+                foreach(string volume in volumes) {
+                    var disk=new System.IO.DriveInfo(volume);
+                    if(!disk.IsReady || disk.AvailableFreeSpace<2L*1024*1024*1024) {
+                        TerminateJobObject(job,112);WaitForSingleObject(pi.process,5000);
+                        throw new System.IO.IOException("Owned startup command stopped at the 2 GiB drive-space reserve; existing runtime and evidence remain held.");
+                    }
+                }
+            }
             if (waited==258) {
                 TerminateJobObject(job,1460); WaitForSingleObject(pi.process,5000);
                 throw new TimeoutException("Owned startup command exceeded its deadline.");

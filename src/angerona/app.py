@@ -302,6 +302,8 @@ class AngeronaApp:
             process_baseline=self.process_baseline,
             alert_retention_worker=self.alert_retention_worker,
             runtime_metrics=self.runtime_metrics,
+            shutdown_prepare=self.prepare_shutdown,
+            shutdown_callback=self.shutdown,
         )
         # Settings consumes only this bounded, privacy-safe status provider; it
         # never receives fleet service keys or endpoint private-key material.
@@ -440,7 +442,20 @@ class AngeronaApp:
         for event in pending:
             bus.publish(event)
 
-    def start(self) -> None:
+    def start(self) -> bool:
+        import os
+        from angerona.resilience import shutdown_token
+
+        # Only an explicit operator launch can resume after STOP. Automatic
+        # children retain the inhibit flag even if their launch was in flight.
+        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+            if shutdown_token.is_standdown_requested():
+                shutdown_token.signal_external_watchdog_stop()
+                return False
+        else:
+            shutdown_token.clear_standdown(strict=True)
+            if shutdown_token.is_standdown_requested():
+                raise RuntimeError("Explicit launch could not clear the authenticated operator STOP.")
         # Show the window immediately so the user sees a responsive UI.
         # Module discovery (37 importlib.import_module calls) and thread
         # starts are deferred to a background thread via a zero-delay timer
@@ -469,6 +484,13 @@ class AngeronaApp:
             self._schedule_dashboard_ready()
         self.qt.aboutToQuit.connect(self.shutdown)
         from PySide6.QtCore import QTimer
+        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+            # Covers a native-parent launch already past its admission check
+            # when the previous core saves STOP. This child may never revive it.
+            self._operator_stop_timer = QTimer(self.window)
+            self._operator_stop_timer.setInterval(250)
+            self._operator_stop_timer.timeout.connect(self._honor_operator_stop)
+            self._operator_stop_timer.start()
         # Let the window actually paint and become interactive before kicking off
         # the ~40-module import burst. A zero-delay timer can fire before the OS
         # has composited the first frame; a short delay guarantees a clean, centered
@@ -487,6 +509,14 @@ class AngeronaApp:
             "0", "false", "no", "off"
         ):
             QTimer.singleShot(800, self._launch_blackbox)
+        return True
+
+    def _honor_operator_stop(self) -> None:
+        from angerona.resilience.shutdown_token import is_standdown_requested
+
+        if is_standdown_requested():
+            self._operator_stop_timer.stop()
+            self.window._terminate()
 
     def _schedule_dashboard_ready(self) -> None:
         """Allow a shown dashboard to paint before reporting it to the helper."""
@@ -548,11 +578,12 @@ class AngeronaApp:
         """Start blackbox_recorder.py as an independent, tray-resident process.
 
         Shares nothing with the suite (read-only file tailing) so we spawn it
-        detached, with ``--show`` so its window actually appears. Its stdout/stderr
-        are captured to ``<data_dir>/logs/blackbox.log`` so a startup crash is
-        diagnosable, and a liveness check reports to the console if it dies fast
+        detached, with ``--show`` so its window actually appears. Black Box owns
+        its startup crash log; a liveness check reports to the console if it dies fast
         (the usual cause: PySide6-Addons/QtCharts missing — now handled gracefully
         in the recorder itself). Single-instance guarded; fail-open."""
+        if self._startup_cancelled():
+            return
         import sys
         if not sys.platform.startswith("win"):
             # The existing decoupled recorder consumes Windows watchdog/ETW
@@ -561,11 +592,9 @@ class AngeronaApp:
         if not force and not getattr(self.config, "blackbox_enabled", True):
             return
         try:
-            import os
-            import subprocess
             from pathlib import Path
             from angerona.core.data_paths import project_root
-            from angerona.core.privilege import sanitized_child_environment
+            from angerona.resilience.supervisor import spawn_detached
 
             frozen = bool(getattr(sys, "frozen", False))
             bb = project_root() / (
@@ -585,9 +614,6 @@ class AngeronaApp:
                     return
 
             # Prefer a windowless interpreter so no console flashes.
-            creationflags = 0
-            if sys.platform.startswith("win"):
-                creationflags = 0x08000000  # CREATE_NO_WINDOW
             if frozen:
                 command = [str(bb), "--show"]
             else:
@@ -604,24 +630,14 @@ class AngeronaApp:
                 if cached_cmdline_probe(expected_argv=expected)():
                     return
 
-            # Capture output so a crash-on-startup is recoverable.
-            try:
-                logdir = Path(self.config.data_dir) / "logs"
-                logdir.mkdir(parents=True, exist_ok=True)
-                logf = open(logdir / "blackbox.log", "ab", buffering=0)
-            except Exception:
-                logf = subprocess.DEVNULL
-
-            self._blackbox_proc = subprocess.Popen(
-                command,
-                cwd=str(bb.parent),
-                env=sanitized_child_environment(),
-                creationflags=creationflags,
-                stdin=subprocess.DEVNULL,
-                stdout=logf,
-                stderr=logf,
-                close_fds=True,
-            )
+            self._blackbox_proc = spawn_detached(command, cwd=str(bb.parent), window="hidden")
+            if self._startup_cancelled():
+                self._blackbox_proc.terminate()
+                self._blackbox_proc.wait(timeout=3.0)
+                self._blackbox_proc.wait_tree(timeout=3.0)
+                self._blackbox_proc.close()
+                self._blackbox_proc = None
+                return
             from PySide6.QtCore import QTimer
             QTimer.singleShot(3500, self._check_blackbox_alive)
         except Exception as exc:
@@ -639,14 +655,21 @@ class AngeronaApp:
         tail = ""
         try:
             from pathlib import Path
-            logp = Path(self.config.data_dir) / "logs" / "blackbox.log"
-            if logp.exists():
-                tail = logp.read_bytes()[-1400:].decode("utf-8", "replace").strip()
+            for logp in (
+                Path(self.config.data_dir) / "diagnostics" / "blackbox_startup.log",
+                Path(self.config.data_dir) / "blackbox_startup.log",
+                Path(self.config.data_dir) / "logs" / "blackbox.log",
+            ):
+                if logp.is_file():
+                    with logp.open("rb") as stream:
+                        stream.seek(max(0, logp.stat().st_size - 1400))
+                        tail = stream.read(1400).decode("utf-8", "replace").strip()
+                    break
         except Exception:
             pass
         self._blackbox_note(
             f"recorder exited immediately (code {code}). Last output:\n"
-            + (tail or "(no output captured — see logs/blackbox.log)"))
+            + (tail or "(see diagnostics/blackbox_startup.log)"))
 
     def _blackbox_note(self, msg: str) -> None:
         try:
@@ -713,7 +736,10 @@ class AngeronaApp:
 
     def _startup_cancelled(self) -> bool:
         requested = getattr(self, "_shutdown_requested", None)
-        return bool(requested is not None and requested.is_set())
+        if requested is not None and requested.is_set():
+            return True
+        from angerona.resilience.shutdown_token import is_standdown_requested
+        return is_standdown_requested()
 
     def _load_modules(self) -> None:
         """Background thread — no Qt widget access here, only thread-safe
@@ -748,8 +774,6 @@ class AngeronaApp:
             _loading("Starting recovery and watchdog services…")
             try:
                 from angerona.resilience.manager import start_resilience
-                from angerona.resilience import shutdown_token as _tok
-                _tok.clear_standdown()
                 # In Chill the real watchdog and scanner still run, but their
                 # two standalone Qt status windows are redundant: the orb and
                 # Console already expose the same live status on demand. Not
@@ -1150,6 +1174,28 @@ class AngeronaApp:
             "fleet_api_contract_sha256": api_contract_sha256,
         }
 
+    def _cancel_owned_work(self) -> None:
+        """Fence work without classifying a startup exception as operator STOP."""
+        from angerona.core.ollama_lifecycle import begin_ollama_shutdown
+
+        requested = getattr(self, "_shutdown_requested", None)
+        if requested is None:
+            requested = threading.Event()
+            self._shutdown_requested = requested
+        requested.set()
+        begin_ollama_shutdown()
+        resilience = getattr(self, "_resilience", None)
+        if resilience is not None:
+            resilience.request_stop()
+
+    def prepare_shutdown(self) -> None:
+        """Persist explicit STOP before any owned process can exit."""
+        from angerona.resilience import shutdown_token
+
+        shutdown_token.request_operator_stop()
+        self._cancel_owned_work()
+        shutdown_token.signal_external_watchdog_stop()
+
     def shutdown(self) -> None:
         """Mark cancellation immediately, then serialize startup teardown."""
         shutdown_gate = getattr(self, "_shutdown_gate", None)
@@ -1161,13 +1207,22 @@ class AngeronaApp:
             requested = threading.Event()
             self._shutdown_requested = requested
         with shutdown_gate:
-            if requested.is_set():
+            if getattr(self, "_shutdown_cleanup_started", False):
                 return
+            self._shutdown_cleanup_started = True
             requested.set()
+        try:
+            self._cancel_owned_work()
+        except Exception:
+            # Still retire retained handles if a worker fence is unavailable.
+            pass
         window = getattr(self, "window", None)
         signal_operations = getattr(window, "_begin_operations_shutdown", None)
         if callable(signal_operations):
             signal_operations()
+        # Watchdogs/AI must retire even if a sensor is stuck inside the startup
+        # lock. Their own admission fences and native ownership serialize them.
+        self._shutdown_critical_owned()
         lifecycle_lock = getattr(self, "_startup_lifecycle_lock", None)
         if lifecycle_lock is None:
             lifecycle_lock = threading.Lock()
@@ -1176,22 +1231,60 @@ class AngeronaApp:
             self._shutdown_owned()
 
     def _shutdown_owned(self) -> None:
+        # A manager created just before cancellation may only become visible
+        # after the startup lock drains; finish that late ownership as well.
+        self._shutdown_critical_owned()
         metrics_publisher = getattr(self, "runtime_metrics_publisher", None)
         if metrics_publisher is not None:
             metrics_publisher.stop()
+        self._shutdown_services_and_stores()
+
+    def _shutdown_critical_owned(self) -> None:
+        inventory = getattr(self, "_process_snapshot_lifecycle", None)
+        if inventory is not None:
+            inventory.request_stop()
+        # Resilience-free launches still retain their exact Black Box handle.
+        blackbox = getattr(self, "_blackbox_proc", None)
+        if blackbox is not None:
+            try:
+                if getattr(blackbox, "owns_descendants", False):
+                    blackbox.terminate()
+                    blackbox.wait(timeout=3.0)
+                    blackbox.wait_tree(timeout=3.0)
+                    blackbox.close()
+                    self._blackbox_proc = None
+                elif blackbox.poll() is None:
+                    blackbox.terminate()
+                    try:
+                        blackbox.wait(timeout=2.0)
+                    except Exception:
+                        blackbox.kill()
+                        blackbox.wait(timeout=2.0)
+            except Exception:
+                pass
+        # Release AI before either supervisor/healer lifecycle lock can wait.
+        # The terminal fence also catches an in-flight late server launch.
+        try:
+            if not getattr(self, "_critical_ai_done", False):
+                from angerona.core.ollama_lifecycle import shutdown_ollama
+                shutdown_ollama(
+                    getattr(self.config, "ollama_host", "http://localhost:11434"),
+                    getattr(self.config, "ollama_model", "llama3"),
+                )
+                self._critical_ai_done = True
+        except Exception:
+            pass
+        resilience = getattr(self, "_resilience", None)
+        if resilience is not None:
+            try:
+                resilience.stop(terminate_children=True)
+            except Exception:
+                pass
         healer = getattr(self, "_runtime_healer", None)
         if healer is not None:
             healer.stop()
-        # Clean shutdown: tell the ecosystem to STAND DOWN so the watchdog does
-        # not resurrect the core, then stop the child processes. (A crash — with
-        # no stand-down — leaves the watchdog free to restart everything.)
-        if getattr(self, "_resilience", None) is not None:
-            try:
-                from angerona.resilience import shutdown_token as _tok
-                _tok.request_standdown("angerona gui shutdown")
-                self._resilience.stop(terminate_children=True)
-            except Exception:
-                pass
+
+    def _shutdown_services_and_stores(self) -> None:
         self.reporter.stop()
         if self._mcp is not None:
             try:
@@ -1273,18 +1366,6 @@ class AngeronaApp:
                 evidence_drained = self.evidence_ingestion.stop(
                     drain_timeout=3.0
                 )
-        except Exception:
-            pass
-        # Release Angerona's resident llama3 model immediately. Ollama normally
-        # keeps models loaded for several minutes, which left its runner using
-        # CPU/GPU after the GUI had closed. Keep the Ollama service itself alive
-        # for other local applications and fail silently if it is unavailable.
-        try:
-            from angerona.core.ollama_lifecycle import unload_angerona_models
-            unload_angerona_models(
-                getattr(self.config, "ollama_host", "http://localhost:11434"),
-                getattr(self.config, "ollama_model", "llama3"),
-            )
         except Exception:
             pass
         # Never close a SQLite connection underneath a still-running writer.

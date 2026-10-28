@@ -1,9 +1,8 @@
 """Main window — single-screen dashboard.
 
-Everything is visible at once (mirroring the original Angerona layout):
-a header with brand + threat, a row of stat cards, and a split body with the
-Modules panel on the left and the Live Alerts feed on the right. Settings open
-in a dialog from the header button.
+Evidence and operational panels open at startup and minimize individually from
+their existing headings. Module health ribbons start folded; coverage and host
+quick status remain visible. Settings open in a dialog from the header button.
 """
 from __future__ import annotations
 
@@ -45,6 +44,9 @@ from angerona.gui.live_defense_activity import LiveDefenseActivityCard
 from angerona.gui.dashboard_details import (
     AriaDetailDialog,
     SystemPulseDetailDialog,
+)
+from angerona.gui.dashboard_sections import (
+    DashboardDisclosure, DashboardPanelCollapse, DashboardPanelGroup,
 )
 from angerona.gui.pages import (
     AARDialog, AlertDetailDialog, AlertsPanel, CommandConsolePanel, DashboardCards, ModuleInspector,
@@ -283,9 +285,14 @@ class MainWindow(QMainWindow):
         process_baseline=None,
         alert_retention_worker=None,
         runtime_metrics=None,
+        shutdown_prepare=None,
+        shutdown_callback=None,
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
+        self._shutdown_prepare = shutdown_prepare
+        self._shutdown_callback = shutdown_callback
+        self._termination_started = False
         self._posture_reader = AsyncSnapshot(
             self, self._prepare_posture_snapshot, self._apply_posture_snapshot,
             name="DashboardPostureReader",
@@ -367,8 +374,8 @@ class MainWindow(QMainWindow):
         central.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         root = _DashboardLayout(central)
         root.setSizeConstraint(QLayout.SetNoConstraint)
-        root.setContentsMargins(16, 12, 16, 12)
-        root.setSpacing(10)
+        root.setContentsMargins(14, 8, 14, 8)
+        root.setSpacing(7)
         self._dashboard_content = central
 
         # ── Header: routine actions left, admin actions right, title centered ─
@@ -766,14 +773,26 @@ class MainWindow(QMainWindow):
             self._console_section.setHandleWidth(7)
             bottom = self._console_section
 
+        self.console.out.setMinimumHeight(40)
+        self.console.out.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        self._dashboard_panel_controls = [
+            DashboardPanelCollapse(self.console, "incident response console"),
+            DashboardPanelCollapse(self.live_defense_activity, "live activity", scroll_body=True),
+            DashboardPanelCollapse(self.system_pulse, "system pulse", scroll_body=True),
+        ]
+        self._console_collapse = self._dashboard_panel_controls[0]
+        self._activity_collapse = self._dashboard_panel_controls[1]
+        self._pulse_collapse = self._dashboard_panel_controls[2]
+        self._operations_disclosure = DashboardPanelGroup(bottom, self._dashboard_panel_controls)
+        self._operations_disclosure.expanded_changed.connect(self._on_operations_expanded)
         body = QSplitter(Qt.Vertical)
         body.addWidget(top_split)
         body.addWidget(bottom)
-        # Evidence gets most of the workspace while the lower operational
-        # cards retain readable minimum heights and independently draggable edges.
+        # Startup opens each operational panel while evidence keeps priority.
+        # Internal views scroll instead of imposing their full content heights.
         body.setStretchFactor(0, 3)
         body.setStretchFactor(1, 1)
-        body.setSizes([380, 230])
+        body.setSizes([520, 180])
         self._workspace_tabs = QTabWidget()
         self._workspace_tabs.addTab(body, "Workspace")
         self._workspace_tabs.tabBar().hide()
@@ -797,11 +816,18 @@ class MainWindow(QMainWindow):
         # wider, and the Console/prompt can shrink further vertically.
         self.modules_panel.setMinimumWidth(150)
         self._right_tabs.setMinimumWidth(190)
-        self.console.setMinimumHeight(84)
         for _sp in (top_split, body):
             _sp.setOpaqueResize(False)
             _sp.setChildrenCollapsible(False)
             _sp.setHandleWidth(7)
+
+        for control in self._dashboard_panel_controls:
+            control.collapsed_changed.connect(lambda _collapsed: self._resize_timer.start())
+        for panel in (self.modules_panel, self.alerts_panel, *self.cards.findChildren(QWidget)):
+            changed = getattr(panel, "collapsed_changed", None)
+            if changed is not None:
+                changed.connect(lambda _collapsed: self._resize_timer.start())
+        self._body_sizing_signature = None
 
         # ── Bottom status strip (every module's state) ───────────────────────
         # Chips are clickable → open that module's full window (details, live
@@ -809,11 +835,22 @@ class MainWindow(QMainWindow):
         self.status_strip = StatusStrip(
             manager, on_chip_click=self._open_module_window, config=self.config,
         )
-        root.addWidget(self.status_strip)
         # Second row: estimated activity, aligned with the health ribbon above.
         self.resource_strip = ResourceStrip(manager, self.bus)
-        root.addWidget(self.resource_strip)
         self.status_strip.set_companion(self.resource_strip)
+        ribbon_content = QWidget()
+        ribbon_layout = QVBoxLayout(ribbon_content)
+        ribbon_layout.setContentsMargins(0, 0, 0, 0)
+        ribbon_layout.setSpacing(3)
+        ribbon_layout.addWidget(self.status_strip)
+        ribbon_layout.addWidget(self.resource_strip)
+        self._module_ribbons_disclosure = DashboardDisclosure(
+            "Module health & activity", ribbon_content,
+            "Starting… · expand for per-module coverage and estimated workload",
+        )
+        self._module_ribbons_disclosure.expanded_changed.connect(
+            lambda _expanded: self._resize_timer.start())
+        root.addWidget(self._module_ribbons_disclosure)
         from angerona.gui.ollama_status import OllamaStatusPanel
         self.ollama_status = OllamaStatusPanel(
             lambda: self.config.ollama_host, central,
@@ -1118,6 +1155,57 @@ class MainWindow(QMainWindow):
             timer.start()
         super().resizeEvent(event)
 
+    def _on_operations_expanded(self, expanded: bool) -> None:
+        """Rebudget a requested presentation change without changing runtime."""
+        self._body_sizing_signature = None
+        self._fit_collapsed_operations()
+        timer = getattr(self, "_resize_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _fit_collapsed_operations(self) -> None:
+        """Fit open/closed operational boxes to the current viewport budget."""
+        section = getattr(self, "_operations_disclosure", None)
+        body = getattr(self, "_body_splitter", None)
+        if section is None or body is None:
+            return
+        sizes = body.sizes()
+        if len(sizes) != 2:
+            return
+        total = sum(sizes) or body.height()
+        controls = getattr(self, "_dashboard_panel_controls", ())
+        collapsed = tuple(control.is_collapsed() for control in controls)
+        scale = getattr(self, "_ui_scale", 1.0)
+        narrow = self._top_splitter.orientation() == Qt.Vertical
+        signature = (total, round(scale, 2), narrow, section.is_expanded(), collapsed)
+        if signature == getattr(self, "_body_sizing_signature", None):
+            return
+        self._body_sizing_signature = signature
+        if not section.is_expanded():
+            bottom = section.collapsed_height()
+        else:
+            minimum = section.minimumSizeHint().height()
+            ceiling = round((480 if narrow else 210) * scale)
+            bottom = max(minimum, min(ceiling, round(total * (0.42 if narrow else 0.32))))
+        body.setSizes([max(1, total - bottom), bottom])
+
+    def _update_module_ribbon_summary(self) -> None:
+        """Keep coverage warnings visible while individual chips are folded."""
+        section = getattr(self, "_module_ribbons_disclosure", None)
+        strip = getattr(self, "status_strip", None)
+        if section is None or strip is None:
+            return
+        label = getattr(strip, "_summary", None)
+        live = label.text() if label is not None else "Starting…"
+        states = [value[0] for value in getattr(strip, "_prev", {}).values() if value]
+        critical = sum(state in {"critical", "failed"} for state in states)
+        degraded = states.count("degraded")
+        if states:
+            summary = f"Coverage: {critical} critical/failed · {degraded} degraded · {live} · expand for coverage and workload"
+        else:
+            summary = f"{live} · expand for per-module coverage and estimated workload"
+        section.set_summary(summary, warning=degraded > 0, critical=critical > 0)
+
     def _apply_dashboard_layout(self) -> None:
         if not hasattr(self, "_console_section"):
             return
@@ -1126,6 +1214,13 @@ class MainWindow(QMainWindow):
         width = self.width()
         scale = self._ui_scale
         mode = "wide" if width >= 1650 * scale else "stack" if width < 850 * scale else "two"
+        if getattr(self, "_operations_disclosure", None) is not None and mode == "two":
+            # Larger-font layouts often already use concise icon buttons. Use
+            # their actual width budget before spending another header row.
+            groups = self._header_groups
+            needed = sum(max(group.minimumWidth(), group.minimumSizeHint().width()) for group in groups) + 64
+            if needed <= width:
+                mode = "wide"
         if mode != self._header_layout_mode:
             layout = self._header_layout
             left, brand, right = self._header_groups
@@ -1177,18 +1272,45 @@ class MainWindow(QMainWindow):
             if getattr(self, "aria_hud", None) is not None:
                 sizes.insert(0, 170)
             self._console_section.setSizes(sizes)
-            self._body_splitter.setSizes([640, sum(sizes)] if narrow else [380, 230])
+            section = getattr(self, "_operations_disclosure", None)
+            if section is not None and not section.is_expanded():
+                self._body_splitter.setSizes([640, section.collapsed_height()])
+            else:
+                self._body_splitter.setSizes([640, sum(sizes)] if narrow else [380, 230])
+        if getattr(self, "_operations_disclosure", None) is not None:
+            # Views scroll internally; readable fonts do not force an oversized
+            # lower row to consume all evidence space on a laptop display.
+            self._top_splitter.setMinimumHeight(round(440 * scale) if narrow else 180)
         self._console_section.setMaximumWidth(16_777_215)
         # Preserve readable panel heights at laptop sizes and allow all content
         # to remain reachable even in a small utility-sized window.
-        minimum_height = 950 if narrow and self._orbital_view_active() else 1550 if narrow else 740
+        operations = getattr(self, "_operations_disclosure", None)
+        ribbons = getattr(self, "_module_ribbons_disclosure", None)
+        if operations is not None:
+            minimum_height = 980 if narrow else 540
+            if ribbons is not None and ribbons.is_expanded():
+                minimum_height += 160
+            if self._orbital_view_active():
+                minimum_height = 950 if narrow else 580
+        else:
+            minimum_height = 950 if narrow and self._orbital_view_active() else 1550 if narrow else 740
         policy = QSizePolicy.Ignored if self._orbital_view_active() else QSizePolicy.Expanding
         self._body_splitter.setSizePolicy(policy, policy)
+        scaled_minimum = round(minimum_height * scale)
+        if operations is not None and not narrow:
+            viewport = self.centralWidget()
+            if isinstance(viewport, QScrollArea):
+                # Respect the available work area instead of adding height just
+                # because details start open. Font minima remain authoritative.
+                scaled_minimum = min(scaled_minimum, max(480, viewport.viewport().height()))
         self._dashboard_content.setMinimumHeight(max(
-            round(minimum_height * scale),
-            self._dashboard_content.layout().minimumSize().height(),
-        ))
+            scaled_minimum, self._dashboard_content.layout().minimumSize().height()))
         self._dashboard_content.setMinimumWidth(440)
+        if operations is not None:
+            self._fit_collapsed_operations()
+            # The scroll canvas may resize after its new minimum is applied.
+            # Reclaim that final allocation once its queued layout has settled.
+            QTimer.singleShot(0, self._fit_collapsed_operations)
 
     def apply_theme(self, theme: str | None = None) -> None:
         # SettingsDialog passes the newly-chosen theme here; callers that just
@@ -1535,6 +1657,7 @@ class MainWindow(QMainWindow):
         # timer now governs cosmetic tables and strips only.
         if self._tick_count % status_period == 0:
             self.status_strip.refresh()
+            MainWindow._update_module_ribbon_summary(self)
         self.red_swords.set_active(self.shark_engine.is_running or self.red_team_engine.is_running)
         self._check_threat_animation()
 
@@ -2359,6 +2482,11 @@ class MainWindow(QMainWindow):
             return
         sizes = self._body_splitter.sizes()
         total = sum(sizes) or max(600, self._body_splitter.height())
+        section = getattr(self, "_operations_disclosure", None)
+        if section is not None and not section.is_expanded():
+            bottom = section.collapsed_height()
+            self._body_splitter.setSizes([max(1, total - bottom), bottom])
+            return
         # Keep both dashboard rows proportional to the actual window. A prior
         # fixed 90–150 px console allocation made the lower information row look
         # crushed whenever Scan Center opened, especially on tall displays.
@@ -6002,6 +6130,45 @@ class MainWindow(QMainWindow):
 
     def _terminate(self) -> None:
         """Best-effort graceful cleanup, then an unconditional hard exit."""
+        if self._termination_started:
+            return
+        # Persist operator intent before a child exits or aboutToQuit runs.
+        try:
+            if self._shutdown_prepare is not None:
+                self._shutdown_prepare()
+            else:
+                from angerona.core.ollama_lifecycle import begin_ollama_shutdown
+                from angerona.resilience.shutdown_token import request_operator_stop
+                request_operator_stop()
+                begin_ollama_shutdown()
+        except Exception as error:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.critical(
+                self, "Angerona could not record STOP",
+                "STOP could not be completed, so Angerona has not exited. "
+                "If STOP was already recorded, protection may be partially paused. "
+                "Check free disk space and storage permissions, then retry STOP.\n\n"
+                + type(error).__name__,
+            )
+            return
+        self._termination_started = True
+        cleanup_done = threading.Event()
+
+        def cleanup_owned():
+            try:
+                if self._shutdown_callback is not None:
+                    self._shutdown_callback()
+                else:
+                    from angerona.core.ollama_lifecycle import shutdown_ollama
+                    shutdown_ollama(
+                        getattr(self.config, "ollama_host", "http://localhost:11434"),
+                        getattr(self.config, "ollama_model", "llama3"),
+                    )
+                    self.manager.stop_all()
+            finally:
+                cleanup_done.set()
+
+        threading.Thread(target=cleanup_owned, name="OperatorStopCleanup", daemon=True).start()
         update_controller = getattr(self, "_update_controller", None)
         if update_controller is not None:
             update_controller.close()
@@ -6044,27 +6211,10 @@ class MainWindow(QMainWindow):
                 self._release_redteam_validation_lease()
         except Exception:
             pass
-        modules_stopped = False
-        try:
-            self.manager.stop_all()
-            modules_stopped = True
-        except Exception:
-            pass
-        if modules_stopped:
-            self._close_operations_service()
-        # This path ends with os._exit(), so QApplication.aboutToQuit may not
-        # get enough event-loop time to run AngeronaApp.shutdown(). Explicitly
-        # release the resident local model here as well; this covers the red
-        # STOP button and tray Quit, while kill-all-angerona.bat has its own
-        # external fallback for a wedged runner.
-        try:
-            from angerona.core.ollama_lifecycle import unload_angerona_models
-            unload_angerona_models(
-                getattr(self.config, "ollama_host", "http://localhost:11434"),
-                getattr(self.config, "ollama_model", "llama3"),
-            )
-        except Exception:
-            pass
+        # Native calls in a sensor cannot trap the UI forever. The admission
+        # fences are already durable; retained Ollama jobs close with this
+        # process even if a late sensor drain exceeds the shutdown budget.
+        cleanup_done.wait(timeout=30.0)
         try:
             self._holographic_orb.shutdown()
         except Exception:
@@ -6082,46 +6232,18 @@ class MainWindow(QMainWindow):
         os._exit(0)  # guarantee this instance dies and releases the lock socket
 
     def _full_shutdown(self) -> None:
-        """Red STOP button: confirm, then HARD-kill EVERY Angerona instance
-        (this one plus any stacked copies) and exit. This works where a normal
-        PowerShell fails, because the app runs elevated and can terminate its
-        sibling elevated processes."""
+        """Red STOP: persist operator intent and retire owned suite resources."""
         from PySide6.QtWidgets import QMessageBox
         reply = QMessageBox.question(
-            self, "Stop Angerona — hard kill",
-            "This force-stops ALL Angerona instances (including any stacked "
-            "copies running in the background) and exits completely.\n\nContinue?",
+            self, "Stop Angerona",
+            "Stop protection, unload Angerona's local AI models, stop its owned "
+            "AI services and watchdogs, and exit. Automatic recovery remains "
+            "stopped until you launch Angerona again.\n\n"
+            "A shared Ollama server remains running. Unloading a shared model "
+            "also releases its residency for other apps. Downloaded model files "
+            "are kept.\n\nContinue?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return
-
-        # Hard-kill only exact, revalidated sibling Angerona processes. Merely
-        # mentioning the repository in an unrelated Python command line never
-        # grants termination authority.
-        import os
-        me = os.getpid()
-        try:
-            import psutil
-            project_root = Path(__file__).resolve(strict=False).parents[3]
-            # Command-line reads are expensive and may retry on protected Windows
-            # processes. Query names for the whole process table, then request a
-            # command line only for the small set of Python candidates.
-            for p in psutil.process_iter(["pid", "name"]):
-                try:
-                    if "python" not in (p.info.get("name") or "").lower():
-                        continue
-                    if p.pid == me or not _is_owned_angerona_process(p, project_root):
-                        continue
-                    captured_create_time = float(p.create_time())
-                    current = psutil.Process(int(p.pid))
-                    if (
-                        abs(float(current.create_time()) - captured_create_time) <= 0.001
-                        and _is_owned_angerona_process(current, project_root)
-                    ):
-                        current.kill()
-                except Exception:
-                    continue
-        except Exception:
-            pass
 
         self._terminate()

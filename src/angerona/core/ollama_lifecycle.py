@@ -416,7 +416,9 @@ _startup_attempts: OrderedDict[str, _StartupAttempt] = OrderedDict()
 _startup_launch_lock = threading.Lock()
 _STARTUP_LIMIT = 16
 _owned_services: dict[tuple[str, int], Any] = {}
+_owned_stop_lock = threading.RLock()
 _chill_release = ContextVar("angerona_chill_model_release", default=False)
+_ai_shutdown = threading.Event()
 
 CHILL_AI_MESSAGE = (
     "Local AI is off while Chill is enabled. Switch Chill off manually to enable Ollama."
@@ -429,7 +431,12 @@ class OllamaChillBlockedError(RuntimeError):
 
 def ollama_blocked() -> bool:
     """Incident escalation cannot override the operator's local AI lock."""
-    return chill_ai_blocked() or chill_active()
+    return _ai_shutdown.is_set() or chill_ai_blocked() or chill_active()
+
+
+def begin_ollama_shutdown() -> None:
+    """Terminal admission fence for this Angerona process generation."""
+    _ai_shutdown.set()
 
 
 def _require_ollama_allowed() -> None:
@@ -464,7 +471,9 @@ def chill_cleanup_request_allowed(path: str, method: str, body: bytes | None) ->
 
 
 def _blocked_startup_status(progress=None) -> OllamaStartupStatus:
-    status = OllamaStartupStatus("blocked", "Chill Mode", 0, CHILL_AI_MESSAGE)
+    status = (OllamaStartupStatus("blocked", "Stopping", 0, "Angerona is stopping; local AI is disabled.")
+              if _ai_shutdown.is_set()
+              else OllamaStartupStatus("blocked", "Chill Mode", 0, CHILL_AI_MESSAGE))
     if progress is not None:
         try:
             progress(status)
@@ -475,6 +484,14 @@ def _blocked_startup_status(progress=None) -> OllamaStartupStatus:
 
 def _stop_owned_service(key: tuple[str, int], child) -> None:
     """Use the retained launch handle; never discover/kill an unrelated daemon."""
+    with _owned_stop_lock:
+        with _startup_lock:
+            if _owned_services.get(key) is not child:
+                return
+        _stop_owned_service_locked(key, child)
+
+
+def _stop_owned_service_locked(key, child) -> None:
     try:
         if child.poll() is None:
             child.terminate()
@@ -493,6 +510,10 @@ def _stop_owned_service(key: tuple[str, int], child) -> None:
                     threading.Event().wait(0.02)
         if child.poll() is None:
             return
+        # Closing the retained job also retires runners whose server exited.
+        close = getattr(child, "close", None)
+        if close is not None:
+            close()
     except (OSError, AttributeError, subprocess.TimeoutExpired):
         # Keep custody on failure so a later Chill release can retry.
         return
@@ -674,14 +695,18 @@ def _spawn_ollama_service(host: str, deadline: float, *, verified=None):
 
                 return launch_medium_ollama(candidate, host, deadline=deadline,
                                             check_cancelled=verified)
-            kwargs = {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
-            if sys.platform != "win32":
-                kwargs = {"start_new_session": True}
+            if sys.platform == "win32":
+                from angerona.core.ollama_owned_process import launch_owned_ollama
+
+                return launch_owned_ollama(
+                    candidate, _startup_environment(host), deadline=deadline,
+                    check_cancelled=verified,
+                )
             return subprocess.Popen(
                 [str(candidate), "serve"], cwd=str(candidate.parent),
                 env=_startup_environment(host), stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                close_fds=True, **kwargs,
+                close_fds=True, start_new_session=True,
             )
     raise ValueError("No trusted Ollama installation was found. Install Ollama using its official installer.")
 
@@ -1062,6 +1087,8 @@ def unload_angerona_models(
 
 
 def _unload_resident_models(host: str, configured_model: str, timeout: float) -> list[str]:
+    timeout = max(0.05, min(float(timeout), 5.0))
+    deadline = time.monotonic() + timeout
     base = host.rstrip("/")
     wanted = (configured_model or "llama3").split(":", 1)[0].casefold()
     try:
@@ -1069,8 +1096,15 @@ def _unload_resident_models(host: str, configured_model: str, timeout: float) ->
     except Exception:
         return []
 
+    if not isinstance(running, list):
+        return []
     unloaded: list[str] = []
-    for item in running:
+    for item in running[:32]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        if not isinstance(item, dict):
+            continue
         name = str(item.get("name") or item.get("model") or "").strip()
         family = name.split(":", 1)[0].casefold()
         if not name or (family != wanted and not family.startswith("llama3")):
@@ -1084,9 +1118,30 @@ def _unload_resident_models(host: str, configured_model: str, timeout: float) ->
                     "stream": False,
                     "keep_alive": 0,
                 },
-                timeout,
+                remaining,
             )
             unloaded.append(name)
         except Exception:
             continue
     return unloaded
+
+
+def shutdown_ollama(host="http://localhost:11434", configured_model="llama3", timeout=3.0):
+    """Cancel starts, unload resident configured models, retire owned jobs.
+
+    Existing shared Ollama services remain available to other applications.
+    A launch already in flight observes the terminal fence after creation and
+    retires its retained child; no incoming request can reopen AI admission.
+    """
+    begin_ollama_shutdown()
+    deadline = time.monotonic() + max(0.05, min(float(timeout), 5.0))
+    acquired = _startup_launch_lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            return unload_angerona_models(host, configured_model, timeout=remaining)
+        return []
+    finally:
+        stop_owned_ollama_services()
+        if acquired:
+            _startup_launch_lock.release()

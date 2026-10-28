@@ -63,6 +63,19 @@ class FakeNative:
         self.calls.append(("resume", thread))
         return 1
 
+    def create_job(self):
+        class Job:
+            def assign(self, process):
+                assert process == 30
+
+            def terminate(self):
+                pass
+
+            def close(self):
+                pass
+
+        return Job()
+
     def close(self, handle):
         self.closed.append(handle)
 
@@ -279,6 +292,44 @@ def test_cleanup_closes_remaining_handles_even_if_termination_fails(fixture_nati
     with pytest.raises(ValueError):
         run(native)
     assert sorted(native.closed) == [10, 20, 30, 40, 50]
+
+
+@pytest.mark.parametrize("assignment_fails", [False, True])
+def test_medium_child_joins_private_job_before_resume(fixture_native, assignment_fails):
+    native = fixture_native
+    calls = []
+
+    class Job:
+        def assign(self, process):
+            calls.append(("assign", process))
+            if assignment_fails:
+                raise OSError("fixture job assignment refused")
+
+        def terminate(self):
+            calls.append("terminate-tree")
+
+        def close(self):
+            calls.append("close-job")
+
+    native.create_job = Job
+    original_resume = native.resume
+
+    def resume(thread):
+        assert calls == [("assign", 30)]
+        calls.append("resume")
+        return original_resume(thread)
+
+    native.resume = resume
+    if assignment_fails:
+        with pytest.raises(ValueError):
+            run(native)
+        assert calls == [("assign", 30), "close-job"]
+        assert native.terminated == [30]
+    else:
+        child = run(native)
+        child.terminate()
+        child.close()
+        assert calls == [("assign", 30), "resume", "terminate-tree", "close-job"]
 
 
 @pytest.mark.parametrize("cancel_at", [1, 2])

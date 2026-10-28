@@ -8,7 +8,9 @@ tool never starts defensive modules or reads host telemetry.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import stat
 import sys
 import time
 from pathlib import Path
@@ -19,7 +21,21 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-DEMO_ROOT = ROOT / "diagnostics" / "public-demo-runtime"
+def _validated_demo_root() -> Path:
+    """Only task-owned scratch may hold disposable synthetic runtime records."""
+    value = Path(os.environ.get("ANGERONA_PUBLIC_DEMO_ROOT", str(ROOT / ".tmp" / "public-demo-runtime")))
+    if not value.is_absolute():
+        raise ValueError("public demo runtime root must be absolute")
+    value = Path(os.path.abspath(value))
+    if not value.is_relative_to(ROOT / ".tmp") or value == ROOT / ".tmp":
+        raise ValueError("public demo runtime root must stay beneath repository .tmp")
+    for item in (*reversed(value.parents), value):
+        if item.exists() and (item.is_symlink() or getattr(item.lstat(), "st_file_attributes", 0) & 0x400):
+            raise ValueError("public demo runtime refuses redirected paths")
+    return value
+
+
+DEMO_ROOT = _validated_demo_root()
 os.environ["ANGERONA_DATA"] = str(DEMO_ROOT)
 os.environ.setdefault("QT_QPA_PLATFORM", "windows")
 os.environ.setdefault("QT_SCALE_FACTOR", "1")
@@ -136,6 +152,10 @@ SYNTHETIC_SOAR_RECORDS = (
 
 
 def _stop_background_ui_helpers(window: MainWindow) -> None:
+    for name in ("_storage_warning_controller", "_update_controller"):
+        controller = getattr(window, name, None)
+        if controller is not None:
+            controller.close()
     monitor = getattr(window, "_responsiveness_monitor", None)
     if monitor is not None:
         monitor.close()
@@ -191,13 +211,28 @@ def _save_widget(widget, destination: Path) -> None:
 
 
 def _build_demo_window():
-    DEMO_ROOT.mkdir(parents=True, exist_ok=True)
+    marker = DEMO_ROOT / "public-demo-owner.json"
+    owner = {"schema": 1, "purpose": "Angerona synthetic public UI only"}
+    if DEMO_ROOT.exists():
+        if not marker.is_file() or marker.is_symlink() or marker.stat().st_size > 256:
+            raise ValueError("existing public demo runtime has no bounded ownership marker")
+        if json.loads(marker.read_text(encoding="ascii")) != owner:
+            raise ValueError("public demo runtime ownership marker changed")
+    else:
+        DEMO_ROOT.mkdir(parents=True)
+        marker.write_text(json.dumps(owner), encoding="ascii")
     db_path = DEMO_ROOT / "synthetic-public-demo.db"
     if db_path.exists():
+        info = db_path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ValueError("synthetic database is not a plain single-link fixture")
         db_path.unlink()
     for name in ("soar_queue.json", "soar_queue_state.json"):
         queue_path = DEMO_ROOT / "shared_logs" / name
         if queue_path.exists():
+            info = queue_path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or getattr(info, "st_file_attributes", 0) & 0x400:
+                raise ValueError("synthetic queue is not a plain single-link fixture")
             queue_path.unlink()
 
     app = QApplication.instance() or QApplication([])
@@ -368,6 +403,11 @@ def _privacy_guard() -> None:
 def _close_demo(app: QApplication, window: MainWindow, storage: FlightRecorder) -> None:
     window.hide()
     _stop_background_ui_helpers(window)
+    window.system_pulse.shutdown()
+    for name in ("_posture_reader", "_security_reader", "_usage_reconciler", "_aria_history_reader", "_flow_writer"):
+        reader = getattr(window, name, None)
+        if reader is not None:
+            reader.close()
     storage.close()
     app.processEvents()
 

@@ -43,17 +43,27 @@ function Invoke-StartupRepair {
         Write-Host "[startup-repair] failed-check=$FailureCategory attempt=$Attempt tool=Repair-Angerona-Python.ps1"
         $transaction = Invoke-RepairTransaction
         Write-Host '[startup-repair] tool-result=completed; independent-recheck=running'
+        if (Get-Command -Name Write-RepairDiagnostic -CommandType Function -ErrorAction SilentlyContinue) {
+            Write-RepairDiagnostic 'supervisor' 'independent-recheck' 'Runtime transaction returned; independent final-path verification starts.'
+        }
         Test-RepairedRuntime $venv $transaction.Stage
         Complete-RepairTransaction $transaction
         Write-Host '[startup-repair] independent-recheck=verified; retry remains Chill'
         return 0
     } catch {
+        $failure = $_
+        if (Get-Command -Name Write-RepairDiagnostic -CommandType Function -ErrorAction SilentlyContinue) {
+            Write-RepairDiagnostic 'supervisor' 'failed-or-unverified' $failure.Exception.Message
+        }
         if ($transaction -and !$transaction.Closed) {
             try { Undo-RepairTransaction $transaction } catch {
+                if (Get-Command -Name Write-RepairDiagnostic -CommandType Function -ErrorAction SilentlyContinue) {
+                    Write-RepairDiagnostic 'supervisor-rollback' 'failed-or-refused' $_.Exception.Message
+                }
                 Write-Host "[startup-repair] rollback-refused=$($_.Exception.Message)" -ForegroundColor Red
             }
         }
-        Write-Host "[startup-repair] result=failed-or-unverified; $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "[startup-repair] result=failed-or-unverified; $($failure.Exception.Message)" -ForegroundColor Red
         return 1
     }
 }

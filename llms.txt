@@ -1,15 +1,65 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.14.0
-Date: 2026-10-24
+Date: 2026-10-28
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.14.0 — live review, response recovery and runtime corrections)
 
+- Safe Startup now has private phase/error diagnostics, separate native output
+  and exit status, typed bounded repair strategies, software-renderer/non-Tk
+  alternatives and independent recovery UI. Source coherence also gates
+  check-only startup and diagnostic failures. Seventeen operational files and
+  dependency/build inputs are pinned to exact canonical GitHub blobs; native
+  read/ancestor leases bind checked bytes to execution. Explicit automatic and
+  GitHub recovery switches default on, with ambiguous consent off. Preserved
+  source edits can be kept or scheduled for a later startup, never hot-swapped
+  into an active engine. Ready snapshots are source-digest bound and do not
+  establish a security baseline or response authority.
+- Launcher/probe/capture exceptions use a separate infrastructure hold rather
+  than selecting application rollback. PowerShell environment values cross the
+  strict capture boundary as validated string bases in a typed dictionary.
+  Per-attempt diagnostics retain prior failures without attaching their text to
+  a later successful attempt. Native directory moves bind expected identities,
+  refuse overwrite and retain safe rollback after the forward budget expires.
+- Dashboard panels can minimize individually and start open except Module
+  health & activity. Responsive budgets retain readable evidence tables and
+  resource summaries. Filters/Columns and full row details expose additional
+  fields; styled native-font widths keep time/status/header text readable.
+- STOP and tray Quit persist authenticated operator intent before AI/startup
+  fences and owned-process teardown. Automatic recovery and modern sign-in
+  routes honor it. Explicit source startup resumes once after preflight; child
+  construction cannot clear a newer STOP. Owned Windows jobs and retained native
+  process generations protect shared runtimes. Configured model residency is
+  unloaded; shared Ollama daemons and downloaded weights remain. POSIX process
+  tree behavior and existing signed binaries were not verified by this work.
+- Recovery storage has separate admission budgets and free-space reserves.
+  Runtime repair preserves one prior environment, bounds retained transactions
+  and requires 5 GiB available before staging. Owned disposable commands retain
+  native job custody and monitor a 2 GiB working/log-volume reserve. Pip installs
+  avoid eager bytecode compilation and remain hash-locked/offline with bounded
+  command and transaction deadlines. An active shared runtime holds replacement;
+  unrelated diagnostic processes are not terminated to force a repair.
+- The prepared MSIX entry is independent .NET SafeStart, with a fixed helper
+  pin, retained process identity, timeout preservation and synchronized close.
+  Authenticated modern/legacy selection covers autostart and approved upgrade
+  launch; live SafeStart processes hold upgrades. Staged native validation uses
+  only the authenticated catalog reconstruction, after threshold authorization.
+  Final helper signing must precede pin embedding and final release evidence.
+  The external release authority remains unprovisioned; source publication is
+  not a signed package release. See docs/enterprise/RELEASE_SIGNING_BOUNDARY.md.
+- The 74-page master manual includes security flowcharts, all 86 source module
+  entries and a code/test/attack-surface map. README and Welcome/Help explain
+  source Observe, installed authority, default public recovery requests and
+  Ring 3 limitations. The 45-second real-UI GIF uses synthetic data and blocked
+  network/process dispatch. Scoped gates and live observation are recorded in
+  analysis/startup-storage-recovery-2026-10-28.md. Direct dashboard stdout and
+  general evidence are not covered by a universal drive quota; preserve those
+  limitations and coverage gaps rather than claiming every writer is bounded.
 - Storage maintenance adds a default 2 GiB total Shadow Shield cache ceiling
   and 2 GiB free-space reserve. Bounded restart accounting and explicit holds
-  preserve existing recovery points. Settings > General exposes limits and
+  preserve existing recovery points. Settings > System exposes limits and
   block/delete/change choices, with asynchronous volume warnings and separate
   destructive confirmation. Automatic VSS requests now default off; Windows
   shadow-storage allocation remains independent. No broad temp/evidence purge

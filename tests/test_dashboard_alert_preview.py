@@ -74,6 +74,7 @@ def test_inspector_does_not_bypass_allow_block_or_analyze_routes(monkeypatch):
 
 def test_narrow_layout_collapses_preview_and_preserves_full_detail_access(monkeypatch):
     panel, events = make_panel()
+    panel._artifact_column_action.setChecked(True)
     opened = []
     monkeypatch.setattr(panel, "_open_event_details", opened.append)
     try:

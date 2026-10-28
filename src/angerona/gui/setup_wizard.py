@@ -128,10 +128,18 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
 STEPS: tuple[Step, ...] = (
     Step(
         "Welcome to Angerona Full Setup",
-        "Configure the complete supported product in one pass. Nothing is sent "
-        "off this device unless you explicitly enable an option marked as network "
-        "or cloud. Settings are reviewed and saved when you press Finish. "
-        "Explicit installation and service-configuration actions take effect when confirmed.",
+        "Bring local alerts, investigation and policy-governed response into one workbench. "
+        "Start with a profile, review its privacy and storage choices, then save with Finish. "
+        "You can return to Help & Info for the evidence, limitations and code behind each feature.\n\n"
+        "Source runs use an ordinary user in Observe mode. Angerona runs in user mode "
+        "(Ring 3), ships no production kernel driver, and cannot guarantee visibility or "
+        "resist an administrator or kernel compromise. Response requires the appropriate "
+        "permissions, verified evidence and policy; an alert or AI answer grants no authority.\n\n"
+        "Automatic source-startup recovery and its public GitHub downloads are on by default; "
+        "change them under Updates and storage or Settings > General. Recovery preserves edits "
+        "and uploads no host files. Optional cloud analysis and messaging stay off until enabled. "
+        "Storage warnings offer Block, confirmed Delete, or Change settings. Confirmed installation "
+        "and service actions take effect immediately; other choices are saved with Finish.",
         (
             Field("profile", "_profile", "Starting profile", options=tuple(SETUP_PROFILES)),
             Field("action", "apply_profile", "Apply selected profile"),
@@ -546,7 +554,10 @@ STEPS: tuple[Step, ...] = (
         "Updates and storage",
         "v1.14 can check canonical GitHub metadata daily while Angerona is open. "
         "This optional network check prompts before any isolated download and "
-        "never silently replaces your code or settings. Review where evidence is retained.",
+        "never silently replaces your code or settings. Source-startup recovery is separate: "
+        "it is on by default and can download verified public source after startup fails, "
+        "while preserving original edits. These downloads do not upload host evidence. "
+        "Review storage limits and Block, confirmed Delete, or Change settings in System.",
         (
             Field("text", "github_repo", "Canonical GitHub update repository", "Ag3nt47/AngeronaSuite",
                   note="Updates use Ag3nt47/AngeronaSuite only; source main and signed releases are distinct."),
@@ -554,6 +565,19 @@ STEPS: tuple[Step, ...] = (
                   note="Off until enabled. Prompts before downloading an isolated source candidate; "
                        "user edits are preserved and conflicts block activation. Source preparation provides static checks; "
                        "activation remains held for separate application validation. Checks run while Angerona is open."),
+            Field("check", "startup_recovery_enabled", "Automatically try verified recovery after source startup fails",
+                  note="On by default. Applies next startup; keeps original edits privately. "
+                       "Off keeps startup checks and the independent recovery screen available."),
+            Field("check", "startup_recovery_github_enabled", "Allow public GitHub source downloads during startup recovery",
+                  note="On by default. Uses the canonical repository without uploading host files. "
+                       "Off keeps local working-source recovery available when automatic recovery is enabled."),
+            Field("check", "shadow_cache_enabled", "Allow bounded Shadow Shield recovery copies",
+                  note="Defaults to a 2 GiB total cache ceiling and 2 GiB free-space reserve. "
+                       "Block stops new copying; deleting existing copies needs separate confirmation in General."),
+            Field("spin", "shadow_cache_max_mib", "Maximum Shadow Shield cache (MiB)", minimum=64, maximum=16384),
+            Field("spin", "shadow_min_free_mib", "Minimum free space before recovery copying (MiB)", minimum=512, maximum=65536),
+            Field("check", "shadow_vss_enabled", "Allow automatic Windows shadow-copy requests",
+                  note="Off by default. Windows shadow-storage allocation is separate; no shadow copies are deleted here."),
             Field("info", "data_dir", "Evidence and settings location"),
             Field("check", "alert_retention_enabled", "Automatically clean archived alert copies",
                   note="Keeps signed evidence, recovery records and pinned archives. Defaults: 30 days / 256 MiB."),

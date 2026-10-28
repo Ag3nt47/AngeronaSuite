@@ -41,9 +41,11 @@ def test_delegates_and_desktop_shortcut_reach_only_canonical_source_launcher() -
     supervisor = _text("tools/Invoke-AngeronaSourceStartup.ps1")
     repair_supervisor = _text("tools/Invoke-AngeronaStartupRepair.ps1")
     repair = _text("Repair-Angerona-Python.ps1")
-    assert '-File "%~dp0tools\\Invoke-AngeronaSourceStartup.ps1" -RepositoryRoot "%~dp0."' in canonical
-    assert "-File (Join-Path $Root 'tools\\Invoke-AngeronaStartupRepair.ps1')" in supervisor
-    assert "-RepositoryRoot $Root -FailureCategory $Category -Attempt 1" in supervisor
+    assert "__ANGERONA_PINNED_BOOTSTRAP__" in canonical
+    assert "-ExpectedVerifierSha256" in canonical and "'-RunSupervisor'" in canonical
+    assert "tools\\Invoke-AngeronaSourceStartup.ps1" in _text("tools/verify_startup_recovery_bundle.ps1")
+    assert "(Join-Path $Root 'tools\\Invoke-AngeronaStartupRepair.ps1')" in supervisor
+    assert "'-FailureCategory', $Category, '-Attempt', '1'" in supervisor
     assert ". (Join-Path $RepositoryRoot 'Repair-Angerona-Python.ps1')" in repair_supervisor
     assert "Invoke-RepairTransaction" in repair_supervisor
     assert "$bootstrap = (Join-Path $root 'requirements-bootstrap-pip.txt')" in repair

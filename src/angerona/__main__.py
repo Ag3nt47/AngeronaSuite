@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import os
 from types import ModuleType
 
 
@@ -53,6 +54,10 @@ def _install_fast_pyside_feature_detection() -> bool:
         return False
 
 def main() -> int:
+    if "--automatic-start" in sys.argv[1:]:
+        # An inhibit-only flag: scheduled/recovery launches cannot resume STOP.
+        os.environ["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+        sys.argv = [arg for arg in sys.argv if arg != "--automatic-start"]
     process_worker = "--process-snapshot-worker" in sys.argv[1:]
     if process_worker and sys.argv[1:] != ["--process-snapshot-worker"]:
         print("[Angerona] Invalid process inventory worker arguments.", file=sys.stderr, flush=True)
@@ -158,6 +163,14 @@ def main() -> int:
     from angerona.core.data_paths import configure_runtime_environment
     configure_runtime_environment()
 
+    if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+        from angerona.resilience.shutdown_token import (
+            is_standdown_requested, signal_external_watchdog_stop,
+        )
+        if is_standdown_requested():
+            signal_external_watchdog_stop()
+            return 0
+
     # Stop child processes (netsh, tasklist, signal-cli, yara, git, …) from
     # flashing console windows every time a module runs one. Must happen before
     # any module loads. Best-effort; no-op off Windows.
@@ -254,7 +267,8 @@ def main() -> int:
         raise
     app._instance_lock = lock  # keep the lock socket alive for the app's lifetime
     try:
-        app.start()
+        if app.start() is False:
+            return 0
         if setup_requested:
             from PySide6.QtCore import QTimer
             QTimer.singleShot(700, app.window._open_setup)
