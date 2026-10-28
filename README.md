@@ -284,6 +284,13 @@ Packaged Windows installs prefer `D:\AngeronaData`, with protected
 `%ProgramData%\Angerona` as fallback when D: is unavailable.
 Cloud integrations are optional and off by default.
 
+Shadow Shield recovery copies default to a **2 GiB total cache limit** and a
+**2 GiB free-space reserve**. A storage warning offers block, delete and
+change-limit choices; **Settings > General > Drive space and recovery data**
+contains the controls. Deleting recovery copies requires confirmation.
+Automatic Windows shadow-copy creation is off by default; Windows manages its
+separate shadow-storage quota. [Storage controls and cleanup limits](docs/storage-management.md).
+
 Disposable `diagnostics/runtime_alerts.log` copies rotate at 4 MiB. Background
 cleanup removes eligible closed archives by age and total-size target, with
 adjustable limits of 1–3,650 days and 8–16,384 MiB. Pinned or inaccessible files

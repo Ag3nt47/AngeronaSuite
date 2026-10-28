@@ -8516,6 +8516,9 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self._accept_async_results = False
+        storage_controls = getattr(self, "_storage_controls", None)
+        if storage_controls is not None:
+            storage_controls.close()
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
@@ -8525,6 +8528,9 @@ class SettingsDialog(QDialog):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        storage_controls = getattr(self, "_storage_controls", None)
+        if storage_controls is not None:
+            storage_controls.close()
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
@@ -9531,6 +9537,10 @@ class SettingsDialog(QDialog):
         lay.addWidget(eco_note)
 
         lay.addWidget(self._alert_retention_controls())
+        from angerona.gui.storage_controls import StorageControls
+        self._storage_controls = StorageControls(
+            self._cfg, getattr(self.parent(), "manager", None), self)
+        lay.addWidget(self._storage_controls)
 
         lay.addWidget(self._section("Removable media (USB)"))
         usb_grid = QGridLayout()
@@ -11502,6 +11512,9 @@ class SettingsDialog(QDialog):
         candidate.alert_retention_enabled = self._alert_retention_chk.isChecked()
         candidate.alert_retention_days = self._alert_retention_days.value()
         candidate.alert_retention_max_mib = self._alert_retention_mib.value()
+        storage_controls = getattr(self, "_storage_controls", None)
+        if storage_controls is not None:
+            storage_controls.write_candidate(candidate)
         candidate.deception_user_folders = self._deception_user_folders_chk.isChecked()
         candidate.mcp_enabled = self._mcp_chk.isChecked()
         try:
@@ -11923,6 +11936,8 @@ class SettingsDialog(QDialog):
         if retention_worker is not None:
             from angerona.core.alert_retention import RetentionPolicy
             retention_worker.update_policy(RetentionPolicy.from_config(self._cfg))
+        from angerona.gui.storage_controls import apply_storage_policy, shadow_module
+        apply_storage_policy(shadow_module(getattr(self.parent(), "manager", None)), self._cfg)
         if combat_to_start is not None:
             self._request_combat_activation(*combat_to_start)
         self.accept()

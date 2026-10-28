@@ -21,6 +21,7 @@ def shield(tmp_path, monkeypatch):
     module = ShadowShield()
     module._cache_dir = tmp_path / "cache"
     module.emit = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(shadow_shield.shutil, "disk_usage", lambda _path: SimpleNamespace(free=100 * 1024**3))
     monkeypatch.setattr(shadow_shield.subprocess, "Popen", lambda *_a, **_k: pytest.fail("live subprocess forbidden"))
     return module
 
@@ -165,6 +166,7 @@ def test_success_and_unavailable_vss_publish_real_coverage(shield, monkeypatch):
 
 
 def test_missing_powershell_preserves_hourly_attempt_limit(shield, monkeypatch):
+    shield._automatic_vss_enabled = True
     calls = []
     now = [10000.0]
     monkeypatch.setattr(shadow_shield.time, "time", lambda: now[0])

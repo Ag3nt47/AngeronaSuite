@@ -7,6 +7,18 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.14.0 — live review, response recovery and runtime corrections)
 
+- Storage maintenance adds a default 2 GiB total Shadow Shield cache ceiling
+  and 2 GiB free-space reserve. Bounded restart accounting and explicit holds
+  preserve existing recovery points. Settings > General exposes limits and
+  block/delete/change choices, with asynchronous volume warnings and separate
+  destructive confirmation. Automatic VSS requests now default off; Windows
+  shadow-storage allocation remains independent. No broad temp/evidence purge
+  or Windows shadow deletion is authorized by these controls. See
+  docs/storage-management.md for scope, coverage and cleanup limits. Final
+  affected gate: 192 passed/six platform or privilege skips/native exit 0,
+  unchanged scoped sources and four retained owned process handles retired.
+  Data and temporary volumes are sampled off Qt; this is not a total-drive
+  quota or live-host protection claim.
 - Continuing GUI stalls exposed a shared process-inventory native call holding
   Python's execution lock. Embedded GUI and direct headless entries now register
   an owned, asynchronous inventory child before readers/modules. Qt refuses admission

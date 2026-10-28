@@ -948,6 +948,9 @@ class MainWindow(QMainWindow):
         self._update_controller.status_changed.connect(self._on_update_status)
         self._update_controller.candidate_ready.connect(self._on_source_candidate_ready)
         QApplication.instance().aboutToQuit.connect(self._update_controller.close)
+        from angerona.gui.storage_controls import StorageWarningController
+        self._storage_warning_controller = StorageWarningController(
+            self.config, self.manager, self, self._show_settings)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.

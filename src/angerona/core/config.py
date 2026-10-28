@@ -138,6 +138,10 @@ class Config:
     alert_retention_enabled: bool = True         # disposable runtime-alert archives only
     alert_retention_days: int = 30
     alert_retention_max_mib: int = 256
+    shadow_cache_enabled: bool = True          # bounded ransomware recovery copies
+    shadow_cache_max_mib: int = 2048
+    shadow_min_free_mib: int = 2048
+    shadow_vss_enabled: bool = False           # Windows shadow storage needs explicit opt-in
     # Decoys stay inside Angerona's D-drive data root unless the operator
     # explicitly opts into personal-folder/registry placement.
     deception_user_folders: bool = False
@@ -518,6 +522,17 @@ class Config:
                 cfg.alert_retention_enabled = retention.enabled
                 cfg.alert_retention_days = retention.days
                 cfg.alert_retention_max_mib = retention.max_mib
+                cfg.shadow_cache_enabled = _bool_setting(
+                    data, "shadow_cache_enabled", cfg.shadow_cache_enabled)
+                cfg.shadow_vss_enabled = _bool_setting(
+                    data, "shadow_vss_enabled", cfg.shadow_vss_enabled)
+                for name, low, high in (
+                    ("shadow_cache_max_mib", 64, 16384),
+                    ("shadow_min_free_mib", 512, 65536),
+                ):
+                    value = data.get(name, getattr(cfg, name))
+                    if type(value) is int and low <= value <= high:
+                        setattr(cfg, name, value)
                 cfg.deception_user_folders = _bool_setting(
                     data, "deception_user_folders", cfg.deception_user_folders)
                 cfg.mobile_enabled = _bool_setting(
@@ -923,7 +938,20 @@ class Config:
             cfg.publish_integration_environment()
         return cfg
 
+    def validate_shadow_storage_settings(self) -> None:
+        for name in ("shadow_cache_enabled", "shadow_vss_enabled"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
+        for name, low, high in (
+            ("shadow_cache_max_mib", 64, 16384),
+            ("shadow_min_free_mib", 512, 65536),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high} MiB")
+
     def save(self) -> None:
+        self.validate_shadow_storage_settings()
         self.validate_integration_settings()
         from angerona.core.alert_retention import RetentionPolicy
         RetentionPolicy(self.alert_retention_enabled, self.alert_retention_days,
@@ -958,6 +986,10 @@ class Config:
                     "alert_retention_enabled": self.alert_retention_enabled,
                     "alert_retention_days": self.alert_retention_days,
                     "alert_retention_max_mib": self.alert_retention_max_mib,
+                    "shadow_cache_enabled": self.shadow_cache_enabled,
+                    "shadow_cache_max_mib": self.shadow_cache_max_mib,
+                    "shadow_min_free_mib": self.shadow_min_free_mib,
+                    "shadow_vss_enabled": self.shadow_vss_enabled,
                     "deception_user_folders": self.deception_user_folders,
                     "mobile_enabled":     self.mobile_enabled,
                     "mobile_signal_cli":  self.mobile_signal_cli,

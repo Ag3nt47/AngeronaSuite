@@ -17,10 +17,11 @@ class SettingsArea:
 AREAS = (
     SettingsArea(
         "general", "General",
-        "Local model, appearance, motion, integrity and updates.",
+        "Local model, appearance, motion, integrity, recovery storage and updates.",
         ("ollama", "model", "theme", "appearance", "dashboard", "flow",
          "local soc", "animation", "motion",
-         "orb", "update", "github", "daily", "source update", "preserve edits", "integrity"),
+         "orb", "update", "github", "daily", "source update", "preserve edits", "integrity",
+         "recovery storage", "recovery copies", "shadow cache", "drive space", "storage limit"),
         "Local configuration; optional daily GitHub metadata checks", False,
     ),
     SettingsArea(
