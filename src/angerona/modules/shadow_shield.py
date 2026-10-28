@@ -71,6 +71,8 @@ MIN_FREE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_CACHE_ENTRIES = 20_000
 MAX_CACHE_SOURCES = 4_096
 CACHE_INVENTORY_SECONDS = 2.0
+MAX_CLEANUP_PASSES = 256
+MAX_CLEANUP_SECONDS = 30 * 60.0
 SKIP_EXT         = {".tmp", ".part", ".crdownload"}
 
 
@@ -112,6 +114,7 @@ class ShadowShield(BaseModule):
         self._cache_cleanup_running = False
         self._cache_cleanup_thread: threading.Thread | None = None
         self._cache_cleanup_cancel = threading.Event()
+        self._cache_cleanup_report: dict | None = None
         self._storage_review_pending = False
         self._cache_enabled = True
         self._automatic_vss_enabled = False
@@ -148,7 +151,10 @@ class ShadowShield(BaseModule):
                     or self._cache_cleanup_thread is not None and self._cache_cleanup_thread.is_alive()):
                 return False
             self._cache_cleanup_pending = True
-            self._storage_status = {**self._storage_status, "cleanup_pending": True}
+            self._cache_cleanup_report = dict(complete=False, removed_files=0, removed_bytes=0,
+                                             removed_directories=0, reason="cleanup requested")
+            self._storage_status = {**self._storage_status, "cleanup_pending": True,
+                                    "cleanup_report": dict(self._cache_cleanup_report)}
             cancel = self._cache_cleanup_cancel = threading.Event()
             worker = threading.Thread(target=self._cleanup_maintenance, args=(cancel,),
                                       name="ShadowShield-cache-maintenance", daemon=True)
@@ -157,8 +163,10 @@ class ShadowShield(BaseModule):
                 worker.start()
             except RuntimeError:
                 self._cache_cleanup_pending = False
+                self._cache_cleanup_report["reason"] = "cache maintenance could not start"
                 self._storage_status = {**self._storage_status, "cleanup_pending": False,
-                                        "held": True, "reason": "cache maintenance could not start"}
+                                        "held": True, "reason": "cache maintenance could not start",
+                                        "cleanup_report": dict(self._cache_cleanup_report)}
                 return False
             return True
 
@@ -172,36 +180,92 @@ class ShadowShield(BaseModule):
             return self._cache_cleanup_pending or self._cache_cleanup_running
 
     def _cleanup_maintenance(self, cancel: threading.Event) -> None:
-        # The retained thread waits here, never Qt. All sensor generations share
-        # this lock, so an old cleanup cannot race a restarted writer.
-        with self._cache_io_lock:
-            with self._storage_command_lock:
-                self._cache_cleanup_pending = False
-                self._cache_cleanup_running = True
-            self._service_storage_commands(cancel)
-            try:
-                from angerona.core.shadow_cache_cleanup import cleanup_cache
-                result = cleanup_cache(self._cache_dir, stopped=cancel)
+        # All generations share this lock, but only one bounded helper pass
+        # holds it. Primary policy/observation turns can run between passes;
+        # persistent maintenance flags exclude inventory/copy admission there.
+        with self._storage_command_lock:
+            self._cache_cleanup_pending = False
+            self._cache_cleanup_running = True
+        report = dict(complete=False, removed_files=0, removed_bytes=0,
+                      removed_directories=0, reason="cleanup did not complete")
+        started = time.monotonic()
+        try:
+            from angerona.core.shadow_cache_cleanup import cleanup_cache
+            for _pass in range(MAX_CLEANUP_PASSES):
+                if cancel.is_set():
+                    report["reason"] = "cleanup cancelled; remaining copies preserved"
+                    break
+                if time.monotonic() - started >= MAX_CLEANUP_SECONDS:
+                    report["reason"] = "cleanup overall time bound reached; remaining copies preserved"
+                    break
+                with self._cache_io_lock:
+                    self._apply_storage_commands(cancel)
+                    if cancel.is_set():
+                        report["reason"] = "cleanup cancelled; remaining copies preserved"
+                        break
+                    result = cleanup_cache(self._cache_dir, stopped=cancel)
+                    progress = 0
+                    for field in ("removed_files", "removed_bytes", "removed_directories"):
+                        value = result.get(field, 0)
+                        if type(value) is not int or value < 0:
+                            raise ValueError("invalid cleanup progress")
+                        report[field] += value
+                        if field != "removed_bytes":
+                            progress += value
+                    report["complete"] = result.get("complete") is True
+                    report["reason"] = str(result.get("reason", "cleanup outcome unavailable"))[:300]
+                    self._cache_accounted = False
+                    self._cache_cleanup_report = dict(report)
+                    self._publish_storage_status()
+                if cancel.is_set() and not report["complete"]:
+                    report["reason"] = "cleanup cancelled; remaining copies preserved"
+                if report["complete"] or cancel.is_set() or not progress:
+                    break
+                # Only the helper's two explicit resumable bounds authorize
+                # another pass. Unsafe, unknown and unavailable outcomes stop.
+                if report["reason"] not in {
+                    "cleanup time bound reached; remaining copies preserved; run cleanup again",
+                    "cleanup entry bound reached; remaining copies preserved; run cleanup again",
+                }:
+                    break
+                self._cleanup_pass_pause(cancel)
+            else:
+                report["reason"] = "cleanup overall pass bound reached; remaining copies preserved"
+            with self._cache_io_lock:
+                if report["complete"]:
+                    self._cache_storage_hold = ""
+                    self._storage_review_pending = False
+                else:
+                    self._cache_storage_hold = "requested cache cleanup incomplete: " + report["reason"][:200]
+        except Exception:
+            with self._cache_io_lock:
+                self._cache_storage_hold = "requested cache cleanup unavailable; restart after review"
+                report["complete"] = False
+                report["reason"] = "cache cleanup unavailable; remaining copies preserved"
+        finally:
+            with self._cache_io_lock:
                 self._cache_accounted = False
                 self._cache_directory_stamps = {}
                 self._cache_populated_sources = set()
                 self._seen_mtime.clear()
-                if result["complete"]:
-                    self._cache_storage_hold = ""
-                    self._storage_review_pending = False
-                else:
-                    self._cache_storage_hold = "requested cache cleanup incomplete: " + str(result["reason"])[:200]
-            except Exception:
-                self._cache_storage_hold = "requested cache cleanup unavailable; restart after review"
-            finally:
+                self._cache_cleanup_report = dict(report)
                 with self._storage_command_lock:
                     self._cache_cleanup_running = False
                 self._publish_storage_status()
 
+    @staticmethod
+    def _cleanup_pass_pause(cancel: threading.Event) -> None:
+        # Yield outside I/O custody for a waiting primary policy turn. This is
+        # cooperative scheduling, not a preemptible filesystem deadline.
+        cancel.wait(0.01)
+
     def storage_status(self) -> dict:
         """Return cached advisory state; no directory walk or disk query."""
         with self._storage_command_lock:
-            return dict(self._storage_status)
+            result = dict(self._storage_status)
+            if result.get("cleanup_report") is not None:
+                result["cleanup_report"] = dict(result["cleanup_report"])
+            return result
 
     def _publish_storage_status(self) -> None:
         # Publish one advisory projection atomically. GUI readers never combine
@@ -215,11 +279,17 @@ class ShadowShield(BaseModule):
                 "held": bool(self._cache_storage_hold),
                 "reason": self._cache_storage_hold or ("cache disabled by operator" if not self._cache_enabled else ""),
                 "cleanup_pending": self._cache_cleanup_pending or self._cache_cleanup_running,
+                "cleanup_report": (dict(self._cache_cleanup_report)
+                                   if self._cache_cleanup_report is not None else None),
                 "cache_enabled": self._cache_enabled,
                 "inventory_complete": self._cache_accounted,
             }
 
     def _service_storage_commands(self, stopped: threading.Event) -> None:
+        with self._storage_command_lock:
+            pending = self._storage_policy_pending is not None
+        if not pending:
+            return
         with self._cache_io_lock:
             self._apply_storage_commands(stopped)
 
@@ -244,7 +314,8 @@ class ShadowShield(BaseModule):
 
     def _storage_commands_waiting(self) -> bool:
         with self._storage_command_lock:
-            return self._storage_policy_pending is not None or self._cache_cleanup_pending
+            return (self._storage_policy_pending is not None
+                    or self._cache_cleanup_pending or self._cache_cleanup_running)
 
     # ── Cache helpers ─────────────────────────────────────────────────────────
     @staticmethod
@@ -293,6 +364,8 @@ class ShadowShield(BaseModule):
             return self._hold_storage("cache directory unavailable; restart after review")
 
     def _inventory_cache(self) -> bool:
+        if self._cleanup_waiting():
+            return False
         with self._cache_io_lock:
             if self._cleanup_waiting():
                 return False
@@ -442,6 +515,8 @@ class ShadowShield(BaseModule):
                     yield os.path.join(root, fn)
 
     def _cache_version(self, path: str) -> tuple[str, int]:
+        if self._cleanup_waiting():
+            return "skipped", 0
         with self._cache_io_lock:
             if self._cleanup_waiting():
                 return "skipped", 0
@@ -452,6 +527,7 @@ class ShadowShield(BaseModule):
         versions. Stores an index sidecar mapping cache filename → source path."""
         stopped = self.generation_stop_event()
         temporary: Path | None = None
+        temporary_generation: tuple[int, int] | None = None
         kd: Path | None = None
         copied = 0
         try:
@@ -502,6 +578,8 @@ class ShadowShield(BaseModule):
             # the existing exact-artifact recovery workflow could enumerate.
             temporary = kd / f".{mtime_ns}.{uuid.uuid4().hex}.tmp"
             with open(path, "rb") as source, temporary.open("xb") as target:
+                created = os.fstat(target.fileno())
+                temporary_generation = created.st_dev, created.st_ino
                 opened = os.fstat(source.fileno())
                 if (opened.st_size, opened.st_mtime_ns) != (st.st_size, mtime_ns):
                     return "failed", 0
@@ -539,8 +617,18 @@ class ShadowShield(BaseModule):
         finally:
             if temporary is not None:
                 try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
+                    if os.path.lexists(temporary):
+                        info = temporary.lstat()
+                        if ((info.st_dev, info.st_ino) != temporary_generation
+                                or not self._plain(info, directory=False)):
+                            raise ValueError("staging file no longer belongs to this copy")
+                        from angerona.core.shadow_cache_cleanup import delete_cache_file
+                        # Retire this one owned staging file even when the
+                        # module's generation stopped. copystat can have copied
+                        # READONLY; exact-handle disposition needs no attr edit.
+                        if not delete_cache_file(temporary, expected_identity=self._cache_file_identity(info)):
+                            raise OSError("owned staging cleanup did not complete")
+                except (OSError, ValueError):
                     self._hold_storage("partial cache cleanup unavailable; restart after review")
             if self._cache_accounted:
                 try:
@@ -551,9 +639,19 @@ class ShadowShield(BaseModule):
                     self._hold_storage("cache directory accounting unavailable; restart after review")
             self._publish_storage_status()
 
+    @staticmethod
+    def _cache_file_identity(info) -> tuple[int, int, int, int]:
+        return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
     def _prune(self, kd: Path) -> None:
+        with self._cache_io_lock:
+            self._prune_locked(kd)
+
+    def _prune_locked(self, kd: Path) -> None:
         stopped = self.generation_stop_event()
         try:
+            if kd.parent != self._cache_dir or re.fullmatch(r"[0-9a-f]{64}", kd.name) is None:
+                raise ValueError("retention requires one bound cache key directory")
             versions = []
             with os.scandir(kd) as entries:
                 for index, entry in enumerate(entries):
@@ -561,16 +659,26 @@ class ShadowShield(BaseModule):
                         return
                     if index >= MAX_PRUNE_ENTRIES:
                         self._prune_errors += 1
+                        self._hold_storage("cache retention inventory limit reached; restart after review")
                         return
-                    if entry.name.endswith(".bak") and entry.is_file(follow_symlinks=False):
-                        versions.append((entry.stat(follow_symlinks=False).st_mtime, Path(entry.path)))
+                    if re.fullmatch(r"[0-9]{1,20}\.bak", entry.name):
+                        candidate = Path(entry.path)
+                        info = candidate.lstat()
+                        if not self._plain(info, directory=False):
+                            raise ValueError("cache retention artifact is not plain")
+                        versions.append((info.st_mtime_ns, candidate, self._cache_file_identity(info)))
             versions.sort(key=lambda item: item[0])
-            for _, old in versions[:-RETAIN_VERSIONS]:
+            for _, old, expected in versions[:-RETAIN_VERSIONS]:
                 if stopped.is_set():
                     return
-                old.unlink(missing_ok=True)
+                from angerona.core.shadow_cache_cleanup import delete_cache_file
+                if not delete_cache_file(old, expected_identity=expected, stopped=stopped):
+                    if not stopped.is_set():
+                        raise OSError("cache retention deletion did not complete")
+                    return
         except Exception:
             self._prune_errors += 1
+            self._hold_storage("cache retention unavailable; restart after review")
 
     @staticmethod
     def _sha256(path: Path) -> str:
@@ -853,8 +961,13 @@ class ShadowShield(BaseModule):
     # ── Loop ──────────────────────────────────────────────────────────────────
     def _cache_progress(self, counts: dict[str, int], *, complete: bool) -> None:
         health = self._vss_health if self._vss_health is not None else 50
+        maintenance = self._cleanup_waiting()
+        limited = bool(self._cache_storage_hold or not self._cache_enabled or maintenance)
+        storage_note = ("cache maintenance in progress; copying held" if maintenance else
+                        "LIMITED: " + self._cache_storage_hold if self._cache_storage_hold else
+                        "admitted" if self._cache_enabled else "cache disabled by operator")
         if (not complete or self._walk_errors or self._prune_errors
-                or counts["failed"] or counts["skipped"] or self._cache_storage_hold or not self._cache_enabled):
+                or counts["failed"] or counts["skipped"] or limited):
             health = min(health, 50)
         stopped = self.generation_stop_event()
         with self._lifecycle_lock:
@@ -862,12 +975,12 @@ class ShadowShield(BaseModule):
                 return
             self.set_health(
                 health,
-                f"delta cache {'coverage LIMITED' if self._cache_storage_hold or not self._cache_enabled else 'pass complete' if complete else 'coverage PARTIAL'}: "
+                f"delta cache {'coverage LIMITED' if limited else 'pass complete' if complete else 'coverage PARTIAL'}: "
                 f"cached={counts['cached']}, unchanged={counts['unchanged']}, "
                 f"skipped={counts['skipped']}, failed={counts['failed']}, "
                 f"unavailable roots/walk errors={self._walk_errors}, "
                 f"cache retention errors={self._prune_errors}; {self._vss_note}; "
-                f"storage={'LIMITED: ' + self._cache_storage_hold if self._cache_storage_hold else 'admitted' if self._cache_enabled else 'cache disabled by operator'}; "
+                f"storage={storage_note}; "
                 f"{self._snapshots} snapshots, {self._rollbacks} rollbacks",
             )
 
@@ -929,7 +1042,8 @@ class ShadowShield(BaseModule):
             self.mark_cycle_complete(interval_seconds=0.0)
 
             now = time.time()
-            if self._automatic_vss_enabled and now - self._last_vss >= VSS_INTERVAL_S:
+            if (self._automatic_vss_enabled and not self._cleanup_waiting()
+                    and now - self._last_vss >= VSS_INTERVAL_S):
                 self._take_vss_snapshot()
             elif not self._automatic_vss_enabled and self._vss_health is None:
                 self._vss_health = 50

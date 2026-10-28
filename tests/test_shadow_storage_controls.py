@@ -195,6 +195,43 @@ def test_settings_confirmed_delete_blocks_before_request_and_cancel_preserves_po
     assert not controls._timer.isActive()
 
 
+@pytest.mark.parametrize("complete", [True, False])
+def test_settings_shows_cleanup_progress_and_truthful_terminal_result(setup, complete):
+    config, module, manager, _, _, parent = setup
+    controls = gui.StorageControls(config, manager, parent)
+    module.state.update(cleanup_pending=True, cleanup_report={
+        "complete": False, "removed_files": 17, "removed_bytes": 3 * gui.MIB,
+        "reason": "bounded pass continuing",
+    })
+    controls.refresh()
+    assert "Deletion running: removed 17 files (3.0 MiB)" in controls.usage.text()
+    assert "wait for completion" in controls.usage.text()
+    assert "Deletion complete" not in controls.usage.text()
+    assert not controls.delete_button.isEnabled()
+    module.state.update(cleanup_pending=False, cleanup_report={
+        "complete": complete, "removed_files": 23, "removed_bytes": 5 * gui.MIB,
+        "reason": "" if complete else "changed cache identity; remaining files preserved",
+    })
+    controls.refresh()
+    assert controls.delete_button.isEnabled()
+    assert "removed 23 files (5.0 MiB)" in controls.usage.text()
+    if complete:
+        assert "Deletion complete" in controls.usage.text()
+        assert "Deletion incomplete" not in controls.usage.text()
+    else:
+        assert "Deletion incomplete" in controls.usage.text()
+        assert "changed cache identity; remaining files preserved" in controls.usage.text()
+    controls.close()
+
+
+def test_queued_request_does_not_reuse_prior_complete_report_as_success():
+    text = gui._usage_text({"cleanup_pending": True, "cleanup_report": {
+        "complete": True, "removed_files": 5, "removed_bytes": gui.MIB, "reason": "",
+    }})
+    assert "Deletion queued or running" in text
+    assert "Deletion complete" not in text and "removed 5" not in text
+
+
 def test_volume_probe_runs_off_qt_and_polling_coalesces(setup, monkeypatch):
     config, _, _, controller, _, _ = setup
     entered, release = threading.Event(), threading.Event()

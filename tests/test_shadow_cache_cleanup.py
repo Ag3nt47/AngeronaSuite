@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import os
+import stat
 import threading
 from types import SimpleNamespace
 
 import pytest
 
 from angerona.core import shadow_cache_cleanup as cleanup
-from angerona.core.alert_retention import _File
 
 
 @pytest.fixture
@@ -303,7 +303,7 @@ def test_reparse_file_metadata_is_refused_even_if_not_a_symlink(cache, monkeypat
 def test_windows_deletion_holds_exact_file_against_other_writers_and_renames(cache, monkeypatch):
     path = key(cache) / "1.bak"
     path.write_bytes(b"copy")
-    original = _File.delete
+    original = cleanup._CacheFile.delete
     witnessed = []
 
     def verify_held(file, expected):
@@ -315,7 +315,7 @@ def test_windows_deletion_holds_exact_file_against_other_writers_and_renames(cac
         witnessed.append(True)
         return original(file, expected)
 
-    monkeypatch.setattr(_File, "delete", verify_held)
+    monkeypatch.setattr(cleanup._CacheFile, "delete", verify_held)
     result = cleanup.cleanup_cache(cache)
     assert result["complete"] and witnessed == [True] and not path.exists()
 
@@ -378,6 +378,139 @@ def test_windows_guards_deny_writable_root_and_key_directory_handles(cache, monk
     monkeypatch.setattr(cleanup._CacheDirectory, "remove_empty", verify_held)
     result = cleanup.cleanup_cache(cache)
     assert result["complete"] and witnessed == [True] and not directory.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only recovery artifacts")
+def test_windows_readonly_versions_and_interrupted_temporary_copies_are_deleted(cache):
+    directory = key(cache)
+    paths = [directory / "123.bak", directory / (".123." + "a" * 32 + ".tmp")]
+    metadata = directory / "_source.txt"
+    metadata.write_bytes(b"source")
+    for path in paths:
+        path.write_bytes(b"read-only recovery")
+        path.chmod(stat.S_IREAD)
+        assert path.stat().st_file_attributes & 1
+    result = cleanup.cleanup_cache(cache)
+    try:
+        assert result["complete"], result
+        assert result["removed_files"] == 3 and result["removed_directories"] == 1
+        assert not directory.exists()
+    finally:
+        for path in paths:
+            if path.exists():
+                path.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only attribute preservation")
+@pytest.mark.parametrize("kind", ["unknown", "pinned", "hardlink"])
+def test_windows_unapproved_readonly_files_keep_their_bytes_and_attributes(cache, tmp_path, kind):
+    directory = key(cache)
+    path = directory / ("evidence.json" if kind == "unknown" else "123.bak")
+    path.write_bytes(b"preserved read-only data")
+    if kind == "pinned":
+        (directory / "123.bak.keep").write_bytes(b"investigation pin")
+    linked = tmp_path / "original"
+    if kind == "hardlink":
+        os.link(path, linked)
+    path.chmod(stat.S_IREAD)
+    before = path.stat().st_file_attributes
+    try:
+        result = cleanup.cleanup_cache(cache)
+        assert not result["complete"] and result["removed_files"] == 0
+        assert path.read_bytes() == b"preserved read-only data"
+        assert path.stat().st_file_attributes == before
+        if kind == "hardlink":
+            assert linked.read_bytes() == b"preserved read-only data"
+            assert linked.stat().st_file_attributes == before
+    finally:
+        path.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows FileDispositionInfoEx support boundary")
+def test_unsupported_readonly_disposition_preserves_original_attributes(cache, monkeypatch):
+    path = key(cache) / "123.bak"
+    path.write_bytes(b"read-only recovery")
+    path.chmod(stat.S_IREAD)
+    before = path.stat().st_file_attributes
+    original = cleanup._CacheFile._set_information
+    attempted = []
+
+    def unsupported(file, kind, value):
+        if kind == 21:
+            attempted.append(value.flags)
+            raise OSError(50, "FileDispositionInfoEx unsupported")
+        return original(file, kind, value)
+
+    monkeypatch.setattr(cleanup._CacheFile, "_set_information", unsupported)
+    try:
+        result = cleanup.cleanup_cache(cache)
+        assert not result["complete"] and result["removed_files"] == 0
+        assert attempted == [0x11]
+        assert path.read_bytes() == b"read-only recovery"
+        assert path.stat().st_file_attributes == before
+    finally:
+        path.chmod(stat.S_IWRITE | stat.S_IREAD)
+
+
+def test_single_artifact_deletion_is_identity_bound_and_preserves_source_mapping(cache):
+    directory = key(cache)
+    path = directory / "123.bak"
+    path.write_bytes(b"prior version")
+    metadata = directory / "_source.txt"
+    metadata.write_bytes(b"source mapping")
+    expected = cleanup._identity(path.lstat())
+    assert cleanup.delete_cache_file(path, expected_identity=expected)
+    assert not path.exists() and metadata.read_bytes() == b"source mapping"
+    assert directory.is_dir()
+
+
+def test_single_artifact_refuses_changed_identity_and_cancellation(cache):
+    path = key(cache) / "123.bak"
+    path.write_bytes(b"prior")
+    expected = cleanup._identity(path.lstat())
+    path.write_bytes(b"replacement longer")
+    with pytest.raises(ValueError, match="changed"):
+        cleanup.delete_cache_file(path, expected_identity=expected)
+    stopped = threading.Event()
+    stopped.set()
+    assert not cleanup.delete_cache_file(path, expected_identity=cleanup._identity(path.lstat()), stopped=stopped)
+    assert path.read_bytes() == b"replacement longer"
+
+
+@pytest.mark.parametrize("name", ["_source.txt", "evidence.json", "123.bak.keep"])
+def test_single_artifact_never_admits_metadata_or_unknown_names(cache, name):
+    path = key(cache) / name
+    path.write_bytes(b"preserved")
+    with pytest.raises(ValueError, match="select one"):
+        cleanup.delete_cache_file(path, expected_identity=cleanup._identity(path.lstat()))
+    assert path.read_bytes() == b"preserved"
+
+
+def test_single_artifact_requires_explicit_prior_identity(cache):
+    path = key(cache) / "123.bak"
+    path.write_bytes(b"preserved")
+    with pytest.raises(ValueError, match="previously observed"):
+        cleanup.delete_cache_file(path, expected_identity=None)
+    assert path.read_bytes() == b"preserved"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX read-only cache descriptor")
+def test_posix_readonly_recovery_copy_uses_readonly_held_descriptor(cache, monkeypatch):
+    path = key(cache) / "123.bak"
+    path.write_bytes(b"read-only recovery")
+    path.chmod(0o444)
+    original = cleanup.os.open
+    observed = []
+
+    def record(name, flags, *args, **kwargs):
+        if name == "123.bak":
+            observed.append(flags & os.O_ACCMODE)
+        return original(name, flags, *args, **kwargs)
+
+    monkeypatch.setattr(cleanup.os, "open", record)
+    result = cleanup.cleanup_cache(cache)
+    assert result["complete"] and result["removed_files"] == 1
+    assert observed == [os.O_RDONLY] and not path.exists()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX directory permission custody")

@@ -13,7 +13,7 @@ import stat
 import time
 from pathlib import Path
 
-from angerona.core.alert_retention import _Directory, _identity, _plain
+from angerona.core.alert_retention import _Directory, _File, _identity, _plain
 
 
 MAX_ENTRIES = 100_000
@@ -37,6 +37,11 @@ class _CacheDirectory(_Directory):
         self.handle = handle
         self._guard_active = False
         self.identity = self.object_identity()
+
+    def open(self, name, *, create=False, lease=False):
+        if create or lease:
+            raise ValueError("cache cleanup never creates files or authority leases")
+        return _CacheFile(self, name)
 
     def object_identity(self):
         info = (self.path.lstat() if self.descriptor is None else os.fstat(self.descriptor))
@@ -68,6 +73,87 @@ class _CacheDirectory(_Directory):
                 raise ctypes.WinError(ctypes.get_last_error())
         else:
             os.rmdir(name, dir_fd=parent.descriptor)
+
+
+class _CacheFile(_File):
+    """Held cache artifact; Windows deletion needs attributes and DELETE only.
+
+    Recovery copies inherit source read-only attributes through copystat. They
+    must not require GENERIC_WRITE or a pathname attribute rewrite to retire.
+    """
+
+    def __init__(self, directory, name):
+        if "/" in name or "\\" in name or name in {".", ".."}:
+            raise ValueError("invalid cache artifact name")
+        self.directory, self.name, self.descriptor = directory, name, -1
+        if os.name != "nt":
+            import fcntl
+
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+            self.descriptor = os.open(name, flags, dir_fd=directory.descriptor)
+            try:
+                opened = self.info()
+                named = directory.stat(name)
+                _plain(named)
+                if _identity(opened) != _identity(named):
+                    raise ValueError("cache artifact handle changed identity")
+                fcntl.flock(self.descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BaseException:
+                self.close()
+                raise
+            return
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        opener = kernel.CreateFileW
+        opener.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                           wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        opener.restype = wintypes.HANDLE
+        closer = kernel.CloseHandle
+        closer.argtypes = (wintypes.HANDLE,)
+        closer.restype = wintypes.BOOL
+        handle = opener(str(directory.path / name), 0x80 | 0x10000, 1, None,
+                        3, 0x00200000, None)  # READ_ATTRIBUTES | DELETE; OPEN_REPARSE_POINT.
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            self.descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        except BaseException:
+            closer(handle)
+            raise
+        try:
+            opened = self.info()
+            named = directory.stat(name)
+            _plain(named)
+            if _identity(opened) != _identity(named):
+                raise ValueError("cache artifact handle changed identity")
+        except BaseException:
+            self.close()
+            raise
+
+    def delete(self, expected):
+        if os.name != "nt":
+            return super().delete(expected)
+        named = self.directory.stat(self.name)
+        _plain(named)
+        if _identity(self.info()) != expected or _identity(named) != expected:
+            raise ValueError("cache artifact changed before removal")
+        if self.directory.exists(self.name + ".keep"):
+            raise ValueError("cache artifact became pinned")
+        if not int(getattr(named, "st_file_attributes", 0)) & 1:
+            return super().delete(expected)
+        import ctypes
+        from ctypes import wintypes
+
+        class DispositionEx(ctypes.Structure):
+            _fields_ = [("flags", wintypes.DWORD)]
+
+        # FileDispositionInfoEx=21, DELETE=0x1, IGNORE_READONLY_ATTRIBUTE=0x10.
+        # This acts on the retained exact handle without changing attributes.
+        # Unsupported filesystems/OS versions fail closed; no weaker fallback.
+        self._set_information(21, DispositionEx(0x1 | 0x10))
 
 
 @contextlib.contextmanager
@@ -223,6 +309,40 @@ def _clean_key(parent, name, before, budget, result):
         budget.check()
         directory.remove_empty(parent, name, budget)
     result["removed_directories"] += 1
+
+
+def delete_cache_file(path, *, expected_identity, stopped=None) -> bool:
+    """Retire one previously observed version/temp artifact with full custody.
+
+    The caller owns writer exclusion and must supply its prior observed
+    ``(st_dev, st_ino, st_size, st_mtime_ns)``. Source metadata is ineligible.
+    Cancellation/time bounds return False; unsafe, changed, pinned, unavailable
+    or unsupported deletion raises without rewriting attributes or contents.
+    """
+    if (type(expected_identity) is not tuple or len(expected_identity) != 4
+            or any(type(value) is not int for value in expected_identity)):
+        raise ValueError("one exact previously observed cache identity is required")
+    path = Path(path)
+    if (not path.is_absolute() or ".." in path.parts
+            or str(path).startswith(("\\\\", "//"))
+            or path.parent.parent.name != "shadow_cache"
+            or not _KEY.fullmatch(path.parent.name)
+            or not (_VERSION.fullmatch(path.name) or _TEMPORARY.fullmatch(path.name))):
+        raise ValueError("select one local cache version or interrupted writer temporary")
+    budget = _Budget(stopped)
+    try:
+        budget.check()
+        with _held_directory(path.parent.parent) as root:
+            before = root.stat(path.parent.name)
+            _protected_directory(before)
+            with _held_directory(path.parent, root) as directory:
+                if directory.identity != (before.st_dev, before.st_ino):
+                    raise ValueError("cache key changed before artifact removal")
+                result = dict(removed_files=0, removed_bytes=0)
+                _remove(directory, path.name, expected_identity, budget, result)
+        return True
+    except _LimitReached:
+        return False
 
 
 def cleanup_cache(cache_dir, *, stopped=None) -> dict:

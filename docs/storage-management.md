@@ -34,10 +34,24 @@ of the same condition do not open repeated dialogs.
 Deletion runs outside the GUI thread with the cache writer excluded. It checks
 plain directory ancestry and exact regular-file identities, rejects links and
 hardlinks, and preserves unknown or pinned artifacts. Work has entry and time
-limits; cancellation, changed input and incomplete cleanup remain visible.
-Another request can continue remaining cleanup. Filesystem calls can exceed
-the cooperative time budget. A successful request is not a claim that other
-applications have stopped using the drive.
+limits; the worker continues bounded passes while time or entry limits are the
+only interruption and each pass makes progress. One request stops at completion,
+cancellation, unsafe or unavailable input, no progress, 256 passes or 30 minutes.
+The controls show cumulative progress and an explicit complete or incomplete
+result. Another request can continue remaining cleanup. Filesystem calls can
+exceed the cooperative time budget. A successful request is not a claim that
+other applications have stopped using the drive.
+The worker releases I/O custody between passes while admission flags continue
+to block copies, so primary policy and observation turns can advance during a
+long deletion. Maintenance remains explicitly limited recovery coverage.
+
+Older copies can inherit a source file's read-only flag, including interrupted
+staging files. Cache cleanup, six-version pruning and owned staging retirement
+now use identity-bound deletion that handles those artifacts without rewriting
+their attributes. On Windows, read-only deletion uses the documented
+[handle disposition flag](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex).
+Unsupported operations preserve the file and report incomplete work. The shared
+alert-archive writer and original documents are outside this deletion path.
 
 ## Windows shadow copies and other data
 
@@ -63,11 +77,12 @@ quota for every file on a drive or a guarantee of complete ransomware recovery.
 
 ## Validation
 
-The final focused integration gate passed 192 cases with six existing platform
+The final focused integration gate passed 218 cases with seven platform
 or privilege skips. It covered cache admission, exact-artifact restoration,
-cleanup custody and cancellation, stopped-module maintenance, restart writer
-exclusion, storage dialogs, configuration, alert retention and affected Settings
-and shutdown paths. Source digests stayed unchanged throughout that run; all
-four retained owned process handles signaled completion and were closed.
+read-only cleanup and retention, custody and cancellation, stopped-module and
+multiple-pass maintenance, inter-pass primary progress, restart writer exclusion,
+storage dialogs, configuration, alert retention and affected Settings and shutdown
+paths. Source digests stayed unchanged throughout that run; all five retained
+owned process handles signaled completion and were closed.
 Lint, in-memory syntax checks and offline documentation validation also passed.
 These are scoped offline and offscreen results, not a full live-host observation.

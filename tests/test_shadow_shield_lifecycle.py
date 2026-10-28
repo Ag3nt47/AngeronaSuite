@@ -19,7 +19,7 @@ from angerona.modules.watchdog_monitor import WatchdogMonitor
 @pytest.fixture
 def shield(tmp_path, monkeypatch):
     module = ShadowShield()
-    module._cache_dir = tmp_path / "cache"
+    module._cache_dir = tmp_path / "shadow_cache"
     module.emit = lambda *_args, **_kwargs: None
     monkeypatch.setattr(shadow_shield.shutil, "disk_usage", lambda _path: SimpleNamespace(free=100 * 1024**3))
     monkeypatch.setattr(shadow_shield.subprocess, "Popen", lambda *_a, **_k: pytest.fail("live subprocess forbidden"))
@@ -265,8 +265,8 @@ def test_cache_slices_yield_after_real_work_with_partial_coverage(shield, monkey
 
 
 def test_retention_is_per_key_and_bounds_unexpected_directory_growth(shield, tmp_path):
-    keydir = tmp_path / "versions"
-    keydir.mkdir()
+    keydir = shield._keydir(str(tmp_path / "retention-source.txt"))
+    keydir.mkdir(parents=True)
     for number in range(shadow_shield.RETAIN_VERSIONS + 1):
         path = keydir / f"{number}.bak"
         path.write_bytes(b"x")

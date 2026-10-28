@@ -105,6 +105,27 @@ def storage_warning(status: dict, free_bytes: int | None, reserve_bytes: int) ->
     return ""
 
 
+def _cleanup_text(status: dict) -> str:
+    pending = bool(status.get("cleanup_pending"))
+    report = status.get("cleanup_report")
+    if not isinstance(report, dict):
+        return "Deletion queued or running; wait for completion" if pending else ""
+    files, size = report.get("removed_files"), report.get("removed_bytes")
+    measured = type(files) is int and files >= 0 and type(size) is int and size >= 0
+    progress = f"removed {files:,} files ({size / MIB:.1f} MiB)" if measured else "removal totals unavailable"
+    # A prior terminal report cannot attest a newly queued request. Pending
+    # always wins over a complete flag until maintenance publishes its result.
+    if pending:
+        if report.get("complete") is True:
+            return "Deletion queued or running; wait for completion"
+        state = "Deletion running" if measured and files else "Deletion queued or running"
+        return f"{state}: {progress}; wait for completion"
+    if report.get("complete") is True and measured:
+        return f"Deletion complete: {progress}"
+    reason = str(report.get("reason") or "completion was not verified")[:500]
+    return f"Deletion incomplete: {progress}; {reason}"
+
+
 def _usage_text(status: dict) -> str:
     used, limit = status.get("used_bytes"), status.get("limit_bytes")
     text = "Recovery usage is not measured yet."
@@ -114,8 +135,9 @@ def _usage_text(status: dict) -> str:
             text += " (incomplete inventory; copying held)"
     if status.get("reason"):
         text += f". {str(status['reason'])[:500]}"
-    if status.get("cleanup_pending"):
-        text += ". Deletion queued or running; wait for completion."
+    cleanup = _cleanup_text(status)
+    if cleanup:
+        text = text.rstrip(".") + ". " + cleanup + "."
     return text
 
 

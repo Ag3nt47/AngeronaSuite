@@ -14,11 +14,21 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   destructive confirmation. Automatic VSS requests now default off; Windows
   shadow-storage allocation remains independent. No broad temp/evidence purge
   or Windows shadow deletion is authorized by these controls. See
-  docs/storage-management.md for scope, coverage and cleanup limits. Final
-  affected gate: 192 passed/six platform or privilege skips/native exit 0,
+  docs/storage-management.md for scope, coverage and cleanup limits. Initial
+  storage gate: 192 passed/six platform or privilege skips/native exit 0,
   unchanged scoped sources and four retained owned process handles retired.
   Data and temporary volumes are sampled off Qt; this is not a total-drive
   quota or live-host protection claim.
+- Read-only recovery copies and interrupted staging files need deletion access,
+  not content-write access. Cache-only retained handles now retire these exact
+  artifacts without attribute rewrites; unsupported operations preserve them.
+  Six-version pruning and owned temporary retirement use the same identity-bound
+  path. Explicit cleanup continues bounded progress-making passes and reports
+  cumulative progress plus complete/incomplete results; no broad purge was added.
+  I/O custody releases between passes while copying stays held, allowing primary
+  policy/observation progress with explicit limited maintenance coverage. Final
+  integration: 218 passed/seven platform or privilege skips/native exit 0,
+  unchanged scoped source and five retained owned process handles retired.
 - Continuing GUI stalls exposed a shared process-inventory native call holding
   Python's execution lock. Embedded GUI and direct headless entries now register
   an owned, asynchronous inventory child before readers/modules. Qt refuses admission
