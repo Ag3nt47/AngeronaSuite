@@ -452,6 +452,49 @@ read-only bootstrap self-test passed with hostile inherited exit-status text
 and no injected command execution. GitHub publication and final-commit CI have
 their separate receipts; historical failed or cancelled runs remain history.
 
+## GitHub whole-suite follow-up
+
+The first published 1.14.1 maintenance commit's
+[Python 3.12 job](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/40795470838/job/123190783591)
+completed with 9,947 passed, 26 skipped and 12 failures. Its original result is
+retained. The follow-up corrects eight test files; application, recovery and
+security-engine source remain unchanged.
+
+Hosted administrator tokens gave ordinary fixture files an Administrators
+owner. Positive fixtures now explicitly establish the intended user's private
+custody before invoking the unchanged owner/DACL checks. Inert supervision
+children select their own user as default file owner; the parent token and
+operator's files are untouched. The batch test builds its own pip-free venv
+instead of assuming the checkout contains one. Native invocation checks bind
+the actual CI entry module and retain wrong-role and native-generation negatives.
+
+The real first-paint test now puts its receipt inside the unchanged native
+reader's permitted installation/.tmp scope. Startup assertions cover the actual
+30-second phase and 100-second overall bounds. Capability inventory checks
+match each implementation's declared version rather than relabeling all modules
+with the product version. The synthetic orb dispatcher test calls the unchanged
+production methods with isolated Python state while retaining separate native
+widget/deletion/minimize/GC tests. Its original intermittent Hide failure was
+not reproduced locally; its cause remains unresolved.
+
+Python 3.10, 3.11 and 3.13 each reported the same passed/skipped/failed counts, with
+an additional process-admission fixture failure replacing the orb failure.
+The original missing reader-identity publication remains unexplained. That
+inert fixture now publishes complete identity atomically, requires an explicit
+native-handle retention acknowledgement before Retry, and reports early child
+exit or bounded publication failure. It still checks the actual reader's image,
+birth and retirement before Retry returns. Fixed sleep is no longer the
+ownership handshake; no production timeout was changed.
+
+No blanket skips or production guard relaxations were introduced. Focused
+validation retains native process-generation retirement receipts. The combined
+eight-file replay through the actual CI entry passed 149 cases with one existing
+file-symlink privilege skip; all 248 observed retained native generations retired
+and the frozen test sources stayed unchanged. Ruff and documentation drift also
+passed. Full GitHub
+workflow results must still belong to the exact subsequently published commit.
+Raw diagnostics and private fixtures are not included in this publication.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

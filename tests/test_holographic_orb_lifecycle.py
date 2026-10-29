@@ -24,31 +24,35 @@ from angerona.gui.holographic_orb import HolographicOrbController
     QEvent.PlatformSurface, QEvent.WinIdChange, QEvent.ChildRemoved,
     QEvent.Paint,
 ])
-def test_teardown_and_unrelated_events_never_inspect_native_widget(monkeypatch, event_type):
+def test_teardown_and_unrelated_events_never_inspect_native_widget(event_type):
     class DyingWindow:
         pass
 
-    window = QMainWindow()
-    controller = HolographicOrbController(window)
     dying = DyingWindow()
-    controller._collapsed.append(weakref.ref(dying))
+    # This exercises the Python-only dispatch boundary. A real controller also
+    # filters every QApplication event, which gives unrelated Qt destruction
+    # and deferred callbacks access to the synthetic bookkeeping under test.
+    # Native wrapper deletion and queued minimizes are covered separately below.
+    controller = SimpleNamespace(
+        _shutting_down=False,
+        _collapsed=[weakref.ref(dying)],
+        _normal_geometries=weakref.WeakKeyDictionary(),
+        _is_managed_window=lambda _watched: pytest.fail(
+            "Native widget inspection during destruction/unrelated event"),
+    )
+    controller._drop_window = lambda watched: HolographicOrbController._drop_window(
+        controller, watched)
     controller._normal_geometries[dying] = QRect(0, 0, 640, 420)
-    try:
-        # A pure Python stand-in cannot safely be passed to any native Qt
-        # method, including QObject.eventFilter. Destruction needs only identity
-        # bookkeeping; unrelated events must not enter the native classifier.
-        with monkeypatch.context() as scoped:
-            scoped.setattr(controller, "_is_managed_window", lambda _watched: pytest.fail(
-                "Native widget inspection during destruction/unrelated event"))
-            assert controller.eventFilter(dying, QEvent(event_type)) is False
-        if event_type == QEvent.Destroy:
-            assert not controller._collapsed
-            assert dying not in controller._normal_geometries
-        else:
-            assert controller._collapsed[0]() is dying
-    finally:
-        controller.shutdown()
-        window.deleteLater()
+    # A stand-in cannot safely enter any native Qt method, including the
+    # QObject eventFilter fallback. Call the production dispatcher unchanged.
+    assert HolographicOrbController.eventFilter(
+        controller, dying, QEvent(event_type)) is False
+    if event_type == QEvent.Destroy:
+        assert not controller._collapsed
+        assert dying not in controller._normal_geometries
+    else:
+        assert controller._collapsed[0]() is dying
+        assert dying in controller._normal_geometries
 
 
 def test_deleted_native_wrapper_is_not_classified_as_live_window():

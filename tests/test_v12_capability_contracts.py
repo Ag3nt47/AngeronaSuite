@@ -4,7 +4,6 @@ import json
 
 import pytest
 
-from angerona import __version__
 from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
 from angerona.core.module_contract import (
@@ -34,11 +33,27 @@ def test_all_builtins_publish_unique_v12_contracts() -> None:
     assert len(identifiers) == len(rows)
     assert all(row["contract_schema"] == CONTRACT_SCHEMA_ID for row in rows)
     assert all(row["contract_schema_version"] == CONTRACT_SCHEMA_VERSION for row in rows)
+    # Capability implementations have independent versions. A product patch
+    # must not relabel unchanged sensor implementations as freshly revised.
     assert {
-        row["implementation_version"] for row in rows
-    } == {__version__}
+        row["name"]: row["implementation_version"] for row in rows
+    } == {name: module.version for name, module in manager.modules.items()}
     assert all(row["operational"]["schema"] == "angerona.module-operational.v12" for row in rows)
     json.dumps(rows, sort_keys=True)
+
+
+def test_capability_version_is_independent_of_product_release() -> None:
+    from angerona import __version__
+
+    class IndependentlyVersionedModule(BaseModule):
+        name = "Independent implementation version"
+        version = "0.7.2"
+
+    contract = build_capability_contract(
+        IndependentlyVersionedModule(), capability_id="angerona.test.versioning"
+    )
+    assert contract.implementation_version == "0.7.2"
+    assert contract.implementation_version != __version__
 
 
 def test_contract_exposes_legacy_gaps_without_inventing_authority() -> None:

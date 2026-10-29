@@ -12,7 +12,7 @@ POWERSHELL = Path(os.environ.get("SystemRoot", r"C:\Windows")) / r"System32\Wind
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows retained process identity")
 
 
-def run(tmp_path, script):
+def run(tmp_path, script, *, timeout=25):
     path = tmp_path / "process-admission.ps1"
     path.write_text("$ErrorActionPreference='Stop'\n. (Join-Path $env:PROCESS_TEST_ROOT 'tools\\startup_repair_common.ps1')\n"
                     + "function Get-CanonicalSourceStartupStorage { return (Join-Path $env:PROCESS_TEST_SCRATCH 'SourceData') }\n" + script,
@@ -20,7 +20,7 @@ def run(tmp_path, script):
     environment = dict(os.environ, PROCESS_TEST_ROOT=str(ROOT), PROCESS_TEST_SCRATCH=str(tmp_path),
                        TEMP=str(tmp_path), TMP=str(tmp_path), PSModulePath="")
     result = subprocess.run([str(POWERSHELL), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(path)],
-                            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=25, check=False)
+                            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=timeout, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -114,15 +114,21 @@ Initialize-RepairLiveProcessIdentity
 $systemPowerShell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $childScript=Join-Path $scratch 'reader.ps1'
 $identityPath=Join-Path $scratch 'reader.json'
+$releasePath=Join-Path $scratch 'reader-retained'
+$windowLog=Join-Path $scratch 'window.log'
 [IO.File]::WriteAllText($childScript,@'
 param($IdentityPath)
+$ErrorActionPreference='Stop'
 $self=[Diagnostics.Process]::GetCurrentProcess()
-[IO.File]::WriteAllText($IdentityPath,(@{pid=$PID;birth=$self.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}|ConvertTo-Json -Compress))
+# Existence must mean a complete publication, not a partially written JSON row.
+[IO.File]::WriteAllText($IdentityPath+'.publishing',(@{pid=$PID;birth=$self.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}|ConvertTo-Json -Compress))
+[IO.File]::Move($IdentityPath+'.publishing',$IdentityPath)
 Start-Sleep -Seconds 60
 '@)
 $parentScript=Join-Path $scratch 'window.ps1'
 [IO.File]::WriteAllText($parentScript,@'
-param($ChildScript,$IdentityPath)
+param($ChildScript,$IdentityPath,$ReleasePath)
+$ErrorActionPreference='Stop'
 $start=[Diagnostics.ProcessStartInfo]::new()
 $start.FileName=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $start.Arguments='-NoProfile -NonInteractive -File "'+$ChildScript+'" "'+$IdentityPath+'"'
@@ -130,20 +136,36 @@ $start.UseShellExecute=$false;$start.CreateNoWindow=$true
 $child=[Diagnostics.Process]::Start($start)
 try {
     $clock=[Diagnostics.Stopwatch]::StartNew()
-    while(!(Test-Path -LiteralPath $IdentityPath) -and $clock.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 20}
-    Start-Sleep -Milliseconds 1200
+    while(!(Test-Path -LiteralPath $ReleasePath) -and $clock.ElapsedMilliseconds -lt 20000){
+        if($child.HasExited){throw ('Owned reader exited before retention acknowledgement; exit='+$child.ExitCode)}
+        Start-Sleep -Milliseconds 20
+    }
+    if(!(Test-Path -LiteralPath $ReleasePath)){throw 'Owned reader retention was not acknowledged within the fixture bound.'}
+    if($child.HasExited){throw 'Owned reader retired before the Retry window exit.'}
 }finally{$child.Dispose()}
 exit 10
 '@)
 $environment=New-RepairChildEnvironment $scratch
-$window=Start-OwnedRepairWindow -FilePath $systemPowerShell -Arguments @('-NoProfile','-NonInteractive','-File',$parentScript,$childScript,$identityPath) -WorkingDirectory $scratch -Environment $environment -LogPath (Join-Path $scratch 'window.log')
+$window=Start-OwnedRepairWindow -FilePath $systemPowerShell -Arguments @('-NoProfile','-NonInteractive','-File',$parentScript,$childScript,$identityPath,$releasePath) -WorkingDirectory $scratch -Environment $environment -LogPath $windowLog
 $reader=$null
 try {
     $clock=[Diagnostics.Stopwatch]::StartNew()
-    while(!(Test-Path -LiteralPath $identityPath) -and $clock.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 20}
+    # Budget both cold PowerShell starts on hosted runners. Retry itself stays
+    # blocked on explicit native-handle retention, replacing a fixed 1.2s grace.
+    while(!(Test-Path -LiteralPath $identityPath) -and $clock.ElapsedMilliseconds -lt 15000){
+        if($window.HasExited){throw ('Owned window exited before reader publication: '+[IO.File]::ReadAllText($windowLog))}
+        Start-Sleep -Milliseconds 20
+    }
+    if(!(Test-Path -LiteralPath $identityPath)){throw ('Owned reader did not publish within 15 seconds: '+[IO.File]::ReadAllText($windowLog))}
     $record=[IO.File]::ReadAllText($identityPath)|ConvertFrom-Json
     $reader=[Diagnostics.Process]::GetProcessById([int]$record.pid);$null=$reader.Handle
     if($reader.HasExited -or $reader.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -cne $record.birth){throw 'Owned reader generation was not retained before window exit.'}
+    $native=Get-LiveRepairProcessIdentity ([uint32]$record.pid)
+    try {
+        if($native.State -ne 'live' -or [string]$native.CreationFileTime -cne $record.birth -or
+            ![string]::Equals($native.ImagePath,$systemPowerShell,[StringComparison]::OrdinalIgnoreCase)){throw 'Owned reader native image or generation did not match.'}
+    }finally{$native.Dispose()}
+    [IO.File]::WriteAllText($releasePath,'Native reader generation retained; permit Retry.')
     if(!$window.WaitForExit(10000) -or $window.ExitCode -ne 10){throw 'Retry result was not preserved.'}
     if($window.ProcessId -le 0 -or $window.CreationFileTime -le 0){throw 'Window launch identity was not recorded.'}
     if(!$reader.WaitForExit(0)){throw 'Retry returned while its exact owned reader was still active.'}
@@ -151,7 +173,7 @@ try {
     if($reader){$reader.Dispose()}
     $window.Dispose()
 }
-""")
+""", timeout=35)
 
 
 def test_owned_recovery_window_disposal_retires_only_its_generation(tmp_path):

@@ -236,7 +236,12 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert "'-FailureCategory', $Category, '-Attempt', '1'" in supervisor
     assert "if ($choice -ne 10)" in supervisor
     helper = open(os.path.join(root, "src/angerona/startup.py"), encoding="utf-8").read()
-    assert "deadline = time.monotonic() + 30" in helper
+    # Each probe has its own bounded deadline inside the overall startup cap.
+    # A literal 30-second overall deadline would reject a healthy later phase.
+    assert "_PROBE_PHASE_SECONDS = 30" in helper
+    assert "_PROBE_OVERALL_SECONDS = 100" in helper
+    assert "deadline = time.monotonic() + _PROBE_OVERALL_SECONDS" in helper
+    assert "phase_deadline = min(deadline, phase_started + _PROBE_PHASE_SECONDS)" in helper
     assert 'QT_QPA_PLATFORM="offscreen"' in helper
     assert "timeout: float = 120" in helper
     assert "wait_dashboard(listener, process" in helper

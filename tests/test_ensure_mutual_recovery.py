@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+import venv
 
 import pytest
 
@@ -123,13 +124,12 @@ def test_peer_that_recovers_during_observation_is_not_force_restarted(helper, mo
 def test_batch_wrapper_ignores_hostile_inherited_control_text(tmp_path, arguments, expected):
     installation = tmp_path / "isolated-wrapper"
     scripts = installation / "venv/Scripts"
-    scripts.mkdir(parents=True)
+    # A checkout on CI uses setup-python directly and has no repository venv.
+    # Build the inert recorder's own pip-free stdlib environment so the real
+    # batch parser still executes a genuine trusted Python redirector.
+    venv.EnvBuilder(with_pip=False).create(installation / "venv")
     (installation / "tools").mkdir()
-    # A copied trusted redirector and a minimal isolated venv run only this
-    # inert stdlib recorder. The real ensure tool and real runtime never start.
-    shutil.copyfile(ROOT / "venv/Scripts/python.exe", scripts / "python.exe")
-    (installation / "venv/pyvenv.cfg").write_text(
-        "home = " + str(Path(sys._base_executable).parent) + "\ninclude-system-site-packages = false\n", encoding="utf-8")
+    assert (scripts / "python.exe").is_file()
     recorder = installation / "tools/ensure_mutual_recovery.py"
     recorder.write_text("import json,os,sys\nfrom pathlib import Path\nPath(os.environ['ENSURE_FIXTURE_RESULT']).write_text(json.dumps({'args':sys.argv[1:],'bytecode_disabled':sys.dont_write_bytecode}))\n", encoding="utf-8")
     wrapper = installation / "Ensure-Angerona-Recovery.bat"
@@ -166,6 +166,17 @@ from angerona.core import singleton
 from angerona.core.engine_transport import create_private_file
 from angerona.resilience import heartbeat,shutdown_token,supervisor
 role,root=sys.argv[1],Path(sys.argv[2])
+# This inert child represents an ordinary-user runtime. A hosted runner's
+# administrator token may otherwise choose Administrators as the default
+# owner of generic heartbeat/singleton files. Adjust only this child's default
+# owner; keep the real private-file ACL/owner checks and all auth boundaries.
+if __import__('os').name=='nt':
+    import win32api,win32security
+    token=win32security.OpenProcessToken(win32api.GetCurrentProcess(),0x88)
+    try:
+        sid=win32security.GetTokenInformation(token,win32security.TokenUser)[0]
+        win32security.SetTokenInformation(token,win32security.TokenOwner,sid)
+    finally:token.Close()
 heartbeat._data_dir=lambda:root
 shutdown_token._data_dir=lambda:root
 singleton.data_dir=lambda:root
@@ -206,7 +217,7 @@ while True:
         record = heartbeat.HeartbeatReader("core", path=root / "heartbeats/core.hb", key_raw=bytes(range(32))).read()
         retained.append(helper.ReadOnlyGeneration(int(record["pid"]), "core"))
         before = helper.ensure(check_only=True)
-        assert before["outcome"] == "needs-attention" and before["missing"] == ["watchdog", "scanner", "blackbox"]
+        assert before["outcome"] == "needs-attention" and before["missing"] == ["watchdog", "scanner", "blackbox"], before
         original = supervisor.request_restart
         def publish_and_start(*roles):
             paths = original(*roles)

@@ -97,8 +97,29 @@ def execute(tmp_path, root, storage, payload, settings, *, network_guard=NETWORK
     setup = ("$ErrorActionPreference='Stop'\n. " + ps_literal(root / BUILDER.VERIFIER)
              + " -Root " + ps_literal(root) + " -ManifestSha256 ('0'*64) -ManifestBlobSha1 ('0'*40)\n"
              + "New-BundlePrivateDirectory " + ps_literal(storage) + "\n"
-             + "[IO.File]::WriteAllText(" + ps_literal(storage / "settings.json") + ","
-             + ps_literal(settings) + ")\n")
+             # A hosted administrator token defaults plain WriteAllText files
+             # to Administrators ownership, even in this user-owned directory.
+             # Exercise the original consent reader with a genuinely private
+             # fixture file instead of weakening its owner or DACL checks.
+             + "function Write-FixturePrivateText([string]$FixturePath,[string]$FixtureText) {\n"
+             + "$fixtureOwner=[Security.Principal.WindowsIdentity]::GetCurrent().User\n"
+             + "$fixtureAcl=[Security.AccessControl.FileSecurity]::new()\n"
+             + "$fixtureAcl.SetOwner($fixtureOwner);$fixtureAcl.SetAccessRuleProtection($true,$false)\n"
+             + "foreach($fixtureSid in @($fixtureOwner.Value,'S-1-5-18','S-1-5-32-544')) {\n"
+             + "    [void]$fixtureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(\n"
+             + "        [Security.Principal.SecurityIdentifier]::new($fixtureSid),\n"
+             + "        [Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.AccessControlType]::Allow))\n"
+             + "}\n"
+             + "$fixtureSettings=[IO.FileStream]::new($FixturePath"
+             + ",[IO.FileMode]::CreateNew,([Security.AccessControl.FileSystemRights]::Read -bor "
+             + "[Security.AccessControl.FileSystemRights]::Write),"
+             + "[IO.FileShare]::Read,4096,[IO.FileOptions]::None,$fixtureAcl)\n"
+             + "try {\n"
+             + "    $fixtureBytes=[Text.UTF8Encoding]::new($false).GetBytes($FixtureText)\n"
+             + "    $fixtureSettings.Write($fixtureBytes,0,$fixtureBytes.Length);$fixtureSettings.Flush($true)\n"
+             + "}finally{$fixtureSettings.Dispose()}\n"
+             + "}\n"
+             + "Write-FixturePrivateText " + ps_literal(storage / "settings.json") + " " + ps_literal(settings) + "\n")
     # An absent verifier case still needs definition-only setup from the exact
     # reviewed inert fixture copy; it never imports the deleted operational path.
     setup_verifier = tmp_path / "fixture-setup-verifier.ps1"
@@ -255,7 +276,7 @@ def test_pinned_verifier_self_restore_holds_all_mutation_locks_and_preserves_pri
         prelude = r"""
 $archive=Join-Path (Get-BundleDataRoot) 'logs\startup-recovery\bootstrap-preserved'
 New-BundlePrivateDirectory $archive
-for($i=0;$i -lt 16;$i++) {[IO.File]::WriteAllText((Join-Path $archive ($i.ToString('x32')+'.verifier.edited')),'retained original')}
+for($i=0;$i -lt 16;$i++) {Write-FixturePrivateText (Join-Path $archive ($i.ToString('x32')+'.verifier.edited')) 'retained original'}
 """
     result = execute(tmp_path, root, storage, payload,
                      '{"startup_recovery_enabled":true,"startup_recovery_github_enabled":true}',

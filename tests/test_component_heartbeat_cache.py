@@ -269,6 +269,11 @@ def test_default_reader_uses_only_existing_private_authority_and_known_file(tmp_
     key = bytes(range(32))
     authority = root / "shutdown.key"
     _private_file(authority, key.hex().encode("ascii"))
+    # Hosted Windows administrator tokens may default new files to the
+    # Administrators owner. This ordinary-user observation fixture supplies
+    # its existing producer slot with the same explicit user custody as its
+    # authority; the observer still has no permission to repair either file.
+    _private_file(directory / "blackbox.hb", b"\0" * hb.RECORD_SIZE)
     writer = hb.HeartbeatWriter("blackbox", token_raw=key, path=directory / "blackbox.hb")
     if os.name != "nt":
         os.chmod(writer.path, 0o600)
@@ -423,7 +428,14 @@ def test_app_footer_source_uses_only_copies_and_stops_without_faking_helper_heal
 def test_read_only_native_witness_binds_actual_pid_birth_and_rejects_wrong_role():
     from angerona.core.startup_diagnostics import process_identity
 
-    expected = (sys.executable, "-m", "pytest")
+    # CI enters through tools.ci_pytest rather than pytest directly. Bind the
+    # actual entry, while preserving the same retained native generation and
+    # the negative check against a different component invocation below.
+    original = sys.orig_argv[1:]
+    if "-m" in original:
+        expected = (sys.executable, "-m", original[original.index("-m") + 1])
+    else:
+        expected = (sys.executable, str(Path(sys.argv[0]).resolve()))
     witness = status._ReadOnlyProcessWitness(os.getpid(), expected)
     try:
         assert witness.validate()

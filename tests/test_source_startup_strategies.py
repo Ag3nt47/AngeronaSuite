@@ -400,12 +400,19 @@ Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls);pending=$script:Sta
 def test_supervisor_waits_for_exact_native_first_paint_and_ready_retires_shell(tmp_path):
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
-$script:InertStorage=Join-Path $env:ANGERONA_TEST_SCRATCH 'SourceData'
+# Keep the original native reader's installation/.tmp scope. Hosted pytest
+# temporary directories live outside the real checkout, so pointing the real
+# installation's shell at arbitrary tmp_path diagnostics correctly refuses them.
+$fixtureRoot=Join-Path $env:ANGERONA_TEST_SCRATCH 'installation'
+[void][IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'tools'))
+[IO.File]::WriteAllBytes((Join-Path $fixtureRoot 'tools\Show-AngeronaStartupRecovery.ps1'),
+    [IO.File]::ReadAllBytes((Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1')))
+$script:InertStorage=Join-Path $fixtureRoot '.tmp\SourceData'
 New-PrivateRepairDirectory $script:InertStorage
 function Initialize-SourceStartupStorage {return $script:InertStorage}
 Initialize-SourceStartupDiagnostics $script:InertStorage
 try {
-    Start-SourceStartupShell $env:ANGERONA_TEST_ROOT
+    Start-SourceStartupShell $fixtureRoot
     if(!$script:StartupShell -or $script:StartupShell.HasExited){throw 'Native shell did not survive its first paint.'}
     $status=[IO.File]::ReadAllText($script:StartupStatusPath)|ConvertFrom-Json
     if($status.outcome -cne 'checking' -or $status.run_id -cne $script:StartupRunId){throw 'Paint incorrectly conveyed dashboard readiness.'}
