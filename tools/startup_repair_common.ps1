@@ -824,7 +824,10 @@ public static class StartupRepairProcess {
                 int count;
                 while((count=input.Read(buffer,0,buffer.Length))>0) {
                     int keep=failed?0:(int)Math.Min(count,Math.Max(0,limit-written));
-                    if(keep>0)try{output.Write(buffer,0,keep);written+=keep;}
+                    // Publish small live phase records without waiting for the
+                    // producer to exit or fill the FileStream buffer. The
+                    // durable flush remains at EOF; byte limits are unchanged.
+                    if(keep>0)try{output.Write(buffer,0,keep);written+=keep;output.Flush();}
                         catch(Exception error){Error=error.GetType().Name+": critical output sink unavailable";failed=true;keep=0;}
                     System.Threading.Interlocked.Add(ref dropped,count-keep);
                 }

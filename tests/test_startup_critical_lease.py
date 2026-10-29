@@ -307,6 +307,47 @@ try {
     assert f'"dropped_bytes":{9 * 1024 * 1024 - limit}' in result.stderr
 
 
+def test_critical_native_short_output_is_visible_before_actual_producer_exit(tmp_path):
+    (tmp_path / "live-output.py").write_text(
+        "import sys,time\nfrom pathlib import Path\n"
+        "sys.stdout.buffer.write(b'ANGERONA_NATIVE_LIVE_MARKER\\n');sys.stdout.buffer.flush()\n"
+        "release=Path(sys.argv[1]);deadline=time.monotonic()+12\n"
+        "while not release.exists() and time.monotonic()<deadline:time.sleep(.02)\n"
+        "raise SystemExit(37 if release.exists() else 38)\n", encoding="utf-8")
+    source = SETUP + r"""
+$release=Join-Path $env:LEASE_TEST_SCRATCH 'live-output-release'
+$log=Join-Path $private 'live-output.log'
+$owner=Start-OwnedRepairWindow -FilePath $env:LEASE_TEST_PYTHON -Arguments @('-B','-I',
+    (Join-Path $env:LEASE_TEST_SCRATCH 'live-output.py'),$release) -WorkingDirectory $env:LEASE_TEST_ROOT `
+    -Environment $childEnvironment -LogPath $log
+try {
+    $raw='';$clock=[Diagnostics.Stopwatch]::StartNew()
+    while(!$raw -and $clock.ElapsedMilliseconds -lt 5000){
+        if($owner.HasExited){throw 'Actual producer exited before live output observation.'}
+        if([IO.File]::Exists($log)){
+            $reader=[IO.File]::Open($log,'Open','Read','ReadWrite')
+            try{
+                $bytes=New-Object byte[] 128;$count=$reader.Read($bytes,0,$bytes.Length)
+                $raw=[Text.Encoding]::UTF8.GetString($bytes,0,$count)
+            }finally{$reader.Dispose()}
+        }
+        if(!$raw){Start-Sleep -Milliseconds 20}
+    }
+    if($raw -cne "ANGERONA_NATIVE_LIVE_MARKER`n" -or $owner.HasExited -or
+        $owner.ProcessId -le 0 -or $owner.CreationFileTime -le 0){throw 'Bounded short output was not visible from the live exact native producer.'}
+    [IO.File]::WriteAllText($release,'release')
+    if(!$owner.WaitForExit(10000) -or $owner.ExitCode -ne 37){throw 'Actual live-output producer did not retire with its original exit.'}
+    Write-Output ('RESULT:'+(@{live_marker=$true;code=$owner.ExitCode;bytes=(Get-Item -LiteralPath $log).Length}|ConvertTo-Json -Compress))
+}finally{
+    [IO.File]::WriteAllText($release,'release')
+    $owner.Dispose();$guard.Dispose()
+}
+"""
+    result = _run_script(tmp_path, source)
+    row = json.loads(next(line[7:] for line in result.stdout.splitlines() if line.startswith("RESULT:")))
+    assert row == {"live_marker": True, "code": 37, "bytes": len("ANGERONA_NATIVE_LIVE_MARKER\n")}
+
+
 def test_critical_capture_streams_share_remaining_workspace_budget(tmp_path):
     (tmp_path / "quota.py").write_text("import sys\nsys.stdout.buffer.write(b'x'*(2*1024*1024))\nsys.stdout.flush()\nsys.stderr.buffer.write(b'y'*(2*1024*1024))\nsys.stderr.flush()\nraise SystemExit(23)\n", encoding="utf-8")
     source = SETUP + r"""

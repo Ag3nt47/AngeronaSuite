@@ -661,6 +661,34 @@ with wrapping on and off and Unicode text, verify continuing age updates without
 scroll reset or accumulating undo history. The focused component suite passed
 23 cases; all three observed native diagnostic process generations retired.
 
+### Subsequent hosted first-paint diagnostics
+
+Publication `cf60d689` passed its guarded branch/default-main and nine-image
+proof; 16 additional documentation/media reads matched at the immutable commit
+and public main. All 15 GitHub jobs finished: 11 passed and four Python jobs
+failed the same early native first-paint case. Each early gate's other five
+cases passed. The full Python suites did not run. The failed shell generations
+were alive with no observed windows; their captured output and paint receipts
+were empty at the deadline. These facts do not locate the failing script phase.
+
+Review found a separate observability defect: the critical native output pump
+buffered small records until process exit. An actual held-child regression
+reproduced a short marker remaining unreadable while the child lived. The pump
+now flushes kept chunks to the readable stream without per-chunk durable sync;
+the final durable flush, byte limits, exit result and native custody stay intact.
+Failure fixtures also collect a separate bounded tail after owned retirement,
+preserving the original live diagnostic and original exception. This repairs
+live diagnostic visibility; it does not claim the historical GUI cause is known.
+The focused correction passed 16 native cases, including the live short marker,
+all producer/quota cases, real first paint and wrong-birth hold; all 98 observed
+process generations retired. A subsequent two-case replay passed after making
+the post-disposal diagnostic conservative: task completion alone is not native
+retirement, and a failed disposal cannot publish a retired claim or read tail.
+All 24 observed generations in that replay retired.
+A separate regenerated-bundle/bootstrap gate passed 30 cases with all 66 observed
+generations retired and source unchanged. CI runs the new short-output case
+before first paint so hosted failures can separately establish live log delivery.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

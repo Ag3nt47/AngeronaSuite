@@ -514,6 +514,7 @@ function Start-OwnedRepairWindow {
     return & $script:FixtureNativeWindowLaunch @PSBoundParameters
 }
 """ + WINDOW_DIAGNOSTICS + r"""
+$script:FixtureFirstPaintFailed=$false
 try {
     Start-SourceStartupShell $fixtureRoot
     if(!$script:StartupShell -or $script:StartupShell.HasExited){throw 'Native shell did not survive its first paint.'}
@@ -533,6 +534,7 @@ try {
     if(($phases -join ',') -cne 'script-entry,ui-assemblies-start,ui-assemblies-ready,form-construction-start,show-dialog-start,shown-entry,refresh-complete,reader-initialization-start,reader-initialization-ready'){throw 'Native startup phase order is incomplete or changed.'}
     Write-Output ('RESULT:'+(@{code=$script:StartupShell.ExitCode;painted=$true}|ConvertTo-Json -Compress))
 }catch{
+    $script:FixtureFirstPaintFailed=$true
     $originalFailure=$_
     try {
         $diagnostic=[ordered]@{outcome='first-paint-fixture-failed';message=$originalFailure.Exception.Message}
@@ -560,7 +562,33 @@ try {
         Write-Output ('FIXTURE-DIAGNOSTIC:'+($diagnostic|ConvertTo-Json -Depth 5 -Compress))
     }catch{Write-Output ('FIXTURE-DIAGNOSTIC-UNAVAILABLE:'+ $_.Exception.Message)}
     throw $originalFailure
-}finally{if($script:StartupShell){$script:StartupShell.Dispose()}}
+}finally{
+    if($script:StartupShell){
+        $disposeReturned=$false
+        try{$script:StartupShell.Dispose();$disposeReturned=$true}
+        finally{
+            if($script:FixtureFirstPaintFailed){
+                try{
+                    # Preserve the live-timeout observation above, then report
+                    # any buffered evidence only after exact owned retirement.
+                    # Completion can also fault with a retained custody hold.
+                    # Only a successful Dispose proves the owner's retirement.
+                    $retired=$disposeReturned -and $script:StartupShell.HasExited
+                    $post=[ordered]@{outcome='first-paint-fixture-post-retirement';native_retired=$retired
+                        shell_pid=$script:StartupShell.ProcessId
+                        shell_creation_filetime=[string]$script:StartupShell.CreationFileTime}
+                    if($retired){
+                        $post.window_log=Read-SourceStartupLogTail $script:FixtureWindowLog
+                        $post.window_log_bytes=if([IO.File]::Exists($script:FixtureWindowLog)){
+                            [long](Get-Item -LiteralPath $script:FixtureWindowLog).Length
+                        }else{-1}
+                    }
+                    Write-Output ('FIXTURE-POST-RETIREMENT:'+($post|ConvertTo-Json -Depth 3 -Compress))
+                }catch{Write-Output ('FIXTURE-POST-RETIREMENT-UNAVAILABLE:'+ $_.Exception.Message)}
+            }
+        }
+    }
+}
 """)
     assert outcome == {"code": 0, "painted": True}
 
