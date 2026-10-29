@@ -61,6 +61,17 @@ jobs:
         run: |
           $dataRoot = Join-Path (Split-Path -Parent $env:GITHUB_WORKSPACE) "AngeronaData"
           & "$env:GITHUB_WORKSPACE\tools\protect-key-custody.ps1" -DataRoot $dataRoot
+      - name: Check native recovery startup contracts
+        shell: pwsh
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $recoveryTests = @(
+            'tests/test_startup_bootstrap.py::test_pinned_verifier_self_restore_holds_all_mutation_locks_and_preserves_private_edits'
+            'tests/test_startup_process_admission.py::test_owned_recovery_window_retires_its_exact_reader_tree_before_retry'
+            'tests/test_source_startup_strategies.py::test_supervisor_waits_for_exact_native_first_paint_and_ready_retires_shell'
+          )
+          python -X faulthandler -m tools.ci_pytest -q @recoveryTests
+          exit $LASTEXITCODE
       - name: Test
         shell: pwsh
         env:

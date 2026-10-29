@@ -106,8 +106,10 @@ if($env:TEMP -cne $beforeTemp -or $env:TMP -cne $beforeTmp){throw 'Caller TEMP/T
 """.replace("__FAILURE__", str(failure)))
 
 
-def test_owned_recovery_window_retires_its_exact_reader_tree_before_retry(tmp_path):
+@pytest.mark.parametrize("reader_mode", ["ready", "fail-before-publication"])
+def test_owned_recovery_window_retires_its_exact_reader_tree_before_retry(tmp_path, reader_mode):
     run(tmp_path, r"""
+$readerMode='__READER_MODE__'
 $storage=Get-CanonicalSourceStartupStorage;New-PrivateRepairDirectory $storage
 $scratch=Join-Path $storage 'window';New-PrivateRepairDirectory $scratch
 Initialize-RepairLiveProcessIdentity
@@ -117,47 +119,106 @@ $identityPath=Join-Path $scratch 'reader.json'
 $releasePath=Join-Path $scratch 'reader-retained'
 $windowLog=Join-Path $scratch 'window.log'
 [IO.File]::WriteAllText($childScript,@'
-param($IdentityPath)
+param($IdentityPath,$Mode)
 $ErrorActionPreference='Stop'
-$self=[Diagnostics.Process]::GetCurrentProcess()
-# Existence must mean a complete publication, not a partially written JSON row.
-[IO.File]::WriteAllText($IdentityPath+'.publishing',(@{pid=$PID;birth=$self.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}|ConvertTo-Json -Compress))
-[IO.File]::Move($IdentityPath+'.publishing',$IdentityPath)
-Start-Sleep -Seconds 60
+try {
+    [IO.File]::WriteAllText($IdentityPath+'.reader-stage','reader-entered')
+    if($Mode -ceq 'fail-before-publication'){throw 'Injected reader failure before identity publication.'}
+    $self=[Diagnostics.Process]::GetCurrentProcess()
+    # This fixture exercises native ownership, not PowerShell module autoload.
+    # Emit its fixed numeric identity using .NET only, with atomic publication.
+    $wire='{"pid":'+$PID.ToString([Globalization.CultureInfo]::InvariantCulture)+',"birth":"'+$self.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)+'"}'
+    [IO.File]::WriteAllText($IdentityPath+'.reader-stage','identity-publishing')
+    [IO.File]::WriteAllText($IdentityPath+'.publishing',$wire)
+    [IO.File]::Move($IdentityPath+'.publishing',$IdentityPath)
+    [IO.File]::WriteAllText($IdentityPath+'.reader-stage','identity-published')
+    [Threading.Thread]::Sleep(60000)
+}catch {
+    $message=$_.Exception.ToString()
+    [IO.File]::WriteAllText($IdentityPath+'.reader-error',$message.Substring(0,[Math]::Min(2048,$message.Length)))
+    exit 41
+}
 '@)
 $parentScript=Join-Path $scratch 'window.ps1'
 [IO.File]::WriteAllText($parentScript,@'
-param($ChildScript,$IdentityPath,$ReleasePath)
+param($ChildScript,$IdentityPath,$ReleasePath,$Mode)
 $ErrorActionPreference='Stop'
+$stagePath=$IdentityPath+'.parent-stage'
+[IO.File]::WriteAllText($stagePath,'parent-entered; module-path='+[Environment]::GetEnvironmentVariable('PSModulePath'))
 $start=[Diagnostics.ProcessStartInfo]::new()
-$start.FileName=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-$start.Arguments='-NoProfile -NonInteractive -File "'+$ChildScript+'" "'+$IdentityPath+'"'
+$start.FileName=[IO.Path]::Combine([Environment]::SystemDirectory,'WindowsPowerShell\v1.0\powershell.exe')
+$start.Arguments='-NoLogo -NoProfile -NonInteractive -File "'+$ChildScript+'" "'+$IdentityPath+'" "'+$Mode+'"'
 $start.UseShellExecute=$false;$start.CreateNoWindow=$true
-$child=[Diagnostics.Process]::Start($start)
+# Give the inert service-hosted child defined standard handles. Its stdin is
+# immediately EOF; only a bounded tail is copied after this exact child exits.
+$start.RedirectStandardInput=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
+$child=$null
 try {
+    [IO.File]::WriteAllText($stagePath,'reader-start-requested; argv='+$start.Arguments)
+    $child=[Diagnostics.Process]::Start($start)
+    $child.StandardInput.Close()
+    $wire='{"pid":'+$child.Id.ToString([Globalization.CultureInfo]::InvariantCulture)+',"birth":"'+$child.StartTime.ToUniversalTime().ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture)+'"}'
+    [IO.File]::WriteAllText($IdentityPath+'.launching',$wire)
+    [IO.File]::Move($IdentityPath+'.launching',$IdentityPath+'.launched')
+    [IO.File]::WriteAllText($stagePath,'reader-launched; identity='+$wire)
     $clock=[Diagnostics.Stopwatch]::StartNew()
-    while(!(Test-Path -LiteralPath $ReleasePath) -and $clock.ElapsedMilliseconds -lt 20000){
-        if($child.HasExited){throw ('Owned reader exited before retention acknowledgement; exit='+$child.ExitCode)}
-        Start-Sleep -Milliseconds 20
+    while(![IO.File]::Exists($ReleasePath) -and $clock.ElapsedMilliseconds -lt 20000){
+        if($child.HasExited){
+            foreach($streamName in @('StandardOutput','StandardError')){
+                $buffer=[char[]]::new(2048)
+                $count=$child.$streamName.Read($buffer,0,$buffer.Length)
+                [IO.File]::WriteAllText($IdentityPath+'.'+$streamName,[string]::new($buffer,0,$count))
+            }
+            throw ('Owned reader exited before retention acknowledgement; exit='+$child.ExitCode)
+        }
+        [Threading.Thread]::Sleep(20)
     }
-    if(!(Test-Path -LiteralPath $ReleasePath)){throw 'Owned reader retention was not acknowledged within the fixture bound.'}
+    if(![IO.File]::Exists($ReleasePath)){throw 'Owned reader retention was not acknowledged within the fixture bound.'}
     if($child.HasExited){throw 'Owned reader retired before the Retry window exit.'}
-}finally{$child.Dispose()}
+    [IO.File]::WriteAllText($stagePath,'reader-retention-acknowledged; permitting-retry')
+}catch {
+    $message=$_.Exception.ToString()
+    [IO.File]::WriteAllText($IdentityPath+'.parent-error',$message.Substring(0,[Math]::Min(2048,$message.Length)))
+    throw
+}finally{if($child){$child.Dispose()}}
 exit 10
 '@)
+function Read-FixtureDiagnostic([string]$Path) {
+    $stream=$null
+    try {
+        if(![IO.File]::Exists($Path)){return '[not published]'}
+        # The owned native logger keeps its write handle open until retirement.
+        # FileShare.ReadWrite permits that existing writer without masking the
+        # original missing-publication failure with a sharing violation.
+        $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+        $null=$stream.Seek([Math]::Max(0,$stream.Length-4096),[IO.SeekOrigin]::Begin)
+        $buffer=[byte[]]::new(4096);$count=$stream.Read($buffer,0,$buffer.Length)
+        return [Text.Encoding]::UTF8.GetString($buffer,0,$count)
+    }catch{return ('[diagnostic unavailable: '+$_.Exception.GetType().Name+']')}
+    finally{if($stream){$stream.Dispose()}}
+}
+function Get-FixtureDiagnostics {
+    $text=''
+    foreach($suffix in @('.parent-stage','.launched','.parent-error','.reader-stage','.reader-error','.StandardOutput','.StandardError')){
+        $text+="`n"+$suffix+': '+(Read-FixtureDiagnostic ($identityPath+$suffix))
+    }
+    return $text+"`nwindow-log: "+(Read-FixtureDiagnostic $windowLog)
+}
 $environment=New-RepairChildEnvironment $scratch
-$window=Start-OwnedRepairWindow -FilePath $systemPowerShell -Arguments @('-NoProfile','-NonInteractive','-File',$parentScript,$childScript,$identityPath,$releasePath) -WorkingDirectory $scratch -Environment $environment -LogPath $windowLog
-$reader=$null
+$window=Start-OwnedRepairWindow -FilePath $systemPowerShell -Arguments @('-NoLogo','-NoProfile','-NonInteractive','-File',$parentScript,$childScript,$identityPath,$releasePath,$readerMode) -WorkingDirectory $scratch -Environment $environment -LogPath $windowLog
+$reader=$null;$failure=$null
 try {
     $clock=[Diagnostics.Stopwatch]::StartNew()
     # Budget both cold PowerShell starts on hosted runners. Retry itself stays
     # blocked on explicit native-handle retention, replacing a fixed 1.2s grace.
-    while(!(Test-Path -LiteralPath $identityPath) -and $clock.ElapsedMilliseconds -lt 15000){
-        if($window.HasExited){throw ('Owned window exited before reader publication: '+[IO.File]::ReadAllText($windowLog))}
-        Start-Sleep -Milliseconds 20
+    while((![IO.File]::Exists($identityPath) -or ![IO.File]::Exists($identityPath+'.launched')) -and $clock.ElapsedMilliseconds -lt 15000){
+        if($window.HasExited){throw ('Owned window exited before reader publication. '+(Get-FixtureDiagnostics))}
+        [Threading.Thread]::Sleep(20)
     }
-    if(!(Test-Path -LiteralPath $identityPath)){throw ('Owned reader did not publish within 15 seconds: '+[IO.File]::ReadAllText($windowLog))}
+    if(![IO.File]::Exists($identityPath) -or ![IO.File]::Exists($identityPath+'.launched')){throw ('Owned reader and parent launch identity did not both publish within 15 seconds. '+(Get-FixtureDiagnostics))}
     $record=[IO.File]::ReadAllText($identityPath)|ConvertFrom-Json
+    $launched=[IO.File]::ReadAllText($identityPath+'.launched')|ConvertFrom-Json
+    if($record.pid -ne $launched.pid -or $record.birth -cne $launched.birth){throw 'The reader did not match its exact launched PID and native birth.'}
     $reader=[Diagnostics.Process]::GetProcessById([int]$record.pid);$null=$reader.Handle
     if($reader.HasExited -or $reader.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -cne $record.birth){throw 'Owned reader generation was not retained before window exit.'}
     $native=Get-LiveRepairProcessIdentity ([uint32]$record.pid)
@@ -169,11 +230,20 @@ try {
     if(!$window.WaitForExit(10000) -or $window.ExitCode -ne 10){throw 'Retry result was not preserved.'}
     if($window.ProcessId -le 0 -or $window.CreationFileTime -le 0){throw 'Window launch identity was not recorded.'}
     if(!$reader.WaitForExit(0)){throw 'Retry returned while its exact owned reader was still active.'}
-}finally{
-    if($reader){$reader.Dispose()}
-    $window.Dispose()
+}catch{$failure=$_.Exception.Message}
+finally{
+    try {
+        $window.Dispose()
+        if($reader -and !$reader.WaitForExit(0)){throw 'The retained reader generation survived owned-window disposal.'}
+    }finally{if($reader){$reader.Dispose()}}
 }
-""", timeout=35)
+if($readerMode -ceq 'fail-before-publication'){
+    if(!$failure -or !$failure.Contains('Injected reader failure before identity publication.')){throw ('The controlled reader failure lost its original diagnostic. '+$failure)}
+    if($failure.Contains('being used by another process')){throw 'The diagnostic path masked the original error with a log sharing conflict.'}
+    if([IO.File]::Exists($identityPath) -or [IO.File]::Exists($releasePath)){throw 'A failed reader manufactured a ready identity or retention acknowledgement.'}
+    if(!$window.HasExited -or $window.ProcessId -le 0 -or $window.CreationFileTime -le 0){throw 'The failed reader window lost exact retired-root custody.'}
+}elseif($failure){throw $failure}
+""".replace("__READER_MODE__", reader_mode), timeout=35)
 
 
 def test_owned_recovery_window_disposal_retires_only_its_generation(tmp_path):

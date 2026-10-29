@@ -457,8 +457,8 @@ their separate receipts; historical failed or cancelled runs remain history.
 The first published 1.14.1 maintenance commit's
 [Python 3.12 job](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/40795470838/job/123190783591)
 completed with 9,947 passed, 26 skipped and 12 failures. Its original result is
-retained. The follow-up corrects eight test files; application, recovery and
-security-engine source remain unchanged.
+retained. The initial CI follow-up corrected eight test files; application,
+recovery and security-engine source were unchanged in that commit.
 
 Hosted administrator tokens gave ordinary fixture files an Administrators
 owner. Positive fixtures now explicitly establish the intended user's private
@@ -494,6 +494,70 @@ and the frozen test sources stayed unchanged. Ruff and documentation drift also
 passed. Full GitHub
 workflow results must still belong to the exact subsequently published commit.
 Raw diagnostics and private fixtures are not included in this publication.
+
+The subsequent `fe582597` whole-suite run retained two failures on Python 3.13
+(9,958 passed, 26 skipped), and three on Python 3.11/3.12 (9,957 passed, 26
+skipped). The remaining bootstrap archive creator uses the token's default
+owner; its inert fixture simulates ordinary source startup under an otherwise
+inadmissible hosted administrator token. The next fixture scope models only
+that disposable child's ordinary-user default owner and restores it afterward;
+production owner checks and elevation rejection remain unchanged.
+
+The reader fixture now has defined redirected standard handles and immediate
+stdin EOF, .NET-only bookkeeping, independent bounded phase/error records, and
+share-compatible bounded live-log reads. Both parent launch identity and reader
+identity publish atomically, and both must exist before native retention and
+acknowledgement. A controlled early-reader failure proves that diagnostics do
+not mask the original failure or manufacture readiness. The original hosted
+failure's cause cannot be recovered from the masked historical log.
+
+CI now checks the native bootstrap, reader-retirement and first-paint contracts
+before the complete Python suite, preserving native failure exit codes and the
+required full suite. This makes runner-specific failures visible earlier; it
+does not substitute the focused checks for the remaining tests.
+
+The first-paint failure exposed a separate observability defect: a caught native
+window connection/reader/receipt exception appeared only inside the window,
+leaving captured stderr empty. The recovery interface now emits advisory JSON
+with the failed phase, run/process generations and a redacted error. ASCII JSON
+escapes preserve characters across OEM console encodings; the complete record,
+including its newline, is capped at 8 KiB. Overflow produces a complete omission
+record. Logging failure cannot replace the original held state or grant a
+receipt. Native reader, supervisor verification, receipt and poll ordering are
+unchanged. A real wrong-supervisor-birth case keeps its receipt empty and
+requires owned cancellation retirement while recording the reason.
+
+The hosted first-paint timeout's historical cause remains unresolved; a blank
+old log cannot establish that the window failed to paint. The fixture now
+retains its exact native log path and reports bounded share-compatible log,
+status, journal, receipt and process-generation evidence on failure. This adds
+the missing evidence instead of skipping the UI check or raising its deadline.
+
+After regeneration, the manifest/embedded-bootstrap checks, workflow policy,
+Ruff and documentation drift passed. The bundle plus exact early-CI selections
+passed 33 cases; all 113 observed retained native generations retired and scoped
+sources stayed unchanged. The native logger's final complete-record boundary
+checks passed with valid admission/fallback at 8 KiB including the newline.
+
+A fresh ordinary source launch then reached the genuine dashboard-ready receipt
+without selecting repair or restoring source. Snapshot recording remained held
+at the existing capacity. The actual core stayed alive with unchanged Python
+source and every sampled visible window responding for 80.64 seconds. Five
+initial advisory status samples were rejected as another process generation;
+two fresh matching 1.14.1 status generations followed. The read-only heartbeat
+observer saw core, watchdog, scanner and Black Box all live in 12 samples,
+matching the actual core descriptor; authority-file metadata was unchanged.
+The dashboard accessibility view agreed. These are liveness observations rather
+than verified detector coverage or response acceptance.
+
+Dashboard STOP and its exact process-owned confirmation completed without force.
+All ten retained core/peer/inventory/console generations retired, as did the
+separately retained core redirector. Authenticated operator intent verified;
+75.14 seconds of continuous post-exit observation saw no new live core, with
+scoped source unchanged. Two transient descendant candidates could not be
+retained; their discovery gaps remain in the original private receipt. The
+final read-only helper honored STOP and requested no actions. Angerona was left
+stopped. This supplements the earlier observation rather than replacing it.
 
 ## Remaining limits
 

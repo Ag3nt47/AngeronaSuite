@@ -411,6 +411,16 @@ $script:InertStorage=Join-Path $fixtureRoot '.tmp\SourceData'
 New-PrivateRepairDirectory $script:InertStorage
 function Initialize-SourceStartupStorage {return $script:InertStorage}
 Initialize-SourceStartupDiagnostics $script:InertStorage
+$script:FixtureNativeWindowLaunch=${function:Start-OwnedRepairWindow}
+function Start-OwnedRepairWindow {
+    param([string]$FilePath,[string[]]$Arguments,[string]$WorkingDirectory,
+        [Collections.IDictionary]$Environment,[string]$LogPath)
+    # Observe the exact original native launch; never substitute its owner,
+    # command, environment, first-paint receipt or twenty-second admission gate.
+    $script:FixtureWindowLog=$LogPath
+    $script:FixturePaintReceipt=Join-Path $Environment['TEMP'] 'startup-shell-painted.json'
+    return & $script:FixtureNativeWindowLaunch @PSBoundParameters
+}
 try {
     Start-SourceStartupShell $fixtureRoot
     if(!$script:StartupShell -or $script:StartupShell.HasExited){throw 'Native shell did not survive its first paint.'}
@@ -419,9 +429,167 @@ try {
     Write-SourceStartupStatus 'dashboard' 'verified' 'Inert integration receipt; no application engine was launched.'
     if(!$script:StartupShell.WaitForExit(15000)){throw 'Matching ready status did not retire the independent shell.'}
     Write-Output ('RESULT:'+(@{code=$script:StartupShell.ExitCode;painted=$true}|ConvertTo-Json -Compress))
+}catch{
+    $originalFailure=$_
+    try {
+        $diagnostic=[ordered]@{outcome='first-paint-fixture-failed';message=$originalFailure.Exception.Message}
+        if($script:StartupShell){
+            $diagnostic.shell_pid=$script:StartupShell.ProcessId
+            $diagnostic.shell_creation_filetime=[string]$script:StartupShell.CreationFileTime
+            $diagnostic.completion_ready=$script:StartupShell.HasExited
+        }
+        foreach($entry in @(@('window_log',$script:FixtureWindowLog),
+            @('paint_receipt',$script:FixturePaintReceipt),@('status',$script:StartupStatusPath),
+            @('journal',$script:StartupJournalPath))) {
+            try {$diagnostic[$entry[0]]=Read-SourceStartupLogTail $entry[1]}
+            catch{$diagnostic[$entry[0]]='Bounded diagnostic unavailable: '+$_.Exception.Message}
+        }
+        Write-Output ('FIXTURE-DIAGNOSTIC:'+($diagnostic|ConvertTo-Json -Compress))
+    }catch{Write-Output ('FIXTURE-DIAGNOSTIC-UNAVAILABLE:'+ $_.Exception.Message)}
+    throw $originalFailure
 }finally{if($script:StartupShell){$script:StartupShell.Dispose()}}
 """)
     assert outcome == {"code": 0, "painted": True}
+
+
+def test_native_first_paint_supervisor_mismatch_logs_hold_without_receipt(tmp_path):
+    outcome = run(tmp_path, r"""
+. (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+$fixtureRoot=Join-Path $env:ANGERONA_TEST_SCRATCH 'installation'
+[void][IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'tools'))
+[IO.File]::WriteAllBytes((Join-Path $fixtureRoot 'tools\Show-AngeronaStartupRecovery.ps1'),
+    [IO.File]::ReadAllBytes((Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1')))
+$storage=Join-Path $fixtureRoot '.tmp\SourceData';New-PrivateRepairDirectory $storage
+$scratch=Join-Path $storage 'negative';New-PrivateRepairDirectory $scratch
+$receipt=Join-Path $scratch 'startup-shell-painted.json'
+$file=Open-PrivateRepairFile $receipt;$file.Dispose()
+$status=Join-Path $scratch 'status.json'
+$file=Open-PrivateRepairFile $status;$file.Dispose()
+$log=Join-Path $scratch 'native-window.log'
+$self=Get-LiveRepairProcessIdentity ([uint32]$PID)
+try {$wrongBirth=$self.CreationFileTime+1}finally{$self.Dispose()}
+$runId=[Guid]::NewGuid().ToString('N')
+$powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-STA','-File',
+    (Join-Path $fixtureRoot 'tools\Show-AngeronaStartupRecovery.ps1'),'-StartupShell','-StatusFile',$status,
+    '-StartupRunId',$runId,'-SupervisorPid',[string]$PID,'-SupervisorCreationFileTime',[string]$wrongBirth,
+    '-PaintReceiptFile',$receipt) -WorkingDirectory $fixtureRoot -Environment (New-RepairChildEnvironment $scratch) -LogPath $log
+try {
+    $record=$null;$clock=[Diagnostics.Stopwatch]::StartNew()
+    while(!$record -and $clock.ElapsedMilliseconds -lt 20000){
+        foreach($line in ((Read-SourceStartupLogTail $log) -split "`n")) {
+            try {
+                $candidate=$line|ConvertFrom-Json
+                if($candidate.component -ceq 'startup-recovery-ui'){$record=$candidate;break}
+            }catch{} # An incomplete captured line carries no diagnostic authority.
+        }
+        if(!$record){if($window.HasExited){throw ('Native hold window exited: '+(Read-SourceStartupLogTail $log))};Start-Sleep -Milliseconds 20}
+    }
+    if(!$record){throw ('Native hold window did not publish its failure: '+(Read-SourceStartupLogTail $log))}
+    if($record.phase -cne 'supervisor-verification' -or $record.outcome -cne 'held' -or !$record.painted){throw 'Wrong native held diagnostic.'}
+    if($record.run_id -cne $runId -or [string]$record.supervisor_pid -cne [string]$PID -or
+        $record.supervisor_creation_filetime -cne [string]$wrongBirth -or
+        [string]$record.shell_pid -cne [string]$window.ProcessId -or
+        $record.shell_creation_filetime -cne [string]$window.CreationFileTime){throw 'Held diagnostic lost its exact run/process identities.'}
+    if((Get-Item -LiteralPath $receipt).Length -ne 0 -or $window.HasExited){throw 'Held window admitted a paint receipt or changed its original hold.'}
+    $window.Dispose()
+    if(!$window.HasExited -or $window.ExitCode -ne 1223){throw 'Owned held window did not retire with explicit cancellation.'}
+    Write-Output ('RESULT:'+(@{held=$true;receipt_bytes=0;retired=$true;phase=$record.phase}|ConvertTo-Json -Compress))
+}finally{$window.Dispose()}
+""")
+    assert outcome == {"held": True, "receipt_bytes": 0, "retired": True, "phase": "supervisor-verification"}
+
+
+def test_startup_shell_diagnostic_is_redacted_bounded_json_without_json_cmdlet(tmp_path):
+    outcome = run(tmp_path, r"""
+$ast=[Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1'),[ref]$null,[ref]$null)
+foreach($name in @('Protect-RecoveryText','Write-StartupShellDiagnostic')) {
+    $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true)
+    . ([scriptblock]::Create($node.Extent.Text))
+}
+$StartupRunId='a'*32;$SupervisorPid=$PID;$SupervisorCreationFileTime=123
+$message=([string]::new([char[]](0..31)))+'"quoted"\path password=fixture-secret '+([string][char]0x6f22)+('X'*8000)
+$originalError=[Console]::Error;$captured=[IO.StringWriter]::new()
+function ConvertTo-Json {throw 'The diagnostic formatter must not autoload the JSON command.'}
+try {
+    [Console]::SetError($captured)
+    try {throw [InvalidOperationException]::new($message)}catch{Write-StartupShellDiagnostic 'reader-initialization' $_ $true}
+}finally{[Console]::SetError($originalError);Remove-Item Function:\ConvertTo-Json}
+$raw=$captured.ToString();$captured.Dispose()
+$record=$raw|ConvertFrom-Json
+if($raw.Contains('fixture-secret') -or !$record.message.Contains('[redacted]') -or
+    !$record.message.Contains('"quoted"\path') -or $record.phase -cne 'reader-initialization' -or
+    !$record.message.Contains([string][char]0x6f22) -or $raw -match '[^\x00-\x7f]' -or
+    $raw.TrimEnd([char[]]"`r`n") -match '[\x00-\x1f]' -or
+    $record.outcome -cne 'held' -or !$record.painted -or [Text.Encoding]::UTF8.GetByteCount($raw) -gt 8192){throw 'Diagnostic redaction, escaping or bound failed.'}
+Write-Output ('RESULT:'+(@{redacted=$true;bounded=$true;parseable=$true}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"redacted": True, "bounded": True, "parseable": True}
+
+
+def test_startup_shell_diagnostic_overflow_reports_bounded_complete_json(tmp_path):
+    outcome = run(tmp_path, r"""
+$ast=[Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1'),[ref]$null,[ref]$null)
+foreach($name in @('Protect-RecoveryText','Write-StartupShellDiagnostic')) {
+    $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true)
+    . ([scriptblock]::Create($node.Extent.Text))
+}
+$StartupRunId='a'*32;$SupervisorPid=$PID;$SupervisorCreationFileTime=123
+$originalError=[Console]::Error;$captured=[IO.StringWriter]::new()
+try {
+    [Console]::SetError($captured)
+    try {throw [InvalidOperationException]::new(([string][char]0x6f22)*8000)}catch{Write-StartupShellDiagnostic 'reader-initialization' $_ $true}
+}finally{[Console]::SetError($originalError)}
+$raw=$captured.ToString();$captured.Dispose();$record=$raw|ConvertFrom-Json
+if($record.outcome -cne 'held' -or !$record.diagnostic_omitted -or $record.reason -cne 'frame-capacity' -or
+    [Text.Encoding]::UTF8.GetByteCount($raw) -gt 8192){throw 'Oversized diagnostic did not retain a bounded complete fallback.'}
+Write-Output ('RESULT:'+(@{held=$true;omission_explicit=$true;bounded=$true}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"held": True, "omission_explicit": True, "bounded": True}
+
+
+def test_startup_shell_diagnostic_counts_newline_at_reachable_frame_boundaries(tmp_path):
+    outcome = run(tmp_path, r"""
+$ast=[Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1'),[ref]$null,[ref]$null)
+foreach($name in @('Protect-RecoveryText','Write-StartupShellDiagnostic')) {
+    $node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name},$true)
+    . ([scriptblock]::Create($node.Extent.Text))
+}
+$StartupRunId='a'*32;$SupervisorPid=$PID;$SupervisorCreationFileTime=123
+function Get-FixtureDiagnostic([string]$Text) {
+    $originalError=[Console]::Error;$captured=[IO.StringWriter]::new()
+    try {
+        [Console]::SetError($captured)
+        try {throw [InvalidOperationException]::new($Text)}catch{Write-StartupShellDiagnostic 'reader-initialization' $_ $true}
+    }finally{[Console]::SetError($originalError)}
+    try {return $captured.ToString()}finally{$captured.Dispose()}
+}
+$base=Get-FixtureDiagnostic ''
+if(($base|ConvertFrom-Json).message -cne ''){throw 'Boundary fixture requires an empty message baseline.'}
+$overhead=[Text.Encoding]::UTF8.GetByteCount($base.TrimEnd([char[]]"`r`n"))
+$newline=[Text.Encoding]::UTF8.GetByteCount([Environment]::NewLine)
+foreach($target in @(8190,8191,8192)) {
+    # One escaped Unicode code unit occupies six ASCII bytes; the remaining
+    # ASCII text makes each exact line length reachable below the 2048-char cap.
+    $escapedLength=$target-$overhead
+    $unicode=[int][Math]::Ceiling(($escapedLength-2048)/5.0)
+    $ascii=$escapedLength-6*$unicode
+    if($unicode -lt 0 -or $ascii -lt 0 -or $unicode+$ascii -gt 2048){throw 'Boundary fixture is outside the real source-message cap.'}
+    $message=([string][char]0x6f22)*$unicode+('X'*$ascii)
+    $raw=Get-FixtureDiagnostic $message;$record=$raw|ConvertFrom-Json
+    if([Text.Encoding]::UTF8.GetByteCount($raw) -gt 8192){throw 'Complete diagnostic record exceeded its byte cap.'}
+    if($target+$newline -le 8192){
+        if($record.message -cne $message -or [Text.Encoding]::UTF8.GetByteCount($raw) -ne $target+$newline){throw 'Admitted exact-boundary record was truncated or omitted.'}
+    }elseif(!$record.diagnostic_omitted -or $record.reason -cne 'frame-capacity'){
+        throw 'Line-only capacity check admitted an oversized newline-terminated frame.'
+    }
+}
+Write-Output ('RESULT:'+(@{boundaries=@(8190,8191,8192);complete_frames_bounded=$true}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"boundaries": [8190, 8191, 8192], "complete_frames_bounded": True}
 
 
 @pytest.mark.parametrize("native_code", [0, 1, 82, 124, 125])

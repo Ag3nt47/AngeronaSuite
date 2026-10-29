@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import json
 import base64
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 import re
 import subprocess
@@ -90,6 +92,131 @@ if(![Net.WebRequest]::RegisterPrefix('https://api.github.com/repos/Ag3nt47/Anger
 """
 
 
+FIXTURE_DEFAULT_OWNER = r"""
+$ErrorActionPreference='Stop'
+# The inert verifier models an ordinary source session on a hosted admin
+# runner. Set only this disposable test child's default owner to TokenUser:
+# native CreateFile(NULL security descriptor) then has ordinary-user ownership.
+# No group, elevation, privilege, DACL, product file or pytest-parent token changes.
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+public sealed class AngeronaFixtureOwnerScope : IDisposable {
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr value);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool OpenProcessToken(IntPtr process,uint access,out IntPtr token);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool GetTokenInformation(IntPtr token,int kind,IntPtr buffer,int size,out int needed);
+    [DllImport("advapi32.dll",SetLastError=true)] static extern bool SetTokenInformation(IntPtr token,int kind,ref IntPtr value,int size);
+    IntPtr token, original, user;
+    bool changed;
+    readonly string originalOwner, tokenUser;
+    readonly bool administrator;
+    public bool Restored { get; private set; }
+    static IntPtr Read(IntPtr token,int kind) {
+        int needed;
+        GetTokenInformation(token,kind,IntPtr.Zero,0,out needed);
+        if(needed<=0 || needed>65536) throw new InvalidOperationException("Fixture token information size is invalid.");
+        IntPtr buffer=Marshal.AllocHGlobal(needed);
+        try {
+            if(!GetTokenInformation(token,kind,buffer,needed,out needed)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return buffer;
+        } catch { Marshal.FreeHGlobal(buffer); throw; }
+    }
+    static string Sid(IntPtr information) { return new SecurityIdentifier(Marshal.ReadIntPtr(information)).Value; }
+    static bool Administrator() {
+        using(WindowsIdentity identity=WindowsIdentity.GetCurrent()) {
+            return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+        }
+    }
+    static string CurrentUser() {
+        using(WindowsIdentity identity=WindowsIdentity.GetCurrent()) { return identity.User.Value; }
+    }
+    public AngeronaFixtureOwnerScope() {
+        administrator=Administrator();
+        if(!OpenProcessToken(GetCurrentProcess(),0x88u,out token)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            IntPtr statistics=Read(token,10);
+            try {
+                long caller;
+                if(!Int64.TryParse(Environment.GetEnvironmentVariable("ANGERONA_FIXTURE_CALLER_TOKEN_ID"),out caller) ||
+                    Marshal.ReadInt64(statistics)==caller) throw new InvalidOperationException("Fixture child does not have a distinct caller token; owner adjustment refused.");
+            } finally { Marshal.FreeHGlobal(statistics); }
+            original=Read(token,4); user=Read(token,1);
+            originalOwner=Sid(original); tokenUser=Sid(user);
+            if(tokenUser!=CurrentUser()) throw new InvalidOperationException("Fixture process identity differs from the current user.");
+            IntPtr requested=Marshal.ReadIntPtr(user);
+            if(!SetTokenInformation(token,4,ref requested,IntPtr.Size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            changed=true;
+            IntPtr actual=Read(token,4);
+            try { if(Sid(actual)!=tokenUser) throw new InvalidOperationException("Fixture default owner did not become TokenUser."); }
+            finally { Marshal.FreeHGlobal(actual); }
+            if(Administrator()!=administrator) throw new InvalidOperationException("Fixture owner adjustment changed elevation state.");
+        } catch { Dispose(); throw; }
+    }
+    public void Dispose() {
+        if(token==IntPtr.Zero) return;
+        try {
+            if(changed) {
+                IntPtr prior=Marshal.ReadIntPtr(original);
+                if(!SetTokenInformation(token,4,ref prior,IntPtr.Size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                changed=false;
+                IntPtr actual=Read(token,4);
+                try { if(Sid(actual)!=originalOwner || Administrator()!=administrator) throw new InvalidOperationException("Fixture default owner/elevation did not restore."); }
+                finally { Marshal.FreeHGlobal(actual); }
+            }
+            Restored=true;
+        } finally {
+            if(original!=IntPtr.Zero) { Marshal.FreeHGlobal(original); original=IntPtr.Zero; }
+            if(user!=IntPtr.Zero) { Marshal.FreeHGlobal(user); user=IntPtr.Zero; }
+            IntPtr held=token; token=IntPtr.Zero;
+            if(!CloseHandle(held)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+    }
+}
+'@
+$fixtureOwnerScope=[AngeronaFixtureOwnerScope]::new()
+"""
+
+
+def _fixture_caller_token_state():
+    """Read only the pytest caller's primary token identity/default owner."""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    advapi.OpenProcessToken.argtypes = (wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE))
+    advapi.OpenProcessToken.restype = wintypes.BOOL
+    advapi.GetTokenInformation.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD))
+    advapi.GetTokenInformation.restype = wintypes.BOOL
+    advapi.GetLengthSid.argtypes = (wintypes.LPVOID,)
+    advapi.GetLengthSid.restype = wintypes.DWORD
+    token = wintypes.HANDLE()
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        information = {}
+        for kind in (4, 10):
+            needed = wintypes.DWORD()
+            advapi.GetTokenInformation(token, kind, None, 0, ctypes.byref(needed))
+            assert 0 < needed.value <= 65536
+            buffer = ctypes.create_string_buffer(needed.value)
+            if not advapi.GetTokenInformation(token, kind, buffer, len(buffer), ctypes.byref(needed)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            information[kind] = buffer
+        owner = information[4]
+        owner_pointer = ctypes.c_void_p.from_buffer(owner).value
+        assert ctypes.addressof(owner) <= owner_pointer < ctypes.addressof(owner) + len(owner)
+        owner_length = advapi.GetLengthSid(owner_pointer)
+        assert 0 < owner_length <= 1024 and owner_pointer + owner_length <= ctypes.addressof(owner) + len(owner)
+        return ctypes.c_int64.from_buffer(information[10]).value, ctypes.string_at(owner_pointer, owner_length)
+    finally:
+        if not kernel.CloseHandle(token):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
 def execute(tmp_path, root, storage, payload, settings, *, network_guard=NETWORK_GUARD, prelude=""):
     script = tmp_path / "bootstrap-fixture.ps1"
     # Definition-only import lets us create the real private ACL before the
@@ -131,11 +258,21 @@ def execute(tmp_path, root, storage, payload, settings, *, network_guard=NETWORK
     else:
         setup_verifier.write_bytes((tmp_path / "removed-verifier.ps1").read_bytes())
     setup = setup.replace(ps_literal(setup_source), ps_literal(setup_verifier), 1)
-    script.write_text(setup + network_guard + prelude + payload, encoding="utf-8")
+    script.write_text(FIXTURE_DEFAULT_OWNER + "\ntry {\n" + setup + network_guard + prelude + payload
+                      + "\n}finally{\n$fixtureOwnerScope.Dispose()\n"
+                      + "if(!$fixtureOwnerScope.Restored){throw 'Fixture default owner was not restored.'}\n"
+                      + "[Console]::WriteLine('FIXTURE_DEFAULT_OWNER_RESTORED')\n}\n", encoding="utf-8")
+    caller_token = _fixture_caller_token_state()
     environment = dict(os.environ, ANGERONA_INSTALL_ROOT=str(root), ANGERONA_SETUP_ONLY="1",
+                       ANGERONA_FIXTURE_CALLER_TOKEN_ID=str(caller_token[0]),
                        TEMP=str(tmp_path), TMP=str(tmp_path), PSModulePath="")
-    return subprocess.run([str(POWERSHELL), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
-                          cwd=root, env=environment, text=True, capture_output=True, timeout=60, check=False)
+    try:
+        result = subprocess.run([str(POWERSHELL), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(script)],
+                                cwd=root, env=environment, text=True, capture_output=True, timeout=60, check=False)
+    finally:
+        assert _fixture_caller_token_state() == caller_token, "The pytest caller's token identity/default owner changed."
+    assert "FIXTURE_DEFAULT_OWNER_RESTORED" in result.stdout, result.stdout + result.stderr
+    return result
 
 
 def test_full_intact_payload_honors_master_off_and_runs_only_verified_inert_supervisor(tmp_path):

@@ -29,6 +29,52 @@ function Protect-RecoveryText([object]$TextValue, [int]$Limit = 4096) {
         '[redacted]')
 }
 
+function Write-StartupShellDiagnostic([string]$Phase, [object]$Failure, [bool]$Painted) {
+    # Advisory stderr only. Do not depend on JSON command/module loading while
+    # explaining a failed reader/compiler/receipt step, or change the UI hold.
+    try {
+        $exception = $Failure.Exception.GetBaseException()
+        $values = @((Protect-RecoveryText $Phase 64),
+            $(if ($StartupRunId -cmatch '^[a-f0-9]{32}$') { $StartupRunId } else { '' }),
+            (Protect-RecoveryText $exception.GetType().FullName 256),
+            (Protect-RecoveryText $exception.Message 2048))
+        $escaped = foreach ($value in $values) {
+            $builder = [Text.StringBuilder]::new()
+            foreach ($character in $value.ToCharArray()) {
+                $number = [int]$character
+                if ($number -eq 34) { [void]$builder.Append('\"') }
+                elseif ($number -eq 92) { [void]$builder.Append('\\') }
+                elseif ($number -lt 32 -or $number -gt 126) {
+                    # ASCII JSON is valid UTF-8 even on an OEM-encoded Windows
+                    # stderr stream. Preserve Unicode as complete JSON escapes.
+                    [void]$builder.Append('\u')
+                    [void]$builder.Append($number.ToString('x4', [Globalization.CultureInfo]::InvariantCulture))
+                } else { [void]$builder.Append($character) }
+            }
+            $builder.ToString()
+        }
+        $birth = '0'; $self = $null
+        try {
+            $self = [Diagnostics.Process]::GetCurrentProcess()
+            $birth = [string]$self.StartTime.ToUniversalTime().ToFileTimeUtc()
+        } catch { } finally { if ($self) { $self.Dispose() } }
+        $line = '{"schema":1,"component":"startup-recovery-ui","phase":"' + $escaped[0] +
+            '","outcome":"held","utc":"' + [DateTime]::UtcNow.ToString('o') +
+            '","run_id":"' + $escaped[1] + '","shell_pid":' + $PID +
+            ',"shell_creation_filetime":"' + $birth + '","supervisor_pid":' + $SupervisorPid +
+            ',"supervisor_creation_filetime":"' + [string]$SupervisorCreationFileTime +
+            '","painted":' + $Painted.ToString().ToLowerInvariant() +
+            ',"exception_type":"' + $escaped[2] + '","message":"' + $escaped[3] + '"}'
+        $recordBytes = [Text.Encoding]::UTF8.GetByteCount($line) +
+            [Text.Encoding]::UTF8.GetByteCount([Console]::Error.NewLine)
+        if ($recordBytes -le 8192) {
+            [Console]::Error.WriteLine($line)
+        } else {
+            [Console]::Error.WriteLine('{"schema":1,"component":"startup-recovery-ui","outcome":"held","diagnostic_omitted":true,"reason":"frame-capacity"}')
+        }
+    } catch { } # Diagnostics cannot replace the original held state or grant a receipt.
+}
+
 function Get-RecoveryCandidatePath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path) -or $Path -notmatch '^[A-Za-z]:[\\/]' -or
         $Path.Substring(2).Contains(':') -or
@@ -515,8 +561,10 @@ function Show-StartupDashboard {
         # Refresh completes the first native paint before any report/log read,
         # C# reader compilation, or paint-receipt filesystem operation.
         $form.Refresh(); $state.Painted = $true
+        $connectionPhase = 'reader-initialization'
         try {
             Initialize-RecoveryReader
+            $connectionPhase = 'supervisor-verification'
             $shellBirth = [AngeronaRecoveryReadV1]::ProcessCreationFileTime($PID)
             if ($shellBirth -le 0 -or
                 [AngeronaRecoveryReadV1]::ProcessCreationFileTime($SupervisorPid) -ne $SupervisorCreationFileTime) {
@@ -525,10 +573,13 @@ function Show-StartupDashboard {
             $receipt = [ordered]@{ schema = 1; run_id = $StartupRunId
                 supervisor_pid = $SupervisorPid; supervisor_creation_filetime = [string]$SupervisorCreationFileTime
                 shell_pid = $PID; shell_creation_filetime = [string]$shellBirth }
+            $connectionPhase = 'paint-receipt'
             [AngeronaRecoveryReadV1]::WritePaintReceipt($PaintReceiptFile,
                 ($receipt | ConvertTo-Json -Compress), $localRuntime, $ownedScratch)
+            $connectionPhase = 'status-poll-start'
             $pollTimer.Start()
         } catch {
+            Write-StartupShellDiagnostic $connectionPhase $_ $state.Painted
             $state.State = 'held'; $state.ExitCode = 0; $bar.Style = 'Continuous'
             $verification.Value.Text = 'Held'; $runtime.Value.Text = 'Unavailable'
             $stage.Text = 'Startup interface could not establish its supervisor connection. Protection is unavailable.'
