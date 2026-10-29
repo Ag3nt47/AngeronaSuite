@@ -17,6 +17,8 @@ import time
 
 MAX_PROGRESS_BYTES = 48 * 1024
 MAX_STEPS = 32
+MAX_RUN_SECONDS = 4 * 60 * 60
+MAX_PROGRESS_ELAPSED_SECONDS = 24 * 60 * 60
 _ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 _UUID = re.compile(r"[0-9a-f]{32}")
 _STATES = {"queued", "running", "completed", "incomplete", "cancelled", "timed-out", "failed", "skipped"}
@@ -74,7 +76,8 @@ def validate_snapshot(raw, *, job_id, nonce, birth, operation_id, previous_seque
             or document.get("state") not in _STATES):
         raise ValueError("Scanner progress does not match its owned generation")
     for name in ("elapsed_s", "timeout_seconds", "remaining_budget_s"):
-        if not _number(document.get(name), 3600):
+        ceiling = MAX_PROGRESS_ELAPSED_SECONDS if name == "elapsed_s" else MAX_RUN_SECONDS
+        if not _number(document.get(name), ceiling):
             raise ValueError("Invalid scanner progress timing")
     for name, limit in (("current_step", 64), ("current_task", 1000), ("current_file", 4096), ("estimate_basis", 300)):
         if type(document.get(name)) is not str or len(document[name]) > limit:
@@ -104,7 +107,7 @@ def validate_snapshot(raw, *, job_id, nonce, birth, operation_id, previous_seque
             total = row.get("total")
             if total is None or total <= 0 or abs(row["percent"] - 100 * row["completed"] / total) > .11:
                 raise ValueError("Scanner percentage lacks a measured denominator")
-        if not _number(row.get("elapsed_s"), 3600):
+        if not _number(row.get("elapsed_s"), MAX_PROGRESS_ELAPSED_SECONDS):
             raise ValueError("Invalid scanner step duration")
     if (type(document.get("completed_steps")) is not int or type(document.get("total_steps")) is not int
             or document.get("total_steps") != len(steps)

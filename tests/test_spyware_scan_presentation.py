@@ -421,3 +421,32 @@ def test_retired_toolkit_rows_are_not_run_while_native_request_still_drains(memo
         assert panel.progress_ring.percent < 100
     finally:
         panel.close()
+
+
+def test_longer_per_run_choice_preserves_saved_limit_and_completed_scanner_reaches_100(memory):
+    controller, manager, config, _ = memory
+    before = copy.deepcopy(vars(config))
+    panel = ui.SpywareScanControls(manager)
+    try:
+        assert panel.budget.minimum() == 30 and panel.budget.maximum() == 14400
+        assert panel.budget.value() == 300
+        assert ui._LIMITS["github_tools_timeout_seconds"][1:] == (300, 30, 900)
+        panel.budget.setValue(14400)
+        assert panel.start()
+        assert controller.requests[-1]["timeout_seconds"] == 14400
+        assert vars(config) == before
+        controller.publish(busy=True, scan_progress=progress(4, stage="aggregation"), scanner_progress={
+            "native": {"state": "completed", "overall_percent": 100, "steps": []},
+            "toolkit": {"state": "running", "overall_percent": 100, "steps": []},
+        })
+        assert "100%" in panel.scanner_summaries["native"].text()
+        assert "99%" in panel.scanner_summaries["toolkit"].text()
+        assert panel.progress_ring.percent < 100
+        controller.publish(scanner_progress={
+            "native": {"state": "running", "overall_percent": 100, "steps": []},
+            "toolkit": {"state": "completed", "overall_percent": 100, "steps": []},
+        })
+        assert "99%" in panel.scanner_summaries["native"].text()
+        assert "100%" in panel.scanner_summaries["toolkit"].text()
+    finally:
+        panel.close()

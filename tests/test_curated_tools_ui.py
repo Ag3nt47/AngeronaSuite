@@ -566,13 +566,13 @@ def test_per_run_budget_constructs_operation_before_scan_without_changing_saved_
     assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
     wait_until(lambda: not controller.snapshot()["busy"])
     assert observed[-1][1] == 600 and observed[-1][2] > 590
-    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, timeout_seconds=900)
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, timeout_seconds=14400)
     wait_until(lambda: not controller.snapshot()["busy"])
-    assert observed[-1][1] == 900 and observed[-1][2] > 890
+    assert observed[-1][1] == 14400 and observed[-1][2] > 14390
     assert controller.manager.cfg.github_tools_timeout_seconds == 600
     assert not Config.saved_on
-    assert not controller.priority_scan(timeout_seconds=901)
-    assert "30 and 900" in controller.snapshot()["message"]
+    assert not controller.priority_scan(timeout_seconds=14401)
+    assert "30 and 14400" in controller.snapshot()["message"]
 
 
 def test_timeout_preserves_exact_partial_reader_progress_and_reason(controller):

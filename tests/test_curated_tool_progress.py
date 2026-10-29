@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -58,6 +59,65 @@ def decode(raw, sequence=0):
     return validate_snapshot(raw, job_id="c" * 32, nonce="b" * 64,
                              birth="123456789012345678", operation_id="a" * 32,
                              previous_sequence=sequence)
+
+
+def test_extended_operation_deadline_and_cancel_remain_finite(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(tools.time, "monotonic", clock)
+    operation = tools.ToolOperation(timeout=14400)
+    assert operation.timeout_seconds == 14400 and operation.deadline == 14500
+    clock.value += 901
+    operation.check()
+    clock.value = 14500
+    with pytest.raises(tools.ToolCancelled, match="deadline"):
+        operation.check()
+    assert operation.stop_reason == "deadline"
+    cancelled = tools.ToolOperation(timeout=14400)
+    cancelled.cancel()
+    with pytest.raises(tools.ToolCancelled, match="cancelled"):
+        cancelled.check()
+    assert cancelled.stop_reason == "operator"
+    assert tools.ToolOperation(timeout=14401).timeout_seconds == 14400
+    assert tools.ToolOperation().timeout_seconds == 300
+
+
+def test_extended_progress_keeps_budget_elapsed_and_eta_bounds_distinct(tmp_path):
+    observer, output, _ = tracker(tmp_path)
+    observer.publish(force=True)
+    document = json.loads(output[-1])
+    document.update(timeout_seconds=14400, remaining_budget_s=14399, elapsed_s=14401,
+                    remaining_s=20000, item_remaining_s=20000)
+    assert decode(json.dumps(document).encode())["timeout_seconds"] == 14400
+    for field, value in (("timeout_seconds", 14401), ("remaining_budget_s", 14401),
+                         ("elapsed_s", 86401), ("timeout_seconds", float("inf"))):
+        with pytest.raises(ValueError):
+            decode(json.dumps(dict(document, **{field: value})).encode())
+    document.update(elapsed_s=86400, completed_steps=0, total_steps=1, overall_percent=0,
+                    steps=[dict(id="browser", label="Browser", state="running", completed=0,
+                                total=None, unit="checks", percent=None, checked=0, skipped=0,
+                                elapsed_s=86400, remaining_s=20000)])
+    decode(json.dumps(document).encode())
+    document["steps"][0]["elapsed_s"] = 86401
+    with pytest.raises(ValueError):
+        decode(json.dumps(document).encode())
+
+
+@pytest.mark.parametrize("inherited_cpu", [-1, 1800])
+def test_extended_posix_cpu_allowance_preserves_tighter_hard_limits(monkeypatch, inherited_cpu):
+    applied = {}
+    fake = SimpleNamespace(RLIMIT_FSIZE=1, RLIMIT_NOFILE=2, RLIMIT_CPU=3, RLIMIT_AS=4,
+                           RLIM_INFINITY=-1)
+    fake.getrlimit = lambda name: (-1, inherited_cpu if name == fake.RLIMIT_CPU else -1)
+    fake.setrlimit = lambda name, values: applied.update({name: values})
+    monkeypatch.setitem(sys.modules, "resource", fake)
+    monkeypatch.setattr(worker.sys, "platform", "linux")
+    worker._posix_limits(dict(max_memory_mib=512, priority="normal"),
+                         dict(working_bytes=256 * 1024**2, cpu_seconds=14400))
+    expected = 14400 if inherited_cpu == -1 else inherited_cpu
+    assert applied[fake.RLIMIT_CPU] == (expected, expected)
+    assert applied[fake.RLIMIT_FSIZE] == (256 * 1024**2, 256 * 1024**2)
+    assert applied[fake.RLIMIT_AS] == (512 * 1024**2, 512 * 1024**2)
+    assert applied[fake.RLIMIT_NOFILE] == (256, 256)
 
 
 def test_wire_identity_duplicate_nonfinite_and_counter_bounds(tmp_path):
@@ -255,7 +315,8 @@ def test_verified_temp_opener_rejects_reused_foreign_fd_without_closing_or_writi
 
 @pytest.mark.skipif(os.name != "nt", reason="actual ordinary-user Windows owned scanner job")
 @pytest.mark.parametrize("match", [False, True])
-def test_real_pinned_engine_selected_evidence_positive_negative_and_progress(tmp_path, monkeypatch, match):
+@pytest.mark.parametrize("budget", [30, 14400])
+def test_real_pinned_engine_selected_evidence_positive_negative_and_progress(tmp_path, monkeypatch, match, budget):
     if not tools._admin_state()["verified"] or tools._admin_state()["elevated"]:
         pytest.skip("Managed scanner requires verified ordinary-user token")
     # Both scopes and all environmental fallback locations are exact owned
@@ -278,7 +339,7 @@ def test_real_pinned_engine_selected_evidence_positive_negative_and_progress(tmp
     pinned_before = hashlib.sha256((bundle / "engine.py").read_bytes()).hexdigest()
     service = tools.CuratedToolService(tmp_path / "managed-tools", bundle=bundle)
     service.prepare(tools.ToolOperation(timeout=30), allow_download=False)
-    operation = tools.ToolOperation(timeout=30)
+    operation = tools.ToolOperation(timeout=budget)
     result = service.scan(tools.ToolScanRequest(mode="targeted", targets=(str(evidence),),
                                               iocs=(str(indicators),), priority="normal"), operation)
     assert result["native_retired"] is True
@@ -299,6 +360,11 @@ def test_real_pinned_engine_selected_evidence_positive_negative_and_progress(tmp
     snapshot["steps"].clear()
     assert service.progress_snapshot()["steps"]  # Detached memory-only state.
     job = service._root() / "jobs" / result["job_id"]
+    request = json.loads((job / "request.json").read_text(encoding="utf-8"))
+    assert 0 < request["limits"]["runtime_seconds"] <= budget
+    assert 0 < request["limits"]["cpu_seconds"] <= budget
+    if budget == 14400:
+        assert request["limits"]["runtime_seconds"] > 900 and request["limits"]["cpu_seconds"] > 900
     assert not (job / "scratch").exists()
     (tmp_path / "native-real-scan-receipt.json").write_text(json.dumps({key: result[key] for key in (
         "state", "exit_code", "native_started", "native_retired", "native_generations", "scanner_progress")}, indent=2), encoding="utf-8")

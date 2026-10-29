@@ -159,8 +159,8 @@ class CuratedToolsController(QObject):
         cfg = _config(self.manager)
         options = dict(options or {})
         budget = options.pop("timeout_seconds", getattr(cfg, "github_tools_timeout_seconds", 300))
-        if type(budget) is not int or not 30 <= budget <= 900:
-            self._publish(state="held", message="Choose a per-run time budget between 30 and 900 seconds.")
+        if type(budget) is not int or not 30 <= budget <= 14400:
+            self._publish(state="held", message="Choose a per-run time budget between 30 and 14400 seconds.")
             return False
         if action in {"prepare", "scan", "priority_scan", "open_tool", "self_test"}:
             if (getattr(self.manager, "ugcap_paused", False)
@@ -1141,7 +1141,7 @@ class SpywareScanControls(QWidget):
         self.memory.setValue(int(getattr(cfg, "spyware_scan_memory_mib", 512)))
         form.addRow("Memory ceiling (MiB)", self.memory)
         self.budget = ClickNumber()
-        self.budget.setRange(30, 900)
+        self.budget.setRange(30, 14400)
         self.budget.setValue(int(getattr(cfg, "github_tools_timeout_seconds", 300)))
         self.budget.setSuffix(" s")
         self.budget.setToolTip("Per-run budget only. This never overwrites your saved default or extends an active scan.")
@@ -1473,7 +1473,7 @@ class SpywareScanControls(QWidget):
                         or (not snapshot.get("busy") and snapshot.get("lifecycle") == "terminal"))
             percent = _measured(value.get("overall_percent"), maximum=100)
             value_state = _literal(value.get("state", "unknown"), 32)
-            percentage = f"{min(percent, 99) if snapshot.get('busy') else percent:.0f}%" if percent is not None else "indeterminate"
+            percentage = f"{min(percent, 99) if snapshot.get('busy') and not terminal else percent:.0f}%" if percent is not None else "indeterminate"
             self.scanner_summaries[source].setText(f"{title}: {value_state} · {percentage}")
             task = _literal(value.get("current_task"), 500)
             item = _literal(value.get("current_file"), 800)

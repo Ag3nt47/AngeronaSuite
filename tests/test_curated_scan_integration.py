@@ -155,8 +155,11 @@ from angerona.core.curated_tool_worker import main
         assert controller.prepare()
         _until(lambda: not controller.snapshot()["busy"])
         assert controller.snapshot()["verified"] is True
+        panel.budget.setValue(14400)
         assert panel.start(mode="targeted", targets=(str(evidence),), iocs=(str(indicators),))
         _until(entered.is_set)
+        assert controller.snapshot()["timeout_seconds"] == 14400
+        assert controller._operation.timeout_seconds == 14400
         assert manager.priority_scan_focus_snapshot()["active"] is True
         assert background._priority_throttle == 8
         _until(lambda: panel.item_progress.isVisible() and 0 < panel.item_progress.value() < 100)
@@ -178,6 +181,10 @@ from angerona.core.curated_tool_worker import main
         assert tool["state"] == "findings" and tool["native_retired"] is True
         assert tool["native_generations"] and all(row["native_retired"] for row in tool["native_generations"])
         assert Path(result["report"]).is_relative_to(root) and Path(result["report"]).is_file()
+        request_document = json.loads(Path(result["report"]).with_name("request.json").read_text(encoding="utf-8"))
+        assert request_document["limits"]["runtime_seconds"] > 900
+        assert request_document["limits"]["cpu_seconds"] > 900
+        assert cfg.github_tools_timeout_seconds == 30
         assert json.loads(Path(result["report"]).read_text(encoding="utf-8"))["schema_version"] == "1.6"
         status = native.priority_scan_snapshot()
         assert status["request_finished"] is True and status["collector_finished"] is True

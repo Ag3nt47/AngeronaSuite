@@ -34,6 +34,10 @@
 - Open one shared after-action report automatically when a requested spyware
   scan has finished and its workers have stopped. Include cancelled, failed and
   incomplete results without granting third-party findings response authority.
+- Allow an explicit per-run scan budget up to four hours for large profiles;
+  retain the saved five-minute default and fifteen-minute saved-setting limit.
+  Keep progress timing consistent with the selected allowance and show a
+  finished scanner at 100% while another selected scanner is still working.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

@@ -21,6 +21,8 @@ import threading
 import tempfile
 import types
 
+from angerona.core.curated_tool_progress import MAX_RUN_SECONDS
+
 
 ENGINE_SHA256 = "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3"
 ENGINE_BYTES = 968987
@@ -205,7 +207,7 @@ def _posix_limits(request, limits):
     if type(memory) is not int or not 128 <= memory <= 2048 or priority not in {"normal", "above-normal", "high"}:
         raise ValueError("Invalid curated-worker resource request")
     values = [(resource.RLIMIT_FSIZE, limits["working_bytes"]), (resource.RLIMIT_NOFILE, 256),
-              (resource.RLIMIT_CPU, min(900, max(1, int(limits.get("cpu_seconds", 300)))))]
+              (resource.RLIMIT_CPU, min(MAX_RUN_SECONDS, max(1, int(limits.get("cpu_seconds", 300)))))]
     if sys.platform.startswith("linux"):
         values.append((resource.RLIMIT_AS, memory * 1024**2))
     for name, value in values:

@@ -538,3 +538,41 @@ exceed a finite per-run budget. These controlled checks do not prove that every
 host finishes within 900 seconds or that an incomplete full scan is a clean
 verdict. Real host evidence remains private, and no source or response authority
 is expanded by automatic report presentation.
+
+## Full-scan time allowance follow-up
+
+An actual supported full-scope local run finished its native priority request
+with both strict completion flags, while the toolkit reached the chosen
+900-second deadline in its browser reader. The toolkit's final retained progress
+counted 19,204 checked items and two skips; five later stages did not run. Both
+tool process generations were independently observed retired, and the retained
+receipt matched the latest-job copy. No final report.json existed. This was an
+incomplete scan, not a clean result. The new after-action window opened without
+an investigator action and retained the same request, native completion,
+toolkit deadline and explicit coverage gaps. Its copied native progress also
+contained skipped items; completion of the request did not erase those gaps.
+
+The follow-up permits an explicit per-run budget up to 14,400 seconds while
+keeping the saved default at 300 and saved-setting maximum at 900. One shared
+bound reaches operation construction, child runtime/CPU-time requests and POSIX
+CPU allowance; inherited tighter hard limits still win. CPU rate, memory,
+working/report capacity, ordinary-user execution, scope, cancellation and native
+custody are unchanged. Four hours is an allowance, not a completion guarantee.
+Progress timeout/remaining-budget fields accept that bound, while elapsed
+metadata has a separate finite day-long ceiling for retirement accounting. ETA
+fields remain measurements rather than being clamped to the selected deadline.
+The per-scanner display no longer caps an already finished reader at 99% merely
+because a different reader is still active; aggregate progress remains bounded
+until the whole workflow ends.
+
+The coherent extended-budget Qt gate passed 152 cases, including real operation
+construction, unchanged preference bytes, saved-setting rejection above 900,
+actual pinned-worker budget propagation and the automatic after-action chain.
+Its five captured native generations retired naturally with fixed source hashes.
+The backend gate passed 58 cases; the remaining new test initially supplied an
+inconsistent empty-plan rollup when adding a step, which the parser correctly
+rejected. After correcting only that fixture, the timing case and all four
+actual pinned positive/negative short/extended-budget executions passed together;
+all eleven captured native generations retired with final sources fixed.
+Independent review passed. These fast controlled runs verify allowance
+propagation and lifecycle behavior, not a four-hour endurance or full-host result.

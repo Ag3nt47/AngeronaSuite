@@ -60,6 +60,11 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   publication AND actual worker retirement, including failure and partial
   results. Shared views cannot create duplicate reports; shutdown fences late
   callbacks. External findings retain confirmed=False and no response authority.
+  Explicit per-run budgets accept 30..14400 seconds. Saved default300 and
+  Config/settings maximum900 remain unchanged. Runtime and CPU-time allowances
+  propagate consistently; CPU rate, RAM, disk admission, cancellation and native
+  custody retain their controls. Progress budget fields cap at14400; elapsed
+  records cap at86400 for retirement, while measured ETA remains independent.
 - A latched Breached warning, critical report and borders require fresh native
   manager-enrolled LIVE mesh evidence, registered/current producer, an exact
   contract and explicit active attack/exploitation. Health/exposure/practice,

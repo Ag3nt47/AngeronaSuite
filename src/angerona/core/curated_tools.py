@@ -29,6 +29,7 @@ import unicodedata
 import uuid
 
 from angerona.core.data_paths import data_dir, resource_root
+from angerona.core.curated_tool_progress import MAX_RUN_SECONDS
 from angerona.core.executable_trust import _open_sealed
 from angerona.core.file_lease import ExclusiveFileLease
 from angerona.core.source_sandbox import (
@@ -96,7 +97,7 @@ class ToolOperation:
     def __init__(self, timeout: float = 300) -> None:
         self.cancelled = threading.Event()
         self.started_monotonic = time.monotonic()
-        self.timeout_seconds = min(900.0, max(1.0, float(timeout)))
+        self.timeout_seconds = min(float(MAX_RUN_SECONDS), max(1.0, float(timeout)))
         self.deadline = self.started_monotonic + self.timeout_seconds
         self.operation_id = uuid.uuid4().hex
         self.stop_reason = ""
@@ -1131,8 +1132,8 @@ class CuratedToolService:
                         kind="interactive" if interactive else "describe" if metadata_only else "scan",
                         request=asdict(request), limits={"working_bytes": self._limit("job_limit_mib", 256, 64, 1024) * 1024**2,
                                                        "retained_bytes": self._retained_allowances.get(job.name, 8 * 1024**2),
-                                                       "cpu_seconds": min(900, max(1, int(operation.deadline - time.monotonic()))),
-                                                       "runtime_seconds": min(900.0, max(1.0, operation.deadline - time.monotonic()))})
+                                                       "cpu_seconds": min(MAX_RUN_SECONDS, max(1, int(operation.deadline - time.monotonic()))),
+                                                       "runtime_seconds": min(float(MAX_RUN_SECONDS), max(1.0, operation.deadline - time.monotonic()))})
         request_path = job / "request.json"
         request_raw = json.dumps(document, ensure_ascii=True, separators=(",", ":")).encode()
         if len(request_raw) > 64 * 1024:
