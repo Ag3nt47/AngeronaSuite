@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import time
+import copy
 import json
+import os
 import threading
+import uuid
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -64,6 +69,341 @@ def _assert_issuer_original_response(bus, result):
     assert response.details["queue_request_id"] is None
     assert not any(event.module in {"Active Response SOAR Request", "Red Team Practice Lab"}
                    for event in events)
+
+
+@pytest.fixture
+def source_canary(tmp_path, monkeypatch):
+    """Actual issuer/file custody; only unrelated inventory and queue intake are inert."""
+    if os.name != "nt":
+        pytest.skip("Windows exact canary custody")
+    from angerona.core.practice_verification import _write_registered_marker
+    from angerona.modules.adversary_combat import AdversaryCombat, CombatPolicy
+    from angerona.modules.purple_guard import RedTeamValidationLease, acquire_redteam_validation_lease
+    _offline_practice_inventory(monkeypatch)
+    root = tmp_path / "runtime"
+    root.mkdir()
+    _key(root)
+    monkeypatch.setattr("angerona.core.breach_state.protect_authority", lambda: (False, "Source Observe"))
+    recorder = FlightRecorder(root / "flight-recorder.db")
+    bus = EventBus()
+    bus.arm(recorder.authority)
+    bus.subscribe(recorder.record_bus, delivery_budget_ms=60_000)
+    guard, combat = PurpleGuard(root), AdversaryCombat(root, rollback_anchor={})
+    guard.bind(bus)
+    combat.bind(bus)
+    manager = SimpleNamespace(bus=bus, recorder=recorder, modules={guard.name: guard, combat.name: combat})
+    combat.bind_manager(manager)
+    monkeypatch.setattr(combat, "policy", lambda: CombatPolicy(
+        block_network=False, isolate_host=False, activate_honeypots=False, process_action="terminate"))
+    # Tests dispatch the exact original directly; the real worker still owns
+    # lifecycle/journal preparation, and the real detector mints its own proof.
+    monkeypatch.setattr(combat, "_submit", lambda _event: None)
+    lease, run_id = None, None
+    try:
+        combat.start()
+        deadline = time.monotonic() + 5
+        while not combat.response_ready() and time.monotonic() < deadline:
+            time.sleep(.01)
+        assert combat.response_ready()
+        target = root / "drill-sandbox"
+        lease = acquire_redteam_validation_lease(manager, bus, recorder, root, target, timeout=3)
+        run_id = uuid.uuid4().hex
+        RedTeamValidationLease.consume_for_run(lease, run_id=run_id, target=target, data_root=root)
+        marker = target / f"_redteam_lsass_dump_practice_{run_id}.txt"
+        _write_registered_marker(marker, "ANGERONA inert boundary control\n", run_id, lease=lease)
+        guard.scan_once(guard._policy_snapshot())
+        event = next(event for event in reversed(bus.recent(100))
+                     if event.module == guard.name and event.details.get("path") == str(marker))
+        assert bus.verify(event)
+        yield SimpleNamespace(root=root, marker=marker, event=event, lease=lease, guard=guard, run_id=run_id,
+                              combat=combat, manager=manager, bus=bus, recorder=recorder)
+    finally:
+        modules = tuple(manager.modules.values())
+        threads = tuple(module._thread for module in modules if module._thread is not None)
+        if lease is not None:
+            RedTeamValidationLease.release(lease)
+        if run_id is not None:
+            from angerona.core.practice_scope import unregister_run
+            unregister_run(run_id)
+        for module in modules:
+            module.stop()
+        for thread in threads:
+            thread.join(timeout=5)
+        assert not any(thread.is_alive() for thread in threads)
+        recorder.close()
+
+
+def test_source_canary_success_preserves_host_hold_and_public_undo_denial(source_canary):
+    graph = source_canary
+    action = graph.combat._quarantine_file(str(graph.marker), graph.event, "combat-000000000001")
+    assert action is not None and action.status == "applied"
+    assert not graph.marker.exists()
+    status = graph.combat.response_snapshot()
+    assert status["state"] == "AUTHORITY HELD" and status["ready"] is False
+    assert status["canary_ready"] is True
+    assert "Source Observe" in status["reason"]
+    assert graph.combat.undo_action(action.action_id)["ok"] is False
+    assert not graph.marker.exists()
+    assert Path(action.details["quarantine"]).is_file()
+
+
+@pytest.mark.parametrize("change", ["expired", "released", "replaced", "foreign-manager", "raw-practice", "foreign-target"])
+def test_source_canary_cannot_authorize_stale_foreign_or_metadata_only_targets(source_canary, monkeypatch, change):
+    from angerona.modules.purple_guard import RedTeamValidationLease, _lease_authority
+    graph = source_canary
+    event, target = graph.event, graph.marker
+    if change == "expired":
+        _lease_authority(graph.lease).run_deadline_monotonic = time.monotonic() - 1
+    elif change == "released":
+        RedTeamValidationLease.release(graph.lease)
+    elif change == "replaced":
+        old_identity = target.stat().st_ino
+        RedTeamValidationLease.begin_marker_containment(graph.lease, graph.combat, event, target)
+        data = target.read_bytes()
+        target.replace(graph.root / "retained-original-control.txt")
+        target.write_bytes(data)
+        assert target.stat().st_ino != old_identity
+    elif change == "foreign-manager":
+        monkeypatch.setattr(graph.combat, "_manager", SimpleNamespace(
+            modules=graph.manager.modules, bus=graph.bus, recorder=graph.recorder))
+    else:
+        event = copy.deepcopy(event)
+        if change == "raw-practice":
+            event.details["detector_receipt_mac"] = "0" * 64
+            event.details["disposition"] = "practice"
+        else:
+            target = graph.root / "ordinary-host-file.txt"
+            target.write_bytes(b"ordinary unrelated file")
+            event.details["path"] = str(target)
+            event.details["response_contract"]["targets"]["path"] = str(target)
+        event = replace(event, hmac_sig=graph.recorder.authority.sign(event))
+        assert graph.bus.verify(event), "The negative must reach the private issuer-proof boundary"
+    before = target.read_bytes()
+    assert graph.combat._quarantine_file(str(target), event, "combat-000000000002") is None
+    assert target.read_bytes() == before
+    assert not any(row.get("status") == "applied" for row in graph.combat.list_actions())
+
+
+@pytest.mark.parametrize("change", ["expired", "released", "stop", "disabled-policy"])
+def test_source_canary_rechecks_authority_after_durable_intent(source_canary, monkeypatch, change):
+    from angerona.modules.purple_guard import RedTeamValidationLease, _lease_authority
+    graph = source_canary
+    policy, entered = graph.combat.policy(), []
+    original = graph.combat._journal_intent
+    def revoke_after_intent(action):
+        original(action)
+        entered.append(action.action_id)
+        if change == "expired":
+            _lease_authority(graph.lease).run_deadline_monotonic = time.monotonic() - 1
+        elif change == "released":
+            RedTeamValidationLease.release(graph.lease)
+        elif change == "stop":
+            graph.combat.stop()
+        else:
+            monkeypatch.setattr(graph.combat, "policy", lambda: replace(policy, enabled=False))
+    monkeypatch.setattr(graph.combat, "_journal_intent", revoke_after_intent)
+    identity = graph.marker.stat().st_ino
+    assert graph.combat._quarantine_file(str(graph.marker), graph.event, "combat-000000000003") is None
+    assert len(entered) == 1
+    assert graph.marker.stat().st_ino == identity
+
+
+def test_source_ordinary_process_network_and_program_effects_stay_held(source_canary, monkeypatch):
+    import subprocess
+    import sys
+    import psutil
+    from angerona.modules.adversary_combat import CombatPolicy
+    graph = source_canary
+    monkeypatch.setattr(graph.combat, "_run_firewall", lambda *_a, **_k: pytest.fail("No firewall effect"))
+    child = subprocess.Popen([getattr(sys, "_base_executable", sys.executable), "-I", "-c", "import time;time.sleep(15)"],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        created = psutil.Process(child.pid).create_time()
+        event = Event("ordinary-host-detector", "public practice labels grant no authority", Severity.HIGH,
+                      details={"pid": child.pid, "process_create_time": created, "disposition": "practice",
+                               "response_authorized": True, "response_contract": {
+                                   "version": 1, "actions": ["terminate_process"],
+                                   "targets": {"pid": child.pid, "process_create_time": created}}})
+        event = replace(event, hmac_sig=graph.recorder.authority.sign(event))
+        assert graph.bus.verify(event)
+        assert graph.combat._block_remote_ip("192.0.2.25", event, "combat-000000000004") is None
+        assert graph.combat._block_program("C:/ordinary.exe", child.pid, created, event, "combat-000000000004") is None
+        assert graph.combat._act_on_process(child.pid, CombatPolicy(), event, "combat-000000000004") is None
+        assert child.poll() is None, "A real owned but unleased child must not inherit canary authority"
+    finally:
+        if child.poll() is None:
+            child.terminate()
+        child.wait(timeout=5)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Actual final Windows process dispatch")
+@pytest.mark.parametrize("change", ["expired", "stop", "disabled-policy"])
+def test_source_owned_child_rechecks_issuer_and_stop_at_final_native_dispatch(tmp_path, monkeypatch, change):
+    from angerona.modules.purple_guard import _lease_authority
+    _offline_practice_inventory(monkeypatch)
+    _key(tmp_path)
+    monkeypatch.setattr("angerona.core.breach_state.protect_authority", lambda: (False, "Source Observe"))
+    recorder = FlightRecorder(tmp_path / "flight-recorder.db")
+    bus = EventBus()
+    bus.arm(recorder.authority)
+    bus.subscribe(recorder.record_bus, delivery_budget_ms=60_000)
+    guard, response = PurpleGuard(tmp_path), ActiveResponseSOAR()
+    guard.bind(bus)
+    response.bind(bus)
+    manager = SimpleNamespace(bus=bus, recorder=recorder, modules={guard.name: guard, response.name: response})
+    combat = _shared_practice_combat(tmp_path, manager, response)
+    baseline = combat.policy()
+    enabled = [True]
+    monkeypatch.setattr(combat, "policy", lambda: replace(baseline, enabled=enabled[0]))
+    acquire = combat._acquire_termination_lease
+    held_at_refusal, producers = [], []
+
+    def wrapped_acquire(action):
+        real = acquire(action)
+        producers[:] = tuple(manager.modules.values())
+        class FinalDispatch:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def terminate(self, *, before_dispatch=None):
+                def revoke_after_native_validation():
+                    if change == "expired":
+                        _lease_authority(guard._validation_lease).run_deadline_monotonic = time.monotonic() - 1
+                    elif change == "stop":
+                        combat.stop()
+                    else:
+                        enabled[0] = False
+                    try:
+                        before_dispatch()
+                    except Exception:
+                        # This is the actual retained kernel object after the
+                        # real adapter's final native identity check, not a fake
+                        # Process.kill/terminate callback or mere PID assertion.
+                        real.validate(alive=True)
+                        held_at_refusal.append(not real.dispatch_started)
+                        raise
+                real.terminate(before_dispatch=revoke_after_native_validation)
+        return FinalDispatch()
+
+    monkeypatch.setattr(combat, "_acquire_termination_lease", wrapped_acquire)
+    try:
+        result = verify_practice_fixes(
+            ["T1059"], source_run_id="boundary-source", data_dir=tmp_path,
+            db_path=tmp_path / "flight-recorder.db", bus=bus, purple_guard=guard,
+            active_response=response, manager=manager, recorder=recorder, recorder_timeout=3,
+        )
+        assert result["ok"] is False
+        assert held_at_refusal == [True], "The actual final callback must be reached and refuse before termination"
+        assert not any(row.get("action") == "terminate_process" and row.get("status") == "applied"
+                       for row in combat.list_actions())
+    finally:
+        modules = tuple(dict.fromkeys([*producers, *manager.modules.values()]))
+        threads = tuple(module._thread for module in modules if module._thread is not None)
+        for module in modules:
+            module.stop()
+        for thread in threads:
+            thread.join(timeout=5)
+        assert not any(thread.is_alive() for thread in threads)
+        recorder.close()
+
+
+@pytest.mark.parametrize("change", ["expired", "stop", "replacement"])
+def test_source_immediate_canary_rollback_preserves_when_scope_ends(source_canary, monkeypatch, change):
+    from angerona.modules.purple_guard import _lease_authority
+    graph = source_canary
+    original_bytes = graph.marker.read_bytes()
+    moved = []
+    append = graph.combat._append_journal
+    def fail_terminal_after_move(record):
+        if record.get("record_type") == "commit" and record.get("action") == "quarantine_file":
+            quarantine = Path(record["details"]["quarantine"])
+            assert quarantine.is_file() and not graph.marker.exists()
+            moved.append(quarantine)
+            if change == "expired":
+                _lease_authority(graph.lease).run_deadline_monotonic = time.monotonic() - 1
+            elif change == "stop":
+                graph.combat.stop()
+            else:
+                graph.marker.write_bytes(b"foreign replacement must survive")
+            raise OSError("inert terminal-failure injection")
+        return append(record)
+    monkeypatch.setattr(graph.combat, "_append_journal", fail_terminal_after_move)
+    assert graph.combat._quarantine_file(str(graph.marker), graph.event, "combat-000000000005") is None
+    assert len(moved) == 1
+    assert moved[0].read_bytes() == original_bytes
+    assert graph.combat._mutation_blocked is True
+    if change == "replacement":
+        assert graph.marker.read_bytes() == b"foreign replacement must survive"
+    else:
+        assert not graph.marker.exists()
+
+
+@pytest.mark.parametrize("installed", [False, True], ids=["source-canary", "inert-installed-ordinary-control"])
+def test_direct_file_response_honors_an_already_disabled_quarantine_policy(source_canary, monkeypatch, installed):
+    graph = source_canary
+    event, target = graph.event, graph.marker
+    if installed:
+        # Only this private fixture control is reachable; the fake authority
+        # does not enable a real host/process/firewall provider.
+        monkeypatch.setattr("angerona.core.breach_state.protect_authority", lambda: (True, "Inert installed fixture"))
+        target = graph.root / "ordinary-disabled-control.txt"
+        target.write_bytes(b"test-owned ordinary control")
+        event = Event("ordinary-fixture-detector", "disabled quarantine", Severity.HIGH, details={
+            "path": str(target), "response_authorized": True, "response_contract": {
+                "version": 1, "actions": ["quarantine_file"], "targets": {"path": str(target)}}})
+        event = replace(event, hmac_sig=graph.recorder.authority.sign(event))
+    baseline = graph.combat.policy()
+    monkeypatch.setattr(graph.combat, "policy", lambda: replace(baseline, quarantine_files=False))
+    before = (target.stat().st_ino, target.read_bytes())
+    assert graph.combat._quarantine_file(str(target), event, "combat-000000000006") is None
+    assert (target.stat().st_ino, target.read_bytes()) == before
+
+
+def test_installed_owned_control_rechecks_quarantine_policy_after_intent(source_canary, monkeypatch):
+    graph = source_canary
+    monkeypatch.setattr("angerona.core.breach_state.protect_authority", lambda: (True, "Inert installed fixture"))
+    target = graph.root / "ordinary-fsync-control.txt"
+    target.write_bytes(b"test-owned ordinary control")
+    event = Event("ordinary-fixture-detector", "post-intent policy revocation", Severity.HIGH, details={
+        "path": str(target), "response_authorized": True, "response_contract": {
+            "version": 1, "actions": ["quarantine_file"], "targets": {"path": str(target)}}})
+    event = replace(event, hmac_sig=graph.recorder.authority.sign(event))
+    baseline, entered = graph.combat.policy(), []
+    intent = graph.combat._journal_intent
+    def revoke(action):
+        intent(action)
+        entered.append(action.action_id)
+        monkeypatch.setattr(graph.combat, "policy", lambda: replace(baseline, quarantine_files=False))
+    monkeypatch.setattr(graph.combat, "_journal_intent", revoke)
+    identity = target.stat().st_ino
+    assert graph.combat._quarantine_file(str(target), event, "combat-000000000007") is None
+    assert len(entered) == 1 and target.stat().st_ino == identity
+
+
+@pytest.mark.parametrize("process_action, mode", [("none", "balanced"), ("terminate", "contain")])
+def test_direct_canary_child_request_cannot_override_current_operation_policy(source_canary, monkeypatch, process_action, mode):
+    from angerona.core.practice_verification import _publish_process_probe, _retire_process
+    graph = source_canary
+    _probe, process = _publish_process_probe(graph.bus, graph.run_id, lease=graph.lease)
+    try:
+        deadline = time.monotonic() + 5
+        event = None
+        while event is None and time.monotonic() < deadline:
+            graph.guard.scan_process_once(graph.guard._policy_snapshot())
+            event = next((row for row in reversed(graph.bus.recent(200))
+                          if row.module == graph.guard.name and row.details.get("pid") == process.pid
+                          and row.details.get("receipt_type") == "purple_simulation_validation"), None)
+            if event is None:
+                time.sleep(.02)
+        assert event is not None and graph.bus.verify(event), "Actual enrolled child must reach its real detector proof"
+        baseline = graph.combat.policy()
+        request_policy = replace(baseline, process_action="terminate", mode="maximum")
+        monkeypatch.setattr(graph.combat, "policy", lambda: replace(baseline, process_action=process_action, mode=mode))
+        assert graph.combat._act_on_process(process.pid, request_policy, event, "combat-000000000008") is None
+        assert process.poll() is None, "A caller's request cannot override disabled/suspend-only current policy"
+    finally:
+        assert _retire_process(process)
 
 
 def test_active_response_processes_burst_oldest_first(monkeypatch) -> None:

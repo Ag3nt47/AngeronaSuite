@@ -59,3 +59,19 @@ def test_shutdown_closes_after_successful_drains(monkeypatch):
     app.shutdown()
     assert app.storage.closed
     assert app.evidence_store.closed
+
+
+def test_shutdown_keeps_stores_open_when_optional_native_retirement_is_unproven(monkeypatch):
+    monkeypatch.setattr(
+        "angerona.core.ollama_lifecycle.shutdown_ollama", lambda *_args: None,
+    )
+    app = _app(True, True)
+    app.manager._curated_tools_controller = SimpleNamespace(
+        shutdown=lambda: None, wait_for_shutdown=lambda _timeout: False,
+    )
+    app.shutdown()
+    assert app._optional_owned_drained is False
+    assert app.flight_recorder_worker.called
+    assert app.evidence_ingestion.called
+    assert not app.storage.closed
+    assert not app.evidence_store.closed

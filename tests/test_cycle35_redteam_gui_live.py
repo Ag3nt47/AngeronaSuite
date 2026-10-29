@@ -890,9 +890,9 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         deadline = time.monotonic() + 60.0
         while (
             (
-                not combat.response_snapshot()["ready"]
+                not combat.response_snapshot()["canary_ready"]
                 or bool(getattr(manager, "_settings_combat_activation_pending", False))
-                or "ready" not in activation_states
+                or "held" not in activation_states
             )
             and time.monotonic() < deadline
         ):
@@ -900,12 +900,15 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             time.sleep(0.05)
         assert visited == ["settings"]
         assert "pending" in activation_states
-        assert "ready" in activation_states, activation_states
+        assert "held" in activation_states, activation_states
+        assert "ready" not in activation_states, "Source Observe must not announce installed host authority"
         assert not getattr(manager, "_settings_combat_activation_pending", False)
         assert config.adversary_combat_enabled is True
         assert config.module_states["Adversary Combat"] is True
         assert manager.is_enabled(combat.name)
-        assert combat.response_snapshot()["ready"]
+        assert combat.response_snapshot()["canary_ready"] is True
+        assert combat.response_snapshot()["ready"] is False
+        assert combat.response_snapshot()["state"] == "AUTHORITY HELD"
         trace("settings_armed", combat=combat.response_snapshot())
         assert config.settings_path.is_file()
         saved = json.loads(config.settings_path.read_text(encoding="utf-8"))

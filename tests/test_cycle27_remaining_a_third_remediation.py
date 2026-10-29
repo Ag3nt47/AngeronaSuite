@@ -30,6 +30,16 @@ _CONTINUITY_KEY = b"t" * 32
 _DRIVER_NOW = 1_800_100_000.0
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch):
+    """Admit only the explicitly requested inert host-effect fixture."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(
+        breach_state, "protect_authority", lambda: (True, "Inert installed native authority")
+    )
+
+
 def _combat_action() -> CombatAction:
     return CombatAction(
         action_id="act-0000000000000012",
@@ -167,7 +177,9 @@ def test_a02_equal_cache_index_object_swap_is_rejected(tmp_path: Path) -> None:
                     module._trusted_action(action.action_id)
 
 
-def test_a03_terminal_proof_is_returned_from_retained_writer(tmp_path: Path) -> None:
+def test_a03_terminal_proof_is_returned_from_retained_writer(
+    tmp_path: Path, inert_installed_authority,
+) -> None:
     source = tmp_path / "inert-terminal-proof.bin"
     source.write_bytes(b"third remediation exact-object proof")
     module = AdversaryCombat(tmp_path, rollback_anchor={})

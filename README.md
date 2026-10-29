@@ -1,7 +1,7 @@
 # Angerona Security Suite
 
-Angerona provides a unified desktop environment for security monitoring,
-evidence-based investigation, and policy-governed incident response.
+Angerona is a desktop security suite for endpoint monitoring,
+evidence-led investigation, and policy-controlled incident response.
 Angerona combines Endpoint Detection and Response
 (EDR), Network Detection and Response (NDR), Security Orchestration, Automation,
 and Response (SOAR), forensics and defensive practice in one desktop application.
@@ -10,7 +10,7 @@ and Response (SOAR), forensics and defensive practice in one desktop application
 Deterministic defense works without an AI model; optional local AI helps explain
 evidence and propose next steps.
 
-## Current development: v1.14.1
+## Current development: v1.14.2
 
 [Download and installation choices](#choose-your-installation) ·
 [Release downloads](https://github.com/Ag3nt47/AngeronaSuite/releases) ·
@@ -26,26 +26,29 @@ evidence and propose next steps.
 
 [![Angerona dashboard demonstration with fixed synthetic data and no host actions](assets/screenshots/dashboard-demo.png)](assets/demo/angerona-demo.gif)
 
-[Play the 45-second application demonstration](assets/demo/angerona-demo.gif):
-dashboard, scrolling alerts, SpywareGuard, Settings, MITRE ATT&CK, SOAR and scans.
+[Play the application demonstration](assets/demo/angerona-demo.gif): dashboard,
+scrolling alerts, SpywareGuard, curated tools, breach review, Settings and scans.
 
 **DEMO:** actual Qt interface with fixed examples; all displayed telemetry,
 identifiers, timestamps and counts are synthetic. No host scan or response is
 performed to create this demonstration.
 
-[![Verified startup, evidence collection, governed response and independent recovery with Ring 3 limits](assets/security-flow-overview.png)](docs/security-flow.md)
+| Curated tools | Integrated toolkit |
+| --- | --- |
+| [![GitHub Tools hub with synthetic demonstration state](assets/screenshots/github-tools-demo.png)](docs/zero-breach-toolkit.md) | [![Native Zero Breach Toolkit tab with synthetic demonstration state](assets/screenshots/zero-breach-demo.png)](docs/zero-breach-toolkit.md) |
+| [![Priority Spyware Scan controls with synthetic resource and privilege state](assets/screenshots/spyware-scan-demo.png)](docs/zero-breach-toolkit.md#priority-spyware-scan) | [![Synthetic verified-breach and network-lockdown review demonstration](assets/screenshots/breach-lockdown-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) |
+| [![After-action investigation and response choices using a synthetic case](assets/screenshots/after-action-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) | All views are labeled DEMO. Shown lockdown and response states are synthetic; these images do not demonstrate a host network action. |
 
 ## Latest maintenance
 
-This v1.14.1 maintenance update opens an independent startup dashboard before
-runtime checks, with clearer failure diagnostics and storage admission limits.
-Dashboard sections minimize individually and start open except Module health.
-Component EKGs show fresh heartbeats or a red flatline with inspection details.
-STOP unloads local AI and retires owned helpers/watchdogs; automatic recovery
-honors the recorded stop.
-The updated master manual maps the security boundaries and recovery paths.
-[Heartbeat and mutual-recovery guide](docs/resilience-recovery.md) ·
-[Version notes and update availability](docs/releases/v1.14.1.md).
+v1.14.2 adds a **GitHub Tools** hub, pinned **Zero Breach Toolkit**, priority
+**Spyware Scan** and linked after-action review. Verified native breach evidence
+can latch a visible case; supported installed response paths separately check
+authority, policy and network-rule receipts before reporting containment.
+Source Observe shows response holds, and third-party findings remain leads.
+Startup recovery, storage controls and component heartbeat EKGs remain available.
+[What changed and current limits](docs/releases/v1.14.2.md) ·
+[Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance
 
@@ -61,6 +64,13 @@ The updated master manual maps the security boundaries and recovery paths.
   process and network operations under policy, with recorded outcomes and Undo.
 - **SpywareGuard:** surveillanceware evidence review and governed response,
   subject to its published preview and platform prerequisites.
+- **GitHub Tools:** curated, version-pinned scanners, source review, settings,
+  analysis, integrity checks, managed revert and visible third-party credits.
+- **Spyware Scan:** selected native and toolkit checks with priority, resource
+  and privilege-coverage controls; unavailable collection remains visible.
+- **Breach review:** qualified native evidence, persistent case visibility and
+  Investigate/Trace/Isolate/Patch/Kill next steps with explicit action holds.
+  Managed network lockdown and Lift require the accepted installed authority.
 - **Integrity and provenance:** source, model, audit, IPC and enrolled UGCAP
   checks; independent witness authority requires its own deployment.
 - **Defensive practice:** benign validation, deception and canary exercises
@@ -107,6 +117,10 @@ wheel manifests. OS prerequisites, Intel macOS
 Xcode/Rust/OpenSSL builds, Git history, retained backups and evidence are extra.
 Windows source repair requires **5 GiB free**: a 2 GiB reserve plus 3 GiB working
 capacity. Its one retained previous runtime can add another runtime's disk use.
+The bundled Zero Breach engine is about **0.97 MB**, plus its retained licenses
+and notices. Optional managed scans require a separate **3 GiB free-space
+reserve plus the working-data allowance**; a scanner storage hold does not block
+normal Angerona startup.
 
 **Optional models are separate:** [Llama 3 8B](https://ollama.com/library/llama3:8b)
 adds about **4.7 GB** for model weights alone, plus the Ollama runtime. Other
@@ -138,10 +152,16 @@ alternatives, logs and held conditions.
 
 ## How the security flow works
 
+[![Verified startup, evidence collection, governed response and independent recovery with Ring 3 limits](assets/security-flow-overview.png)](docs/security-flow.md)
+
 The [full flow and attack-surface matrix](docs/security-flow.md) connect each
 boundary to implementation and regression entry points. A visible dashboard,
 fresh sensor evidence and authority to act are separate states. Imported logs,
 URLs, AI prose and review notes remain untrusted data.
+
+| Curated scanner boundary | Breach and response boundary |
+| --- | --- |
+| [![Pinned toolkit preparation, separate execution and report review](assets/security-flow-tools.png)](docs/zero-breach-toolkit.md) | [![Verified native breach, governed lockdown and managed Lift flow](assets/security-flow-breach.png)](docs/security-flow.md#verified-breach-review-and-lockdown) |
 
 Angerona is user-mode and ships no production kernel driver. Ring 3 code does
 not gain kernel immunity through UAC, signing or cryptographic checks. Hostile
@@ -170,8 +190,10 @@ bytes does not alone establish producer truth.
 [Data and key boundaries](docs/key-and-communication-integrity.md).
 
 File recovery has configurable cache/reserve controls and visible storage
-warnings. Startup work has separate quotas: source snapshots preserve original
-edits, logs rotate, and disk-pressure holds stop new work. Full capacity never
+warnings. Windows source Safe Startup treats retained diagnostic history and
+recommended reserves as advisory, with private bounded launcher work and actual
+I/O checks. Optional repairs and scans keep their own admission limits. Full
+capacity never
 justifies silently evicting unreviewed edits or clearing protected evidence.
 Some direct dashboard/native-installer logs still need retention review.
 [Storage budgets and limits](docs/safe-startup-recovery.md#capacity-and-retention).
@@ -193,7 +215,7 @@ is active. [Recovery guide](docs/safe-startup-recovery.md).
 
 ## Guides and current work
 
-- [Master Manual](Angerona_Master_Manual.docx): operating reference, complete
+- [Master Manual online](docs/master-manual.md) and [PDF](Angerona_Master_Manual.pdf): operating reference, complete
   security flow, all built-in source entries and recovery decisions.
 - [Safe Startup](docs/safe-startup-recovery.md): alternatives, diagnostics,
   preserved edits, optional GitHub egress and honest storage limits.
@@ -203,6 +225,8 @@ is active. [Recovery guide](docs/safe-startup-recovery.md).
   enrollment, fresh integrity evidence and separately deployed witness authority.
 - [SpywareGuard](docs/spyware-guard.md): surveillanceware evidence review and
   governed response with explicit preview/prerequisite limits.
+- [GitHub Tools and Zero Breach](docs/zero-breach-toolkit.md): pinned engine,
+  integrated and held modes, priority scans, private reports and retained credits.
 - [Hardware and self-check](docs/hardware-and-selfcheck.md), [native setup](docs/NATIVE_INSTALL.md),
   [v1.14 acceptance register](docs/releases/v1.14-security-integration.md).
 
@@ -220,6 +244,8 @@ This is a dated checkpoint, not the current revision's result or live coverage.
 the previous README and its scoped measurements;
 [the issue map](analysis/live-debug-2026-10-22/README.md) records further evidence
 and remaining work.
+The [v1.14.2 review map](analysis/curated-tools-breach-2026-10-29.md) records the
+new integration and breach-control checks with their scope and remaining holds.
 
 For a configured development environment, run the focused checks relevant to
 your change, then the required integration/self-check gates. Preserve skips and
@@ -228,5 +254,9 @@ clean worktree and byte-identical tracked README assets.
 
 [Contributing](CONTRIBUTING.md) · [Writing modules](docs/writing-modules.md) ·
 [Report security issues](SECURITY.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+
+Third-party components retain their own terms. Zero Breach Toolkit code is
+Apache-2.0; its research data and optional rules retain their separate licenses
+and author notices. [Credits and bundled notices](docs/zero-breach-toolkit.md#credits-licenses-and-integrity).
 
 <!-- ANGERONA_DOC_STATUS tests=2882 skips=15 modules=86 -->

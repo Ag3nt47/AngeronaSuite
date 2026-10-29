@@ -26,6 +26,15 @@ from angerona.modules.adversary_combat import (
 from angerona.modules.etw_listener import EtwListenerModule
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only requested effect tests model accepted authority; no real host effect."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(breach_state, "protect_authority",
+                        lambda: (True, "Inert installed native authority"))
+
+
 def _combat(root: Path, anchors: dict[str, str]) -> AdversaryCombat:
     return AdversaryCombat(root, rollback_anchor=anchors)
 
@@ -305,7 +314,7 @@ def test_cross_process_writer_contention_and_crash_release(
 
 
 def test_hardlink_added_at_irreversible_effect_boundary_opens_circuit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -333,7 +342,9 @@ def test_hardlink_added_at_irreversible_effect_boundary_opens_circuit(
         dispatch_started=False,
     )
 
-    def inert_terminate():
+    def inert_terminate(*, before_dispatch=None):
+        if before_dispatch is not None:
+            before_dispatch()
         lease.dispatch_started = True
         process.kill()
 
@@ -348,7 +359,7 @@ def test_hardlink_added_at_irreversible_effect_boundary_opens_circuit(
 
 
 def test_operator_undo_retains_journal_custody_through_host_effect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -372,9 +383,11 @@ def test_operator_undo_retains_journal_custody_through_host_effect(
     module._journal_intent(action)
     module._journal_commit(action)
     effect_crossed = False
+    undo_entered = False
 
     def inert_undo(_record):
-        nonlocal effect_crossed
+        nonlocal effect_crossed, undo_entered
+        undo_entered = True
         # The exact journal remains pinned from undo intent through the host
         # reversal, so a competing removal attempt must fail closed.
         module.receipt_path.unlink()
@@ -384,6 +397,7 @@ def test_operator_undo_retains_journal_custody_through_host_effect(
     monkeypatch.setattr(module, "_undo_record", inert_undo)
     result = module.undo_action(action.action_id)
 
+    assert undo_entered, "the inert Undo did not enter the journal-custody boundary"
     assert effect_crossed is False
     assert result["ok"] is False
     assert result["error"]

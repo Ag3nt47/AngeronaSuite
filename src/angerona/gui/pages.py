@@ -1624,6 +1624,10 @@ class DashboardCards(QWidget):
         self.c_alerts = StatCard("Alerts (24h)")
         self.c_crit = StatCard("Active critical (10m)")
         self.c_threat = StatCard("Threat level")
+        self._normal_threat_snapshot = None
+        self._breach_projection = None
+        self._breach_open_report = None
+        self._normal_threat_status = "current"
         for c in (self.c_modules, self.c_alerts, self.c_crit, self.c_threat):
             lay.addWidget(c, 1)
         # Each tile opens its own focused detail window.
@@ -1642,11 +1646,7 @@ class DashboardCards(QWidget):
         self._threat_reader = AsyncSnapshot(
             self, self._prepare_threat_snapshot, self._apply_threat_snapshot,
             name="DashboardThreatReader",
-            status=lambda state: self.c_threat.setToolTip(
-                "Threat assessment current" if state == "current" else
-                "Updating threat assessment; showing the previous result" if state == "updating" else
-                "Threat assessment unavailable; showing the previous result and retrying on refresh"
-            ),
+            status=self._set_threat_reader_status,
         )
 
     def refresh(self) -> None:
@@ -1679,9 +1679,44 @@ class DashboardCards(QWidget):
         return read
 
     def _apply_threat_snapshot(self, snapshot) -> None:
+        self._normal_threat_snapshot = snapshot
         crit, (label, color) = snapshot
         self.c_crit.set(str(crit), "#ef4444" if crit else "#ffffff")
-        self.c_threat.set(label, color)
+        if self._breach_projection is None:
+            self.c_threat.set(label, color)
+
+    def _set_threat_reader_status(self, state) -> None:
+        self._normal_threat_status = state
+        if self._breach_projection is None:
+            self.c_threat.setToolTip(
+                "Threat assessment current" if state == "current" else
+                "Updating threat assessment; showing the previous result" if state == "updating" else
+                "Threat assessment unavailable; showing the previous result and retrying on refresh")
+
+    def set_breach_override(self, snapshot, *, open_report=None) -> None:
+        """Latch a typed case advisory without changing engine threat counts."""
+        from angerona.core.breach_state import BreachDisplaySnapshot
+        if type(snapshot) is not BreachDisplaySnapshot:
+            return
+        self._breach_projection = snapshot if snapshot.active else None
+        self._breach_open_report = open_report if snapshot.active and callable(open_report) else None
+        if snapshot.active:
+            self.c_threat.set("Compromised", "#ef4444")
+            self.c_threat.setToolTip(
+                f"Confirmed case {snapshot.case_id}; containment: {snapshot.containment_state}. "
+                "Open the live after-action report. The separate critical count covers active "
+                "events in the last 10 minutes; a retained case can outlive that window.")
+            self.c_crit.setToolTip("Active critical events in the last 10 minutes. "
+                                  "A retained confirmed case can outlive this count; review Threat level for its status.")
+        else:
+            if self._normal_threat_snapshot is not None:
+                self._apply_threat_snapshot(self._normal_threat_snapshot)
+            else:
+                self.c_threat.set("Updating…", "#fbbf24")
+                self._normal_threat_status = "updating"
+            self._set_threat_reader_status(self._normal_threat_status)
+            self.c_crit.setToolTip("Active critical events in the last 10 minutes.")
+            self._threat_reader.request()
 
     def _apply_count(self, revision, count) -> None:
         if not self._accept_async_results:
@@ -1735,6 +1770,9 @@ class DashboardCards(QWidget):
         )
 
     def _open_threat(self) -> None:
+        if self._breach_projection is not None and self._breach_open_report is not None:
+            self._breach_open_report()
+            return
         # Resolve Center: list CRITICAL/HIGH alerts with Allow/Block/Research/Apply/
         # Ignore so the operator can clear false positives and get back to Secure.
         from angerona.gui.resolve_center import ResolveCenter
@@ -9006,7 +9044,7 @@ class SettingsDialog(QDialog):
                      "_aria_push_chk", "_aria_inbox_chk", "_aria_egress_chk",
                      "_aria_awareness_chk", "_aria_always_listen_chk",
                      "_aria_hands_chk", "_teams_chk", "_teams_skip_chk", "_mob_chk",
-                     "_github_daily_check"):
+                     "_github_daily_check", "_github_tools_allow_download"):
             widget = getattr(self, name, None)
             if widget is not None:
                 widget.setChecked(False)
@@ -9384,6 +9422,42 @@ class SettingsDialog(QDialog):
             self._update_check_reader = AsyncSnapshot(
                 self, self._prepare_update_check, self._apply_update_check,
                 name="Settings GitHub Update Check", status=self._update_check_status)
+        lay.addWidget(self._section("GitHub tools and integrated scanners"))
+        self._github_tools_enabled = QCheckBox("Enable maintained scanner integrations")
+        self._github_tools_enabled.setChecked(bool(getattr(self._cfg, "github_tools_enabled", True)))
+        self._github_tools_auto_prepare = QCheckBox("Prepare the pinned Zero-Breach scanner after the dashboard opens")
+        self._github_tools_auto_prepare.setChecked(bool(getattr(self._cfg, "github_tools_auto_prepare", True)))
+        self._github_tools_allow_download = QCheckBox("Allow verified downloads for missing scanner files")
+        self._github_tools_allow_download.setChecked(bool(getattr(self._cfg, "github_tools_allow_download", True)))
+        for control in (self._github_tools_enabled, self._github_tools_auto_prepare,
+                        self._github_tools_allow_download):
+            lay.addWidget(control)
+        tool_limits = QGridLayout()
+        self._github_tool_limits = {}
+        for row, (name, title, default, low, high) in enumerate((
+            ("github_tools_job_limit_mib", "Working data per job (MiB)", 256, 64, 1024),
+            ("github_tools_report_limit_mib", "Retained reports (MiB)", 64, 8, 256),
+            ("github_tools_timeout_seconds", "Scan deadline (seconds)", 300, 30, 900),
+        )):
+            spin = QSpinBox()
+            spin.setRange(low, high)
+            spin.setValue(int(getattr(self._cfg, name, default)))
+            self._github_tool_limits[name] = spin
+            tool_limits.addWidget(QLabel(title), row, 0)
+            tool_limits.addWidget(spin, row, 1)
+        lay.addLayout(tool_limits)
+        tool_note = QLabel(
+            "The GitHub button and SpywareGuard share scanner setup, reports and cancellation. "
+            "Preparation does not start a host scan. Source review and its analysis sandbox "
+            "keep their separate permissions; imported projects do not become executable tools.")
+        tool_note.setWordWrap(True)
+        lay.addWidget(tool_note)
+        self._breach_auto_isolate = QCheckBox("Automatically request network lockdown for confirmed breaches")
+        self._breach_auto_isolate.setChecked(bool(getattr(self._cfg, "breach_auto_isolate_enabled", True)))
+        self._breach_auto_isolate.setToolTip(
+            "Uses first-party confirmed evidence and existing installed response authority. "
+            "External scanner leads do not trigger lockdown. Lift Lockdown releases only this case's owned controls.")
+        lay.addWidget(self._breach_auto_isolate)
         lay.addWidget(self._section("Automatic startup recovery"))
         self._startup_recovery_enabled = QCheckBox("Automatically try verified recovery when source startup fails")
         self._startup_recovery_enabled.setChecked(self._cfg.startup_recovery_enabled)
@@ -9633,11 +9707,29 @@ class SettingsDialog(QDialog):
                         if not isinstance(snapshot, dict):
                             detail = "Combat returned no live readiness state."
                             break
+                        status = snapshot.get("state")
+                        if type(status) is str and status == "AUTHORITY HELD":
+                            state = "held"
+                            reason = snapshot.get("reason")
+                            reason = (
+                                " ".join(reason[:500].split())[:120]
+                                if isinstance(reason, str) else ""
+                            ) or "Installed host-response authority is unavailable."
+                            detail = f"Host response remains held: {reason} "
+                            if snapshot.get("canary_ready") is True:
+                                detail += (
+                                    "Practice canaries may be eligible; each action "
+                                    "requires a fresh issuer lease, exact target "
+                                    "checks and authenticated receipts."
+                                )
+                            else:
+                                detail += "Practice canaries are not currently eligible."
+                            break
                         if snapshot.get("ready") is True:
                             state = "ready"
                             detail = "Combat is armed and ready for authenticated response."
                             break
-                        status = str(snapshot.get("state") or "UNKNOWN")
+                        status = str(status or "UNKNOWN")
                         if status in {"RECOVERY REQUIRED", "JOURNAL FULL", "DISABLED"}:
                             detail = f"Combat is not ready: {status}."
                             break
@@ -9650,7 +9742,7 @@ class SettingsDialog(QDialog):
             finally:
                 if current():
                     manager._settings_combat_activation_pending = False
-                if state == "ready" and (not selected() or not current()):
+                if state in {"ready", "held"} and (not selected() or not current()):
                     state = "canceled"
                     detail = "Combat activation was superseded or disarmed."
                 if parent_signal is not None:
@@ -11825,6 +11917,12 @@ class SettingsDialog(QDialog):
         candidate.ollama_model = self._ollama_model.text().strip()
         candidate.github_repo = self._github_repo.text().strip()
         candidate.github_daily_check_enabled = self._github_daily_check.isChecked()
+        candidate.github_tools_enabled = self._github_tools_enabled.isChecked()
+        candidate.github_tools_auto_prepare = self._github_tools_auto_prepare.isChecked()
+        candidate.github_tools_allow_download = self._github_tools_allow_download.isChecked()
+        candidate.breach_auto_isolate_enabled = self._breach_auto_isolate.isChecked()
+        for name, spin in self._github_tool_limits.items():
+            setattr(candidate, name, spin.value())
         candidate.startup_recovery_enabled = self._startup_recovery_enabled.isChecked()
         candidate.startup_recovery_github_enabled = self._startup_recovery_github_enabled.isChecked()
         theme_key = self._theme_combo.currentData() or self._theme_combo.currentText()

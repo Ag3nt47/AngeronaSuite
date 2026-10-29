@@ -196,10 +196,18 @@ class WindowsProcessLease:
             raise ProcessLeaseError("retained process liveness does not match required state")
         self._remaining()
 
-    def terminate(self) -> None:
+    def terminate(self, *, before_dispatch: Callable[[], None] | None = None) -> None:
         if self._dispatched:
             raise ProcessLeaseError("process termination was already dispatched")
+        if before_dispatch is not None and not callable(before_dispatch):
+            raise ProcessLeaseError("invalid process dispatch guard")
         self.validate(alive=True)
+        # The owner rechecks current policy/authority after the last blocking
+        # native read. A refusal or exception must remain pre-effect, without
+        # claiming dispatch or success. None is the sole successful completion.
+        if before_dispatch is not None and before_dispatch() is not None:
+            raise ProcessLeaseError("process dispatch guard did not authorize completion")
+        self._remaining()
         self._dispatched = True
         self._native.terminate(self._handle, 1)
 

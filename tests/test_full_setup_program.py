@@ -47,6 +47,9 @@ def test_full_setup_maps_every_supported_end_user_config_option() -> None:
         "teams_bot_skip_auth",
         "holographic_orb_x",
         "holographic_orb_y",
+        # Case-scoped operator decisions are controller policy history, not
+        # editable setup input or a source of new response authority.
+        "breach_lifted_cases",
     }
     configurable = {field.name for field in fields(Config)} - internal_or_runtime
     assert configurable == mapped
@@ -211,6 +214,10 @@ def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> Non
         "spyware_auto_contain", "spyware_network_enabled", "spyware_memory_enabled",
         "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
         "spyware_research_urls",
+        "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
+        "spyware_scan_priority", "spyware_scan_cpu_percent",
+        "spyware_scan_memory_mib", "spyware_scan_background_percent",
+        "spyware_scan_verify_admin",
     }
     from angerona.core.ugcap_witness import WITNESS_DEFAULTS
     assert {field.key for field in ugcap.fields} == {

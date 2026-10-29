@@ -59,6 +59,10 @@ def main() -> int:
         os.environ["ANGERONA_SUPERVISED_RECOVERY"] = "1"
         sys.argv = [arg for arg in sys.argv if arg != "--automatic-start"]
     process_worker = "--process-snapshot-worker" in sys.argv[1:]
+    curated_worker = "--curated-tool-worker" in sys.argv[1:]
+    if curated_worker and (len(sys.argv) != 3 or sys.argv[1] != "--curated-tool-worker"):
+        print("[Angerona] Invalid curated scanner worker arguments.", file=sys.stderr, flush=True)
+        return 2
     if process_worker and sys.argv[1:] != ["--process-snapshot-worker"]:
         print("[Angerona] Invalid process inventory worker arguments.", file=sys.stderr, flush=True)
         return 2
@@ -86,6 +90,15 @@ def main() -> int:
                 flush=True,
             )
             return 2
+        if curated_worker:
+            # A maintained external scanner remains an ordinary-user child.
+            # Package identity is still proved; this entry never requests UAC.
+            if is_admin():
+                print("[Angerona] Curated scanners require an ordinary-user worker.",
+                      file=sys.stderr, flush=True)
+                return 2
+            from angerona.core.curated_tool_worker import main as curated_worker_main
+            return curated_worker_main(sys.argv[2:])
         if process_worker:
             # The child inherits its parent's token. It must verify packaged
             # authority, but must never trigger a separate UAC handoff.
@@ -131,6 +144,12 @@ def main() -> int:
             flush=True,
         )
         return 2
+
+    if curated_worker:
+        # The source privilege guard above applies before reading the private
+        # bounded request. No Config, Qt, singleton or security engine is loaded.
+        from angerona.core.curated_tool_worker import main as curated_worker_main
+        return curated_worker_main(sys.argv[2:])
 
     if process_worker:
         # The ordinary-source privilege guard above still applies. No Config,

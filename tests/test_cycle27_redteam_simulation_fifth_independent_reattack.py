@@ -36,16 +36,23 @@ from angerona.shark.run_manifest import (
 _KEY = bytes.fromhex("93" * 32)
 
 
-def _supply_contract_inventory(monkeypatch: pytest.MonkeyPatch) -> None:
+def _supply_contract_inventory(monkeypatch: pytest.MonkeyPatch) -> list[float | None]:
     """Supply an offline inventory; native owned-child observations stay real."""
     from angerona.modules import process_monitor
     from angerona.telemetry.sensors import ProcessSnapshot
 
-    monkeypatch.setattr(process_monitor, "process_snapshot", lambda **_kwargs: ProcessSnapshot(
-        processes=(), collected_at=time.time(), complete=True,
-        enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
-        error="", enumeration_complete=True,
-    ))
+    ages = []
+
+    def inventory(*, max_age=None):
+        ages.append(max_age)
+        return ProcessSnapshot(
+            processes=(), collected_at=time.time(), complete=True,
+            enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+            error="", enumeration_complete=True,
+        )
+
+    monkeypatch.setattr(process_monitor, "process_snapshot", inventory)
+    return ages
 
 
 def _install_keys(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
@@ -122,7 +129,7 @@ def _history(root: Path, receipt: dict, decision, *, empty: bool = False) -> dic
 def test_direct_canonical_fim_evaluator_cannot_mint_proof_without_scan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _supply_contract_inventory(monkeypatch)
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, fim, manager = _runtime(tmp_path, monkeypatch, fim=True)
     assert fim is not None
     keep_alive = threading.Event()
@@ -132,6 +139,7 @@ def test_direct_canonical_fim_evaluator_cannot_mint_proof_without_scan(
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     marker = target / "_redteam_lsass_dump_direct_eval.txt"
     try:
         run_id = "direct-fim-evaluator"
@@ -176,13 +184,14 @@ def test_direct_canonical_fim_evaluator_cannot_mint_proof_without_scan(
 def test_t1059_readiness_and_os_receipt_reject_receipt_free_exact_tuple(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _supply_contract_inventory(monkeypatch)
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     assert "Process Monitor" not in manager.modules
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     child: subprocess.Popen | None = None
     try:
         receipt = RedTeamValidationLease.consume_for_run(
@@ -262,11 +271,13 @@ def test_t1059_binding_fails_closed_when_exact_observation_fails(
     monkeypatch: pytest.MonkeyPatch,
     observer_outcome: str,
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     child: subprocess.Popen | None = None
     original_observer = ProcessMonitorModule.observe_validation_process
     injected = RuntimeError("injected exact observation failure")
@@ -364,11 +375,13 @@ def test_t1059_binding_fails_closed_when_exact_observation_fails(
 def test_t1059_pending_observation_rejects_a_polling_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     child: subprocess.Popen | None = None
     bind_thread: threading.Thread | None = None
     prepare_entered = threading.Event()
@@ -459,11 +472,13 @@ def test_t1059_pending_observation_rejects_a_polling_thread(
 def test_t1059_publication_does_not_hold_lease_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     child: subprocess.Popen | None = None
     bind_thread: threading.Thread | None = None
     publication_entered = threading.Event()
@@ -537,11 +552,13 @@ def test_t1059_publication_does_not_hold_lease_authority(
 def test_t1059_concurrent_sensor_rebind_cannot_silently_drop_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     child: subprocess.Popen | None = None
     process_module = manager.modules["Process Monitor"]
     replacement_bus = EventBus()
@@ -619,11 +636,13 @@ def test_t1059_concurrent_sensor_rebind_cannot_silently_drop_source(
 def test_lease_authority_registry_has_no_mutable_verifier_dispatch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         RedTeamValidationLease.consume_for_run(
             lease, run_id="mutable-dispatch", target=target, data_root=tmp_path
@@ -655,11 +674,13 @@ def test_lease_authority_registry_has_no_mutable_verifier_dispatch(
 def test_rolling_back_only_the_journal_is_detected_by_fixed_head_witness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         decision = _decision(tmp_path)
         admitted = float(decision.budget["admitted_run_ttl_seconds"])
@@ -719,11 +740,13 @@ def test_rolling_back_only_the_journal_is_detected_by_fixed_head_witness(
 def test_cleanup_disposes_original_if_replacement_lands_after_delete_handle_open(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     marker = target / "_redteam_lsass_dump_post_open.txt"
     backup = target / "renamed-original.txt"
     try:
@@ -768,12 +791,13 @@ def test_cleanup_disposes_original_if_replacement_lands_after_delete_handle_open
 def test_history_longer_than_authenticated_ttl_is_rejected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _supply_contract_inventory(monkeypatch)
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         decision = _decision(tmp_path)
         admitted = float(decision.budget["admitted_run_ttl_seconds"])
@@ -799,12 +823,13 @@ def test_history_longer_than_authenticated_ttl_is_rejected(
 def test_zero_step_signed_history_keeps_full_denominator_and_null_score(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _supply_contract_inventory(monkeypatch)
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         decision = _decision(tmp_path)
         admitted = float(decision.budget["admitted_run_ttl_seconds"])

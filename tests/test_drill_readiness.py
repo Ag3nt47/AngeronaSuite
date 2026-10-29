@@ -147,3 +147,43 @@ def test_recovery_reason_remains_visible_when_policy_reader_fails():
     assert result["state"] == "RECOVERY REQUIRED"
     assert result["reason"] == "Checkpoint mismatch."
     assert result["policy"] == {}
+
+
+def test_canary_eligibility_preserves_host_hold_and_reads_only_current_memory():
+    manager, module, _policy = _manager(snapshot={
+        "ready": False, "state": "AUTHORITY HELD", "reason": "Source Observe",
+        "canary_ready": True,
+    })
+    module.response_ready = lambda: pytest.fail("No journal or authority I/O")
+    result = assess_drill_response(manager, require_process=True)
+    assert result["ready"] is True and result["state"] == "CANARYONLY"
+    assert "Host response remains held" in result["reason"]
+    assert module.response_snapshot()["ready"] is False
+
+
+@pytest.mark.parametrize("value", [False, "true", 1, None])
+def test_canary_eligibility_requires_an_exact_boolean(value):
+    manager, _module, _policy = _manager(snapshot={
+        "ready": False, "state": "AUTHORITY HELD", "reason": "Source Observe",
+        "canary_ready": value,
+    })
+    assert assess_drill_response(manager)["ready"] is False
+
+
+@pytest.mark.parametrize("state", ["status=stopped", "STARTING", "RECOVERY REQUIRED", "QUEUE FULL"])
+def test_canary_field_cannot_override_worker_lifecycle_or_recovery_hold(state):
+    manager, _module, _policy = _manager(snapshot={
+        "ready": False, "state": state, "reason": "Current worker held",
+        "canary_ready": True,
+    })
+    result = assess_drill_response(manager)
+    assert result["ready"] is False and result["state"] == state
+
+
+@pytest.mark.parametrize("changes", [{"process_action": "suspend"}, {"mode": "contain"}])
+def test_canary_child_checks_never_admit_host_suspension(changes):
+    manager, _module, _policy = _manager(snapshot={
+        "ready": False, "state": "AUTHORITY HELD", "canary_ready": True,
+    }, **changes)
+    assert assess_drill_response(manager)["ready"] is True
+    assert assess_drill_response(manager, require_process=True)["ready"] is False

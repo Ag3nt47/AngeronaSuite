@@ -44,6 +44,16 @@ _DRIVER_IDS = {
 _DRIVER_NOW = 1_800_000_000.0
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch):
+    """Admit only the explicitly requested inert host-effect fixture."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(
+        breach_state, "protect_authority", lambda: (True, "Inert installed native authority")
+    )
+
+
 def _combat_action() -> CombatAction:
     return CombatAction(
         action_id="act-0000000000000001",
@@ -187,7 +197,7 @@ def test_a02_same_metadata_interior_tamper_disarms_cached_authority(
 
 
 def test_a03_terminal_hardlink_attempt_cannot_coexist_with_applied_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority
 ) -> None:
     source = tmp_path / "terminal-source.bin"
     alias = tmp_path / "terminal-alias.bin"
@@ -195,10 +205,12 @@ def test_a03_terminal_hardlink_attempt_cannot_coexist_with_applied_receipt(
     module = AdversaryCombat(tmp_path, rollback_anchor={})
     original_append = module._append_journal
     link_error: OSError | None = None
+    terminal_entered = False
 
     def append_with_terminal_race(payload: dict[str, object]) -> dict[str, object]:
-        nonlocal link_error
+        nonlocal link_error, terminal_entered
         if payload.get("record_type") == "commit":
+            terminal_entered = True
             details = payload.get("details")
             assert isinstance(details, dict)
             try:
@@ -218,6 +230,7 @@ def test_a03_terminal_hardlink_attempt_cannot_coexist_with_applied_receipt(
         and row.get("status") == "applied"
     ]
 
+    assert terminal_entered is True
     if alias.exists():
         destination = Path(str(alias))
         assert destination.read_bytes() == b"inert terminal hard-link boundary"
@@ -231,7 +244,7 @@ def test_a03_terminal_hardlink_attempt_cannot_coexist_with_applied_receipt(
 
 
 def test_a03_failed_terminal_proof_survives_failed_rollback_and_restart_recovers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority
 ) -> None:
     source = tmp_path / "orphan-source.bin"
     content = b"inert orphan restart recovery fixture"
@@ -240,10 +253,12 @@ def test_a03_failed_terminal_proof_survives_failed_rollback_and_restart_recovers
 
     class TerminalProofFailure(real_pinned):
         checks = 0
+        failure_injected = False
 
         def require_single_link(self) -> int:
             type(self).checks += 1
             if type(self).checks == 5:
+                type(self).failure_injected = True
                 raise OSError("inert terminal proof failure")
             return super().require_single_link()
 
@@ -261,6 +276,7 @@ def test_a03_failed_terminal_proof_survives_failed_rollback_and_restart_recovers
     )
     pending = first._pending_recovery_records()
 
+    assert TerminalProofFailure.failure_injected is True
     assert result is None
     assert not source.exists()
     assert len(pending) == 1

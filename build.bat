@@ -16,8 +16,10 @@ if errorlevel 1 (
     --name Angerona ^
     --paths src ^
     --collect-all PySide6 ^
+    --add-data "assets;assets" ^
     --add-data "modules;modules" ^
     --hidden-import angerona ^
+    --hidden-import angerona.core.curated_tool_worker ^
     src\angerona\__main__.py
 if errorlevel 1 exit /b 1
 

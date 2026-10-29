@@ -24,6 +24,15 @@ from angerona.modules.driver_provenance_guard import (
 _CONTINUITY_KEY = b"r" * 32
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only requested effect tests model accepted authority; no real host effect."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(breach_state, "protect_authority",
+                        lambda: (True, "Inert installed native authority"))
+
+
 def _combat_action() -> CombatAction:
     return CombatAction(
         action_id="act-0000000000000001",
@@ -76,7 +85,7 @@ def test_a02_strict_journal_snapshot_cannot_mutate_cached_authority(
 
 
 def test_a03_quarantine_never_commits_after_terminal_hardlink_race(
-    tmp_path: Path,
+    tmp_path: Path, inert_installed_authority,
 ) -> None:
     source = tmp_path / "source.bin"
     alias = tmp_path / "terminal-race-alias.bin"
@@ -119,7 +128,7 @@ def test_a03_quarantine_never_commits_after_terminal_hardlink_race(
 
 
 def test_a03_final_topology_failure_remains_recoverable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     source = tmp_path / "final-check-source.bin"
     content = b"inert final topology failure fixture"
@@ -128,10 +137,12 @@ def test_a03_final_topology_failure_remains_recoverable(
 
     class FourthCheckFailure(real_pinned):
         checks = 0
+        failure_injected = False
 
         def require_single_link(self) -> int:
             type(self).checks += 1
             if type(self).checks == 4:
+                type(self).failure_injected = True
                 raise OSError("inert final topology check failed")
             return super().require_single_link()
 
@@ -152,6 +163,7 @@ def test_a03_final_topology_failure_remains_recoverable(
     )
     recovery = module._pending_recovery_records()
 
+    assert FourthCheckFailure.failure_injected, "the final topology boundary was not exercised"
     assert source.exists() or recovery
     if source.exists():
         assert source.read_bytes() == content

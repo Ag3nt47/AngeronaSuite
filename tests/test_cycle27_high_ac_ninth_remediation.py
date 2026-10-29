@@ -25,6 +25,16 @@ from test_cycle27_high_c_seventh_independent_reattack import (
 )
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch):
+    """Admit only the explicitly requested inert host-effect fixture."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(
+        breach_state, "protect_authority", lambda: (True, "Inert installed native authority")
+    )
+
+
 def test_a01_fractional_authenticated_authority_is_rejected(tmp_path: Path) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -37,7 +47,7 @@ def test_a01_fractional_authenticated_authority_is_rejected(tmp_path: Path) -> N
 
 
 def test_a01_terminal_loss_trips_current_process_circuit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority
 ) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -46,15 +56,26 @@ def test_a01_terminal_loss_trips_current_process_circuit(
     module._journal_intent(action)
     module._journal_commit(action)
     original = module._append_undo_phase
+    effect_entered = False
+    terminal_fault_entered = False
 
     def append(phase, record, undo_id, *, error="", recovery=False):
+        nonlocal terminal_fault_entered
         if phase == "undo_commit":
+            terminal_fault_entered = True
             raise OSError("inert terminal loss")
         return original(phase, record, undo_id, error=error, recovery=recovery)
 
+    def inert_undo(_record):
+        nonlocal effect_entered
+        effect_entered = True
+        return True, ""
+
     monkeypatch.setattr(module, "_append_undo_phase", append)
-    monkeypatch.setattr(module, "_undo_record", lambda _record: (True, ""))
+    monkeypatch.setattr(module, "_undo_record", inert_undo)
     result = module.undo_action(action.action_id)
+    assert effect_entered is True
+    assert terminal_fault_entered is True
     assert result["ok"] is False
     assert module._mutation_blocked is True
     assert module.health == 0

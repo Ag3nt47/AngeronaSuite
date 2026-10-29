@@ -14,6 +14,7 @@ from angerona.core.storage import FlightRecorder
 from angerona.modules import file_integrity, purple_guard
 from angerona.modules.file_integrity import FileIntegrityModule
 from angerona.modules.purple_guard import RedTeamValidationLease
+from test_cycle27_redteam_validation_lease import _supply_contract_inventory
 
 
 _STEP = {"attack_ids": ["T1003"], "technique": "T1003 inert marker"}
@@ -21,6 +22,7 @@ _STEP = {"attack_ids": ["T1003"], "technique": "T1003 inert marker"}
 
 @pytest.fixture
 def runtime(tmp_path, monkeypatch):
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     key_path = tmp_path / "bus.key"
     key_path.write_text((b"d" * 32).hex(), encoding="ascii")
     monkeypatch.setattr(report_attest, "_key_path", lambda: key_path)
@@ -47,6 +49,7 @@ def runtime(tmp_path, monkeypatch):
         lease = purple_guard.acquire_redteam_validation_lease(
             manager, bus, recorder, tmp_path, target, timeout=3,
         )
+        assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
         RedTeamValidationLease.consume_for_run(
             lease, run_id="digest-fixture", target=target, data_root=tmp_path,
         )

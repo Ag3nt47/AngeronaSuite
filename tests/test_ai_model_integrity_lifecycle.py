@@ -361,9 +361,12 @@ def test_two_slow_triage_attempts_advance_liveness_only_when_each_finishes(monke
 
 @pytest.mark.parametrize("fails", [False, True])
 def test_triage_discards_transport_result_or_error_after_generation_stop(monkeypatch, fails):
+    # Own the transport fixture's URL; an ambient Ollama CLI host may omit its scheme.
+    monkeypatch.setenv("OLLAMA_HOST", "http://127.0.0.1:11434")
     module = AITriageModule()
     old_stop = module.generation_stop_event()
     emitted = []
+    transport_entered = []
     monkeypatch.setattr(module, "_attest_model", lambda: True)
     monkeypatch.setattr(module, "emit", lambda *args, **_kwargs: emitted.append(args))
 
@@ -380,6 +383,7 @@ def test_triage_discards_transport_result_or_error_after_generation_stop(monkeyp
             return b'{"message":{"content":"discard this late result"}}'
 
     def transport(*_args, **_kwargs):
+        transport_entered.append(True)
         old_stop.set()
         module._stop = threading.Event()  # Another generation must not clear the old token.
         if fails:
@@ -388,6 +392,7 @@ def test_triage_discards_transport_result_or_error_after_generation_stop(monkeyp
 
     monkeypatch.setattr("angerona.modules.ai_triage.safe_urlopen", transport)
     assert module._ask("inert event") is None
+    assert transport_entered == [True]
     assert module._cb_state == "closed"
     assert module.last_error == ""
     assert emitted == []

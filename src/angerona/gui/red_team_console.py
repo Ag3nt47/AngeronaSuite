@@ -537,6 +537,14 @@ class RedTeamConsole(QDialog):
                     "Launch checks again; signed report receipts decide the result."
                 )
                 color = "#4ade80"
+            elif assessment.get("ready") is True and state == "CANARYONLY":
+                message = (
+                    f"Practice canaries ready ({scope}). {reason} "
+                    "Ordinary host response remains held. Fresh issuer leases, "
+                    "exact target checks and authenticated report receipts are "
+                    "required; launch checks readiness again."
+                )
+                color = "#38bdf8"
             else:
                 message = (
                     f"Containment readiness now ({scope}): {state}. {reason} "

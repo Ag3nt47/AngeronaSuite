@@ -23,6 +23,15 @@ from angerona.modules.driver_provenance_guard import (
 _CONTINUITY_KEY = b"d" * 32
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only requested effect tests model accepted authority; no real host effect."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(breach_state, "protect_authority",
+                        lambda: (True, "Inert installed native authority"))
+
+
 def _action(index: int = 1) -> CombatAction:
     return CombatAction(
         action_id=f"act-{index:016x}",
@@ -65,7 +74,7 @@ def test_combat_control_paths_use_every_live_action(monkeypatch: pytest.MonkeyPa
 
 
 def test_combat_reserves_terminal_capacity_before_effect(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     module = AdversaryCombat(tmp_path, rollback_anchor={})
     monkeypatch.setattr(module, "_journal_has_capacity", lambda _required: False)
@@ -119,7 +128,7 @@ def test_pinned_quarantine_rejects_preexisting_hardlink(tmp_path: Path) -> None:
 
 
 def test_quarantine_retains_object_custody_through_commit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     module = AdversaryCombat(tmp_path, rollback_anchor={})
     source = tmp_path / "fixture.bin"
@@ -133,12 +142,24 @@ def test_quarantine_retains_object_custody_through_commit(
             instances.append(self)
 
     monkeypatch.setattr(combat_module, "_PinnedFileMove", SpyPinned)
-    monkeypatch.setattr(module, "_journaled_mutation", lambda _action: nullcontext())
+    journal_entered = []
 
-    def commit(action, *, release_before_rollback=None):
+    def journal(_action, *, canary=None, pinned=None):
+        assert canary is None  # This fixture models ordinary installed authority.
+        assert instances and pinned is instances[0] and pinned._closed is False
+        journal_entered.append(True)
+        return nullcontext()
+
+    monkeypatch.setattr(module, "_journaled_mutation", journal)
+
+    commit_entered = []
+
+    def commit(action, *, release_before_rollback=None, canary=None):
+        assert canary is None
         assert instances and instances[0]._closed is False
         assert callable(release_before_rollback)
         assert instances[0].require_single_link() == 1
+        commit_entered.append(True)
         return action
 
     monkeypatch.setattr(module, "_commit_after_mutation", commit)
@@ -152,12 +173,14 @@ def test_quarantine_retains_object_custody_through_commit(
     result = module._quarantine_file(str(source), event, "combat-000000000001")
 
     assert result is not None
+    assert journal_entered == [True]
+    assert commit_entered == [True]
     assert result.details["source_link_count"] == 1
     assert result.details["destination_link_count"] == 1
 
 
 def test_quarantine_post_move_alias_signal_rolls_back_without_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     module = AdversaryCombat(tmp_path, rollback_anchor={})
     source = tmp_path / "rollback-fixture.bin"
@@ -167,10 +190,12 @@ def test_quarantine_post_move_alias_signal_rolls_back_without_success(
 
     class BoundaryPinned(real_pinned):
         checks = 0
+        failure_injected = False
 
         def require_single_link(self) -> int:
             type(self).checks += 1
             if type(self).checks == 3:
+                type(self).failure_injected = True
                 raise OSError("secure move destination acquired a hard-link alias")
             return super().require_single_link()
 
@@ -186,6 +211,7 @@ def test_quarantine_post_move_alias_signal_rolls_back_without_success(
         str(source), event, "combat-000000000002"
     )
 
+    assert BoundaryPinned.failure_injected, "the post-move alias boundary was not exercised"
     assert result is None
     assert source.read_bytes() == content
     assert not any(

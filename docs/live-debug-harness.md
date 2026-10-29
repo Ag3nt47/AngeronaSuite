@@ -1,6 +1,6 @@
 # Live debug harness for local AI review
 
-Updated 28 October 2026. Angerona v1.14.1 development feature; the review protocol
+Updated 29 October 2026. Angerona v1.14.2 development feature; the review protocol
 was introduced in v1.14.0.
 
 Angerona can expose a bounded, read-only stream of its running alerts and

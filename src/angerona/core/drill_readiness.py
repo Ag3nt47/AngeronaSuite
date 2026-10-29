@@ -70,17 +70,21 @@ def assess_drill_response(manager: object, *, require_process: bool = False) -> 
         return result
 
     policy_error = False
+    current_policy = None
     try:
-        result["policy"] = _policy_fields(policy_reader())
+        current_policy = policy_reader()
+        result["policy"] = _policy_fields(current_policy)
     except Exception:
         policy_error = True
-    if snapshot["ready"] is not True:
+    canary_only = (snapshot["ready"] is False and snapshot.get("state") == "AUTHORITY HELD"
+                   and snapshot.get("canary_ready") is True)
+    if snapshot["ready"] is not True and not canary_only:
         result.update(
             state=_text(snapshot.get("state"), "NOT READY", 64),
             reason=_text(snapshot.get("reason"), "Combat is not ready for automatic response."),
         )
         return result
-    if snapshot.get("state") != "ARMED":
+    if not canary_only and snapshot.get("state") != "ARMED":
         result.update(state="UNKNOWN", reason="Combat returned an inconsistent response status.")
         return result
     if policy_error:
@@ -106,6 +110,16 @@ def assess_drill_response(manager: object, *, require_process: bool = False) -> 
         result.update(
             state="POLICY RESTRICTED",
             reason="This drill requires Combat policy to permit process suspension or termination.",
+        )
+    elif canary_only and require_process and (policy["process_action"] != "terminate"
+                                              or getattr(current_policy, "mode", "") == "contain"):
+        result.update(state="POLICY RESTRICTED",
+                      reason="Owned-child practice checks require termination policy; Source Observe cannot suspend host processes.")
+    elif canary_only:
+        result.update(
+            ready=True, state="CANARYONLY",
+            reason=("Only issuer-enrolled practice canaries are eligible. Host response remains held; "
+                    "each action still requires a fresh exact lease, original event and verified postcondition."),
         )
     else:
         result.update(

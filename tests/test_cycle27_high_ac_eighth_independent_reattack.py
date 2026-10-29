@@ -24,6 +24,16 @@ from test_cycle27_high_c_seventh_independent_reattack import (
 )
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch):
+    """Admit only the explicitly requested inert host-effect fixture."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(
+        breach_state, "protect_authority", lambda: (True, "Inert installed native authority")
+    )
+
+
 def _reversible_combat_action() -> CombatAction:
     return CombatAction(
         action_id="act-1212121212121212",
@@ -107,7 +117,7 @@ def test_a01_authenticated_anchor_numeric_fields_require_exact_integer_types(
 
 
 def test_a01_failed_undo_terminal_must_open_current_process_mutation_circuit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority
 ) -> None:
     """Red gate: an effect without its terminal must disarm before restart."""
     anchors: dict[str, str] = {}
@@ -117,9 +127,13 @@ def test_a01_failed_undo_terminal_must_open_current_process_mutation_circuit(
     module._journal_intent(action)
     module._journal_commit(action)
     original_append = module._append_undo_phase
+    effect_entered = False
+    terminal_fault_entered = False
 
     def fail_terminal(phase, record, undo_id, *, error="", recovery=False):
+        nonlocal terminal_fault_entered
         if phase == "undo_commit":
+            terminal_fault_entered = True
             raise OSError("inert terminal durability loss")
         return original_append(
             phase,
@@ -129,10 +143,17 @@ def test_a01_failed_undo_terminal_must_open_current_process_mutation_circuit(
             recovery=recovery,
         )
 
+    def inert_undo(_record):
+        nonlocal effect_entered
+        effect_entered = True
+        return True, ""
+
     monkeypatch.setattr(module, "_append_undo_phase", fail_terminal)
-    monkeypatch.setattr(module, "_undo_record", lambda _record: (True, ""))
+    monkeypatch.setattr(module, "_undo_record", inert_undo)
     result = module.undo_action(action.action_id)
 
+    assert effect_entered is True
+    assert terminal_fault_entered is True
     assert result["ok"] is False
     assert "undo journal commit failed" in result["error"]
     records, _legacy = module._read_journal(strict=True)

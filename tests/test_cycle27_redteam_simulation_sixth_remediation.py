@@ -15,6 +15,7 @@ from angerona.modules import purple_guard
 from angerona.modules.file_integrity import FileIntegrityModule
 from angerona.modules.purple_guard import RedTeamValidationLease
 from angerona.shark import aar_report
+from test_cycle27_redteam_validation_lease import _supply_contract_inventory
 
 
 _KEY = bytes.fromhex("a6" * 32)
@@ -51,6 +52,7 @@ def _runtime(root: Path, monkeypatch: pytest.MonkeyPatch, *, fim: bool = False):
 def test_fim_native_proof_requires_one_real_internal_scan_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, fim, manager = _runtime(tmp_path, monkeypatch, fim=True)
     assert fim is not None
     keep_alive = threading.Event()
@@ -60,6 +62,7 @@ def test_fim_native_proof_requires_one_real_internal_scan_receipt(
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     marker = target / "_redteam_lsass_dump_sixth_scan.txt"
     try:
         run_id = "sixth-fim-scan"
@@ -130,11 +133,13 @@ def test_fim_native_proof_requires_one_real_internal_scan_receipt(
 def test_verifier_dispatch_is_not_mutable_through_lease_authority(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         RedTeamValidationLease.consume_for_run(
             lease, run_id="sixth-dispatch", target=target, data_root=tmp_path

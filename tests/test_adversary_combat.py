@@ -10,6 +10,7 @@ from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.modules.adversary_combat import AdversaryCombat, _ResponseEventQueue
 from angerona.modules.file_integrity import _combat_intervals
 from angerona.shark.aar_report import evaluate
+from test_breach_lockdown import FakeFirewall, installed_protect_for_inert_combat
 
 
 def _module(tmp_path, **overrides) -> tuple[AdversaryCombat, EventBus]:
@@ -259,24 +260,10 @@ def test_critical_maximum_event_isolates_host_with_undo_receipt(tmp_path, monkey
         adversary_combat_quarantine_files=False,
         adversary_combat_isolate_host=True,
     )
-    calls = []
-    active_rules: set[str] = set()
-
-    def firewall(arguments):
-        calls.append(tuple(arguments))
-        name = next(value[5:] for value in arguments if value.startswith("name="))
-        if arguments[:2] == ["add", "rule"]:
-            active_rules.add(name)
-        elif arguments[:2] == ["delete", "rule"]:
-            active_rules.discard(name)
-        return True
-
-    monkeypatch.setattr(
-        module,
-        "_run_firewall",
-        firewall,
-    )
-    monkeypatch.setattr(module, "_firewall_rule_exists", active_rules.__contains__)
+    firewall = FakeFirewall()
+    monkeypatch.setattr(module, "_lockdown_query", firewall.query)
+    monkeypatch.setattr(module, "_lockdown_effective_policy_query", firewall.policy_query)
+    monkeypatch.setattr(module, "_run_firewall", lambda *_: pytest.fail("Host isolation selected the legacy provider"))
     event = Event(
         "EDR",
         "critical active attack",
@@ -301,7 +288,7 @@ def test_critical_maximum_event_isolates_host_with_undo_receipt(tmp_path, monkey
     assert len(isolation["details"]["rules"]) == 2
     assert isolation["reversible"] is True
     assert module.undo_action(isolation["action_id"])["ok"] is True
-    assert any(call[:2] == ("delete", "rule") for call in calls)
+    assert any(call[:2] == ["firewall", "delete"] for call in firewall.calls)
 
 
 def test_shark_network_evidence_and_combat_action_correlate_exactly():

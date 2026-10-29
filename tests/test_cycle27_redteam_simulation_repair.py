@@ -27,6 +27,7 @@ from angerona.shark.run_manifest import (
     preflight_run,
     write_run_history,
 )
+from test_cycle27_redteam_validation_lease import _supply_contract_inventory
 
 
 _KEY = bytes.fromhex("42" * 32)
@@ -298,6 +299,7 @@ def test_custom_probe_is_informational_and_filename_cannot_collide(tmp_path) -> 
 def test_engine_binds_readiness_into_signed_history_and_resets_target(
     tmp_path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     _install_test_keys(monkeypatch, tmp_path)
     root = tmp_path / "data"
     bus, recorder, guard, manager = _validation_runtime(root)
@@ -324,6 +326,7 @@ def test_engine_binds_readiness_into_signed_history_and_resets_target(
     lease = acquire_redteam_validation_lease(
         manager, bus, recorder, root, custom_target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         assert engine.start(
             jitter_range=(0, 0),
@@ -370,6 +373,7 @@ def test_engine_refusal_without_live_lease_preserves_prior_history(tmp_path) -> 
 def test_engine_rejects_target_mismatch_and_released_lease_replay(
     tmp_path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     _install_test_keys(monkeypatch, tmp_path)
     root = tmp_path / "runtime"
     target = root / "target-a"
@@ -377,6 +381,7 @@ def test_engine_rejects_target_mismatch_and_released_lease_replay(
     lease = acquire_redteam_validation_lease(
         manager, bus, recorder, root, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     engine = RedTeamEngine(root)
     for name in (
         "_step_initial_access",
@@ -474,6 +479,7 @@ def test_generate_aar_rejects_structural_fake_recorder(tmp_path, monkeypatch) ->
 def test_generate_aar_ignores_instance_verifiers_that_accept_a_fake_hmac(
     tmp_path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     root = tmp_path / "root"
     root.mkdir()
     _install_test_keys(monkeypatch, root)
@@ -484,6 +490,7 @@ def test_generate_aar_ignores_instance_verifiers_that_accept_a_fake_hmac(
     lease = acquire_redteam_validation_lease(
         manager, bus, recorder, root, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         run_id = "redteam-instance-verifier-spoof"
         receipt = lease.consume_for_run(
@@ -594,6 +601,7 @@ def test_redteam_refresh_reloads_attested_report_without_rescoring(
 def test_generate_aar_uses_passed_run_recorder_not_ambient_config(
     tmp_path, monkeypatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     root = tmp_path / "requested-root"
     other = tmp_path / "unrelated-root"
     root.mkdir()
@@ -622,6 +630,7 @@ def test_generate_aar_uses_passed_run_recorder_not_ambient_config(
     lease = acquire_redteam_validation_lease(
         manager, bus, requested, root, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         assert engine.start(
             jitter_range=(0, 0),
@@ -674,6 +683,7 @@ def test_safe_end_to_end_campaign_validates_all_13_pipeline_canaries(
     tmp_path, monkeypatch
 ) -> None:
     """Exercise inert files/process telemetry only; no exploit or host mutation."""
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     _install_test_keys(monkeypatch, tmp_path)
     root = tmp_path / "runtime"
     target = root / "drill-sandbox"
@@ -690,6 +700,7 @@ def test_safe_end_to_end_campaign_validates_all_13_pipeline_canaries(
     lease = acquire_redteam_validation_lease(
         manager, bus, recorder, root, target, timeout=5
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     engine = RedTeamEngine(root)
     engine.hold_evidence_for_aar()
     try:

@@ -1,11 +1,18 @@
 # Angerona Capabilities
 
-Current development version: **v1.14.1**. This is a present-tense capability and boundary
+Current development version: **v1.14.2**. This is a present-tense capability and boundary
 summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
 or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
+
+The 1.14.2 source update adds [GitHub Tools and pinned Zero-Breach integration](docs/zero-breach-toolkit.md),
+a shared priority SpywareScan workflow, visible tool credits and typed breach
+review with scoped response controls. Source Observe mode does not authorize
+host mutation. Elevated toolkit execution, optional advanced dependencies and
+signed-release acceptance have explicit limits in the
+[current version notes](docs/releases/v1.14.2.md).
 
 The v1.14.0 update adds [Live AI Review](docs/live-debug-harness.md), a bounded
 read-only local alert/error stream for authorised AI-assisted debugging,

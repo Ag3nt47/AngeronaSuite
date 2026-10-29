@@ -15,9 +15,11 @@ import importlib.abc
 import importlib.util
 import inspect
 import hashlib
+import math
 import os
 import pkgutil
 import re
+import secrets
 import sys
 import threading
 import time
@@ -117,7 +119,45 @@ def _unsigned_development_allowed() -> bool:
     )
 
 
+class _PriorityScanFocus:
+    """One app-owned cadence lease; it carries no security or response authority."""
+
+    def __init__(self, manager, owner: str, background_percent: int):
+        self.manager = manager
+        self.owner = owner
+        self.background_percent = background_percent
+        self.token = object()
+        self.pacer_owner = secrets.token_hex(16)
+        self.entered = False
+        self.closed = False
+
+    def __enter__(self):
+        if self.entered or self.closed:
+            raise RuntimeError("Priority scan focus cannot be reused.")
+        self.manager._begin_priority_scan_focus(self)
+        self.entered = True
+        return self
+
+    def renew(self) -> bool:
+        return bool(self.entered and not self.closed
+                    and self.manager._renew_priority_scan_focus(self))
+
+    def snapshot(self) -> dict:
+        return self.manager.priority_scan_focus_snapshot()
+
+    def close(self) -> None:
+        if not self.closed:
+            self.closed = True
+            if self.entered:
+                self.manager._end_priority_scan_focus(self.token)
+
+    def __exit__(self, *_error):
+        self.close()
+
+
 class ModuleManager:
+    PRIORITY_FOCUS_SECONDS = 900.0
+
     def __init__(
         self,
         bus: EventBus,
@@ -143,6 +183,8 @@ class ModuleManager:
         self._control_generation = 0
         self._runtime_active = False
         self._shutdown = False
+        self._priority_scan_focus: dict | None = None
+        self._priority_scan_modules: dict[int, BaseModule] = {}
         self._ugcap_paused = getattr(config, "ugcap_enabled", False) is True
         self._ugcap_reason = "UGCAP user challenge required" if self._ugcap_paused else ""
         self._ugcap_held: set[str] = set()
@@ -285,7 +327,127 @@ class ModuleManager:
                 ),
                 "publisher": manifest.publisher if manifest is not None else "Angerona",
             }
+            with self._module_control_lock:
+                self._sync_priority_scan_module(inst.name, inst)
             self.verified_readiness.register(inst)
+
+    def priority_scan_focus(self, *, owner: str, background_percent: int = 10):
+        """Temporarily pace reviewed analysis while leaving control/intake live."""
+        if type(owner) is not str or re.fullmatch(r"[a-f0-9]{32}", owner) is None:
+            raise ValueError("Priority scan owner must be an exact request identity.")
+        if type(background_percent) is not int or not 1 <= background_percent <= 100:
+            raise ValueError("Background cadence must be between 1 and 100 percent.")
+        return _PriorityScanFocus(self, owner, background_percent)
+
+    def _priority_scan_ceiling(self, name, mod) -> float:
+        trust = self.module_trust.get(name, {})
+        if (not isinstance(mod, BaseModule) or _is_ugcap_control(mod)
+                or module_identity(mod) == ("angerona.modules.spyware_guard", "SpywareGuardModule")
+                or trust.get("origin") != "builtin" or trust.get("trust") != "release"
+                or type(mod).__dict__.get("adaptive_throttle_allowed") is not True):
+            return 1.0
+        try:
+            ceiling = float(type(mod).__dict__["adaptive_throttle_max"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return 1.0
+        return ceiling if math.isfinite(ceiling) and 1 <= ceiling <= 8 else 1.0
+
+    def _sync_priority_scan_module(self, name, mod, *, blocking=True) -> bool:
+        focus = self._priority_scan_focus
+        if focus is None or focus["expires_at"] <= time.monotonic():
+            return False
+        ceiling = self._priority_scan_ceiling(name, mod)
+        if ceiling <= 1:
+            return False
+        factor = min(ceiling, 100.0 / focus["background_percent"])
+        if BaseModule.set_priority_throttle(mod, factor, focus["expires_at"], blocking=blocking):
+            self._priority_scan_modules[id(mod)] = mod
+            return True
+        return False
+
+    def _begin_priority_scan_focus(self, lease) -> None:
+        from angerona.core.background_pacing import get_pacing_controller
+
+        with self._module_control_lock:
+            if self._shutdown or self._ugcap_paused:
+                raise RuntimeError("Priority scans are held by shutdown or workspace policy.")
+            previous = self._priority_scan_focus
+            if previous is not None:
+                if previous["expires_at"] > time.monotonic():
+                    raise RuntimeError("Another priority scan is already active.")
+                self._end_priority_scan_focus(previous["token"])
+            get_pacing_controller().begin_priority_focus(
+                lease.pacer_owner, lease.background_percent, seconds=self.PRIORITY_FOCUS_SECONDS)
+            self._priority_scan_focus = {
+                "owner": lease.owner, "token": lease.token, "pacer_owner": lease.pacer_owner,
+                "background_percent": lease.background_percent,
+                "expires_at": time.monotonic() + self.PRIORITY_FOCUS_SECONDS,
+            }
+            try:
+                for name, mod in tuple(self.modules.items()):
+                    self._sync_priority_scan_module(name, mod)
+            except BaseException:
+                self._end_priority_scan_focus(lease.token)
+                raise
+
+    def _renew_priority_scan_focus(self, lease) -> bool:
+        """Memory-only best effort; safe for an app-owned UI timer."""
+        from angerona.core.background_pacing import get_pacing_controller
+
+        if not self._module_control_lock.acquire(blocking=False):
+            return False
+        try:
+            focus = self._priority_scan_focus
+            if (focus is None or focus["token"] is not lease.token or self._shutdown
+                    or self._ugcap_paused or focus["expires_at"] <= time.monotonic()):
+                return False
+            try:
+                renewed = get_pacing_controller().begin_priority_focus(
+                    lease.pacer_owner, lease.background_percent,
+                    seconds=self.PRIORITY_FOCUS_SECONDS, blocking=False)
+            except RuntimeError:
+                return False  # A newer routine-pacing owner cannot be displaced.
+            if not renewed:
+                return False
+            focus["expires_at"] = time.monotonic() + self.PRIORITY_FOCUS_SECONDS
+            for name, mod in tuple(self.modules.items()):
+                self._sync_priority_scan_module(name, mod, blocking=False)
+            return True
+        finally:
+            self._module_control_lock.release()
+
+    def _end_priority_scan_focus(self, token) -> None:
+        from angerona.core.background_pacing import get_pacing_controller
+
+        with self._module_control_lock:
+            focus = self._priority_scan_focus
+            if focus is None or focus["token"] is not token:
+                return
+            self._priority_scan_focus = None
+            known, self._priority_scan_modules = self._priority_scan_modules, {}
+            get_pacing_controller().end_priority_focus(focus["pacer_owner"])
+            for mod in known.values():
+                BaseModule.set_priority_throttle(mod, 1.0)
+
+    def cancel_priority_scan_focus(self) -> None:
+        with self._module_control_lock:
+            if self._priority_scan_focus is not None:
+                self._end_priority_scan_focus(self._priority_scan_focus["token"])
+
+    def priority_scan_focus_snapshot(self) -> dict:
+        if not self._module_control_lock.acquire(blocking=False):
+            return {"active": None, "state": "policy-update-in-progress"}
+        try:
+            focus = self._priority_scan_focus
+            if focus is None or focus["expires_at"] <= time.monotonic():
+                return {"active": False}
+            return {"active": True, "owner": focus["owner"],
+                    "requested_background_percent": focus["background_percent"],
+                    "affected_modules": len(self._priority_scan_modules),
+                    "remaining_seconds": max(0.0, focus["expires_at"] - time.monotonic()),
+                    "scope": "reviewed analysis cadence; critical intake/control unchanged; not a CPU quota"}
+        finally:
+            self._module_control_lock.release()
 
     def _construct_module(self, cls: type) -> BaseModule:
         """Construct one module and bind application-owned security services.
@@ -905,6 +1067,7 @@ class ModuleManager:
 
     def stop_all(self) -> None:
         with self._module_control_lock:
+            self.cancel_priority_scan_focus()
             self._control_generation += 1
             self._runtime_active = False
             self._shutdown = True

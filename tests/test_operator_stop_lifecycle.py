@@ -286,6 +286,7 @@ def _inert_stop_window(calls):
         _shutdown_callback=lambda: calls.append("owned-cleanup"),
         _close_flight_instructor=lambda: None,
         _close_spyware_guard_window=lambda: None,
+        _close_github_tools_window=lambda: None,
         red_team_engine=SimpleNamespace(stop_and_clean=lambda: None),
         shark_engine=SimpleNamespace(stop_and_clean=lambda: None),
         _release_redteam_validation_lease=lambda: None,

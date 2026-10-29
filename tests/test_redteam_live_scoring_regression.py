@@ -14,6 +14,15 @@ from types import SimpleNamespace
 import pytest
 
 
+def _offline_practice_inventory(monkeypatch):
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+    # Only unrelated general inventory is inert. The exact enrolled child,
+    # native receipts, FIM scans and all marker custody remain real.
+    monkeypatch.setattr(process_monitor, "process_snapshot", lambda **_kwargs:
+        ProcessSnapshot((), time.time(), True, 0, 0, 0, 0, "", True))
+
+
 def _drain_validation_workers(manager, lease) -> None:
     # Capture lease-inserted producers before release removes them from inventory.
     modules = tuple(manager.modules.values())
@@ -80,6 +89,7 @@ def test_live_redteam_marker_custody_allows_verified_containment(
     expected_file_count: int,
 ) -> None:
     """Every inert marker must reach a real, verified response receipt."""
+    _offline_practice_inventory(monkeypatch)
     root = workspace_tmp_path / "isolated-runtime"
     target = root / "drill-sandbox"
     root.mkdir()
@@ -133,7 +143,7 @@ def test_live_redteam_marker_custody_allows_verified_containment(
     try:
         combat.start()
         deadline = time.monotonic() + 10.0
-        while not combat.response_snapshot()["ready"] and time.monotonic() < deadline:
+        while not combat.response_snapshot()["canary_ready"] and time.monotonic() < deadline:
             time.sleep(0.05)
         assert assess_drill_response(manager, require_process=True)["ready"]
 
@@ -264,6 +274,7 @@ def test_live_fim_evidence_survives_later_scans_in_the_aar(
     workspace_tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An authentic native receipt remains evidence after FIM polls again."""
+    _offline_practice_inventory(monkeypatch)
     root = workspace_tmp_path / "native-runtime"
     target = root / "drill-sandbox"
     target.mkdir(parents=True)
@@ -435,6 +446,7 @@ def test_stale_enrollment_discards_only_the_created_marker_and_stops(
     replace_same_name: bool,
 ) -> None:
     """A producer dying after exclusive creation cannot orphan or misdelete a file."""
+    _offline_practice_inventory(monkeypatch)
     root = workspace_tmp_path / "stale-runtime"
     target = root / "drill-sandbox"
     root.mkdir()
@@ -531,6 +543,7 @@ def test_failed_quarantine_commit_never_credits_replacement_marker(
     replace_before_recapture: bool,
 ) -> None:
     """A failed terminal write restores exact custody or poisons the lease."""
+    _offline_practice_inventory(monkeypatch)
     root = workspace_tmp_path / "failed-commit-runtime"
     target = root / "drill-sandbox"
     root.mkdir()

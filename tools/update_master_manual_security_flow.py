@@ -18,11 +18,15 @@ from zipfile import ZipFile
 
 ROOT = Path(__file__).resolve().parents[1]
 MANUAL = ROOT / "Angerona_Master_Manual.docx"
-DOCS = (ROOT / "docs/security-flow.md", ROOT / "docs/safe-startup-recovery.md")
-ASSETS = ("security-flow-overview.png", "security-flow-startup.png", "security-flow-response.png")
+DOCS = (ROOT / "docs/security-flow.md", ROOT / "docs/safe-startup-recovery.md",
+        ROOT / "docs/zero-breach-toolkit.md")
+ASSETS = ("security-flow-overview.png", "security-flow-startup.png", "security-flow-response.png",
+          "security-flow-tools.png", "security-flow-breach.png")
 START = b"<!-- ANGERONA_SECURITY_FLOW_START -->"
 END = b"<!-- ANGERONA_SECURITY_FLOW_END -->"
-TITLE = "Security flow and dependable startup"
+TITLE = "Security flow integrations and recovery"
+REVISION_DATE = "29 October 2026"
+REVISION_UTC = b"2026-10-29T00:00:00Z"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -186,6 +190,28 @@ def build_assets():
         ("8  Support review and Undo", ["Signed/authenticated receipt and history", "Reconcile only proven original/target state"]),
     ], ["Installed Protect needs trusted signing, identities and native deployment acceptance.",
         "User-mode source tests cannot create privileged or independent authorities."], stop_branch="right")
+    diagram(ASSETS[3], "Curated toolkit security flow", "Pinned third-party code • isolated interpreter • findings remain leads", [
+        ("1  Select the reviewed artifact", ["Fixed release • digest • retained licenses", "Source Library imports stay data-only"]),
+        ("2  Prepare after the dashboard", ["Bundled standard-library engine • no pip", "Optional fixed-release restore • saved policy"]),
+        ("3  Admit a separate owned job", ["Ordinary source execution • private TEMP", "Installed/elevated broker remains held"]),
+        ("4  Choose supported checks", ["Default • full • browser • targeted", "Local phone • preview • quick • records"]),
+        ("5  Apply resource controls", ["Deadline • priority • managed output caps", "Native writers monitored • no OS quota"]),
+        ("6  Validate the retained report", ["Schema • coverage • findings • gaps", "Preserve modified or unknown originals"]),
+        ("7  Investigate the evidence", ["Tool text is data, never action authority", "Native breach proof is a separate boundary"]),
+        ("8  Revert only managed state", ["Engine revert differs from report cleanup", "Preferences • reports • credits retained"]),
+    ], ["Advanced menus, dependencies, feed updates and acquisition retain execution holds.",
+        "Code Apache-2.0 • data CC0 • optional rules retain MSTIC / Felix Bilstein credits."])
+    diagram(ASSETS[4], "Verified breach and lockdown flow", "A visible warning, authority to act and verified containment are separate", [
+        ("1  Qualify native evidence", ["Fresh LIVE • enrolled/current producer", "Active attack • exact original contract"]),
+        ("2  Latch a case for review", ["Breached warning • critical report • borders", "Health / practice / tool leads cannot qualify"]),
+        ("3  Review the next steps", ["Investigate / Trace remain read-only", "Patch needs a reviewed bound operation"]),
+        ("4  Prove response authority", ["Signed installed Protect • Administrator", "Original scope • policy • source is held"]),
+        ("5  Request managed lockdown", ["Same Combat worker • durable journal", "All interfaces • directions • IPv4 / IPv6"]),
+        ("6  Verify scope and policy", ["Enabled profiles • effective-policy checks", "Unknown state stays held / unverified"]),
+        ("7  Lift verified managed rules", ["Authenticated Undo • prove rule absence", "Preserve other policy • same-case standdown"]),
+        ("8  Resolve the breach review", ["Lift and review resolution are separate", "New case rechecks • STOP does not lift"]),
+    ], ["Rule receipts do not attest packet drops, kernel truth or hostile-admin resistance.",
+        "Emergency local-console recovery matches exact managed receipts, never a blanket reset."])
 
 
 def plain(text):
@@ -265,12 +291,21 @@ def markdown_parts(text, *, include_catalog=False):
                 break
         elif line.startswith('<!--'):
             pass
+        elif line.startswith('```'):
+            flush()
+            index += 1
+            while index < len(lines) and not lines[index].lstrip().startswith('```'):
+                output.append(paragraph(lines[index], small=True))
+                index += 1
+            if index == len(lines):
+                raise ValueError("manual source has an unclosed fenced block")
         elif line.startswith('!['):
             flush()
             for number, name in enumerate(ASSETS, 1):
                 if name in line:
                     output.append(picture(name, number))
-                    display_number = {ASSETS[0]: 1, ASSETS[2]: 2, ASSETS[1]: 3}[name]
+                    display_number = {ASSETS[0]: 1, ASSETS[3]: 2, ASSETS[2]: 3,
+                                      ASSETS[4]: 4, ASSETS[1]: 5}[name]
                     output.append(paragraph("Figure " + str(display_number) + " " + name.replace('security-flow-', '').replace('.png', '') + " flow", "Caption"))
         elif line.startswith('#'):
             flush()
@@ -301,7 +336,7 @@ def markdown_parts(text, *, include_catalog=False):
 
 def chapter():
     result = paragraph(TITLE, "Heading1", first=True)
-    result += paragraph("Current operating guidance 28 October 2026")
+    result += paragraph("Current operating guidance " + REVISION_DATE)
     result += paragraph("This chapter explains the suite from launch to evidence, governed response, retention and recovery. Source Observe and signed installed Protect have distinct authority. A visible dashboard does not attest working sensors or protection. The current security flow and Safe Startup sections below apply to the maintained source profile; earlier dated validation results remain historical evidence.")
     result += markdown_parts(DOCS[0].read_text(encoding="utf-8"))
     result += paragraph("Complete built in capability inventory", "Heading2")
@@ -309,14 +344,20 @@ def chapter():
     result += table([("Capability", "Built in source file")] + [
         (name, relative) for name, relative, _mode, _authority in capability_rows()
     ])
+    result += markdown_parts(DOCS[2].read_text(encoding="utf-8"))
     result += markdown_parts(DOCS[1].read_text(encoding="utf-8"))
-    result += paragraph("Primary platform and protocol references", "Heading2")
+    result += paragraph("Primary platform and toolkit references", "Heading2", first=True)
     for url in (
         "https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/user-mode-and-kernel-mode",
         "https://www.microsoft.com/en-us/msrc/windows-security-servicing-criteria",
         "https://docs.github.com/en/rest/git/blobs",
         "https://docs.github.com/en/rest/git/commits",
         "https://docs.github.com/en/rest/git/trees",
+        "https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps",
+        "https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-inetfwpolicy2-get_localpolicymodifystate",
+        "https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10",
+        "https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/scan/CONTRACT.md",
+        "https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md",
     ):
         # Keep this short reference list compact without reducing its type size
         # or pushing a lone final URL onto another page.
@@ -377,7 +418,7 @@ def current_version_parts(mapping):
         if frontmatter_open and re.fullmatch(r'\d{1,2} [A-Za-z]+ \d{4}', text):
             cover_dates += 1
             return re.sub(rb'(?<=>)\d{1,2} [A-Za-z]+ \d{4}(?=</w:t>)',
-                          b'28 October 2026', raw, count=1)
+                          REVISION_DATE.encode('ascii'), raw, count=1)
         for index, anchor in enumerate(anchors):
             # The source-update wording is a stable frontmatter anchor; only its
             # current version changes. Dated v1.14 integration prose stays intact.
@@ -388,13 +429,13 @@ def current_version_parts(mapping):
                 if index == 1:
                     return replace_single_run_text(raw,
                         f'v{version_text} source maintenance. Current validation: '
-                        'analysis/startup-storage-recovery-2026-10-28.md. '
+                        'analysis/curated-tools-breach-2026-10-29.md. '
                         'Signed-package and clean-VM acceptance remain separate.')
                 return re.sub(rb'(?<=v)\d+\.\d+\.\d+', lambda _: version, raw, count=1)
         if text.startswith('Current repository code, the 86-capability inventory and '):
             return replace_single_run_text(raw,
                 'Current repository code, the 86-capability inventory and '
-                'analysis/startup-storage-recovery-2026-10-28.md; '
+                'analysis/curated-tools-breach-2026-10-29.md; '
                 'October 22 validation and historical chapters retain their dated scope.')
         if follows_version_label and re.fullmatch(r'\d+\.\d+\.\d+', text):
             counts[3] += 1
@@ -419,7 +460,7 @@ def current_version_parts(mapping):
             raise ValueError(f'current manual display version is missing: {name}')
     mapping['word/footer2.xml'], count = re.subn(
         rb'(?<=  \|  )\d{1,2} [A-Za-z]+ \d{4}(?=</w:t>)',
-        b'28 October 2026', mapping['word/footer2.xml'], count=1)
+        REVISION_DATE.encode('ascii'), mapping['word/footer2.xml'], count=1)
     if count != 1:
         raise ValueError('current manual footer revision date is missing')
 
@@ -486,7 +527,8 @@ def update(check=False):
     mapping['word/document.xml'] = updated
     mapping['word/_rels/document.xml.rels'] = relationships
     mapping['[Content_Types].xml'] = types
-    mapping['docProps/core.xml'] = re.sub(rb'(<dcterms:modified\b[^>]*>).*?(</dcterms:modified>)', rb'\g<1>2026-10-28T00:00:00Z\g<2>', mapping['docProps/core.xml'])
+    mapping['docProps/core.xml'] = re.sub(rb'(<dcterms:modified\b[^>]*>).*?(</dcterms:modified>)',
+        lambda match: match.group(1) + REVISION_UTC + match.group(2), mapping['docProps/core.xml'])
     for name in ASSETS:
         mapping['word/media/' + name] = (ROOT / 'assets' / name).read_bytes()
     temporary = MANUAL.with_suffix('.security-flow.tmp')

@@ -204,6 +204,7 @@ jobs:
             --add-data "$(Join-Path $PWD 'rules.yar');." `
             --add-data "$(Join-Path $PWD 'build/bundled-runtime/models');runtime-data/models" `
             --hidden-import angerona `
+            --hidden-import angerona.core.curated_tool_worker `
             src/angerona/__main__.py
           if ($LASTEXITCODE -ne 0) { throw 'Dashboard build failed.' }
 
@@ -573,6 +574,7 @@ jobs:
             --add-data "$PWD/assets:assets" \
             --add-data "$PWD/rules.yar:." \
             --hidden-import angerona \
+            --hidden-import angerona.core.curated_tool_worker \
             src/angerona/__main__.py
 
       - name: Verify and package native application

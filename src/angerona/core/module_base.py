@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import stat
 import sys
@@ -386,6 +387,7 @@ class BaseModule:
         self._bus: Optional[EventBus] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._startup_wake_event: Optional[threading.Event] = None
         # Lifecycle generations prevent a restarted module from clearing the
         # stop token underneath its exiting predecessor. ``stop()`` remains
         # non-blocking; ``start()`` performs only a short join and, when needed,
@@ -410,6 +412,8 @@ class BaseModule:
         self._throttle_lock = threading.RLock()
         self._throttle: float = 1.0   # loop-cadence multiplier (Adaptive Resource Governor)
         self._throttle_floor: float = 1.0  # persistent Chill Mode cadence floor
+        self._priority_throttle: float = 1.0
+        self._priority_throttle_until: float = 0.0
         # Readiness barrier used by staged Eco Mode wake-up. A module's first
         # cadence boundary proves it has actually run, rather than merely
         # having a live thread and stale pre-Eco health.
@@ -735,7 +739,10 @@ class BaseModule:
         # boundary after their work; otherwise startup could attest readiness
         # before a sensor had observed anything.
         with self._throttle_lock:
-            throttle = float(self._throttle)
+            if self._priority_throttle_until and time.monotonic() >= self._priority_throttle_until:
+                self._priority_throttle = 1.0
+                self._priority_throttle_until = 0.0
+            throttle = max(float(self._throttle), self._priority_throttle)
         wait_seconds = max(0.0, float(seconds)) * throttle
         if (
             _background_pacing
@@ -887,6 +894,24 @@ class BaseModule:
                 floor = 1.0
             self._throttle_floor = floor
             self._throttle = max(floor, self._throttle)
+
+    def set_priority_throttle(self, multiplier: float, expires_at: float = 0.0,
+                              *, blocking: bool = True) -> bool:
+        """Set a separate bounded temporary floor; preserve Chill/governor state."""
+        requested, expiry = float(multiplier), float(expires_at)
+        if (not math.isfinite(requested) or not 1 <= requested <= 8
+                or not math.isfinite(expiry) or expiry < 0):
+            raise ValueError("Invalid priority cadence lease.")
+        if requested > 1 and expiry <= time.monotonic():
+            raise ValueError("Priority cadence requires a future expiry.")
+        if not self._throttle_lock.acquire(blocking=blocking):
+            return False
+        try:
+            self._priority_throttle = requested
+            self._priority_throttle_until = expiry if requested > 1 else 0.0
+            return True
+        finally:
+            self._throttle_lock.release()
 
     def emit(self, message: str, severity: Severity = Severity.INFO, **details) -> None:
         self.publish_event(Event(self.name, message, severity, time.time(), details))
@@ -1061,6 +1086,8 @@ class BaseModule:
             ),
             "throttle_multiplier": float(self._throttle),
             "throttle_floor": float(self._throttle_floor),
+            "priority_throttle_multiplier": float(self._priority_throttle)
+                if self._priority_throttle_until > now else 1.0,
             "event_revision": int(self._bus_revision),
             "priority_event_revision": int(self._bus_priority_revision),
             "event_overflow_count": int(self._bus_overflow_count),
@@ -1098,7 +1125,16 @@ class BaseModule:
         self._run_context.generation = generation
         self._run_context.stop_event = stop_event
         if initial_delay:
-            stop_event.wait(timeout=initial_delay)
+            wake = self._startup_wake_event
+            if wake is None:
+                stop_event.wait(timeout=initial_delay)
+            else:
+                deadline = time.monotonic() + initial_delay
+                while not stop_event.is_set() and not wake.is_set():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    stop_event.wait(timeout=min(0.25, remaining))
             if stop_event.is_set():
                 return
         for attempt in range(_MAX_RESTARTS):

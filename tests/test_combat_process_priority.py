@@ -7,6 +7,8 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from test_breach_lockdown import installed_protect_for_inert_combat
+from angerona.core.response_contract import authorize_response
 
 from angerona.core import module_base, win
 from angerona.core.eventbus import Event, Severity
@@ -33,7 +35,8 @@ def _fixture(monkeypatch, tmp_path):
                               reversible=True, details={"pid": pid, "create_time": birth})
 
     @contextmanager
-    def journal(action):
+    def journal(action, *, canary=None):
+        assert canary is None  # This fixture models ordinary installed authority.
         calls.append("intent:" + action.action)
         yield
 
@@ -42,7 +45,9 @@ def _fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_commit_after_mutation", lambda action: action)
     monkeypatch.setattr(module, "_journal_failure", lambda *_args: calls.append("failure"))
     event = Event("Inert Detector", "fixture", Severity.CRITICAL,
-                  details={"pid": 999999, "process_create_time": 10.0})
+                  details={"pid": 999999, "process_create_time": 10.0,
+                      **authorize_response(["terminate_process", "suspend_process", "isolate_program"],
+                                           pid=999999, process_create_time=10.0)})
     return module, process, state, calls, event
 
 
@@ -60,7 +65,9 @@ def test_maximum_terminate_uses_existing_native_transaction_before_firewall(
             assert alive and state["alive"]
             calls.append("validate")
 
-        def terminate(self):
+        def terminate(self, *, before_dispatch=None):
+            if before_dispatch is not None:
+                before_dispatch()
             calls.append("terminate")
             self.dispatch_started = True
             state["alive"] = False
@@ -95,7 +102,7 @@ def test_failed_kill_falls_back_only_with_intact_authority_and_same_live_target(
 ):
     module, _process, state, calls, event = _fixture(monkeypatch, tmp_path)
 
-    def failed_kill(_process, _action):
+    def failed_kill(_process, _action, **_kwargs):
         calls.append("terminate-refused")
         if failure == "uncertain":
             module._mutation_blocked = True
@@ -130,7 +137,7 @@ def test_failed_kill_falls_back_only_with_intact_authority_and_same_live_target(
 def test_network_only_contract_does_not_inherit_terminate_permission(monkeypatch, tmp_path):
     module, _process, _state, calls, event = _fixture(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_terminate_process_transaction",
-                        lambda *_args: pytest.fail("network-only contract cannot kill"))
+                        lambda *_args, **_kwargs: pytest.fail("network-only contract cannot kill"))
     result = module._act_on_process(
         999999, combat.CombatPolicy(), event, "combat-aaaaaaaaaaaa",
         allowed_actions=frozenset({"isolate_program"}),
@@ -149,7 +156,7 @@ def test_contain_and_exact_suspend_keep_network_first_semantics(
 ):
     module, _process, _state, calls, event = _fixture(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_terminate_process_transaction",
-                        lambda *_args: pytest.fail("suspend permission must not become kill"))
+                        lambda *_args, **_kwargs: pytest.fail("suspend permission must not become kill"))
     result = module._act_on_process(
         999999, combat.CombatPolicy(mode=mode, process_action=process_action), event,
         "combat-aaaaaaaaaaaa", allowed_actions=frozenset(allowed),
@@ -168,7 +175,7 @@ def test_identity_and_protected_process_checks_precede_both_effects(
     else:
         monkeypatch.setattr(module, "_is_system_path", lambda _path: True)
     monkeypatch.setattr(module, "_terminate_process_transaction",
-                        lambda *_args: pytest.fail("invalid target must not be killed"))
+                        lambda *_args, **_kwargs: pytest.fail("invalid target must not be killed"))
     assert module._act_on_process(999999, combat.CombatPolicy(), event,
                                   "combat-aaaaaaaaaaaa") is None
     assert calls == []
@@ -180,12 +187,15 @@ def test_completed_slow_firewall_substeps_renew_current_worker_progress(
     module = combat.AdversaryCombat(tmp_path, rollback_anchor={})
     clock = [100.0]
     monkeypatch.setattr(module_base, "time", SimpleNamespace(monotonic=lambda: clock[0]))
-    monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt", environ={}, path=__import__("os").path))
+    monkeypatch.setattr(module, "_lockdown_netsh", lambda: "C:/Windows/System32/netsh.exe")
     calls, result, deadlines = [], [], []
     present = [False]
 
     def provider(command, **kwargs):
         assert kwargs["timeout"] == 15
+        assert command[0] == "C:/Windows/System32/netsh.exe"
+        assert kwargs["cwd"] == "C:/Windows/System32"
         # Progress must reflect an actual completed step, never an early pulse.
         assert clock[0] < module._watchdog_deadline_at
         cycle = module._cycle_count
@@ -197,7 +207,7 @@ def test_completed_slow_firewall_substeps_renew_current_worker_progress(
         elif command[3] == "delete":
             present[0] = False
         return SimpleNamespace(returncode=0,
-                               stdout="Rule Name: Fixture" if present[0] else "No rules match.",
+                               stdout="Rule Name: Fixture" if present[0] else "No rules match the specified criteria.",
                                stderr="")
 
     monkeypatch.setattr(win, "run_hidden", provider)
@@ -234,7 +244,8 @@ def test_failed_bounded_firewall_step_never_fabricates_worker_readiness(
     monkeypatch, tmp_path, call, state,
 ):
     module = combat.AdversaryCombat(tmp_path, rollback_anchor={})
-    monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt", environ={}, path=__import__("os").path))
+    monkeypatch.setattr(module, "_lockdown_netsh", lambda: "C:/Windows/System32/netsh.exe")
 
     def timeout(*_args, **_kwargs):
         raise subprocess.TimeoutExpired("inert-netsh", 15)

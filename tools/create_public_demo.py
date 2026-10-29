@@ -18,14 +18,31 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRATCH = ROOT / ".tmp" / "public-demo-20261028"
+SCRATCH = ROOT / ".tmp" / "public-demo-20261029-tools"
 MAX_GIF = 12 * 1024 * 1024
-CHAPTERS = 9
+CHAPTERS = 13
 FRAMES_PER_CHAPTER = 10
 FRAME_DURATION_MS = 500
 FRAME_COUNT = CHAPTERS * FRAMES_PER_CHAPTER
 MAX_FRAME_BYTES = 8 * 1024 * 1024
-MAX_CAPTURE_BYTES = 64 * 1024 * 1024
+MAX_CAPTURE_BYTES = 96 * 1024 * 1024
+SCREENSHOTS = (
+    "github-tools-demo", "zero-breach-demo", "spyware-scan-demo",
+    "breach-lockdown-demo", "after-action-demo",
+    "github-tools-settings-demo", "github-tools-credits-demo",
+)
+CAPTURE_SOURCES = (
+    "tools/create_public_demo.py", "tools/capture_public_dashboard.py",
+    "tools/capture_spywareguard.py", "src/angerona/__init__.py",
+    "src/angerona/gui/main_window.py", "src/angerona/gui/curated_tools.py",
+    "src/angerona/gui/spyware_guard_page.py", "src/angerona/gui/breach_display.py",
+    "src/angerona/gui/header_controls.py", "src/angerona/gui/pages.py",
+    "src/angerona/gui/dashboard_footer.py",
+)
+
+
+def source_fingerprints() -> dict[str, str]:
+    return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in CAPTURE_SOURCES}
 
 
 def plain(path: Path, *, scratch: bool = False) -> Path:
@@ -131,9 +148,101 @@ def _attack_fixture(parent, forbidden):
     return dialog
 
 
+def _curated_fixture(manager, forbidden):
+    """Copy-only publications for the production widgets; no service exists."""
+    import copy
+    from PySide6.QtCore import QObject, Signal
+    from angerona.core.curated_tools import credits
+    from angerona.gui import curated_tools
+
+    class MemoryController(QObject):
+        status_changed = Signal(dict)
+        credits_ready = Signal(object)
+        settings_saved = Signal()
+
+        def __init__(self):
+            super().__init__()
+            self.manager = manager
+            self._closed = False
+            self.state = dict(
+                state="references", installed=True, verified=True, version="0.1.10", busy=False,
+                execution_available=True, message="DEMO - fixed synthetic evidence; no scanner was executed.",
+                coverage={"checked": ["Synthetic process, browser and desktop evidence"],
+                          "not_checked": ["Encrypted phone evidence", "Live device acquisition"],
+                          "note": "DEMO - coverage labels illustrate report structure, not host coverage."},
+                findings=[{"state": "reference", "title": "Synthetic historical indicator reference",
+                           "note": "DEMO - a reference is not a confirmed active infection."}],
+                admin_state={"verified": True, "elevated": False,
+                             "integrity": "DEMO synthetic ordinary-user observation"},
+                resource_usage={"cpu_percent": 0.0, "rss_mib": 32.0,
+                                "read_bytes": 0, "write_bytes": 0, "process_alive": False},
+                provenance={"synthetic": True, "host_actions": False, "live_scan": False},
+            )
+
+        def snapshot(self):
+            return copy.deepcopy(self.state)
+
+        def update(self, **values):
+            self.state.update(values)
+            self.status_changed.emit(self.snapshot())
+
+        def load_credits(self):
+            self.credits_ready.emit(list(credits()))
+            return True
+
+        def shutdown(self):
+            self._closed = True
+
+        def wait_for_shutdown(self, _timeout=0):
+            return True
+
+        prepare = scan = priority_scan = cancel = self_test = open_tool = revert = forbidden
+        save_options = clear_reports = refresh = auto_prepare = forbidden
+
+    controller = MemoryController()
+    manager._curated_tools_controller = controller
+    curated_tools.get_curated_tools_controller = lambda _manager: controller
+    return controller
+
+
+def _breach_fixture(manager, forbidden):
+    """Typed synthetic presentation only; action dispatch remains forbidden."""
+    from types import SimpleNamespace
+    from angerona.core.breach_state import BreachActionAvailability, BreachDisplaySnapshot
+    snapshot = BreachDisplaySnapshot(
+        active=True, state="breached", case_id="de" * 16, sequence=1,
+        summary="DEMO - synthetic confirmed case and lockdown receipt; no host or network action",
+        containment_state="locked-down",
+        details=(
+            ("SIMULATION", "No live breach, scanner, native evidence or response exists in this replay."),
+            ("Detection", "Synthetic first-party evidence case; external toolkit references alone do not confirm compromise."),
+            ("Network scope", "DEMO - modeled Ethernet, Wi-Fi and other outbound connections held by case-owned rules."),
+            ("Receipt", "DEMO - synthetic rule receipt only; no firewall rule was created or changed."),
+            ("Operator control", "Lift Lockdown restores only the case-owned controls in an authorized installed runtime."),
+            ("After lifting", "The breach remains visible until separately reviewed and resolved."),
+            ("Coverage", "Source Observe does not gain response authority from this synthetic projection."),
+        ),
+        actions=(
+            BreachActionAvailability("investigate", True, "Read the synthetic case evidence", False),
+            BreachActionAvailability("trace", True, "Inspect synthetic provenance; no remote contact", False),
+            BreachActionAvailability("isolate", False, "DEMO - modeled case already locked down"),
+            BreachActionAvailability("patch", False, "Advisory only; a reviewed patch is not supplied by a finding"),
+            BreachActionAvailability("kill", False, "DEMO - there is no validated live process target"),
+            BreachActionAvailability("lift_lockdown", True, "DEMO - modeled case-owned receipt; button is not activated"),
+            BreachActionAvailability("review_resolved", True, "DEMO - separate operator review; button is not activated"),
+        ),
+    )
+    manager._breach_state_controller = SimpleNamespace(snapshot=lambda: snapshot, request_action=forbidden)
+    return snapshot
+
+
 def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: bool = False) -> None:
     runtime_root, frames_root = plain(runtime_root, scratch=True), plain(frames_root, scratch=True)
+    if (runtime_root.exists() or runtime_root.is_relative_to(frames_root)
+            or frames_root.is_relative_to(runtime_root)):
+        raise ValueError("capture requires a fresh, separate, task-owned runtime directory")
     poster = plain(poster)
+    captured_sources = source_fingerprints()
     if poster != ROOT / "assets" / "screenshots" / "dashboard-demo.png" or (poster.exists() and not replace):
         raise ValueError("capture requires its explicit poster path and permission to replace an existing demo")
     frames_root.mkdir(parents=True, exist_ok=False)
@@ -169,6 +278,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
 
     (frames_root / "capture-identity.json").write_text(json.dumps(identity()), encoding="ascii")
     app, window, storage = demo._build_demo_window()
+    curated = _curated_fixture(window.manager, forbidden)
     wrapper = QWidget()
     wrapper.setWindowTitle("Angerona public demonstration - synthetic fixtures only")
     wrapper.setStyleSheet(window.styleSheet())
@@ -227,17 +337,22 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     # scenes where the real Scan Center tab is currently hidden.
     window.scan_center.path_edit.setText("DEMO - synthetic findings; no path was scanned")
     frames = []
+    frame_sha256 = {}
+    staged_screenshots = {}
     chapter_names = []
     interactions = {"dashboard_panels_collapsed": {"console": [], "activity": [], "pulse": []},
                     "alerts": {"row_count": 0, "positions": []},
                     "settings_tabs": [], "attack_tabs": [], "attack_horizontal_positions": [],
-                    "heartbeats": [], "heartbeat_details_steps": []}
+                    "heartbeats": [], "heartbeat_details_steps": [],
+                    "curated_views": [], "priority_resources": [], "breach_colors": [],
+                    "after_action_scroll": []}
     captured_bytes = 0
     detail = None
     settings = spyware = attack = None
     heartbeat_details = None
+    hub = credits_dialog = after_action = None
 
-    def chapter(number, heading, description, widget, navigate=None):
+    def chapter(number, heading, description, widget, navigate=None, screenshot_at=None):
         nonlocal captured_bytes
         chapter_names.append(heading)
         title.setText(f"{number}/{CHAPTERS}  {heading}")
@@ -268,6 +383,15 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
             if size > MAX_FRAME_BYTES or captured_bytes > MAX_CAPTURE_BYTES:
                 raise RuntimeError("public demo capture reached its explicit frame/disk byte budget")
             frames.append(destination.name)
+            frame_sha256[destination.name] = hashlib.sha256(destination.read_bytes()).hexdigest()
+            name = (screenshot_at or {}).get(step)
+            if name is not None:
+                if name not in SCREENSHOTS or name in staged_screenshots:
+                    raise RuntimeError("demo screenshot name or multiplicity differs from its explicit plan")
+                staged = frames_root / f"{name}.png"
+                with destination.open("rb") as source, staged.open("xb") as target:
+                    target.write(source.read())
+                staged_screenshots[name] = staged
             if len(frames) == 1:
                 print(json.dumps({"outcome": "first-dashboard-frame", "path": str(destination),
                                   "app_version": __version__, "capture": identity()}), flush=True)
@@ -444,6 +568,117 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         stack.addWidget(help_dialog)
         chapter(9, "Find the implementation and honest operating limits",
                 f"Angerona {__version__}: Help & Info documents source Observe mode, Ring 3 boundaries, evidence versus authority, storage choices and optional services.", help_dialog)
+
+        from angerona.gui.curated_tools import GitHubToolsDialog
+        hub = GitHubToolsDialog(window.manager, window)
+        # Reuse production views without constructing a catalog or lab worker.
+        hub.source_library._loaded = True
+        hub.source_library.analysis_lab._loaded = True
+        hub.source_library.status.setText("DEMO - no repository download or source execution has occurred.")
+        hub.source_library.analysis_lab.status.setText("DEMO - optional analysis runtime is not loaded or started.")
+        hub.setParent(stack)
+        hub.setWindowFlags(Qt.Widget)
+        stack.addWidget(hub)
+
+        def browse_curated(step):
+            nonlocal credits_dialog
+            if step < 4:
+                stack.setCurrentWidget(hub)
+                hub.tabs.setCurrentIndex(0)
+                selected_view = "GitHub Tools - curated scanners"
+            elif step < 7:
+                stack.setCurrentWidget(spyware)
+                spyware.tabs.setCurrentIndex(spyware.tabs.count() - 1)
+                selected_view = "SpywareGuard - Zero-Breach"
+            elif step == 7:
+                stack.setCurrentWidget(hub)
+                hub.tabs.setCurrentIndex(2)
+                selected_view = "GitHub Tools - settings"
+            elif step == 8:
+                stack.setCurrentWidget(hub)
+                hub.tabs.setCurrentIndex(0)
+                demo._settle(app, .05)
+                hub.scanner.credits_button.click()
+                credits_dialog = hub.scanner._credits_dialog
+                if credits_dialog is None:
+                    raise RuntimeError("the production Credits action did not open its attribution view")
+                credits_dialog.setParent(stack)
+                credits_dialog.setWindowFlags(Qt.Widget)
+                stack.addWidget(credits_dialog)
+                stack.setCurrentWidget(credits_dialog)
+                selected_view = "GitHub Tools - credits and license links"
+            else:
+                stack.setCurrentWidget(hub)
+                hub.open_analysis()
+                selected_view = "Source library - separate analysis sandbox"
+            interactions["curated_views"].append(selected_view)
+
+        chapter(10, "Add reviewed tools while keeping provenance visible",
+                "DEMO - the GitHub hub and SpywareGuard share the pinned Zero-Breach adapter. Credits, license links and source analysis are visible; no tool or host scan runs.",
+                hub, browse_curated, screenshot_at={1: "github-tools-demo", 5: "zero-breach-demo",
+                                                  7: "github-tools-settings-demo", 8: "github-tools-credits-demo"})
+
+        hub.tabs.setCurrentIndex(0)
+        hub.scanner.priority_controls.toggle.setChecked(True)
+        def replay_priority(step):
+            usage = dict(cpu_percent=round(18.0 + (step % 4) * 7.5, 1), rss_mib=42.0 + step,
+                         read_bytes=(step + 1) * 1048576, write_bytes=(step + 1) * 4096,
+                         process_alive=True, native={"state": "running", "request_id": "ab" * 16})
+            curated.update(state="running", busy=True,
+                           message="DEMO - synthetic priority scan and resource replay; no scanner process exists.",
+                           resource_usage=usage)
+            interactions["priority_resources"].append(usage)
+        chapter(11, "Prioritize selected spyware checks within resource limits",
+                "DEMO - native and toolkit selection, Above normal/High scheduling, CPU/RAM ceilings and privilege coverage. The changing resource readings are synthetic; no administrator rights are granted.",
+                hub, replay_priority, screenshot_at={4: "spyware-scan-demo"})
+        curated.update(state="references", busy=False,
+                       message="DEMO - synthetic review complete; no host-clean verdict is claimed.")
+
+        # Restore the production dashboard's evidence tabs after the earlier
+        # close-up chapters, so the breach scene contains the full MainWindow.
+        for index, (panel, label) in enumerate(((alerts, "Live Alerts"),
+                                                (window.soar_panel, "SOAR Queue"),
+                                                (window.scan_center, "Scan Center"))):
+            stack.removeWidget(panel)
+            window._right_tabs.insertTab(index, panel, label)
+        window._right_tabs.setCurrentWidget(alerts)
+        fixture_missing_blackbox[0] = False
+        window.config.breach_alert_popup_enabled = False
+        synthetic_breach = _breach_fixture(window.manager, forbidden)
+        stack.setCurrentWidget(window)
+        window.set_breach_visual_state(synthetic_breach)
+        demo._settle(app, .1)
+        breach_bridge = window._breach_view
+        breach_bridge.poll_timer.stop()
+        breach_bridge.flash_timer.stop()
+
+        def replay_breach(step):
+            # The real bridge paints its badge and outline; replay their slow
+            # red/orange phases deterministically rather than using wall time.
+            breach_bridge.poll_timer.stop()
+            breach_bridge.flash_timer.stop()
+            breach_bridge._orange = bool((step // 2) % 2)
+            breach_bridge._paint_warning()
+            interactions["breach_colors"].append("orange" if breach_bridge._orange else "red")
+            if window.posture_lbl.text() != "⚠️Breached⚠️":
+                raise RuntimeError("the real dashboard did not retain its confirmed-breach badge")
+        chapter(12, "Keep a confirmed breach visible until operator review",
+                "DEMO SIMULATION - case status stays critical independently of the engine score. Modeled lockdown covers Ethernet, Wi-Fi and other outside connections; this capture changes no network rules.",
+                window, replay_breach, screenshot_at={4: "breach-lockdown-demo"})
+
+        after_action = breach_bridge.open_report()
+        after_action.setParent(stack)
+        after_action.setWindowFlags(Qt.Widget)
+        stack.addWidget(after_action)
+        if not after_action.actions["lift_lockdown"].isEnabled():
+            raise RuntimeError("the synthetic case-owned Lift Lockdown availability was not presented")
+        def browse_after_action(step):
+            bar = after_action.text.verticalScrollBar()
+            bar.setValue(round(bar.maximum() * step / (FRAMES_PER_CHAPTER - 1)))
+            interactions["after_action_scroll"].append({"value": bar.value(), "maximum": bar.maximum()})
+        chapter(13, "Review evidence, next steps and the explicit Lift Lockdown control",
+                "DEMO SIMULATION - investigate and trace a detailed case, review held actions and Lift Lockdown availability. No response button is activated; lifting and resolving remain separate operator decisions.",
+                after_action, browse_after_action, screenshot_at={1: "after-action-demo"})
         demo._privacy_guard()
         if (not all(row["fresh"] for row in interactions["heartbeats"][0])
                 or not any(row["role"] == "blackbox" and not row["fresh"]
@@ -457,26 +692,51 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 or positions[-1]["value"] != positions[-1]["maximum"]
                 or len({position["value"] for position in positions}) < 3):
             raise RuntimeError("the real alerts table did not complete its recorded scrolling demonstration")
-        report = {"schema": 1, "frames": frames, "chapters": chapter_names,
+        if (len(frames) != FRAME_COUNT or len(chapter_names) != CHAPTERS
+                or set(staged_screenshots) != set(SCREENSHOTS)
+                or set(interactions["breach_colors"]) != {"red", "orange"}
+                or len({row["cpu_percent"] for row in interactions["priority_resources"]}) < 3
+                or captured_sources != source_fingerprints()):
+            raise RuntimeError("the capture plan, source revision or synthetic interaction coverage changed")
+        report = {"schema": 2, "frames": frames, "frame_sha256": frame_sha256, "chapters": chapter_names,
                   "duration_ms": FRAME_DURATION_MS, "width": wrapper.width(),
                   "height": wrapper.height(), "synthetic": True, "host_actions": False,
                   "external_effect_attempts": 0, "app_version": __version__,
-                  "interactions": interactions, "capture": identity()}
+                  "interactions": interactions, "capture": identity(), "source_sha256": captured_sources,
+                  "screenshots": {name: hashlib.sha256(path.read_bytes()).hexdigest()
+                                  for name, path in staged_screenshots.items()}}
         (frames_root / "frames.json").write_text(json.dumps(report), encoding="ascii")
         staged_poster = frames_root / "poster.png"
         with (frames_root / frames[0]).open("rb") as source, staged_poster.open("xb") as target:
             target.write(source.read())
         publish_media(staged_poster, poster, replace=replace)
+        for name, staged in staged_screenshots.items():
+            publish_media(staged, ROOT / "assets" / "screenshots" / f"{name}.png", replace=replace)
+        owned = []
+        for name in (*frames, "frames.json", "capture-identity.json", "capture-stacks.log"):
+            path = plain(frames_root / name, scratch=True)
+            info = path.stat()
+            owned.append(dict(path=str(path), device=info.st_dev, inode=info.st_ino,
+                              bytes=info.st_size, modified_ns=info.st_mtime_ns,
+                              sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
+        (frames_root / "owned-files.json").write_text(json.dumps(
+            dict(schema=1, capture=identity(), files=owned,
+                 policy="Delete only an unchanged exact file after native process retirement and independent review; preserve unknown files.",
+                 runtime_root=str(runtime_root),
+                 runtime_policy="Synthetic runtime is separate; this frame manifest grants no recursive deletion authority."),
+        ), encoding="ascii")
         print(json.dumps({"outcome": "captured", "frames": len(frames),
                           "seconds": FRAME_COUNT * FRAME_DURATION_MS / 1000,
                           "poster": str(poster), "capture": identity()}))
     finally:
         if detail is not None:
             detail.hide()
-        for widget in (settings, spyware, attack, heartbeat_details):
+        for widget in (settings, spyware, attack, heartbeat_details, hub, credits_dialog, after_action):
             if widget is not None:
                 widget.close()
         wrapper.hide()
+        window._breach_view.shutdown()
+        curated.shutdown()
         demo._close_demo(app, window, storage)
         app.processEvents()
         faulthandler.cancel_dump_traceback_later()
@@ -493,12 +753,15 @@ def encode(frames_root: Path, output: Path, *, replace: bool = False) -> None:
         raise ValueError("frame manifest exceeds its bound")
     manifest = json.loads(manifest_path.read_text(encoding="ascii"))
     names = manifest.get("frames")
-    if manifest.get("schema") != 1 or names != [f"frame-{index:03d}.png" for index in range(FRAME_COUNT)]:
+    if manifest.get("schema") != 2 or names != [f"frame-{index:03d}.png" for index in range(FRAME_COUNT)]:
         raise ValueError("frame manifest is invalid")
     if (manifest.get("duration_ms") != FRAME_DURATION_MS or not manifest.get("synthetic")
             or manifest.get("host_actions") is not False or len(manifest.get("chapters", [])) != CHAPTERS):
         raise ValueError("frame policy is invalid")
-    images = []
+    frame_hashes = manifest.get("frame_sha256")
+    if type(frame_hashes) is not dict or set(frame_hashes) != set(names):
+        raise ValueError("frame fingerprint manifest is invalid")
+    paths = []
     total_bytes = 0
     for name in names:
         if not isinstance(name, str) or not re.fullmatch(r"frame-\d{3}\.png", name):
@@ -508,23 +771,34 @@ def encode(frames_root: Path, output: Path, *, replace: bool = False) -> None:
         total_bytes += size
         if size > MAX_FRAME_BYTES or total_bytes > MAX_CAPTURE_BYTES:
             raise ValueError("frame exceeds its byte bound")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != frame_hashes[name]:
+            raise ValueError("frame changed after capture")
         with Image.open(path) as image:
             if (image.format != "PNG" or image.width > 1920 or image.height > 1200
                     or image.size != (manifest.get("width"), manifest.get("height"))):
                 raise ValueError("frame geometry or type is invalid")
-            images.append(image.convert("RGB"))
+            paths.append(path)
     palette_sample = Image.new("RGB", (800, 530 * CHAPTERS))
     for index in range(CHAPTERS):
-        sample = images[index * FRAMES_PER_CHAPTER].copy()
-        sample.thumbnail((800, 530))
-        palette_sample.paste(sample, (0, index * 530))
-    palette = palette_sample.quantize(colors=252)
+        with Image.open(paths[index * FRAMES_PER_CHAPTER]) as original:
+            sample = original.convert("RGB")
+            sample.thumbnail((800, 530))
+            palette_sample.paste(sample, (0, index * 530))
+            sample.close()
+    palette = palette_sample.quantize(colors=248)
+    palette_sample.close()
     # Preserve the UI's liveness/absence colors; tiny EKG lanes must not lose
     # their meaning when a global chapter palette favors the blue dashboard.
-    colors = palette.getpalette()[:252 * 3]
-    colors.extend((40, 223, 148, 255, 83, 99, 47, 227, 138, 251, 191, 36))
+    colors = palette.getpalette()[:248 * 3]
+    colors.extend((40, 223, 148, 255, 83, 99, 47, 227, 138, 251, 191, 36,
+                   239, 68, 68, 251, 146, 60, 31, 156, 255, 248, 250, 252))
     palette.putpalette(colors)
-    quantized = [image.quantize(palette=palette, dither=Image.Dither.NONE) for image in images]
+    quantized = []
+    for path in paths:
+        with Image.open(path) as original:
+            image = original.convert("RGB")
+            quantized.append(image.quantize(palette=palette, dither=Image.Dither.NONE))
+            image.close()
     staged = frames_root / "encoded-demo.gif"
     with staged.open("xb") as target:
         quantized[0].save(target, format="GIF", save_all=True, append_images=quantized[1:],
@@ -561,7 +835,7 @@ def main():
     parser.add_argument("--frames-root", type=Path, required=True)
     parser.add_argument("--runtime-root", type=Path)
     parser.add_argument("--replace-existing-demo", action="store_true",
-                        help="Replace only the two explicit demo asset leaves after a successful capture/encode.")
+                        help="Replace only the explicit planned demo asset leaves after successful validation.")
     parser.add_argument("--poster", type=Path, default=ROOT / "assets" / "screenshots" / "dashboard-demo.png")
     parser.add_argument("--gif", type=Path, default=ROOT / "assets" / "demo" / "angerona-demo.gif")
     args = parser.parse_args()

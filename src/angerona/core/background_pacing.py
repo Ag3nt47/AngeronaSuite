@@ -6,6 +6,7 @@ thread or timer, and never gates event delivery, response actions or watchdogs.
 from __future__ import annotations
 
 import math
+import re
 import threading
 import time
 from typing import Callable
@@ -35,6 +36,52 @@ class BackgroundPacingController:
         self._host: tuple[float, int] | None = None
         self._memory: tuple[float, int] | None = None
         self._reason = "No recent pressure"
+        self._priority_focus: tuple[str, float, float, int] | None = None
+
+    def begin_priority_focus(self, owner: str, background_percent: int = 10,
+                             *, seconds: float = 900.0, blocking: bool = True) -> bool:
+        """Lease routine-work pacing without changing operator preferences."""
+        if type(owner) is not str or re.fullmatch(r"[a-f0-9]{32}", owner) is None:
+            raise ValueError("A priority scan requires an exact owner identity.")
+        if type(background_percent) is not int or not 1 <= background_percent <= 100:
+            raise ValueError("Background cadence must be between 1 and 100 percent.")
+        duration = self._number(seconds)
+        if duration is None or not 1 <= duration <= 900:
+            raise ValueError("Priority pacing lease exceeds its lifetime bound.")
+        if not self._lock.acquire(blocking=blocking):
+            return False
+        try:
+            current = self._priority_focus_locked()
+            if current is not None and current[0] != owner:
+                raise RuntimeError("Another priority scan owns routine pacing.")
+            self._priority_focus = (owner, min(32.0, 100.0 / background_percent),
+                                    self._clock() + duration, background_percent)
+            return True
+        finally:
+            self._lock.release()
+
+    def end_priority_focus(self, owner: str) -> bool:
+        with self._lock:
+            current = self._priority_focus_locked()
+            if current is None or current[0] != owner:
+                return False
+            self._priority_focus = None
+            return True
+
+    def _priority_focus_locked(self):
+        current = self._priority_focus
+        if current is not None and self._clock() >= current[2]:
+            self._priority_focus = None
+            return None
+        return current
+
+    def work_multiplier(self) -> float:
+        """Requested routine duty factor, never a measured CPU percentage."""
+        with self._lock:
+            self._evaluate_locked(self._clock())
+            focus = self._priority_focus_locked()
+            return max(float(self._FACTORS[self._step]), focus[1] if focus else 1.0,
+                       float(self.CHILL_MULTIPLIER) if self._chill_active else 1.0)
 
     @staticmethod
     def _number(value: object) -> float | None:
@@ -179,11 +226,15 @@ class BackgroundPacingController:
     def interval(self, seconds: float) -> float:
         """Add at most 30 seconds to a routine interval; never shorten it."""
         base = max(0.0, float(seconds))
-        return min(base * self.multiplier(), base + self.MAX_ADDED_INTERVAL)
+        with self._lock:
+            self._evaluate_locked(self._clock())
+            focus = self._priority_focus_locked()
+            factor = max(float(self._FACTORS[self._step]), focus[1] if focus else 1.0)
+        return min(base * factor, base + self.MAX_ADDED_INTERVAL)
 
     def batch_delay(self) -> float:
         """At most 50ms per cooperative batch; zero at normal load."""
-        return (max(self.multiplier(), self.CHILL_MULTIPLIER if self.chill_active() else 1) - 1) * (0.05 / 7.0)
+        return min(0.05, (self.work_multiplier() - 1) * (0.05 / 7.0))
 
     def optional_interval(self, seconds: float) -> float:
         """Slow explicitly optional maintenance, preserving live inventory cadence.
@@ -201,7 +252,7 @@ class BackgroundPacingController:
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             self._evaluate_locked(self._clock())
-            return {
+            result = {
                 "enabled": self._enabled,
                 "chill_active": self._chill_active,
                 "multiplier": self._FACTORS[self._step],
@@ -210,6 +261,15 @@ class BackgroundPacingController:
                 "level": "strained" if self._step >= 2 else "busy" if self._step else "normal",
                 "reason": self._reason,
             }
+            focus = self._priority_focus_locked()
+            if focus is not None:
+                result["priority_focus"] = {
+                    "owner": focus[0], "requested_background_percent": focus[3],
+                    "routine_multiplier": focus[1],
+                    "remaining_seconds": max(0.0, focus[2] - self._clock()),
+                    "scope": "opted-in routine work; not a CPU quota",
+                }
+            return result
 
 
 _CONTROLLER = BackgroundPacingController()
@@ -244,6 +304,11 @@ class RoutineWorkPacer:
         # that can precede one bounded pause at that requested pacing level.
         self._work_budget = (self.MAX_WORK_SLICE if delay <= 0 else
                              min(self.MAX_WORK_SLICE, self.MAX_PAUSE ** 2 / (7 * delay)))
+        factor_reader = getattr(self._controller, "work_multiplier", None)
+        if callable(factor_reader):
+            factor = max(1.0, min(32.0, float(factor_reader())))
+            if factor > 1:
+                self._work_budget = min(self._work_budget, self.MAX_PAUSE / (factor - 1))
 
     def pause_seconds(self, completed: int, *, batch_size: int) -> float:
         now = self._clock()

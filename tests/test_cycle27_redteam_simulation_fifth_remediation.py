@@ -28,6 +28,7 @@ from angerona.shark.run_manifest import (
     preflight_run,
     write_run_history,
 )
+from test_cycle27_redteam_validation_lease import _supply_contract_inventory
 
 
 _KEY = bytes.fromhex("85" * 32)
@@ -119,6 +120,7 @@ def _history(
 def test_t1059_requires_exact_process_monitor_source_receipt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     # A security receipt must wake Purple Guard even when ordinary file-policy
     # cadence is resource-throttled to its maximum supported multiplier.
@@ -127,6 +129,7 @@ def test_t1059_requires_exact_process_monitor_source_receipt(
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     engine = RedTeamEngine(tmp_path, documents_dir=target)
     try:
         receipt = RedTeamValidationLease.consume_for_run(
@@ -239,6 +242,7 @@ def test_process_wake_requires_expected_native_source_envelope(tmp_path: Path) -
 def test_public_fim_attester_and_mutable_legacy_dispatch_are_not_oracles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, fim, manager = _runtime(tmp_path, monkeypatch, fim=True)
     assert fim is not None
     keep_alive = threading.Event()
@@ -248,6 +252,7 @@ def test_public_fim_attester_and_mutable_legacy_dispatch_are_not_oracles(
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         RedTeamValidationLease.consume_for_run(
             lease, run_id="no-public-oracle", target=target, data_root=tmp_path
@@ -292,11 +297,13 @@ def test_public_fim_attester_and_mutable_legacy_dispatch_are_not_oracles(
 def test_cleanup_never_deletes_a_same_path_replacement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     engine = RedTeamEngine(tmp_path, documents_dir=target)
     backup = target / "held-original.txt"
     try:
@@ -333,11 +340,13 @@ def test_cleanup_never_deletes_a_same_path_replacement(
 def test_append_only_head_journal_prevents_rollback_fork_and_handoff_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         receipt = RedTeamValidationLease.consume_for_run(
             lease, run_id="journal-run", target=target, data_root=tmp_path
@@ -404,11 +413,13 @@ def test_append_only_head_journal_prevents_rollback_fork_and_handoff_mutation(
 def test_max_campaign_query_uses_authenticated_ttl_not_legacy_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         decision = preflight_run(
             kind="red_team",
@@ -466,11 +477,13 @@ def test_max_campaign_query_uses_authenticated_ttl_not_legacy_window(
 def test_zero_step_redteam_history_writes_signed_planned_denominator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    inventory_ages = _supply_contract_inventory(monkeypatch)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3
     )
+    assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
         receipt = RedTeamValidationLease.consume_for_run(
             lease, run_id="zero-step", target=target, data_root=tmp_path

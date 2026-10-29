@@ -58,6 +58,7 @@ _ICON_COLORS = {
     "attack": "#fb923c",
     "intel": "#60a5fa",
     "spyware": "#000000",
+    "github": "#e2e8f0",
     "forensics": "#c084fc",
     "operations": "#22d3ee",
     "console": "#2dd4bf",
@@ -178,6 +179,32 @@ def _icon_pixmap(kind: str, color: str, size: int = 22) -> QPixmap:
         coat.lineTo(3.5, 19.5)
         coat.closeSubpath()
         p.drawPath(coat)
+    elif kind == "github":
+        # GitHub's familiar circular cat mark, kept vector-native like the
+        # other header controls rather than relying on an installed icon font.
+        p.setPen(Qt.NoPen)
+        p.setBrush(c)
+        p.drawEllipse(QRectF(2.0, 2.0, s - 4.0, s - 4.0))
+        cat = QPainterPath()
+        cat.moveTo(6.0, 7.9)
+        cat.lineTo(5.8, 4.9)
+        cat.lineTo(8.9, 6.1)
+        cat.cubicTo(10.2, 5.7, 11.8, 5.7, 13.1, 6.1)
+        cat.lineTo(16.2, 4.9)
+        cat.lineTo(16.0, 7.9)
+        cat.cubicTo(18.5, 11.3, 16.3, 14.4, 12.6, 14.7)
+        cat.cubicTo(13.4, 15.4, 13.8, 16.3, 13.7, 19.7)
+        cat.lineTo(8.3, 19.7)
+        cat.lineTo(8.3, 17.5)
+        cat.cubicTo(5.7, 18.0, 5.7, 15.3, 4.2, 15.2)
+        cat.cubicTo(4.0, 14.7, 5.3, 14.5, 6.0, 15.8)
+        cat.cubicTo(6.5, 16.5, 7.4, 16.5, 8.4, 16.1)
+        cat.cubicTo(8.6, 15.4, 8.9, 15.0, 9.4, 14.7)
+        cat.cubicTo(5.7, 14.4, 3.5, 11.3, 6.0, 7.9)
+        cat.closeSubpath()
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+        p.drawPath(cat)
+        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
     elif kind == "forensics":
         p.drawEllipse(QRectF(3.0, 3.0, 11.5, 11.5))
         p.drawLine(QPointF(13.0, 13.0), QPointF(19.0, 19.0))

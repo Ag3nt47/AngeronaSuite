@@ -1,13 +1,81 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.14.1
-Date: 2026-10-28
+Version: 1.14.2
+Date: 2026-10-29
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.14.1 — startup, storage and dashboard reliability)
+## LATEST (v1.14.2 — curated tools, priority scans and breach review)
 
-- Current source/app/package version is 1.14.1, a scoped maintenance update;
+- Source/application version is 1.14.2; Windows package metadata derives 1.14.2.0.
+  Component implementation versions remain independent. Broader 1.15 is still
+  incomplete. This source publication is not an accepted signed release; the
+  external signing authority remains unprovisioned. Current validation and
+  limitations are recorded in analysis/curated-tools-breach-2026-10-29.md and
+  docs/releases/v1.14.2.md. Historical observations below keep their dated scope.
+- GitHub Tools and SpywareGuard's native Zero Breach tab share one curated-tool
+  controller and managed job state. The full 968987-byte Zero Breach 0.1.10 engine
+  is pinned at 81bd556ba604685dbd1c0ecb48138c10f43cccf8 with SHA256
+  075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3.
+  Standard-library preparation adds no pip dependencies. Retain Apache-2.0
+  LICENSE/NOTICE, CC0 indicator attribution and Candiru DRL-1.1/CC-BY-SA 4.0
+  notices, including MSTIC and Felix Bilstein credits. Angerona's MIT license
+  does not replace those terms. See docs/zero-breach-toolkit.md.
+- Third-party scanning runs only in a separate owned ordinary-user source
+  process. Never import the engine into Core/GUI: upstream socket globals are
+  modified inside its interpreter. Installed/elevated execution is HELD pending
+  an accepted ordinary-user broker. The Source Library stays a data-only ZIP
+  review workflow; existing Analysis Lab acceptance holds remain unchanged.
+- Native modes are default/full/browser/targeted plus explicit local phone
+  backup/filesystem/sysdiagnose inputs, quick/preview, local indicators and
+  existing Windows records. Ordinary native jobs use offline bundled indicators.
+  Advanced terminal menus, encrypted-backup prompts, dependency/YARA setup,
+  acquisition and feed updates remain execution-HELD pending managed adapters.
+  Advanced toolkit options links the full official pinned release for review
+  and standalone setup; it must not imply those workflows already run natively.
+- Every tool job has private temporary paths, exact process/native job custody,
+  bounded managed output and validated reports. Default working/report budgets
+  are 256 MiB / 64 MiB, with at most eight report sets. Cooperating Python copies and
+  writes are bounded; native writers are monitored, not an OS filesystem quota.
+  Scan admission needs 3 GiB free plus its working allowance; preparation needs
+  64 MiB free. Optional failures do not block main startup. Revert affects only
+  the managed engine and preserves preferences, reports and modified originals.
+  Unknown or uncertain data remains explicit; cleanup cannot erase source evidence.
+- Spyware Scan schedules independently selected native SpywareGuard and curated
+  checks with saved toggles, Above normal/High priority and resource choices.
+  High is the ceiling; REALTIME is not used. Copied CPU/RAM/I/O and current
+  privilege coverage can be unavailable. The requested 10% routine-background
+  pace is cadence intent, not a CPU guarantee. Critical control, heartbeat and
+  event intake keep their cadence. Verifying privileges never grants UAC rights.
+- A latched Breached warning, critical report and borders require fresh native
+  manager-enrolled LIVE mesh evidence, registered/current producer, an exact
+  contract and explicit active attack/exploitation. Health/exposure/practice,
+  remote Observe, raw critical severity and external tool text alone do not
+  qualify. Explicit spyware_confirmed=False remains a lead. All report/JSON/AI
+  text is untrusted data, never response instructions or allowlist authority.
+  Compromised card/footer projection preserves the engine's scores and counts.
+- Investigate and Trace are read-only. Isolate/Kill require current exact
+  evidence, original action/host contract, saved policy and verified signed
+  installed Protect/Administrator authority through the existing Combat worker.
+  Source Observe Combat response mutation is HELD; Patch is disabled without a reviewed bound
+  operation. Automatic-lockdown preference does not bypass these checks.
+  Network scope includes all interfaces, profiles, IPv4/IPv6, protocols/ports and
+  inbound/outbound directions. Scope/effective-policy ambiguity stays HELD or
+  unverified; rule receipts do not attest packet drops, GPO immunity or kernel truth.
+- Lift Lockdown uses authenticated managed receipts and verified rule absence;
+  unrelated firewall policy/preferences are preserved. A bounded saved same-case
+  lift suppresses automatic relock for that case; a new case can request response.
+  Lift does not erase evidence or resolve the red review state. STOP does not
+  automatically lift persistent lockdown. Emergency local-console review must
+  match exact managed receipt/rule identities; never recommend a blanket reset.
+- README, complete online/Word/PDF manuals, security-flow diagrams and public
+  interface demonstrations cover the new controls. Public media are synthetic
+  DEMO with host response dispatch blocked. Tests/native fixtures are scoped
+  evidence, not a live host scan, packet-filter benchmark or field efficacy proof.
+
+## Historical v1.14.1 startup, storage and dashboard maintenance
+
+- The v1.14.1 source/app/package maintenance update had its own scoped evidence;
   broader 1.15 remains incomplete. Historical 1.14.0 observations below retain
   their original version and do not prove this revision. Source update discovery
   compares canonical main; installed delivery still requires accepted signed
@@ -114,7 +182,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 The following observations and former current-state statements describe their
 original v1.14.0 revisions. They remain evidence and limitations, not fresh
-validation of the current v1.14.1 build.
+validation of the current maintained build.
 
 - Continuing GUI stalls exposed a shared process-inventory native call holding
   Python's execution lock. Embedded GUI and direct headless entries now register

@@ -146,6 +146,12 @@ class Config:
     github_daily_check_enabled: bool = False  # opt-in public GitHub metadata; never auto-installs
     startup_recovery_enabled: bool = True     # user-authorized verified source recovery after failed startup
     startup_recovery_github_enabled: bool = True  # public canonical source downloads; never host uploads
+    github_tools_enabled: bool = True
+    github_tools_auto_prepare: bool = True
+    github_tools_allow_download: bool = True
+    github_tools_job_limit_mib: int = 256
+    github_tools_report_limit_mib: int = 64
+    github_tools_timeout_seconds: int = 300
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
@@ -264,6 +270,15 @@ class Config:
 
     # SpywareGuard standing response authority and separately opt-in egress.
     spyware_auto_contain: bool = True
+    spyware_scan_native_enabled: bool = True
+    spyware_scan_zero_breach_enabled: bool = True
+    spyware_scan_priority: str = "above-normal"
+    spyware_scan_cpu_percent: int = 70
+    spyware_scan_memory_mib: int = 512
+    spyware_scan_background_percent: int = 10
+    spyware_scan_verify_admin: bool = True
+    breach_auto_isolate_enabled: bool = True
+    breach_lifted_cases: list[str] = field(default_factory=list)
     spyware_network_enabled: bool = False
     spyware_memory_enabled: bool = False
     spyware_beacon_enabled: bool = False
@@ -528,6 +543,29 @@ class Config:
                     cfg.github_repo = "Ag3nt47/AngeronaSuite"
                 cfg.github_daily_check_enabled = _bool_setting(
                     data, "github_daily_check_enabled", cfg.github_daily_check_enabled)
+                for name in ("github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download"):
+                    value = data.get(name, getattr(cfg, name))
+                    setattr(cfg, name, value if type(value) is bool else False)
+                for name, low, high in (
+                    ("github_tools_job_limit_mib", 64, 1024),
+                    ("github_tools_report_limit_mib", 8, 256),
+                    ("github_tools_timeout_seconds", 30, 900),
+                    ("spyware_scan_cpu_percent", 10, 90),
+                    ("spyware_scan_memory_mib", 128, 2048),
+                    ("spyware_scan_background_percent", 5, 50),
+                ):
+                    value = data.get(name)
+                    if type(value) is int and low <= value <= high:
+                        setattr(cfg, name, value)
+                priority = data.get("spyware_scan_priority")
+                if priority in ("above-normal", "high"):
+                    cfg.spyware_scan_priority = priority
+                lifted_cases = data.get("breach_lifted_cases", [])
+                if type(lifted_cases) is list:
+                    cfg.breach_lifted_cases = list(dict.fromkeys(
+                        value for value in lifted_cases[:32]
+                        if type(value) is str and re.fullmatch(r"[0-9a-f]{32}", value)
+                    ))
                 cfg.theme = data.get("theme", cfg.theme)
                 cfg.accent = data.get("accent", cfg.accent)
                 cfg.module_states = data.get("module_states", {})
@@ -676,6 +714,12 @@ class Config:
                     "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
                 ):
                     setattr(cfg, name, _bool_setting(data, name, getattr(cfg, name)))
+                for name in (
+                    "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
+                    "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
+                ):
+                    value = data.get(name, getattr(cfg, name))
+                    setattr(cfg, name, value if type(value) is bool else False)
                 urls = data.get("spyware_research_urls", [])
                 if isinstance(urls, list):
                     cfg.spyware_research_urls = list(dict.fromkeys(
@@ -975,12 +1019,40 @@ class Config:
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f"{name} must be between {low} and {high} MiB")
 
+    def validate_curated_tool_settings(self) -> None:
+        """Reject malformed resource/consent choices before replacing preferences."""
+        for name in (
+            "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+            "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
+            "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
+        ):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be a boolean")
+        for name, low, high in (
+            ("github_tools_job_limit_mib", 64, 1024),
+            ("github_tools_report_limit_mib", 8, 256),
+            ("github_tools_timeout_seconds", 30, 900),
+            ("spyware_scan_cpu_percent", 10, 90),
+            ("spyware_scan_memory_mib", 128, 2048),
+            ("spyware_scan_background_percent", 5, 50),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError(f"{name} must be an integer from {low} to {high}")
+        if self.spyware_scan_priority not in ("above-normal", "high"):
+            raise ValueError("spyware_scan_priority must be above-normal or high")
+        if (type(self.breach_lifted_cases) is not list or len(self.breach_lifted_cases) > 32
+                or any(type(value) is not str or not re.fullmatch(r"[0-9a-f]{32}", value)
+                       for value in self.breach_lifted_cases)):
+            raise ValueError("breach_lifted_cases must contain at most 32 exact case identities")
+
     def save(self) -> None:
         for name in ("startup_recovery_enabled", "startup_recovery_github_enabled"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
         self.validate_shadow_storage_settings()
         self.validate_integration_settings()
+        self.validate_curated_tool_settings()
         from angerona.core.alert_retention import RetentionPolicy
         RetentionPolicy(self.alert_retention_enabled, self.alert_retention_days,
                         self.alert_retention_max_mib)
@@ -1054,6 +1126,14 @@ class Config:
                     "ioc_feed_url": self.ioc_feed_url,
                     "ioc_feed_sha256": self.ioc_feed_sha256,
                     "spyware_auto_contain": self.spyware_auto_contain,
+                    **{name: getattr(self, name) for name in (
+                        "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+                        "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_timeout_seconds",
+                        "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled", "spyware_scan_priority",
+                        "spyware_scan_cpu_percent", "spyware_scan_memory_mib", "spyware_scan_background_percent",
+                        "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
+                        "breach_lifted_cases",
+                    )},
                     "spyware_network_enabled": self.spyware_network_enabled,
                     "spyware_memory_enabled": self.spyware_memory_enabled,
                     "spyware_beacon_enabled": self.spyware_beacon_enabled,

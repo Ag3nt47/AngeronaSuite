@@ -24,6 +24,7 @@ from angerona.core.assurance_receipts import (
     PRODUCER_CONTRACTS,
     AssuranceReceiptBroker,
 )
+from angerona.core.response_contract import authorize_response
 from angerona.modules import adversary_combat as combat_module
 from angerona.modules import api_patch_detector as api_patch_module
 from angerona.modules import etw_listener as etw_module
@@ -40,6 +41,16 @@ from angerona.modules.file_integrity import (
 
 _COMBAT_TEST_ANCHORS: dict[str, dict[str, str]] = {}
 _ETW_TEST_ANCHORS: dict[str, dict[str, str]] = {}
+
+
+@pytest.fixture
+def inert_installed_authority(monkeypatch):
+    """Admit only the explicitly requested inert host-effect fixture."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(
+        breach_state, "protect_authority", lambda: (True, "Inert installed native authority")
+    )
 
 
 def _new_combat(tmp_path: Path) -> AdversaryCombat:
@@ -264,10 +275,14 @@ def _inert_termination_lease(process):
     lease = SimpleNamespace(
         identity=SimpleNamespace(pid=4242, birth_ticks=1, image=str(process._executable)),
         validate=lambda **_kwargs: None, terminal_proof=lambda: {},
-        close=lambda: None, dispatch_started=False,
+        close=lambda: None, dispatch_started=False, dispatch_guard_ran=False,
     )
 
-    def terminate():
+    def terminate(*, before_dispatch=None):
+        lease.validate(alive=True)
+        if before_dispatch is not None:
+            before_dispatch()
+            lease.dispatch_guard_ran = True
         lease.dispatch_started = True
         process.kill()
 
@@ -282,7 +297,7 @@ def _inert_termination_lease(process):
 
 
 def test_uncertain_kill_postcondition_durably_blocks_mutation_across_restart(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, inert_installed_authority
 ) -> None:
     """Exact inert replay of independent A01's fake-completed kill."""
     process = _UncertainKillProcess(tmp_path / "inert-uncertain.exe")
@@ -292,20 +307,23 @@ def test_uncertain_kill_postcondition_durably_blocks_mutation_across_restart(
         SimpleNamespace(Process=lambda _pid: process, STATUS_STOPPED="stopped"),
     )
     module = _new_combat(tmp_path)
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action:
-                        _inert_termination_lease(process))
+    lease = _inert_termination_lease(process)
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
     policy = dataclasses.replace(module.policy(), block_network=False)
 
     result = module._act_on_process(
         4242,
         policy,
-        Event("inert-test", "uncertain termination", Severity.HIGH),
+        Event("inert-test", "uncertain termination", Severity.HIGH,
+              details={"pid": 4242, "process_create_time": 50.0,
+                       **authorize_response(["terminate_process"], pid=4242, process_create_time=50.0)}),
         "combat-aaaaaaaaaaaa",
         allowed_actions=frozenset({"terminate_process"}),
     )
 
     assert result == []
+    assert lease.dispatch_guard_ran is True
     assert process.killed is True
     assert module._mutation_blocked is True
     assert module.response_ready() is False
@@ -336,7 +354,7 @@ class _BlockedUncertainKillProcess(_UncertainKillProcess):
 
 
 def test_inflight_intent_cannot_be_disposed_before_later_orphan(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, inert_installed_authority
 ) -> None:
     """Exact inert replay of second re-audit's blocked-kill disposition race."""
     process = _BlockedUncertainKillProcess(tmp_path / "blocked-inert.exe")
@@ -346,8 +364,8 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
         SimpleNamespace(Process=lambda _pid: process, STATUS_STOPPED="stopped"),
     )
     module = _new_combat(tmp_path)
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action:
-                        _inert_termination_lease(process))
+    lease = _inert_termination_lease(process)
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
     policy = dataclasses.replace(module.policy(), block_network=False)
     captured: dict[str, CombatAction] = {}
@@ -367,7 +385,9 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
             worker_result["actions"] = module._act_on_process(
                 4242,
                 policy,
-                Event("inert-test", "race", Severity.HIGH),
+                Event("inert-test", "race", Severity.HIGH,
+                      details={"pid": 4242, "process_create_time": 50.0,
+                               **authorize_response(["terminate_process"], pid=4242, process_create_time=50.0)}),
                 "combat-race",
                 allowed_actions=frozenset({"terminate_process"}),
             )
@@ -449,6 +469,7 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
     assert not disposer.is_alive()
     assert worker_done.is_set()
     assert worker_result == {"actions": []}
+    assert lease.dispatch_guard_ran is True
     assert disposition_done.is_set()
     assert "worker_exception" not in disposition_result
     assert process.killed is True

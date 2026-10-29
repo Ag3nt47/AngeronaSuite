@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
+
+- Add a GitHub Tools workspace and a shared SpywareGuard integration for the
+  reviewed, pinned Zero-Breach Toolkit, with isolated jobs, bounded retention,
+  settings, verification, revert and visible upstream credits.
+- Coordinate native and selected toolkit scans through SpywareScan priority
+  leases, copied resource observations and reduced routine background pacing.
+  Preserve essential event intake, heartbeats, STOP and existing user settings.
+- Add typed breach review, red/orange alert styling, detailed after-action
+  reports and governed response controls. Source Observe, unavailable authority
+  and unverified effective firewall policy keep host mutation held.
+- Preserve review position in heartbeat details, improve bounded startup logs
+  and isolate compiler scratch from critical startup output admission.
+- Drain optional scan/review workers before closing shared stores on shutdown;
+  preserve data and custody when native retirement cannot be proven.
+- Refresh the manual, diagrams, browser-readable exports and synthetic demo
+  media. Keep source version metadata consistent at 1.14.2; signed installed
+  release acceptance remains separate.
+
+See [version notes](docs/releases/v1.14.2.md) and
+[scoped review evidence](analysis/curated-tools-breach-2026-10-29.md).
+
 ## 1.14.1 — startup, storage and dashboard reliability (2026-10-28)
 
 - Bound Shadow Shield recovery data with aggregate capacity/free-space admission,

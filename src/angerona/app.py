@@ -3,6 +3,7 @@ together. Keep this thin — real logic lives in core/ and modules/."""
 from __future__ import annotations
 
 import threading
+import time
 
 from PySide6.QtWidgets import QApplication
 
@@ -214,6 +215,14 @@ class AngeronaApp:
             high_water_provider=high_water_provider,
         )
         self.manager.live_debug_service = self.live_debug_service
+        self._breach_state_controller = None
+        try:
+            from angerona.core.breach_state import ensure_breach_controller
+            self._breach_state_controller = ensure_breach_controller(self.manager)
+        except Exception as exc:
+            self._record_startup_degradation(
+                "Breach review", "verified breach review state is unavailable", exc,
+            )
         # SentinelLens is an additive, local-only read model. Its EventBus
         # subscriber performs only a bounded put_nowait; deterministic parsing,
         # graph construction, and anomaly scoring run on the owned worker.
@@ -584,6 +593,22 @@ class AngeronaApp:
             name="DashboardReadyNotifier",
             daemon=True,
         ).start()
+        # Optional scanner preparation follows the painted dashboard and its
+        # readiness publication. The controller does all storage/network work
+        # on its own worker and never holds the startup handshake.
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._prepare_curated_tools_after_paint)
+
+    def _prepare_curated_tools_after_paint(self) -> None:
+        if self._startup_cancelled() or getattr(self.config, "github_tools_enabled", True) is not True:
+            return
+        try:
+            from angerona.gui.curated_tools import get_curated_tools_controller
+            get_curated_tools_controller(self.manager).auto_prepare()
+        except Exception as exc:
+            self._record_startup_degradation(
+                "Curated scanners", "optional scanner preparation is unavailable", exc,
+            )
 
     def _publish_dashboard_ready(self) -> None:
         """Keep socket waits and legacy filesystem handshakes off the UI thread."""
@@ -1223,6 +1248,20 @@ class AngeronaApp:
             requested = threading.Event()
             self._shutdown_requested = requested
         requested.set()
+        tools_controller = getattr(getattr(self, "manager", None), "_curated_tools_controller", None)
+        if tools_controller is not None:
+            try:
+                tools_controller.shutdown()
+            except Exception:
+                pass  # Remaining shutdown fences must still run.
+        breach_controller = getattr(self, "_breach_state_controller", None)
+        if breach_controller is not None:
+            stopper = getattr(breach_controller, "request_stop", None)
+            if callable(stopper):
+                try:
+                    stopper()
+                except Exception:
+                    pass
         begin_ollama_shutdown()
         resilience = getattr(self, "_resilience", None)
         if resilience is not None:
@@ -1274,10 +1313,35 @@ class AngeronaApp:
         # A manager created just before cancellation may only become visible
         # after the startup lock drains; finish that late ownership as well.
         self._shutdown_critical_owned()
+        self._optional_owned_drained = self._drain_optional_owned()
         metrics_publisher = getattr(self, "runtime_metrics_publisher", None)
         if metrics_publisher is not None:
             metrics_publisher.stop()
         self._shutdown_services_and_stores()
+
+    def _drain_optional_owned(self, timeout: float = 5.0) -> bool:
+        """Retire scanner/review workers before their evidence stores close."""
+        deadline = time.monotonic() + max(0.0, min(float(timeout), 10.0))
+        drained = True
+        tools_controller = getattr(getattr(self, "manager", None), "_curated_tools_controller", None)
+        if tools_controller is not None:
+            try:
+                tools_controller.shutdown()
+                drained = tools_controller.wait_for_shutdown(
+                    max(0.0, deadline - time.monotonic())
+                ) is True
+            except Exception:
+                drained = False
+        breach_controller = getattr(self, "_breach_state_controller", None)
+        if breach_controller is not None:
+            try:
+                breach_drained = breach_controller.close(
+                    timeout=max(0.0, deadline - time.monotonic())
+                ) is True
+            except Exception:
+                breach_drained = False
+            drained = breach_drained and drained
+        return drained
 
     def _shutdown_critical_owned(self) -> None:
         inventory = getattr(self, "_process_snapshot_lifecycle", None)
@@ -1411,10 +1475,11 @@ class AngeronaApp:
         # Never close a SQLite connection underneath a still-running writer.
         # If a bounded drain times out, process teardown will reclaim it; this
         # is safer than creating a worker/use-after-close race during shutdown.
-        if recorder_drained:
+        optional_drained = getattr(self, "_optional_owned_drained", True)
+        if recorder_drained and optional_drained:
             self.storage.close()
         try:
-            if self.evidence_store is not None and evidence_drained:
+            if self.evidence_store is not None and evidence_drained and optional_drained:
                 self.evidence_store.close()
         except Exception:
             pass

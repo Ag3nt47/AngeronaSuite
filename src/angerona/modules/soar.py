@@ -422,7 +422,7 @@ class SOARModule(BaseModule):
         if held:
             message = (
                 f"Playbook[automatic]: Adversary Combat standing rules cover "
-                f"{action_names}; response HELD — {state}: {reason}. "
+                f"{action_names}; host response HELD — {state}: {reason}. "
             )
         else:
             message = (

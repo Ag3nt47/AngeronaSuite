@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import threading
 
 import pytest
+from test_breach_lockdown import installed_protect_for_inert_combat
 
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.core.response_contract import authorize_response
@@ -28,9 +29,10 @@ def fixture(monkeypatch, tmp_path, *, mode="maximum", process_action="terminate"
     event = bus.recent(1)[0]
     assert bus.verify(event) and module._response_actions(event) is not None
     calls = []
-    def process(pid, selected_policy, source, combat_id, *, allowed_actions):
+    def process(pid, selected_policy, source, combat_id, *, allowed_actions, expected_policy):
         assert pid == 45001 and source is event and selected_policy is policy
         assert allowed_actions == frozenset(actions)
+        assert expected_policy is policy
         calls.append("process")
         return []
     def remote(ip, source, combat_id):

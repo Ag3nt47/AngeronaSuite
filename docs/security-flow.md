@@ -115,6 +115,26 @@ model is needed for deterministic detection or governed response. See
 [AI consultation privacy](ai-consult-privacy.md) and
 [key and communication integrity](key-and-communication-integrity.md).
 
+### Curated tools and priority scans
+
+![Pinned toolkit preparation, separate execution and advisory report review](../assets/security-flow-tools.png)
+
+The **GitHub Tools** hub and **SpywareGuard > Zero Breach** share one controller
+and the pinned Zero Breach Toolkit v0.1.10 installation. The complete engine and
+required notices ship with Angerona; optional restoration uses the fixed reviewed
+release. Third-party Python runs in a separate owned ordinary-user process,
+never by importing its socket-changing globals into the core or GUI. Current
+installed/elevated execution is held pending an accepted ordinary-user broker.
+The existing Source Library remains a data-only repository review path.
+
+**Spyware Scan** schedules the selected native and curated checks with visible
+priority, resource and privilege-coverage controls. High is the supported ceiling;
+REALTIME is not used. The requested 10% routine-background pace is a cadence
+choice, not a CPU guarantee. Critical control, heartbeat and event intake retain
+their cadence. Missing inputs, dependencies, privileges or measurements remain
+coverage gaps. Full upstream advanced execution remains held until its managed
+adapters are accepted. See the [toolkit guide](zero-breach-toolkit.md).
+
 ## 5 Response authority and execution
 
 ![Authority checks before action and receipt verification](../assets/security-flow-response.png)
@@ -132,6 +152,65 @@ cannot replace outcome evidence. The suite must not reset a key, delete an alert
 replace a baseline or accept an unknown rollback solely to pass a self-check.
 Source Observe and a diagnostic response-service fixture cannot claim a fully
 deployed privileged service or process-bound egress adapter.
+
+### Verified breach review and lockdown
+
+![Native breach qualification, governed containment and managed rule removal](../assets/security-flow-breach.png)
+
+The red/orange **Breached** state requires fresh manager-enrolled native LIVE
+evidence, a registered current producer, an exact response contract and explicit
+active-attack or active-exploitation evidence. Health failures, exposure, practice
+markers, remote Observe events, raw critical severity and third-party findings
+alone cannot create it. An explicit `spyware_confirmed=False` remains uncertainty.
+A bounded case identity links the latched brand warning, critical report, border
+state and after-action review. The threat card and footer project **Compromised**
+for the active case while preserving the engine's underlying scores and counts.
+Displaying a breach grants no response authority.
+
+| Next step | Behavior and boundary |
+| --- | --- |
+| Investigate | Opens the case and retained report for read-only review. |
+| Trace | Follows the case's process, network and evidence context without mutation. |
+| Isolate | Requests host network lockdown only with current evidence, its original host-scope contract, saved policy and verified signed installed Protect/Administrator authority. |
+| Kill | Requires an exact current process target, its permitted action and the same response authority; confirmation cannot create a missing contract. |
+| Patch | Disabled when no reviewed patch operation is bound to this evidence; report text cannot become a command. |
+| Lift Lockdown | Removes only verified Angerona-managed lockdown rules through authenticated Undo and absence checks; unrelated policy and preferences remain. |
+
+The automatic-lockdown preference defaults on, but mutation still goes through
+the existing Adversary Combat worker and its full policy, deployment and journal
+checks. Current source Observe controls show **HELD** with their reason. There is
+no accepted signed release implied by these implemented source controls.
+
+The requested network scope covers Ethernet, Wi-Fi and other interfaces;
+IPv4/IPv6, inbound/outbound traffic, all protocols and ports. The adapter must
+verify rule scope, enabled profiles and effective-policy prerequisites before it
+can report containment. Unknown enterprise policy or ambiguous readback remains
+held or unverified. Rule configuration and an authenticated receipt do not prove
+packet drops, kernel integrity or resistance to a hostile administrator.
+
+On Windows, the fixed owned query reads Domain, Private and Public profiles from
+`Get-NetFirewallProfile -PolicyStore ActiveStore` and checks
+`INetFwPolicy2.LocalPolicyModifyState`. Every required enabled-profile,
+local-rule-merge and inbound-rule setting must be explicit, with no excluded
+interfaces. Unknown or NotConfigured results remain held; the adapter preserves
+the existing policy. Microsoft documents the
+[ActiveStore profile query](https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps)
+and the read-only [local-policy modification state](https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-inetfwpolicy2-get_localpolicymodifystate).
+
+Lift requires the exact managed receipt and verified removal. A saved bounded
+case decision prevents automatic relocking of that same lifted case; a new case
+can request containment again. Lifting restrictions does not erase the breach
+evidence or resolve the red review state. **Review resolved** remains separate.
+STOP does not automatically remove persistent lockdown rules.
+
+If isolation removes remote access, use the local console or an approved
+out-of-band administration route. Prefer the report's **Lift Lockdown** control.
+If Angerona cannot open, review Windows Defender Firewall with Advanced Security
+locally and match the exact rule names to the retained authenticated action
+receipt before changing only those rules. Preserve the case and receipt; a
+matching name prefix alone is insufficient. Do not reset the whole firewall,
+disable protection or remove unrelated rules as a recovery shortcut. Missing or
+ambiguous receipts require reviewed OS administration rather than a guessed Undo.
 
 ### STOP and deliberate shutdown
 
@@ -243,6 +322,7 @@ separately configured capability, not a blanket parity claim.
 | Witness and fleet | Separate enrolled remote authority, endpoint authentication and typed schema. Disabled/unavailable deployment stays a gap. |
 | Live Debug and engine IPC | Authenticated bounded local records and typed controls. Read-only review cannot authorize mutation. Shared user context remains part of the threat model. |
 | Third-party Python modules | Explicitly loaded code executes in a process with that process's authority. Contract metadata is not sandboxing; review extensions and their dependencies. |
+| Curated Zero Breach scanner | Exact bundled or pinned-release bytes and retained licenses; separate owned ordinary-user job, private temporary data and validated reports. No automatic feed refresh; third-party results remain leads. Source Library imports and advanced acquisition/dependencies retain separate holds. |
 
 The GitHub recovery implementation follows the official
 [blob](https://docs.github.com/en/rest/git/blobs),
@@ -281,6 +361,9 @@ own receipts.
 | Practice marker confused with real evidence | defensive exercise producer/lease and response contracts | `tests/test_practice_provenance.py`, `tests/test_adversary_response_producers.py` | Exact live issuer/owned target, synthetic labels, no text-only authority. |
 | Retention hides loss or discards evidence | `core/storage.py`, `core/alert_retention.py`, Live Debug | `tests/test_alert_retention.py`, `tests/test_cleanup_preservation.py`, `tests/test_live_debug_app_startup.py` | Distinct protected/disposable classes, pinned originals, bounded loss-aware review. |
 | Supply-chain or public asset drift | release/update code and guarded publisher | `tools/validate_documentation_drift.py`, `tools/verify_published_readme_assets.py` | Reviewed locks, signing/deployment gates, exact public main and byte-identical tracked images. |
+| Curated engine tamper, orphan job or unsafe report cleanup | `core/curated_tools.py`, `core/curated_tool_worker.py`, `gui/curated_tools.py` | `tests/test_curated_tools.py`, `tests/test_zero_breach_bundle.py`, `tests/test_curated_app_lifecycle.py` | Fixed artifact identities, separate process/job custody, validated bounded reports, private job roots and preservation of unknown or modified originals. |
+| Priority scan starves essential work or overstates privileges | SpywareGuard, `core/background_pacing.py`, curated scan controls | `tests/test_spyware_priority_scan.py`, `tests/test_curated_tools_ui.py` | Explicit scanner toggles, supported priority ceiling, copied resource state and coverage; critical controls/intake remain independent of routine pacing. |
+| Untrusted lead becomes breach or unjustified lockdown | `core/breach_state.py`, Adversary Combat, `gui/breach_display.py` | `tests/test_breach_state.py`, `tests/test_breach_lockdown.py`, `tests/test_breach_display.py` | Fresh native current-generation evidence, original target/action contract, signed installed authority, effective-policy/scope checks, durable receipts and managed-only verified Lift. |
 
 Code paths abbreviated to `core/`, `startup.py` or telemetry above are under
 `src/angerona`. A patch should preserve authenticated originals, reproduce the

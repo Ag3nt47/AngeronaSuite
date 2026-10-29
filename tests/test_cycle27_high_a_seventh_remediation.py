@@ -16,6 +16,16 @@ from angerona.modules.adversary_combat import (
 from angerona.modules.etw_listener import EtwListenerModule
 
 
+@pytest.fixture
+def inert_installed_authority(monkeypatch):
+    """Admit only the explicitly requested inert host-effect fixture."""
+    from angerona.core import breach_state
+
+    monkeypatch.setattr(
+        breach_state, "protect_authority", lambda: (True, "Inert installed native authority")
+    )
+
+
 def _combat(root: Path, anchors: dict[str, str]) -> AdversaryCombat:
     return AdversaryCombat(root, rollback_anchor=anchors)
 
@@ -192,7 +202,7 @@ def test_read_append_and_final_read_swaps_cannot_return_false_success(
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows host mutation custody contract")
 def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
@@ -222,10 +232,14 @@ def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
         identity=SimpleNamespace(pid=4242, birth_ticks=1, image=r"C:\fixture\inert.exe"),
         validate=lambda **_kwargs: None, wait_terminated=process.wait,
         terminal_proof=lambda: {"inert_journal_custody": True}, close=lambda: None,
-        dispatch_started=False,
+        dispatch_started=False, dispatch_guard_ran=False,
     )
 
-    def inert_terminate():
+    def inert_terminate(*, before_dispatch=None):
+        lease.validate(alive=True)
+        if before_dispatch is not None:
+            before_dispatch()
+            lease.dispatch_guard_ran = True
         lease.dispatch_started = True
         process.kill()
 
@@ -233,6 +247,7 @@ def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
     monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
     committed = module._terminate_process_transaction(process, _action())
 
+    assert lease.dispatch_guard_ran is True
     assert process.delete_was_blocked is True
     assert committed is not None
     records, _legacy = module._read_journal(strict=True)

@@ -139,6 +139,7 @@ class _NewsSpinner(QWidget):
 
 class SpywareGuardPage(QWidget):
     settings_requested = Signal(str)
+    github_tools_requested = Signal(bool)
 
     def __init__(self, manager, config, bus, parent=None) -> None:
         super().__init__(parent)
@@ -173,11 +174,14 @@ class SpywareGuardPage(QWidget):
         title = _label("SPYWAREGUARD · Surveillanceware & Zero-Day Defense")
         title.setObjectName("SectionTitle")
         header.addWidget(title, 1)
-        self.scan_button = QPushButton("Scan now")
+        self.scan_button = QPushButton("Spyware Scan")
         self.scan_button.clicked.connect(self._request_scan)
         header.addWidget(self.scan_button)
         root.addLayout(header)
         self._build_news_strip(root)
+        from angerona.gui.curated_tools import SpywareScanControls
+        self.priority_scan = SpywareScanControls(manager, self)
+        root.addWidget(self.priority_scan)
         self.status = _label("Open this window to view local evidence and module coverage.")
         root.addWidget(self.status)
         self.tabs = QTabWidget()
@@ -188,6 +192,10 @@ class SpywareGuardPage(QWidget):
         self._build_research()
         self._build_sandbox()
         self._build_guide()
+        from angerona.gui.curated_tools import CuratedScannerWidget
+        self.zero_breach = CuratedScannerWidget(manager, self)
+        self.zero_breach.analysis_requested.connect(lambda: self.github_tools_requested.emit(True))
+        self.tabs.addTab(_scroll(self.zero_breach), "Zero-Breach")
         self._update_availability()
         self._update_news({})
 
@@ -798,8 +806,8 @@ class SpywareGuardPage(QWidget):
             return False
 
     def _request_scan(self) -> None:
-        result = self._command("request_scan")
-        self.status.setText("Local spyware scan queued." if result else "Scan was not queued; check module health or pending work.")
+        result = self.priority_scan.start()
+        self.status.setText("Selected spyware checks scheduled." if result else "Scan was not scheduled; check selected scanners or pending work.")
 
     def _mark_settings_dirty(self, *_args) -> None:
         self._settings_dirty = True

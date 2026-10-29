@@ -8,6 +8,7 @@ import threading
 from types import SimpleNamespace
 
 import pytest
+from test_breach_lockdown import installed_protect_for_inert_combat
 
 from angerona.core.windows_process_lease import (
     ProcessLeaseError, ProcessObjectIdentity, WindowsProcessLease, _Native, _RIGHTS,
@@ -84,6 +85,34 @@ def test_one_least_rights_non_inheritable_handle_binds_every_native_call():
     assert all(call[1] == 101 for call in native.calls[1:])
     with pytest.raises(ProcessLeaseError, match="closed"):
         lease.validate(alive=False)
+
+
+@pytest.mark.parametrize("refusal", ["exception", "false", "true", "invalid"])
+def test_dispatch_callback_refusal_never_crosses_possible_effect_boundary(refusal):
+    native = FakeNative()
+    with acquire(native) as lease:
+        def guard():
+            if refusal == "exception":
+                raise RuntimeError("inert authority refusal")
+            return refusal == "true"
+        callback = "invalid" if refusal == "invalid" else guard
+        with pytest.raises((RuntimeError, ProcessLeaseError)):
+            lease.terminate(before_dispatch=callback)
+        assert not lease.dispatch_started
+        assert not any(call[0] == "terminate" for call in native.calls)
+
+
+def test_dispatch_callback_follows_last_native_read_and_deadline_is_rechecked():
+    native = FakeNative()
+    clock = [0.0]
+    with acquire(native, _monotonic=lambda: clock[0]) as lease:
+        def guard():
+            assert native.calls[-1][0] == "wait"
+            clock[0] = 61.0
+        with pytest.raises(ProcessLeaseError, match="expired"):
+            lease.terminate(before_dispatch=guard)
+        assert not lease.dispatch_started
+        assert not any(call[0] == "terminate" for call in native.calls)
 
 
 @pytest.mark.parametrize("pid,birth,image", [
@@ -234,6 +263,25 @@ def transaction(tmp_path, monkeypatch):
 
 def records(module):
     return module._read_journal(strict=True)[0]
+
+
+def test_stop_during_final_internal_native_read_is_held_before_dispatch(transaction, monkeypatch):
+    module, native, _clock, process = transaction
+    identity = native.identity
+    reads = []
+    def final_read(handle):
+        reads.append(handle)
+        result = identity(handle)
+        # Acquisition reads twice, the outer pre-dispatch check once, then
+        # WindowsProcessLease.terminate performs its own last native read.
+        if len(reads) == 4:
+            module._stop.set()
+        return result
+    monkeypatch.setattr(native, "identity", final_read)
+    assert module._terminate_process_transaction(process, action()) is None
+    assert len(reads) == 4
+    assert not native.exited and not any(call[0] == "terminate" for call in native.calls)
+    assert not any(record["record_type"] in {"commit", "orphan"} for record in records(module))
 
 
 def test_transaction_handle_survives_intent_and_terminal_and_pid_lookup_change(

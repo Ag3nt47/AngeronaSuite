@@ -6,6 +6,8 @@ from dataclasses import asdict
 from types import SimpleNamespace
 
 import pytest
+from test_breach_lockdown import installed_protect_for_inert_combat
+from angerona.core.response_contract import authorize_response
 
 from angerona.core.eventbus import Event, Severity
 from angerona.modules import adversary_combat as combat
@@ -56,9 +58,14 @@ def test_uncertain_firewall_effects_close_only_after_verified_rollback(
 
     monkeypatch.setattr(module, "_run_firewall", firewall)
     monkeypatch.setattr(module, "_firewall_rule_exists", lambda name: name in rules)
+    monkeypatch.setattr(module, "_run_lockdown_firewall", firewall)
+    monkeypatch.setattr(module, "_lockdown_rule_present", lambda name: name in rules)
+    monkeypatch.setattr(module, "_lockdown_profiles_enabled", lambda **_: True)
+    monkeypatch.setattr(module, "_lockdown_effective_policy", lambda **_: True)
     monkeypatch.setattr(combat, "psutil", SimpleNamespace(Process=lambda _pid: SimpleNamespace(
         exe=lambda: "C:/fixture/inert.exe", create_time=lambda: 22.0)))
-    event = Event("Inert Detector", "fixture", Severity.HIGH)
+    event = Event("Inert Detector", "fixture", Severity.HIGH,
+                  details={"active_attack": True, **authorize_response(["isolate_host"], local_host=True)})
     if kind == "block_remote_ip":
         result = module._block_remote_ip("203.0.113.8", event, "combat-aaaaaaaaaaaa")
     elif kind == "isolate_host":
@@ -143,7 +150,9 @@ def test_firewall_rollback_requires_proven_absence(monkeypatch, tmp_path, state)
 
 @pytest.mark.parametrize("returncode, output, expected", [
     (0, "Rule Name: AngeronaCombat-test", True),
+    (0, "Rule Name: AngeronaCombat-test\nDescription: No rules match the specified criteria.", True),
     (1, "No rules match the specified criteria.", False),
+    (2, "No rules match the specified criteria.", None),
     (1, "The service is not running.", None),
     (0, "", None),
 ])
@@ -153,10 +162,11 @@ def test_firewall_query_distinguishes_absence_from_unavailable(
     from angerona.core import win
 
     # Replace only this module's os binding; do not change pathlib's platform.
-    monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(combat, "os", SimpleNamespace(name="nt", path=__import__("os").path))
     monkeypatch.setattr(win, "run_hidden", lambda *_args, **_kwargs: SimpleNamespace(
         returncode=returncode, stdout=output, stderr=""))
     module = combat.AdversaryCombat(tmp_path, rollback_anchor={})
+    monkeypatch.setattr(module, "_lockdown_netsh", lambda: "C:/Windows/System32/netsh.exe")
     assert module._firewall_rule_exists("AngeronaCombat-test") is expected
 
 

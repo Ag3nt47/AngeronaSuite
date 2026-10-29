@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from test_breach_lockdown import installed_protect_for_inert_combat
 import yara_x
 
 from angerona.core.eventbus import BusAuthority, EventBus

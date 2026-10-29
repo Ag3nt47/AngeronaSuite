@@ -260,6 +260,7 @@ def _dashboard_refresh_plan(
 
 
 class MainWindow(QMainWindow):
+    _breach_projection = Signal(object)
     # Emitted from background threads; Qt signals are the safe way to hand
     # control back to the GUI thread to touch widgets.
     _aar_ready = Signal(object)
@@ -338,6 +339,9 @@ class MainWindow(QMainWindow):
         self._spyware_guard_dialog = None
         self._spyware_guard_ui_closed = False
         QApplication.instance().aboutToQuit.connect(self._close_spyware_guard_window)
+        self._github_tools_dialog = None
+        self._github_tools_ui_closed = False
+        QApplication.instance().aboutToQuit.connect(self._close_github_tools_window)
 
         self.setWindowTitle("Angerona — Security Suite")
         # Custom shield icon (assets/icons/angerona.ico) — falls back to the
@@ -479,7 +483,7 @@ class MainWindow(QMainWindow):
         self.posture_lbl.setAlignment(Qt.AlignCenter)
         self.posture_lbl.setCursor(Qt.PointingHandCursor)
         self.posture_lbl.setToolTip("Composite security posture (0–100). Click for detail.")
-        self.posture_lbl.mousePressEvent = lambda ev: self._show_posture_detail()
+        self.posture_lbl.mousePressEvent = lambda ev: self._on_posture_click()
         brand_box = QWidget()
         _bl = QVBoxLayout(brand_box)
         _bl.setContentsMargins(0, 0, 0, 0)
@@ -553,6 +557,15 @@ class MainWindow(QMainWindow):
         self._spyware_guard_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 self._spyware_guard_btn, self._open_spyware_guard, "#94a3b8"))
+        self._github_tools_btn = HeaderActionButton(
+            "GITHUB TOOLS", "github", "GitHub Tools",
+            "Opens integrated scanners, verified setup, source review, analysis, "
+            "sandbox controls, settings, revert and upstream credits.",
+        )
+        self._github_tools_btn.setObjectName("GitHubToolsShortcut")
+        self._github_tools_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self._github_tools_btn, self._open_github_tools, "#e2e8f0"))
         self._threat_intel_dlg: ThreatIntelDashboard | None = None
         self._intl_alert_pulse = False   # toggled each tick when alert is pending
         forensics_btn = HeaderActionButton(
@@ -632,6 +645,7 @@ class MainWindow(QMainWindow):
         rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
         rl.addWidget(self.threat_intel_btn)
         rl.addWidget(self._spyware_guard_btn)
+        rl.addWidget(self._github_tools_btn)
         rl.addWidget(forensics_btn)
         rl.addWidget(operations_btn)
         rl.addWidget(console_btn); rl.addWidget(setup_btn); rl.addWidget(self._help_btn)
@@ -655,6 +669,7 @@ class MainWindow(QMainWindow):
             attack_heatmap_btn,
             self.threat_intel_btn,
             self._spyware_guard_btn,
+            self._github_tools_btn,
             forensics_btn,
             operations_btn,
             console_btn,
@@ -866,6 +881,10 @@ class MainWindow(QMainWindow):
         viewport.setWidgetResizable(True)
         viewport.setWidget(central)
         self.setCentralWidget(viewport)
+        from angerona.gui.breach_display import BreachDisplayBridge
+        self._breach_view = BreachDisplayBridge(self)
+        self._breach_projection.connect(self._breach_view.apply)
+        QApplication.instance().aboutToQuit.connect(self._breach_view.shutdown)
         from angerona.gui.dashboard_footer import DashboardFooter
         self._dashboard_footer = DashboardFooter()
         self._dashboard_footer.details_requested.connect(self._open_system_pulse_details)
@@ -2065,6 +2084,8 @@ class MainWindow(QMainWindow):
             layout.setContentsMargins(6, 6, 6, 6)
             page = SpywareGuardPage(self.manager, self.config, self.bus, dialog)
             page.settings_requested.connect(self._show_settings)
+            page.github_tools_requested.connect(
+                lambda analysis: self._open_github_tools(open_analysis=analysis))
             layout.addWidget(page)
             self.spyware_guard = self.spyware_guard_page = page
             self._spyware_guard_dialog = dialog
@@ -2092,6 +2113,36 @@ class MainWindow(QMainWindow):
         # Shutdown cannot wait for the cosmetic reverse-close animation.
         setattr(dialog, "_angerona_close_bypass", True)
         dialog.close()
+
+    def _open_github_tools(self, *, open_analysis=False):
+        """Open a reusable tool hub; creating its view starts no scan."""
+        if (getattr(self, "_github_tools_ui_closed", False)
+                or getattr(self.manager, "ugcap_paused", False)
+                or getattr(self, "_ugcap_workspace_locked", False)):
+            return None
+        dialog = self._github_tools_dialog
+        if dialog is None:
+            from angerona.gui.curated_tools import GitHubToolsDialog
+            dialog = GitHubToolsDialog(self.manager, self)
+            dialog.setWindowIcon(self._github_tools_btn.icon())
+            dialog.setStyleSheet(self._qss())
+            self._github_tools_dialog = dialog
+        if open_analysis:
+            dialog.open_analysis()
+        if dialog.isMinimized():
+            dialog.showNormal()
+        else:
+            dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _close_github_tools_window(self) -> None:
+        self._github_tools_ui_closed = True
+        dialog = getattr(self, "_github_tools_dialog", None)
+        if dialog is not None:
+            setattr(dialog, "_angerona_close_bypass", True)
+            dialog.retire_view()
 
     # ── Chill Mode (network-first, all-day low-impact monitoring) ────────────
     # Compatibility alias retained for the startup loader and older tests.
@@ -4755,6 +4806,7 @@ class MainWindow(QMainWindow):
     def _apply_posture_snapshot(self, snapshot) -> None:
         p, tooltip = snapshot
         self._last_posture = p
+        self._last_posture_tooltip = tooltip
         footer = getattr(self, "_dashboard_footer", None)
         if footer is not None:
             footer.update_posture(p)
@@ -4767,13 +4819,14 @@ class MainWindow(QMainWindow):
         orbital = getattr(self, "_orbital_dashboard", None)
         if orbital is not None:
             orbital.update_posture(p)
-        self.posture_lbl.setText(f"POSTURE {p['score']} · {p['label']}")
-        self.posture_lbl.setStyleSheet(
-            f"color:{p['color']}; font-weight:800; font-size:11px; letter-spacing:1px;")
-        try:
-            self.posture_lbl.setToolTip(tooltip)
-        except Exception:
-            pass
+        if not getattr(getattr(self, "_breach_view", None), "active", False):
+            self.posture_lbl.setText(f"POSTURE {p['score']} · {p['label']}")
+            self.posture_lbl.setStyleSheet(
+                f"color:{p['color']}; font-weight:800; font-size:11px; letter-spacing:1px;")
+            try:
+                self.posture_lbl.setToolTip(tooltip)
+            except Exception:
+                pass
         # Feed the ARIA HUD: record the score trend (on change) and repaint.
         try:
             if getattr(self, "aria_hud", None) is not None:
@@ -4811,6 +4864,17 @@ class MainWindow(QMainWindow):
                     self._aria_crit_announced = False
         except Exception:
             pass
+
+    def set_breach_visual_state(self, snapshot) -> None:
+        """Queue a first-party projection; the bridge validates its exact type."""
+        self._breach_projection.emit(snapshot)
+
+    def _on_posture_click(self) -> None:
+        bridge = getattr(self, "_breach_view", None)
+        if bridge is not None and bridge.active:
+            bridge.open_report()
+        else:
+            self._show_posture_detail()
 
     def _show_posture_detail(self) -> None:
         p = getattr(self, "_last_posture", None)
@@ -5758,6 +5822,7 @@ class MainWindow(QMainWindow):
                     tabs.setTabEnabled(index, False)
             for widget in [getattr(self, "modules_panel", None), getattr(self, "console", None),
                            getattr(self, "_spyware_guard_dialog", None),
+                           getattr(self, "_github_tools_dialog", None),
                            *getattr(self, "_header_primary_buttons", []),
                            *(button for button in getattr(self, "_header_nav_buttons", [])
                              if button not in {getattr(self, "_settings_btn", None),
@@ -6080,6 +6145,9 @@ class MainWindow(QMainWindow):
         # default offset that can hang off a screen edge (esp. multi-monitor).
         # Only centered ONCE — reopening from the tray keeps wherever you moved it.
         super().showEvent(event)
+        bridge = getattr(self, "_breach_view", None)
+        if bridge is not None:
+            bridge.poll()
         QTimer.singleShot(0, self._sync_idle_presentation)
         if not getattr(self, "_did_center", False):
             self._did_center = True
@@ -6087,6 +6155,9 @@ class MainWindow(QMainWindow):
 
     def hideEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         super().hideEvent(event)
+        bridge = getattr(self, "_breach_view", None)
+        if bridge is not None:
+            bridge._sync_visibility()
         QTimer.singleShot(0, self._sync_idle_presentation)
 
     def changeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
@@ -6182,6 +6253,10 @@ class MainWindow(QMainWindow):
             update_controller.close()
         self._close_flight_instructor()
         self._close_spyware_guard_window()
+        self._close_github_tools_window()
+        bridge = getattr(self, "_breach_view", None)
+        if bridge is not None:
+            bridge.shutdown()
         self._simulation_closing = True
         preparing = getattr(self, "_sim_launch_job", None)
         if preparing is not None:

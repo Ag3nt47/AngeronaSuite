@@ -10,6 +10,8 @@ import json
 import threading
 
 import pytest
+from test_breach_lockdown import FakeFirewall, installed_protect_for_inert_combat
+from angerona.core.response_contract import authorize_response
 
 from angerona.core import secure_store
 from angerona.core.eventbus import Event, Severity
@@ -169,8 +171,15 @@ def test_host_intent_busy_refuses_effect_without_latching_and_later_request_can_
     module, _values = _fixture(tmp_path, monkeypatch)
     before = _authority(module)
     effects = []
-    monkeypatch.setattr(module, "_run_firewall", lambda args: effects.append(args) or True)
-    event = Event("Inert Detector", "fixture", Severity.HIGH)
+    firewall = FakeFirewall()
+    def query(arguments, **kwargs):
+        if arguments[:2] == ["firewall", "add"]:
+            effects.append(arguments)
+        return firewall.query(arguments, **kwargs)
+    monkeypatch.setattr(module, "_lockdown_query", query)
+    monkeypatch.setattr(module, "_lockdown_effective_policy_query", firewall.policy_query)
+    event = Event("Inert Detector", "fixture", Severity.HIGH,
+                  details={"active_attack": True, **authorize_response(["isolate_host"], local_host=True)})
 
     @contextmanager
     def busy(_root):

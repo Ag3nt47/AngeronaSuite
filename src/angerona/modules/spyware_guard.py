@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import queue
+import re
 import secrets
 import stat
 import threading
@@ -55,6 +56,47 @@ _TELEMETRY = frozenset({
 })
 
 
+@contextmanager
+def _priority_worker_thread(level: str):
+    """Boost only this worker thread and restore its actual previous priority."""
+    info = {"thread_id": threading.get_native_id(), "pid": os.getpid(),
+            "requested": level, "active": "unchanged", "restored": None,
+            "scope": "native worker thread; not process or realtime scheduling"}
+    if os.name != "nt":
+        info["reason"] = "Native thread priority is unavailable on this platform."
+        yield info
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentThread.restype = wintypes.HANDLE
+    kernel.GetThreadPriority.argtypes = (wintypes.HANDLE,)
+    kernel.GetThreadPriority.restype = ctypes.c_int
+    kernel.SetThreadPriority.argtypes = (wintypes.HANDLE, ctypes.c_int)
+    kernel.SetThreadPriority.restype = wintypes.BOOL
+    thread = kernel.GetCurrentThread()
+    previous = kernel.GetThreadPriority(thread)
+    changed = False
+    if previous == 0x7FFFFFFF:
+        info["reason"] = "Native worker priority could not be read."
+    else:
+        info["previous"] = previous
+        requested = 2 if level == "high" else 1
+        if kernel.SetThreadPriority(thread, requested):
+            changed = True
+            info["active"] = "highest" if requested == 2 else "above-normal"
+        else:
+            info["reason"] = "Native worker priority could not be changed."
+    try:
+        yield info
+    finally:
+        if changed:
+            info["restored"] = bool(kernel.SetThreadPriority(thread, previous))
+            if not info["restored"]:
+                info["reason"] = "Native worker priority restoration failed."
+
+
 class SpywareGuardModule(BaseModule):
     CODE = "SPYG"
     NAME = "SpywareGuard"
@@ -64,7 +106,7 @@ class SpywareGuardModule(BaseModule):
         "reviewed intelligence, exact-target single-rule containment and emergency beacons."
     )
     category = "Spyware Defense"
-    version = "1.14.0"
+    version = "1.14.1"
     supported_platforms = ("windows", "macos", "linux")
     capability_mode = "detect"
     maturity_channel = "preview"
@@ -145,6 +187,11 @@ class SpywareGuardModule(BaseModule):
         self._memory_cursor = 0
         self._hash_cursor = 0
         self._scan_requested = True
+        self._priority_scan_wake = threading.Event()
+        self._startup_wake_event = self._priority_scan_wake
+        self._priority_scan_job = None
+        self._priority_scan_status = {"request_id": "", "state": "idle", "started_at": None,
+                                      "finished_at": None, "coverage": {}, "error": ""}
         self._counts = {"findings": 0, "response_requests": 0, "reports": 0, "sandbox_runs": 0,
                         "queue_dropped": 0}
         self._receipt_ids: OrderedDict[str, float | None] = OrderedDict()
@@ -175,6 +222,91 @@ class SpywareGuardModule(BaseModule):
 
     def request_scan(self) -> bool:
         return self._enqueue("scan")
+
+    def request_priority_scan(self, request_id: str) -> bool:
+        """Wake the existing generation; never create an overlapping scanner."""
+        if type(request_id) is not str or re.fullmatch(r"[a-f0-9]{32}", request_id) is None:
+            return False
+        with self._lifecycle_lock:
+            thread = self._thread
+            if (thread is None or not thread.is_alive() or self._stop.is_set()
+                    or self.lifecycle_generation <= 0):
+                return False
+            generation = self.lifecycle_generation
+            with self._lock:
+                if (self._priority_scan_status["state"] in {"queued", "running"}
+                        or self._priority_scan_status["request_id"] == request_id):
+                    return False
+                level = getattr(self._config, "spyware_scan_priority", "above-normal")
+                level = level if type(level) is str and level in {"above-normal", "high"} else "above-normal"
+                self._priority_scan_job = {"request_id": request_id, "generation": generation,
+                                           "cancel": threading.Event(), "priority": level}
+                self._priority_scan_status = {
+                    "request_id": request_id, "state": "queued", "started_at": None,
+                    "finished_at": None, "coverage": {}, "error": "",
+                    "lifecycle_generation": generation,
+                }
+                self._priority_scan_wake.set()
+                return True
+
+    def cancel_priority_scan(self, request_id: str) -> None:
+        with self._lock:
+            job = self._priority_scan_job
+            if job is not None and job["request_id"] == request_id:
+                job["cancel"].set()
+                self._priority_scan_wake.set()
+
+    def priority_scan_snapshot(self) -> dict:
+        """Return detached memory state; no filesystem or process inspection."""
+        with self._lock:
+            return json.loads(json.dumps(self._priority_scan_status, default=str))
+
+    def _run_priority_scan(self) -> bool:
+        if self._thread is not threading.current_thread():
+            return False
+        with self._lock:
+            job = self._priority_scan_job
+            if job is None or self._priority_scan_status["state"] != "queued":
+                return False
+            self._priority_scan_wake.clear()
+            if job["generation"] != self.lifecycle_generation or job["cancel"].is_set() or self.stopping:
+                self._priority_scan_status.update(state="cancelled", finished_at=self._clock())
+                return True
+            self._priority_scan_status.update(state="running", started_at=self._clock(),
+                                               worker_thread_id=threading.get_native_id())
+            self._scan_requested = False
+        stopped = self.generation_stop_event()
+
+        def cancelled():
+            return (stopped.is_set() or stopped is not self._stop or job["cancel"].is_set()
+                    or job["generation"] != self.lifecycle_generation)
+
+        state, error, native = "completed", "", {}
+        try:
+            with _priority_worker_thread(job["priority"]) as native:
+                with self._lock:
+                    self._priority_scan_status["native_priority"] = dict(native)
+                completed = self._scan_once(cancelled=cancelled)
+                if cancelled() or completed is False:
+                    state = "cancelled"
+        except Exception as exc:
+            state, error = ("cancelled" if cancelled() else "failed"), type(exc).__name__
+        finally:
+            if native.get("restored") is False:
+                state, error = "failed", "native-thread-priority-restore-failed"
+                # Retiring this exact worker also retires a priority level the
+                # OS refused to restore. Never boost the remaining core.
+                stopped.set()
+                self.status = "error"
+                self.set_health(0, "Native worker priority restoration failed; worker retired.")
+            with self._lock:
+                if self._priority_scan_job is job:
+                    self._priority_scan_status.update(
+                        state=state, error=error, finished_at=self._clock(),
+                        native_priority=dict(native),
+                        coverage=json.loads(json.dumps(self._coverage, default=str)),
+                    )
+        return True
 
     def _queue_definition_command(self, command, value, *, module_session=None, module_generation=None):
         payload = {"module_session": self._review_session if module_session is None else module_session,
@@ -896,16 +1028,28 @@ class SpywareGuardModule(BaseModule):
                 finding[key] = record[key]
         self._publish(finding, local_authority=local_authority)
 
-    def _scan_once(self) -> None:
+    def _scan_once(self, *, cancelled=None) -> bool:
+        # Ordinary source collection keeps its existing per-source stop and
+        # advisory-evidence rules. An explicit priority job adds cancellation
+        # at stage boundaries without changing that normal call contract.
+        cancelled = cancelled if callable(cancelled) else lambda: False
+        if cancelled():
+            return False
         report = self._persistence(max_entries=512)
         with self._lock:
             self._coverage["persistence"] = report.get("coverage", {})
         for finding in report.get("findings", [])[:64]:
+            if cancelled():
+                return False
             # A configuration record alone does not identify a running process.
             self._publish(finding, local_authority=True)
+        if cancelled():
+            return False
         processes = self._processes()
         rows = list(processes.processes)[:4096]
-        self._scan_hashes(rows)
+        self._scan_hashes(rows, cancelled=cancelled)
+        if cancelled():
+            return False
         with self._lock:
             self._coverage["processes"] = {"complete": processes.complete,
                                            "error": processes.error}
@@ -917,7 +1061,7 @@ class SpywareGuardModule(BaseModule):
             memory_stopped = self.generation_stop_event()
             memory_cancelled = False
             def retired():
-                return memory_stopped.is_set() or memory_stopped is not self._stop
+                return memory_stopped.is_set() or memory_stopped is not self._stop or cancelled()
             for row in chosen:
                 if retired():
                     memory_cancelled = True
@@ -987,13 +1131,17 @@ class SpywareGuardModule(BaseModule):
                 if memory_cancelled:
                     self._coverage["host"] = "scan-cancelled-memory-owner-generation"
             if memory_cancelled:
-                return
+                return False
         else:
             with self._lock:
                 self._coverage["memory"] = "disabled" if not self._settings["spyware_memory_enabled"] else "no-processes"
+        if cancelled():
+            return False
         snapshot = self._connections()
         indexed = {row.get("pid"): row for row in rows}
         for connection in snapshot.connections[:4096]:
+            if cancelled():
+                return False
             raw = str(connection.get("raddr", ""))
             try:
                 address, _port = raw.rsplit(":", 1)
@@ -1007,8 +1155,11 @@ class SpywareGuardModule(BaseModule):
             self._coverage["connections"] = {"complete": snapshot.complete, "error": snapshot.error}
             self._coverage["host"] = "scan-completed-with-source-specific-coverage"
         self._last_scan = self._clock()
+        return True
 
-    def _scan_hashes(self, rows) -> None:
+    def _scan_hashes(self, rows, *, cancelled=None) -> None:
+        requested_cancel = cancelled if callable(cancelled) else lambda: False
+        cancelled = lambda: self.stopping or requested_cancel()
         with self._lock:
             wanted = any(kind == "sha256" for kind, _value in self._approved)
         wanted = wanted or (self._definitions is not None and self._definitions.has_hashes())
@@ -1022,7 +1173,7 @@ class SpywareGuardModule(BaseModule):
         selected = rows[self._hash_cursor:] + rows[:self._hash_cursor]
         for row in selected:
             path = row.get("exe")
-            if scanned >= 4 or self.stopping:
+            if scanned >= 4 or cancelled():
                 break
             if not path:
                 continue
@@ -1042,7 +1193,7 @@ class SpywareGuardModule(BaseModule):
                         hashed, total = hashlib.sha256(), 0
                         deadline = time.monotonic() + 5
                         while True:
-                            if self.stopping or time.monotonic() > deadline:
+                            if cancelled() or time.monotonic() > deadline:
                                 raise ValueError("hash-read-deadline")
                             chunk = stream.read(min(65536, limit - total + 1))
                             if not chunk:
@@ -1057,6 +1208,8 @@ class SpywareGuardModule(BaseModule):
                         if total != before.st_size or identity(before) != identity(after):
                             raise ValueError("hash-source-changed")
                         digest = hashed.hexdigest()
+                if cancelled():
+                    break
                 self._match_indicator({"pid": row.get("pid"),
                     "process_create_time": row.get("create_time"), "path": str(path),
                     "observed_content_sha256": digest}, "sha256", digest, local_authority=True)
@@ -1169,6 +1322,12 @@ class SpywareGuardModule(BaseModule):
                 self._cache_definition_snapshot()
             except (ValueError, OSError, RuntimeError) as exc:
                 self._cache_definition_snapshot(error=f"Definition storage unavailable ({type(exc).__name__}).")
+        if self._run_priority_scan():
+            # Priority host work precedes discretionary command/report/news
+            # work. Existing intake remains serviced after its bounded stage.
+            self._consume_events()
+            self._collect_responses()
+            return
         self._process_commands()
         if self._definitions is not None:
             # Refresh expiry/generation summaries in the worker, never in Qt.
@@ -1255,8 +1414,15 @@ class SpywareGuardModule(BaseModule):
             self.seed_bus_cursor()
             while not self.stopping:
                 self._tick()
-                self.sleep(5)
+                self.sleep(5, _wake_event=self._priority_scan_wake)
         finally:
+            with self._lock:
+                job = self._priority_scan_job
+                if (job is not None and job["generation"] == self.lifecycle_generation
+                        and self._priority_scan_status["state"] in {"queued", "running"}):
+                    job["cancel"].set()
+                    self._priority_scan_status.update(state="cancelled", finished_at=self._clock())
+                self._priority_scan_wake.clear()
             self._report_stop.set()
             if self._report_thread is not None:
                 self._report_thread.join(timeout=1.0)

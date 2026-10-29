@@ -489,6 +489,14 @@ STEPS: tuple[Step, ...] = (
                   note="Off by default. Downloads use public HTTPS sources with bounded fetches."),
             Field("check", "spyware_memory_enabled", "Enable optional process memory inspection",
                   note="Off by default. Permission and platform limits appear in source coverage."),
+            Field("check", "spyware_scan_native_enabled", "Include native SpywareGuard in dedicated Spyware Scan"),
+            Field("check", "spyware_scan_zero_breach_enabled", "Include the pinned Zero-Breach toolkit in Spyware Scan"),
+            Field("check", "spyware_scan_verify_admin", "Verify actual runtime privilege coverage before scanning",
+                  note="Verification reports available permissions; it does not elevate or grant response authority."),
+            Field("combo", "spyware_scan_priority", "Dedicated scan priority", options=("above-normal", "high")),
+            Field("spin", "spyware_scan_cpu_percent", "Toolkit CPU ceiling (%)", minimum=10, maximum=90),
+            Field("spin", "spyware_scan_memory_mib", "Toolkit memory ceiling (MiB)", minimum=128, maximum=2048),
+            Field("spin", "spyware_scan_background_percent", "Routine background pace during scan (%)", minimum=5, maximum=50),
             Field("text", "spyware_research_urls", "Saved research URLs", "https://example.org/report",
                   note="Comma-separated HTTPS URLs; maximum 32 entries of 2048 characters each. "
                        "Use the SpywareGuard window to ingest and review reports; saving URLs grants no response authority."),
@@ -571,6 +579,18 @@ STEPS: tuple[Step, ...] = (
             Field("check", "startup_recovery_github_enabled", "Allow public GitHub source downloads during startup recovery",
                   note="On by default. Uses the canonical repository without uploading host files. "
                        "Off keeps local working-source recovery available when automatic recovery is enabled."),
+            Field("check", "github_tools_enabled", "Enable maintained scanner integrations",
+                  note="Zero-Breach checks are available in SpywareGuard and the GitHub tools page."),
+            Field("check", "github_tools_auto_prepare", "Prepare the pinned Zero-Breach scanner after startup",
+                  note="On by default. Preparation runs after the dashboard opens; it does not start a host scan."),
+            Field("check", "github_tools_allow_download", "Allow verified downloads for missing scanner files",
+                  note="Uses the maintained version and digest. Source-review imports stay non-executable."),
+            Field("spin", "github_tools_job_limit_mib", "Scanner working data per job (MiB)", minimum=64, maximum=1024),
+            Field("spin", "github_tools_report_limit_mib", "Retained scanner reports (MiB)", minimum=8, maximum=256),
+            Field("spin", "github_tools_timeout_seconds", "Scanner deadline (seconds)", minimum=30, maximum=900),
+            Field("check", "breach_auto_isolate_enabled", "Automatically request network lockdown for confirmed breaches",
+                  note="Requires first-party confirmed evidence and installed response authority. "
+                       "External scanner leads do not trigger lockdown; Lift Lockdown restores only the case's owned controls."),
             Field("check", "shadow_cache_enabled", "Allow bounded Shadow Shield recovery copies",
                   note="Defaults to a 2 GiB total cache ceiling and 2 GiB free-space reserve. "
                        "Block stops new copying; deleting existing copies needs separate confirmation in General."),
@@ -1239,6 +1259,7 @@ if _HAVE_QT:
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
                 "spyware_network_enabled", "spyware_beacon_enabled",
                 "github_daily_check_enabled",
+                "github_tools_allow_download",
             ) if values.get(key)]
             return (
                 f"Platform: {platform_family()}\n"

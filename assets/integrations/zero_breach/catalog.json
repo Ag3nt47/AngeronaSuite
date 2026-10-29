@@ -1,0 +1,207 @@
+{
+  "schema": 1,
+  "tool_id": "zero-breach",
+  "name": "Zero Breach Toolkit",
+  "version": "0.1.10",
+  "repository": "https://github.com/interplains/Zero-Breach-Toolkit",
+  "commit": "81bd556ba604685dbd1c0ecb48138c10f43cccf8",
+  "release": "https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10",
+  "artifact": {
+    "path": "engine.py",
+    "upstream_path": "zero-breach-toolkit.py",
+    "bytes": 968987,
+    "sha256": "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3",
+    "source_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/zero-breach-toolkit.py",
+    "release_asset_id": 686634209,
+    "size": 968987,
+    "download_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/zero-breach-toolkit.py"
+  },
+  "files": [
+    {
+      "path": "engine.py",
+      "upstream_path": "zero-breach-toolkit.py",
+      "bytes": 968987,
+      "sha256": "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3",
+      "source_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/zero-breach-toolkit.py",
+      "release_asset_id": 686634209,
+      "size": 968987,
+      "download_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/zero-breach-toolkit.py"
+    },
+    {
+      "path": "LICENSE",
+      "upstream_path": "LICENSE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "git_blob_sha1": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/LICENSE"
+    },
+    {
+      "path": "NOTICE",
+      "upstream_path": "NOTICE",
+      "bytes": 3795,
+      "sha256": "ab1ee7fafff72a9b56d0982e2e1078debaebe0f6f61c49ed90d91200c8234449",
+      "git_blob_sha1": "18c5b70477a1a01d0f9b8e5b7e184f23c5256665",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/NOTICE"
+    },
+    {
+      "path": "PRIVACY.md",
+      "upstream_path": "PRIVACY.md",
+      "bytes": 5718,
+      "sha256": "5cdbe31b0380bd8baf80b6bf7f8df5e406e9bed2cfcdabd4f960cd4b2c2185fc",
+      "git_blob_sha1": "a8a70a886cf79b4779231404796496efc67bb73f",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md"
+    },
+    {
+      "path": "iocs/LICENSE.md",
+      "upstream_path": "iocs/LICENSE.md",
+      "bytes": 4930,
+      "sha256": "fb6654d9ec5e6484152ab31aae334673b37360b694077c809e542f88c6ab2d18",
+      "git_blob_sha1": "74ce995f101c0d93de9ec923d3b147240576c097",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/iocs/LICENSE.md"
+    },
+    {
+      "path": "third_party/candiru/README.md",
+      "upstream_path": "third_party/candiru/README.md",
+      "bytes": 1480,
+      "sha256": "ab7891667c2e2aa8166dd5687d5abb5550cc91a0fc85398b2494b34d2c15ef0c",
+      "git_blob_sha1": "0fc8fa49a75b8e93cc080a3775ed573f250bf1f1",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/third_party/candiru/README.md"
+    },
+    {
+      "path": "third_party/candiru/LICENSE-DRL-1.1.txt",
+      "upstream_path": "third_party/candiru/LICENSE-DRL-1.1.txt",
+      "bytes": 1939,
+      "sha256": "8a959b2413d0c83ca1b3ce9153076c649abf2e4bbfebbb493fb24c2074a1eb8a",
+      "git_blob_sha1": "a2486e663132108cffe118790d6195a662a39ab2",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/third_party/candiru/LICENSE-DRL-1.1.txt"
+    },
+    {
+      "path": "third_party/candiru/LICENSE-CC-BY-SA-4.0.txt",
+      "upstream_path": "third_party/candiru/LICENSE-CC-BY-SA-4.0.txt",
+      "bytes": 569,
+      "sha256": "b013f21a44956c6d717f211990b450aeaa4d7266da4614ab8c386b479565296e",
+      "git_blob_sha1": "624cc2be67d0320c420a47c3ecd67b9ab0a0eedb",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/third_party/candiru/LICENSE-CC-BY-SA-4.0.txt"
+    },
+    {
+      "path": "third_party/candiru/PROVENANCE.json",
+      "upstream_path": "third_party/candiru/PROVENANCE.json",
+      "bytes": 1823,
+      "sha256": "d1c2ca7de2def9915071835ec3755ab4c856b7672fae184a792051c7952f19cb",
+      "git_blob_sha1": "c93127499a730de1b9264c9175635580dc137c82",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/third_party/candiru/PROVENANCE.json"
+    },
+    {
+      "path": "third_party/candiru/apt_candiru.yar",
+      "upstream_path": "third_party/candiru/apt_candiru.yar",
+      "bytes": 1850,
+      "sha256": "1a298e8d5cd766334da384ab4b06bccec2c8020c3d8dbb68eba159cab755307d",
+      "git_blob_sha1": "1060cf1eb07a75802ea529be3e8536e9db03a8f4",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/third_party/candiru/apt_candiru.yar"
+    },
+    {
+      "path": "third_party/candiru/win_devilstongue_auto.yar",
+      "upstream_path": "third_party/candiru/win_devilstongue_auto.yar",
+      "bytes": 7445,
+      "sha256": "1daaf0ceaa7d21b12869bc60492a9e089c6504be2ac26ddc508d25107e45fcb5",
+      "git_blob_sha1": "d7528e5ef7fe336ff5434d688efbb1340323efef",
+      "source_url": "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/81bd556ba604685dbd1c0ecb48138c10f43cccf8/third_party/candiru/win_devilstongue_auto.yar"
+    },
+    {
+      "path": "verification/SHA256SUMS.txt",
+      "upstream_path": "SHA256SUMS.txt",
+      "bytes": 187,
+      "sha256": "cdb6a64cf402d98c9622c76162189eb8d7479477dcb3284305414a618d898d43",
+      "source_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/SHA256SUMS.txt",
+      "release_asset_id": 686634204
+    },
+    {
+      "path": "verification/SHA256SUMS.txt.asc",
+      "upstream_path": "SHA256SUMS.txt.asc",
+      "bytes": 228,
+      "sha256": "589fad893bcadf41e40beb71d68333f1930e85d61285a3e3ff3e0116c38aadef",
+      "source_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/SHA256SUMS.txt.asc",
+      "release_asset_id": 686634221
+    },
+    {
+      "path": "verification/zero-breach-toolkit.py.asc",
+      "upstream_path": "zero-breach-toolkit.py.asc",
+      "bytes": 228,
+      "sha256": "165866cd246265ef85f731de2f26c7f1126a0fb0f115e98b12d66393a9c6ebc9",
+      "source_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/zero-breach-toolkit.py.asc",
+      "release_asset_id": 686634206
+    },
+    {
+      "path": "verification/archivegenocide-signing-key.asc",
+      "upstream_path": "archivegenocide-signing-key.asc",
+      "bytes": 421,
+      "sha256": "9b0c762b2c2fd8f4a204c9cc29f97b3e00b56eb87aab959bed9b7e4a17627c8d",
+      "source_url": "https://github.com/interplains/Zero-Breach-Toolkit/releases/download/v0.1.10/archivegenocide-signing-key.asc",
+      "release_asset_id": 686634211
+    }
+  ],
+  "license": "Apache-2.0",
+  "license_path": "LICENSE",
+  "notice_path": "NOTICE",
+  "privacy_path": "PRIVACY.md",
+  "credits": [
+    {
+      "name": "archivegenocide.com / interplains",
+      "role": "Toolkit authors and maintainers",
+      "url": "https://github.com/interplains/Zero-Breach-Toolkit",
+      "license": "Apache-2.0",
+      "notice": "NOTICE"
+    },
+    {
+      "name": "Zero Breach indicator data",
+      "role": "Curated published indicator collection",
+      "url": "https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/iocs/LICENSE.md",
+      "license": "CC0-1.0",
+      "notice": "iocs/LICENSE.md"
+    },
+    {
+      "name": "Microsoft Threat Intelligence Center (MSTIC)",
+      "role": "MAL_DevilsTongue_HijackDll optional rule author",
+      "url": "https://github.com/Neo23x0/signature-base/blob/master/yara/apt_candiru.yar",
+      "license": "DRL-1.1",
+      "notice": "third_party/candiru/LICENSE-DRL-1.1.txt",
+      "match_attribution_required": true
+    },
+    {
+      "name": "Felix Bilstein",
+      "role": "win_devilstongue_auto optional rule author",
+      "url": "https://malpedia.caad.fkie.fraunhofer.de/details/win.devilstongue",
+      "license": "CC-BY-SA-4.0",
+      "notice": "third_party/candiru/LICENSE-CC-BY-SA-4.0.txt",
+      "match_attribution_required": true
+    }
+  ],
+  "research_sources": [
+    "The Citizen Lab (University of Toronto)",
+    "Confiant",
+    "Recorded Future / Insikt Group",
+    "Amnesty International Security Lab",
+    "Access Now",
+    "Microsoft",
+    "ESET",
+    "Avast / Gen",
+    "Google Threat Analysis Group",
+    "Mobile Verification Toolkit (MVT)",
+    "Echap",
+    "Kaspersky",
+    "Rapid7 / Velociraptor",
+    "SigmaHQ"
+  ],
+  "signature": {
+    "published_fingerprint": "C24E C92B 12D6 670A 2516 065F 9B4D 5754 99AF A53C",
+    "independent_key_trust_verified": false,
+    "signatures_verified": false,
+    "note": "Published checksum, key and signature bytes are retained; independent signer-key trust was not established."
+  },
+  "integration": {
+    "engine_modified": false,
+    "execution": "Separate supervised process; never imported into the Angerona interpreter",
+    "default_dependencies": "Python standard library",
+    "attribution_notice": "Source authors do not endorse Angerona; research providers do not endorse the upstream toolkit."
+  }
+}

@@ -8,6 +8,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from test_breach_lockdown import installed_protect_for_inert_combat
 
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.modules.adversary_combat import AdversaryCombat

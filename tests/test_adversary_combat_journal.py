@@ -9,6 +9,7 @@ import angerona.modules.adversary_combat as combat_module
 import pytest
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.modules.adversary_combat import AdversaryCombat
+from test_breach_lockdown import installed_protect_for_inert_combat
 
 
 def _combat(tmp_path, **overrides) -> AdversaryCombat:

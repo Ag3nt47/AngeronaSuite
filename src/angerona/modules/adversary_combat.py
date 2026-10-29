@@ -12,6 +12,7 @@ detector so a response cannot drift onto an unrelated target.
 from __future__ import annotations
 
 import copy
+import base64
 import ipaddress
 import hashlib
 import hmac
@@ -333,6 +334,23 @@ def _exclusive_combat_writer_lease(path: Path) -> Iterator[None]:
 
 class JournalIntegrityError(RuntimeError):
     """The combat journal cannot safely authorize another host mutation."""
+
+
+class HostMutationHeld(JournalIntegrityError):
+    """Current installed authority, response policy or lifecycle is held."""
+
+
+@dataclass(frozen=True)
+class _CanaryMutation:
+    """Private original-event binding; never a host Protect authority receipt."""
+
+    event: Event
+    signature: str
+    lease: Any
+    operation: str
+    target: str | int
+    generation: int
+    identity: dict[str, Any]
 
 
 def _absolute_path(path: Path) -> Path:
@@ -1089,6 +1107,16 @@ def _severity(value: object, default: Severity = Severity.LOW) -> Severity:
 
 
 @dataclass(frozen=True)
+class _BreachCommand:
+    request_id: str
+    case_id: str
+    action: str
+    event: Event | None
+    automatic: bool
+    reviewed_cases: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CombatPolicy:
     enabled: bool = True
     mode: str = "maximum"
@@ -1116,11 +1144,11 @@ class CombatAction:
     status: str = "applied"
 
 
-class _ResponseEventQueue(queue.Queue[Event]):
+class _ResponseEventQueue(queue.Queue[Event | _BreachCommand]):
     """Keep short-lived process requests ahead of slower file mutations.
 
-    This remains a bounded Queue of Event objects. Urgent requests retain
-    arrival order among themselves, and all ordinary requests retain their
+    This remains a bounded queue of events and private breach commands. Urgent
+    requests retain arrival order among themselves, and ordinary requests retain their
     arrival order; admission and task accounting use Queue's own condition.
     """
 
@@ -1130,7 +1158,7 @@ class _ResponseEventQueue(queue.Queue[Event]):
         self._urgent_burst = 0
         self._max_urgent_burst = 4
 
-    def put_urgent_nowait(self, event: Event) -> None:
+    def put_urgent_nowait(self, event: Event | _BreachCommand) -> None:
         with self.not_full:
             if self.maxsize > 0 and self._qsize() >= self.maxsize:
                 raise queue.Full
@@ -1139,7 +1167,7 @@ class _ResponseEventQueue(queue.Queue[Event]):
             self.unfinished_tasks += 1
             self.not_empty.notify()
 
-    def _get(self) -> Event:
+    def _get(self) -> Event | _BreachCommand:
         if self._urgent_count and (
             self._urgent_burst < self._max_urgent_burst
             or self._urgent_count == len(self.queue)
@@ -1171,7 +1199,7 @@ class AdversaryCombat(BaseModule):
         "isolates, and activates honeypots with undo receipts."
     )
     category = "Response"
-    version = "1.14.0"
+    version = "1.14.1"
     supported_platforms = ('windows',)
     capability_mode = 'respond'
     maturity_channel = 'preview'
@@ -1284,7 +1312,7 @@ class AdversaryCombat(BaseModule):
         super().__init__()
         self._manager = None
         self._explicit_data_root = Path(data_root) if data_root is not None else None
-        self._queue: queue.Queue[Event] = _ResponseEventQueue(maxsize=2048)
+        self._queue: queue.Queue[Event | _BreachCommand] = _ResponseEventQueue(maxsize=2048)
         self._receipt_lock = threading.RLock()
         # EventBus publishers must never wait behind journal fsync, firewall
         # commands or rollback. Admission owns only bounded in-memory state.
@@ -1295,6 +1323,10 @@ class AdversaryCombat(BaseModule):
         self._admitted_identities: dict[int, str] = {}
         self._response_counts: dict[str, int] = {}
         self._last_response_decision = "waiting"
+        self._breach_results: dict[str, dict[str, Any]] = {}
+        self._breach_pending: set[tuple[str, str]] = set()
+        self._host_authority_reason = ""
+        self._lockdown_policy_reason = ""
         self._seen_order: deque[str] = deque(maxlen=8192)
         self._seen: set[str] = set()
         self._active_events: deque[tuple[float, str]] = deque(maxlen=256)
@@ -1443,6 +1475,9 @@ class AdversaryCombat(BaseModule):
         elif not self._response_initialized:
             state = "STARTING"
             reason = "The worker has not completed journal reconciliation."
+        elif self._host_authority_reason:
+            state = "AUTHORITY HELD"
+            reason = self._host_authority_reason
         elif self._queue.full():
             state = "QUEUE FULL"
             reason = "The response queue is full; new requests cannot be admitted."
@@ -1456,6 +1491,8 @@ class AdversaryCombat(BaseModule):
             queue_pending = int(self._queue.unfinished_tasks)
         return {
             "ready": state == "ARMED",
+            "canary_ready": (state in {"ARMED", "AUTHORITY HELD"} and not self._queue.full()
+                             and not self.generation_stop_event().is_set()),
             "state": state,
             "reason": " ".join(str(reason).split())[:500],
             "queue_depth": self._queue.qsize(),
@@ -1472,8 +1509,166 @@ class AdversaryCombat(BaseModule):
             self._response_counts[reason] = self._response_counts.get(reason, 0) + 1
             self._last_response_decision = reason
 
+    def request_breach_action(self, event: Event | None, case_id: str, action: str,
+                              request_id: str, *, automatic: bool = False,
+                              reviewed_cases: tuple[str, ...] = ()) -> bool:
+        """Admit a narrow command to this worker, never to a parallel engine."""
+        from angerona.core.breach_state import verified_breach
+        if (type(action) is not str or action not in {"isolate", "kill", "lift_lockdown"}
+                or type(case_id) is not str or not re.fullmatch(r"[0-9a-f]{32}", case_id)
+                or type(request_id) is not str or not re.fullmatch(r"[0-9a-f]{32}", request_id)
+                or type(automatic) is not bool or self.status != "running"
+                or type(reviewed_cases) is not tuple or len(reviewed_cases) > 32
+                or any(type(value) is not str or not re.fullmatch(r"[0-9a-f]{32}", value) for value in reviewed_cases)
+                or self.stopping or not self._response_initialized):
+            return False
+        proof = None
+        if action != "lift_lockdown":
+            proof = verified_breach(event, self._bus, getattr(self._manager, "modules", {}))
+            if proof is None or proof.case_id != case_id:
+                return False
+        command = _BreachCommand(request_id, case_id, action, proof.event if proof else None, automatic, reviewed_cases)
+        with self._admission_lock:
+            if self.stopping or self.status != "running" or not self._response_initialized:
+                return False
+            key = (case_id, action)
+            if key in self._breach_pending or len(self._breach_pending) >= 16:
+                return False
+            if len(self._breach_results) >= 64:
+                finished = next((key for key, value in self._breach_results.items()
+                                 if value.get("state") != "queued"), None)
+                if finished is None:
+                    return False
+                self._breach_results.pop(finished)
+            self._breach_pending.add(key)
+            self._breach_results[request_id] = {"state": "queued", "message": "Response queued; native completion is pending."}
+            try:
+                if isinstance(self._queue, _ResponseEventQueue):
+                    self._queue.put_urgent_nowait(command)
+                else:
+                    self._queue.put_nowait(command)
+            except queue.Full:
+                self._breach_pending.discard(key)
+                self._breach_results.pop(request_id, None)
+                return False
+        return True
+
+    def breach_action_result(self, request_id: str) -> dict[str, Any]:
+        with self._admission_lock:
+            return copy.deepcopy(self._breach_results.get(request_id, {}))
+
+    def _finish_breach_command(self, command: _BreachCommand, state: str,
+                               message: str, **metadata) -> None:
+        with self._admission_lock:
+            self._breach_pending.discard((command.case_id, command.action))
+            self._breach_results[command.request_id] = dict(
+                state=state, message=message, **metadata)
+
+    def _breach_is_lifted(self, case_id: str) -> bool:
+        values = getattr(getattr(self._manager, "config", None), "breach_lifted_cases", ())
+        return type(values) in (list, tuple) and case_id in values
+
+    def _record_breach_lift(self, case_ids: list[str]) -> None:
+        config = getattr(self._manager, "config", None)
+        existing = getattr(config, "breach_lifted_cases", ())
+        values = [value for value in existing if type(value) is str and re.fullmatch(r"[0-9a-f]{32}", value)] if type(existing) in (list, tuple) else []
+        config.breach_lifted_cases = list(dict.fromkeys([*values, *case_ids]))[-32:]
+        saver = getattr(config, "save", None)
+        if callable(saver):
+            saver()
+
+    def _execute_breach_command(self, command: _BreachCommand) -> None:
+        from angerona.core.breach_state import protect_authority, verified_breach
+        lifting = command.action == "lift_lockdown"
+        if (self.stopping or not self._response_initialized
+                or (not lifting and (self._mutation_blocked or self._journal_saturated or not self.policy().enabled))):
+            self._finish_breach_command(command, "held", "Response policy, lifecycle or journal custody is unavailable.")
+            return
+        authorized, reason = protect_authority()
+        if not authorized:
+            self._finish_breach_command(command, "held", reason)
+            return
+        proof = None if lifting else verified_breach(command.event, self._bus, getattr(self._manager, "modules", {}))
+        if not lifting and (proof is None or proof.case_id != command.case_id):
+            self._finish_breach_command(command, "held", "Native evidence, freshness or exact target verification failed.")
+            return
+        try:
+            if command.action == "lift_lockdown":
+                records = [record for record in self.list_actions(limit=512)
+                           if record.get("action") == "isolate_host" and not record.get("undone")
+                           and record.get("status") in {"applied", "recovery_required"}
+                           and record.get("integrity_status") == "verified"]
+                if not records or not any((record.get("details") or {}).get("breach_case_id") == command.case_id for record in records):
+                    self._finish_breach_command(command, "held", "No verified applied host lockdown receipt is available.")
+                    return
+                lifted = [command.case_id, *command.reviewed_cases]
+                for record in records:
+                    result = self.undo_action(str(record["action_id"]))
+                    if result.get("ok") is not True:
+                        self._finish_breach_command(command, "unknown", "Managed lockdown removal did not verify; remaining restrictions need review.")
+                        return
+                    recorded_case = (record.get("details") or {}).get("breach_case_id")
+                    if type(recorded_case) is str and re.fullmatch(r"[0-9a-f]{32}", recorded_case):
+                        lifted.append(recorded_case)
+                try:
+                    self._record_breach_lift(lifted)
+                    preference_note = ""
+                except Exception:
+                    preference_note = " The durable suppression preference could not be saved; review before restarting."
+                self._finish_breach_command(command, "lifted", "Verified managed lockdown rules were removed; existing firewall policy was preserved." + preference_note)
+            elif command.action == "isolate":
+                cfg = getattr(self._manager, "config", None)
+                if ("isolate_host" not in proof.authorized_actions or not self.policy().isolate_host
+                        or (command.automatic and (getattr(cfg, "breach_auto_isolate_enabled", True) is not True
+                                                  or self._breach_is_lifted(command.case_id)))):
+                    self._finish_breach_command(command, "held", "This case has no enabled detector-authorized host-isolation policy, or the operator lifted it.")
+                    return
+                if self._host_isolated:
+                    self._finish_breach_command(command, "held", "An existing host restriction needs its own verified receipt review.")
+                    return
+                action = self._isolate_host(command.event, f"combat-{uuid.uuid4().hex[:12]}",
+                                            breach_case_id=command.case_id, verify_scope=True,
+                                            operator_relock=not command.automatic)
+                if action is None or action.details.get("lockdown_scope_verified") is not True:
+                    self._finish_breach_command(command, "unknown" if self._mutation_blocked else "held",
+                        self._lockdown_policy_reason or "All-interface host isolation could not be verified; review response receipts.")
+                    return
+                # A manual re-isolation deliberately revokes this case's prior
+                # suppression preference; it does not change another case.
+                if not command.automatic:
+                    values = getattr(cfg, "breach_lifted_cases", [])
+                    cfg.breach_lifted_cases = [value for value in values if value != command.case_id]
+                    saver = getattr(cfg, "save", None)
+                    if callable(saver):
+                        try:
+                            saver()
+                        except Exception:
+                            self._finish_breach_command(command, "applied", "Lockdown scope and receipt verified, but durable preference revocation requires review.", scope_verified=True, action_id=action.action_id)
+                            return
+                self._finish_breach_command(command, "applied", "All-interface inbound/outbound block rules and their managed receipt verified.",
+                                            scope_verified=True, action_id=action.action_id)
+            elif command.action == "kill":
+                if "terminate_process" not in proof.authorized_actions:
+                    self._finish_breach_command(command, "held", "The native detector did not authorize exact-generation process termination.")
+                    return
+                from dataclasses import replace
+                baseline_policy = self.policy()
+                policy = replace(baseline_policy, mode="maximum", process_action="terminate",
+                                 block_network=False, quarantine_files=False, isolate_host=False,
+                                 activate_honeypots=False)
+                actions = self._act_on_process(command.event.details.get("pid"), policy, command.event,
+                                               f"combat-{uuid.uuid4().hex[:12]}",
+                                               allowed_actions=frozenset({"terminate_process"}),
+                                               expected_policy=baseline_policy) or []
+                applied = any(action.action == "terminate_process" and action.status == "applied"
+                              and action.details.get("postcondition_verified") is True for action in actions)
+                self._finish_breach_command(command, "applied" if applied else "held",
+                    "Exact native process retirement verified." if applied else "Exact process identity, policy or retirement could not verify.")
+        except Exception as error:
+            self._finish_breach_command(command, "unknown", f"Response or durable operator preference requires review ({type(error).__name__}).")
+
     def response_ready(self) -> bool:
-        """Return whether new host mutations may cross the Combat boundary."""
+        """Check worker/journal capacity; this grants no host mutation authority."""
         if not (
             self.status == "running"
             and self._response_initialized
@@ -1601,6 +1796,16 @@ class AdversaryCombat(BaseModule):
             return
         if stop.is_set():
             return
+        # This runs on the response worker after ordinary journal readiness,
+        # never on the GUI. Publish Source/installed authority honestly before
+        # the first memory-only ready snapshot can be observed.
+        try:
+            from angerona.core.breach_state import protect_authority
+            authorized, authority_reason = protect_authority()
+        except Exception:
+            authorized, authority_reason = False, "Host response authority could not be verified."
+        with self._admission_lock:
+            self._host_authority_reason = "" if authorized is True else str(authority_reason)[:500]
         with admission_lock:
             self._startup_buffering = False
             self._response_initialized = True
@@ -1613,6 +1818,13 @@ class AdversaryCombat(BaseModule):
             # Keep evidence collection online, but never overwrite the recovery
             # circuit's red health state or imply mutation authority was restored.
             self.set_health(0, "RECOVERY REQUIRED — Combat mutation circuit open")
+        elif policy.enabled and self._host_authority_reason:
+            self.set_health(100, "host response held; practice canaries eligible")
+            self.emit(
+                "Adversary Combat host response is held. Only issuer-enrolled "
+                "practice controls can qualify through fresh exact canary checks.",
+                Severity.INFO, disposition="health", response_authorized=False,
+            )
         elif policy.enabled:
             self.set_health(100, "standing authority armed")
             self.emit(
@@ -1637,6 +1849,13 @@ class AdversaryCombat(BaseModule):
                     self.mark_cycle_complete(interval_seconds=1.0)
                     continue
                 try:
+                    if type(event) is _BreachCommand:
+                        if stop.is_set():
+                            self._forget_unhandled_submission(event)
+                            return
+                        self._execute_breach_command(event)
+                        self.mark_cycle_complete(interval_seconds=1.0)
+                        continue
                     if stop.is_set():
                         self._forget_unhandled_submission(event)
                         self._response_decision("generation_discarded")
@@ -1739,8 +1958,11 @@ class AdversaryCombat(BaseModule):
             f"{json.dumps(event.details or {}, sort_keys=True, default=str)}"
         )
 
-    def _forget_unhandled_submission(self, event: Event) -> None:
+    def _forget_unhandled_submission(self, event: Event | _BreachCommand) -> None:
         """Discarding queued work must not poison a fresh authenticated retry."""
+        if type(event) is _BreachCommand:
+            self._finish_breach_command(event, "cancelled", "The owning response generation stopped before execution.")
+            return
         with self._admission_lock:
             self._startup_admitted_at.pop(id(event), None)
             # Event.details is mutable. Release only the identity actually
@@ -2135,6 +2357,11 @@ class AdversaryCombat(BaseModule):
         if response_actions is None:
             self._response_decision("invalid_contract")
             return
+        kind = (event.details or {}).get("evidence_kind")
+        canary = self._practice_mutation(event, "quarantine_file" if kind == "inert_file_marker" else "terminate_process")
+        if not self._host_mutation_allowed(canary=canary):
+            self._response_decision("authority_held")
+            return
         combat_id = f"combat-{uuid.uuid4().hex[:12]}"
         actions: list[CombatAction] = []
         path = self._event_path(event)
@@ -2151,7 +2378,7 @@ class AdversaryCombat(BaseModule):
             # authorized exact-process termination. Existing native custody and
             # journal gates remain inside the process transaction.
             process_action = self._act_on_process(
-                pid, policy, event, combat_id, allowed_actions=response_actions
+                pid, policy, event, combat_id, allowed_actions=response_actions, expected_policy=policy
             )
             if process_action is not None:
                 actions.extend(process_action)
@@ -2168,7 +2395,7 @@ class AdversaryCombat(BaseModule):
 
         if not process_first:
             process_action = self._act_on_process(
-                pid, policy, event, combat_id, allowed_actions=response_actions
+                pid, policy, event, combat_id, allowed_actions=response_actions, expected_policy=policy
             )
             if process_action is not None:
                 actions.extend(process_action)
@@ -3743,8 +3970,12 @@ class AdversaryCombat(BaseModule):
         raise JournalIntegrityError(self._journal_error)
 
     @contextmanager
-    def _journaled_mutation(self, action: CombatAction) -> Iterator[None]:
+    def _journaled_mutation(self, action: CombatAction, *,
+                            canary: _CanaryMutation | None = None,
+                            pinned: _PinnedFileMove | None = None) -> Iterator[None]:
         """Keep exact journal custody from intent through effect and terminal."""
+        self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
+        admitted_policy = self.policy()
         with self._receipt_lock:
             with self._journal_writer_lease():
                 with self._pinned_journal_session(create=True):
@@ -3756,6 +3987,12 @@ class AdversaryCombat(BaseModule):
                         raise JournalIntegrityError(
                             "combat journal intent checkpoint is unavailable"
                         )
+                    # Locks, protected-store admission and fsync can block.
+                    # Recheck the *current* generation and installed authority
+                    # after durable intent, immediately before any host effect.
+                    self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
+                    if self.policy() != admitted_policy:
+                        raise HostMutationHeld("Response policy changed while the durable intent was being persisted.")
                     yield
                     if self._validated_active_journal_cache() is None:
                         raise JournalIntegrityError(
@@ -3818,6 +4055,7 @@ class AdversaryCombat(BaseModule):
         action: CombatAction,
         *,
         release_before_rollback: Callable[[], None] | None = None,
+        canary: _CanaryMutation | None = None,
     ) -> CombatAction | None:
         """Commit a mutation or immediately roll back an explicit orphan.
 
@@ -3872,7 +4110,7 @@ class AdversaryCombat(BaseModule):
                 )
             except Exception:
                 pass
-            ok, rollback_error = self._undo_record(orphan_record)
+            ok, rollback_error = self._undo_record(orphan_record, canary=canary) if canary is not None else self._undo_record(orphan_record)
             try:
                 self._append_undo_phase(
                     "undo_commit" if ok else "undo_failure",
@@ -3910,6 +4148,7 @@ class AdversaryCombat(BaseModule):
         reason: str,
         *,
         release_custody: Callable[[], None],
+        canary: _CanaryMutation | None = None,
     ) -> None:
         """Durably orphan then reverse a mutation with an uncertain boundary."""
         orphan_payload = {
@@ -3943,7 +4182,7 @@ class AdversaryCombat(BaseModule):
                 cause=exc,
             )
             return
-        ok, rollback_error = self._undo_record(orphan)
+        ok, rollback_error = self._undo_record(orphan, canary=canary) if canary is not None else self._undo_record(orphan)
         try:
             self._append_undo_phase(
                 "undo_commit" if ok else "undo_failure",
@@ -4109,6 +4348,17 @@ class AdversaryCombat(BaseModule):
     def _quarantine_file(
         self, raw_path: str, event: Event, combat_id: str
     ) -> CombatAction | None:
+        if self.policy().quarantine_files is not True:
+            return None
+        canary = self._practice_mutation(event, "quarantine_file")
+        if canary is not None:
+            try:
+                if str(_absolute_path(Path(raw_path))) != canary.target:
+                    return None
+            except (OSError, TypeError, ValueError):
+                return None
+        if not self._host_mutation_allowed(canary=canary):
+            return None
         action: CombatAction | None = None
         handoff_lease: Any = None
         handoff_started = False
@@ -4201,16 +4451,19 @@ class AdversaryCombat(BaseModule):
                         "move_strategy": planned_strategy,
                     },
                 )
-                with self._journaled_mutation(action):
+                with self._journaled_mutation(action, canary=canary, pinned=pinned):
                     destination_identity = ""
                     try:
                         pinned.require_single_link()
                         if handoff_started:
-                            with RedTeamValidationLease.marker_move_guard(
-                                handoff_lease, source,
-                            ):
-                                destination_identity = pinned.rename_to(destination)
+                            with self._canary_dispatch_guard(canary):
+                                with RedTeamValidationLease.marker_move_guard(
+                                    handoff_lease, source,
+                                ):
+                                    self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
+                                    destination_identity = pinned.rename_to(destination)
                         else:
+                            self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
                             destination_identity = pinned.rename_to(destination)
                         destination_link_count = pinned.require_single_link()
                         if pinned.sha256() != digest:
@@ -4255,6 +4508,7 @@ class AdversaryCombat(BaseModule):
                             committed = self._commit_after_mutation(
                                 action,
                                 release_before_rollback=release_custody_before_rollback,
+                                canary=canary,
                             )
                             handoff_succeeded = bool(
                                 committed is not None
@@ -4276,6 +4530,7 @@ class AdversaryCombat(BaseModule):
                             f"quarantine mutation boundary failed: "
                             f"{type(exc).__name__}",
                             release_custody=release_custody_before_rollback,
+                            canary=canary,
                         )
                         if handoff_started:
                             self.emit(
@@ -4332,7 +4587,9 @@ class AdversaryCombat(BaseModule):
             raise
 
     def _terminate_process_transaction(
-        self, process: Any, action: CombatAction
+        self, process: Any, action: CombatAction, *, event: Event | None = None,
+        expected_policy: CombatPolicy | None = None,
+        canary: _CanaryMutation | None = None,
     ) -> CombatAction | None:
         """Serialize intent through commit/orphan for one irreversible kill.
 
@@ -4340,6 +4597,28 @@ class AdversaryCombat(BaseModule):
         cannot observe or terminalize the bare in-flight intent while the host
         effect and its postcondition are still unresolved.
         """
+        if not self._host_mutation_allowed(canary=canary, action=action):
+            return None
+        baseline = self.policy() if expected_policy is None else expected_policy
+        def authorize_dispatch():
+            self._require_host_mutation_authority(canary=canary, action=action)
+            if self.policy() != baseline:
+                raise HostMutationHeld("Response policy changed before process dispatch.")
+            if event is not None:
+                if not self._integrity_ok(event) or "terminate_process" not in (self._response_actions(event) or ()):
+                    raise HostMutationHeld("Original producer proof or exact termination contract was revoked.")
+                supplied, observed_birth = self._expected_process_start(event.details)
+                if (event.details.get("pid") != action.details.get("pid") or not supplied or observed_birth is None
+                        or abs(observed_birth - float(action.details.get("create_time", -1))) > .001):
+                    raise HostMutationHeld("Original process generation no longer matches the admitted action.")
+                from angerona.core.breach_state import verified_breach
+                historical = verified_breach(event, self._bus, getattr(self._manager, "modules", {}), require_fresh=False)
+                if historical is not None and verified_breach(event, self._bus, getattr(self._manager, "modules", {})) is None:
+                    raise HostMutationHeld("Confirmed native evidence expired before dispatch.")
+            # Producer/contract verification may itself perform bounded reads.
+            self._require_host_mutation_authority(canary=canary, action=action)
+            if self.policy() != baseline:
+                raise HostMutationHeld("Response policy changed before process dispatch.")
         with self._receipt_lock:
             mutation_started = False
             lease = None
@@ -4359,12 +4638,14 @@ class AdversaryCombat(BaseModule):
                             "native_image": lease.identity.image,
                         },
                     })
-                with self._journaled_mutation(action):
+                with self._journaled_mutation(action, canary=canary):
                     if lease is not None:
                         # Persistence can block. Recheck the same object and
                         # deadline after intent and again at native dispatch.
                         lease.validate(alive=True)
-                        lease.terminate()
+                        authorize_dispatch()
+                        with self._canary_dispatch_guard(canary):
+                            lease.terminate(before_dispatch=authorize_dispatch)
                         mutation_started = lease.dispatch_started
                         lease.wait_terminated(timeout=3.0)
                         with self._terminal_commit_validator(lease.terminal_proof):
@@ -4373,8 +4654,11 @@ class AdversaryCombat(BaseModule):
                         # Cross the uncertainty boundary before kill(): an
                         # exception from the call cannot prove that no effect
                         # occurred.
+                        authorize_dispatch()
                         mutation_started = True
-                        process.kill()
+                        with self._canary_dispatch_guard(canary):
+                            authorize_dispatch()
+                            process.kill()
                         try:
                             process.wait(timeout=3)
                         except Exception:
@@ -4420,7 +4704,16 @@ class AdversaryCombat(BaseModule):
         combat_id: str,
         *,
         allowed_actions: frozenset[str] | None = None,
+        expected_policy: CombatPolicy | None = None,
     ) -> list[CombatAction] | None:
+        canary = self._practice_mutation(event, "terminate_process")
+        if canary is not None and pid != canary.target:
+            return None
+        if not self._host_mutation_allowed(canary=canary):
+            return None
+        baseline_policy = self.policy() if expected_policy is None else expected_policy
+        if self.policy() != baseline_policy:
+            return None
         if type(pid) is not int or pid <= 0 or psutil is None:
             return None
         # Killing the response engine itself ends autonomous defense.  Parent
@@ -4476,6 +4769,10 @@ class AdversaryCombat(BaseModule):
         suspend_started = False
         try:
             if suspend_requested:
+                # The canary exception grants no suspension or program/network
+                # authority, even when a tagged process contract lists them.
+                if not self._host_mutation_allowed():
+                    return actions
                 if "suspend_process" not in allowed:
                     return actions
                 action = self._action(
@@ -4491,6 +4788,7 @@ class AdversaryCombat(BaseModule):
                     },
                 )
                 with self._journaled_mutation(action):
+                    self._require_host_mutation_authority()
                     suspend_started = True
                     process.suspend()
                     time.sleep(0.05)
@@ -4523,7 +4821,8 @@ class AdversaryCombat(BaseModule):
                         "exe": exe,
                     },
                 )
-                committed = self._terminate_process_transaction(process, action)
+                committed = self._terminate_process_transaction(process, action, event=event,
+                    expected_policy=baseline_policy, canary=canary)
                 if committed is not None:
                     actions.append(committed)
                     # This response targets one process generation. Once its
@@ -4573,15 +4872,217 @@ class AdversaryCombat(BaseModule):
                 and not self.stopping):
             self.mark_cycle_complete(interval_seconds=1.0)
 
+    def _practice_mutation(self, event: Event, operation: str) -> _CanaryMutation | None:
+        """Bind only an issuer-enrolled canary to its immutable original event."""
+        if type(event) is not Event or operation not in {"quarantine_file", "terminate_process"}:
+            return None
+        try:
+            from angerona.modules.purple_guard import RedTeamValidationLease, _lease_authority
+            original = copy.deepcopy(event)
+            modules = getattr(self._manager, "modules", {})
+            guard = modules.get("Purple Remediation Guard") if isinstance(modules, dict) else None
+            lease = getattr(guard, "_validation_lease", None)
+            state = _lease_authority(lease)
+            details = original.details
+            with state.lock:
+                if operation == "quarantine_file":
+                    target = str(_absolute_path(Path(details["path"])))
+                    record = (state.artifact_handles or {}).get(os.path.normcase(target))
+                    if record is None or record[0] is None:
+                        return None
+                    identity = copy.deepcopy(record[1])
+                else:
+                    target = details["pid"]
+                    identity = RedTeamValidationLease._validated_process_identity(
+                        state, pid=target, token=details.get("correlation_token"),
+                        process_create_time=details.get("process_create_time"), require_live=True,
+                    )
+                proof = _CanaryMutation(original, original.hmac_sig, lease, operation,
+                                        target, self.lifecycle_generation, identity)
+                return proof if self._canary_mutation_valid(proof) else None
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return None
+
+    def _canary_mutation_valid(self, proof: _CanaryMutation, *,
+                               action: CombatAction | None = None,
+                               pinned: _PinnedFileMove | None = None,
+                               restoring: bool = False) -> bool:
+        """Recheck live issuer, original contract and exact held object/child."""
+        try:
+            from angerona.modules.purple_guard import (
+                PurpleGuard, RedTeamValidationLease, _PURPLE_RECEIPT_V2_FIELDS,
+                _canonical_json, _lease_authority, verify_validation_purple_event,
+            )
+            if (type(proof) is not _CanaryMutation or type(self) is not AdversaryCombat
+                    or proof.generation != self.lifecycle_generation
+                    or proof.operation not in {"quarantine_file", "terminate_process"}
+                    or self._bus is None or not self._bus.integrity_enabled
+                    or proof.event.hmac_sig != proof.signature or not self._bus.verify(proof.event)
+                    or proof.operation not in (self._response_actions(proof.event) or ())):
+                return False
+            policy = self.policy()
+            if (restoring and proof.operation != "quarantine_file"
+                    or (not restoring and proof.operation == "quarantine_file" and policy.quarantine_files is not True)
+                    or (proof.operation == "terminate_process"
+                        and (policy.process_action != "terminate" or policy.mode == "contain"))):
+                return False
+            state = _lease_authority(proof.lease)
+            details = proof.event.details
+            modules = getattr(self._manager, "modules", {})
+            with state.lock:
+                if (state.manager is not self._manager or state.bus is not self._bus
+                        or not isinstance(modules, dict) or modules.get(self.name) is not self
+                        or type(state.module) is not PurpleGuard
+                        or modules.get(state.module.name) is not state.module
+                        or getattr(state.module, "_validation_lease", None) is not proof.lease
+                        or state.data_root != self.data_root.resolve(strict=False)
+                        or state.released or not state.consumed or state.artifact_custody_failed
+                        or time.monotonic() > state.run_deadline_monotonic
+                        or details.get("redteam_detector_receipt_version") != 2
+                        or details.get("lease_id") != state.lease_id
+                        or details.get("receipt_id") != state.receipt_id
+                        or details.get("run_id") != state.bound_run_id
+                        or details.get("target") != str(state.target)
+                        or not RedTeamValidationLease._state_matches(proof.lease)):
+                    return False
+                if action is not None:
+                    if action.action != proof.operation:
+                        return False
+                    if proof.operation == "quarantine_file":
+                        if (str(_absolute_path(Path(action.target))) != proof.target
+                                or action.details.get("original") != proof.target
+                                or action.details.get("sha256") != proof.identity.get("sha256")):
+                            return False
+                    elif (action.details.get("pid") != proof.target
+                          or abs(float(action.details.get("create_time", -1))
+                                 - float(details["process_create_time"])) > .001
+                          or hashlib.sha256(os.path.normcase(str(action.details.get("exe", ""))).encode()).hexdigest()
+                          != proof.identity.get("executable_sha256")):
+                        return False
+                if proof.operation == "terminate_process":
+                    if details.get("evidence_kind") != "nonce_tagged_process" or details.get("pid") != proof.target:
+                        return False
+                    current = RedTeamValidationLease._validated_process_identity(
+                        state, pid=proof.target, token=details.get("correlation_token"),
+                        process_create_time=details.get("process_create_time"), require_live=True,
+                    )
+                    return bool(current and current.get("identity_sha256") == proof.identity.get("identity_sha256")
+                                and verify_validation_purple_event(proof.lease, proof.event,
+                                                                  {"attack_ids": [details.get("technique")]}))
+                if (details.get("evidence_kind") != "inert_file_marker"
+                        or str(_absolute_path(Path(details["path"]))) != proof.target
+                        or Path(proof.target).parent != state.target):
+                    return False
+                key = os.path.normcase(proof.target)
+                record = (state.artifact_handles or {}).get(key)
+                if record is None or record[1] != proof.identity:
+                    return False
+                if key not in (state.artifact_handoffs or set()):
+                    return bool(verify_validation_purple_event(proof.lease, proof.event,
+                                                              {"attack_ids": [details.get("technique")]}))
+                # During the existing exclusive handoff the issuer deliberately
+                # releases its read descriptor. Only Combat's actual pin may
+                # bridge that interval; a path, label or registry entry cannot.
+                expected_pin = action.details.get("quarantine") if restoring and action is not None else proof.target
+                if (restoring and (action is None or Path(str(expected_pin)).parent.parent != self.quarantine_root
+                                   or Path(str(expected_pin)).parent.name != action.combat_id)):
+                    return False
+                if (record[0] is not None or type(pinned) is not _PinnedFileMove
+                        or str(pinned.path) != expected_pin or pinned.require_single_link() != 1
+                        or pinned.sha256() != proof.identity.get("sha256")):
+                    return False
+                descriptor = pinned.duplicate_custody_descriptor()
+                try:
+                    held = os.fstat(descriptor)
+                    expected = tuple(proof.identity.get(field) for field in ("device", "inode", "size", "mtime_ns"))
+                    if (held.st_dev, held.st_ino, held.st_size, held.st_mtime_ns) != expected:
+                        return False
+                    if restoring:
+                        try:
+                            Path(proof.target).lstat()
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            return False
+                    else:
+                        named = Path(proof.target).lstat()
+                        if (named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns) != expected:
+                            return False
+                finally:
+                    os.close(descriptor)
+                return bool(state._verify_hmac(str(details.get("detector_receipt_mac") or ""),
+                    _canonical_json({field: details.get(field) for field in _PURPLE_RECEIPT_V2_FIELDS})))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    @contextmanager
+    def _canary_dispatch_guard(self, proof: _CanaryMutation | None):
+        # Preserve the issuer's state-lock -> marker-move-lock ordering, and
+        # prevent release from racing the final native canary dispatch.
+        if proof is None:
+            yield
+            return
+        from angerona.modules.purple_guard import _lease_authority
+        state = _lease_authority(proof.lease)
+        with state.lock:
+            yield
+
+    def _require_host_mutation_authority(self, *, check_policy: bool = True,
+                                         canary: _CanaryMutation | None = None,
+                                         action: CombatAction | None = None,
+                                         pinned: _PinnedFileMove | None = None,
+                                         restoring: bool = False) -> None:
+        """No legacy/new queue route can turn Source Observe into Protect.
+
+        This observes the existing native installed authority; it accepts no
+        setting, report, environment flag or caller-supplied trust receipt.
+        A private live canary binding may admit only its exact enrolled control;
+        it never establishes installed host authority or a public Undo grant.
+        Restorative Undo may run with automatic policy disabled, but still
+        requires installed authority and a live, non-stopped generation.
+        """
+        from angerona.core.breach_state import protect_authority
+        allowed, reason = protect_authority()
+        host_reason = reason
+        canary_only = bool(allowed is not True and canary is not None
+                           and self._canary_mutation_valid(canary, action=action, pinned=pinned, restoring=restoring))
+        if canary_only:
+            allowed, reason = True, "Only the exact live issuer-enrolled canary is admitted."
+        if self.stopping or self.generation_stop_event().is_set():
+            allowed, reason = False, "The owning response generation has stopped."
+        elif check_policy and not self.policy().enabled:
+            allowed, reason = False, "Automatic response policy is disabled."
+        elif (check_policy and action is not None and action.action == "quarantine_file"
+              and self.policy().quarantine_files is not True):
+            allowed, reason = False, "File quarantine is disabled in the current response policy."
+        with self._admission_lock:
+            self._host_authority_reason = "" if allowed is True and not canary_only else str(host_reason if canary_only else reason)[:500]
+        if allowed is not True:
+            raise HostMutationHeld(str(reason)[:500])
+
+    def _host_mutation_allowed(self, *, check_policy: bool = True,
+                               canary: _CanaryMutation | None = None,
+                               action: CombatAction | None = None,
+                               pinned: _PinnedFileMove | None = None) -> bool:
+        try:
+            self._require_host_mutation_authority(check_policy=check_policy, canary=canary,
+                                                  action=action, pinned=pinned)
+            return True
+        except HostMutationHeld:
+            return False
+
     def _run_firewall(self, arguments: list[str]) -> bool:
         if os.name != "nt":
             return False
         try:
+            self._require_host_mutation_authority(check_policy=arguments[:2] != ["delete", "rule"])
             from angerona.core.win import run_hidden
+            executable = self._lockdown_netsh()
 
             try:
                 result = run_hidden(
-                    ["netsh", "advfirewall", "firewall", *arguments],
+                    [executable, "advfirewall", "firewall", *arguments],
+                    cwd=os.path.dirname(executable),
                     capture_output=True,
                     text=True,
                     timeout=15,
@@ -4605,19 +5106,234 @@ class AdversaryCombat(BaseModule):
         except Exception:
             return False
 
+    @staticmethod
+    def _lockdown_netsh() -> str:
+        """Resolve the OS utility without PATH/current-directory discovery."""
+        if os.name != "nt":
+            raise OSError("Windows lockdown provider is unavailable")
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetSystemDirectoryW.argtypes = (wintypes.LPWSTR, wintypes.UINT)
+        kernel.GetSystemDirectoryW.restype = wintypes.UINT
+        buffer = ctypes.create_unicode_buffer(32768)
+        length = kernel.GetSystemDirectoryW(buffer, len(buffer))
+        if not 0 < length < len(buffer):
+            raise OSError("The Windows system directory is unavailable")
+        return os.path.join(buffer.value, "netsh.exe")
+
+    def _owned_windows_output(self, command: list[str], *, encoding: str, cancel=None) -> tuple[int, str] | None:
+        # The same atomic Windows job used for disposable startup probes owns
+        # this fixed OS utility and descendants. No shell, PATH lookup, visible
+        # console or unbounded pipe capture is involved; the temporary output
+        # handle is deleted on close. A failed retirement cannot attest scope.
+        probe = None
+        try:
+            if self.stopping or (cancel is not None and cancel.is_set()):
+                return None
+            import tempfile
+            from angerona.startup import _WindowsProbe
+            from angerona.core.privilege import sanitized_child_environment
+            with tempfile.TemporaryFile(mode="w+b") as output:
+                probe = _WindowsProbe(command, cwd=os.path.dirname(command[0]),
+                                      env=sanitized_child_environment(), stdout=output)
+                deadline = time.monotonic() + 10
+                while probe.poll() is None:
+                    if (self.stopping or (cancel is not None and cancel.is_set())
+                            or time.monotonic() >= deadline or os.fstat(output.fileno()).st_size > 32768):
+                        return None
+                    time.sleep(.05)
+                if not probe.wait_tree(timeout=1):
+                    return None
+                returncode = probe.returncode
+                probe.close()
+                probe = None
+                output.seek(0)
+                raw = output.read(32769)
+                if len(raw) > 32768:
+                    return None
+                return returncode, raw.decode(encoding, errors="strict")
+        except Exception:
+            return None
+        finally:
+            if probe is not None:
+                try:
+                    probe.close()
+                except Exception:
+                    # Its retained native owner/reaper preserves custody.
+                    pass
+            self._firewall_step_completed()
+
+    def _lockdown_query(self, arguments: list[str], *, cancel=None) -> str | None:
+        if arguments[:2] in (["firewall", "add"], ["firewall", "delete"]):
+            if not self._host_mutation_allowed(check_policy=arguments[:2] != ["firewall", "delete"]):
+                return None
+        try:
+            result = self._owned_windows_output([self._lockdown_netsh(), "advfirewall", *arguments],
+                                                encoding="oem", cancel=cancel)
+        except Exception:
+            return None
+        if result is None:
+            return None
+        returncode, text = result
+        if returncode != 0 and not (returncode == 1 and arguments[:3] == ["firewall", "show", "rule"]
+                and text.strip().casefold() == "no rules match the specified criteria."):
+            return None
+        return text
+
+    def _lockdown_effective_policy_query(self, *, cancel=None) -> str | None:
+        """Read effective policy, never persistent/local settings in isolation.
+
+        The script is a fixed literal and uses the OS-owned module manifest.
+        No imported report, rule name or target is interpolated into code.
+        ActiveStore covers Domain, Private and Public, including profiles that
+        may become active later; COM's current-profile state alone is not proof.
+        """
+        from angerona.core.privilege import trusted_powershell_path
+        script = r"""
+$ErrorActionPreference='Stop'
+$ProgressPreference='SilentlyContinue'
+[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false)
+Import-Module (Join-Path $PSHOME 'Modules\NetSecurity\NetSecurity.psd1') -ErrorAction Stop
+$profiles=@(Get-NetFirewallProfile -PolicyStore ActiveStore -Name Domain,Private,Public -ErrorAction Stop | ForEach-Object {
+    [ordered]@{name=[string]$_.Name; enabled=[string]$_.Enabled;
+        local_rules=[string]$_.AllowLocalFirewallRules; inbound_rules=[string]$_.AllowInboundRules;
+        disabled_interfaces=@($_.DisabledInterfaceAliases)}
+})
+$policy=New-Object -ComObject HNetCfg.FwPolicy2
+[ordered]@{version=1; store='ActiveStore'; modify_state=[int]$policy.LocalPolicyModifyState; profiles=$profiles} |
+    ConvertTo-Json -Depth 5 -Compress
+"""
+        try:
+            result = self._owned_windows_output([str(trusted_powershell_path()), "-NoLogo", "-NoProfile",
+                "-NonInteractive", "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+                encoding="utf-8-sig", cancel=cancel)
+            return result[1] if result is not None and result[0] == 0 else None
+        except Exception:
+            return None
+
+    def _lockdown_effective_policy(self, *, cancel=None) -> bool:
+        """Unknown, GPO override or any unmerged/disabled profile stays held."""
+        self._lockdown_policy_reason = "Effective firewall policy cannot verify all-profile local-rule merge and enforcement permission; no lockdown is claimed."
+        output = self._lockdown_effective_policy_query(cancel=cancel)
+        if type(output) is not str or len(output) > 32768:
+            return False
+        def unique_pairs(pairs):
+            values = {}
+            for key, value in pairs:
+                if key in values:
+                    raise ValueError("duplicate effective-policy field")
+                values[key] = value
+            return values
+        try:
+            result = json.loads(output, object_pairs_hook=unique_pairs)
+            if (type(result) is not dict or set(result) != {"version", "store", "modify_state", "profiles"}
+                    or type(result["version"]) is not int or result["version"] != 1 or result["store"] != "ActiveStore"
+                    or type(result["modify_state"]) is not int or result["modify_state"] != 0
+                    or type(result["profiles"]) is not list or len(result["profiles"]) != 3):
+                return False
+            names = set()
+            for profile in result["profiles"]:
+                if (type(profile) is not dict or set(profile) != {"name", "enabled", "local_rules", "inbound_rules", "disabled_interfaces"}
+                        or type(profile["name"]) is not str or profile["name"] not in {"Domain", "Private", "Public"}
+                        or profile["name"] in names or profile["enabled"] != "True"
+                        or profile["local_rules"] != "True" or profile["inbound_rules"] != "True"
+                        or profile["disabled_interfaces"] != []):
+                    return False
+                names.add(profile["name"])
+            valid = names == {"Domain", "Private", "Public"}
+            if valid:
+                self._lockdown_policy_reason = ""
+            return valid
+        except (ValueError, TypeError, RecursionError):
+            return False
+
+    @staticmethod
+    def _lockdown_rule_fields(output: str, rule: str, direction: str) -> bool:
+        """Strict English provider projection; unknown/localized data is held."""
+        if type(output) is not str or len(output) > 32768:
+            return False
+        fields = {}
+        for line in output.splitlines():
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            key = re.sub(r"[^a-z]", "", key.casefold())
+            if key in fields:
+                return False
+            fields[key] = value.strip().casefold()
+        profiles = fields.get("profiles", "")
+        all_profiles = profiles in {"any", "all"} or set(re.split(r"[,\s]+", profiles)) == {"domain", "private", "public"}
+        any_value = {"any", "all", "*"}
+        return bool(fields.get("rulename") == rule.casefold()
+                    and fields.get("enabled") == "yes"
+                    and fields.get("direction") == direction
+                    and all_profiles and fields.get("action") == "block"
+                    and fields.get("interfacetypes") in any_value
+                    and fields.get("localip") in any_value and fields.get("remoteip") in any_value
+                    and fields.get("protocol") in {"any", "256"}
+                    and fields.get("program") in any_value and fields.get("service") in any_value
+                    and all(fields.get(key, "any") in any_value for key in ("localport", "remoteport")))
+
+    def _lockdown_profiles_enabled(self, *, cancel=None) -> bool:
+        arguments = ["show", "allprofiles", "state"]
+        output = self._lockdown_query(arguments, cancel=cancel) if cancel is not None else self._lockdown_query(arguments)
+        if output is None:
+            return False
+        profiles = re.findall(r"(?im)^\s*(Domain|Private|Public)\s+Profile\s+Settings\s*:", output)
+        states = re.findall(r"(?im)^\s*State\s+(ON|OFF)\s*$", output)
+        return len(profiles) == 3 and {value.casefold() for value in profiles} == {"domain", "private", "public"} and states == ["ON"] * 3
+
+    def _lockdown_rule_scope(self, rule: str, direction: str, *, cancel=None) -> bool:
+        if not self._managed_rule("isolate_host", rule):
+            return False
+        arguments = ["firewall", "show", "rule", f"name={rule}", "verbose"]
+        output = self._lockdown_query(arguments, cancel=cancel) if cancel is not None else self._lockdown_query(arguments)
+        return output is not None and self._lockdown_rule_fields(output, rule, direction)
+
+    def _run_lockdown_firewall(self, arguments: list[str]) -> bool:
+        rule = next((value[5:] for value in arguments if value.startswith("name=")), "")
+        if (self.stopping or arguments[:2] not in (["add", "rule"], ["delete", "rule"])
+                or not self._managed_rule("isolate_host", rule)):
+            return False
+        if not self._host_mutation_allowed(check_policy=arguments[:2] != ["delete", "rule"]):
+            return False
+        output = self._lockdown_query(["firewall", *arguments])
+        if output is None:
+            return False
+        if arguments[:2] == ["add", "rule"]:
+            direction = next((value[4:] for value in arguments if value.startswith("dir=")), "")
+            return self._lockdown_rule_scope(rule, direction)
+        if arguments[:2] == ["delete", "rule"]:
+            return self._lockdown_rule_present(rule) is False
+        return False
+
+    def _lockdown_rule_present(self, rule: str) -> bool | None:
+        if not self._managed_rule("isolate_host", rule):
+            return None
+        check = self._lockdown_query(["firewall", "show", "rule", f"name={rule}"])
+        if check is None:
+            return None
+        if check.strip().casefold() == "no rules match the specified criteria.":
+            return False
+        names = re.findall(r"(?im)^\s*Rule\s+Name\s*:\s*(.+?)\s*$", check)
+        return True if len(names) == 1 and names[0].casefold() == rule.casefold() else None
+
     def _firewall_rule_exists(self, rule_name: str) -> bool | None:
         """Return exact presence, proven absence, or unavailable evidence."""
         if os.name != "nt" or not rule_name:
             return None
         try:
             from angerona.core.win import run_hidden
+            executable = self._lockdown_netsh()
 
             try:
                 result = run_hidden(
                     [
-                        "netsh", "advfirewall", "firewall", "show", "rule",
+                        executable, "advfirewall", "firewall", "show", "rule",
                         f"name={rule_name}",
                     ],
+                    cwd=os.path.dirname(executable),
                     capture_output=True,
                     text=True,
                     timeout=15,
@@ -4629,10 +5345,13 @@ class AdversaryCombat(BaseModule):
                 + "\n"
                 + str(getattr(result, "stderr", "") or "")
             ).casefold()
-            if "no rules match" in output:
+            code = int(getattr(result, "returncode", 1))
+            if len(output) > 32768:
+                return None
+            if code in {0, 1} and output.strip() == "no rules match the specified criteria.":
                 return False
-            if (int(getattr(result, "returncode", 1)) == 0
-                    and rule_name.casefold() in output):
+            names = re.findall(r"(?im)^\s*Rule\s+Name\s*:\s*(.+?)\s*$", output)
+            if code == 0 and names == [rule_name.casefold()]:
                 return True
             # An error, empty response, or unsupported/localized output is not
             # proof that an intent-bound firewall mutation has disappeared.
@@ -5347,6 +6066,8 @@ class AdversaryCombat(BaseModule):
     def _block_remote_ip(
         self, remote_ip: str, event: Event, combat_id: str
     ) -> CombatAction | None:
+        if not self._host_mutation_allowed():
+            return None
         if remote_ip in self._blocked_ips:
             return None
         rule = f"Angerona-Combat-IP-{uuid.uuid4().hex[:12]}"
@@ -5391,6 +6112,8 @@ class AdversaryCombat(BaseModule):
         event: Event,
         combat_id: str,
     ) -> CombatAction | None:
+        if not self._host_mutation_allowed():
+            return None
         program_key = os.path.normcase(os.path.abspath(exe))
         if program_key in self._blocked_programs:
             return None
@@ -5444,7 +6167,40 @@ class AdversaryCombat(BaseModule):
         except JournalIntegrityError:
             return None
 
-    def _isolate_host(self, event: Event, combat_id: str) -> CombatAction | None:
+    def _isolate_host(self, event: Event, combat_id: str, *,
+                      breach_case_id: str = "", verify_scope: bool = False,
+                      operator_relock: bool = False) -> CombatAction | None:
+        from angerona.core.breach_state import protect_authority, verified_breach
+        if not self._host_mutation_allowed():
+            return None
+        historical = verified_breach(event, self._bus, getattr(self._manager, "modules", {}), require_fresh=False)
+        # A lifted case remains suppressed when the ordinary Maximum queue
+        # encounters an older copy. Expiry must never downgrade it to the
+        # legacy isolation path and thereby bypass the operator's decision.
+        if historical is not None and self._breach_is_lifted(historical.case_id) and not operator_relock:
+            return None
+        proof = verified_breach(event, self._bus, getattr(self._manager, "modules", {}))
+        if historical is not None and proof is None:
+            return None
+        if proof is not None:
+            if (getattr(getattr(self._manager, "config", None), "breach_auto_isolate_enabled", True) is not True
+                    and not operator_relock):
+                return None
+            if self._breach_is_lifted(proof.case_id) and not operator_relock:
+                return None
+            breach_case_id, verify_scope = proof.case_id, True
+        if verify_scope:
+            if (proof is None or proof.case_id != breach_case_id or protect_authority()[0] is not True
+                    or "isolate_host" not in proof.authorized_actions):
+                return None
+        elif (not self._integrity_ok(event) or "isolate_host" not in (self._response_actions(event) or ())
+              or event_disposition(event) != "active"):
+            return None
+        # Every host-isolation route uses the same fixed provider and scope
+        # verification. A rejected breach classifier must never select a weaker
+        # PATH-discovered firewall implementation or skip effective GPO policy.
+        if not self._lockdown_profiles_enabled() or not self._lockdown_effective_policy():
+            return None
         if self._host_isolated:
             return None
         base = f"Angerona-Combat-Host-{uuid.uuid4().hex[:10]}"
@@ -5455,16 +6211,20 @@ class AdversaryCombat(BaseModule):
             event,
             combat_id,
             reversible=True,
-            details={"rules": expected},
+            details={"rules": expected, "lockdown_scope_version": 1,
+                "lockdown_scope": "all-profiles/all-interfaces/all-protocols/ipv4+ipv6/in+out",
+                **({"breach_case_id": breach_case_id} if breach_case_id else {})},
         )
         try:
             with self._journaled_mutation(action):
                 rules: list[str] = []
+                runner = self._run_lockdown_firewall
                 for direction in ("out", "in"):
                     name = f"{base}-{direction}"
-                    if self._run_firewall([
+                    if runner([
                         "add", "rule", f"name={name}", f"dir={direction}",
                         "action=block", "remoteip=any", "enable=yes",
+                        "profile=any", "interfacetype=any", "protocol=any", "localip=any",
                     ]):
                         rules.append(name)
                 if len(rules) != 2:
@@ -5474,7 +6234,14 @@ class AdversaryCombat(BaseModule):
                     )
                     return None
                 self._host_isolated = True
-                return self._commit_after_mutation(action)
+                def verify_terminal_scope():
+                    self._require_host_mutation_authority()
+                    if (not self._lockdown_profiles_enabled() or not self._lockdown_effective_policy()
+                            or any(not self._lockdown_rule_scope(rule, rule.rsplit("-", 1)[-1]) for rule in rules)):
+                        raise JournalIntegrityError("All-interface effective lockdown scope changed before commit")
+                    return {"lockdown_scope_verified": True, "lockdown_policy_verified": True}
+                with self._terminal_commit_validator(verify_terminal_scope):
+                    return self._commit_after_mutation(action)
         except JournalIntegrityError:
             return None
 
@@ -5515,6 +6282,9 @@ class AdversaryCombat(BaseModule):
                     self._commit_after_mutation(action)
                     return None
                 return self._commit_after_mutation(action)
+        except HostMutationHeld:
+            self.set_health(100, "host mutation authority held")
+            return None
         except JournalIntegrityError as exc:
             # An interrupted startup intent can leave the journal ahead of its
             # checkpoint before module.start() runs. Report the hold now, not
@@ -5652,11 +6422,21 @@ class AdversaryCombat(BaseModule):
                 return
         yield
 
-    def _undo_record(self, record: dict[str, Any]) -> tuple[bool, str]:
+    def _undo_record(self, record: dict[str, Any], *,
+                     canary: _CanaryMutation | None = None) -> tuple[bool, str]:
         """Execute one exact, revalidated reverse mutation idempotently."""
         action = str(record.get("action") or "")
         details = record.get("details") if isinstance(record.get("details"), dict) else {}
         try:
+            bound_action = None
+            if canary is None:
+                self._require_host_mutation_authority(check_policy=False)
+            else:
+                # Only the current private immediate-rollback call chain has a
+                # proof. Public Undo/restart recovery never reconstruct one.
+                if action != "quarantine_file" or canary.operation != action:
+                    return False, "canary rollback action is outside its scope"
+                bound_action = CombatAction(**{key: record[key] for key in CombatAction.__dataclass_fields__})
             if action == "quarantine_file":
                 binding = self._valid_quarantine_binding(record)
                 if binding is None:
@@ -5690,8 +6470,11 @@ class AdversaryCombat(BaseModule):
                             return False, "quarantined content no longer matches receipt"
                         if destination.exists() or self._is_protected_file(destination):
                             return False, "original target is occupied or protected"
-                        with self._marker_target_rename_guard(destination):
-                            restored_identity = pinned.rename_to(destination)
+                        with self._canary_dispatch_guard(canary):
+                            with self._marker_target_rename_guard(destination):
+                                self._require_host_mutation_authority(check_policy=False, canary=canary,
+                                    action=bound_action, pinned=pinned, restoring=canary is not None)
+                                restored_identity = pinned.rename_to(destination)
                         if pinned.sha256() != expected_hash:
                             return False, "quarantine restore postcondition failed"
                 else:
@@ -5720,6 +6503,7 @@ class AdversaryCombat(BaseModule):
                     return False, "PID was reused; process was not resumed"
                 stopped = getattr(psutil, "STATUS_STOPPED", "stopped")
                 if process.status() == stopped:
+                    self._require_host_mutation_authority(check_policy=False)
                     process.resume()
                 if (
                     abs(float(process.create_time()) - created) <= 0.001
@@ -5742,15 +6526,18 @@ class AdversaryCombat(BaseModule):
                         os.path.abspath(str(record.get("target") or ""))
                     ):
                         return False, "program binding does not match"
+                scoped = action == "isolate_host" and details.get("lockdown_scope_version") == 1
+                presence = self._lockdown_rule_present if scoped else self._firewall_rule_exists
+                runner = self._run_lockdown_firewall if scoped else self._run_firewall
                 for rule in rules:
-                    state = self._firewall_rule_exists(rule)
+                    state = presence(rule)
                     if state is None:
                         return False, f"managed firewall rule state unavailable: {rule}"
-                    if state is True and not self._run_firewall(
+                    if state is True and not runner(
                         ["delete", "rule", f"name={rule}"]
                     ):
                         return False, f"managed firewall rule remains: {rule}"
-                if any(self._firewall_rule_exists(rule) is not False for rule in rules):
+                if any(presence(rule) is not False for rule in rules):
                     return False, "managed firewall rule absence was not proven"
                 if action == "isolate_host":
                     self._host_isolated = False
@@ -5808,6 +6595,7 @@ class AdversaryCombat(BaseModule):
 
     def undo_action(self, action_id: str) -> dict[str, Any]:
         try:
+            self._require_host_mutation_authority(check_policy=False)
             with self._receipt_lock:
                 with self._journal_writer_lease():
                     with self._pinned_journal_session(create=True):

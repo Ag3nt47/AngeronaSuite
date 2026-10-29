@@ -27,7 +27,8 @@ def test_daily_update_is_an_explicit_network_opt_in_in_first_run_setup() -> None
 
 def test_new_config_option_is_discoverable_with_all_existing_setup_options() -> None:
     mapped = {field.key for step in STEPS for field in step.fields if field.kind in CONFIG_KINDS}
-    internal = {"data_dir", "module_states", "teams_bot_skip_auth", "holographic_orb_x", "holographic_orb_y"}
+    internal = {"data_dir", "module_states", "teams_bot_skip_auth", "holographic_orb_x", "holographic_orb_y",
+                "breach_lifted_cases"}  # Controller-owned case decisions are not setup input.
     assert {field.name for field in fields(Config)} - internal == mapped
 
 

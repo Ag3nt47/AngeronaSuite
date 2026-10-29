@@ -1,0 +1,2 @@
+075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3  zero-breach-toolkit.py
+9b0c762b2c2fd8f4a204c9cc29f97b3e00b56eb87aab959bed9b7e4a17627c8d  archivegenocide-signing-key.asc

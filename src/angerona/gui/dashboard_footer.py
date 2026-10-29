@@ -52,6 +52,8 @@ class DashboardFooter(QAbstractButton):
         self._posture = "Posture —"
         self._posture_description = "Posture has not been evaluated yet."
         self._posture_color = QColor()
+        self._normal_posture = (self._posture, self._posture_description, self._posture_color)
+        self._breach_projection = None
         self._response = "Auto —"
         self._response_description = "Automatic response status has not been checked yet."
         self._fps = "FPS —"
@@ -149,9 +151,28 @@ class DashboardFooter(QAbstractButton):
         description = ("Posture unavailable." if score is None else
                        f"Posture score: {score:g}/100. State: {label}.")
         color = QColor(str(snapshot.get("color") or ""))
-        if (text, description, color) == (
-            self._posture, self._posture_description, self._posture_color,
-        ):
+        self._normal_posture = (text, description, color)
+        if self._breach_projection is not None:
+            return
+        self._apply_posture_presentation(text, description, color)
+
+    def set_breach_override(self, snapshot) -> None:
+        """A typed case advisory overrides display, never the posture score."""
+        from angerona.core.breach_state import BreachDisplaySnapshot
+        if type(snapshot) is not BreachDisplaySnapshot:
+            return
+        self._breach_projection = snapshot if snapshot.active else None
+        if snapshot.active:
+            self._apply_posture_presentation(
+                f"COMPROMISED · {snapshot.case_id[:8]} · {snapshot.containment_state}",
+                f"Confirmed breach case {snapshot.case_id}. Containment: {snapshot.containment_state}. "
+                f"{snapshot.summary} The underlying engine posture score is preserved; review the live case.",
+                QColor("#ef4444"))
+        else:
+            self._apply_posture_presentation(*self._normal_posture)
+
+    def _apply_posture_presentation(self, text, description, color) -> None:
+        if (text, description, color) == (self._posture, self._posture_description, self._posture_color):
             return
         self._posture, self._posture_description, self._posture_color = text, description, color
         self._sync_presentation()
