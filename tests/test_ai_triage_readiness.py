@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import urllib.error
+from types import SimpleNamespace
 
 import pytest
 
@@ -83,6 +84,23 @@ def test_recovered_readiness_clears_stale_connection_error(module, monkeypatch):
     module.last_error = module._ollama_readiness_error
     assert module._ping_ollama()
     assert module._ollama_readiness_error == module.last_error == ""
+
+
+def test_saved_bare_host_reaches_inventory_without_changing_runtime_config(module, monkeypatch):
+    config = SimpleNamespace(ollama_host="127.0.0.1:14184", ollama_model="llama3")
+    before = vars(config).copy()
+    module._config = config
+    requests = []
+
+    def capture(request, **_kwargs):
+        requests.append(request.full_url)
+        return _Response(b'{"models":[{"name":"llama3:latest"}]}')
+
+    monkeypatch.setattr(ai_triage, "safe_urlopen", capture)
+    assert module._ping_ollama()
+    assert requests == ["http://127.0.0.1:14184/api/tags"]
+    assert config.ollama_host == module._host == "127.0.0.1:14184"
+    assert vars(config) == before
 
 
 @pytest.mark.parametrize(

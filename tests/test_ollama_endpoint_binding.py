@@ -65,6 +65,8 @@ def test_opposite_family_listener_cannot_attest_requested_endpoint(
         ("http://[::1]:11434", "::1", "::"),
         # The socket table does not prove whether :: uses IPV6_V6ONLY.
         ("http://127.0.0.1:11434", "127.0.0.1", "::"),
+        ("127.0.0.1:11434", "127.0.0.1", "0.0.0.0"),
+        ("[::1]:11434", "::1", "::"),
     ),
 )
 def test_wildcard_affecting_endpoint_cannot_hide_behind_trusted_listener(
@@ -87,6 +89,8 @@ def test_wildcard_affecting_endpoint_cannot_hide_behind_trusted_listener(
     (
         ("http://127.0.0.1:11434", "127.0.0.1", "::1"),
         ("http://[::1]:11434", "::1", "127.0.0.1"),
+        ("127.0.0.1:11434", "127.0.0.1", "::1"),
+        ("[::1]:11434", "::1", "127.0.0.1"),
     ),
 )
 def test_trusted_exact_endpoint_is_allowed_with_unrelated_listeners(

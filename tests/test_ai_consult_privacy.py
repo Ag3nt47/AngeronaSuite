@@ -210,6 +210,55 @@ def test_preview_has_no_transport_and_binds_exact_content(captured_transport):
     assert _content(_payload(captured_transport.requests[0][0])) == (preview.prompt, preview.system)
 
 
+@pytest.mark.parametrize("base,connection", [
+    ("127.0.0.1:23145", "http://127.0.0.1:23145/api/chat"),
+    ("localhost:23145", "http://127.0.0.1:23145/api/chat"),
+    ("[::1]:23145", "http://[::1]:23145/api/chat"),
+])
+def test_bare_local_preview_and_dispatch_share_the_reviewed_destination(
+    captured_transport, monkeypatch, base, connection,
+):
+    from angerona.core import url_policy
+
+    captured_transport.configured = set()
+    monkeypatch.setattr(ai_consult, "OLLAMA_HOST", base)
+    monkeypatch.setattr(ai_consult, "local_service_url", url_policy.local_service_url)
+    resolutions = []
+
+    def resolve(host, port, **kwargs):
+        resolutions.append((host, port))
+        return [(url_policy.socket.AF_INET, kwargs["type"], 6, "", ("127.0.0.1", port))]
+
+    monkeypatch.setattr(url_policy.socket, "getaddrinfo", resolve)
+    preview = ai_consult.prepare_consultation("Selected question")
+    assert resolutions == captured_transport.requests == []
+    assert len(preview.destinations) == 1
+    assert preview.destinations[0].endpoint == "http://" + base + "/api/chat"
+    result = ai_consult.consult_ai("Selected question", approved_preview=preview)
+    assert result["provider"] == "ollama"
+    request, policy, _timeout = captured_transport.requests[0]
+    assert request.full_url == connection and policy is url_policy.OLLAMA_SERVICE_POLICY
+    assert resolutions == ([("localhost", 23145)] if base.startswith("localhost") else [])
+    assert ai_consult.OLLAMA_HOST == base
+
+
+def test_changed_local_destination_after_bare_preview_still_requires_review(captured_transport, monkeypatch):
+    captured_transport.configured = set()
+    monkeypatch.setattr(ai_consult, "OLLAMA_HOST", "127.0.0.1:11434")
+    preview = ai_consult.prepare_consultation("Selected question")
+    monkeypatch.setattr(ai_consult, "OLLAMA_HOST", "127.0.0.1:11435")
+    result = ai_consult.consult_ai("Selected question", approved_preview=preview)
+    assert result["provider"] is None and "held" in result["error"]
+    assert captured_transport.requests == []
+
+
+def test_cloud_destination_does_not_use_bare_loopback_compatibility(monkeypatch):
+    monkeypatch.setattr(ai_consult, "normalize_local_service_base",
+                        lambda *_args: pytest.fail("Cloud destinations must not be normalized"))
+    route = ai_consult._validated_route("openai", "owned-model", "0.0.0.0:11434")
+    assert route.endpoint == "https://api.openai.com/v1/chat/completions"
+
+
 @pytest.mark.parametrize("change", ["prompt", "system", "configured", "order", "model", "local"])
 def test_review_mismatch_holds_before_transport(captured_transport, monkeypatch, change):
     captured_transport.configured = {"anthropic", "openai"}

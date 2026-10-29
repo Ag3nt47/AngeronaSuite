@@ -167,8 +167,49 @@ def validate_url(
     return host
 
 
+def normalize_local_service_base(base: str) -> str:
+    """Adapt only an unambiguous bare loopback host:port, without I/O.
+
+    Complete URLs retain their existing caller-specific validation. This
+    compatibility spelling never changes persisted configuration or attests
+    a listener; transport still validates, pins and checks service ownership.
+    """
+    if type(base) is not str:
+        raise UrlPolicyError("local service base must be a string")
+    if "://" in base:
+        return base
+    if (not 1 <= len(base) <= LOCAL_SERVICE_POLICY.max_url_chars
+            or not base.isascii() or any(ord(char) <= 32 or ord(char) == 127 for char in base)):
+        raise UrlPolicyError("bare local service address is malformed")
+    if base.startswith("["):
+        address, separator, port_text = base[1:].partition("]:")
+        if not separator or "%" in address:
+            raise UrlPolicyError("bare local service address is ambiguous")
+        try:
+            literal = ipaddress.IPv6Address(address)
+        except ValueError as exc:
+            raise UrlPolicyError("bare local service address is invalid") from exc
+        loopback = literal.is_loopback
+    else:
+        address, separator, port_text = base.rpartition(":")
+        if not separator or ":" in address:
+            raise UrlPolicyError("bare local service address requires an explicit port")
+        if address.casefold() == "localhost":
+            loopback = True
+        else:
+            try:
+                loopback = ipaddress.IPv4Address(address).is_loopback
+            except ValueError as exc:
+                raise UrlPolicyError("bare local service address is invalid") from exc
+    if (not loopback or not 1 <= len(port_text) <= 5 or not port_text.isdecimal()
+            or not 1 <= int(port_text) <= 65535):
+        raise UrlPolicyError("bare local service address requires loopback and a valid port")
+    return "http://" + base
+
+
 def local_service_url(base: str, path: str = "") -> str:
     """Join a loopback-only service base with one absolute API path."""
+    base = normalize_local_service_base(base)
     parsed = urlsplit(base)
     if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
         raise UrlPolicyError("local service base URL must not include a path or query")
@@ -419,6 +460,7 @@ __all__ = [
     "host_policy",
     "local_json_request",
     "local_service_url",
+    "normalize_local_service_base",
     "read_bounded",
     "safe_urlopen",
     "validate_url",

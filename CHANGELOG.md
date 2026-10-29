@@ -50,6 +50,12 @@
 - Retain Defender source timestamps, exact threat/detection identifiers and
   available action/error/status fields in alerts and Live Debug. Describe an
   action as reported rather than inferring remediation success from its name.
+- Preserve native Base64 mesh-signature metadata and generic SOAR triage input
+  links through diagnostic export and offline review. Distinguish observed bus
+  mode from the existing verification boolean; neither grants response authority.
+- Accept strict bare loopback host-and-port settings at local AI runtime
+  boundaries and matching previews. Keep saved preferences, cloud URL policy,
+  consent checks and listener attestation unchanged.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

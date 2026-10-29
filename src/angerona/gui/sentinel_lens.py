@@ -42,6 +42,7 @@ from angerona.core.sentinel_lens import (
     parse_log_bundle,
     render_narrative,
 )
+from angerona.core.url_policy import normalize_local_service_base
 
 _MAX_IMPORT_FILE_BYTES = MAX_BUNDLE_BYTES
 _MAX_GRAPH_EVENTS = 2_000
@@ -66,7 +67,11 @@ _KIND_COLOR = {
 
 def _loopback_ollama_url(value: object) -> str:
     rendered = str(value or "http://localhost:11434").strip()
-    parsed = urlsplit(rendered)
+    try:
+        rendered = normalize_local_service_base(rendered)
+        parsed = urlsplit(rendered)
+    except ValueError as exc:
+        raise SentinelLensInputError("local AI endpoint is not a plain loopback URL") from exc
     if (
         parsed.scheme not in {"http", "https"}
         or parsed.username is not None

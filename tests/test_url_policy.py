@@ -15,6 +15,7 @@ from angerona.core.url_policy import (
     host_policy,
     local_json_request,
     local_service_url,
+    normalize_local_service_base,
     read_bounded,
     safe_urlopen,
     validate_url,
@@ -26,6 +27,56 @@ def _resolver(address: str):
         return [(2, type, 6, "", (address, port))]
 
     return resolve
+
+
+@pytest.mark.parametrize("base", [
+    "127.0.0.1:11434", "127.0.0.2:23145", "localhost:11434",
+    "LOCALHOST:23145", "[::1]:11434", "[0:0:0:0:0:0:0:1]:23145",
+])
+def test_bare_loopback_normalization_is_pure_and_does_not_resolve(base, monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("No DNS during normalization"))
+    assert normalize_local_service_base(base) == "http://" + base
+    assert normalize_local_service_base("http://" + base) == "http://" + base
+
+
+@pytest.mark.parametrize("base", [
+    None, 11434, "", "localhost", "127.0.0.1", "localhost:", "localhost:0",
+    "localhost:65536", "localhost:+1", "localhost:-1", "localhost:１２３",
+    "localhost:11434/path", "localhost:11434?query=1", "localhost:11434#fragment",
+    "user:secret@localhost:11434", "localhost.evil.invalid:11434", "localtest:11434",
+    "0.0.0.0:11434", "10.0.0.1:11434", "203.0.113.8:11434", "127.1:11434",
+    "2130706433:11434", "127.00.0.1:11434", "[::]:11434", "::1:11434",
+    "[::1%1]:11434", "[127.0.0.1]:11434", " localhost:11434", "localhost:11434\n",
+    "localhost\\:11434", "localhost:" + "1" * 4096,
+])
+def test_ambiguous_or_non_loopback_bare_addresses_fail_without_io(base, monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("Rejected before DNS"))
+    with pytest.raises(UrlPolicyError):
+        normalize_local_service_base(base)
+
+
+@pytest.mark.parametrize("base", [
+    "http://203.0.113.8:11434", "http://user:secret@localhost:11434",
+    "http://localhost:11434/path", "http://localhost:11434?query=1",
+    "http://localhost:11434#fragment", "ftp://localhost:11434",
+])
+def test_complete_url_validation_is_not_replaced_by_bare_compatibility(base, monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("Rejected before DNS"))
+    assert normalize_local_service_base(base) == base
+    with pytest.raises(UrlPolicyError):
+        local_service_url(base, "/api/chat")
+
+
+def test_legacy_localhost_base_uses_existing_single_resolution_pin(monkeypatch):
+    resolutions = []
+
+    def resolve(host, port, **kwargs):
+        resolutions.append((host, port))
+        return [(socket.AF_INET, kwargs["type"], 6, "", ("127.0.0.1", port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    assert local_service_url("localhost:23145", "/api/tags") == "http://127.0.0.1:23145/api/tags"
+    assert resolutions == [("localhost", 23145)]
 
 
 @pytest.mark.parametrize(

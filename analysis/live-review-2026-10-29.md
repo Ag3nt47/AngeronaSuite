@@ -164,3 +164,155 @@ rows are not sufficient evidence of a duplicated-publication defect.
 
 Diagnostic annotations do not authorize clearing alerts, approving baselines,
 changing response policy or mutating host processes or firewall rules.
+
+## Continuing Full-mode observation
+
+A later 180-second pass observed Full mode, while the saved Chill preference
+remained byte-identical. The mode-transition cause was not captured. Six cached
+inventory snapshots stayed ready, and all four component roles had eighteen
+fresh authenticated samples with seventeen counter advances each. Of thirty-six
+500 ms main-window probes, two missed; maximum observed GUI heartbeat lag was
+1,141 ms and maximum tick duration was 147.8 ms. Reported delivery drops stayed
+zero. Present crash/stall/runtime-log tails were unchanged. This does not prove
+that short UI delays were absent or that the cause of earlier delays is known.
+
+The incremental stream contained 433 events: 371 informational, 56 medium, two
+low, three high and one critical. The critical event concerned canary health
+coverage and explicitly denied active attack and response authority. High
+records included a platform hardening exposure. Memory observations and their
+SpywareGuard echoes retained partial-coverage and uncorroborated-exposure
+qualifications. No observed record in this interval asserted a confirmed active
+spyware breach. A gap between separate retained windows remains explicit; these
+captures are not a continuous audit or a whole-host cleanliness verdict.
+
+A separate 75-second native-thread sample observed Full mode throughout. Core
+CPU averaged approximately 133% of one logical CPU and the shared inventory
+worker approximately 76%. Primary module workers and the GUI accounted for
+only about half of Core CPU time. AI Model Integrity Guard and Data Provenance
+Graph were the largest attributed primary workers. Auxiliary threads, native
+work and measurement skew remain unresolved. Security attestation, hashing and
+detector cadence were not weakened on the basis of incomplete attribution, and
+no performance improvement is claimed from this sample.
+
+Two optional AI failures had distinct causes: a saved bare loopback address was
+parsed as a URL path, and a separate request encountered an existing wildcard
+Ollama listener. Runtime compatibility for the former must preserve preferences
+and the latter's existing listener-attestation hold. This review did not stop,
+rebind, trust or otherwise change the external service.
+
+Before the next patch, a signed standdown signal retired watchdog and scanner
+generations but left the directly launched Core and its other children alive.
+Source review established that this normal development launch does not install
+the supervised-recovery stop-token timer. That result alone is not a dashboard
+STOP defect. Invoking the exact dashboard STOP and its maintained confirmation
+then retired Core and all remaining captured application generations. The
+storage-warning choices were untouched. Preferences and authority-file metadata
+remained unchanged. The diagnostic Job retired naturally; one brief diagnostic
+generation lacked an independent retained witness. Descendants created after
+admission remain outside the captured-generation retirement proof.
+
+## Provenance and local-AI corrections
+
+An isolated reproduction used actual enrolled mesh encryption, Ed25519 packet
+signatures and EventBus HMAC verification. Native signatures are canonical
+Base64; both the exporter and offline summary had accepted only hexadecimal
+metadata. All four genuine fixture signatures were lost from those views while
+the authenticated originals remained intact. Separately, distinct same-module,
+same-time inputs produced identical generic SOAR triage rows because the rows
+omitted their input HMAC and timestamp. This demonstrates lost provenance,
+not duplicate delivery. No event deduplication or original-ledger rewrite is
+appropriate.
+
+An HMAC-only bus also demonstrated that the existing live-verification boolean
+does not by itself establish an enrolled mesh receipt. Additive observed-mode
+and encoding metadata must remain advisory. Signature shape, peer text and
+redacted diagnostic output cannot grant response authority. The current live
+capture's absent signature and absent peer cannot be attributed solely to the
+encoding defect; its mesh enrollment has not been independently established.
+
+The corrected exporter and offline summarizer preserve exact canonical Base64
+signatures, explicitly tagged historical hexadecimal metadata and validated
+public trigger links. Malformed provenance stays unavailable; derived status
+cannot hide an omitted source field. The observed receipt-basis label describes
+only before/after bus-mode observations and retains existing verification
+semantics. Producer cryptography, event delivery, cursor/retry behavior and
+response authorization are unchanged.
+
+A shared pure helper now adapts strict bare loopback host-and-port values at
+local service transport, startup-cache lookup, Sentinel Lens, local consultation
+preview and Counter-Agentic's configured-port reader. Caller-specific complete
+URL policies remain in force, including narrower startup and preview host rules.
+Cloud destinations, DNS pinning, explicit Send consent and native listener
+attestation retain their checks. No saved configuration rewrite, unowned service
+change or external-provider enrollment is part of this compatibility fix.
+
+The nineteen-file combined gate passed 545 tests with two unavailable-directory-
+symlink skips in 77.35 seconds. Its 28 admitted native Job generations retired
+without supervisor force, with scoped source hashes unchanged. Independent
+source review found no blocking issue. A test-only refinement then removed an
+unrelated temporary settings-file assertion: its focused replay passed and
+checks the actual runtime configuration object. It is not evidence of host
+preferences-byte preservation; fresh launch and UI-action receipts establish
+that separately. That replay's three admitted generations also retired.
+
+Ruff and documentation drift checks passed. A fresh finite startup preflight
+passed and its twelve admitted native Job generations retired. A separate
+source inventory bound all 467 first-party Python files for the new diagnostic
+launch. These are scoped validation results, not complete host coverage,
+independent live enrollment, native listener acceptance or a performance fix.
+
+## Fresh manual Full-mode verification
+
+The user requested Full-mode observation. A single exact dashboard Chill action
+was invoked after native Core/window and visible green-on-state checks. A later
+dark manual-Full toolbar capture and newer generation-bound status confirmed
+the transition. An immediate still-green frame was preserved as queued/paint
+timing uncertainty; the action was not repeated. Unsupported accessibility
+properties caused an earlier diagnostic hold, not an application failure.
+Actual settings and authority-file metadata stayed unchanged.
+
+During the subsequent 180-second window, six status snapshots consistently
+showed all 75 enabled module statuses running, with eleven disabled modules
+among 86 discovered. The shared inventory generation stayed ready. All four
+component roles had eighteen authenticated native-identity-bound samples and
+seventeen counter advances each, with no observed role gap. Running status and
+liveness remain distinct from detector collection or response coverage.
+
+Thirty-five main-window probes included one 500 ms miss. Maximum GUI heartbeat
+lag was 2,016 ms; maximum tick duration was 185.06 ms. Core CPU averaged 130.15%
+of one logical CPU; system CPU averaged 87.48% and peaked at 100%. Maximum
+observed queue depth was four with zero reported delivery drops. The sampled
+worker population and competing host/diagnostic load differ from earlier
+windows, preventing a causal performance comparison. UI delay remains open.
+Five present crash/stall/runtime-log tails stayed byte-identical and same-size;
+five absent sources remained not-created or unavailable. No new stall-log entry
+does not rule out the measured shorter heartbeat delays.
+
+The follow added 830 events: 799 informational, two low, thirteen medium,
+fifteen high and one critical. The critical CHAOS record matches the frozen
+coverage-self-test template for missing NDRD/FIM/AMSI detection echoes. Its
+export lacks disposition and omits two original detail fields. Report it as a
+coverage self-test regression with unresolved cause, not a confirmed breach or
+proof of kernel blinding. Neither confirmed-spyware nor active-attack authority
+was asserted in these captured events. The initial follow retained-history loss
+of 4,356 records remains explicit; no later zero-drop reading erases that gap.
+
+All 2,075 unique captured event views reported HMAC-only observed mode and empty
+mesh-signature metadata. All 28 generic SOAR outputs, including fifteen new
+ones, linked to exactly one preceding captured input by public HMAC, timestamp
+and module. This is advisory captured-view correlation, not independent archive
+verification. Both optional-AI modules now report the expected wildcard-listener
+hold; the former bare-address URL-policy error was absent. No external service
+or listener was changed.
+
+All 467 first-party Python source hashes stayed fixed. The three observation
+generations retired naturally with retained native waits, Job active zero and
+no supervisor force or lost diagnostic witness. The application remained alive
+at handoff. These fresh observations validate the scoped diagnostic changes;
+they do not close remaining responsiveness, privilege or collection gaps.
+
+The separately requested next hardening milestone is v1.15.0. Kernel telemetry
+assurance, WER suspension precursors, containment identity leases, rollback
+freshness and service/key custody require their own implementations and
+acceptance evidence. This v1.14.2 maintenance record does not claim those next
+changes are already deployed.

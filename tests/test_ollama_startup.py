@@ -38,6 +38,19 @@ def test_existing_daemon_is_checked_without_starting_or_loading(monkeypatch):
     assert lifecycle.startup_snapshot("http://127.0.0.1:11434/") == status
 
 
+@pytest.mark.parametrize("bare,complete", [
+    ("127.0.0.1:11434", "http://127.0.0.1:11434"),
+    ("localhost:11434", "http://127.0.0.1:11434"),
+    ("[::1]:23145", "http://[::1]:23145"),
+])
+def test_bare_startup_and_snapshot_use_the_same_pure_cache_key(monkeypatch, bare, complete):
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("Cache must not resolve"))
+    status = lifecycle.ensure_ollama_service(bare)
+    assert status.daemon_ready
+    assert lifecycle.startup_snapshot(bare) == lifecycle.startup_snapshot(complete) == status
+    assert list(lifecycle._startup_attempts) == [lifecycle._startup_key(complete)]
+
+
 def test_missing_daemon_launches_once_and_reports_completed_stages(monkeypatch):
     occupied = iter((False, True))
     monkeypatch.setattr(lifecycle, "_startup_port_present", lambda _host: next(occupied))
@@ -143,6 +156,8 @@ def test_concurrent_async_and_sync_calls_share_one_launch(monkeypatch):
     result = lifecycle.request_ollama_start()
     assert result.state == "starting" and entered.wait(1)
     assert lifecycle.request_ollama_start("http://127.0.0.1:11434").state == "starting"
+    assert lifecycle.request_ollama_start("127.0.0.1:11434").state == "starting"
+    assert len(lifecycle._startup_attempts) == 1
     shared = []
     waiter = threading.Thread(target=lambda: shared.append(lifecycle.ensure_ollama_service()))
     waiter.start()
@@ -162,6 +177,8 @@ def test_concurrent_async_and_sync_calls_share_one_launch(monkeypatch):
     "http://remote.example:11434", "http://127.0.0.1:0", "http://[malformed",
     "http://localhost:11434/api/tags", "https://localhost:11434",
     "http://user:password@localhost:11434", None,
+    "0.0.0.0:11434", "localhost:0", "localhost:65536", "::1:11434",
+    "[::1%1]:11434", "localhost:11434/api/tags",
 ])
 def test_invalid_gui_host_is_failed_without_io(host, monkeypatch):
     monkeypatch.setattr(socket, "getaddrinfo", lambda *_a, **_k: pytest.fail("DNS"))

@@ -10,6 +10,38 @@ from angerona.modules import beacon_detector, counter_agentic
 from angerona.telemetry import sensors
 
 
+@pytest.mark.parametrize("base,port,normalized", [
+    ("127.0.0.1:23145", 23145, "http://127.0.0.1:23145"),
+    ("localhost:23145", 23145, "http://localhost:23145"),
+    ("[::1]:23145", 23145, "http://[::1]:23145"),
+    ("https://localhost:23145", 23145, "https://localhost:23145"),
+])
+def test_counter_agentic_uses_configured_bare_port_without_mutating_settings(
+    monkeypatch, base, port, normalized,
+):
+    from angerona.core.config import Config
+
+    config = SimpleNamespace(ollama_host=base)
+    monkeypatch.setattr(Config, "load", lambda: config)
+    monkeypatch.setattr(counter_agentic, "list_connections",
+                        lambda: pytest.fail("Parsing a configured endpoint must not collect connections"))
+    assert counter_agentic._configured_inference_port() == (port, normalized, "")
+    assert config.ollama_host == base
+
+
+@pytest.mark.parametrize("base", [
+    "0.0.0.0:11434", "localhost:0", "localhost:65536", "localhost:11434/path",
+    "user:password@localhost:11434", "[::1%1]:11434", "::1:11434",
+    "http://127.0.0.2:11434",  # Retain this module's narrower existing host policy.
+])
+def test_counter_agentic_invalid_base_remains_unavailable_without_default_port(monkeypatch, base):
+    from angerona.core.config import Config
+
+    monkeypatch.setattr(Config, "load", lambda: SimpleNamespace(ollama_host=base))
+    port, endpoint, error = counter_agentic._configured_inference_port()
+    assert port is None and endpoint == "" and error
+
+
 def test_connection_enumeration_failure_is_not_an_empty_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

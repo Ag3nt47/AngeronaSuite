@@ -29,6 +29,7 @@ from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
     local_json_request,
     local_service_url,
+    normalize_local_service_base,
 )
 
 
@@ -541,6 +542,7 @@ def _startup_key(host: str) -> str:
     if (not isinstance(host, str) or len(host) > 256 or host != host.strip()
             or any(ord(character) < 32 for character in host)):
         raise ValueError("Invalid local AI service address.")
+    host = normalize_local_service_base(host)
     parsed = urlsplit(host)
     if (parsed.scheme != "http" or parsed.username is not None
             or parsed.password is not None or parsed.path not in {"", "/"}

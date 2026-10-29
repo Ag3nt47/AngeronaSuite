@@ -7,6 +7,7 @@ signed event and must never be submitted to a response engine as evidence.
 """
 from __future__ import annotations
 
+import base64
 from collections import deque
 from contextlib import contextmanager, ExitStack
 import copy
@@ -58,6 +59,7 @@ _SAFE_DETAILS = frozenset({
     "defender_threat_id", "defender_detection_id", "defender_action_id",
     "defender_action_status", "defender_error_code", "defender_error_description",
     "defender_status_code", "defender_status_description", "defender_metadata_gaps",
+    "trigger", "trigger_hmac", "trigger_ts",
 })
 _TAMPER_KINDS = frozenset({
     "runtime-callable-drift", "source-file-drift", "coverage-unavailable",
@@ -83,6 +85,29 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]"
 
 class LiveDebugError(RuntimeError):
     pass
+
+
+def mesh_signature_encoding(value: object) -> str:
+    """Recognize exact public signature metadata; this does not verify it."""
+    if type(value) is not str:
+        return ""
+    if len(value) == 128 and re.fullmatch(r"[0-9a-f]{128}", value):
+        return "hex-ed25519-legacy"
+    if len(value) != 88:
+        return ""
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, UnicodeError):
+        return ""
+    return "base64-ed25519" if len(raw) == 64 and base64.b64encode(raw).decode("ascii") == value else ""
+
+
+def _observed_mesh_requirement(bus):
+    try:
+        value = bus.mesh_required
+    except Exception:
+        return None
+    return value if type(value) is bool else None
 
 
 def endpoint_for_pid(pid: int) -> str:
@@ -788,6 +813,21 @@ class LiveDebugService:
             value = details.get(key)
             if value is None:
                 continue
+            # Public signatures are exact provenance, not free text or secrets.
+            # Malformed claims are omitted rather than normalized or redacted
+            # into a string that could be mistaken for an original signature.
+            if key == "trigger_hmac":
+                if type(value) is str and re.fullmatch(r"[0-9a-f]{64}", value):
+                    selected[key] = value
+                continue
+            if key == "trigger_ts":
+                if type(value) in (int, float) and 0 <= value <= 253402300799 and math.isfinite(value):
+                    selected[key] = value
+                continue
+            if key == "trigger":
+                if type(value) is str:
+                    selected[key] = sanitize_text(value, 160)
+                continue
             if key == "process_identity_complete" and type(value) is not bool:
                 continue
             if key == "tamper_kind" and (type(value) is not str or value not in _TAMPER_KINDS):
@@ -823,25 +863,37 @@ class LiveDebugService:
                     if isinstance(scalar, str):
                         evidence[name] = sanitize_text(scalar, 512)
                 selected[key] = evidence
+        omitted_details = max(0, len(details) - len(selected))
+        if any(key in details for key in ("trigger", "trigger_hmac", "trigger_ts")):
+            selected["trigger_provenance_status"] = ("reported" if "trigger_hmac" in selected and "trigger_ts" in selected
+                                                     else "unavailable")
+        mesh_before = _observed_mesh_requirement(self.bus)
         signed = bool(getattr(event, "hmac_sig", ""))
         try:
             archived = signed and bool(self.bus.integrity_enabled) and bool(self.bus.verify_archived(event))
             live = archived and bool(self.bus.verify(event))
         except Exception:
             archived = live = False
+        mesh_after = _observed_mesh_requirement(self.bus)
+        # Two mode observations are descriptive, not an atomic enrollment or
+        # cryptographic attestation. Keep the established live bool semantics.
+        receipt_basis = ("mesh-required-observed" if mesh_before is mesh_after is True else
+                         "hmac-only-observed" if mesh_before is mesh_after is False else "mode-changed-or-unavailable")
         signature = str(getattr(event, "hmac_sig", ""))
         if not re.fullmatch(r"[0-9a-f]{64}", signature):
             signature = ""
-        mesh_signature = str(getattr(event, "mesh_sig", ""))
-        if not re.fullmatch(r"[0-9a-f]{128}", mesh_signature):
+        mesh_signature = getattr(event, "mesh_sig", "")
+        mesh_encoding = mesh_signature_encoding(mesh_signature)
+        if not mesh_encoding:
             mesh_signature = ""
         severity = getattr(getattr(event, "severity", None), "name", "UNKNOWN")
         timestamp = getattr(event, "ts", None)
         return dict(kind="event", module=sanitize_text(getattr(event, "module", ""), 160),
                     message=sanitize_text(getattr(event, "message", "")), severity=severity,
                     event_ts=timestamp if type(timestamp) in (float, int) and math.isfinite(timestamp) else None,
-                    details=selected, omitted_detail_count=max(0, len(details) - len(selected)),
+                    details=selected, omitted_detail_count=omitted_details,
                     original_hmac=signature, original_mesh_signature=mesh_signature,
+                    original_mesh_signature_encoding=mesh_encoding, receipt_basis_at_export=receipt_basis,
                     original_mesh_peer=sanitize_text(getattr(event, "mesh_peer", ""), 160),
                     original_integrity_verified=archived, live_receipt_verified_at_export=live,
                     verification_scope="original event only; redacted view is advisory")

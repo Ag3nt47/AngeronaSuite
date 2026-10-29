@@ -41,29 +41,18 @@ performed to create this demonstration.
 
 ## Latest maintenance
 
-v1.14.2 adds a **GitHub Tools** hub, pinned **Zero Breach Toolkit**, priority
-**Spyware Scan** and linked after-action review. Verified native breach evidence
-can latch a visible case; supported installed response paths separately check
-authority, policy and network-rule receipts before reporting containment.
-Source Observe shows response holds, and third-party findings remain leads.
-Startup recovery, storage controls and component heartbeat EKGs remain available.
-Follow-up fixes fit the dashboard frame to scaled display work areas and create
-private Windows toolkit output with explicit current-user ownership.
-SpywareScan groups scope, checks and progress into readable sections, with a red
-start button and click-to-change Entire PC scope. Per-check and overall progress,
-current task/file, elapsed time and available estimates explain active work;
-timeouts retain their reason and partial progress.
-An after-action report opens automatically once both selected scanners have
-finished and stopped, including incomplete or failed runs.
-Large profiles can use a separate per-run allowance of up to four hours; saved
-defaults and storage/resource controls remain unchanged.
-Active accounting tolerates normal generated-file cleanup while keeping strict
-checks on installed files, retained evidence and storage limits.
-Scan reports distinguish tool findings, contextual references and withdrawn
-indicators. Runtime diagnostics expose shared process-inventory readiness and
-preserve its first failure through worker retirement.
-Defender alerts retain native source time, correlation IDs and available result
-fields separately from delivery time and confirmed response outcomes.
+v1.14.2 connects **GitHub Tools**, the pinned **Zero Breach Toolkit**, priority
+**Spyware Scan** and automatic after-action review.
+
+- **Clear scan progress:** per-check and overall progress, current task/file,
+  available estimates and an optional longer per-run allowance.
+- **Breach review:** case-linked warnings and governed response controls;
+  third-party findings and coverage gaps retain their distinct meanings.
+- **Runtime reliability:** bounded storage, display fitting, component EKGs,
+  inventory failure diagnostics and preserved user preferences.
+- **Traceable evidence:** toolkit classifications, native Defender metadata
+  and diagnostic provenance support investigation without granting authority.
+
 [What changed and current limits](docs/releases/v1.14.2.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 

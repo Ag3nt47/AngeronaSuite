@@ -47,6 +47,36 @@ def test_guarded_call_uses_local_bounded_transport_and_records_metrics(monkeypat
     assert ollama_client.diagnostics_snapshot()["tokens_per_sec"] == 10.0
 
 
+def test_guarded_call_adapts_bare_host_only_at_the_existing_transport_boundary(monkeypatch):
+    from angerona.core import url_policy
+
+    captured = {}
+
+    class Response:
+        headers = {}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _maximum):
+            return b'{"response":"Owned advisory result"}'
+
+    def capture(request, *, policy, timeout):
+        captured.update(url=request.full_url, policy=policy, timeout=timeout)
+        return Response()
+
+    monkeypatch.setattr(url_policy, "safe_urlopen", capture)
+    monkeypatch.setattr(ollama_client.g, "audit", lambda *_a, **_k: None)
+    result = ollama_client.call({"model": "local", "prompt": "Summarize this event"},
+                                host="127.0.0.1:23145", timeout=9)
+    assert result["response"] == "Owned advisory result"
+    assert captured == dict(url="http://127.0.0.1:23145/api/generate",
+                            policy=url_policy.OLLAMA_SERVICE_POLICY, timeout=9)
+
+
 def test_untrusted_telemetry_is_neutralized_without_skipping_analysis(monkeypatch) -> None:
     captured = {}
 

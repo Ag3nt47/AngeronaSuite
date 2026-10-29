@@ -50,6 +50,7 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.url_policy import normalize_local_service_base
 from angerona.core.process_allowlist import (
     is_digest_pinned_allowed,
     policy_snapshot,
@@ -72,7 +73,7 @@ def _configured_inference_port() -> tuple[int | None, str, str]:
     try:
         from angerona.core.config import Config
 
-        endpoint = str(Config.load().ollama_host or "").strip()
+        endpoint = normalize_local_service_base(str(Config.load().ollama_host or "").strip())
         parsed = urlsplit(endpoint)
         host = (parsed.hostname or "").casefold()
         if parsed.scheme not in {"http", "https"} or host not in {

@@ -231,11 +231,15 @@ def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
     assert _loopback_ollama_url("http://localhost:11434") == "http://localhost:11434"
     assert _loopback_ollama_url("http://127.0.0.1:11434/") == "http://127.0.0.1:11434"
     assert _loopback_ollama_url("http://[::1]:11434") == "http://[::1]:11434"
+    assert _loopback_ollama_url("localhost:11434") == "http://localhost:11434"
+    assert _loopback_ollama_url("127.0.0.1:11434") == "http://127.0.0.1:11434"
+    assert _loopback_ollama_url("[::1]:11434") == "http://[::1]:11434"
     for endpoint in (
         "https://models.example.com",
         "http://localhost.example.com:11434",
         "http://user:password@localhost:11434",
         "http://localhost:11434/proxy",
+        "0.0.0.0:11434", "localhost:0", "localhost:11434/proxy", "::1:11434",
     ):
         with pytest.raises(SentinelLensInputError):
             _loopback_ollama_url(endpoint)
@@ -268,7 +272,7 @@ def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
     local = SentinelLensDialog(
         None,
         config=SimpleNamespace(
-            ollama_host="http://127.0.0.1:11434",
+            ollama_host="127.0.0.1:11434",
             ollama_model="local-model",
             ollama_keep_alive="5m",
         ),
@@ -276,6 +280,7 @@ def test_only_plain_loopback_ai_endpoints_are_admitted(monkeypatch) -> None:
     try:
         assert local._ask_loopback_ai("private evidence") == "bounded local narrative"
         assert calls[0]["host"] == "http://127.0.0.1:11434"
+        assert local.config.ollama_host == "127.0.0.1:11434"
         assert calls[0]["path"] == "/api/generate"
         assert calls[0]["neutralized_telemetry"] == "private evidence"
         assert "private evidence" not in calls[0]["payload"]["prompt"]

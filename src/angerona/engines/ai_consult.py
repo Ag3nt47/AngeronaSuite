@@ -47,6 +47,7 @@ from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
     host_policy,
     local_service_url,
+    normalize_local_service_base,
     read_bounded,
     safe_urlopen,
 )
@@ -271,6 +272,7 @@ def _validated_route(name: str, model: str, local_base: str = "") -> Consultatio
             raise ValueError("local provider base is invalid")
         if any(ord(char) < 33 or ord(char) > 126 for char in local_base):
             raise ValueError("local provider base contains invalid characters")
+        local_base = normalize_local_service_base(local_base)
         parsed = urlsplit(local_base)
         if (parsed.scheme not in {"http", "https"} or parsed.username is not None
                 or parsed.password is not None or parsed.query or parsed.fragment

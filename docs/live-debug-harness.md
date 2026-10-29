@@ -201,6 +201,23 @@ give a reader response authority. `status()` exposes `enabled`, `running`,
 `endpoint`, `pid`, `birth`, `run_id`, `cursor`, `first_seq`, `queue_dropped`,
 `client_count`, `error`, `transport`, `history_size` and `queued`.
 
+`original_mesh_signature_encoding` identifies exact canonical Base64 metadata
+from the native producer or supported historical lowercase-hex metadata.
+Recognizing either format is not signature verification. The additive
+`receipt_basis_at_export` describes the bus mode observed around verification:
+`mesh-required-observed`, `hmac-only-observed`, or
+`mode-changed-or-unavailable`. These are separate observations, not an atomic
+enrollment attestation. The existing live boolean can be true for HMAC-only
+verification and must not be treated as proof of an enrolled native producer.
+Older captures without these fields retain their original uncertainty.
+
+Generic SOAR triage records include the triggering module, exact public input
+HMAC and source timestamp when valid. Diagnostic views and offline samples
+preserve those links and mark incomplete provenance unavailable. This allows
+same-module records to be traced without treating identical informational rows
+as duplicate delivery. Neither exporter nor summary rewrites authenticated
+originals, deduplicates the source ledger or grants a reader response authority.
+
 AV Telemetry event details retain `source_event_time` independently from the
 event's delivery timestamp. `source_event_time_status` distinguishes missing,
 invalid and unavailable source metadata. Exact Defender IDs remain strings;

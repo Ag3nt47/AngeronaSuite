@@ -80,6 +80,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   and provided result fields; Event.ts stays delivery time. Missing/duplicate/
   invalid source metadata is explicit. A reported action or zero error text is
   not independently verified remediation, active-attack or response authority.
+  Diagnostic maintenance also retains exact native Base64 mesh signatures and
+  generic SOAR input-HMAC/time links. Observed bus mode and encoding are advisory;
+  the existing live boolean alone is not proof of enrolled producer identity.
+  Strict bare loopback host-and-port compatibility is runtime-only across local
+  AI clients/previews, with saved values, cloud URL rules, Send consent and
+  listener attestation preserved. Unowned wildcard listeners remain held.
 - A latched Breached warning, critical report and borders require fresh native
   manager-enrolled LIVE mesh evidence, registered/current producer, an exact
   contract and explicit active attack/exploitation. Health/exposure/practice,

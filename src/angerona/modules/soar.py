@@ -8,7 +8,9 @@ authority or proves that a request was admitted or completed.
 """
 from __future__ import annotations
 
+import math
 import os
+import re
 import time
 from pathlib import Path
 from typing import List
@@ -529,10 +531,17 @@ class SOARModule(BaseModule):
             return
 
         # Playbook 2: any other HIGH+ event → correlate & log for the analyst.
+        provenance = {}
+        signature = getattr(ev, "hmac_sig", "")
+        if type(signature) is str and re.fullmatch(r"[0-9a-f]{64}", signature):
+            provenance["trigger_hmac"] = signature
+        stamp = getattr(ev, "ts", None)
+        if type(stamp) in (int, float) and 0 <= stamp <= 253402300799 and math.isfinite(stamp):
+            provenance["trigger_ts"] = stamp
         self.emit(
             f"Playbook[triage]: correlated {ev.severity.label} event from "
             f"{ev.module}. Review in Alerts.",
-            Severity.INFO, trigger=ev.module,
+            Severity.INFO, trigger=ev.module, **provenance,
         )
 
     # ── G3-B helpers ─────────────────────────────────────────────────────────

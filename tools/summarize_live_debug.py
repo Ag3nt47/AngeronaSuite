@@ -22,7 +22,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_ROOT / "src"))
 
-from angerona.core.live_debug import PROTOCOL, sanitize_text  # noqa: E402
+from angerona.core.live_debug import PROTOCOL, mesh_signature_encoding, sanitize_text  # noqa: E402
 
 MAX_FRAME_BYTES = 32 * 1024
 MAX_INPUT_BYTES = 64 * 1024 * 1024
@@ -34,7 +34,6 @@ _SEVERITIES = {"UNKNOWN": -1, "INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRIT
 _KINDS = {"hello", "heartbeat", "event", "diagnostic", "coverage", "gap", "annotation", "client_error"}
 _VERDICTS = {"threat", "confirmed-threat", "false-positive", "needs-review", "health", "exposure"}
 _HASH = re.compile(r"[0-9a-f]{64}")
-_MESH_HASH = re.compile(r"[0-9a-f]{128}")
 _RUN = re.compile(r"[0-9a-f]{32}")
 
 
@@ -167,6 +166,15 @@ def _stamp(value):
     return value if type(value) in (int, float) and 0 <= value <= 253402300799 and math.isfinite(value) else None
 
 
+def _mesh_signature(record):
+    value = record.get("original_mesh_signature")
+    encoding = mesh_signature_encoding(value)
+    # Older v1 records had no encoding tag. Preserve their exact supported
+    # value, but an explicit contradictory claim is not accepted as provenance.
+    claimed = record.get("original_mesh_signature_encoding", encoding)
+    return (value, encoding) if encoding and claimed == encoding else ("", "")
+
+
 def _identity(record):
     run, sequence = record.get("run_id"), record.get("seq")
     if isinstance(run, str) and _RUN.fullmatch(run) and type(sequence) is int and 0 < sequence <= 0x7FFFFFFFFFFFFFFF:
@@ -240,14 +248,26 @@ class CaseSummary:
         disposition = disposition if isinstance(disposition, str) and disposition in {"active", "health", "exposure", "practice", "observation", "informational"} else "unknown"
         counts = case["producer_dispositions"]
         counts[disposition] = counts.get(disposition, 0) + 1
+        mesh_signature, mesh_encoding = _mesh_signature(record)
+        receipt_basis = record.get("receipt_basis_at_export")
+        receipt_basis = receipt_basis if type(receipt_basis) is str and receipt_basis in {
+            "mesh-required-observed", "hmac-only-observed", "mode-changed-or-unavailable"} else "unspecified"
+        trigger_hmac = details.get("trigger_hmac")
+        trigger_hmac = trigger_hmac if type(trigger_hmac) is str and _HASH.fullmatch(trigger_hmac) else ""
+        trigger_ts = _stamp(details.get("trigger_ts"))
+        has_trigger = any(key in details for key in ("trigger", "trigger_hmac", "trigger_ts", "trigger_provenance_status"))
         sample = {"capture": capture, "line": line, "run_id": record.get("run_id") if _identity(record) else None,
             "seq": record.get("seq") if _identity(record) else None, "ts": stamp, "severity": severity,
             "text": _text(message), "source_file": _text(details.get("source_file"), 256),
             "original_integrity_verified": record.get("original_integrity_verified") is True,
             "live_receipt_verified_at_export": record.get("live_receipt_verified_at_export") is True,
             "original_hmac": record.get("original_hmac") if isinstance(record.get("original_hmac"), str) and _HASH.fullmatch(record["original_hmac"]) else "",
-            "original_mesh_signature": record.get("original_mesh_signature") if isinstance(record.get("original_mesh_signature"), str) and _MESH_HASH.fullmatch(record["original_mesh_signature"]) else "",
-            "original_mesh_peer": _text(record.get("original_mesh_peer"), 160)}
+            "original_mesh_signature": mesh_signature, "original_mesh_signature_encoding": mesh_encoding,
+            "original_mesh_peer": _text(record.get("original_mesh_peer"), 160),
+            "receipt_basis_at_export": receipt_basis,
+            "trigger_module": _text(details.get("trigger"), 160), "trigger_hmac": trigger_hmac, "trigger_ts": trigger_ts,
+            "trigger_provenance_status": "reported" if trigger_hmac and trigger_ts is not None else
+                                         "unavailable" if has_trigger else "unspecified"}
         if len(case["samples"]) < 2:
             case["samples"].append(sample)
         else:
