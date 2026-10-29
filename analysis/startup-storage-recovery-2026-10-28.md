@@ -730,6 +730,22 @@ that exact reviewed root without changing its injected retirement-proof failure.
 The focused replay passed. All 107 observed generations in the wider run and
 all seven in the replay retired; the runtime correction was unchanged.
 
+Publication `bee6019` completed its guarded ref and nine-image proof. Fresh
+hosted logs now retain the script-entry marker. Three Python runners still
+failed first paint while one reached the full suite. In the failed 3.11 shell,
+the last marker preceded three path cmdlets, with no window observed. Windows
+PowerShell may rebuild user/all-user module search paths after process creation;
+that makes module autoload discovery a possible delay, not an established cause.
+The independent UI now sets its own system-only module path after initialization
+and builds those three paths directly through .NET. This removes unnecessary
+pre-paint cmdlet discovery without changing the twenty-second paint requirement,
+AMSI, profile policy, source authority or native lifetime/receipt checks.
+The complete source-strategy, review-interface, bundle and bootstrap replay
+passed 128 cases in 332.33 seconds, with scoped source unchanged and all 283
+observed native generations retired. Hosted acceptance still requires a fresh
+run of the published revision; this local replay does not establish the former
+runner stall's root cause.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

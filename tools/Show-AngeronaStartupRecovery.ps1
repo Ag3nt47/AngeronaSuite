@@ -37,9 +37,14 @@ function Write-StartupShellPhase {
 }
 
 if ($StartupShell -and !$Headless) { Write-StartupShellPhase 'script-entry' }
-$fixedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
-$localRuntime = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona'
-$ownedScratch = Join-Path $fixedRoot '.tmp'
+# This independent UI needs only the Windows PowerShell system modules. Set
+# the scope after shell initialization, which may otherwise add user/all-user
+# module inventories even when the launcher omitted PSModulePath. No profile
+# or third-party module is needed before the first paint or by its reader.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
+$fixedRoot = [IO.Path]::GetFullPath([IO.Path]::Combine($PSScriptRoot, '..'))
+$localRuntime = [IO.Path]::Combine([Environment]::GetFolderPath('LocalApplicationData'), 'Angerona')
+$ownedScratch = [IO.Path]::Combine($fixedRoot, '.tmp')
 $statusLimit = 64KB
 $logLimit = 128KB
 
