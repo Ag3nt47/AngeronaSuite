@@ -767,6 +767,31 @@ passed 16 cases in 55.85 seconds. All 74 observed native process generations
 retired and scoped source stayed unchanged. Ruff, workflow-policy validation
 and whitespace checks passed. No production launcher/runtime files changed.
 
+The cancelled `cb459f8` Python 3.10 full run exposed four additional capture
+fixture failures with duplicate `PSMODULEPATH` / `PSModulePath` keys. The fixture
+had copied the uppercase Windows environment into an ordinary Python dictionary
+and added a mixed-case keyword override. A local Python 3.12 subprocess collapsed
+those variants, masking the same construction defect. An actual owned Windows
+launch with a controlled raw environment block reproduced the capture collision;
+the otherwise identical uppercase-only control completed its inert capture.
+All sixteen observed generations in that reproduction retired.
+
+Fixture setup now explicitly replaces only its owned module-path override with
+one uppercase spelling. It does not mutate the caller's mapping, select between
+other conflicting environment values, or normalize production input. A native
+capture regression supplies both ambient spellings, checks the actual parent's
+single canonical key and proves that module paths are not forwarded to the child.
+Writable/missing read guards, ambient numeric handles and malformed child values
+retain their original refusal or no-custody checks.
+
+The critical-lease, new capture/invalid-value and real role/first-paint replay
+passed 25 cases in 94.79 seconds, with all 140 observed generations retired.
+The complete capture-helper regression then passed eleven cases in 31.72 seconds,
+including output caps, live timeout and a descendant-held pipe, with all 37
+observed generations retired. Both gates kept scoped source unchanged. Ruff and
+whitespace checks passed; production launchers, runtime and validators were
+unchanged.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

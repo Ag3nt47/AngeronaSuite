@@ -18,6 +18,17 @@ POWERSHELL = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/Windo
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Native Windows read-guard inheritance")
 
 
+def fixture_environment(tmp_path):
+    # Windows environment names are case-insensitive. This fixture owns the
+    # module-path override; preserve every other ambient value and replace only
+    # known spelling variants before constructing the native parent environment.
+    environment = {key: value for key, value in os.environ.items()
+                   if key.casefold() != "psmodulepath"}
+    environment.update(LEASE_TEST_ROOT=str(ROOT), LEASE_TEST_SCRATCH=str(tmp_path),
+                       LEASE_TEST_PYTHON=sys.executable, TEMP=str(tmp_path), TMP=str(tmp_path), PSMODULEPATH="")
+    return environment
+
+
 CHILD = r'''
 import ctypes,json,os,sys,time
 from ctypes import wintypes
@@ -142,8 +153,7 @@ if(!(Test-Path -LiteralPath (Join-Path $env:LEASE_TEST_SCRATCH 'parent-release')
 """ + ("[Environment]::Exit(0)\n" if orphan else finish)
     script = tmp_path / "parent.ps1"
     script.write_text(source, encoding="utf-8")
-    environment = dict(os.environ, LEASE_TEST_ROOT=str(ROOT), LEASE_TEST_SCRATCH=str(tmp_path),
-                       LEASE_TEST_PYTHON=sys.executable, TEMP=str(tmp_path), TMP=str(tmp_path), PSModulePath="")
+    environment = fixture_environment(tmp_path)
     k = kernel()
     process = subprocess.Popen([str(POWERSHELL), "-NoProfile", "-NonInteractive", "-File", str(script)],
                                cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -241,8 +251,7 @@ if(!$refused -or (Test-Path -LiteralPath (Join-Path $private 'bad.log')) -or
 """
     script = tmp_path / "rejected.ps1"
     script.write_text(source, encoding="utf-8")
-    environment = dict(os.environ, LEASE_TEST_ROOT=str(ROOT), LEASE_TEST_SCRATCH=str(tmp_path),
-                       LEASE_TEST_PYTHON=sys.executable, TEMP=str(tmp_path), TMP=str(tmp_path), PSModulePath="")
+    environment = fixture_environment(tmp_path)
     result = subprocess.run([str(POWERSHELL), "-NoProfile", "-NonInteractive", "-File", str(script)],
                             cwd=ROOT, env=environment, text=True, capture_output=True, timeout=20,
                             creationflags=subprocess.CREATE_NO_WINDOW)
@@ -486,8 +495,7 @@ try {
 def _run_script(tmp_path, source):
     script = tmp_path / "single.ps1"
     script.write_text(source, encoding="utf-8")
-    environment = dict(os.environ, LEASE_TEST_ROOT=str(ROOT), LEASE_TEST_SCRATCH=str(tmp_path),
-                       LEASE_TEST_PYTHON=sys.executable, TEMP=str(tmp_path), TMP=str(tmp_path), PSModulePath="")
+    environment = fixture_environment(tmp_path)
     result = subprocess.run([str(POWERSHELL), "-NoProfile", "-NonInteractive", "-File", str(script)],
                             cwd=ROOT, env=environment, text=True, capture_output=True, timeout=25,
                             creationflags=subprocess.CREATE_NO_WINDOW)

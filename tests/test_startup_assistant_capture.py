@@ -18,11 +18,17 @@ pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell 5 na
 LIMIT = 8 * 1024 * 1024
 
 
-def run_capture(tmp_path, body, *, tail="", arguments=(), timeout=10):
+def run_capture(tmp_path, body, *, tail="", arguments=(), timeout=10, source_environment=None):
     child = tmp_path / "inert-capture-child.py"
     child.write_text(body, encoding="utf-8")
-    environment = dict(os.environ, ANGERONA_CAPTURE_ROOT=str(ROOT), ANGERONA_CAPTURE_SCRATCH=str(tmp_path),
-                       ANGERONA_CAPTURE_PYTHON=sys._base_executable,
+    # This fixture explicitly owns an empty module-path override. Ordinary
+    # dict keyword updates can retain an uppercase ambient key alongside a
+    # mixed-case spelling on older Python/Windows environment constructors.
+    ambient = os.environ if source_environment is None else source_environment
+    environment = {key: value for key, value in ambient.items()
+                   if key.casefold() != "psmodulepath"}
+    environment.update(ANGERONA_CAPTURE_ROOT=str(ROOT), ANGERONA_CAPTURE_SCRATCH=str(tmp_path),
+                       ANGERONA_CAPTURE_PYTHON=sys._base_executable, PSMODULEPATH="",
                        ANGERONA_CAPTURE_ARGS=json.dumps(list(arguments), ensure_ascii=True))
     source = tmp_path / "capture-harness.ps1"
     source.write_text(r"""$ErrorActionPreference='Stop'
@@ -66,7 +72,8 @@ $answer=[ordered]@{ExitCode=$result.ExitCode;TimedOut=$result.TimedOut;ProcessId
     StdoutDropped=$result.StdoutDropped;StderrDropped=$result.StderrDropped;
     ReadersComplete=$result.ReadersComplete;CaptureError=$result.CaptureError;
     HandleValid=($result.Process.Handle -ne [IntPtr]::Zero);Elapsed=$clock.Elapsed.TotalSeconds;
-    OutputPrivate=$outputPrivate;AmbientUntouched=([string]$env:CAPTURE_CHILD_ONLY -ceq $ambientBefore)}
+    OutputPrivate=$outputPrivate;AmbientUntouched=([string]$env:CAPTURE_CHILD_ONLY -ceq $ambientBefore);
+    ModulePathVariants=@([Environment]::GetEnvironmentVariables().Keys|Where-Object {$_ -ieq 'PSMODULEPATH'})}
 if($result.ReadersComplete -and $result.Process.HasExited) { $result.Process.Dispose() }
 $answer|ConvertTo-Json -Compress
 """, encoding="utf-8")
@@ -130,6 +137,20 @@ $childEnvironment['ANGERONA_INSTALL_ROOT']=$root
     assert Path(values["ANGERONA_DIAG_DIR"]) == tmp_path / "diagnostics"
     assert Path(values["ComSpec"]).name.casefold() == "cmd.exe"
     assert result["AmbientUntouched"]
+
+
+def test_capture_fixture_owns_one_module_path_without_mutating_ambient_variants(tmp_path):
+    ambient = dict(os.environ, PSMODULEPATH=r"C:\inert-uppercase-module-path",
+                   PSModulePath=r"C:\inert-mixed-module-path")
+    before = dict(ambient)
+    result, scratch = run_capture(tmp_path,
+        "import os\nprint(os.getenv('PSMODULEPATH', 'not inherited'))\n",
+        source_environment=ambient)
+    assert ambient == before
+    assert result["ExitCode"] == 0 and result["CaptureError"] == ""
+    assert result["ReadersComplete"] and result["OutputPrivate"] and result["AmbientUntouched"]
+    assert result["ModulePathVariants"] == ["PSMODULEPATH"]
+    assert (scratch / "stdout.log").read_text().strip() == "not inherited"
 
 
 @pytest.mark.parametrize("expression", ["$null", "42", "([pscustomobject]@{secret='must-not-be-rendered'})", '"nul"+[char]0+"value"'])
