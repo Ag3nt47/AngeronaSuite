@@ -49,8 +49,10 @@ Source Observe shows response holds, and third-party findings remain leads.
 Startup recovery, storage controls and component heartbeat EKGs remain available.
 Follow-up fixes fit the dashboard frame to scaled display work areas and create
 private Windows toolkit output with explicit current-user ownership.
-SpywareScan now groups scope, checks and progress into readable sections, with
-a red start button, stage-based progress ring and click-to-change Entire PC scope.
+SpywareScan groups scope, checks and progress into readable sections, with a red
+start button and click-to-change Entire PC scope. Per-check and overall progress,
+current task/file, elapsed time and available estimates explain active work;
+timeouts retain their reason and partial progress.
 [What changed and current limits](docs/releases/v1.14.2.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 

@@ -18,7 +18,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRATCH = ROOT / ".tmp" / "public-demo-spyware-ui-20261029"
+SCRATCH = ROOT / ".tmp" / "public-demo-scan-progress-20261029"
 MAX_GIF = 12 * 1024 * 1024
 CHAPTERS = 13
 FRAMES_PER_CHAPTER = 10
@@ -38,6 +38,8 @@ CAPTURE_SOURCES = (
     "src/angerona/gui/spyware_guard_page.py", "src/angerona/gui/breach_display.py",
     "src/angerona/gui/header_controls.py", "src/angerona/gui/pages.py",
     "src/angerona/gui/dashboard_footer.py", "src/angerona/gui/window_fit.py",
+    "src/angerona/core/curated_tools.py", "src/angerona/core/curated_tool_worker.py",
+    "src/angerona/core/curated_tool_progress.py", "src/angerona/modules/spyware_guard.py",
 )
 
 
@@ -203,6 +205,108 @@ def _curated_fixture(manager, forbidden):
     manager._curated_tools_controller = controller
     curated_tools.get_curated_tools_controller = lambda _manager: controller
     return controller
+
+
+def _scan_progress_fixture(step):
+    """Fixed copied observations; no scanner, clock estimate or host file exists."""
+    if type(step) is not int or not 0 <= step < FRAMES_PER_CHAPTER:
+        raise ValueError("the synthetic progress slot is outside its explicit plan")
+    elapsed = (0, 1, 5, 10, 15, 25, 300, 301, 302, 302)[step]
+    stopping, ended = step in (6, 7), step >= 8
+
+    def row(key, label, *, state="pending", completed=0, total=None, unit="items", **values):
+        result = dict(id=key, label=label, state=state, completed=completed, total=total, unit=unit,
+                      percent=completed * 100 / total if total else None,
+                      checked=completed, skipped=0, elapsed_s=0.0, remaining_s=None)
+        result.update(values)
+        return result
+
+    native_steps = [row(key, label) for key, label in (
+        ("persistence", "Persistence sources"), ("processes", "Process inventory"),
+        ("hashes", "Bounded file hashes"), ("memory", "Bounded process memory"),
+        ("connections", "Connections"))]
+    toolkit_steps = [row(key, label, state="queued", unit="checks") for key, label in (
+        ("browser", "Browser and application traces"), ("hash", "File fingerprints"),
+        ("host", "Host configuration and DNS"), ("traces", "Windows activity traces"),
+        ("windows-execution", "Windows execution records"), ("report", "Writing scanner reports"))]
+    native = dict(schema=1, request_id="ab" * 16, operation_id="ab" * 16, sequence=step + 1,
+                  state="queued" if step == 0 else "cancelling" if stopping else "cancelled" if ended else "running",
+                  current_step="", current_task="DEMO - waiting for native checks", current_file="",
+                  elapsed_s=elapsed, remaining_s=None, steps=native_steps,
+                  item_completed=None, item_total=None, item_unit="", item_remaining_s=None)
+    toolkit = dict(schema=1, operation_id="ab" * 16, sequence=step + 1,
+                   state="queued" if step == 0 else "timed-out" if step >= 6 else "running",
+                   current_step="", current_task="DEMO - waiting for the pinned toolkit", current_file="",
+                   elapsed_s=elapsed, remaining_s=None, steps=toolkit_steps,
+                   item_completed=None, item_total=None, item_unit="", item_remaining_s=None)
+    if step == 1:
+        native_steps[0] = row("persistence", "Persistence sources", state="running", completed=1,
+                              total=3, unit="collectors", elapsed_s=1.0)
+        native.update(current_step="persistence", current_task="DEMO - checking supported persistence collectors")
+    if step >= 2:
+        native_steps[0] = row("persistence", "Persistence sources", state="completed", completed=3, total=3, unit="collectors", elapsed_s=2.0)
+        native_steps[1] = row("processes", "Process inventory", state="completed", completed=24, total=24, unit="process records", elapsed_s=3.0)
+        byte_count = (256, 512, 768)[min(step - 2, 2)]
+        native_steps[2] = row("hashes", "Bounded file hashes",
+                              state="cancelling" if stopping else "cancelled" if ended else "running",
+                              completed=1, total=4, unit="candidate records", elapsed_s=max(1, elapsed - 5),
+                              percent=(1 + byte_count / 1024) * 100 / 4,
+                              percent_basis="completed candidate slots plus current file byte fraction",
+                              item_completed=byte_count, item_total=1024, item_unit="bytes",
+                              item_remaining_s=None if step >= 6 else 2.0,
+                              remaining_s=None if step >= 6 else 15.0)
+        native.update(current_step="hashes", current_task="DEMO - hashing a bounded candidate file",
+                      current_file="D:/DEMO/evidence/sample-application.exe", item_completed=byte_count,
+                      item_total=1024, item_unit="bytes", item_remaining_s=None if step >= 6 else 2.0)
+    if 1 <= step < 5:
+        # Existing fetched SQLite rows describe only this query. They do not
+        # provide a measured denominator for the entire browser reader.
+        query_rows = (0, 0, 100, 200, 300)[step]
+        toolkit_steps[0] = row("browser", "Browser and application traces", state="running", unit="checks",
+                               checked=query_rows, elapsed_s=elapsed)
+        toolkit.update(current_step="browser", current_task="DEMO - comparing fetched browser database rows",
+                       current_file="D:/DEMO/evidence/browser-history.sqlite",
+                       item_completed=query_rows, item_total=400, item_unit="database rows processed",
+                       item_remaining_s=2.0 if query_rows else None)
+    if step >= 5:
+        toolkit_steps[0] = row("browser", "Browser and application traces", state="incomplete",
+                               completed=1, total=1, unit="reader", checked=400, skipped=2, elapsed_s=15.0)
+        toolkit_steps[1] = row("hash", "File fingerprints", state="running", completed=1, total=4,
+                               unit="candidate files", elapsed_s=10.0,
+                               remaining_s=None if step >= 6 else 18.0)
+        toolkit.update(current_step="hash", current_task="DEMO - reading the current file for fingerprints",
+                       current_file="D:/DEMO/evidence/second-application.exe",
+                       item_completed=512, item_total=1024, item_unit="bytes read",
+                       item_remaining_s=None if step >= 6 else 4.0)
+    for reader in (native, toolkit):
+        settled = {"completed", "incomplete", "skipped", "failed"}
+        reader["completed_steps"] = sum(item["state"] in settled for item in reader["steps"])
+        reader["total_steps"] = len(reader["steps"])
+        fraction = sum(1.0 if item["state"] in settled else (item["percent"] or 0) / 100
+                       if item["state"] in {"running", "cancelling", "cancelled"} else 0
+                       for item in reader["steps"])
+        reader["overall_percent"] = round(100 * fraction / reader["total_steps"], 1)
+        reader["item_percent"] = (reader["item_completed"] * 100 / reader["item_total"]
+                                  if reader["item_total"] else None)
+    done = () if step == 0 else ("preflight",)
+    progress = dict(request_id="ab" * 16, unit="workflow_stages",
+                    stage="preflight" if step == 0 else "cancelling" if stopping else "finished" if ended else "toolkit",
+                    finished=len(done), total=4, planned_stages=("preflight", "native", "toolkit", "aggregation"),
+                    finished_stages=done, state="finished" if ended else "running")
+    fraction = (len(done) + native["overall_percent"] / 100 + toolkit["overall_percent"] / 100) / 4
+    return dict(state="timed-out" if ended else "stopping" if stopping else "running",
+                busy=not ended, lifecycle="terminal" if ended else "draining" if stopping else "running",
+                message=("DEMO - the synthetic time budget expired; partial evidence is retained. Native work is still stopping."
+                         if stopping else "DEMO - time budget reached; owned work has ended and partial results are retained. No clean-host verdict."
+                         if ended else "DEMO - fixed synthetic reader and current-item observations; no scanner or host file exists."),
+                elapsed_seconds=elapsed, timeout_seconds=300, scan_progress=progress,
+                scanner_progress={"native": native, "toolkit": toolkit},
+                resource_usage=dict(cpu_percent=round(18.0 + (step % 4) * 7.5, 1) if step < 6 else 0.0,
+                                    rss_mib=42.0 + step if step < 6 else 0.0,
+                                    read_bytes=(step + 1) * 1048576, write_bytes=(step + 1) * 4096,
+                                    process_alive=step < 6,
+                                    native={"state": native["state"], "request_id": "ab" * 16}),
+                demo_expected_overall=int(int(fraction * 1_000_000) * 100 // 1_000_000))
 
 
 def _breach_fixture(manager, forbidden):
@@ -640,38 +744,44 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         spyware._window_fit.scroll_area.verticalScrollBar().setValue(0)
         spyware.priority_scan.toggle.setChecked(False)
         def replay_priority(step):
-            # Explicit synthetic stage publications exercise the real presenter.
-            # These counters never estimate file coverage or use elapsed time.
-            finished = min(step // 2, 4)
-            stage_order = ("preflight", "toolkit", "native", "aggregation")
-            stage = stage_order[finished] if finished < 4 else "finished"
-            scan_progress = dict(request_id="ab" * 16, unit="workflow_stages", stage=stage,
-                                 finished=finished, total=4, planned_stages=stage_order,
-                                 finished_stages=stage_order[:finished],
-                                 state="running" if finished < 4 else "finished")
-            usage = dict(cpu_percent=round(18.0 + (step % 4) * 7.5, 1) if finished < 4 else 0.0,
-                         rss_mib=42.0 + step if finished < 4 else 0.0,
-                         read_bytes=(step + 1) * 1048576, write_bytes=(step + 1) * 4096,
-                         process_alive=finished < 4,
-                         native={"state": "running" if finished < 4 else "finished", "request_id": "ab" * 16})
-            curated.update(state="running" if finished < 4 else "incomplete", busy=finished < 4,
-                           message="DEMO - synthetic priority scan and resource replay; no scanner process exists.",
-                           scan_progress=scan_progress, resource_usage=usage)
+            publication = _scan_progress_fixture(step)
+            expected = publication.pop("demo_expected_overall")
+            prior_rows = dict(spyware.priority_scan.step_rows)
+            curated.update(**publication)
+            if any(spyware.priority_scan.step_rows.get(key) is not row for key, row in prior_rows.items()):
+                raise RuntimeError("the real progress presenter replaced its stable reader widgets")
             spyware.priority_scan.toggle.setChecked(step in (6, 7))
             spyware.priority_scan.explanation_toggle.setChecked(step in (6, 7))
-            interactions["priority_resources"].append(usage)
-            interactions["priority_progress"].append({"publication": scan_progress,
+            # Purposeful navigation happens only at chapter waypoints; copied
+            # status updates retain the current reader scroll position.
+            target = {2: "native:hashes", 4: "toolkit:browser", 5: "toolkit:hash"}.get(step)
+            if target in spyware.priority_scan.step_rows:
+                spyware.priority_scan.steps_scroll.ensureWidgetVisible(spyware.priority_scan.step_rows[target], 0, 0)
+            interactions["priority_resources"].append(publication["resource_usage"])
+            interactions["priority_progress"].append({"publication": publication["scan_progress"],
+                "reader_publications": {source: {key: value.get(key) for key in (
+                    "state", "overall_percent", "current_file", "item_completed", "item_total", "item_unit", "item_percent")}
+                    for source, value in publication["scanner_progress"].items()},
+                "expected_percent": expected,
                 "displayed_percent": spyware.priority_scan.progress_ring.percent,
                 "displayed_stage": spyware.priority_scan.progress_stage.text(),
-                "state": "running" if finished < 4 else "incomplete",
+                "displayed_current_task": spyware.priority_scan.activity.text(),
+                "displayed_current_file": spyware.priority_scan.current_file.text(),
+                "displayed_item_percent": spyware.priority_scan.item_progress.format(),
+                "displayed_timing": spyware.priority_scan.timing.text(),
+                "displayed_outcome": spyware.priority_scan.outcome.text(),
+                "displayed_rows": {key: {"caption": row.caption.text(), "percent": row.bar.format(),
+                                          "count": row.count.text()} for key, row in spyware.priority_scan.step_rows.items()
+                                   if key in {"native:hashes", "toolkit:browser", "toolkit:hash", "toolkit:host"}},
+                "stable_reader_widgets": True,
+                "state": publication["state"], "busy": publication["busy"], "lifecycle": publication["lifecycle"],
                 "scope": spyware.priority_scan._scope_mode,
                 "resource_limits_open": spyware.priority_scan.toggle.isChecked(),
                 "coverage_details_open": spyware.priority_scan.explanation_toggle.isChecked()})
-        chapter(11, "Prioritize selected spyware checks within resource limits",
-                "DEMO - click to change Entire PC scope. The ring counts synthetic finished workflow stages, not files or protection. Stage explanations, resource ceilings and privilege limits stay visible; no scan runs.",
-                spyware_host, replay_priority, screenshot_at={4: "spyware-scan-demo"})
-        curated.update(state="references", busy=False,
-                       message="DEMO - synthetic review complete; no host-clean verdict is claimed.")
+        chapter(11, "Follow measured reader and current-item progress",
+                "DEMO - fixed synthetic counts and timing. Overall, reader and current query/file percentages are separate; unknown ETA stays Calculating. A modeled timeout waits for native stopping and retains partial results. No scan runs.",
+                spyware_host, replay_priority, screenshot_at={3: "spyware-scan-demo"})
+        curated.update(message="DEMO - the modeled timeout and partial progress remain available; no host-clean verdict is claimed.")
 
         # Restore the production dashboard's evidence tabs after the earlier
         # close-up chapters, so the breach scene contains the full MainWindow.
@@ -735,7 +845,11 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 or set(staged_screenshots) != set(SCREENSHOTS)
                 or set(interactions["breach_colors"]) != {"red", "orange"}
                 or len({row["cpu_percent"] for row in interactions["priority_resources"]}) < 3
-                or {row["displayed_percent"] for row in interactions["priority_progress"]} != {0, 25, 50, 75, 100}
+                or any(row["displayed_percent"] != row["expected_percent"] or not 0 <= row["displayed_percent"] < 100
+                       for row in interactions["priority_progress"])
+                or interactions["priority_progress"][3]["displayed_rows"]["native:hashes"]["percent"] != "37.5%"
+                or "Stopping" not in interactions["priority_progress"][6]["displayed_stage"]
+                or any(row["state"] != "timed-out" or row["busy"] for row in interactions["priority_progress"][-2:])
                 or any(row["scope"] != "full" for row in interactions["priority_progress"])
                 or captured_sources != source_fingerprints()):
             raise RuntimeError("the capture plan, source revision or synthetic interaction coverage changed")

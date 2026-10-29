@@ -135,6 +135,13 @@ their cadence. Missing inputs, dependencies, privileges or measurements remain
 coverage gaps. Full upstream advanced execution remains held until its managed
 adapters are accepted. See the [toolkit guide](zero-breach-toolkit.md).
 
+Request-bound progress describes each selected check, its current task or
+observed file, elapsed time and available estimates. The toolkit worker publishes
+only a bounded latest snapshot under its owned job. Paths and activity text are
+untrusted display data; neither progress nor resource samples grant response
+authority. Timeout, incomplete coverage and native cancellation remain visible
+until the corresponding owner has settled.
+
 ## 5 Response authority and execution
 
 ![Authority checks before action and receipt verification](../assets/security-flow-response.png)

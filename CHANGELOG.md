@@ -24,6 +24,13 @@
   stage-based progress ring with expandable explanations, and default to the
   supported Entire PC checks. Ignore accidental wheel changes to scan options;
   fit auxiliary windows to the display with scroll access and stable review.
+- Add request-bound per-check and overall scan progress, current task/item,
+  elapsed time, measured estimates and a separate per-run time budget. Retain
+  timeout reasons and partial progress, honor longer configured budgets and
+  keep native cancellation observable until the request owner settles.
+- Repair the isolated engine's standard-library temporary-report path while
+  retaining fresh descriptor, private-path and write-budget checks; verify
+  actual pinned-engine positive/negative reports and browser-query progress.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

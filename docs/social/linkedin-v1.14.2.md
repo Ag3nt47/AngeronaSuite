@@ -5,7 +5,7 @@ investigation and policy-governed incident response.
 
 The latest source update adds a GitHub Tools workspace with a reviewed,
 version-pinned Zero-Breach Toolkit integration, a priority SpywareScan workflow
-with clear scan stages and expandable explanations,
+with per-check progress, current tasks and expandable explanations,
 and clearer after-action reports. New breach-state visuals bring the evidence,
 available response actions and network-containment status into one review.
 

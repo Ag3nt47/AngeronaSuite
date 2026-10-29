@@ -6,6 +6,7 @@ Results are external leads and coverage records, never response authority.
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+import copy
 import ctypes
 from dataclasses import asdict, dataclass, field
 import hashlib
@@ -94,15 +95,21 @@ class ToolCancelled(ToolError):
 class ToolOperation:
     def __init__(self, timeout: float = 300) -> None:
         self.cancelled = threading.Event()
-        self.deadline = time.monotonic() + min(900.0, max(1.0, float(timeout)))
+        self.started_monotonic = time.monotonic()
+        self.timeout_seconds = min(900.0, max(1.0, float(timeout)))
+        self.deadline = self.started_monotonic + self.timeout_seconds
+        self.operation_id = uuid.uuid4().hex
+        self.stop_reason = ""
 
     def cancel(self) -> None:
         self.cancelled.set()
 
     def check(self) -> None:
         if self.cancelled.is_set():
+            self.stop_reason = "operator"
             raise ToolCancelled("Tool operation cancelled; incomplete coverage is preserved.")
         if time.monotonic() >= self.deadline:
+            self.stop_reason = "deadline"
             raise ToolCancelled("Tool deadline reached; incomplete coverage is preserved.")
 
 
@@ -152,13 +159,14 @@ def _atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> None:
     _sandbox_atomic_bytes_write(path, content, root=root, private=True)
 
 
-def _read(path: Path, limit: int, *, private=False) -> bytes:
+def _read(path: Path, limit: int, *, private=False, expected_identity=None) -> bytes:
     _validate_chain(path)
     with _hold_plain_directories(path.parent), _open_sealed(path) as stream:
         before = os.fstat(stream.fileno())
         named = path.lstat()
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
                 or _identity(before) != _identity(named) or before.st_size > limit
+                or expected_identity is not None and (before.st_dev, before.st_ino) != expected_identity
                 or getattr(before, "st_file_attributes", 0) & 0x400):
             raise ToolError("Tool data is not the expected bounded regular file.")
         if private and not private_repair_file(path):
@@ -729,6 +737,7 @@ class CuratedToolService:
         self._operations: set[ToolOperation] = set()
         self._lock = threading.Lock()
         self._resource = {}
+        self._progress = {}
         self._retained_allowances = {}
         self._job_states = {}
         self._closed = False
@@ -749,6 +758,24 @@ class CuratedToolService:
     def resource_snapshot(self) -> dict:
         with self._lock:
             return dict(self._resource, native_custody_held=True) if _HELD_CUSTODY else dict(self._resource)
+
+    def progress_snapshot(self) -> dict:
+        """Copied memory only: callers on Qt must never inspect worker files."""
+        with self._lock:
+            return copy.deepcopy(self._progress)
+
+    def _progress_start(self, operation, *, job_id=""):
+        if type(operation) is not ToolOperation:
+            raise ValueError("Use an actual tool operation owner.")
+        with self._lock:
+            self._progress = dict(schema=1, operation_id=operation.operation_id, job_id=job_id,
+                                  sequence=0, state="queued", elapsed_s=0.0,
+                                  timeout_seconds=operation.timeout_seconds,
+                                  remaining_budget_s=max(0.0, operation.deadline - time.monotonic()),
+                                  current_step="", current_task="Verifying selected scanner and scope", current_file="",
+                                  completed_steps=0, total_steps=0, overall_percent=None,
+                                  remaining_s=None, estimate_basis="Calculating; work has not been counted", steps=[],
+                                  owner_retired=False)
 
     def cancel_all(self) -> None:
         with self._lock:
@@ -1079,18 +1106,35 @@ class CuratedToolService:
         if shutil.disk_usage(job).free < (3 * 1024**3 + self._limit("job_limit_mib", 256, 64, 1024) * 1024**2):
             raise ToolError("Optional scanner work needs 3 GiB plus its working allowance free. Dashboard startup is unaffected.")
         nonce = secrets.token_hex(32)
-        document = dict(schema=1, job_id=job.name, version=ZERO_BREACH["version"], engine_sha256=ZERO_BREACH["sha256"],
+        self._progress_start(operation, job_id=job.name)
+        state = self._job_states[job.name]
+        progress_path, progress_identity = job / "scratch" / "progress.json", None
+        if not metadata_only and not request.preview:
+            # The stdlib-only child must never import pywin32 to create IPC.
+            # Create its exact private file here with the established explicit
+            # TokenUser/protected DACL before the child is allowed to run.
+            from angerona.core.engine_transport import create_private_file
+            descriptor = create_private_file(progress_path)
+            try:
+                observed = os.fstat(descriptor)
+                progress_identity = (observed.st_dev, observed.st_ino)
+            finally:
+                os.close(descriptor)
+            state.files[progress_path] = {"bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()}
+        document = dict(schema=1, job_id=job.name, operation_id=operation.operation_id,
+                        progress_identity=progress_identity,
+                        version=ZERO_BREACH["version"], engine_sha256=ZERO_BREACH["sha256"],
                         nonce=nonce, parent_pid=os.getpid(), parent_birth=_windows_birth(None) if os.name == "nt" else "",
                         kind="interactive" if interactive else "describe" if metadata_only else "scan",
                         request=asdict(request), limits={"working_bytes": self._limit("job_limit_mib", 256, 64, 1024) * 1024**2,
                                                        "retained_bytes": self._retained_allowances.get(job.name, 8 * 1024**2),
-                                                       "cpu_seconds": min(900, max(1, int(operation.deadline - time.monotonic())))})
+                                                       "cpu_seconds": min(900, max(1, int(operation.deadline - time.monotonic()))),
+                                                       "runtime_seconds": min(900.0, max(1.0, operation.deadline - time.monotonic()))})
         request_path = job / "request.json"
         request_raw = json.dumps(document, ensure_ascii=True, separators=(",", ":")).encode()
         if len(request_raw) > 64 * 1024:
             raise ToolError("Curated scanner launch request exceeds its bound.")
         _atomic_bytes_write(request_path, request_raw, root=self._root())
-        state = self._job_states[job.name]
         state.files[request_path] = {"bytes": len(request_raw), "sha256": hashlib.sha256(request_raw).hexdigest()}
         command = self._command(image, request_path)
         env = self._environment(job, metadata_only=metadata_only or request.phone or request.mode == "targeted")
@@ -1112,6 +1156,34 @@ class CuratedToolService:
         native_generations, native_observation_gaps = [], 0
         started = time.monotonic()
         last_cpu = (started, 0.0)
+        progress_sequence = 0
+        last_progress_raw = None
+
+        def observe_progress():
+            nonlocal progress_sequence, last_progress_raw
+            if metadata_only:
+                return
+            from angerona.core.curated_tool_progress import MAX_PROGRESS_BYTES, validate_snapshot
+            try:
+                raw = _read(progress_path, MAX_PROGRESS_BYTES, private=True, expected_identity=progress_identity)
+                if not raw:
+                    return  # Parent-created file awaits the first child publication.
+                if raw == last_progress_raw:
+                    return
+                snapshot = validate_snapshot(raw, job_id=job.name, nonce=nonce,
+                                             birth=job_owner.birth if job_owner else "",
+                                             operation_id=operation.operation_id,
+                                             previous_sequence=progress_sequence)
+            except FileNotFoundError:
+                return
+            except (OSError, ValueError, ToolError):
+                with self._lock:
+                    self._progress["progress_gap"] = "Latest scanner progress could not be verified; previous counts are retained."
+                return  # Optional telemetry never aborts actual collection.
+            progress_sequence = snapshot["sequence"]
+            last_progress_raw = raw
+            with self._lock:
+                self._progress = dict(snapshot, owner_retired=False)
         with ExitStack() as seals:
             self._verify_installed(self._root())
             _sealed_engine(seals, engine)
@@ -1176,6 +1248,7 @@ class CuratedToolService:
                             last_cpu = (now, cpu_time)
                         with self._lock:
                             self._resource = sample
+                        observe_progress()
                         if exited:
                             break
                     except ToolCancelled as exc:
@@ -1210,6 +1283,7 @@ class CuratedToolService:
                             process.wait(timeout=5)
                         for pump in pumps:
                             pump.finish()
+                        observe_progress()
                     except BaseException:
                         state.native_state = "unresolved"
                         # Every platform/error branch retains its kernel
@@ -1220,12 +1294,27 @@ class CuratedToolService:
                     with self._lock:
                         self._resource = dict(self._resource, process_alive=False, cpu_percent=0.0,
                                               state="stopped", retirement="Exact owned process tree retired.")
+                        terminal = "timed-out" if operation.stop_reason == "deadline" else "cancelled" if reason == "cancelled" else "incomplete" if reason != "complete" or process.returncode not in {0, 2} else "completed"
+                        self._progress.update(state=terminal, owner_retired=True,
+                                              elapsed_s=round(time.monotonic() - started, 3),
+                                              remaining_budget_s=max(0.0, operation.deadline - time.monotonic()))
+                        if reason != "complete":
+                            self._progress.update(current_task=_plain(gap, 1000) or "Scanner stopped; partial coverage remains",
+                                                  remaining_s=None)
+                            self._progress["item_remaining_s"] = None
+                            for row in self._progress.get("steps", []):
+                                if row.get("state") == "running":
+                                    row["state"] = terminal
+                                elif row.get("state") == "queued":
+                                    row["state"] = "not-run"
+                                row["remaining_s"] = None
         outcome = {"exit_code": process.returncode, "state": reason, "gap": gap, "native_started": True,
+                   "timed_out": operation.stop_reason == "deadline", "stop_reason": operation.stop_reason,
                    "output_dropped": sum(pump.dropped for pump in pumps),
                    "output_errors": [pump.error for pump in pumps if pump.error],
                    "native_retired": True, "native_generations": native_generations,
                    "native_observation_gaps": native_observation_gaps,
-                   "resource_usage": self.resource_snapshot()}
+                   "resource_usage": self.resource_snapshot(), "scanner_progress": self.progress_snapshot()}
         state.outcome = outcome
         return outcome
 
@@ -1320,6 +1409,7 @@ class CuratedToolService:
                     "removed_reports": removed, "retained_reports": retained}
 
     def scan(self, request: ToolScanRequest, operation: ToolOperation, progress=lambda _message: None):
+        self._progress_start(operation)
         with self._transaction(operation) as root:
             self._preflight_scan(root)
             _request_arguments(request, root / "jobs" / ("0" * 32))

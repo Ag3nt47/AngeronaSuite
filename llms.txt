@@ -48,10 +48,14 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   pace is cadence intent, not a CPU guarantee. Critical control, heartbeat and
   event intake keep their cadence. Verifying privileges never grants UAC rights.
   Scan presentation defaults to supported full/Entire PC checks with click-only
-  scope choices and wheel-safe options. Structured workflow-stage counts drive
-  the progress ring; elapsed time, toolkit text and resource usage never imply
-  file completion. Expandable stage explanations preserve coverage limits and
-  reduced-motion preferences. Auxiliary dialogs fit their current work area.
+  scope choices and wheel-safe options. Request-bound per-check counters and
+  overall fractions show current task/item, elapsed and measured ETA when
+  available. Unknown totals/estimates remain explicit. Toolkit activity text
+  and resource usage cannot imply file completion or authority. Preserve exact
+  timeout/failure reasons, partial progress and native retirement tracking.
+  Per-run budgets preserve saved preferences; longer budgets must reach the
+  actual operation constructor. Progress uses bounded latest snapshots, not
+  growing file logs. Auxiliary dialogs fit their current work area.
 - A latched Breached warning, critical report and borders require fresh native
   manager-enrolled LIVE mesh evidence, registered/current producer, an exact
   contract and explicit active attack/exploitation. Health/exposure/practice,

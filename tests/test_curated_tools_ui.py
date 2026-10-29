@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -15,8 +16,11 @@ from angerona.gui.header_controls import HeaderActionButton, navigation_icon
 
 
 class Operation:
-    def __init__(self):
+    def __init__(self, timeout=300):
         self.cancelled = threading.Event()
+        self.operation_id = uuid.uuid4().hex
+        self.timeout = timeout
+        self.deadline = time.monotonic() + timeout
 
     def cancel(self):
         self.cancelled.set()
@@ -269,18 +273,19 @@ class NativeScanner:
         self.queued_on = threading.get_ident()
         if not self.admit:
             return False
-        self.state = dict(request_id=request_id, state="running", coverage={"fixture": "running"})
+        self.state = dict(request_id=request_id, state="running", coverage={"fixture": "running"},
+                          lifecycle_generation=1, request_finished=False, collector_finished=False)
         return True
 
     def priority_scan_snapshot(self):
         if self.finished.is_set():
-            self.state = dict(self.state, state="completed")
+            self.state = dict(self.state, state="completed", request_finished=True, collector_finished=True)
         return dict(self.state)
 
     def cancel_priority_scan(self, request_id):
         self.cancelled.append(request_id)
         if self.state["request_id"] == request_id:
-            self.state = dict(self.state, state="cancelled")
+            self.state = dict(self.state, state="cancelled", request_finished=True, collector_finished=True)
 
 
 class Focus:
@@ -543,3 +548,238 @@ def test_all_maintained_credit_links_open_without_network_or_host_dispatch(monke
     for url in sorted(urls):
         ui._open_link(url)
     assert opened == sorted(urls)
+
+
+def test_per_run_budget_constructs_operation_before_scan_without_changing_saved_default(controller):
+    service = ready(controller)
+    controller.manager.cfg.github_tools_timeout_seconds = 600
+    observed = []
+
+    def scan(request, operation, *, progress):
+        observed.append((request, operation.timeout, operation.deadline - time.monotonic()))
+        return dict(state="complete", findings=[])
+
+    service.scan = scan
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert observed[-1][1] == 600 and observed[-1][2] > 590
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, timeout_seconds=900)
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert observed[-1][1] == 900 and observed[-1][2] > 890
+    assert controller.manager.cfg.github_tools_timeout_seconds == 600
+    assert not Config.saved_on
+    assert not controller.priority_scan(timeout_seconds=901)
+    assert "30 and 900" in controller.snapshot()["message"]
+
+
+def test_timeout_preserves_exact_partial_reader_progress_and_reason(controller):
+    service = ready(controller)
+    entered, release = threading.Event(), threading.Event()
+    detail = {}
+    service.progress_snapshot = lambda: dict(detail)
+
+    def scan(_request, operation, *, progress):
+        detail.update(operation_id=operation.operation_id, state="running", current_task="Read browser history",
+                      current_file="D:/synthetic/History", current_step="history", elapsed_s=12,
+                      overall_percent=None, steps=[dict(id="history", label="Browser history", state="running",
+                                                        completed=120, total=None, unit="records", percent=None)])
+        entered.set()
+        assert release.wait(4)
+        operation.deadline = time.monotonic() - 1
+        raise RuntimeError("Synthetic reader deadline; partial evidence retained")
+
+    service.scan = scan
+    try:
+        assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, timeout_seconds=600)
+        assert entered.wait(3)
+        wait_until(lambda: "toolkit" in controller.snapshot().get("scanner_progress", {}))
+        assert controller.snapshot()["scan_progress"]["finished"] == 1
+        accepted = controller.snapshot()["scanner_progress"]
+        detail["operation_id"] = "f" * 32
+        controller._drain()
+        assert controller.snapshot()["scanner_progress"] == accepted
+        detail["operation_id"] = controller._operation.operation_id
+        release.set()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        value = controller.snapshot()
+        assert value["state"] == "timed-out" and value["lifecycle"] == "terminal"
+        assert value["scan_progress"]["finished"] == 1
+        assert value["scanner_progress"]["toolkit"]["current_file"] == "D:/synthetic/History"
+        assert value["scanner_progress"]["toolkit"]["steps"][0]["completed"] == 120
+        assert "600s" in value["message"] and "Synthetic reader deadline" in value["error"]
+    finally:
+        release.set()
+
+
+def test_cancel_retains_native_request_past_two_seconds_until_exact_owner_terminal(controller):
+    native, focus = NativeScanner(), Focus()
+    controller.manager.modules["SpywareGuard"] = native
+    controller.manager.priority_scan_focus = lambda **_kwargs: focus
+    ready(controller)
+    native.cancel_priority_scan = lambda request_id: native.cancelled.append(request_id)
+    assert controller.priority_scan(native_enabled=True, zero_breach_enabled=False)
+    wait_until(lambda: native.state["state"] == "running")
+    request_id = native.state["request_id"]
+    controller.cancel()
+    wait_until(lambda: controller.snapshot().get("lifecycle") == "draining")
+    deadline = time.monotonic() + 2.15
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        time.sleep(.01)
+    assert controller.snapshot()["busy"] is True
+    assert controller._native_priority_module is native and controller._native_request_id == request_id
+    assert focus.active and not controller._done.is_set()
+    assert not controller.scan(mode="browser")
+    native.state = dict(native.state, request_id="f" * 32, state="cancelled", request_finished=True, collector_finished=True)
+    time.sleep(.15)
+    QApplication.processEvents()
+    assert controller.snapshot()["busy"] is True  # Another request's terminal result is not ours.
+    native.state = dict(native.state, request_id=request_id, state="cancelled", request_finished=False)
+    time.sleep(.15)
+    QApplication.processEvents()
+    assert controller.snapshot()["busy"] is True
+    native.state = dict(native.state, request_finished=True)
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert not focus.active and controller._native_priority_module is None
+    assert controller.snapshot()["state"] == "cancelled"
+
+
+def test_result_waits_for_owned_backend_retirement_before_releasing_admission(controller):
+    service = ready(controller)
+    release = threading.Event()
+    service.wait_for_shutdown = lambda _timeout: release.is_set()
+    try:
+        assert controller.scan(mode="full")
+        wait_until(lambda: controller.snapshot().get("lifecycle") == "draining")
+        assert controller.snapshot()["busy"] is True
+        assert not controller.prepare()
+        assert not controller.wait_for_shutdown(.01)
+        release.set()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert controller.snapshot()["lifecycle"] == "terminal"
+        assert controller.wait_for_shutdown(1)
+    finally:
+        release.set()
+
+
+def test_direct_scan_keeps_backend_terminal_reader_rows_under_shared_source_key(controller):
+    service = ready(controller)
+
+    def scan(_request, operation, *, progress):
+        return dict(state="complete", findings=[], scanner_progress=dict(
+            operation_id=operation.operation_id, state="completed", current_file="D:/synthetic/History",
+            steps=[dict(id="history", state="completed", completed=12, total=12, unit="records")]))
+
+    service.scan = scan
+    assert controller.scan(mode="full")
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert controller.snapshot()["scanner_progress"]["toolkit"]["steps"][0]["completed"] == 12
+    assert controller.snapshot()["scanner_progress"]["toolkit"]["current_file"] == "D:/synthetic/History"
+
+
+@pytest.mark.parametrize("invalid", [
+    {"collector_finished": True}, {"request_finished": True},
+    {"request_finished": 1, "collector_finished": True},
+    {"request_finished": True, "collector_finished": "true"},
+    {"request_finished": True, "collector_finished": True, "lifecycle_generation": 2},
+    {"request_finished": True, "collector_finished": True, "lifecycle_generation": True},
+])
+def test_native_terminal_requires_both_strict_completion_flags_and_original_generation(controller, invalid):
+    native, focus = NativeScanner(), Focus()
+    controller.manager.modules["SpywareGuard"] = native
+    controller.manager.priority_scan_focus = lambda **_kwargs: focus
+    ready(controller)
+    native.cancel_priority_scan = lambda request_id: native.cancelled.append(request_id)
+    try:
+        assert controller.priority_scan(native_enabled=True, zero_breach_enabled=False)
+        wait_until(lambda: native.state["state"] == "running")
+        request_id = native.state["request_id"]
+        controller.cancel()
+        wait_until(lambda: controller.snapshot().get("lifecycle") == "draining")
+        native.state = dict(request_id=request_id, state="cancelled", lifecycle_generation=1)
+        native.state.update(invalid)
+        deadline = time.monotonic() + .2
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(.01)
+        assert controller.snapshot()["busy"] is True
+        assert controller._native_priority_module is native and controller._native_request_id == request_id
+        assert controller._native_request_generation == 1
+        assert focus.active and not controller._done.is_set()
+    finally:
+        native.state = dict(native.state, request_id=controller._native_request_id, state="cancelled",
+                            lifecycle_generation=1, request_finished=True, collector_finished=True)
+        wait_until(lambda: not controller.snapshot()["busy"])
+
+
+def test_throwing_focus_renewal_cannot_release_pending_native_collector(controller):
+    native, focus = NativeScanner(), Focus()
+    controller.manager.modules["SpywareGuard"] = native
+    controller.manager.priority_scan_focus = lambda **_kwargs: focus
+    ready(controller)
+    native.cancel_priority_scan = lambda request_id: native.cancelled.append(request_id)
+    renewal_calls = []
+
+    def fail_renew():
+        renewal_calls.append(True)
+        raise RuntimeError("Synthetic focus lease failure")
+
+    focus.renew = fail_renew
+    try:
+        assert controller.priority_scan(native_enabled=True, zero_breach_enabled=False)
+        wait_until(lambda: native.state["state"] == "running")
+        controller.cancel()
+        controller._focus_renewed_at = 0
+        wait_until(lambda: "focus_lease_gap" in controller.snapshot())
+        deadline = time.monotonic() + 2.15
+        while time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(.01)
+        assert renewal_calls and focus.active
+        assert controller.snapshot()["busy"] is True
+        assert not controller._done.is_set() and controller._native_priority_module is native
+        assert not controller.prepare()
+    finally:
+        native.finished.set()
+        wait_until(lambda: not controller.snapshot()["busy"])
+    assert controller.snapshot()["state"] == "cancelled" and not focus.active
+
+
+def test_controller_real_native_request_keeps_inert_collector_until_it_returns(controller, monkeypatch):
+    from test_spyware_native_progress import module_with, retire
+    entered, release = threading.Event(), threading.Event()
+    observed = []
+
+    def persistence(**kwargs):
+        observed.append(kwargs)
+        entered.set()
+        assert release.wait(8)
+        return {"findings": [], "coverage": {"fixture": "partial"}}
+
+    native = module_with(monkeypatch, persistence_collector=persistence,
+                         process_observer=lambda: pytest.fail("Cancellation must not collect another source"))
+    focus = Focus()
+    controller.manager.modules["SpywareGuard"] = native
+    controller.manager.priority_scan_focus = lambda **_kwargs: focus
+    ready(controller)
+    native.start(initial_delay=30)
+    try:
+        assert controller.priority_scan(native_enabled=True, zero_breach_enabled=False)
+        assert entered.wait(3)
+        wait_until(lambda: "native" in controller.snapshot().get("scanner_progress", {}))
+        progress = controller.snapshot()["scanner_progress"]["native"]
+        assert progress["current_step"] == "persistence" and progress["remaining_s"] is None
+        controller.cancel()
+        wait_until(lambda: controller.snapshot().get("lifecycle") == "draining")
+        assert controller.snapshot()["busy"] is True and focus.active
+        assert native.priority_scan_snapshot()["request_finished"] is False
+        release.set()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        result = native.priority_scan_snapshot()
+        assert result["request_finished"] is True and result["collector_finished"] is True
+        assert result["module_worker_alive"] is True  # Persistent sensor was not killed.
+        assert controller.snapshot()["state"] == "cancelled"
+        assert observed == [{"max_entries": 512}]
+    finally:
+        release.set()
+        retire(native)

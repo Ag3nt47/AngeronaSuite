@@ -18,6 +18,8 @@ import shutil
 import stat
 import sys
 import threading
+import tempfile
+import types
 
 
 ENGINE_SHA256 = "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3"
@@ -119,6 +121,7 @@ def _request(path: Path, handshake: dict):
     document = json.loads(request_raw)
     if (type(document) is not dict or document.get("schema") != 1 or document.get("job_id") != job.name
             or document.get("version") != "0.1.10" or document.get("engine_sha256") != ENGINE_SHA256
+            or not _UUID.fullmatch(str(document.get("operation_id", "")))
             or not _TOKEN.fullmatch(str(document.get("nonce", "")))
             or document.get("nonce") != handshake.get("nonce")
             or document.get("parent_pid") != os.getppid()
@@ -256,11 +259,38 @@ class _WriteBudget:
         self.original_ftruncate = os.ftruncate
         self.original_replace, self.original_rename = os.replace, os.rename
         self.descriptors = {}
+        self._descriptor_generations = {}
+        self._read_descriptors = {}
+        self._descriptor_sequence = 0
         self.lock = threading.Lock()
         self.written = {}
         # Reserve both parent log streams, launch request and final receipt.
         self.retained_limit = max(0, (retained_allowance if retained_allowance is not None else allowance) - 4 * 1024**2 - 384 * 1024)
         self.published_outputs = {}
+        self.observer = None
+
+    def _register_descriptor(self, descriptor, path):
+        info = os.fstat(descriptor)
+        with self.lock:
+            self._descriptor_sequence += 1
+            self.descriptors[descriptor] = path
+            self._descriptor_generations[descriptor] = (self._descriptor_sequence, info.st_dev, info.st_ino)
+
+    def _observed_read(self, real, filename, mode):
+        if self.observer is not None:
+            from angerona.core.curated_tool_progress import ObservedReader
+            if isinstance(filename, int):
+                with self.lock:
+                    known = self._read_descriptors.pop(filename, None)
+                if known is not None:
+                    try:
+                        held = os.fstat(real.fileno())
+                        if (held.st_dev, held.st_ino) == known[1:]:
+                            filename = known[0]
+                    except OSError:
+                        pass
+            return ObservedReader(real, self.observer, filename, binary=isinstance(mode, str) and "b" in mode)
+        return real
 
     def file_limit(self, path):
         if path.parent == self.job:
@@ -304,25 +334,86 @@ class _WriteBudget:
         if writing:
             path = self.destination(filename)
             real = self.original_open(filename, mode, *args, **kwargs)
-            self.descriptors[real.fileno()] = path
+            self._register_descriptor(real.fileno(), path)
             return _BoundedWriter(real, self, path)
-        return self.original_open(filename, mode, *args, **kwargs)
+        return self._observed_read(self.original_open(filename, mode, *args, **kwargs), filename, mode)
 
     def io_open(self, filename, mode="r", *args, **kwargs):
         writing = any(flag in mode for flag in "wax+") if isinstance(mode, str) else False
         if writing:
+            opener = kwargs.get("opener")
+            if opener is not None:
+                # Python 3.12+ NamedTemporaryFile passes its directory to
+                # io.open and creates the actual file inside a stdlib opener.
+                # Admit only that exact closed report-file pattern, then
+                # verify its fresh registered fd before io.open receives it.
+                if (getattr(opener, "__module__", "") != "tempfile"
+                        or getattr(opener, "__qualname__", "") != "NamedTemporaryFile.<locals>.opener"
+                        or getattr(opener, "__globals__", None) is not tempfile.__dict__
+                        or not any(opener.__code__ is code for code in tempfile.NamedTemporaryFile.__code__.co_consts)):
+                    raise OSError("Unreviewed curated write opener")
+                closure = dict(zip(opener.__code__.co_freevars, (cell.cell_contents for cell in opener.__closure__ or ())))
+                directory = Path(os.path.abspath(os.fspath(filename)))
+                if (not directory.is_relative_to(self.job)
+                        or Path(os.path.abspath(os.fspath(closure.get("dir", "")))) != directory
+                        or closure.get("prefix") not in {".zbt_report_", ".zbt_text_"}
+                        or closure.get("suffix") != ".tmp"):
+                    raise OSError("Curated report temporary opener left its private job")
+                _plain(directory)
+                selected = []
+                def checked_opener(*arguments):
+                    before_generation = self._descriptor_sequence
+                    descriptor = opener(*arguments)
+                    owned = False
+                    try:
+                        registration = self._descriptor_generations.get(descriptor)
+                        if registration is None or registration[0] <= before_generation:
+                            raise OSError("Curated temporary opener did not create a fresh owned descriptor")
+                        held = os.fstat(descriptor)
+                        if (held.st_dev, held.st_ino) != registration[1:]:
+                            raise OSError("Curated temporary descriptor generation was replaced")
+                        owned = True
+                        path = self.destination(descriptor)
+                        named = path.lstat()
+                        if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1
+                                or (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino)
+                                or (held.st_dev, held.st_ino) != registration[1:]
+                                or path.parent != directory):
+                            raise OSError("Curated temporary output descriptor changed")
+                        selected.append(path)
+                        return descriptor
+                    except BaseException:
+                        if owned:
+                            os.close(descriptor)
+                        raise
+                real = self.original_io_open(filename, mode, *args, **dict(kwargs, opener=checked_opener))
+                if len(selected) != 1:
+                    real.close()
+                    raise OSError("Curated temporary output creation was not observed")
+                self._register_descriptor(real.fileno(), selected[0])
+                return _BoundedWriter(real, self, selected[0])
             path = self.destination(filename)
             real = self.original_io_open(filename, mode, *args, **kwargs)
-            self.descriptors[real.fileno()] = path
+            self._register_descriptor(real.fileno(), path)
             return _BoundedWriter(real, self, path)
-        return self.original_io_open(filename, mode, *args, **kwargs)
+        return self._observed_read(self.original_io_open(filename, mode, *args, **kwargs), filename, mode)
 
     def os_open(self, filename, flags, *args, **kwargs):
         writing = bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
         path = self.destination(filename) if writing else None
         descriptor = self.original_os_open(filename, flags, *args, **kwargs)
         if path is not None:
-            self.descriptors[descriptor] = path
+            self._register_descriptor(descriptor, path)
+        elif self.observer is not None:
+            # Display provenance only: a read descriptor never enters the
+            # separately guarded write-descriptor registry.
+            try:
+                held = os.fstat(descriptor)
+                observed = Path(os.path.abspath(os.fspath(filename)))
+                with self.lock:
+                    self._read_descriptors[descriptor] = (observed, held.st_dev, held.st_ino)
+            except (OSError, TypeError, ValueError):
+                pass
         return descriptor
 
     def os_write(self, descriptor, data):
@@ -365,7 +456,7 @@ class _WriteBudget:
         self.destination(target)
         if before.st_size > self.remaining:
             raise OSError("Curated snapshot exceeds the remaining working allowance")
-        with self.original_open(source, "rb") as reader, self.open(target, "xb") as writer:
+        with self._observed_read(self.original_open(source, "rb"), source, "rb") as reader, self.open(target, "xb") as writer:
             read = 0
             while True:
                 chunk = reader.read(64 * 1024)
@@ -451,8 +542,52 @@ def main(argv=None) -> int:
             budget = _WriteBudget(job, document["limits"]["working_bytes"], retained)
             budget.install()
             sys.argv = [str(engine), *args]
-            namespace = {"__name__": "__main__", "__file__": str(engine), "__package__": None}
-            exec(compile(source, str(engine), "exec"), namespace)
+            # Load the exact pinned bytes without invoking their __main__ guard,
+            # then observe supported reader boundaries before calling main.
+            module_name = "_angerona_pinned_zero_breach"
+            module = types.ModuleType(module_name)
+            module.__file__, module.__package__ = str(engine), None
+            sys.modules[module_name] = module
+            tracker = None
+            code = 1
+            try:
+                exec(compile(source, str(engine), "exec"), module.__dict__)
+                if document["kind"] == "scan" and not document.get("request", {}).get("preview"):
+                    from angerona.core.curated_tool_progress import ScannerProgress
+                    from angerona.core.startup_recovery import private_repair_file
+                    progress_path = job / "scratch" / "progress.json"
+                    expected_progress = document.get("progress_identity")
+                    if (type(expected_progress) is not list or len(expected_progress) != 2
+                            or any(type(value) is not int or value < 0 for value in expected_progress)
+                            or not private_repair_file(progress_path)):
+                        raise ValueError("Private scanner progress file lacks its parent-created identity")
+                    write_lock = threading.Lock()
+                    def publish(raw):
+                        with write_lock:
+                            _plain(progress_path)
+                            if not private_repair_file(progress_path):
+                                raise ValueError("Scanner progress file privacy changed")
+                            # Windows sharing excludes readers while this exact
+                            # writable generation is open. POSIX races remain
+                            # an advisory gap and never become scan authority.
+                            with budget.original_open(progress_path, "r+b") as output:
+                                identity = os.fstat(output.fileno())
+                                if [identity.st_dev, identity.st_ino] != expected_progress or identity.st_nlink != 1:
+                                    raise ValueError("Scanner progress file identity changed")
+                                budget.reserve(len(raw), progress_path)
+                                output.write(raw)
+                                output.truncate()
+                                output.flush()
+                    tracker = ScannerProgress(document, job, _birth(os.getpid()), publish)
+                    budget.observer = tracker
+                    tracker.install(module.__dict__)
+                    tracker.start()
+                code = module.main(args)
+                return code if type(code) is int else 1
+            finally:
+                if tracker is not None:
+                    tracker.finish("completed" if code in {0, 2} else "incomplete")
+                sys.modules.pop(module_name, None)
         return 0
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1

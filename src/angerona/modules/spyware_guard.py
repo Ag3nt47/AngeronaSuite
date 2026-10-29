@@ -54,6 +54,32 @@ _TELEMETRY = frozenset({
     "dns_query", "network_egress", "network_connection", "media_render",
     "process_start", "api_access", "file_read", "http_request",
 })
+_PRIORITY_STEPS = (
+    ("persistence", "Persistence sources"),
+    ("processes", "Process inventory"),
+    ("hashes", "Bounded file hashes"),
+    ("memory", "Bounded process memory"),
+    ("connections", "Connections"),
+)
+
+
+def _progress_text(value, limit=512):
+    """Observed paths and names remain bounded display data, never commands."""
+    if type(value) is not str:
+        return ""
+    return "".join(character for character in value[:limit] if ord(character) >= 32)
+
+
+def _priority_progress(request_id, generation):
+    return {"schema": 1, "request_id": request_id, "operation_id": request_id,
+            "lifecycle_generation": generation, "sequence": 0, "state": "queued",
+            "elapsed_s": 0.0, "current_step": "", "current_task": "Waiting for the native worker",
+            "current_file": "", "completed_steps": 0, "total_steps": len(_PRIORITY_STEPS),
+            "overall_percent": 0.0, "remaining_s": None, "estimate_basis": "unavailable",
+            "steps": [{"id": key, "label": label, "state": "pending", "completed": 0,
+                       "total": None, "unit": "items", "percent": None, "checked": 0,
+                       "skipped": 0, "elapsed_s": 0.0, "remaining_s": None}
+                      for key, label in _PRIORITY_STEPS]}
 
 
 @contextmanager
@@ -190,6 +216,8 @@ class SpywareGuardModule(BaseModule):
         self._priority_scan_wake = threading.Event()
         self._startup_wake_event = self._priority_scan_wake
         self._priority_scan_job = None
+        self._priority_progress_clock = time.monotonic
+        self._priority_step_durations = {}
         self._priority_scan_status = {"request_id": "", "state": "idle", "started_at": None,
                                       "finished_at": None, "coverage": {}, "error": ""}
         self._counts = {"findings": 0, "response_requests": 0, "reports": 0, "sandbox_runs": 0,
@@ -240,11 +268,14 @@ class SpywareGuardModule(BaseModule):
                 level = getattr(self._config, "spyware_scan_priority", "above-normal")
                 level = level if type(level) is str and level in {"above-normal", "high"} else "above-normal"
                 self._priority_scan_job = {"request_id": request_id, "generation": generation,
-                                           "cancel": threading.Event(), "priority": level}
+                                           "cancel": threading.Event(), "priority": level, "worker": thread}
                 self._priority_scan_status = {
                     "request_id": request_id, "state": "queued", "started_at": None,
                     "finished_at": None, "coverage": {}, "error": "",
                     "lifecycle_generation": generation,
+                    "request_finished": False, "collector_finished": False,
+                    "cancellation_requested": False,
+                    "progress": _priority_progress(request_id, generation),
                 }
                 self._priority_scan_wake.set()
                 return True
@@ -254,12 +285,132 @@ class SpywareGuardModule(BaseModule):
             job = self._priority_scan_job
             if job is not None and job["request_id"] == request_id:
                 job["cancel"].set()
+                if self._priority_scan_status.get("state") in {"queued", "running"}:
+                    self._priority_scan_status["cancellation_requested"] = True
+                    progress = self._priority_scan_status.get("progress")
+                    if type(progress) is dict:
+                        progress.update(state="cancelling", current_task="Waiting for the current native check to stop")
+                        progress["sequence"] += 1
+                    if self._priority_scan_status["state"] == "queued":
+                        # No priority collector was admitted. This does not
+                        # claim that the continual worker's ordinary scan ends.
+                        self._priority_scan_status.update(state="cancelled", finished_at=self._clock(),
+                                                         request_finished=True, collector_finished=True)
+                        self._finish_scan_progress(job, "cancelled")
                 self._priority_scan_wake.set()
 
     def priority_scan_snapshot(self) -> dict:
         """Return detached memory state; no filesystem or process inspection."""
         with self._lock:
-            return json.loads(json.dumps(self._priority_scan_status, default=str))
+            job = self._priority_scan_job
+            if (job is not None and self._priority_scan_status.get("state") in {"queued", "running"}
+                    and not job["worker"].is_alive()):
+                state = "cancelled" if job["cancel"].is_set() or self.stopping else "failed"
+                error = "" if state == "cancelled" else "native-worker-exited-before-request-finished"
+                self._priority_scan_status.update(state=state, error=error, finished_at=self._clock(),
+                                                  request_finished=True, collector_finished=True)
+                self._finish_scan_progress(job, state, error)
+            snapshot = json.loads(json.dumps(self._priority_scan_status, default=str))
+            worker = self._thread
+            snapshot["module_worker_alive"] = bool(worker is not None and worker.is_alive())
+            if (job is not None and snapshot.get("state") in {"queued", "running"}
+                    and job.get("progress_started") is not None):
+                progress = snapshot.get("progress")
+                if type(progress) is dict:
+                    now = self._priority_progress_clock()
+                    progress["elapsed_s"] = max(0.0, now - job["progress_started"])
+                    current = progress.get("current_step")
+                    for step in progress["steps"]:
+                        if step["id"] == current and step["state"] == "running":
+                            step["elapsed_s"] = max(0.0, now - job["step_started"].get(current, now))
+            return snapshot
+
+    def _scan_progress(self, key, *, state="running", completed=0, total=None,
+                       unit="items", task="", path="", checked=None, skipped=0,
+                       item_completed=None, item_total=None):
+        """Publish only this request's existing worker; routine scans cannot write it."""
+        with self._lock:
+            job = self._priority_scan_job
+            if (job is None or self._thread is not threading.current_thread()
+                    or job["generation"] != self.lifecycle_generation
+                    or self._priority_scan_status.get("state") != "running"):
+                return
+            progress = self._priority_scan_status.get("progress")
+            if type(progress) is not dict:
+                return
+            step = next((row for row in progress["steps"] if row["id"] == key), None)
+            if step is None:
+                return
+            now = self._priority_progress_clock()
+            started = job["step_started"].setdefault(key, now)
+            elapsed = max(0.0, now - started)
+            known = type(total) is int and total >= 0 and type(completed) is int and 0 <= completed <= total
+            has_item = (type(item_completed) is int and type(item_total) is int
+                        and 0 <= item_completed <= item_total and item_total > 0)
+            fraction = item_completed / item_total if has_item and state == "running" else 0.0
+            percent = (100.0 if total == 0 and state == "completed" else
+                       min(total, completed + fraction) * 100.0 / total if known and total else None)
+            if state == "running" and percent is not None:
+                percent = min(99.0, percent)
+            remaining = None
+            basis = "unavailable"
+            if known and total and completed >= 2 and elapsed >= 1 and completed < total:
+                remaining = elapsed * (total - completed) / completed
+                basis = "observed item rate; approximate"
+            elif state == "running" and key in self._priority_step_durations:
+                remaining = max(0.0, self._priority_step_durations[key] - elapsed)
+                basis = "previous completed native step; approximate"
+            step.update(state=state, completed=max(0, completed), total=total if known else None,
+                        unit=unit, percent=percent, checked=max(0, completed if checked is None else checked),
+                        skipped=max(0, skipped), elapsed_s=elapsed, remaining_s=remaining,
+                        current_task=_progress_text(task), current_file=_progress_text(path))
+            if has_item:
+                step.update(item_completed=item_completed, item_total=item_total, item_unit="bytes",
+                            item_percent=min(100.0, item_completed * 100.0 / item_total))
+            else:
+                for field in ("item_completed", "item_total", "item_unit", "item_percent"):
+                    step.pop(field, None)
+            step["percent_basis"] = ("completed candidate slots plus current file byte fraction" if has_item
+                                     else "completed workflow items")
+            if state == "completed":
+                self._priority_step_durations[key] = elapsed
+            settled = {"completed", "skipped"}
+            progress.update(state="cancelling" if job["cancel"].is_set() else "running",
+                            elapsed_s=max(0.0, now - job["progress_started"]), current_step=key,
+                            current_task=_progress_text(task), current_file=_progress_text(path),
+                            completed_steps=sum(row["state"] in settled for row in progress["steps"]),
+                            overall_percent=min(99.0, 100.0 * sum(
+                                1.0 if row["state"] in settled else (row["percent"] or 0) / 100.0
+                                for row in progress["steps"]) / len(progress["steps"])),
+                            remaining_s=None, estimate_basis="unavailable")
+            unfinished = [row for row in progress["steps"] if row["state"] not in settled]
+            if (remaining is not None and state == "running"
+                    and all(row["id"] == key or row["id"] in self._priority_step_durations for row in unfinished)):
+                progress["remaining_s"] = remaining + sum(self._priority_step_durations[row["id"]]
+                    for row in unfinished if row["id"] != key)
+                progress["estimate_basis"] = basis
+            progress["sequence"] += 1
+
+    def _finish_scan_progress(self, job, state, error=""):
+        progress = self._priority_scan_status.get("progress")
+        if type(progress) is not dict:
+            return
+        now = self._priority_progress_clock()
+        progress.update(state=state, elapsed_s=max(0.0, now - job.get("progress_started", now)),
+                        remaining_s=0.0 if state == "completed" else None,
+                        estimate_basis="completed" if state == "completed" else "unavailable",
+                        current_task=("Native request finished; review source coverage" if state == "completed" else
+                                      "Native request stopped with partial coverage" if state == "cancelled" else
+                                      "Native request failed: " + _progress_text(error, 120)))
+        for step in progress["steps"]:
+            if step["state"] == "running":
+                step.update(state=state if state != "completed" else "incomplete", remaining_s=None)
+        if state == "completed" and all(row["state"] in {"completed", "skipped"} for row in progress["steps"]):
+            progress["overall_percent"] = 100.0
+        elif state == "completed":
+            progress["overall_percent"] = None
+            progress["current_task"] = "Native request finished; detailed counters were not supplied"
+        progress["sequence"] += 1
 
     def _run_priority_scan(self) -> bool:
         if self._thread is not threading.current_thread():
@@ -267,11 +418,17 @@ class SpywareGuardModule(BaseModule):
         with self._lock:
             job = self._priority_scan_job
             if job is None or self._priority_scan_status["state"] != "queued":
+                if job is not None and self._priority_scan_status["state"] not in {"queued", "running"}:
+                    self._priority_scan_wake.clear()
                 return False
             self._priority_scan_wake.clear()
             if job["generation"] != self.lifecycle_generation or job["cancel"].is_set() or self.stopping:
-                self._priority_scan_status.update(state="cancelled", finished_at=self._clock())
+                self._priority_scan_status.update(state="cancelled", finished_at=self._clock(),
+                                                 request_finished=True, collector_finished=True)
+                self._finish_scan_progress(job, "cancelled")
                 return True
+            job["progress_started"] = self._priority_progress_clock()
+            job["step_started"] = {}
             self._priority_scan_status.update(state="running", started_at=self._clock(),
                                                worker_thread_id=threading.get_native_id())
             self._scan_requested = False
@@ -303,9 +460,11 @@ class SpywareGuardModule(BaseModule):
                 if self._priority_scan_job is job:
                     self._priority_scan_status.update(
                         state=state, error=error, finished_at=self._clock(),
+                        request_finished=True, collector_finished=True,
                         native_priority=dict(native),
                         coverage=json.loads(json.dumps(self._coverage, default=str)),
                     )
+                    self._finish_scan_progress(job, state, error)
         return True
 
     def _queue_definition_command(self, command, value, *, module_session=None, module_generation=None):
@@ -1035,6 +1194,8 @@ class SpywareGuardModule(BaseModule):
         cancelled = cancelled if callable(cancelled) else lambda: False
         if cancelled():
             return False
+        self._scan_progress("persistence", total=1, unit="collectors",
+                            task="Reading bounded persistence sources")
         report = self._persistence(max_entries=512)
         with self._lock:
             self._coverage["persistence"] = report.get("coverage", {})
@@ -1043,10 +1204,16 @@ class SpywareGuardModule(BaseModule):
                 return False
             # A configuration record alone does not identify a running process.
             self._publish(finding, local_authority=True)
+        self._scan_progress("persistence", state="completed", completed=1, total=1,
+                            unit="collectors", task="Persistence collection finished; review source coverage")
         if cancelled():
             return False
+        self._scan_progress("processes", total=1, unit="collectors",
+                            task="Collecting the existing bounded process inventory")
         processes = self._processes()
         rows = list(processes.processes)[:4096]
+        self._scan_progress("processes", state="completed", completed=len(rows), total=len(rows),
+                            unit="processes", task=f"Process inventory returned {len(rows)} bounded records")
         self._scan_hashes(rows, cancelled=cancelled)
         if cancelled():
             return False
@@ -1062,13 +1229,23 @@ class SpywareGuardModule(BaseModule):
             memory_cancelled = False
             def retired():
                 return memory_stopped.is_set() or memory_stopped is not self._stop or cancelled()
-            for row in chosen:
+            memory_checked = memory_skipped = 0
+            self._scan_progress("memory", total=len(chosen), unit="process sample slots",
+                                task="Starting the bounded process-memory sample")
+            for index, row in enumerate(chosen):
                 if retired():
                     memory_cancelled = True
                     break
                 pid = row.get("pid")
                 if type(pid) is not int or pid <= 4 or pid in {os.getpid(), os.getppid()}:
+                    memory_skipped += 1
+                    self._scan_progress("memory", completed=index + 1, total=len(chosen),
+                                        unit="process sample slots", task="Excluded an ineligible process sample",
+                                        checked=memory_checked, skipped=memory_skipped)
                     continue
+                self._scan_progress("memory", completed=index, total=len(chosen),
+                                    unit="process sample slots", task=f"Inspecting bounded memory for PID {pid}",
+                                    checked=memory_checked, skipped=memory_skipped)
                 request_id = secrets.token_hex(16)
                 try:
                     result = self._memory(pid, max_regions=512,
@@ -1121,6 +1298,10 @@ class SpywareGuardModule(BaseModule):
                     coverage["memory.identity"] = {"status": "partial",
                         "detail": "Memory collection owner generation stopped or was replaced; retained as advisory"}
                     break
+                memory_checked += 1
+                self._scan_progress("memory", completed=index + 1, total=len(chosen),
+                                    unit="process sample slots", task=f"Memory check for PID {pid} returned",
+                                    checked=memory_checked, skipped=memory_skipped)
             complete = not memory_cancelled and bool(memory_coverage) and all(
                 entry["coverage"] and all(isinstance(source, dict) and source.get("status") == "complete"
                                           for source in entry["coverage"].values())
@@ -1132,14 +1313,26 @@ class SpywareGuardModule(BaseModule):
                     self._coverage["host"] = "scan-cancelled-memory-owner-generation"
             if memory_cancelled:
                 return False
+            self._scan_progress("memory", state="completed", completed=len(chosen), total=len(chosen),
+                                unit="process sample slots", task="Bounded memory sample finished; review coverage",
+                                checked=memory_checked, skipped=memory_skipped)
         else:
             with self._lock:
                 self._coverage["memory"] = "disabled" if not self._settings["spyware_memory_enabled"] else "no-processes"
+            self._scan_progress("memory", state="skipped", total=0, unit="process sample slots",
+                                task="Memory check disabled" if not self._settings["spyware_memory_enabled"]
+                                else "No process records available for the bounded memory sample")
         if cancelled():
             return False
+        self._scan_progress("connections", unit="connections",
+                            task="Collecting the existing bounded connection snapshot")
         snapshot = self._connections()
         indexed = {row.get("pid"): row for row in rows}
-        for connection in snapshot.connections[:4096]:
+        connections = snapshot.connections[:4096]
+        connection_checked = connection_skipped = 0
+        self._scan_progress("connections", total=len(connections), unit="connections",
+                            task="Reviewing the bounded connection snapshot")
+        for index, connection in enumerate(connections):
             if cancelled():
                 return False
             raw = str(connection.get("raddr", ""))
@@ -1147,23 +1340,38 @@ class SpywareGuardModule(BaseModule):
                 address, _port = raw.rsplit(":", 1)
                 peer = str(ipaddress.ip_address(address.strip("[]")))
             except ValueError:
+                connection_skipped += 1
+                self._scan_progress("connections", completed=index + 1, total=len(connections),
+                                    unit="connections", task="Connection without a usable remote IP skipped",
+                                    checked=connection_checked, skipped=connection_skipped)
                 continue
             record = {"remote_ip": peer, "pid": connection.get("pid"),
                       "process_create_time": indexed.get(connection.get("pid"), {}).get("create_time")}
             self._match_indicator(record, "ip", peer, local_authority=True)
+            connection_checked += 1
+            self._scan_progress("connections", completed=index + 1, total=len(connections),
+                                unit="connections", task=f"Checked connection record for PID {connection.get('pid')}",
+                                checked=connection_checked, skipped=connection_skipped)
         with self._lock:
             self._coverage["connections"] = {"complete": snapshot.complete, "error": snapshot.error}
             self._coverage["host"] = "scan-completed-with-source-specific-coverage"
         self._last_scan = self._clock()
+        self._scan_progress("connections", state="completed", completed=len(connections), total=len(connections),
+                            unit="connections", task="Connection review finished; review source coverage",
+                            checked=connection_checked, skipped=connection_skipped)
         return True
 
     def _scan_hashes(self, rows, *, cancelled=None) -> None:
         requested_cancel = cancelled if callable(cancelled) else lambda: False
         cancelled = lambda: self.stopping or requested_cancel()
+        self._scan_progress("hashes", unit="candidate records",
+                            task="Checking whether enabled hash indicators require a bounded file sample")
         with self._lock:
             wanted = any(kind == "sha256" for kind, _value in self._approved)
         wanted = wanted or (self._definitions is not None and self._definitions.has_hashes())
         if not wanted:
+            self._scan_progress("hashes", state="skipped", total=0, unit="candidate records",
+                                task="Hash matching not scheduled; no enabled hash indicators")
             return
         # Reuse the pinned, bounded archive reader through a caller-independent
         # file handle; do not read arbitrary bytes through a pathname race.
@@ -1171,10 +1379,13 @@ class SpywareGuardModule(BaseModule):
         from angerona.core.spyware_quarantine import _duplicate_descriptor
         scanned = 0
         selected = rows[self._hash_cursor:] + rows[:self._hash_cursor]
-        for row in selected:
+        for index, row in enumerate(selected):
             path = row.get("exe")
             if scanned >= 4 or cancelled():
                 break
+            self._scan_progress("hashes", completed=index, total=len(selected), unit="candidate records",
+                                task="Selecting at most four eligible executable files", checked=scanned,
+                                skipped=max(0, index - scanned))
             if not path:
                 continue
             try:
@@ -1192,6 +1403,10 @@ class SpywareGuardModule(BaseModule):
                             continue
                         hashed, total = hashlib.sha256(), 0
                         deadline = time.monotonic() + 5
+                        self._scan_progress("hashes", completed=index, total=len(selected), unit="candidate records",
+                                            task="Hashing the current pinned executable", path=str(path), checked=scanned,
+                                            skipped=max(0, index - scanned + 1),
+                                            item_completed=0, item_total=before.st_size)
                         while True:
                             if cancelled() or time.monotonic() > deadline:
                                 raise ValueError("hash-read-deadline")
@@ -1202,6 +1417,10 @@ class SpywareGuardModule(BaseModule):
                             if total > limit:
                                 raise ValueError("hash-byte-limit")
                             hashed.update(chunk)
+                            self._scan_progress("hashes", completed=index, total=len(selected), unit="candidate records",
+                                                task="Hashing the current pinned executable", path=str(path), checked=scanned,
+                                                skipped=max(0, index - scanned + 1),
+                                                item_completed=total, item_total=before.st_size)
                         after = os.fstat(stream.fileno())
                         identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
                                                  info.st_mtime_ns, info.st_ctime_ns, info.st_nlink)
@@ -1215,6 +1434,10 @@ class SpywareGuardModule(BaseModule):
                     "observed_content_sha256": digest}, "sha256", digest, local_authority=True)
             except (OSError, ValueError, RuntimeError):
                 continue
+        if not cancelled():
+            self._scan_progress("hashes", state="completed", completed=len(selected), total=len(selected),
+                                unit="candidate records", task="Bounded hash sample finished; at most four files attempted",
+                                checked=scanned, skipped=max(0, len(selected) - scanned))
 
     def _export_rules(self) -> None:
         if self._config is None:
@@ -1421,7 +1644,9 @@ class SpywareGuardModule(BaseModule):
                 if (job is not None and job["generation"] == self.lifecycle_generation
                         and self._priority_scan_status["state"] in {"queued", "running"}):
                     job["cancel"].set()
-                    self._priority_scan_status.update(state="cancelled", finished_at=self._clock())
+                    self._priority_scan_status.update(state="cancelled", finished_at=self._clock(),
+                                                     request_finished=True, collector_finished=True)
+                    self._finish_scan_progress(job, "cancelled")
                 self._priority_scan_wake.clear()
             self._report_stop.set()
             if self._report_thread is not None:

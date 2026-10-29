@@ -136,8 +136,9 @@ quarantine or other response authority.
 toolkit checks through their existing owners. The red **SpywareScan** button
 uses separate **Scope**, **Included checks**, **Progress**, **What's happening
 now** and **Resource and privilege details** sections. Native and Zero Breach
-selections have independent toggles. Resource details show copied CPU, RAM, I/O
-and privilege coverage; unavailable measurements stay unavailable.
+selections have independent toggles. Resource details show the latest available
+toolkit-process CPU, RAM and I/O samples, process liveness and current privilege
+coverage; unavailable measurements stay unavailable.
 
 **Entire PC** is the initial scope. Click the scope control to choose browser
 checks or selected local evidence. Entire PC requests the toolkit's supported
@@ -145,14 +146,35 @@ system-wide checks; it does not promise examination of every file or privileged
 collection. Scrolling the page does not change scan options. Status refreshes
 preserve the selected scope, inputs, open details and review position.
 
-The progress ring reports completed workflow stages: preparation, selected
-native checks, selected toolkit checks and report assembly. Its percentage is
-stage completion, not a file count or assurance that every check succeeded.
-Held or unavailable checks remain visible in the coverage summary. When valid
-stage counters are absent, progress is indeterminate. Animation follows active
-scan state, stops when hidden or idle and respects reduced-motion preferences.
-**What's happening now** explains the current stage; expand its details for
-collection limits, report handling and the next step.
+Each selected scanner retains its own check rows with state, progress, current
+task, observed file or item, elapsed time and estimated time remaining. Known
+work counts advance that check's percentage; unknown totals remain explicit.
+An estimated time is shown only when measurements support it; otherwise the
+display says **Calculating**. The configured time budget is separate from that
+estimate. Overall progress combines the selected checks and remains below 100%
+while work or cancellation is still active. A percentage describes the requested
+workflow, not every file on the PC or a clean-host verdict.
+
+The latest activity and exact failure or timeout reason stay visible. Failed or
+cancelled checks retain their last progress and partial coverage. **Stopping**
+means the owned work is still draining; it does not mean retirement was proved.
+Native SpywareGuard's continuous monitoring status is separate from the requested
+priority scan. A stopped toolkit does not establish that every selected native
+check has stopped. A new request waits for its prior owner to settle.
+
+Large browser profiles can exceed a short time budget. Adjust the per-run budget
+and retry when appropriate; this does not silently overwrite saved preferences.
+Saved budgets above five minutes must reach the operation owner rather than being
+clamped to a five-minute constructor default. Deadline expiry remains incomplete
+coverage, with preserved diagnostics. Animation follows active visible work and
+respects reduced-motion preferences. Expand **What's happening now** for collection
+limits, report handling and next steps; live refreshes retain the review position.
+
+Toolkit progress crosses a bounded, job-bound latest-snapshot channel from the
+separate worker. It does not create a growing per-file log. Current file names
+and toolkit activity text are untrusted display data; they cannot grant trust,
+change a baseline or authorize response. The pinned upstream engine and license
+bytes remain unchanged.
 
 Settings retain the priority and resource choices. Above normal is the default;
 High is the supported operating-system ceiling. REALTIME priority is not used.

@@ -272,3 +272,152 @@ def test_real_spyware_workspace_fits_with_scroll_and_preserves_tabs_and_edits(me
         page.close()
         dialog.close()
         dialog.deleteLater()
+
+
+def test_reader_rows_show_real_counts_unknown_eta_and_keep_widgets_and_scroll(memory):
+    controller, manager, config, _ = memory
+    panel = ui.SpywareScanControls(manager)
+    panel.resize(620, 700)
+    panel.show()
+    steps = [dict(id=f"reader-{index}", label=f"Synthetic reader {index}", state="running" if index == 3 else "pending",
+                  completed=25 if index == 3 else 0, total=100 if index == 3 else None,
+                  percent=None, unit="records", elapsed_s=12, remaining_s=None)
+             for index in range(12)]
+    value = dict(operation_id="a" * 32, state="running", current_task="Read observed browser records",
+                 current_file="D:/synthetic/<literal>/History", overall_percent=25, elapsed_s=12,
+                 remaining_s=None, steps=steps)
+    try:
+        controller.publish(busy=True, scan_progress=progress(), timeout_seconds=600,
+                           scanner_progress={"toolkit": value})
+        QApplication.processEvents()
+        row = panel.step_rows["toolkit:reader-3"]
+        assert row.bar.value() == 25 and "25/100 records" in row.count.text()
+        assert "ETA Calculating" in row.count.text()
+        assert "Read observed browser records" in panel.activity.text()
+        assert "D:/synthetic/<literal>/History" in panel.current_file.text()
+        assert panel.current_file.textFormat() == Qt.TextFormat.PlainText
+        assert "time budget 600s" in panel.timing.text() and "Calculating" in panel.timing.text()
+        assert panel.progress_ring.percent < 100
+        panel.steps_scroll.verticalScrollBar().setValue(80)
+        position = panel.steps_scroll.verticalScrollBar().value()
+        value["steps"][3]["completed"] = 30
+        controller.publish(scanner_progress={"toolkit": value})
+        assert panel.step_rows["toolkit:reader-3"] is row
+        assert row.bar.value() == 30
+        assert panel.steps_scroll.verticalScrollBar().value() == position
+        controller.publish(busy=False, state="timed-out", message="Time budget reached (600s). Synthetic reader deadline.")
+        assert "Time budget reached" in panel.progress_stage.text()
+        assert "600s" in panel.outcome.text()
+        assert panel.step_rows["toolkit:reader-3"] is row
+        assert "no scan is running" not in panel.activity.text()  # Last observed task is retained.
+        assert "incomplete coverage" in panel.stage_explanation.text()
+        assert not panel.cancel_button.isEnabled()
+        assert not panel.progress_ring._timer.isActive()
+        panel.budget.setValue(900)
+        assert panel.start()
+        assert controller.requests[-1]["timeout_seconds"] == 900
+        assert not hasattr(config, "github_tools_timeout_seconds")
+    finally:
+        panel.close()
+
+
+def test_active_or_draining_workflow_never_displays_one_hundred_percent(memory):
+    controller, manager, _, _ = memory
+    panel = ui.SpywareScanControls(manager)
+    try:
+        controller.publish(busy=True, scan_progress=progress(4, stage="aggregation"), lifecycle="draining")
+        assert panel.progress_ring.percent == 99
+        assert "Stopping" in panel.progress_stage.text()
+        assert panel.cancel_button.isEnabled()
+        controller.publish(busy=False, state="completed", lifecycle="terminal", scan_progress=progress(4, stage="finished"))
+        assert panel.progress_ring.percent == 100
+    finally:
+        panel.close()
+
+
+def test_current_query_item_has_separate_real_percent_eta_and_neutral_units(memory):
+    controller, manager, _, _ = memory
+    panel = ui.SpywareScanControls(manager)
+    value = dict(state="running", current_file="D:/synthetic/History", current_task="Process current query",
+                 overall_percent=None, completed_steps=0, total_steps=8,
+                 item_completed=40, item_total=100, item_unit="database rows processed", item_remaining_s=30,
+                 remaining_s=None, steps=[])
+    try:
+        controller.publish(busy=True, scan_progress=progress(), scanner_progress={"toolkit": value})
+        assert panel.item_progress.value() == 40 and "40%" in panel.item_progress.format()
+        assert "40/100 database rows processed" in panel.item_caption.text()
+        assert "item ETA 0:30" in panel.item_caption.text()
+        assert "database rows processed read" not in panel.current_file.text()
+        assert panel.progress_ring.percent == 25  # Current query is not whole-reader completion.
+        assert "ETA Calculating" in panel.timing.text()
+        value.update(item_completed=4096, item_total=8192, item_unit="bytes read", item_remaining_s=2)
+        controller.publish(scanner_progress={"toolkit": value})
+        assert panel.item_progress.value() == 50 and "4,096/8,192 bytes read" in panel.item_caption.text()
+        value.update(item_total=None, item_remaining_s=None)
+        controller.publish(scanner_progress={"toolkit": value})
+        assert "indeterminate" in panel.item_progress.format()
+        assert "4,096 observed" in panel.item_caption.text() and "Calculating" in panel.item_caption.text()
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("state", ["running", "cancelled"])
+def test_native_hash_step_includes_observed_partial_file_without_finishing_other_candidates(memory, state):
+    row = ui.ScanStepRow()
+    try:
+        step = dict(id="hashes", label="Bounded file hashes", state=state, completed=1, total=4,
+                    unit="candidate records", percent=99, item_completed=512, item_total=1024,
+                    item_unit="bytes", percent_basis="completed candidate slots plus current file byte fraction")
+        row.apply("Native SpywareGuard", step)
+        assert row.bar.value() == 37 and row.bar.format() == "37.5%"
+        assert "1/4 candidate records" in row.count.text()
+        assert "includes this current-file byte fraction" in row.count.text()
+        step["item_completed"] = 1024
+        row.apply("Native SpywareGuard", step)
+        assert row.bar.value() == 50  # One settled slot + one observed file's bytes, not all four.
+        row.apply("Zero-Breach", step)
+        assert row.bar.value() == 25  # A file/query item cannot advance an entire toolkit reader.
+    finally:
+        row.close()
+
+
+@pytest.mark.parametrize("item_done,item_total", [
+    (True, 1024), (512, False), (-1, 1024), (1025, 1024),
+    (float("nan"), 1024), (512, float("inf")), (512, 0), (512, 17 * 1024**2),
+])
+def test_malformed_partial_file_counts_cannot_inflate_native_step_percent(memory, item_done, item_total):
+    row = ui.ScanStepRow()
+    try:
+        row.apply("Native SpywareGuard", dict(id="hashes", state="running", completed=1, total=4,
+                  unit="candidate records", percent=99, item_completed=item_done, item_total=item_total,
+                  item_unit="bytes", percent_basis="completed candidate slots plus current file byte fraction"))
+        assert row.bar.value() == 25 and row.bar.format() == "25%"
+    finally:
+        row.close()
+
+
+@pytest.mark.parametrize("ended_state", ["completed", "timed-out", "cancelled", "failed"])
+def test_retired_toolkit_rows_are_not_run_while_native_request_still_drains(memory, ended_state):
+    controller, manager, _, _ = memory
+    panel = ui.SpywareScanControls(manager)
+    try:
+        native = dict(state="cancelling", current_task="Finishing an owned native collector", steps=[
+            dict(id="persistence", label="Persistence", state="running", completed=0, total=1),
+            dict(id="processes", label="Processes", state="pending", completed=0, total=None)])
+        toolkit = dict(state=ended_state, current_file="D:/synthetic/History", steps=[
+            dict(id="history", label="History", state="running", completed=20, total=100),
+            dict(id="cookies", label="Cookies", state="queued", completed=0, total=None),
+            dict(id="logs", label="Logs", state="pending", completed=0, total=None)])
+        controller.publish(busy=True, state="stopping", lifecycle="draining", scan_progress=progress(),
+                           scanner_progress={"native": native, "toolkit": toolkit})
+        assert "running" in panel.step_rows["native:persistence"].caption.text()
+        assert "pending" in panel.step_rows["native:processes"].caption.text()
+        assert "Interrupted" in panel.step_rows["toolkit:history"].caption.text()
+        assert panel.step_rows["toolkit:history"].bar.value() == 20
+        assert "Not run" in panel.step_rows["toolkit:cookies"].caption.text()
+        assert "Not run" in panel.step_rows["toolkit:logs"].caption.text()
+        assert "Calculating" not in panel.step_rows["toolkit:logs"].count.text()
+        assert panel.cancel_button.isEnabled()  # Native collector remains owned and active.
+        assert panel.progress_ring.percent < 100
+    finally:
+        panel.close()

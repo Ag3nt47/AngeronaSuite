@@ -409,3 +409,95 @@ changed pages were visually reviewed at original 182-DPI resolution. Only the
 Word document body changed. All renderer generations retired before cleanup of
 its exact temporary tool roots. Final public assets and hosted checks must be
 verified against the resulting published commit; parent results do not prove it.
+
+## Detailed scan progress and actual engine execution
+
+The published `5d037193a44a8f72caa26709b22a4897d57db3ae` subsequently passed all
+fifteen GitHub checks. Its fresh normal startup and 76.406-second observation
+showed responsive visible windows, unchanged source, two fresh matching status
+generations and no status gaps. Native visible frames for both the dashboard
+and SpywareGuard fit the actual 125%-scaled work area. Twelve samples showed
+all four component heartbeats live. The shared read-only update transport
+recognized the same canonical source revision and reported no stable release.
+The user then used dashboard STOP; its authenticated record was present and the
+Core and known role processes were absent before further source edits. The
+diagnostic had not retained every child handle for that user action, so it does
+not claim exact retirement of unobserved children.
+
+The user's real priority scan reached its configured five-minute deadline
+during browser checking. Its saved outcome was cancelled/incomplete; the GUI
+discarded progress and hid that specific reason behind a generic unavailable
+label. This was not an installation failure. Review separately found that the
+controller always constructed a default 300-second operation, preventing a
+longer configured budget from taking effect. The observed run itself had a
+300-second budget; it does not establish that a longer saved setting caused
+that historical timeout.
+
+Per-run budgets now reach the actual operation owner without saving preferences.
+The display retains exact errors, partial rows, current task/file, elapsed time,
+per-check fractions and separate item/query progress. Native bounded hash-file
+bytes contribute their measured fraction to that step. SQLite progress observes
+the result list the pinned reader already fetched, with no extra SQL or host
+enumeration. Current-query completion does not become whole-browser completion.
+ETA is measured only where a denominator/rate exists; remaining whole-reader or
+full-scan work can remain Calculating. Percentages describe the requested
+workflow, not every file or proof of a clean host.
+
+The continual native sensor worker remains alive after a priority request.
+Admission waits for the same request and positive lifecycle generation plus
+both collector-finished and request-finished flags, after collection and priority
+restoration return. Missing flags, stale generations and renewal errors cannot
+drop ownership. Tool retirement is separately tied to the exact native job.
+Cancelled work remains Stopping while it drains; future rows become Not run
+after their own scanner ends. Counters and partial percentages are retained.
+
+Actual pinned-engine positive/negative execution exposed another adapter defect:
+the write-budget guard rejected the standard-library NamedTemporaryFile opener
+used to create reports. Metadata-only checks had not exercised report output.
+The narrow repair accepts only the expected standard-library code/globals and
+private report naming pattern, checks a fresh descriptor generation and current
+native identity before adoption or close, and retains path/link/quota checks.
+Foreign or replaced descriptors remain untouched. The upstream engine and
+license bytes are unchanged.
+
+Progress uses a parent-created private file with bound native identity and
+job/nonce/process/sequence checks. The isolated standard-library worker briefly
+opens that existing object for bounded latest-snapshot writes. It does not add
+growing per-file logs or dependencies to the shared environment. Malformed,
+oversized, stale or deeply nested advisory telemetry stays a progress gap and
+does not abort an otherwise valid scan/report. Paths and activity text remain
+untrusted literal display data and grant no response authority.
+
+The native gate passed 152 cases, the final GUI/controller gate passed 121, and
+the backend gate passed 52. Backend checks include actual pinned-engine positive
+and negative reports, a private Chromium History query, controlled deadline
+retirement and malformed progress that cannot prevent a valid real report.
+All 24 observed backend native generations retired naturally with fixed sources
+and no observation gaps. The browser fixture uses a controlled observation
+delay: it proves counters, report integrity and retirement, not production speed.
+Ordinary-user engine cases skip elevated hosted runners rather than bypassing
+the execution guard. Failed intermediate attempts and their receipts remain
+private. Independent review passed the reported frozen production hashes.
+
+Concurrent advisory snapshot publications can arrive out of order. The parent
+rejects stale sequence numbers and later samples recover; the sampler is joined
+before the final forced publication, preserving terminal status and verdicts.
+The complete manual now has 86 rendered pages: 74 exact previous PNGs carry the
+prior review and all twelve changed/new pages were reviewed at original 182 DPI.
+Its exact renderer tool roots were cleaned only after proven process retirement.
+Final integration, public media and hosted acceptance must still bind to the
+new resulting publication, independently of the successful parent revision.
+
+The final controlled end-to-end replay additionally passed through the actual
+Qt controller and controls, real CuratedToolService and unchanged pinned engine,
+plus the real native module with inert providers and an owned non-executable
+file. Qt observed genuine partial-file progress and the expected positive
+report. The same native request/generation finished with both completion flags
+while its continual sensor worker remained alive. Actual ModuleManager focus
+and background preferences restored, no network attempt occurred, and both tool
+process generations were proven retired. All five owned test-job generations
+retired naturally with fixed production hashes. The initial smaller fixture
+did not span a read chunk and could not prove intermediate progress; that test
+failure was retained and the owned file was enlarged before the successful
+7.02-second final replay. This is controlled execution evidence, not a full-PC
+scan or detection-efficacy benchmark.

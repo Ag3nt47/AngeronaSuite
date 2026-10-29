@@ -17,7 +17,7 @@ from PySide6.QtGui import QActionGroup, QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTabWidget, QToolButton,
+    QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QTabWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
@@ -102,10 +102,13 @@ class CuratedToolsController(QObject):
         self._closed = False
         self._auto_started = False
         self._operation = None
+        self._operation_id = ""
         self._worker = None
         self._pending_priority = None
         self._native_priority_module = None
         self._native_request_id = ""
+        self._native_request_generation = None
+        self._last_native_completion = None
         self._focus_lease = None
         self._focus_renewed_at = 0.0
         self._cancel_requested = threading.Event()
@@ -142,6 +145,11 @@ class CuratedToolsController(QObject):
         if self._closed or self._busy or (self._worker is not None and self._worker.is_alive()):
             return False
         cfg = _config(self.manager)
+        options = dict(options or {})
+        budget = options.pop("timeout_seconds", getattr(cfg, "github_tools_timeout_seconds", 300))
+        if type(budget) is not int or not 30 <= budget <= 900:
+            self._publish(state="held", message="Choose a per-run time budget between 30 and 900 seconds.")
+            return False
         if action in {"prepare", "scan", "priority_scan", "open_tool", "self_test"}:
             if (getattr(self.manager, "ugcap_paused", False)
                     or (action != "priority_scan" and not getattr(cfg, "github_tools_enabled", True))):
@@ -150,6 +158,14 @@ class CuratedToolsController(QObject):
         self._busy = True
         self._snapshot["active_action"] = action
         self._snapshot["scan_progress"] = None
+        self._snapshot["scanner_progress"] = {}
+        self._snapshot.pop("focus_lease_gap", None)
+        self._snapshot["lifecycle"] = "active"
+        self._snapshot["state"] = "running" if action in {"scan", "priority_scan"} else "working"
+        self._snapshot["timeout_seconds"] = budget
+        started = time.monotonic()
+        self._snapshot["started_monotonic"] = started
+        self._snapshot["elapsed_seconds"] = 0
         self._cancel_requested.clear()
         self._done.clear()
         self._publish(message={"status": "Checking scanner files…", "prepare": "Preparing the pinned scanner…",
@@ -161,10 +177,13 @@ class CuratedToolsController(QObject):
 
         def work():
             operation = None
+            outcome = None
+            result = None
             try:
                 backend = _backend()
-                operation = backend.ToolOperation()
+                operation = backend.ToolOperation(timeout=budget)
                 self._operation = operation
+                self._operation_id = getattr(operation, "operation_id", "")
                 if self._cancel_requested.is_set():
                     operation.cancel()
                 operation.check()
@@ -181,7 +200,7 @@ class CuratedToolsController(QObject):
                 elif action == "scan":
                     result = service.scan(backend.ToolScanRequest(**(options or {})), operation, progress=progress)
                 elif action == "priority_scan":
-                    result = self._priority_work(backend, service, cfg, operation, options or {}, progress)
+                    result = self._priority_work(backend, service, cfg, operation, options, progress, budget)
                 elif action == "prepare":
                     result = service.prepare(operation, progress=progress,
                                              allow_download=bool(getattr(cfg, "github_tools_allow_download", True)))
@@ -192,15 +211,57 @@ class CuratedToolsController(QObject):
                     result = getattr(service, action)(operation, progress=progress)
                 else:
                     result = service.status()
-                self._frame("result", (action, result))
+                if action == "scan":
+                    operation.check()
+                if type(result) is dict:
+                    raw_progress = result.get("scanner_progress")
+                    if type(raw_progress) is dict and "operation_id" in raw_progress:
+                        result = dict(result)
+                        if raw_progress.get("operation_id") == self._operation_id:
+                            result["scanner_progress"] = {"toolkit": copy.deepcopy(raw_progress)}
+                        else:
+                            # A previous job's terminal snapshot is not this run.
+                            result.pop("scanner_progress")
+                outcome = ("result", (action, result))
             except Exception as error:
                 cancelled = self._cancel_requested.is_set()
-                self._frame("error", dict(state="cancelled" if cancelled else "unavailable", verified=False,
-                                          scan_progress=None,
-                                          message="Operation cancelled; review partial coverage." if cancelled
-                                          else f"Tool operation failed: {type(error).__name__}: {_literal(error, 700)}"))
+                deadline = getattr(operation, "deadline", None)
+                timed_out = not cancelled and type(deadline) in (int, float) and time.monotonic() >= deadline
+                state = "cancelled" if cancelled else "timed-out" if timed_out else "failed"
+                reason = f"{type(error).__name__}: {_literal(error, 1200)}"
+                failure = dict(state=state, error=reason,
+                                          message=(f"Scan time budget reached ({budget}s). Partial progress is preserved. "
+                                                   "Review coverage or choose a longer budget for a new run. " if timed_out else
+                                                   "Operation cancelled; partial progress is preserved. " if cancelled else
+                                                   "Tool operation failed; partial progress is preserved. ") + reason)
+                if not (timed_out or cancelled):
+                    failure["verified"] = False
+                if type(result) is dict:
+                    failure["partial_result"] = result
+                outcome = ("error", failure)
             finally:
+                # A returned scan/exception is not native child retirement.
+                # Keep admission closed and the owner alive until its exact
+                # backend custody has actually drained. No Qt waits or kills.
+                self._retain_tool_progress()
+                wait = getattr(self._service, "wait_for_shutdown", None)
+                if callable(wait):
+                    while True:
+                        try:
+                            retired = wait(.1)
+                        except Exception:
+                            retired = False
+                        if retired is True:
+                            break
+                        self._frame("metadata", {"lifecycle": "draining", "state": "stopping",
+                                                 "message": "Stopping · owned toolkit process retirement is still pending."})
+                        self._retain_tool_progress()
+                        time.sleep(.1)
                 self._operation = None
+                self._operation_id = ""
+                if outcome is not None:
+                    self._frame("metadata", {"elapsed_seconds": max(0, time.monotonic() - started)})
+                    self._frame(*outcome)
                 self._done.set()
 
         try:
@@ -213,9 +274,20 @@ class CuratedToolsController(QObject):
             return False
         return True
 
-    def _priority_work(self, backend, service, cfg, operation, options, progress):
+    def _retain_tool_progress(self):
+        read = getattr(self._service, "progress_snapshot", None)
+        if not callable(read) or not self._operation_id:
+            return
+        try:
+            value = read()
+            if type(value) is dict and value.get("operation_id") == self._operation_id:
+                self._frame("scanner", ("toolkit", copy.deepcopy(value)))
+        except Exception:
+            pass  # Retain the last publication; missing status is not completion.
+
+    def _priority_work(self, backend, service, cfg, operation, options, progress, budget=300):
         request_id = uuid.uuid4().hex
-        deadline = time.monotonic() + min(900, max(30, int(getattr(cfg, "github_tools_timeout_seconds", 300))))
+        deadline = time.monotonic() + budget
         if hasattr(operation, "deadline"):
             operation.deadline = min(operation.deadline, deadline)
         native_enabled = bool(options.pop("native_enabled", getattr(cfg, "spyware_scan_native_enabled", True)))
@@ -249,6 +321,8 @@ class CuratedToolsController(QObject):
         focus = getattr(self.manager, "priority_scan_focus", None)
         lease = focus(owner=request_id, background_percent=getattr(cfg, "spyware_scan_background_percent", 10)) if callable(focus) else contextlib.nullcontext()
         self._native_request_id = request_id
+        self._native_request_generation = None
+        self._last_native_completion = None
         try:
             with self._focus_scope(lease, request_id) as active_lease:
                 self._focus_lease = active_lease
@@ -259,6 +333,7 @@ class CuratedToolsController(QObject):
                             admitted = native.request_priority_scan(request_id)
                             if admitted:
                                 self._native_priority_module = native
+                                self._bind_native_generation(native.priority_scan_snapshot())
                                 native_state = dict(state="queued", request_id=request_id)
                                 progress("Native SpywareGuard scan scheduled; preparing selected toolkit checks.")
                             else:
@@ -289,13 +364,17 @@ class CuratedToolsController(QObject):
                                 service.prepare(operation, progress=progress,
                                                 allow_download=bool(getattr(cfg, "github_tools_allow_download", True)))
                             tool_result = service.scan(backend.ToolScanRequest(**options), operation, progress=progress)
+                            self._frame("metadata", {"partial_result": tool_result})
+                            operation.check()
                     completed_stages.add("toolkit")
                     publish_stage("native" if self._native_priority_module is not None else "aggregation")
                 if self._native_priority_module is not None:
                     while True:
                         operation.check()
                         native_state = native.priority_scan_snapshot()
-                        if native_state.get("request_id") != request_id:
+                        if self._native_snapshot_exact(native_state):
+                            self._frame("scanner", ("native", native_state.get("progress", {})))
+                        if not self._native_snapshot_exact(native_state):
                             native_state = dict(state="incomplete", error="The native scan generation changed; its result was not accepted.")
                             break
                         if native_state.get("state") not in {"queued", "running"}:
@@ -307,6 +386,8 @@ class CuratedToolsController(QObject):
                         operation.cancelled.wait(.1)
                     completed_stages.add("native")
                 publish_stage("aggregation")
+            if self._last_native_completion is not None:
+                native_state = self._last_native_completion
             incomplete = native_enabled and native_state.get("state") != "completed"
             incomplete = incomplete or (tool_enabled and tool_result.get("state") not in {
                 "complete", "findings", "references", "withdrawn",
@@ -320,9 +401,24 @@ class CuratedToolsController(QObject):
                         details={"native": native_state, "zero_breach": tool_result},
                         scan_progress=scan_progress("finished", terminal=True))
         finally:
+            # _focus_scope retains the exact native request until terminal.
             self._native_priority_module = None
             self._native_request_id = ""
+            self._native_request_generation = None
             self._focus_lease = None
+
+    def _bind_native_generation(self, snapshot):
+        if (self._native_request_generation is None and type(snapshot) is dict
+                and snapshot.get("request_id") == self._native_request_id
+                and type(snapshot.get("lifecycle_generation")) is int
+                and snapshot["lifecycle_generation"] > 0):
+            self._native_request_generation = snapshot["lifecycle_generation"]
+
+    def _native_snapshot_exact(self, snapshot):
+        return (type(snapshot) is dict and snapshot.get("request_id") == self._native_request_id
+                and type(snapshot.get("lifecycle_generation")) is int
+                and self._native_request_generation is not None
+                and snapshot["lifecycle_generation"] == self._native_request_generation)
 
     @contextlib.contextmanager
     def _focus_scope(self, lease, request_id):
@@ -332,20 +428,42 @@ class CuratedToolsController(QObject):
             finally:
                 native = self._native_priority_module
                 if native is not None:
-                    try:
-                        snapshot = native.priority_scan_snapshot()
-                        if snapshot.get("request_id") == request_id and snapshot.get("state") in {"queued", "running"}:
-                            native.cancel_priority_scan(request_id)
-                            deadline = time.monotonic() + 2
-                            while time.monotonic() < deadline:
-                                snapshot = native.priority_scan_snapshot()
-                                if (snapshot.get("request_id") != request_id
-                                        or snapshot.get("state") not in {"queued", "running"}):
-                                    break
-                                time.sleep(.05)
+                    requested = False
+                    while True:
+                        try:
+                            snapshot = native.priority_scan_snapshot()
+                        except Exception:
+                            snapshot = {"state": "unavailable"}
+                        self._bind_native_generation(snapshot)
+                        exact = self._native_snapshot_exact(snapshot)
+                        if (exact and snapshot.get("state") in {"completed", "cancelled", "failed"}
+                                and snapshot.get("request_finished") is True
+                                and snapshot.get("collector_finished") is True):
+                            self._last_native_completion = copy.deepcopy(snapshot)
+                            self._frame("scanner", ("native", snapshot.get("progress", {})))
                             self._frame("metadata", {"native_scan_completion": snapshot})
-                    except Exception:
-                        self._frame("metadata", {"native_scan_completion": {"state": "unavailable"}})
+                            break
+                        if not requested:
+                            try:
+                                native.cancel_priority_scan(request_id)
+                                requested = True
+                            except Exception:
+                                pass
+                        self._frame("metadata", {"lifecycle": "draining", "state": "stopping",
+                                                 "message": "Stopping · the exact native check is still retiring. New scans are held."})
+                        if exact:
+                            self._frame("scanner", ("native", snapshot.get("progress", {})))
+                        renew = getattr(active, "renew", None)
+                        if callable(renew) and time.monotonic() - self._focus_renewed_at >= 10:
+                            self._focus_renewed_at = time.monotonic()
+                            try:
+                                renewed = renew()
+                            except Exception as error:
+                                renewed = False
+                                self._frame("metadata", {"focus_lease_gap": f"Focus renewal unavailable: {type(error).__name__}; exact native request remains owned."})
+                            if renewed is not True:
+                                self._frame("metadata", {"focus_lease_gap": "Focus renewal could not be verified; exact native request remains held until completion."})
+                        time.sleep(.1)
 
     @staticmethod
     def _save_config(cfg, options):
@@ -390,6 +508,7 @@ class CuratedToolsController(QObject):
 
     def _drain(self):
         if not self._closed and self._busy:
+            self._retain_tool_progress()
             lease = self._focus_lease
             if lease is not None and time.monotonic() - self._focus_renewed_at >= 10:
                 renew = getattr(lease, "renew", None)
@@ -410,9 +529,9 @@ class CuratedToolsController(QObject):
             if native is not None:
                 try:
                     native_snapshot = native.priority_scan_snapshot()
-                    if (type(native_snapshot) is dict
-                            and native_snapshot.get("request_id") == self._native_request_id):
+                    if self._native_snapshot_exact(native_snapshot):
                         usage = dict(usage, native=native_snapshot)
+                        self._frame("scanner", ("native", native_snapshot.get("progress", {})))
                     else:
                         usage = dict(usage, native={"state": "unavailable",
                                                    "reason": "The native scan generation changed."})
@@ -431,9 +550,16 @@ class CuratedToolsController(QObject):
                 self._publish(message=value)
             elif kind == "metadata":
                 self._publish(**value)
+            elif kind == "scanner":
+                source, progress = value
+                if type(progress) is dict and progress:
+                    combined = dict(self._snapshot.get("scanner_progress") or {})
+                    combined[source] = copy.deepcopy(progress)
+                    if combined != self._snapshot.get("scanner_progress"):
+                        self._publish(scanner_progress=combined)
             elif kind == "error":
                 self._busy = False
-                self._publish(**value)
+                self._publish(**value, lifecycle="terminal")
             else:
                 action, result = value
                 self._busy = False
@@ -443,7 +569,7 @@ class CuratedToolsController(QObject):
                     self._publish(message="Project credits loaded.")
                 else:
                     update = result if type(result) is dict else dict(message=_literal(result))
-                    self._publish(**update)
+                    self._publish(**dict(update, lifecycle="terminal"))
                     if action == "settings":
                         self.settings_saved.emit()
         if not self._busy and self._pending_priority is not None:
@@ -659,13 +785,19 @@ class ScanProgressRing(QWidget):
     def set_state(self, finished, total, busy):
         valid = (type(finished) is int and type(total) is int
                  and 0 < total <= 1_000_000 and 0 <= finished <= total)
-        self.percent = finished * 100 // total if valid else None
+        self.percent = min(99 if busy else 100, finished * 100 // total) if valid else None
         self.busy = bool(busy)
-        text = f"{self.percent}% of workflow stages finished" if valid else "Progress count unavailable"
+        text = f"{self.percent}% measured overall workflow" if valid else "Progress count unavailable"
         self.setAccessibleName(text)
         self.setToolTip(text + ". This is not a percentage of files checked or protection coverage.")
         self._sync_timer()
         self.update()
+
+    def set_fraction(self, fraction, busy):
+        if type(fraction) not in (int, float) or not math.isfinite(fraction) or not 0 <= fraction <= 1:
+            self.set_state(None, None, busy)
+            return
+        self.set_state(int(fraction * 1_000_000), 1_000_000, busy)
 
     def _sync_timer(self):
         from angerona.gui.header_controls import motion_allowed
@@ -705,6 +837,92 @@ class ScanProgressRing(QWidget):
         painter.setFont(font)
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
                          f"{self.percent}%" if self.percent is not None else "—")
+
+
+def _measured(value, *, maximum=None):
+    if type(value) not in (int, float) or value < 0:
+        return None
+    try:
+        if not math.isfinite(value):
+            return None
+    except OverflowError:
+        return None
+    return min(value, maximum) if maximum is not None else value
+
+
+def _duration(value):
+    seconds = _measured(value)
+    if seconds is None:
+        return "Calculating"
+    seconds = int(seconds)
+    return f"{seconds // 3600:d}:{seconds // 60 % 60:02d}:{seconds % 60:02d}" if seconds >= 3600 else f"{seconds // 60:d}:{seconds % 60:02d}"
+
+
+class ScanStepRow(QWidget):
+    """Stable reader row: observations change, the widget and scroll do not."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 3, 4, 3)
+        layout.setSpacing(2)
+        self.caption = _label()
+        self.bar = QProgressBar()
+        self.bar.setRange(0, 100)
+        self.bar.setMaximumHeight(14)
+        self.count = _label()
+        layout.addWidget(self.caption)
+        layout.addWidget(self.bar)
+        layout.addWidget(self.count)
+
+    def apply(self, source, step, *, terminal=False):
+        state = _literal(step.get("state", "pending"), 32)
+        display_state = ("Not run" if terminal and state in {"pending", "queued"} else
+                         "Interrupted" if terminal and state in {"running", "cancelling"} else state)
+        percent = None
+        fractional_item = False
+        # Derive reader completion from counted units. A current database
+        # query/file fraction is not a fraction of an entire toolkit reader.
+        completed, total = _measured(step.get("completed")), _measured(step.get("total"))
+        if total is not None and total > 0 and completed is not None and completed <= total:
+            percent = completed * 100 / total
+            if (source == "Native SpywareGuard" and step.get("id") == "hashes"
+                    and step.get("unit") == "candidate records"
+                    and step.get("percent_basis") == "completed candidate slots plus current file byte fraction"
+                    and state in {"running", "cancelling", "cancelled", "failed"}
+                    and type(step.get("completed")) is int and type(step.get("total")) is int
+                    and completed < total <= 4096 and step.get("item_unit") == "bytes"
+                    and type(step.get("item_completed")) is int and type(step.get("item_total")) is int
+                    and 0 <= step["item_completed"] <= step["item_total"] <= 16 * 1024**2
+                    and step["item_total"] > 0):
+                percent = (completed + step["item_completed"] / step["item_total"]) * 100 / total
+                fractional_item = True
+        if state in {"running", "queued", "cancelling", "pending"} and percent is not None:
+            percent = min(percent, 99)
+        self.caption.setText(f"{source} · {_literal(step.get('label', step.get('id', 'Check')), 120)} · {display_state}")
+        self.bar.setValue(int(percent) if percent is not None else 0)
+        self.bar.setFormat((f"{percent:.1f}%" if fractional_item else f"{percent:.0f}%")
+                           if percent is not None else "Indeterminate · no known total")
+        self.bar.setAccessibleName(self.caption.text() + ": " + self.bar.format())
+        unit = _literal(step.get('unit', 'items'), 40)
+        count = (f"{completed:,.0f}/{total:,.0f} {unit}" if completed is not None and total is not None
+                 else f"{completed:,.0f} {unit} processed · total unknown" if completed is not None
+                 else "Total not yet known")
+        checked, skipped = _measured(step.get("checked")), _measured(step.get("skipped"))
+        if checked is not None:
+            count += f" · checked {checked:,.0f}"
+        if skipped is not None:
+            count += f" · skipped {skipped:,.0f}"
+        item_done, item_total = _measured(step.get("item_completed")), _measured(step.get("item_total"))
+        step_ended = terminal or state in {"completed", "cancelled", "failed", "skipped", "disabled"}
+        if item_done is not None and item_total and item_done <= item_total:
+            count += f"\nCurrent item: {item_done:,.0f}/{item_total:,.0f} {_literal(step.get('item_unit', 'bytes'), 24)} ({item_done * 100 / item_total:.0f}%)"
+            count += " · item ETA " + ("— (step ended)" if step_ended else _duration(step.get('item_remaining_s')))
+            if fractional_item:
+                count += " · step includes this current-file byte fraction"
+        eta = "— (step ended)" if step_ended else _duration(step.get("remaining_s"))
+        elapsed = _duration(step.get("elapsed_s")) if _measured(step.get("elapsed_s")) is not None else "unavailable"
+        self.count.setText(count + f" · elapsed {elapsed} · ETA {eta}")
 
 
 class SpywareScanControls(QWidget):
@@ -786,6 +1004,15 @@ class SpywareScanControls(QWidget):
         self.memory.setRange(128, 2048)
         self.memory.setValue(int(getattr(cfg, "spyware_scan_memory_mib", 512)))
         form.addRow("Memory ceiling (MiB)", self.memory)
+        self.budget = ClickNumber()
+        self.budget.setRange(30, 900)
+        self.budget.setValue(int(getattr(cfg, "github_tools_timeout_seconds", 300)))
+        self.budget.setSuffix(" s")
+        self.budget.setToolTip("Per-run budget only. This never overwrites your saved default or extends an active scan.")
+        # Time budget is always visible; priority details can remain compact.
+        checks.addWidget(_label("Time budget for the next run"))
+        checks.addWidget(self.budget)
+        checks.addWidget(_label("If the budget expires, partial evidence stays visible. Choose a larger budget here and press Spyware Scan again to retry."))
         self.options.hide()
         self.toggle.toggled.connect(self.options.setVisible)
         self.toggle.toggled.connect(lambda opened: self.toggle.setArrowType(
@@ -805,12 +1032,50 @@ class SpywareScanControls(QWidget):
         self.progress_count = _label("No workflow is running.")
         captions.addWidget(self.progress_stage)
         captions.addWidget(self.progress_count)
-        captions.addWidget(_label("Percent tracks finished workflow stages, not files checked or protection coverage."))
+        captions.addWidget(_label("Overall weights workflow stages equally. Reader percentages use counted records or bytes; unknown totals stay indeterminate. Neither is protection coverage."))
+        self.scanner_summaries = {"native": _label(), "toolkit": _label()}
+        for label in self.scanner_summaries.values():
+            captions.addWidget(label)
         progress.addLayout(captions, 1)
         self.cancel_button = QPushButton("Stop scan")
         self.cancel_button.clicked.connect(self.controller.cancel)
         progress.addWidget(self.cancel_button)
         layout.addWidget(self.progress_group)
+        self.activity = _label("Current task: waiting for an explicit scan request.")
+        self.current_file = _label("Current file: not supplied.")
+        self.item_caption = _label()
+        self.item_progress = QProgressBar()
+        self.item_progress.setRange(0, 100)
+        self.item_progress.setMaximumHeight(16)
+        self.item_progress.setToolTip("Only the current observed file/query item. This is separate from reader completion and overall workflow progress.")
+        self.timing = _label()
+        self.outcome = _label()
+        self.outcome.setStyleSheet("color:#fbbf24;font-weight:600;")
+        for label in (self.activity, self.current_file, self.timing, self.outcome):
+            layout.addWidget(label)
+        layout.addWidget(self.item_caption)
+        layout.addWidget(self.item_progress)
+        self.step_toggle = QToolButton()
+        self.step_toggle.setText("Per-check and reader progress")
+        self.step_toggle.setCheckable(True)
+        self.step_toggle.setChecked(True)
+        self.step_toggle.setArrowType(Qt.ArrowType.DownArrow)
+        self.step_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        layout.addWidget(self.step_toggle)
+        self.steps_scroll = QScrollArea()
+        self.steps_scroll.setWidgetResizable(True)
+        self.steps_scroll.setMinimumHeight(90)
+        self.steps_scroll.setMaximumHeight(260)
+        self.steps_body = QWidget()
+        self.steps_layout = QVBoxLayout(self.steps_body)
+        self.steps_layout.setContentsMargins(0, 0, 0, 0)
+        self.steps_layout.addStretch(1)
+        self.steps_scroll.setWidget(self.steps_body)
+        self.step_rows = {}
+        self.step_toggle.toggled.connect(self.steps_scroll.setVisible)
+        self.step_toggle.toggled.connect(lambda opened: self.step_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
+        layout.addWidget(self.steps_scroll)
 
         self.explanation_group = QGroupBox("What's happening now")
         explanation = QVBoxLayout(self.explanation_group)
@@ -861,6 +1126,33 @@ class SpywareScanControls(QWidget):
         layout.addWidget(self.resource_group)
         self.controller.status_changed.connect(self._apply)
         self._apply(self.controller.snapshot())
+        self._clock = QTimer(self)
+        self._clock.setInterval(1000)
+        self._clock.timeout.connect(self._tick_elapsed)
+        self._clock.start()
+
+    def _tick_elapsed(self):
+        if self.isVisible():
+            snapshot = self.controller.snapshot()
+            if snapshot.get("busy"):
+                self._apply_timing(snapshot, getattr(self, "_timing_current", None))
+
+    def _apply_timing(self, snapshot, current=None):
+        current = current if type(current) is dict else {}
+        started = _measured(snapshot.get("started_monotonic"))
+        elapsed = (max(0, time.monotonic() - started) if snapshot.get("busy") and started is not None
+                   else snapshot.get("elapsed_seconds", current.get("elapsed_s")))
+        budget = snapshot.get("timeout_seconds", self.budget.value())
+        remaining = current.get("remaining_s")
+        eta = _duration(remaining)
+        basis = "measured estimate" if _measured(remaining) is not None else "insufficient measured work"
+        if not snapshot.get("busy"):
+            eta, basis = "—", "run ended" if snapshot.get("lifecycle") == "terminal" else "no active estimate"
+        allowance = max(0, budget - elapsed) if type(budget) is int and _measured(elapsed) is not None else None
+        deadline = f" · budget remaining {_duration(allowance)}" if snapshot.get("busy") else ""
+        elapsed_text = _duration(elapsed) if _measured(elapsed) is not None else "unavailable"
+        self.timing.setText(f"Elapsed {elapsed_text} · ETA {eta} ({basis}) · time budget {budget}s{deadline}")
+        self.timing.setToolTip("ETA is a measured estimate when available; time budget is a deadline, not an estimate of scan duration.")
 
     def _set_scope(self, mode):
         self._scope_mode = mode
@@ -890,6 +1182,7 @@ class SpywareScanControls(QWidget):
                         targets=tuple(line.strip() for line in self.scope_paths.toPlainText().splitlines() if line.strip())[:16]
                         if self._scope_mode == "targeted" else ())
         selected.update(options)
+        selected.setdefault("timeout_seconds", self.budget.value())
         if selected["mode"] == "targeted" and not selected.get("targets"):
             self.scope_error.setText("Choose local evidence before starting this scope.")
             self.scope_error.show()
@@ -915,17 +1208,44 @@ class SpywareScanControls(QWidget):
         progress = progress if type(progress) is dict and progress.get("unit") == "workflow_stages" else {}
         finished, total = progress.get("finished"), progress.get("total")
         self.progress_ring.set_state(finished, total, busy)
+        readers = snapshot.get("scanner_progress")
+        readers = readers if type(readers) is dict else {}
+        planned = progress.get("planned_stages")
+        planned = planned if type(planned) in (tuple, list) else (("toolkit",) if "toolkit" in readers else ())
+        done = progress.get("finished_stages")
+        done = done if type(done) in (tuple, list) else ()
+        fractions = []
+        for name in planned:
+            if name in done:
+                fractions.append(1.0)
+                continue
+            source = readers.get(name)
+            source = source if type(source) is dict else {}
+            percent = _measured(source.get("overall_percent"), maximum=100)
+            if percent is None:
+                completed, count = _measured(source.get("completed_steps")), _measured(source.get("total_steps"))
+                percent = completed * 100 / count if completed is not None and count and completed <= count else 0
+            fractions.append(percent / 100)
+        if fractions and readers:
+            self.progress_ring.set_fraction(sum(fractions) / len(fractions), busy)
         labels = {"preflight": "Verifying available checks", "toolkit": "Running supported toolkit checks",
                   "native": "Waiting for native SpywareGuard", "aggregation": "Reviewing results and retiring owned work",
                   "cancelling": "Stopping owned scan work", "finished": "Workflow finished · review findings and coverage"}
         stage = labels.get(progress.get("stage"))
         if progress.get("stage") == "finished" and snapshot.get("state") == "incomplete":
             stage = "Workflow finished · incomplete coverage"
+        if not busy and snapshot.get("state") in {"failed", "timed-out", "cancelled"}:
+            stage = {"failed": "Scan failed · partial progress retained", "timed-out": "Time budget reached · partial progress retained",
+                     "cancelled": "Scan cancelled · partial progress retained"}[snapshot["state"]]
+        elif snapshot.get("lifecycle") == "draining":
+            stage = "Stopping · waiting for exact owned checks to retire"
+        elif busy and stage:
+            stage = "Running · " + stage
         self.progress_stage.setText(stage or ("Working · exact progress unavailable" if busy else
                                               f"Scan state: {_literal(snapshot.get('state', 'idle'), 60)}"))
         state = snapshot.get("state")
         color = ("#38bdf8" if busy else "#4ade80" if state == "completed" else
-                 "#fb7185" if state in {"failed", "unavailable"} else
+                 "#fb7185" if state in {"failed", "unavailable", "timed-out"} else
                  "#fbbf24" if state in {"held", "incomplete", "cancelled"} else "#cbd5e1")
         self.progress_stage.setStyleSheet(f"font-weight:700;color:{color};")
         explanations = {
@@ -943,7 +1263,9 @@ class SpywareScanControls(QWidget):
             "cancelled": "The request was cancelled. Next: review any partial evidence; cancellation does not establish a clean PC.",
             "incomplete": "Some selected checks did not complete. Next: review the report's explicit coverage gaps and findings.",
         }.get(state, "Waiting for an explicit request or structured worker status. No completion percentage is estimated from elapsed time.")
-        explanation = explanations.get(progress.get("stage"), fallback)
+        explanation = explanations.get(progress.get("stage"), fallback) if busy or state not in {"failed", "timed-out", "cancelled"} else fallback
+        if state == "timed-out":
+            explanation = "The selected time budget expired. Partial results are retained; this is incomplete coverage. Choose a larger next-run budget to retry."
         if progress.get("stage") == "finished" and state == "incomplete":
             explanation = ("Some selected checks were held, unavailable or did not complete. Next: review findings "
                            "and coverage gaps. Finished workflow stages do not establish a clean PC.")
@@ -962,7 +1284,9 @@ class SpywareScanControls(QWidget):
         if self.progress_ring.percent is None:
             self.progress_count.setText("Indeterminate · the worker has not supplied a completion count.")
         else:
-            self.progress_count.setText(f"{finished}/{total} workflow stages finished")
+            self.progress_count.setText(f"Overall {self.progress_ring.percent}% · measured workflow fraction" +
+                                        (f" · {finished}/{total} stages finished" if type(finished) is int and type(total) is int else ""))
+        self._apply_readers(snapshot, readers)
         self.cancel_button.setEnabled(busy)
         usage = snapshot.get("resource_usage")
         usage = usage if type(usage) is dict else {}
@@ -994,6 +1318,88 @@ class SpywareScanControls(QWidget):
             self.privileges.setText(f"Privilege verification: {token} · integrity: {integrity}. No new authority is granted.")
         else:
             self.privileges.setText("Privilege verification: unavailable or not yet verified. Coverage limits remain in effect.")
+
+    def _apply_readers(self, snapshot, readers):
+        visible = set()
+        activities, files = [], []
+        current = {}
+        current_terminal = False
+        scrollbar = self.steps_scroll.verticalScrollBar()
+        position = scrollbar.value()
+        for source in ("native", "toolkit"):
+            value = readers.get(source)
+            title = "Native SpywareGuard" if source == "native" else "Zero-Breach"
+            if type(value) is not dict:
+                self.scanner_summaries[source].setText(f"{title}: no request-bound reader progress available")
+                continue
+            terminal = (value.get("state") in {"completed", "complete", "cancelled", "failed", "timed-out",
+                                               "incomplete", "held", "error", "not-scanned", "preview", "references", "withdrawn"}
+                        or (not snapshot.get("busy") and snapshot.get("lifecycle") == "terminal"))
+            percent = _measured(value.get("overall_percent"), maximum=100)
+            value_state = _literal(value.get("state", "unknown"), 32)
+            percentage = f"{min(percent, 99) if snapshot.get('busy') else percent:.0f}%" if percent is not None else "indeterminate"
+            self.scanner_summaries[source].setText(f"{title}: {value_state} · {percentage}")
+            task = _literal(value.get("current_task"), 500)
+            item = _literal(value.get("current_file"), 800)
+            if task:
+                activities.append(f"{title}: {task}")
+            if item:
+                item_done, item_total = _measured(value.get("item_completed")), _measured(value.get("item_total"))
+                if item_done is not None and item_total and item_done <= item_total:
+                    item += f" · {item_done:,.0f}/{item_total:,.0f} {_literal(value.get('item_unit', 'items'), 40)} ({item_done * 100 / item_total:.0f}%)"
+                files.append(f"{title}: {item}")
+            if (value.get("state") in {"running", "queued", "cancelling"} or not current
+                    or current.get("state") not in {"running", "queued", "cancelling"}):
+                current = value
+                current_terminal = terminal
+            rows = value.get("steps")
+            for step in rows[:64] if type(rows) in (tuple, list) else ():
+                if type(step) is not dict or type(step.get("id")) is not str:
+                    continue
+                key = source + ":" + step["id"][:100]
+                visible.add(key)
+                row = self.step_rows.get(key)
+                if row is None:
+                    row = ScanStepRow(self.steps_body)
+                    self.step_rows[key] = row
+                    self.steps_layout.insertWidget(self.steps_layout.count() - 1, row)
+                row.apply(title, step, terminal=terminal)
+                row.show()
+        for key, row in tuple(self.step_rows.items()):
+            if key not in visible:
+                self.steps_layout.removeWidget(row)
+                row.deleteLater()
+                del self.step_rows[key]
+        self.steps_scroll.setVisible(bool(visible) and self.step_toggle.isChecked())
+        self.step_toggle.setVisible(bool(visible))
+        scrollbar.setValue(position)
+        self.activity.setText("Current task: " + ("\n".join(activities) if activities else
+                              "waiting for structured reader activity" if snapshot.get("busy") else "no scan is running"))
+        self.current_file.setText("Current file: " + ("\n".join(files) if files else "not supplied by the current reader; no file name is inferred."))
+        self._timing_current = current
+        self._apply_timing(snapshot, current)
+        item_done, item_total = _measured(current.get("item_completed")), _measured(current.get("item_total"))
+        observed_item = bool(current.get("current_file")) or item_done is not None
+        self.item_progress.setVisible(observed_item)
+        self.item_caption.setVisible(observed_item)
+        if item_done is not None and item_total and item_done <= item_total:
+            percent = item_done * 100 / item_total
+            self.item_progress.setValue(int(percent))
+            self.item_progress.setFormat(f"Current item {percent:.0f}%")
+            unit = _literal(current.get("item_unit", "items"), 60)
+            eta = "— (item ended)" if current_terminal else _duration(current.get("item_remaining_s"))
+            self.item_caption.setText(f"Current item: {item_done:,.0f}/{item_total:,.0f} {unit} · item ETA {eta}")
+        else:
+            self.item_progress.setValue(0)
+            self.item_progress.setFormat("Current item indeterminate · no known total")
+            eta = "— (item ended)" if current_terminal else "Calculating"
+            self.item_caption.setText("Current item: " + (f"{item_done:,.0f} observed; " if item_done is not None else "") + "total unknown · item ETA " + eta)
+        reason = snapshot.get("message") if snapshot.get("state") in {"failed", "timed-out", "cancelled", "incomplete", "stopping"} else ""
+        gap = snapshot.get("focus_lease_gap")
+        if type(gap) is str and gap:
+            reason = str(reason or "") + "\n" + gap
+        self.outcome.setText(_literal(reason, 1800))
+        self.outcome.setVisible(bool(reason))
 
 
 class CuratedScannerWidget(QWidget):
@@ -1214,7 +1620,8 @@ class CuratedScannerWidget(QWidget):
         else:
             selected.update(priority=self.priority_controls.priority.currentData(),
                             max_cpu_percent=self.priority_controls.cpu.value(),
-                            max_memory_mib=self.priority_controls.memory.value())
+                            max_memory_mib=self.priority_controls.memory.value(),
+                            timeout_seconds=self.priority_controls.budget.value())
             self.controller.scan(**selected)
 
     def _apply(self, state):
@@ -1233,7 +1640,7 @@ class CuratedScannerWidget(QWidget):
         self.revert_button.setEnabled(not busy and bool(state.get("installed")))
         self.credits_button.setEnabled(not busy)
         self.settings_button.setEnabled(not busy)
-        selected = {key: state[key] for key in ("state", "message", "coverage", "findings", "details", "report", "latest_report")
+        selected = {key: state[key] for key in ("state", "message", "coverage", "findings", "details", "report", "latest_report", "partial_result")
                     if key in state}
         content = _literal(selected)
         if self.results.toPlainText() != content:
