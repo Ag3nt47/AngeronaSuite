@@ -323,6 +323,93 @@ def test_priority_chain_holds_focus_until_native_and_tool_complete_and_exposes_c
     assert not native.cancelled
 
 
+def test_workflow_progress_advances_only_at_real_stage_returns_and_keeps_gaps(controller):
+    native, focus = NativeScanner(), Focus()
+    controller.manager.modules["SpywareGuard"] = native
+    controller.manager.priority_scan_focus = lambda **_kwargs: focus
+    service = ready(controller)
+    entered, release = threading.Event(), threading.Event()
+    observations = []
+    controller.status_changed.connect(lambda value: observations.append(value))
+
+    def blocked_scan(request, operation, *, progress):
+        service.requests.append(request)
+        entered.set()
+        progress("Untrusted toolkit text: 100% complete")
+        while not release.wait(.01):
+            operation.check()
+        return dict(state="incomplete", coverage={"not_checked": ["fixture gap"]}, findings=[])
+
+    service.scan = blocked_scan
+    try:
+        assert controller.priority_scan(native_enabled=True, zero_breach_enabled=True, mode="full")
+        assert entered.wait(3)
+        wait_until(lambda: (controller.snapshot().get("scan_progress") or {}).get("finished") == 1)
+        value = controller.snapshot()["scan_progress"]
+        assert value["unit"] == "workflow_stages" and value["total"] == 4
+        assert value["finished_stages"] == ("preflight",)
+        for _ in range(5):
+            controller._drain()
+        assert controller.snapshot()["scan_progress"]["finished"] == 1
+        request_id = native.state["request_id"]
+        native.state = dict(native.state, request_id="f" * 32)
+        controller._drain()
+        assert controller.snapshot()["resource_usage"]["native"]["state"] == "unavailable"
+        assert controller.snapshot()["scan_progress"]["finished"] == 1
+        native.state = dict(native.state, request_id=request_id)
+        release.set()
+        wait_until(lambda: (controller.snapshot().get("scan_progress") or {}).get("finished") == 2)
+        assert controller.snapshot()["busy"] is True
+        native.finished.set()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        result = controller.snapshot()
+        assert result["scan_progress"]["finished"] == result["scan_progress"]["total"] == 4
+        assert result["scan_progress"]["stage"] == "finished"
+        assert result["state"] == "incomplete"
+        assert result["coverage"]["zero_breach"]["not_checked"] == ["fixture gap"]
+        assert all(not value["busy"] or not value.get("scan_progress")
+                   or value["scan_progress"]["finished"] < value["scan_progress"]["total"]
+                   for value in observations)
+        assert not focus.active
+    finally:
+        release.set()
+        native.finished.set()
+
+
+def test_new_operation_clears_previous_scan_progress(controller):
+    ready(controller)
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True)
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert controller.snapshot()["scan_progress"]["finished"] == 3
+    assert controller.refresh()
+    assert controller.snapshot()["scan_progress"] is None
+    wait_until(lambda: not controller.snapshot()["busy"])
+
+
+@pytest.mark.parametrize("tool_state, aggregate", [
+    ("held", "incomplete"), ("error", "incomplete"), ("not-scanned", "incomplete"),
+    ("preview", "incomplete"), ("unexpected-state", "incomplete"),
+    ("complete", "completed"), ("findings", "completed"),
+    ("references", "completed"), ("withdrawn", "completed"),
+])
+def test_toolkit_terminal_outcomes_remain_distinct_from_finished_workflow(controller, tool_state, aggregate):
+    service = ready(controller)
+    service.scan = lambda _request, _operation, *, progress: dict(
+        state=tool_state, coverage={"checked": ["synthetic scope"], "not_checked": []},
+        findings=[], details="Synthetic original result retained.",
+    )
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
+    wait_until(lambda: not controller.snapshot()["busy"])
+    result = controller.snapshot()
+    assert result["state"] == aggregate
+    assert result["details"]["zero_breach"]["state"] == tool_state
+    assert result["details"]["zero_breach"]["details"] == "Synthetic original result retained."
+    assert result["scan_progress"]["finished"] == result["scan_progress"]["total"] == 3
+    assert result["scan_progress"]["unit"] == "workflow_stages"
+    if aggregate == "incomplete":
+        assert "incomplete coverage" in result["message"]
+
+
 def test_priority_cancel_restores_focus_and_cancels_only_its_native_request(controller):
     native, focus = NativeScanner(), Focus()
     controller.manager.modules["SpywareGuard"] = native

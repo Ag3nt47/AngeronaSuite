@@ -8818,6 +8818,9 @@ class SettingsDialog(QDialog):
         root = QVBoxLayout(self)
         root.setSpacing(10)
         root.setContentsMargins(16, 16, 16, 16)
+        # Every functional tab already scrolls. Let the dialog fit a smaller
+        # work area without promoting a long page's minimum to the window.
+        root.setSizeConstraint(QLayout.SetNoConstraint)
 
         search_row = QHBoxLayout()
         self._settings_search = QLineEdit()
@@ -8856,18 +8859,25 @@ class SettingsDialog(QDialog):
         self._settings_sandbox_dialogs: dict[str, QDialog] = {}
         self._settings_search.textChanged.connect(self._find_setting)
 
-        # ── button row ──
-        btn_row = QHBoxLayout()
+        # Give each long action its own row; Save and Cancel stay together even
+        # when a scaled desktop temporarily lowers the normal window floor.
+        privacy_row = QHBoxLayout()
         self._privacy_btn = QPushButton("Restore privacy defaults")
         self._privacy_btn.setToolTip(
             "Turns off optional cloud, mailbox, channel, Teams, mobile, and research "
             "egress.")
         self._privacy_btn.clicked.connect(self._restore_privacy_defaults)
-        btn_row.addWidget(self._privacy_btn)
+        privacy_row.addWidget(self._privacy_btn)
+        privacy_row.addStretch()
+        root.addLayout(privacy_row)
+        sandbox_row = QHBoxLayout()
         self._settings_sandbox_btn = QPushButton("Open Tab Code Sandbox")
         self._settings_sandbox_btn.setObjectName("SettingsTabSandbox")
         self._settings_sandbox_btn.clicked.connect(self._open_current_tab_sandbox)
-        btn_row.addWidget(self._settings_sandbox_btn)
+        sandbox_row.addWidget(self._settings_sandbox_btn)
+        sandbox_row.addStretch()
+        root.addLayout(sandbox_row)
+        btn_row = QHBoxLayout()
         btn_row.addStretch()
         self._btn_save   = QPushButton("Save")
         self._btn_cancel = QPushButton("Cancel")
@@ -8907,6 +8917,8 @@ class SettingsDialog(QDialog):
                     if wanted in tabs.tabText(i).casefold():
                         tabs.setCurrentIndex(i)
                         break
+        from angerona.gui.window_fit import install_window_fit
+        install_window_fit(self)
 
     def done(self, result: int) -> None:
         self._accept_async_results = False

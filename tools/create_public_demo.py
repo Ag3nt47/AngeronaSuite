@@ -18,7 +18,7 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SCRATCH = ROOT / ".tmp" / "public-demo-20261029-tools"
+SCRATCH = ROOT / ".tmp" / "public-demo-spyware-ui-20261029"
 MAX_GIF = 12 * 1024 * 1024
 CHAPTERS = 13
 FRAMES_PER_CHAPTER = 10
@@ -37,7 +37,7 @@ CAPTURE_SOURCES = (
     "src/angerona/gui/main_window.py", "src/angerona/gui/curated_tools.py",
     "src/angerona/gui/spyware_guard_page.py", "src/angerona/gui/breach_display.py",
     "src/angerona/gui/header_controls.py", "src/angerona/gui/pages.py",
-    "src/angerona/gui/dashboard_footer.py",
+    "src/angerona/gui/dashboard_footer.py", "src/angerona/gui/window_fit.py",
 )
 
 
@@ -344,11 +344,11 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                     "alerts": {"row_count": 0, "positions": []},
                     "settings_tabs": [], "attack_tabs": [], "attack_horizontal_positions": [],
                     "heartbeats": [], "heartbeat_details_steps": [],
-                    "curated_views": [], "priority_resources": [], "breach_colors": [],
+                    "curated_views": [], "priority_resources": [], "priority_progress": [], "breach_colors": [],
                     "after_action_scroll": []}
     captured_bytes = 0
     detail = None
-    settings = spyware = attack = None
+    settings = spyware = spyware_host = attack = None
     heartbeat_details = None
     hub = credits_dialog = after_action = None
 
@@ -479,16 +479,23 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         # A public replay has no definition-import or mutation provider.
         spy_module.queue_definition_import = None
         spy_config = SimpleNamespace(**spy_module.dashboard_snapshot()["settings"], ui_motion_enabled=False)
+        # Use the production page's actual dialog-owned scrolling layout before
+        # embedding that host as a fixed-viewport presentation widget.
+        spyware_host = QDialog()
+        spyware_layout = QVBoxLayout(spyware_host)
         spyware = spyware_guard_page.SpywareGuardPage(
-            SimpleNamespace(modules={"SpywareGuard": spy_module}), spy_config, None)
-        stack.addWidget(spyware)
+            SimpleNamespace(modules={"SpywareGuard": spy_module}), spy_config, None, spyware_host)
+        spyware_layout.addWidget(spyware)
+        spyware_host.setParent(stack)
+        spyware_host.setWindowFlags(Qt.Widget)
+        stack.addWidget(spyware_host)
         spyware.refresh()
         spyware._timer.stop()
         spyware._news_rotation_timer.stop()
         spyware._news_scroll_timer.stop()
         spyware.hits_table.selectRow(0)
         chapter(4, "Inspect SpywareGuard's dedicated workspace",
-                "Real SpywareGuard UI with fixed synthetic findings and explicit coverage. No scan, research fetch, beacon or containment is run.", spyware)
+                "Real SpywareGuard UI with fixed synthetic findings and explicit coverage. No scan, research fetch, beacon or containment is run.", spyware_host)
 
         settings_config = Config(data_dir=runtime_root, autostart_enabled=False,
                                  aria_enabled=False, aria_voice_enabled=False, ui_motion_enabled=False)
@@ -587,10 +594,21 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 hub.tabs.setCurrentIndex(0)
                 selected_view = "GitHub Tools - curated scanners"
             elif step < 7:
-                stack.setCurrentWidget(spyware)
+                # Present the actual selected tab as a close-up, using the same
+                # temporary reparenting as the alerts and SOAR chapters. This
+                # avoids a half-clipped outer card above the tab workspace.
+                if step == 4:
+                    spyware.layout().removeWidget(spyware.tabs)
+                    spyware.tabs.setParent(stack)
+                    stack.addWidget(spyware.tabs)
+                stack.setCurrentWidget(spyware.tabs)
                 spyware.tabs.setCurrentIndex(spyware.tabs.count() - 1)
-                selected_view = "SpywareGuard - Zero-Breach"
+                selected_view = "SpywareGuard - Zero-Breach tab close-up"
             elif step == 7:
+                stack.removeWidget(spyware.tabs)
+                spyware.tabs.setParent(spyware)
+                spyware.layout().addWidget(spyware.tabs, 1)
+                spyware.tabs.show()
                 stack.setCurrentWidget(hub)
                 hub.tabs.setCurrentIndex(2)
                 selected_view = "GitHub Tools - settings"
@@ -618,19 +636,40 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 hub, browse_curated, screenshot_at={1: "github-tools-demo", 5: "zero-breach-demo",
                                                   7: "github-tools-settings-demo", 8: "github-tools-credits-demo"})
 
-        hub.tabs.setCurrentIndex(0)
-        hub.scanner.priority_controls.toggle.setChecked(True)
+        spyware.tabs.setCurrentIndex(0)
+        spyware._window_fit.scroll_area.verticalScrollBar().setValue(0)
+        spyware.priority_scan.toggle.setChecked(False)
         def replay_priority(step):
-            usage = dict(cpu_percent=round(18.0 + (step % 4) * 7.5, 1), rss_mib=42.0 + step,
+            # Explicit synthetic stage publications exercise the real presenter.
+            # These counters never estimate file coverage or use elapsed time.
+            finished = min(step // 2, 4)
+            stage_order = ("preflight", "toolkit", "native", "aggregation")
+            stage = stage_order[finished] if finished < 4 else "finished"
+            scan_progress = dict(request_id="ab" * 16, unit="workflow_stages", stage=stage,
+                                 finished=finished, total=4, planned_stages=stage_order,
+                                 finished_stages=stage_order[:finished],
+                                 state="running" if finished < 4 else "finished")
+            usage = dict(cpu_percent=round(18.0 + (step % 4) * 7.5, 1) if finished < 4 else 0.0,
+                         rss_mib=42.0 + step if finished < 4 else 0.0,
                          read_bytes=(step + 1) * 1048576, write_bytes=(step + 1) * 4096,
-                         process_alive=True, native={"state": "running", "request_id": "ab" * 16})
-            curated.update(state="running", busy=True,
+                         process_alive=finished < 4,
+                         native={"state": "running" if finished < 4 else "finished", "request_id": "ab" * 16})
+            curated.update(state="running" if finished < 4 else "incomplete", busy=finished < 4,
                            message="DEMO - synthetic priority scan and resource replay; no scanner process exists.",
-                           resource_usage=usage)
+                           scan_progress=scan_progress, resource_usage=usage)
+            spyware.priority_scan.toggle.setChecked(step in (6, 7))
+            spyware.priority_scan.explanation_toggle.setChecked(step in (6, 7))
             interactions["priority_resources"].append(usage)
+            interactions["priority_progress"].append({"publication": scan_progress,
+                "displayed_percent": spyware.priority_scan.progress_ring.percent,
+                "displayed_stage": spyware.priority_scan.progress_stage.text(),
+                "state": "running" if finished < 4 else "incomplete",
+                "scope": spyware.priority_scan._scope_mode,
+                "resource_limits_open": spyware.priority_scan.toggle.isChecked(),
+                "coverage_details_open": spyware.priority_scan.explanation_toggle.isChecked()})
         chapter(11, "Prioritize selected spyware checks within resource limits",
-                "DEMO - native and toolkit selection, Above normal/High scheduling, CPU/RAM ceilings and privilege coverage. The changing resource readings are synthetic; no administrator rights are granted.",
-                hub, replay_priority, screenshot_at={4: "spyware-scan-demo"})
+                "DEMO - click to change Entire PC scope. The ring counts synthetic finished workflow stages, not files or protection. Stage explanations, resource ceilings and privilege limits stay visible; no scan runs.",
+                spyware_host, replay_priority, screenshot_at={4: "spyware-scan-demo"})
         curated.update(state="references", busy=False,
                        message="DEMO - synthetic review complete; no host-clean verdict is claimed.")
 
@@ -696,6 +735,8 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 or set(staged_screenshots) != set(SCREENSHOTS)
                 or set(interactions["breach_colors"]) != {"red", "orange"}
                 or len({row["cpu_percent"] for row in interactions["priority_resources"]}) < 3
+                or {row["displayed_percent"] for row in interactions["priority_progress"]} != {0, 25, 50, 75, 100}
+                or any(row["scope"] != "full" for row in interactions["priority_progress"])
                 or captured_sources != source_fingerprints()):
             raise RuntimeError("the capture plan, source revision or synthetic interaction coverage changed")
         report = {"schema": 2, "frames": frames, "frame_sha256": frame_sha256, "chapters": chapter_names,
@@ -731,7 +772,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     finally:
         if detail is not None:
             detail.hide()
-        for widget in (settings, spyware, attack, heartbeat_details, hub, credits_dialog, after_action):
+        for widget in (settings, spyware, spyware_host, attack, heartbeat_details, hub, credits_dialog, after_action):
             if widget is not None:
                 widget.close()
         wrapper.hide()

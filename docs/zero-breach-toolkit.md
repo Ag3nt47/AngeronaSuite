@@ -133,9 +133,26 @@ quarantine or other response authority.
 ## Priority Spyware Scan
 
 **Spyware Scan** schedules the selected native SpywareGuard checks and curated
-toolkit checks through their existing owners. Native and Zero Breach selections
-have independent toggles. The compact control shows copied CPU, RAM, I/O and
-privilege-coverage status; unavailable measurements stay unavailable.
+toolkit checks through their existing owners. The red **SpywareScan** button
+uses separate **Scope**, **Included checks**, **Progress**, **What's happening
+now** and **Resource and privilege details** sections. Native and Zero Breach
+selections have independent toggles. Resource details show copied CPU, RAM, I/O
+and privilege coverage; unavailable measurements stay unavailable.
+
+**Entire PC** is the initial scope. Click the scope control to choose browser
+checks or selected local evidence. Entire PC requests the toolkit's supported
+system-wide checks; it does not promise examination of every file or privileged
+collection. Scrolling the page does not change scan options. Status refreshes
+preserve the selected scope, inputs, open details and review position.
+
+The progress ring reports completed workflow stages: preparation, selected
+native checks, selected toolkit checks and report assembly. Its percentage is
+stage completion, not a file count or assurance that every check succeeded.
+Held or unavailable checks remain visible in the coverage summary. When valid
+stage counters are absent, progress is indeterminate. Animation follows active
+scan state, stops when hidden or idle and respects reduced-motion preferences.
+**What's happening now** explains the current stage; expand its details for
+collection limits, report handling and the next step.
 
 Settings retain the priority and resource choices. Above normal is the default;
 High is the supported operating-system ceiling. REALTIME priority is not used.

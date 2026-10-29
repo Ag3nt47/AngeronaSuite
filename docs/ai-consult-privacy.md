@@ -1,6 +1,6 @@
 # Review and send AI consultations
 
-Current development version: v1.14.1. The broader v1.15 integration remains incomplete.
+Current development version: v1.14.2. The broader v1.15 integration remains incomplete.
 The v1.14.0 maintenance review below covers the manual alert Research/SOAR consult
 flow identified by SEC-15. SEC-16 tracks its effective resolution while retaining
 the original finding unchanged. The repaired source passed the scoped 182-case

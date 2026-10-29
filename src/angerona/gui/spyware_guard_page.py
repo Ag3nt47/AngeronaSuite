@@ -175,6 +175,8 @@ class SpywareGuardPage(QWidget):
         title.setObjectName("SectionTitle")
         header.addWidget(title, 1)
         self.scan_button = QPushButton("Spyware Scan")
+        from angerona.gui.curated_tools import style_spyware_scan_button
+        style_spyware_scan_button(self.scan_button)
         self.scan_button.clicked.connect(self._request_scan)
         header.addWidget(self.scan_button)
         root.addLayout(header)
@@ -198,6 +200,11 @@ class SpywareGuardPage(QWidget):
         self.tabs.addTab(_scroll(self.zero_breach), "Zero-Breach")
         self._update_availability()
         self._update_news({})
+        # The top-level workspace owns a scrollable page, so readable sections
+        # cannot force its outer frame beyond a scaled monitor's work area.
+        if isinstance(parent, QDialog):
+            from angerona.gui.window_fit import install_window_fit
+            self._window_fit = install_window_fit(parent, scroll_content=True)
 
     def _build_news_strip(self, root) -> None:
         self.news_strip = QWidget()

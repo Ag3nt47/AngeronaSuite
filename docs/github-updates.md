@@ -1,6 +1,6 @@
 # GitHub update checks and preserving custom code
 
-Current development version: v1.14.1. This feature has two separate parts: discovering changes and preparing a
+Current development version: v1.14.2. This feature has two separate parts: discovering changes and preparing a
 source candidate. Preparing a candidate does not install it.
 
 **Historical validation:** daily/settings/setup/manual controls passed 179 focused cases

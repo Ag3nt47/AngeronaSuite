@@ -1234,6 +1234,11 @@ class MainWindow(QMainWindow):
     def _apply_dashboard_layout(self) -> None:
         if not hasattr(self, "_console_section"):
             return
+        if getattr(self, "_screen_fit_enabled", False):
+            # Size the header for the width the screen can actually display.
+            # A final clamp alone leaves wider buttons on old compact slots
+            # until the debounced resize pass, which can overlap destinations.
+            self._fit_dashboard_to_screen()
         self._maybe_rescale_ui()
         self._update_header_button_modes()
         width = self.width()

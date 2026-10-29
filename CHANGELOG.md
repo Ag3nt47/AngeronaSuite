@@ -20,6 +20,10 @@
   with explicit current-user ownership before writing; retain strict readers.
 - Put the current startup-recovery reason before long saved repair history,
   label inspection as read-only and explain optional snapshot capacity holds.
+- Organize SpywareScan into readable sections, add a red start button and
+  stage-based progress ring with expandable explanations, and default to the
+  supported Entire PC checks. Ignore accidental wheel changes to scan options;
+  fit auxiliary windows to the display with scroll access and stable review.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

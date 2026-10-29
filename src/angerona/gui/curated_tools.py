@@ -5,17 +5,18 @@ import copy
 import contextlib
 import importlib
 import json
+import math
 import queue
 import threading
 import time
 import uuid
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QActionGroup, QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
-    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
     QPlainTextEdit, QPushButton, QScrollArea, QSpinBox, QTabWidget, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -148,6 +149,7 @@ class CuratedToolsController(QObject):
                 return False
         self._busy = True
         self._snapshot["active_action"] = action
+        self._snapshot["scan_progress"] = None
         self._cancel_requested.clear()
         self._done.clear()
         self._publish(message={"status": "Checking scanner files…", "prepare": "Preparing the pinned scanner…",
@@ -194,6 +196,7 @@ class CuratedToolsController(QObject):
             except Exception as error:
                 cancelled = self._cancel_requested.is_set()
                 self._frame("error", dict(state="cancelled" if cancelled else "unavailable", verified=False,
+                                          scan_progress=None,
                                           message="Operation cancelled; review partial coverage." if cancelled
                                           else f"Tool operation failed: {type(error).__name__}: {_literal(error, 700)}"))
             finally:
@@ -226,6 +229,23 @@ class CuratedToolsController(QObject):
         native = modules.get("SpywareGuard") if type(modules) is dict else None
         native_state = dict(state="disabled", coverage="Native scan not selected.")
         tool_result = dict(state="disabled", coverage="Zero-Breach not selected.")
+        completed_stages = set()
+        total_stages = 2 + int(native_enabled) + int(tool_enabled)
+
+        def scan_progress(stage, *, terminal=False):
+            return dict(request_id=request_id, unit="workflow_stages", stage=stage,
+                        finished=len(completed_stages), total=total_stages,
+                        planned_stages=("preflight",) + (("native",) if native_enabled else ())
+                        + (("toolkit",) if tool_enabled else ()) + ("aggregation",),
+                        finished_stages=tuple(sorted(completed_stages)),
+                        state="finished" if terminal else "running",
+                        native_state=native_state.get("state", "unavailable"),
+                        tool_state=tool_result.get("state", "unavailable"))
+
+        def publish_stage(stage):
+            self._frame("metadata", {"scan_progress": scan_progress(stage)})
+
+        publish_stage("preflight")
         focus = getattr(self.manager, "priority_scan_focus", None)
         lease = focus(owner=request_id, background_percent=getattr(cfg, "spyware_scan_background_percent", 10)) if callable(focus) else contextlib.nullcontext()
         self._native_request_id = request_id
@@ -252,6 +272,10 @@ class CuratedToolsController(QObject):
                 if getattr(cfg, "spyware_scan_verify_admin", True):
                     checked_status = service.status()
                     self._frame("metadata", {"admin_state": checked_status.get("admin_state", {"verified": False})})
+                completed_stages.add("preflight")
+                if native_enabled and self._native_priority_module is None:
+                    completed_stages.add("native")
+                publish_stage("toolkit" if tool_enabled else "native")
                 if tool_enabled:
                     if not getattr(cfg, "github_tools_enabled", True):
                         tool_result = dict(state="disabled", coverage="Curated scanner integrations are disabled in settings.")
@@ -265,6 +289,8 @@ class CuratedToolsController(QObject):
                                 service.prepare(operation, progress=progress,
                                                 allow_download=bool(getattr(cfg, "github_tools_allow_download", True)))
                             tool_result = service.scan(backend.ToolScanRequest(**options), operation, progress=progress)
+                    completed_stages.add("toolkit")
+                    publish_stage("native" if self._native_priority_module is not None else "aggregation")
                 if self._native_priority_module is not None:
                     while True:
                         operation.check()
@@ -279,13 +305,20 @@ class CuratedToolsController(QObject):
                             native_state = dict(native_state, state="incomplete", error="Native scan exceeded its deadline.")
                             break
                         operation.cancelled.wait(.1)
-            incomplete = native_state.get("state") in {"failed", "held", "unavailable", "incomplete", "cancelled"}
-            incomplete = incomplete or tool_result.get("state") in {"failed", "unavailable", "incomplete", "cancelled", "disabled"} and tool_enabled
+                    completed_stages.add("native")
+                publish_stage("aggregation")
+            incomplete = native_enabled and native_state.get("state") != "completed"
+            incomplete = incomplete or (tool_enabled and tool_result.get("state") not in {
+                "complete", "findings", "references", "withdrawn",
+            })
+            completed_stages.add("aggregation")
             return dict(state="incomplete" if incomplete else "completed",
-                        message="Spyware scan finished. Review each scanner's findings and coverage.",
+                        message=("Spyware scan ended with incomplete coverage. Review each scanner's findings and gaps."
+                                 if incomplete else "Spyware scan finished. Review each scanner's findings and coverage."),
                         request_id=request_id, native=native_state, coverage={"native": native_state, "zero_breach": tool_result.get("coverage")},
                         findings=tool_result.get("findings", []), report=tool_result.get("report"),
-                        details={"native": native_state, "zero_breach": tool_result})
+                        details={"native": native_state, "zero_breach": tool_result},
+                        scan_progress=scan_progress("finished", terminal=True))
         finally:
             self._native_priority_module = None
             self._native_request_id = ""
@@ -376,7 +409,13 @@ class CuratedToolsController(QObject):
             native = self._native_priority_module
             if native is not None:
                 try:
-                    usage = dict(usage, native=native.priority_scan_snapshot())
+                    native_snapshot = native.priority_scan_snapshot()
+                    if (type(native_snapshot) is dict
+                            and native_snapshot.get("request_id") == self._native_request_id):
+                        usage = dict(usage, native=native_snapshot)
+                    else:
+                        usage = dict(usage, native={"state": "unavailable",
+                                                   "reason": "The native scan generation changed."})
                 except Exception:
                     usage = dict(usage, native={"state": "unavailable"})
             if usage and usage != self._snapshot.get("resource_usage"):
@@ -462,7 +501,11 @@ class CuratedToolsController(QObject):
     def cancel(self):
         self._pending_priority = None
         self._cancel_current()
-        self._publish(message="Cancellation requested; waiting for owned tool retirement…")
+        progress = self._snapshot.get("scan_progress")
+        if type(progress) is dict:
+            progress = dict(progress, stage="cancelling", state="cancelling")
+        self._publish(message="Cancellation requested; waiting for owned tool retirement…",
+                      scan_progress=progress)
 
     def _cancel_current(self):
         self._cancel_requested.set()
@@ -577,83 +620,380 @@ class CuratedToolsSettings(QWidget):
             self.controller.clear_reports()
 
 
-class SpywareScanControls(QWidget):
-    """Compact copied status and per-request priority/tool selections."""
+class ClickChoice(QComboBox):
+    """Keep a parent scroll gesture from silently changing a scan choice."""
 
-    def __init__(self, manager, parent=None, *, controller=None):
+    def wheelEvent(self, event):  # noqa: N802
+        event.ignore()
+
+
+class ClickNumber(QSpinBox):
+    def wheelEvent(self, event):  # noqa: N802
+        event.ignore()
+
+
+def style_spyware_scan_button(button):
+    button.setStyleSheet(
+        "QPushButton { background:#b91c1c; color:#fff1f2; border:1px solid #ef4444; "
+        "border-radius:6px; padding:7px 14px; font-weight:800; }"
+        "QPushButton:hover { background:#dc2626; }"
+        "QPushButton:disabled { background:#442126; color:#b9a3a6; }"
+    )
+
+
+class ScanProgressRing(QWidget):
+    """Cosmetic rotation around measured stage progress; never estimates time."""
+
+    def __init__(self, config, parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.setFixedSize(68, 68)
+        self.percent = None
+        self.busy = False
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._rotate)
+        self.set_state(None, None, False)
+
+    def set_state(self, finished, total, busy):
+        valid = (type(finished) is int and type(total) is int
+                 and 0 < total <= 1_000_000 and 0 <= finished <= total)
+        self.percent = finished * 100 // total if valid else None
+        self.busy = bool(busy)
+        text = f"{self.percent}% of workflow stages finished" if valid else "Progress count unavailable"
+        self.setAccessibleName(text)
+        self.setToolTip(text + ". This is not a percentage of files checked or protection coverage.")
+        self._sync_timer()
+        self.update()
+
+    def _sync_timer(self):
+        from angerona.gui.header_controls import motion_allowed
+        if self.busy and self.isVisible() and motion_allowed(self.config):
+            self._timer.start()
+        else:
+            self._timer.stop()
+
+    def _rotate(self):
+        self._angle = (self._angle + 9) % 360
+        self.update()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._sync_timer()
+
+    def hideEvent(self, event):  # noqa: N802
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):  # noqa: N802
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(5, 5, self.width() - 10, self.height() - 10)
+        painter.setPen(QPen(QColor("#334155"), 4))
+        painter.drawEllipse(rect)
+        pen = QPen(QColor("#fb7185" if self.busy else "#38bdf8"), 4)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        painter.setPen(pen)
+        if self.busy:
+            painter.drawArc(rect, -self._angle * 16, 100 * 16)
+        elif self.percent is not None:
+            painter.drawArc(rect, 90 * 16, -round(360 * self.percent / 100) * 16)
+        painter.setPen(QColor("#f8fafc"))
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                         f"{self.percent}%" if self.percent is not None else "—")
+
+
+class SpywareScanControls(QWidget):
+    """Readable request scope, included checks and copied workflow observations."""
+
+    def __init__(self, manager, parent=None, *, controller=None, scope_controls=True):
         super().__init__(parent)
         self.controller = controller or get_curated_tools_controller(manager)
+        self._has_scope_controls = scope_controls
         cfg = _config(manager)
+        self._scope_mode = "full"
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.resources = _label("Spyware Scan · idle · tool process CPU/RAM/I/O measurements unavailable")
-        self.privileges = _label("Privileges have not been verified for this scan.")
-        layout.addWidget(self.resources)
-        layout.addWidget(self.privileges)
-        self.toggle = QToolButton()
-        self.toggle.setText("Scanner selection and priority")
-        self.toggle.setCheckable(True)
-        self.toggle.setArrowType(Qt.ArrowType.RightArrow)
-        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        layout.addWidget(self.toggle)
-        self.options = QWidget()
-        form = QFormLayout(self.options)
+        layout.setSpacing(6)
+        self._section_grid = QGridLayout()
+        self.scope_group = QGroupBox("Scope")
+        scope = QVBoxLayout(self.scope_group)
+        self.scope_button = QToolButton()
+        self.scope_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.scope_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.scope_button.setAccessibleName("Change spyware scan scope")
+        menu = QMenu(self.scope_button)
+        self._scope_actions = {}
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        for title, mode in (("Entire PC · supported full checks", "full"),
+                            ("Browser checks", "browser"), ("Standard system checks", "default"),
+                            ("Selected local evidence", "targeted")):
+            action = menu.addAction(title)
+            action.setCheckable(True)
+            action.setChecked(mode == "full")
+            group.addAction(action)
+            action.triggered.connect(lambda _checked=False, value=mode: self._set_scope(value))
+            self._scope_actions[mode] = action
+        self.scope_button.setMenu(menu)
+        scope.addWidget(self.scope_button)
+        self.scope_description = _label()
+        scope.addWidget(self.scope_description)
+        self.scope_paths = QPlainTextEdit()
+        self.scope_paths.setPlaceholderText("Selected local paths, one per line")
+        self.scope_paths.setMaximumHeight(64)
+        self.scope_paths.document().setMaximumBlockCount(16)
+        self.scope_choose = QPushButton("Choose evidence folder…")
+        self.scope_choose.clicked.connect(self._choose_scope_folder)
+        scope.addWidget(self.scope_paths)
+        scope.addWidget(self.scope_choose)
+        self.scope_error = _label()
+        scope.addWidget(self.scope_error)
+        self._set_scope("full")
+        self.scope_group.setVisible(scope_controls)
+
+        self.checks_group = QGroupBox("Included checks")
+        checks = QVBoxLayout(self.checks_group)
         self.native = QCheckBox("Native SpywareGuard")
         self.native.setChecked(bool(getattr(cfg, "spyware_scan_native_enabled", True)))
         self.zero_breach = QCheckBox("Zero-Breach Toolkit")
         self.zero_breach.setChecked(bool(getattr(cfg, "spyware_scan_zero_breach_enabled", True)))
-        form.addRow(self.native)
-        form.addRow(self.zero_breach)
-        self.priority = QComboBox()
+        checks.addWidget(self.native)
+        checks.addWidget(self.zero_breach)
+        self.toggle = QToolButton()
+        self.toggle.setText("Priority and resource limits")
+        self.toggle.setCheckable(True)
+        self.toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        checks.addWidget(self.toggle)
+        self.options = QWidget()
+        form = QFormLayout(self.options)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.priority = ClickChoice()
         for title, value in (("Above normal", "above-normal"), ("High", "high")):
             self.priority.addItem(title, value)
         self.priority.setCurrentIndex(max(0, self.priority.findData(getattr(cfg, "spyware_scan_priority", "above-normal"))))
         form.addRow("Priority", self.priority)
-        self.cpu = QSpinBox()
+        self.cpu = ClickNumber()
         self.cpu.setRange(10, 90)
         self.cpu.setValue(int(getattr(cfg, "spyware_scan_cpu_percent", 70)))
         form.addRow("CPU ceiling (%)", self.cpu)
-        self.memory = QSpinBox()
+        self.memory = ClickNumber()
         self.memory.setRange(128, 2048)
         self.memory.setValue(int(getattr(cfg, "spyware_scan_memory_mib", 512)))
         form.addRow("Memory ceiling (MiB)", self.memory)
-        form.addRow(_label("Priority favors the selected checks while the operating system retains control. "
-                           "Privilege verification reports coverage; it does not grant administrator rights."))
         self.options.hide()
         self.toggle.toggled.connect(self.options.setVisible)
         self.toggle.toggled.connect(lambda opened: self.toggle.setArrowType(
             Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
-        layout.addWidget(self.options)
+        checks.addWidget(self.options)
+        self._section_grid.addWidget(self.scope_group, 0, 0)
+        self._section_grid.addWidget(self.checks_group, 0, 1 if scope_controls else 0)
+        layout.addLayout(self._section_grid)
+
+        self.progress_group = QGroupBox("Progress")
+        progress = QHBoxLayout(self.progress_group)
+        self.progress_ring = ScanProgressRing(cfg)
+        progress.addWidget(self.progress_ring)
+        captions = QVBoxLayout()
+        self.progress_stage = _label("Ready for an explicit scan request.")
+        self.progress_stage.setStyleSheet("font-weight:700;")
+        self.progress_count = _label("No workflow is running.")
+        captions.addWidget(self.progress_stage)
+        captions.addWidget(self.progress_count)
+        captions.addWidget(_label("Percent tracks finished workflow stages, not files checked or protection coverage."))
+        progress.addLayout(captions, 1)
+        self.cancel_button = QPushButton("Stop scan")
+        self.cancel_button.clicked.connect(self.controller.cancel)
+        progress.addWidget(self.cancel_button)
+        layout.addWidget(self.progress_group)
+
+        self.explanation_group = QGroupBox("What's happening now")
+        explanation = QVBoxLayout(self.explanation_group)
+        self.stage_explanation = _label()
+        explanation.addWidget(self.stage_explanation)
+        timeline = QHBoxLayout()
+        self.stage_chips = {}
+        for stage, title in (("preflight", "Preflight"), ("native", "Native"),
+                             ("toolkit", "Toolkit"), ("aggregation", "Report")):
+            chip = _label(title)
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip.setToolTip("A finished workflow stage is not a clean-host verdict.")
+            self.stage_chips[stage] = chip
+            timeline.addWidget(chip, 1)
+        explanation.addLayout(timeline)
+        self.explanation_toggle = QToolButton()
+        self.explanation_toggle.setText("Coverage and permission details")
+        self.explanation_toggle.setCheckable(True)
+        self.explanation_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.explanation_toggle.setArrowType(Qt.ArrowType.RightArrow)
+        explanation.addWidget(self.explanation_toggle)
+        self.explanation_details = _label(
+            "Native SpywareGuard checks its supported live system sources; its thread's resource "
+            "totals are not separately measured here. Zero-Breach runs "
+            "separate supported checks in an owned ordinary-user process. A scope selection "
+            "changes toolkit checks; native live checks retain their supported system scope.\n\n"
+            "Full mode does not read or verify every file. Missing collectors, permissions and "
+            "incomplete checks stay explicit. Privilege verification observes the current token; "
+            "it does not elevate the app.\n\n"
+            "The report is assembled after selected work settles. External toolkit findings "
+            "remain leads for review; response still requires validated evidence, an exact target "
+            "and existing authority. Workflow completion alone does not mean the PC is clean."
+        )
+        self.explanation_details.hide()
+        self.explanation_toggle.toggled.connect(self.explanation_details.setVisible)
+        self.explanation_toggle.toggled.connect(lambda opened: self.explanation_toggle.setArrowType(
+            Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
+        explanation.addWidget(self.explanation_details)
+        layout.addWidget(self.explanation_group)
+
+        self.resource_group = QGroupBox("Resource and privilege details")
+        resources = QVBoxLayout(self.resource_group)
+        self.resources = _label()
+        self.privileges = _label()
+        resources.addWidget(self.resources)
+        resources.addWidget(self.privileges)
+        self.privileges.setToolTip("Current-token observations do not grant administrator rights or response authority.")
+        layout.addWidget(self.resource_group)
         self.controller.status_changed.connect(self._apply)
         self._apply(self.controller.snapshot())
 
+    def _set_scope(self, mode):
+        self._scope_mode = mode
+        titles = {"full": "Entire PC · change scope…", "browser": "Browser checks · change scope…",
+                  "default": "Standard system checks · change scope…", "targeted": "Selected local evidence · change scope…"}
+        self.scope_button.setText(titles[mode])
+        self.scope_description.setText({
+            "full": "Supported system-wide spyware checks; this does not verify every file.",
+            "browser": "Toolkit browser checks. Selected native checks keep their supported system scope.",
+            "default": "Standard toolkit checks. Selected native checks keep their supported system scope.",
+            "targeted": "Selected toolkit evidence. Selected native checks keep their supported system scope.",
+        }[mode])
+        self._scope_actions[mode].setChecked(True)
+        self.scope_paths.setVisible(mode == "targeted")
+        self.scope_choose.setVisible(mode == "targeted")
+        self.scope_error.clear()
+        self.scope_error.hide()
+
+    def _choose_scope_folder(self):
+        selected = QFileDialog.getExistingDirectory(self, "Choose local spyware evidence")
+        if selected:
+            lines = self.scope_paths.toPlainText().splitlines()
+            self.scope_paths.setPlainText("\n".join((*lines, selected)[-16:]))
+
     def start(self, **options):
+        selected = dict(mode=self._scope_mode,
+                        targets=tuple(line.strip() for line in self.scope_paths.toPlainText().splitlines() if line.strip())[:16]
+                        if self._scope_mode == "targeted" else ())
+        selected.update(options)
+        if selected["mode"] == "targeted" and not selected.get("targets"):
+            self.scope_error.setText("Choose local evidence before starting this scope.")
+            self.scope_error.show()
+            return False
         return self.controller.priority_scan(native_enabled=self.native.isChecked(),
                                              zero_breach_enabled=self.zero_breach.isChecked(),
                                              priority=self.priority.currentData(), max_cpu_percent=self.cpu.value(),
-                                             max_memory_mib=self.memory.value(), **options)
+                                             max_memory_mib=self.memory.value(), **selected)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        if not hasattr(self, "checks_group"):
+            return
+        stacked = self.width() < 650 or not self._has_scope_controls
+        if stacked != getattr(self, "_sections_stacked", None):
+            self._sections_stacked = stacked
+            self._section_grid.removeWidget(self.checks_group)
+            self._section_grid.addWidget(self.checks_group, 1 if stacked else 0, 0 if stacked else 1)
 
     def _apply(self, snapshot):
+        busy = snapshot.get("busy") is True
+        progress = snapshot.get("scan_progress")
+        progress = progress if type(progress) is dict and progress.get("unit") == "workflow_stages" else {}
+        finished, total = progress.get("finished"), progress.get("total")
+        self.progress_ring.set_state(finished, total, busy)
+        labels = {"preflight": "Verifying available checks", "toolkit": "Running supported toolkit checks",
+                  "native": "Waiting for native SpywareGuard", "aggregation": "Reviewing results and retiring owned work",
+                  "cancelling": "Stopping owned scan work", "finished": "Workflow finished · review findings and coverage"}
+        stage = labels.get(progress.get("stage"))
+        if progress.get("stage") == "finished" and snapshot.get("state") == "incomplete":
+            stage = "Workflow finished · incomplete coverage"
+        self.progress_stage.setText(stage or ("Working · exact progress unavailable" if busy else
+                                              f"Scan state: {_literal(snapshot.get('state', 'idle'), 60)}"))
+        state = snapshot.get("state")
+        color = ("#38bdf8" if busy else "#4ade80" if state == "completed" else
+                 "#fb7185" if state in {"failed", "unavailable"} else
+                 "#fbbf24" if state in {"held", "incomplete", "cancelled"} else "#cbd5e1")
+        self.progress_stage.setStyleSheet(f"font-weight:700;color:{color};")
+        explanations = {
+            "preflight": "Checking which selected scanners and privileges are available. Next: run the supported checks.",
+            "toolkit": "The toolkit is checking supported spyware traces. Its exact file completion is unavailable. Next: wait for remaining native work.",
+            "native": "Waiting for this request's native SpywareGuard checks. Next: assemble findings and explicit coverage gaps.",
+            "aggregation": "Selected work has settled; results and owned-work retirement are being reviewed. Next: publish the report.",
+            "cancelling": "Cancellation has been requested. Next: wait for owned checks to stop and review any partial evidence.",
+            "finished": "The request has ended. Next: investigate findings and coverage gaps; completion does not establish a clean PC.",
+        }
+        fallback = {
+            "held": "The requested checks are held by current runtime or permission limits. Next: review coverage and the existing setup requirements.",
+            "failed": "The request failed. Next: review its diagnostic report and partial coverage before trying again.",
+            "unavailable": "A required scanner or status source is unavailable. Next: review setup and the reported coverage gap.",
+            "cancelled": "The request was cancelled. Next: review any partial evidence; cancellation does not establish a clean PC.",
+            "incomplete": "Some selected checks did not complete. Next: review the report's explicit coverage gaps and findings.",
+        }.get(state, "Waiting for an explicit request or structured worker status. No completion percentage is estimated from elapsed time.")
+        explanation = explanations.get(progress.get("stage"), fallback)
+        if progress.get("stage") == "finished" and state == "incomplete":
+            explanation = ("Some selected checks were held, unavailable or did not complete. Next: review findings "
+                           "and coverage gaps. Finished workflow stages do not establish a clean PC.")
+        self.stage_explanation.setText(explanation)
+        planned = progress.get("planned_stages")
+        finished_stages = progress.get("finished_stages")
+        planned = planned if type(planned) in (tuple, list) else ()
+        finished_stages = finished_stages if type(finished_stages) in (tuple, list) else ()
+        for key, chip in self.stage_chips.items():
+            selected = key in planned
+            done = selected and key in finished_stages
+            current = selected and key == progress.get("stage") and busy
+            accent = "#4ade80" if done else "#38bdf8" if current else "#64748b"
+            chip.setStyleSheet(f"color:{accent};border:1px solid {accent};border-radius:4px;padding:3px;")
+            chip.setAccessibleName(f"{chip.text()}: {'finished' if done else 'current' if current else 'pending' if selected else 'not scheduled'}")
+        if self.progress_ring.percent is None:
+            self.progress_count.setText("Indeterminate · the worker has not supplied a completion count.")
+        else:
+            self.progress_count.setText(f"{finished}/{total} workflow stages finished")
+        self.cancel_button.setEnabled(busy)
         usage = snapshot.get("resource_usage")
         usage = usage if type(usage) is dict else {}
-        native = usage.get("native")
-        native = native if type(native) is dict else {}
-        job_state = snapshot.get("state", "idle")
-        if snapshot.get("busy"):
-            job_state = "native running" if native.get("state") == "running" else "requested / preparing"
-            if usage.get("process_alive"):
-                job_state = "native + tool running" if native.get("state") == "running" else "tool running"
-        pieces = [f"Spyware Scan · {_literal(job_state, 60)}"]
-        for label, names in (("CPU", ("cpu_percent", "cpu")), ("RAM", ("memory_mib", "rss_mib")),
-                             ("I/O", ("io_bytes", "io_total_bytes"))):
-            value = next((usage[name] for name in names if name in usage), None)
-            pieces.append(f"{label}: {_literal(value, 50) if value is not None else 'unavailable'}")
-        if "read_bytes" in usage and "write_bytes" in usage:
-            pieces[-1] = f"I/O: {_literal(usage['read_bytes'], 30)} read / {_literal(usage['write_bytes'], 30)} written"
-        self.resources.setText(" · ".join(pieces))
-        admin = snapshot.get("admin_state", usage.get("admin_state", usage.get("admin", snapshot.get("admin"))))
-        self.privileges.setText("Privilege coverage: " + (" ".join(_literal(admin, 220).split()) if admin is not None
-                                                         else "not yet verified for this scan"))
+
+        def number(value, unit, divisor=1):
+            if type(value) not in (int, float):
+                return "unavailable"
+            try:
+                measured = float(value) / divisor
+            except (OverflowError, ValueError):
+                return "unavailable"
+            if not math.isfinite(measured) or measured < 0:
+                return "unavailable"
+            return f"{measured:,.1f}{unit}"
+
+        cpu = usage.get("cpu_percent", usage.get("cpu"))
+        memory = usage.get("rss_mib", usage.get("memory_mib"))
+        read, written = usage.get("read_bytes"), usage.get("write_bytes")
+        io = (f"{number(read, ' MiB', 1024**2)} read / {number(written, ' MiB', 1024**2)} written"
+              if type(read) in (int, float) and type(written) in (int, float) else "unavailable")
+        alive = usage.get("process_alive")
+        presence = "running" if alive is True else "stopped" if alive is False else "liveness unavailable"
+        self.resources.setText(f"Toolkit process · {presence} · latest available sample\n"
+                               f"CPU: {number(cpu, '%')}     RAM: {number(memory, ' MiB')}\nI/O: {io}")
+        admin = snapshot.get("admin_state", usage.get("admin_state"))
+        if type(admin) is dict and admin.get("verified") is True:
+            token = "Elevated token" if admin.get("elevated") is True else "Ordinary-user token"
+            integrity = _literal(admin.get("integrity", "not reported"), 60)
+            self.privileges.setText(f"Privilege verification: {token} · integrity: {integrity}. No new authority is granted.")
+        else:
+            self.privileges.setText("Privilege verification: unavailable or not yet verified. Coverage limits remain in effect.")
 
 
 class CuratedScannerWidget(QWidget):
@@ -681,6 +1021,7 @@ class CuratedScannerWidget(QWidget):
         self.install_button = QPushButton("Install / repair")
         self.run_button = QPushButton("Run scan")
         self.priority_button = QPushButton("Spyware Scan")
+        style_spyware_scan_button(self.priority_button)
         self.cancel_button = QPushButton("Stop scan")
         self.credits_button = QPushButton("Credits")
         self._primary_buttons = (self.install_button, self.run_button, self.priority_button, self.cancel_button, self.credits_button)
@@ -692,16 +1033,17 @@ class CuratedScannerWidget(QWidget):
         self.priority_button.clicked.connect(lambda: self._scan(priority=True))
         self.cancel_button.clicked.connect(self.controller.cancel)
         self.credits_button.clicked.connect(self._request_credits)
-        self.priority_controls = SpywareScanControls(manager, self, controller=self.controller)
+        self.priority_controls = SpywareScanControls(manager, self, controller=self.controller, scope_controls=False)
         layout.addWidget(self.priority_controls)
         mode_row = QFormLayout()
-        self.mode = QComboBox()
+        self.mode = ClickChoice()
         self.mode.setMinimumContentsLength(16)
         self.mode.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        for label, value in (("Default desktop", "default"), ("Full desktop", "full"),
+        for label, value in (("Standard system checks", "default"), ("Entire PC · supported full checks", "full"),
                              ("Browser checks", "browser"), ("Selected evidence", "targeted")):
             self.mode.addItem(label, value)
-        mode_row.addRow("Scan", self.mode)
+        self.mode.setCurrentIndex(self.mode.findData("full"))
+        mode_row.addRow("Scope", self.mode)
         mode_row.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         layout.addLayout(mode_row)
         self.options_toggle = QToolButton()
@@ -715,7 +1057,7 @@ class CuratedScannerWidget(QWidget):
         options_layout = QVBoxLayout(self.options)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.device = QComboBox()
+        self.device = ClickChoice()
         self.device.setMinimumContentsLength(16)
         self.device.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         for label, value in (("Desktop / selected files", "desktop"), ("Existing Android collection", "android"),
@@ -1070,6 +1412,8 @@ class GitHubToolsDialog(QDialog):
         self.tabs.addTab(settings, "Settings")
         self.scanner.analysis_requested.connect(self.open_analysis)
         layout.addWidget(self.tabs)
+        from angerona.gui.window_fit import install_window_fit
+        self._window_fit = install_window_fit(self)
 
     def open_analysis(self):
         self.tabs.setCurrentIndex(1)

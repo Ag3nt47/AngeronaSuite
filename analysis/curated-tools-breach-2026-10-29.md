@@ -346,3 +346,66 @@ all nine observed descendants retired; the 120-second lease observation saw no
 replacement and the authenticated stop remained active. Device approval was
 left untouched. Fresh frame-fit observation and hosted acceptance belong to
 the follow-up commit rather than the earlier published revision.
+
+## Scan presentation and final layout follow-up
+
+The next normal source launch confirmed the main dashboard's visible DWM frame
+inside the actual scaled work area. Invisible native resize borders were
+measured separately. Its SpywareGuard dialog still exceeded that work area,
+which motivated a dialog-owned fitter and scrollable workspace. During the
+141.75-second observation, owned visible windows remained responsive, source
+hashes stayed fixed, and two fresh matching status generations arrived. Sixteen
+initial samples lacked a fresh status generation; they remain a coverage gap.
+Nine samples showed all four component heartbeats live. The subsequent signed
+operator-stop record identifies dashboard STOP; the diagnostic did not retain
+all child handles for that user action and does not claim exact child retirement.
+
+Hosted validation of `d0d376cc0287fe978ca9e18d1933244a3326502d` completed with
+eleven successful checks and four failed Python jobs. Each Python job passed
+10,265 cases with 28 skips and reported the same single narrow-header overlap.
+The earlier fourteen private-file failures were absent. Header widths had been
+calculated before the final screen clamp, leaving a wider SpywareGuard button
+on the previous allocation until a delayed resize pass. Initial screen fitting
+now precedes header allocation; the final fit and exact frame-helper body are
+retained. The fix does not add a longer arbitrary test delay.
+
+SpywareScan now separates scope, included checks, progress, stage explanation
+and resource details. The primary scan button is red. Entire PC selects the
+supported full toolkit checks; it does not promise every-file or privileged
+coverage, and native live checks retain their supported system scope. Scope
+changes require explicit selection. Wheel gestures scroll rather than changing
+scan modes or resource choices. Refreshes preserve selections and expanded
+details. Dialog fitting preserves the current tab, inputs and non-normal window
+states; longer content remains reachable through scrolling.
+
+Only first-party request-bound workflow counters advance the percentage ring.
+External report text, elapsed time and resource samples cannot supply progress.
+Indeterminate stages remain explicit. Rotation follows active visible work and
+honors reduced-motion preferences. Stage explanations distinguish supported
+collection, waiting, report assembly and cancellation. Resource labels identify
+the toolkit process and its latest available sample, including whether process
+liveness is running, stopped or unavailable.
+
+Review also corrected aggregate completion: selected native work must finish
+successfully and selected toolkit work must have a recognized completed result.
+Held, preview, error, unknown and unscanned outcomes retain incomplete coverage,
+with explicit text rather than color alone. Finished workflow stages do not
+establish a clean host or response authority. No backend collection or authority
+policy was expanded.
+
+The 125%-DPI aggregate/UI gate passed 114 cases. The final 73-case replay included
+the exact hosted failure, dashboard frame fitting, actual SpywareGuard and tools
+dialog layouts, preserved settings, progress and controller behavior. All five
+observed native job generations retired, sources stayed fixed and the job was
+empty. A separate seven-case surface baseline passed at default DPR, including
+the existing ATT&CK fixture whose fixed minimum exceeds the artificial small
+125%-DPI offscreen screen. The original failing attempt remains private.
+Independent review passed the final scan presentation and MainWindow reorder;
+the frame helper's function text and AST matched the prior reviewed version.
+
+The complete Word/PDF/online manual explains the controls and progress limits.
+The 85-page fresh render carried forward 83 byte-identical reviewed PNGs; both
+changed pages were visually reviewed at original 182-DPI resolution. Only the
+Word document body changed. All renderer generations retired before cleanup of
+its exact temporary tool roots. Final public assets and hosted checks must be
+verified against the resulting published commit; parent results do not prove it.
