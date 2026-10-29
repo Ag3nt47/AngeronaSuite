@@ -38,6 +38,9 @@
   retain the saved five-minute default and fifteen-minute saved-setting limit.
   Keep progress timing consistent with the selected allowance and show a
   finished scanner at 100% while another selected scanner is still working.
+- Keep active scan storage accounting compatible with normal generated
+  temporary-file deletion and atomic report writes. Retained evidence and
+  installed-file inventories remain strict, with unchanged storage limits.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

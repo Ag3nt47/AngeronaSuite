@@ -304,6 +304,104 @@ def _inventory(root: Path, *, limit=MAX_ENTRIES, byte_limit=None) -> tuple[list,
     return rows, total
 
 
+def _live_job_inventory(job: Path, state: _JobState, *, limit=MAX_ENTRIES, byte_limit=None) -> tuple[list, int]:
+    """Account for a running job without mistaking disposable cleanup for loss.
+
+    Only this path tolerates disappearance. Installed bundles, admission,
+    retained reports and deletion plans continue to use strict _inventory.
+    """
+    names = ("", "scratch", "cache", "profile", "profile/local", "profile/roaming", "profile/config")
+    fixed = {job / name for name in names}
+    if not job.is_absolute() or not _HEX.fullmatch(job.name) or set(state.directories) != fixed:
+        raise ToolError("Active scanner accounting lacks its exact created directory inventory.")
+    generated = tuple(job / name for name in ("scratch", "cache", "profile"))
+
+    def disposable_directory(path):
+        return path not in fixed and any(path != base and path.is_relative_to(base) for base in generated)
+
+    def directory(path, expected=None):
+        # Raw lstat preserves FileNotFoundError; _validate_chain deliberately
+        # wraps it, which would hide this narrowly recognized runtime race.
+        current = job
+        info = None
+        for part in (None, *path.relative_to(job).parts):
+            if part is not None:
+                current /= part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                if disposable_directory(current):
+                    return None
+                raise
+            if (not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                raise ToolError("Active scanner accounting encountered a redirected or unknown parent.")
+        if expected is not None and (info.st_dev, info.st_ino) != expected:
+            raise ToolError("Active scanner directory identity changed during accounting.")
+        return info
+
+    def check_fixed():
+        for path, expected in state.directories.items():
+            info = directory(path)
+            observed = _windows_node(path) if os.name == "nt" else (info.st_dev, info.st_ino)
+            if observed != expected:
+                raise ToolError("An active scanner control directory changed identity.")
+
+    def missing_leaf(path, entry):
+        # Revalidate surviving parents: a redirected ancestor pointing at a
+        # nonexistent child is not ordinary temporary-file cleanup.
+        directory(path.parent)
+        if disposable_directory(path):
+            return True
+        return (path.parent == job
+                and re.fullmatch(r"\.zbt_(?:report|text)_[a-z0-9_]{8}\.tmp", path.name) is not None
+                and entry.is_file(follow_symlinks=False))
+
+    # Pin only the seven permanent, parent-created directories and ancestors.
+    # Browser/SQLite temporary descendants must remain freely removable.
+    with _hold_plain_directories(*fixed):
+        check_fixed()
+        info = job.lstat()
+        pending = [(job, (info.st_dev, info.st_ino))]
+        rows, total, enumerated = [], 0, 0
+        while pending:
+            current, expected = pending.pop()
+            if directory(current, expected) is None:
+                continue
+            try:
+                with os.scandir(current) as children:
+                    for entry in children:
+                        enumerated += 1  # Vanished names still consume the liveness budget.
+                        if enumerated > limit:
+                            raise ToolError("Optional tool storage inventory reached its entry limit; existing data was preserved.")
+                        path = Path(entry.path)
+                        try:
+                            info = path.lstat()
+                        except FileNotFoundError:
+                            if missing_leaf(path, entry):
+                                continue
+                            raise
+                        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+                                or (not stat.S_ISDIR(info.st_mode) and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1))):
+                            raise ToolError("Optional tool storage contains a redirected, linked or unknown entry; it was preserved.")
+                        rows.append((path, info))
+                        if stat.S_ISDIR(info.st_mode):
+                            pending.append((path, (info.st_dev, info.st_ino)))
+                        else:
+                            total += info.st_size
+                            if byte_limit is not None and total > byte_limit:
+                                raise ToolError("Optional tool storage reached its byte budget; existing data was preserved.")
+            except FileNotFoundError as error:
+                # A nested directory can vanish before scandir or its next
+                # iterator step. A missing stable control never qualifies.
+                missing = Path(error.filename) if error.filename else current
+                if not disposable_directory(current) or not disposable_directory(missing):
+                    raise
+            directory(current, expected)
+        check_fixed()
+        return rows, total
+
+
 def _windows_node(path: Path, expected=None, *, delete=False):
     """Observe/delete one exact native node without following a reparse point."""
     from ctypes import wintypes as w
@@ -1221,7 +1319,7 @@ class CuratedToolService:
                 while True:
                     try:
                         operation.check()
-                        _rows, used = _inventory(job, byte_limit=self._limit("job_limit_mib", 256, 64, 1024) * 1024**2)
+                        _rows, used = _live_job_inventory(job, state, byte_limit=self._limit("job_limit_mib", 256, 64, 1024) * 1024**2)
                         if job_owner is not None:
                             exited = process.poll() is not None
                             try:

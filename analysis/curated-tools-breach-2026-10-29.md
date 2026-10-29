@@ -576,3 +576,43 @@ actual pinned positive/negative short/extended-budget executions passed together
 all eleven captured native generations retired with final sources fixed.
 Independent review passed. These fast controlled runs verify allowance
 propagation and lifecycle behavior, not a four-hour endurance or full-host result.
+
+## Active temporary-file accounting follow-up
+
+The next actual full-scope attempt received a runtime allowance above 14,397
+seconds, confirming that the per-run choice reached the worker. It stopped
+after approximately 170 seconds without a deadline or engine traceback: the
+parent's periodic storage inventory attempted to stat a generated browser
+History snapshot just after normal temporary-directory cleanup removed it.
+The parent treated that ordinary disappearance as an accounting failure and
+retired the tool. Its browser reader counted 4,196 checks and one skip; later
+readers did not run and no final report was written. The after-action popup
+opened automatically with the same native request and toolkit job, explicit
+incomplete coverage and no host-response authority. This result was not a
+successful full scan. The monitor started after these short-lived tool
+generations had exited, so their independent reader-handle retirement proof
+was unavailable; the application's retained native-custody records reported
+both retired. That observation gap remains explicit.
+
+The repair separates active generated-data accounting from strict installed and
+retained inventories. Only expected disappearing generated entries are eligible
+for a missing-file exception during live accounting; stable directories,
+control files and final reports retain their checks. The pinned engine also
+atomically renames specifically named temporary report files at the job root,
+which require a narrow regular-file/name exception. Enumerated names still
+count toward the entry bound, already counted bytes remain counted, and
+redirects, links, unknown types, permission errors and quota excess stay held.
+This is cooperative, bounded accounting rather than an operating-system
+filesystem quota or protection against an adversary controlling the same user.
+
+The coherent live-accounting regression gate passed 95 cases across the new
+race tests and existing service/progress suites. An actual pinned browser scan
+survived deterministic snapshot disappearance and 30 real cleanup cycles,
+retained its positive report and proved native retirement. A second-thread
+atomic rename test covers both expected report temporary prefixes, verifies
+that the strict default still rejects disappearance, and counts the preserved
+final bytes on the next strict pass. Negative tests retain fixed-directory,
+control-file, permission, reparse, hard-link, directory-spoof, byte and entry
+limits. All 30 captured test-job generations retired naturally, final source
+hashes stayed fixed, and independent hash-bound review passed. This regression
+evidence does not substitute for the subsequent full-host retry.

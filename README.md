@@ -57,6 +57,8 @@ An after-action report opens automatically once both selected scanners have
 finished and stopped, including incomplete or failed runs.
 Large profiles can use a separate per-run allowance of up to four hours; saved
 defaults and storage/resource controls remain unchanged.
+Active accounting tolerates normal generated-file cleanup while keeping strict
+checks on installed files, retained evidence and storage limits.
 [What changed and current limits](docs/releases/v1.14.2.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 

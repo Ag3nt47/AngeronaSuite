@@ -65,6 +65,9 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   propagate consistently; CPU rate, RAM, disk admission, cancellation and native
   custody retain their controls. Progress budget fields cap at14400; elapsed
   records cap at86400 for retirement, while measured ETA remains independent.
+  Active quota polling separately accounts for generated file churn; default
+  installed/retained inventories stay strict. Missing stable controls and
+  observed redirects, links, permission failures and quota excess remain holds.
 - A latched Breached warning, critical report and borders require fresh native
   manager-enrolled LIVE mesh evidence, registered/current producer, an exact
   contract and explicit active attack/exploitation. Health/exposure/practice,
