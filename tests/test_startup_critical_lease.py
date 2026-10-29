@@ -338,6 +338,20 @@ try {
     [IO.File]::WriteAllText($release,'release')
     if(!$owner.WaitForExit(10000) -or $owner.ExitCode -ne 37){throw 'Actual live-output producer did not retire with its original exit.'}
     Write-Output ('RESULT:'+(@{live_marker=$true;code=$owner.ExitCode;bytes=(Get-Item -LiteralPath $log).Length}|ConvertTo-Json -Compress))
+}catch{
+    $failure=$_
+    try{
+        $rows=[Collections.Generic.List[object]]::new();$visited=0;$total=0L;$nonflat=0
+        foreach($entry in [IO.Directory]::EnumerateFileSystemEntries($private)){
+            if(++$visited -gt 128){break}
+            $attributes=[IO.File]::GetAttributes($entry)
+            $length=0L
+            if(($attributes -band 0x410) -ne 0){$nonflat++}else{$length=([IO.FileInfo]::new($entry)).Length;$total+=$length}
+            if($rows.Count -lt 16){$name=[IO.Path]::GetFileName($entry);$name=[regex]::Replace($name.Substring(0,[Math]::Min(96,$name.Length)),'[^\x20-\x7e]','?');$rows.Add(@{name=$name;attributes=[int]$attributes;bytes=$length})}
+        }
+        Write-Output ('FIXTURE-CRITICAL-INVENTORY:'+(@{visited=$visited;truncated=($visited -gt 128);bytes=$total;nonflat=$nonflat;entries=@($rows)}|ConvertTo-Json -Depth 4 -Compress))
+    }catch{Write-Output 'FIXTURE-CRITICAL-INVENTORY-UNAVAILABLE'}
+    throw $failure
 }finally{
     [IO.File]::WriteAllText($release,'release')
     $owner.Dispose();$guard.Dispose()
@@ -346,6 +360,66 @@ try {
     result = _run_script(tmp_path, source)
     row = json.loads(next(line[7:] for line in result.stdout.splitlines() if line.startswith("RESULT:")))
     assert row == {"live_marker": True, "code": 37, "bytes": len("ANGERONA_NATIVE_LIVE_MARKER\n")}
+
+
+@pytest.mark.parametrize("reason", ["non-flat", "entry-limit", "workspace-limit"])
+def test_critical_native_zero_budget_reports_exact_bounded_reason(tmp_path, reason):
+    (tmp_path / "budget.py").write_text(
+        "import sys\nsys.stdout.buffer.write(b'quota-marker');sys.stdout.buffer.flush()\nraise SystemExit(37)\n",
+        encoding="utf-8")
+    setup = {
+        "non-flat": "[void][IO.Directory]::CreateDirectory((Join-Path $private 'unknown-nested'))",
+        "entry-limit": "for($index=0;$index -lt 127;$index++){[IO.File]::WriteAllBytes((Join-Path $private ('unknown-'+$index)),[byte[]]@())}",
+        "workspace-limit": "$fill=[IO.File]::Open((Join-Path $private 'unknown-retained.bin'),'CreateNew','Write','Read');try{$fill.SetLength(32MB)}finally{$fill.Dispose()}",
+    }[reason]
+    source = SETUP + "\n" + setup + r"""
+$log=Join-Path $private 'zero-budget.log'
+$code=Invoke-OwnedRepairProcess -FilePath $env:LEASE_TEST_PYTHON -Arguments @('-B','-I',
+    (Join-Path $env:LEASE_TEST_SCRATCH 'budget.py')) -WorkingDirectory $env:LEASE_TEST_ROOT `
+    -Environment $childEnvironment -TimeoutSeconds 10 -LogPath $log
+if($code -ne 37 -or ([IO.FileInfo]::new($log)).Length -ne 0){throw 'Zero budget changed native exit or admitted optional output.'}
+$guard.Dispose()
+"""
+    result = _run_script(tmp_path, source)
+    record = next(json.loads(line) for line in result.stderr.splitlines()
+                  if line.startswith('{"component":"critical-startup-output"'))
+    assert record["limit_reason"] == reason
+    assert record["limit_bytes"] == 0 and record["dropped_bytes"] == len("quota-marker")
+    assert record["failure_phase"] == record["exception_type"] == ""
+    assert record["error_hresult"] is None
+    assert record["inventory_entries"] <= 129
+    assert len(json.dumps(record).encode("utf-8")) < 1024
+
+
+def test_critical_native_sink_failure_reports_first_actual_kernel_error(tmp_path):
+    source = SETUP + r"""
+Initialize-OwnedRepairProcess
+$sourcePath=Join-Path $private 'source-marker';[IO.File]::WriteAllBytes($sourcePath,[Text.Encoding]::ASCII.GetBytes('kernel-marker'))
+$sinkPath=Join-Path $private 'read-only-sink';[IO.File]::WriteAllBytes($sinkPath,[byte[]]@())
+$sourceStream=[IO.File]::Open($sourcePath,'Open','Read','ReadWrite')
+$sink=[IO.File]::Open($sinkPath,'Open','Read','ReadWrite')
+$flags=[Reflection.BindingFlags]'Instance,NonPublic'
+$type=[Angerona.StartupRepairProcess].GetNestedType('CriticalOutput',[Reflection.BindingFlags]::NonPublic)
+$constructor=$type.GetConstructors($flags)[0]
+$pump=$constructor.Invoke(@($sourceStream.SafeFileHandle,$sink.SafeFileHandle,[long]1024,'available',[int]2,[long]13))
+try{
+    $type.GetMethod('Start',$flags).Invoke($pump,@())
+    if(!$type.GetMethod('Wait',$flags).Invoke($pump,@([int]5000))){throw 'Actual failing sink pump did not retire.'}
+    $json=$type.GetMethod('Diagnostic',$flags).Invoke($pump,@())
+    $record=$json|ConvertFrom-Json
+    if($record.failure_phase -notin @('sink-write','sink-flush') -or $record.error_hresult -ne -2147024891 -or
+        $record.exception_type -cne 'UnauthorizedAccessException' -or $record.dropped_bytes -ne 13 -or
+        $record.limit_bytes -ne 1024 -or $record.limit_reason -cne 'available' -or
+        $json.Contains($private) -or [Text.Encoding]::UTF8.GetByteCount($json) -gt 1024){throw ('Actual kernel sink denial diagnostic was wrong: '+$json)}
+    Write-Output ('RESULT:'+$json)
+}finally{
+    $type.GetMethod('Release',$flags).Invoke($pump,@());$sourceStream.Dispose();$sink.Dispose();$guard.Dispose()
+}
+"""
+    result = _run_script(tmp_path, source)
+    record = json.loads(next(line[7:] for line in result.stdout.splitlines() if line.startswith("RESULT:")))
+    assert record["failure_phase"] in {"sink-write", "sink-flush"}
+    assert record["error_hresult"] == -2147024891
 
 
 def test_critical_capture_streams_share_remaining_workspace_budget(tmp_path):

@@ -689,6 +689,29 @@ A separate regenerated-bundle/bootstrap gate passed 30 cases with all 66 observe
 generations retired and source unchanged. CI runs the new short-output case
 before first paint so hosted failures can separately establish live log delivery.
 
+Publication `7744b52c` completed its guarded ref/image proof and 16 additional
+documentation/media reads. All 15 GitHub jobs finished with 11 passes and four
+Python failures. Each early gate had two failures and five passes; full Python
+suites did not run. The held child's complete 28-byte marker was counted as
+dropped, and both live and post-retirement first-paint logs were empty. This
+establishes an output-loss gap beyond buffering, without establishing the GUI
+delay's cause. Original logs and exact native generation records were retained.
+
+The next diagnostic correction distinguishes zero output admission (non-flat
+entry, visited-entry limit or used-byte budget) from the first sink/read error.
+It reports fixed reason tokens, bounded ASCII exception type and numeric HRESULT
+without exception messages or paths. Failure fixtures inspect at most 128 flat
+workspace entries and retain metadata for at most 16; they recurse nowhere and
+read no file content. Native fault cases reproduce a real read-only sink and all
+three zero-budget reasons. Twenty focused cases passed, with all 120 observed
+native generations retired and scoped source unchanged. Byte limits, admission,
+process custody and first-paint timing remain intact; hosted cause identification
+is still pending fresh evidence.
+A regenerated bundle/bootstrap replay in the isolated publication worktree
+passed 30 cases, with all 64 observed native generations retired and scoped
+source unchanged. The separate toolkit feature work was excluded from this
+diagnostic publication.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

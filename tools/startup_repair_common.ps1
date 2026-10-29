@@ -784,32 +784,38 @@ public static class StartupRepairProcess {
             if(retained)lease.DangerousRelease();
         }
     }
-    static long CriticalOutputLimit(string log,IntPtr scratchLease) {
+    static long CriticalOutputLimit(string log,IntPtr scratchLease,out string reason,out int entries,out long used) {
         const long workspace=32L*1024*1024, perLog=8L*1024*1024;
+        reason="available";entries=0;used=0;
         var path=new StringBuilder(4096);uint size=GetFinalPathNameByHandleW(scratchLease,path,4096,0);
         if(size==0 || size>=4096)throw new InvalidOperationException("Critical output guard path is unavailable.");
         string guard=path.ToString();if(guard.StartsWith(@"\\?\",StringComparison.Ordinal))guard=guard.Substring(4);
         string directory=Path.GetDirectoryName(Path.GetFullPath(log));
         if(!String.Equals(directory,Path.GetDirectoryName(guard),StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Critical output must remain in its guarded workspace.");
-        long used=0;int count=0;
         foreach(string entry in Directory.EnumerateFileSystemEntries(directory)) {
-            if(++count>128)return 0;
+            if(++entries>128){reason="entry-limit";return 0;}
             var attributes=File.GetAttributes(entry);
-            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))!=0)return 0;
-            used+=new FileInfo(entry).Length;if(used>=workspace)return 0;
+            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))!=0){reason="non-flat";return 0;}
+            used+=new FileInfo(entry).Length;if(used>=workspace){reason="workspace-limit";return 0;}
         }
         return Math.Min(perLog,workspace-used);
     }
     sealed class CriticalOutput {
         readonly FileStream input,output;
         readonly long limit;
+        readonly string limitReason;
+        readonly int inventoryEntries;
+        readonly long workspaceUsed;
         readonly System.Threading.ManualResetEvent complete=new System.Threading.ManualResetEvent(false);
         long dropped;
         internal string Error;
+        string errorPhase="",exceptionType="";
+        int errorHResult;
         internal long Dropped {get{return System.Threading.Interlocked.Read(ref dropped);}}
-        internal CriticalOutput(SafeFileHandle read,SafeFileHandle write,long limit) {
+        internal CriticalOutput(SafeFileHandle read,SafeFileHandle write,long limit,string reason,int entries,long used) {
             this.limit=limit;
+            limitReason=reason;inventoryEntries=entries;workspaceUsed=used;
             input=new FileStream(read,FileAccess.Read,8192,false);
             try {output=new FileStream(write,FileAccess.Write,8192,false);}
             catch {input.Dispose();throw;}
@@ -817,6 +823,25 @@ public static class StartupRepairProcess {
         internal void Start() {
             var thread=new System.Threading.Thread(Pump);thread.IsBackground=true;
             thread.Name="Angerona bounded critical output";thread.Start();
+        }
+        void RecordError(string phase,Exception error) {
+            if(Error!=null)return;
+            errorPhase=phase;errorHResult=error.HResult;
+            var safe=new StringBuilder(64);
+            foreach(char value in error.GetType().Name) {
+                if(safe.Length>=64)break;
+                safe.Append((value>='A'&&value<='Z')||(value>='a'&&value<='z')||
+                    (value>='0'&&value<='9')||value=='_' ? value : '_');
+            }
+            exceptionType=safe.ToString();Error=exceptionType+": critical output "+phase;
+        }
+        internal string Diagnostic() {
+            // Only fixed reason/operation tokens, a bounded ASCII type name and
+            // numeric metadata. Never reflect exception messages or host paths.
+            return "{\"component\":\"critical-startup-output\",\"outcome\":\"limited\",\"dropped_bytes\":"+Dropped+
+                ",\"limit_bytes\":"+limit+",\"limit_reason\":\""+limitReason+"\",\"inventory_entries\":"+inventoryEntries+
+                ",\"workspace_used_bytes\":"+workspaceUsed+",\"failure_phase\":\""+errorPhase+"\",\"exception_type\":\""+exceptionType+
+                "\",\"error_hresult\":"+(Error==null?"null":errorHResult.ToString(System.Globalization.CultureInfo.InvariantCulture))+"}";
         }
         void Pump() {
             var buffer=new byte[8192];long written=0;bool failed=false;
@@ -827,15 +852,18 @@ public static class StartupRepairProcess {
                     // Publish small live phase records without waiting for the
                     // producer to exit or fill the FileStream buffer. The
                     // durable flush remains at EOF; byte limits are unchanged.
-                    if(keep>0)try{output.Write(buffer,0,keep);written+=keep;output.Flush();}
-                        catch(Exception error){Error=error.GetType().Name+": critical output sink unavailable";failed=true;keep=0;}
+                    if(keep>0) {
+                        string phase="sink-write";
+                        try{output.Write(buffer,0,keep);written+=keep;phase="sink-flush";output.Flush();}
+                        catch(Exception error){RecordError(phase,error);failed=true;keep=0;}
+                    }
                     System.Threading.Interlocked.Add(ref dropped,count-keep);
                 }
-            }catch(Exception error){Error=error.GetType().Name+": critical output reader unavailable";}
+            }catch(Exception error){RecordError("reader",error);}
             finally {
-                try{output.Flush(true);}catch(Exception error){Error=error.GetType().Name+": critical output flush unavailable";}
-                try{output.Dispose();}catch(Exception error){Error=error.GetType().Name+": critical output close unavailable";}
-                try{input.Dispose();}catch(Exception error){Error=error.GetType().Name+": critical pipe close unavailable";}
+                try{output.Flush(true);}catch(Exception error){RecordError("durable-flush",error);}
+                try{output.Dispose();}catch(Exception error){RecordError("sink-close",error);}
+                try{input.Dispose();}catch(Exception error){RecordError("reader-close",error);}
                 complete.Set();
             }
         }
@@ -1109,12 +1137,13 @@ public static class StartupRepairProcess {
                 // Only the bounded pipe writer is inheritable. The raw disk
                 // sink must never escape into a concurrent Framework child.
                 Check(SetHandleInformation(output,1,0));
-                long limit=CriticalOutputLimit(log,scratchLease);
+                string reason;int entries;long used;
+                long limit=CriticalOutputLimit(log,scratchLease,out reason,out entries,out used);
                 Check(CreatePipe(out pipeRead,out pipeWrite,ref sa,8192));
                 Check(SetHandleInformation(pipeRead,1,0));
                 var readHandle=new SafeFileHandle(pipeRead,true);pipeRead=IntPtr.Zero;
                 var writeHandle=new SafeFileHandle(output,true);output=IntPtr.Zero;
-                try{criticalOutput=new CriticalOutput(readHandle,writeHandle,limit);criticalOutput.Start();}
+                try{criticalOutput=new CriticalOutput(readHandle,writeHandle,limit,reason,entries,used);criticalOutput.Start();}
                 catch{readHandle.Dispose();writeHandle.Dispose();throw;}
             }
             input=CreateFileW(@"\\.\NUL",0x80000000,3,ref sa,3,0x80,IntPtr.Zero);
@@ -1195,7 +1224,7 @@ public static class StartupRepairProcess {
                     outputRetirementError=new InvalidOperationException("Critical output reader retirement is unverified; its exact stream owner remains retained.");
                 } else try {
                     if(criticalOutput.Dropped>0 || criticalOutput.Error!=null) {
-                        try{Console.Error.WriteLine("{\"component\":\"critical-startup-output\",\"outcome\":\"limited\",\"dropped_bytes\":"+criticalOutput.Dropped+"}");}catch{}
+                        try{Console.Error.WriteLine(criticalOutput.Diagnostic());}catch{}
                     }
                 }finally{criticalOutput.Release();}
             }

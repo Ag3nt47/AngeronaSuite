@@ -559,6 +559,16 @@ try {
             try {$diagnostic[$entry[0]]=Read-SourceStartupLogTail $entry[1]}
             catch{$diagnostic[$entry[0]]='Bounded diagnostic unavailable: '+$_.Exception.Message}
         }
+        try{
+            $rows=[Collections.Generic.List[object]]::new();$visited=0;$total=0L;$nonflat=0
+            foreach($entry in [IO.Directory]::EnumerateFileSystemEntries([IO.Path]::GetDirectoryName($script:FixturePaintReceipt))){
+                if(++$visited -gt 128){break}
+                $attributes=[IO.File]::GetAttributes($entry);$length=0L
+                if(($attributes -band 0x410) -ne 0){$nonflat++}else{$length=([IO.FileInfo]::new($entry)).Length;$total+=$length}
+                if($rows.Count -lt 16){$name=[IO.Path]::GetFileName($entry);$name=[regex]::Replace($name.Substring(0,[Math]::Min(96,$name.Length)),'[^\x20-\x7e]','?');$rows.Add(@{name=$name;attributes=[int]$attributes;bytes=$length})}
+            }
+            $diagnostic.workspace_inventory=@{visited=$visited;truncated=($visited -gt 128);bytes=$total;nonflat=$nonflat;entries=@($rows)}
+        }catch{$diagnostic.workspace_inventory_unavailable=$true}
         Write-Output ('FIXTURE-DIAGNOSTIC:'+($diagnostic|ConvertTo-Json -Depth 5 -Compress))
     }catch{Write-Output ('FIXTURE-DIAGNOSTIC-UNAVAILABLE:'+ $_.Exception.Message)}
     throw $originalFailure
