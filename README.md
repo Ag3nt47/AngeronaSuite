@@ -53,6 +53,8 @@ SpywareScan groups scope, checks and progress into readable sections, with a red
 start button and click-to-change Entire PC scope. Per-check and overall progress,
 current task/file, elapsed time and available estimates explain active work;
 timeouts retain their reason and partial progress.
+An after-action report opens automatically once both selected scanners have
+finished and stopped, including incomplete or failed runs.
 [What changed and current limits](docs/releases/v1.14.2.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 

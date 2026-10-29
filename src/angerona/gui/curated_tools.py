@@ -12,7 +12,7 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QRectF, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
@@ -92,6 +92,8 @@ class CuratedToolsController(QObject):
     status_changed = Signal(dict)
     credits_ready = Signal(object)
     settings_saved = Signal()
+    scan_outcome_ready = Signal(dict)
+    _close_after_action_requested = Signal()
 
     def __init__(self, manager, parent=None, *, service_factory=None):
         super().__init__(parent)
@@ -103,6 +105,7 @@ class CuratedToolsController(QObject):
         self._auto_started = False
         self._operation = None
         self._operation_id = ""
+        self._evidence_operation_id = ""
         self._worker = None
         self._pending_priority = None
         self._native_priority_module = None
@@ -111,6 +114,12 @@ class CuratedToolsController(QObject):
         self._last_native_completion = None
         self._focus_lease = None
         self._focus_renewed_at = 0.0
+        self._completion_dialog = None
+        self._completion_pending = None
+        self._completion_deferred = None
+        self._completion_serial = 0
+        self._completion_delivered = 0
+        self._close_after_action_requested.connect(self._close_after_action)
         self._cancel_requested = threading.Event()
         self._done = threading.Event()
         self._done.set()
@@ -144,6 +153,9 @@ class CuratedToolsController(QObject):
     def _start(self, action, options=None):
         if self._closed or self._busy or (self._worker is not None and self._worker.is_alive()):
             return False
+        self._present_scan_outcome()
+        if self._closed or self._busy or (self._worker is not None and self._worker.is_alive()):
+            return False  # A completion listener may have stopped or started work.
         cfg = _config(self.manager)
         options = dict(options or {})
         budget = options.pop("timeout_seconds", getattr(cfg, "github_tools_timeout_seconds", 300))
@@ -156,7 +168,23 @@ class CuratedToolsController(QObject):
                 self._publish(state="held", message="Curated scanners are disabled or the workspace is locked.")
                 return False
         self._busy = True
+        if action in {"scan", "priority_scan"}:
+            self._completion_serial += 1
+            # An early failure must not present a previous request's evidence
+            # as this run's findings. Saved report files remain untouched.
+            for key in ("request_id", "native", "coverage", "findings", "details", "report",
+                        "partial_result", "error", "native_scan_completion", "review_gap",
+                        "previous_attempt", "resource_usage", "admin_state", "job_id", "tool",
+                        "created_at", "retained_files", "cleanup", "authority", "native_retired",
+                        "native_generations", "native_observation_gaps", "timed_out", "stop_reason",
+                        "output_dropped", "output_errors", "exit_code", "gap", "native_started",
+                        "progress_gap", "job_retained"):
+                self._snapshot.pop(key, None)
+            previous = self._snapshot.pop("latest_report", None)
+            if previous is not None:
+                self._snapshot["previous_saved_report"] = previous
         self._snapshot["active_action"] = action
+        self._evidence_operation_id = ""
         self._snapshot["scan_progress"] = None
         self._snapshot["scanner_progress"] = {}
         self._snapshot.pop("focus_lease_gap", None)
@@ -184,6 +212,7 @@ class CuratedToolsController(QObject):
                 operation = backend.ToolOperation(timeout=budget)
                 self._operation = operation
                 self._operation_id = getattr(operation, "operation_id", "")
+                self._evidence_operation_id = self._operation_id
                 if self._cancel_requested.is_set():
                     operation.cancel()
                 operation.check()
@@ -214,6 +243,8 @@ class CuratedToolsController(QObject):
                 if action == "scan":
                     operation.check()
                 if type(result) is dict:
+                    if action in {"scan", "priority_scan"} and "resource_usage" in result:
+                        result = dict(result, resource_usage=self._bound_scan_resources(result["resource_usage"]))
                     raw_progress = result.get("scanner_progress")
                     if type(raw_progress) is dict and "operation_id" in raw_progress:
                         result = dict(result)
@@ -267,10 +298,19 @@ class CuratedToolsController(QObject):
         try:
             self._worker = threading.Thread(target=work, name="AngeronaCuratedTools", daemon=True)
             self._worker.start()
-        except Exception:
+        except Exception as error:
+            if self._worker is not None and self._worker.is_alive():
+                self._cancel_current()
+                self._publish(message="Worker startup acknowledgment failed; waiting for its owned work to retire.")
+                return False
+            self._worker = None
+            failure = dict(state="failed", message="The tool worker could not start; no scan completion was established.",
+                           error=f"{type(error).__name__}: {_literal(error, 700)}")
+            self._queue_scan_outcome(action, failure)
             self._busy = False
             self._done.set()
-            self._publish(state="unavailable", message="The tool worker could not start.")
+            self._publish(**failure, lifecycle="terminal")
+            self._present_scan_outcome()
             return False
         return True
 
@@ -284,6 +324,12 @@ class CuratedToolsController(QObject):
                 self._frame("scanner", ("toolkit", copy.deepcopy(value)))
         except Exception:
             pass  # Retain the last publication; missing status is not completion.
+
+    def _bound_scan_resources(self, value):
+        if (type(value) is dict and self._evidence_operation_id
+                and value.get("operation_id") == self._evidence_operation_id):
+            return copy.deepcopy(value)
+        return {"state": "unavailable", "reason": "No toolkit resource sample is bound to this scan operation."}
 
     def _priority_work(self, backend, service, cfg, operation, options, progress, budget=300):
         request_id = uuid.uuid4().hex
@@ -523,6 +569,8 @@ class CuratedToolsController(QObject):
                     usage = self._service.resource_snapshot()
                     if type(usage) is not dict:
                         usage = {"state": "unavailable"}
+                    if self._snapshot.get("active_action") in {"scan", "priority_scan"}:
+                        usage = self._bound_scan_resources(usage)
                 except Exception:
                     usage = {"state": "unavailable"}
             native = self._native_priority_module
@@ -558,6 +606,7 @@ class CuratedToolsController(QObject):
                     if combined != self._snapshot.get("scanner_progress"):
                         self._publish(scanner_progress=combined)
             elif kind == "error":
+                self._queue_scan_outcome(self._snapshot.get("active_action"), value)
                 self._busy = False
                 self._publish(**value, lifecycle="terminal")
             else:
@@ -569,19 +618,104 @@ class CuratedToolsController(QObject):
                     self._publish(message="Project credits loaded.")
                 else:
                     update = result if type(result) is dict else dict(message=_literal(result))
+                    self._queue_scan_outcome(action, update)
                     self._publish(**dict(update, lifecycle="terminal"))
                     if action == "settings":
                         self.settings_saved.emit()
+        self._present_scan_outcome()
         if not self._busy and self._pending_priority is not None:
             # A result publication is not thread retirement. Reuse the one
             # worker permit only after its actual Python thread has exited;
             # the backend separately retains native child-tree custody.
             if self._worker is None or not self._worker.is_alive():
                 options, self._pending_priority = self._pending_priority, None
-                self._start("priority_scan", options)
+                pending, self._completion_pending = self._completion_pending, None
+                if pending is not None:
+                    previous = copy.deepcopy(pending[1])
+                    previous.pop("previous_attempt", None)
+                    self._completion_deferred = previous
+                if not self._start("priority_scan", options) and pending is not None:
+                    self._completion_deferred = None
+                    self._completion_pending = pending
+                    self._present_scan_outcome()
             return
-        if not self._busy and self._frames.empty():
+        if not self._busy and self._frames.empty() and self._completion_pending is None:
             self._timer.stop()
+
+    def _queue_scan_outcome(self, action, values):
+        if (not self._closed and action in {"scan", "priority_scan"}
+                and self._completion_serial > self._completion_delivered):
+            # Deliberately allowlist current-run metadata. A new adapter field
+            # from an old run cannot become an early failure's custody proof.
+            keys = ("active_action", "scan_progress", "scanner_progress", "timeout_seconds",
+                    "started_monotonic", "elapsed_seconds", "resource_usage", "admin_state",
+                    "native_scan_completion", "focus_lease_gap", "partial_result", "version")
+            report = {key: copy.deepcopy(self._snapshot[key]) for key in keys if key in self._snapshot}
+            report.update(copy.deepcopy(values))
+            report.update(busy=False, lifecycle="terminal")
+            report["review_attempt"] = self._completion_serial
+            if self._evidence_operation_id:
+                report["operation_id"] = self._evidence_operation_id
+            if self._completion_deferred is not None:
+                report["previous_attempt"] = copy.deepcopy(self._completion_deferred)
+                self._completion_deferred = None
+            self._completion_pending = (self._completion_serial, report)
+
+    def _present_scan_outcome(self):
+        if (self._closed or self._busy or self._pending_priority is not None or self._completion_pending is None
+                or (self._worker is not None and self._worker.is_alive())):
+            return
+        serial, report = self._completion_pending
+        self._completion_pending = None
+        if serial <= self._completion_delivered:
+            return
+        self._completion_delivered = serial
+        try:
+            if self.show_after_action(report) is None:
+                raise RuntimeError("Report presentation is unavailable")
+        except Exception as error:
+            self._publish(review_gap=f"The after-action window could not open: {type(error).__name__}. Retained results remain available.")
+        self.scan_outcome_ready.emit(copy.deepcopy(report))
+
+    def show_after_action(self, report=None, *, trace=False):
+        """One literal, nonmodal report shared by every scanner view."""
+        if self._closed or QThread.currentThread() != self.thread():
+            return None
+        from angerona.gui.breach_display import AfterActionReportDialog
+        from angerona.gui.window_fit import install_window_fit
+        report = self.snapshot() if report is None else copy.deepcopy(report)
+        dialog = self._completion_dialog
+        if dialog is None or not isValid(dialog):
+            # Bind the existing main window's group/qualified breach outline
+            # without importing or constructing another security dashboard.
+            parents = [widget for widget in QApplication.topLevelWidgets()
+                       if type(widget).__module__ == "angerona.gui.main_window"
+                       and type(widget).__name__ == "MainWindow"
+                       and getattr(widget, "manager", None) is self.manager]
+            parent = parents[0] if len(parents) == 1 else None
+            dialog = AfterActionReportDialog(report, parent, confirmed=False)
+            dialog.setModal(False)
+            dialog.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+            install_window_fit(dialog, scroll_content=True)
+            self._completion_dialog = dialog
+        else:
+            dialog.update_report(report, confirmed=False)
+        dialog.notice.setText("Spyware scan review · " + _literal(report.get("state", "unknown"), 80)
+                              + ". Review native coverage and toolkit leads; completion does not establish a clean PC.")
+        if trace:
+            dialog.show_trace()
+        else:
+            dialog.show_investigation()
+        dialog.show()
+        return dialog
+
+    @Slot()
+    def _close_after_action(self):
+        self._timer.stop()
+        dialog, self._completion_dialog = self._completion_dialog, None
+        if dialog is not None and isValid(dialog):
+            dialog.close()
+            dialog.deleteLater()
 
     def refresh(self):
         return self._start("status")
@@ -653,7 +787,9 @@ class CuratedToolsController(QObject):
     def shutdown(self):
         self._closed = True
         self._pending_priority = None
-        self._timer.stop()
+        self._completion_pending = None
+        self._completion_deferred = None
+        self._close_after_action_requested.emit()
         self._cancel_requested.set()
         if self._operation is not None:
             self._operation.cancel()
@@ -1657,18 +1793,7 @@ class CuratedScannerWidget(QWidget):
             self.controller.revert()
 
     def _investigate(self, *, trace=False):
-        from angerona.gui.breach_display import AfterActionReportDialog
-        report = self.controller.snapshot()
-        dialog = self._after_action_dialog
-        if dialog is None or not isValid(dialog):
-            dialog = AfterActionReportDialog(report, self)
-            dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
-        else:
-            dialog.update_report(report)
-        if trace:
-            dialog.show_trace()
-        self._after_action_dialog = dialog
-        dialog.show()
+        self._after_action_dialog = self.controller.show_after_action(trace=trace)
 
     def _show_settings(self):
         if self._settings_dialog is not None and isValid(self._settings_dialog):

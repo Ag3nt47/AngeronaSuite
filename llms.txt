@@ -56,6 +56,10 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   Per-run budgets preserve saved preferences; longer budgets must reach the
   actual operation constructor. Progress uses bounded latest snapshots, not
   growing file logs. Auxiliary dialogs fit their current work area.
+  One controller-owned nonmodal after-action report opens after terminal scan
+  publication AND actual worker retirement, including failure and partial
+  results. Shared views cannot create duplicate reports; shutdown fences late
+  callbacks. External findings retain confirmed=False and no response authority.
 - A latched Breached warning, critical report and borders require fresh native
   manager-enrolled LIVE mesh evidence, registered/current producer, an exact
   contract and explicit active attack/exploitation. Health/exposure/practice,

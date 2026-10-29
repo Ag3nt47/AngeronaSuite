@@ -501,3 +501,40 @@ did not span a read chunk and could not prove intermediate progress; that test
 failure was retained and the owned file was enlarged before the successful
 7.02-second final replay. This is controlled execution evidence, not a full-PC
 scan or detection-efficacy benchmark.
+
+## Automatic scan completion review follow-up
+
+The shared scanner controller now opens one nonmodal after-action report after
+an admitted scan reaches a terminal result and its actual controller worker has
+exited. The existing native request/generation completion and separate toolkit
+custody gates still precede that result. Failed, timed-out, cancelled and partial
+outcomes retain their original reasons, counters and coverage gaps. Shared Hub
+and SpywareGuard views reuse one dialog; dismissing it does not repeat the scan.
+Shutdown fences queued completion, and a preempted scan contributes at most one
+bounded previous-attempt record. The report stays an unconfirmed review with no
+response grants, even when its MainWindow parent independently displays an
+authorized breach warning.
+
+Current-run findings, report references, request identities and native custody
+fields are scoped separately from saved historical reports. Resource snapshots
+reset before a new scan and carry its operation/job identity, preventing old
+CPU, RAM or process observations from becoming evidence for an early failure.
+
+A coherent 133-case Qt/controller gate passed with five captured native
+generations retired naturally and fixed source hashes. The actual pinned-engine
+and native-module integration now additionally proves no early report while the
+native collector is held, one visible report after both scanners settle, strict
+completion flags, disabled mutation actions and no reopening after dismissal.
+Independent source and custody review passed. The backend gate passed 52 cases;
+its one new failure was an incorrect test-only expectation that disabled
+preflight could not create an empty private control directory. The corrected
+case checks that no scan job is created. That case and both real-engine positive
+and negative executions then passed together, with all seven captured native
+generations retired and final sources fixed. The failed intermediate receipt
+remains private rather than being represented as a successful complete gate.
+
+Full-mode browser profiles, caches and selected user-writable system roots can
+exceed a finite per-run budget. These controlled checks do not prove that every
+host finishes within 900 seconds or that an incomplete full scan is a clean
+verdict. Real host evidence remains private, and no source or response authority
+is expanded by automatic report presentation.

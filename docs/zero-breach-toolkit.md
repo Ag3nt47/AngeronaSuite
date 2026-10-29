@@ -176,6 +176,12 @@ and toolkit activity text are untrusted display data; they cannot grant trust,
 change a baseline or authorize response. The pinned upstream engine and license
 bytes remain unchanged.
 
+After the requested scan finishes and both selected scanners have stopped, one
+after-action report opens automatically. It includes completed, cancelled,
+failed and incomplete outcomes with their retained findings and coverage gaps.
+Investigate and Trace reopen the same review; dismissing it does not repeat the
+scan. External-tool findings remain leads and do not authorize containment.
+
 Settings retain the priority and resource choices. Above normal is the default;
 High is the supported operating-system ceiling. REALTIME priority is not used.
 The default requested routine-background pace is 10% while the priority scan is

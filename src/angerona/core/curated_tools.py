@@ -768,6 +768,9 @@ class CuratedToolService:
         if type(operation) is not ToolOperation:
             raise ValueError("Use an actual tool operation owner.")
         with self._lock:
+            self._resource = dict(operation_id=operation.operation_id, job_id=job_id,
+                                  state="unavailable",
+                                  resource_gap="This operation has not supplied a native resource sample.")
             self._progress = dict(schema=1, operation_id=operation.operation_id, job_id=job_id,
                                   sequence=0, state="queued", elapsed_s=0.0,
                                   timeout_seconds=operation.timeout_seconds,
@@ -1241,6 +1244,7 @@ class CuratedToolService:
                         now = time.monotonic()
                         cpu_time = sample.pop("cpu_time", None)
                         sample.update(cpu_percent=None if cpu_time is None else max(0, (cpu_time - last_cpu[1]) / max(.01, now - last_cpu[0]) * 100),
+                                      operation_id=operation.operation_id, job_id=job.name,
                                       pid=process.pid, creation_filetime=job_owner.birth if job_owner else "",
                                       elapsed=round(now - started, 2), priority=sample.get("priority", request.priority),
                                       admin_state="ordinary-user", working_bytes=used, process_alive=not exited)
@@ -1293,6 +1297,7 @@ class CuratedToolService:
                     state.native_state = "retired"
                     with self._lock:
                         self._resource = dict(self._resource, process_alive=False, cpu_percent=0.0,
+                                              operation_id=operation.operation_id, job_id=job.name,
                                               state="stopped", retirement="Exact owned process tree retired.")
                         terminal = "timed-out" if operation.stop_reason == "deadline" else "cancelled" if reason == "cancelled" else "incomplete" if reason != "complete" or process.returncode not in {0, 2} else "completed"
                         self._progress.update(state=terminal, owner_retired=True,

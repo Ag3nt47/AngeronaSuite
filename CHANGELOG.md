@@ -31,6 +31,9 @@
 - Repair the isolated engine's standard-library temporary-report path while
   retaining fresh descriptor, private-path and write-budget checks; verify
   actual pinned-engine positive/negative reports and browser-query progress.
+- Open one shared after-action report automatically when a requested spyware
+  scan has finished and its workers have stopped. Include cancelled, failed and
+  incomplete results without granting third-party findings response authority.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

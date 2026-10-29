@@ -124,6 +124,9 @@ def controller(monkeypatch):
     monkeypatch.setattr(ui, "_backend", lambda: backend)
     manager = SimpleNamespace(cfg=Config(), modules={})
     result = ui.get_curated_tools_controller(manager)
+    resources = Service.resource_snapshot
+    monkeypatch.setattr(Service, "resource_snapshot", lambda service: dict(
+        resources(service), operation_id=result._evidence_operation_id, job_id="c" * 32))
     yield result
     result.shutdown()
     assert result.wait_for_shutdown(4)

@@ -147,7 +147,9 @@ from angerona.core.curated_tool_worker import main
     panel.resize(620, 720)
     panel.show()
     observations = []
+    completed_reports = []
     controller.status_changed.connect(lambda value: observations.append(value))
+    controller.scan_outcome_ready.connect(completed_reports.append)
     native.start(initial_delay=30)
     try:
         assert controller.prepare()
@@ -166,8 +168,10 @@ from angerona.core.curated_tool_worker import main
         assert controller.snapshot()["busy"] is True  # Exact native collector still owns its request.
         assert manager.priority_scan_focus_snapshot()["active"] is True
         assert native.priority_scan_snapshot()["request_finished"] is False
+        assert not completed_reports and controller._completion_dialog is None
         release.set()
         _until(lambda: not controller.snapshot()["busy"])
+        _until(lambda: len(completed_reports) == 1)
         result = controller.snapshot()
         assert result["state"] == "completed" and result["findings"]
         tool = result["details"]["zero_breach"]
@@ -182,6 +186,17 @@ from angerona.core.curated_tool_worker import main
         assert background._priority_throttle == 1 and background._throttle == 2
         assert pacing.work_multiplier() == 1
         assert controller.wait_for_shutdown(3) and service.wait_for_shutdown(3)
+        dialog = controller._completion_dialog
+        assert dialog is not None and dialog.isVisible() and dialog._confirmed is False
+        assert dialog._report["details"]["zero_breach"]["native_retired"] is True
+        assert dialog._report["native_scan_completion"]["request_finished"] is True
+        assert dialog._report["native_scan_completion"]["collector_finished"] is True
+        assert all(button.isEnabled() is (name in {"investigate", "trace"})
+                   for name, button in dialog.actions.items())
+        dialog.close()
+        QApplication.processEvents()
+        controller._drain()
+        assert not dialog.isVisible() and len(completed_reports) == 1
         assert panel.progress_ring.percent == 100 and not panel.cancel_button.isEnabled()
         assert observations and any(value.get("scanner_progress", {}).get("native", {}).get("state") == "running"
                                     for value in observations)
@@ -196,6 +211,8 @@ from angerona.core.curated_tool_worker import main
             "state": result["state"], "report": result["report"], "native_request": status,
             "tool_native_generations": tool["native_generations"], "tool_native_retired": tool["native_retired"],
             "focus": manager.priority_scan_focus_snapshot(), "controlled_network_attempts": 0,
+            "automatic_after_action_observed": True, "automatic_after_action_count": len(completed_reports),
+            "external_report_confirmed": dialog._confirmed,
         }, indent=2), encoding="utf-8")
     finally:
         release.set()

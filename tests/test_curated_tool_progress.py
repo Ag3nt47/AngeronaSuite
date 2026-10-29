@@ -29,6 +29,22 @@ class Clock:
         return self.value
 
 
+def test_failed_new_scan_never_reuses_previous_process_resources(tmp_path):
+    service = tools.CuratedToolService(root=tmp_path / "unused", cfg=SimpleNamespace(github_tools_enabled=False))
+    previous = tools.ToolOperation()
+    current = tools.ToolOperation()
+    service._resource = dict(operation_id=previous.operation_id, job_id="a" * 32,
+                             pid=12345, cpu_percent=88.0, rss_mib=128, process_alive=False,
+                             state="stopped")
+    with pytest.raises(tools.ToolError, match="disabled"):
+        service.scan(tools.ToolScanRequest(), current)
+    sample = service.resource_snapshot()
+    assert sample["operation_id"] == current.operation_id and sample["job_id"] == ""
+    assert sample["state"] == "unavailable" and sample["resource_gap"]
+    assert not {"pid", "cpu_percent", "rss_mib", "process_alive"}.intersection(sample)
+    assert not (tmp_path / "unused" / "jobs").exists()
+
+
 def tracker(tmp_path):
     output, clock = [], Clock()
     document = dict(operation_id="a" * 32, nonce="b" * 64,
@@ -268,6 +284,10 @@ def test_real_pinned_engine_selected_evidence_positive_negative_and_progress(tmp
     assert result["native_retired"] is True
     assert result["native_generations"] and all(row["native_retired"] for row in result["native_generations"])
     assert result["state"] == ("findings" if match else "complete"), result
+    resource = service.resource_snapshot()
+    assert resource["operation_id"] == operation.operation_id
+    assert resource["job_id"] == result["job_id"] and resource["process_alive"] is False
+    assert resource["pid"] and resource["creation_filetime"]
     assert bool(result["findings"]) is match
     assert original.read_bytes() == before
     assert hashlib.sha256((bundle / "engine.py").read_bytes()).hexdigest() == pinned_before == tools.ZERO_BREACH["sha256"]
