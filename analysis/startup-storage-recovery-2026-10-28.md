@@ -746,6 +746,27 @@ observed native generations retired. Hosted acceptance still requires a fresh
 run of the published revision; this local replay does not establish the former
 runner stall's root cause.
 
+On `cb459f8`, all four hosted early native startup gates passed. The completed
+3.11 and 3.12 full suites each reported 9,999 passes, 26 skips and one failure in
+the separate kernel STARTUPINFO role probe. Its old assertion combined a
+ten-second completion wait and a nonzero exit under one message, so those logs
+cannot distinguish timeout from a child error. They do not prove failed native
+retirement. The fixture compiled its read-only C# probe inside each child;
+compiler/module discovery was unrelated work inside the measured interval.
+
+The fixed fixture compiles that same probe once in its private parent state,
+then each actual GUI/command launch loads the exact owned assembly through .NET.
+The real launch wrappers, ten-second deadline, standard-handle flags and
+SW_SHOW/SW_HIDE assertions remain. Failure diagnostics distinguish wait timeout,
+nonzero native exit, owner-completion fault and retirement fault; child log tails
+are read only after successful owned disposal. The existing role test now runs
+in the early CI gate as well, rather than first surfacing after a full suite.
+This removes a fixture confound; it does not establish the former hosted cause.
+The combined role, real first-paint, process-admission and live-output replay
+passed 16 cases in 55.85 seconds. All 74 observed native process generations
+retired and scoped source stayed unchanged. Ruff, workflow-policy validation
+and whitespace checks passed. No production launcher/runtime files changed.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

@@ -69,6 +69,7 @@ jobs:
             'tests/test_startup_bootstrap.py::test_pinned_verifier_self_restore_holds_all_mutation_locks_and_preserves_private_edits'
             'tests/test_startup_process_admission.py::test_owned_recovery_window_retires_its_exact_reader_tree_before_retry'
             'tests/test_startup_critical_lease.py::test_critical_native_short_output_is_visible_before_actual_producer_exit'
+            'tests/test_source_startup_strategies.py::test_native_gui_owner_requests_visible_startup_while_commands_stay_hidden'
             'tests/test_source_startup_strategies.py::test_supervisor_waits_for_exact_native_first_paint_and_ready_retires_shell'
             'tests/test_shadow_shield_storage.py::test_primary_policy_and_limited_observation_advance_between_cleanup_passes'
           )

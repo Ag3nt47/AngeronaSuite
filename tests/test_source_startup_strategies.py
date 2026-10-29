@@ -694,10 +694,11 @@ def test_native_gui_owner_requests_visible_startup_while_commands_stay_hidden(tm
 function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 $storage=Join-Path $env:ANGERONA_TEST_SCRATCH 'state';New-PrivateRepairDirectory $storage
 $probe=Join-Path $storage 'kernel-startup-info.ps1'
-[IO.File]::WriteAllText($probe,@'
-param($Receipt)
-$ErrorActionPreference='Stop'
-Add-Type -TypeDefinition @"
+$library=Join-Path $storage 'kernel-startup-info.dll'
+# Compile the fixed read-only probe once in the parent, before either native
+# launch/deadline. Child-side compiler/module discovery is not the subject of
+# this STARTUPINFO role test and must not consume its ten-second execution wait.
+Add-Type -OutputAssembly $library -OutputType Library -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class FixtureKernelStartup {
@@ -712,18 +713,53 @@ public static class FixtureKernelStartup {
         return "{\"flags\":"+value.flags+",\"show\":"+value.show+"}";
     }
 }
-"@
-[IO.File]::WriteAllText($Receipt,[FixtureKernelStartup]::Read())
+'@
+[IO.File]::WriteAllText($probe,@'
+param([string]$Library,[string]$Receipt)
+$ErrorActionPreference='Stop'
+$assembly=[Reflection.Assembly]::LoadFrom($Library)
+$reader=$assembly.GetType('FixtureKernelStartup',$true).GetMethod('Read')
+[IO.File]::WriteAllText($Receipt,[string]$reader.Invoke($null,[object[]]@()))
 '@)
 $powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $environment=New-RepairChildEnvironment $storage
 $guiReceipt=Join-Path $storage 'gui.json';$commandReceipt=Join-Path $storage 'command.json'
-$window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$guiReceipt) -WorkingDirectory $storage -Environment $environment -LogPath (Join-Path $storage 'gui.log')
+$guiLog=Join-Path $storage 'gui.log'
+$window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$library,$guiReceipt) -WorkingDirectory $storage -Environment $environment -LogPath $guiLog
+$failure=$null;$retirementFailure=$null;$waitCompleted=$false;$nativeExit=$null;$disposed=$false
+$failureKind='owner-completion-fault'
 try {
-    if(!$window.WaitForExit(10000) -or $window.ExitCode -ne 0){throw 'Owned kernel startup-info probe did not retire.'}
-}finally{$window.Dispose()}
-$code=Invoke-OwnedRepairProcess -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$commandReceipt) -WorkingDirectory $storage -Environment $environment -TimeoutSeconds 10 -LogPath (Join-Path $storage 'command.log')
-if($code -ne 0){throw 'Background kernel startup-info probe failed.'}
+    $waitCompleted=$window.WaitForExit(10000)
+    if(!$waitCompleted){$failureKind='execution-wait-timeout';throw 'Owned kernel startup-info probe exceeded its ten-second execution wait.'}
+    $nativeExit=$window.ExitCode
+    if($nativeExit -ne 0){$failureKind='native-nonzero';throw "Owned kernel startup-info probe returned nonzero exit $nativeExit."}
+}catch{$failure=$_}
+finally{
+    try{$window.Dispose();$disposed=$true}catch{$retirementFailure=$_}
+    finally{
+        if($failure -or $retirementFailure){
+            try{
+                $retired=$disposed -and $window.HasExited
+                $diagnostic=[ordered]@{outcome='kernel-startup-info-fixture-failed';role='gui'
+                    failure_kind=$(if($failure){$failureKind}else{'retirement-fault'})
+                    wait_completed=$waitCompleted;exit_code=$nativeExit;native_retired=$retired
+                    retirement_failed=[bool]$retirementFailure
+                    process_id=$window.ProcessId;creation_filetime=[string]$window.CreationFileTime}
+                if($retired){$diagnostic.log=Read-SourceStartupLogTail $guiLog}
+                Write-Output ('FIXTURE-DIAGNOSTIC:'+($diagnostic|ConvertTo-Json -Depth 3 -Compress))
+            }catch{Write-Output 'FIXTURE-DIAGNOSTIC-UNAVAILABLE:kernel-startup-info'}
+        }
+    }
+}
+if($retirementFailure){throw $retirementFailure}
+if($failure){throw $failure}
+$commandLog=Join-Path $storage 'command.log'
+$code=Invoke-OwnedRepairProcess -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$library,$commandReceipt) -WorkingDirectory $storage -Environment $environment -TimeoutSeconds 10 -LogPath $commandLog
+if($code -ne 0){
+    # Invoke-OwnedRepairProcess returns only after its owned retirement proof.
+    Write-Output ('FIXTURE-DIAGNOSTIC:'+(@{outcome='kernel-startup-info-fixture-failed';role='command';exit_code=$code;log=(Read-SourceStartupLogTail $commandLog)}|ConvertTo-Json -Depth 3 -Compress))
+    throw "Background kernel startup-info probe returned exit $code."
+}
 $gui=[IO.File]::ReadAllText($guiReceipt)|ConvertFrom-Json
 $command=[IO.File]::ReadAllText($commandReceipt)|ConvertFrom-Json
 if(($gui.flags -band 0x101) -ne 0x101 -or $gui.show -ne 1 -or
