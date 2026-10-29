@@ -18,6 +18,7 @@ import pytest
 
 from angerona.core import curated_tools as tools
 from angerona.core import curated_tool_worker as worker
+from angerona.core import source_sandbox
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,247 @@ BUNDLE = ROOT / "assets/integrations/zero_breach"
 
 def service(tmp_path):
     return tools.CuratedToolService(tmp_path / "managed-tools", bundle=BUNDLE)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native Windows owner and DACL boundary")
+def test_private_atomic_file_uses_token_user_before_any_bytes_or_publication(tmp_path, monkeypatch):
+    import win32api
+    import win32file
+    import win32security
+    from angerona.core.engine_transport import _windows_identity
+
+    root = tmp_path / "private"
+    tools._private(root)
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+    try:
+        default_owner = win32security.GetTokenInformation(token, win32security.TokenOwner)
+    finally:
+        token.Close()
+    user = _windows_identity()
+    baseline = root / "default-owner-control"
+    source_sandbox._atomic_bytes_write(baseline, b"inert old writer control", root=root)
+    security_flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+    assert win32security.GetFileSecurity(str(baseline), security_flags).GetSecurityDescriptorOwner() == default_owner
+    if default_owner != user:
+        # Elevated hosted tokens can select Administrators. The unchanged
+        # reader must reject that real control, without adopting its owner.
+        before = win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+            win32security.GetFileSecurity(str(baseline), security_flags), 1, security_flags)
+        with pytest.raises(tools.ToolError, match="private current-user custody"):
+            tools._read(baseline, 128, private=True)
+        assert win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+            win32security.GetFileSecurity(str(baseline), security_flags), 1, security_flags) == before
+
+    def assert_private_handle(handle):
+        security = win32security.GetSecurityInfo(int(handle), win32security.SE_FILE_OBJECT, security_flags)
+        assert security.GetSecurityDescriptorOwner() == user
+        assert security.GetSecurityDescriptorControl()[0] & win32security.SE_DACL_PROTECTED
+        acl = security.GetSecurityDescriptorDacl()
+        assert acl.GetAceCount() == 3
+        assert {win32security.ConvertSidToStringSid(acl.GetAce(i)[2]) for i in range(3)} == {
+            win32security.ConvertSidToStringSid(user), "S-1-5-18", "S-1-5-32-544"}
+        assert all(acl.GetAce(i)[0] == (win32security.ACCESS_ALLOWED_ACE_TYPE, 0) for i in range(3))
+
+    events = []
+    real_dll = ctypes.WinDLL
+
+    class NativeCall:
+        def __init__(self, target, observer):
+            object.__setattr__(self, "target", target)
+            object.__setattr__(self, "observer", observer)
+
+        def __getattr__(self, name):
+            return getattr(self.target, name)
+
+        def __setattr__(self, name, value):
+            setattr(self.target, name, value)
+
+        def __call__(self, *args):
+            return self.observer(self.target, *args)
+
+    def created(call, *args):
+        result = call(*args)
+        if args[4] == 1 and result != ctypes.c_void_p(-1).value:
+            assert args[3] is not None  # SECURITY_ATTRIBUTES was present at CREATE_NEW.
+            assert_private_handle(result)
+            assert win32file.GetFileSize(int(result)) == 0
+            events.append("created-private-empty")
+        return result
+
+    def written(call, handle, *args):
+        assert events == ["created-private-empty"]
+        assert_private_handle(handle)
+        assert win32file.GetFileSize(int(handle)) == 0
+        events.append("write")
+        return call(handle, *args)
+
+    def renamed(call, *args):
+        assert events == ["created-private-empty", "write"]
+        events.append("publish")
+        return call(*args)
+
+    class Kernel:
+        def __init__(self, native):
+            self.native = native
+            self.CreateFileW = NativeCall(native.CreateFileW, created)
+            self.WriteFile = NativeCall(native.WriteFile, written)
+            self.MoveFileExW = NativeCall(native.MoveFileExW, renamed)
+
+        def __getattr__(self, name):
+            return getattr(self.native, name)
+
+    def dll(name, *args, **kwargs):
+        native = real_dll(name, *args, **kwargs)
+        return Kernel(native) if name.casefold() == "kernel32" else native
+
+    monkeypatch.setattr(ctypes, "WinDLL", dll)
+    target = root / "explicit-owner.json"
+    tools._atomic_bytes_write(target, b'{"inert":"private"}', root=root)
+    assert events == ["created-private-empty", "write", "publish"]
+    assert tools._read(target, 128, private=True) == b'{"inert":"private"}'
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native private descriptor failure")
+def test_private_descriptor_failure_preserves_existing_bytes_and_permissions(tmp_path, monkeypatch):
+    import win32security
+    from angerona.core import engine_transport
+
+    root = tmp_path / "private"
+    tools._private(root)
+    target = root / "existing.json"
+    tools._atomic_bytes_write(target, b"original private data", root=root)
+    flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+    before = win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+        win32security.GetFileSecurity(str(target), flags), 1, flags)
+
+    def fail(**_kwargs):
+        raise OSError("inert security descriptor construction failure")
+
+    monkeypatch.setattr(engine_transport, "_windows_private_attributes", fail)
+    with pytest.raises(OSError, match="descriptor construction"):
+        tools._atomic_bytes_write(target, b"must not publish", root=root)
+    assert target.read_bytes() == b"original private data"
+    assert win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+        win32security.GetFileSecurity(str(target), flags), 1, flags) == before
+    assert sorted(path.name for path in root.iterdir()) == ["existing.json"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native private ACL refusal")
+def test_private_reader_rejects_broadened_acl_without_repair(tmp_path):
+    import win32con
+    import win32security
+
+    root = tmp_path / "private"
+    tools._private(root)
+    target = root / "report.json"
+    tools._atomic_bytes_write(target, b"untrusted test report", root=root)
+    flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+    security = win32security.GetFileSecurity(str(target), flags)
+    acl = security.GetSecurityDescriptorDacl()
+    acl.AddAccessAllowedAce(win32security.ACL_REVISION, win32con.GENERIC_READ,
+                           win32security.CreateWellKnownSid(win32security.WinWorldSid, None))
+    security.SetSecurityDescriptorDacl(True, acl, False)
+    win32security.SetFileSecurity(str(target), win32security.DACL_SECURITY_INFORMATION
+                                 | win32security.PROTECTED_DACL_SECURITY_INFORMATION, security)
+    before = win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+        win32security.GetFileSecurity(str(target), flags), 1, flags)
+    with pytest.raises(tools.ToolError, match="private current-user custody"):
+        tools._read(target, 128, private=True)
+    assert target.read_bytes() == b"untrusted test report"
+    assert win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(
+        win32security.GetFileSecurity(str(target), flags), 1, flags) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="native log owner and DACL boundary")
+def test_output_pump_creates_private_empty_native_log_before_writing(tmp_path, monkeypatch):
+    import msvcrt
+    import win32file
+    import win32security
+    from angerona.core import engine_transport
+
+    root = tmp_path / "private"
+    tools._private(root)
+    target = root / "stdout.log"
+    create = engine_transport.create_private_file
+    observed = []
+
+    def checked_create(path):
+        descriptor = create(path)
+        try:
+            handle = msvcrt.get_osfhandle(descriptor)
+            flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+            security = win32security.GetSecurityInfo(handle, win32security.SE_FILE_OBJECT, flags)
+            assert security.GetSecurityDescriptorOwner() == engine_transport._windows_identity()
+            assert security.GetSecurityDescriptorControl()[0] & win32security.SE_DACL_PROTECTED
+            assert security.GetSecurityDescriptorDacl().GetAceCount() == 3
+            assert win32file.GetFileSize(handle) == 0
+            assert not os.get_inheritable(descriptor)
+            observed.append(True)
+        except BaseException:
+            os.close(descriptor)
+            raise
+        return descriptor
+
+    monkeypatch.setattr(engine_transport, "create_private_file", checked_create)
+    raw = b"synthetic output\n" * 1000
+    stream = io.BytesIO(raw)
+    pump = tools._OutputPump(stream, target)
+    pump.finish()
+    assert observed == [True] and pump.error == "" and pump.dropped == 0
+    assert stream.closed
+    assert tools._read(target, tools.MAX_LOG_BYTES, private=True) == raw
+    target.unlink()  # The non-delete-sharing writer descriptor was retired.
+
+
+def test_output_pump_records_private_creation_rejection_and_drains(tmp_path, monkeypatch):
+    from angerona.core import engine_transport
+
+    root = tmp_path / "private"
+    tools._private(root)
+    target = root / "stderr.log"
+    raw = b"bounded inert producer output" * 1000
+    stream = io.BytesIO(raw)
+
+    def reject(_path):
+        raise engine_transport.EngineError("inert owner verification refusal")
+
+    monkeypatch.setattr(engine_transport, "create_private_file", reject)
+    pump = tools._OutputPump(stream, target)
+    pump.finish()
+    assert pump.error == "EngineError" and pump.dropped == len(raw)
+    assert stream.closed and not target.exists() and not pump.thread.is_alive()
+
+
+def test_output_pump_retires_private_descriptor_if_fdopen_fails(tmp_path, monkeypatch):
+    from angerona.core import engine_transport
+
+    root = tmp_path / "private"
+    tools._private(root)
+    target = root / "stdout.log"
+    create = engine_transport.create_private_file
+    descriptors = []
+
+    def observed_create(path):
+        descriptor = create(path)
+        descriptors.append(descriptor)
+        return descriptor
+
+    def fail_fdopen(_descriptor, _mode, *, closefd):
+        assert closefd is False
+        raise OSError("inert stream allocation failure")
+
+    monkeypatch.setattr(engine_transport, "create_private_file", observed_create)
+    monkeypatch.setattr(tools.os, "fdopen", fail_fdopen)
+    raw = b"inert producer output"
+    stream = io.BytesIO(raw)
+    pump = tools._OutputPump(stream, target)
+    pump.finish()
+    assert pump.error == "OSError" and pump.dropped == len(raw) and stream.closed
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+    assert target.read_bytes() == b""
+    target.unlink()
 
 
 def test_constructor_is_lazy_and_credits_are_fixed_data(monkeypatch):

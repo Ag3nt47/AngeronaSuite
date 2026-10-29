@@ -273,6 +273,18 @@ function Invoke-SourceRecoveryWindow([string]$Root, [string]$Message, [switch]$R
     return 0
 }
 
+function Format-SourceRecoveryDiagnostic([string]$Action, [object]$Result, [string]$Response) {
+    # Put the current reason ahead of a potentially long saved repair history.
+    # This is diagnostic text only; it cannot change source or launch authority.
+    $message = if ($Result -and $Result.message -is [string]) {
+        Protect-SourceStartupText $Result.message 700
+    } else { 'No current operation detail was supplied.' }
+    $prefix = if ($Action -eq 'inspect') {
+        'Read-only source inspection; saved repair actions below are historical, not changes made by this inspection. '
+    } else { "Source operation $Action. " }
+    return $prefix + $message + "`nBounded response: " + $Response
+}
+
 function Invoke-SourceCodeAction([string]$Root, [string]$Action, [string]$Strategy = '',
     [string]$Choice = '', [string]$ExpectedId = '') {
     $script:LastSourceRecoveryResult = $null
@@ -343,7 +355,8 @@ function Invoke-SourceCodeAction([string]$Root, [string]$Action, [string]$Strate
             $script:LastSourceRecoveryResult = [pscustomobject]@{launch_held=$true;reason_code='invalid-source-response'}
             return 1
         }
-        Write-SourceStartupEvent "source-$Action" $(if ($code -eq 0) { 'completed' } else { 'held' }) $response $code $Strategy
+        $diagnostic = Format-SourceRecoveryDiagnostic $Action $script:LastSourceRecoveryResult $response
+        Write-SourceStartupEvent "source-$Action" $(if ($code -eq 0) { 'completed' } else { 'held' }) $diagnostic $code $Strategy
         return $code
     } finally {
         if ($instanceLease) { Exit-RepairLease $instanceLease }
@@ -389,7 +402,13 @@ function Complete-SourceStartupRecovery([string]$Root) {
             return
         }
         $code = Invoke-SourceCodeAction -Root $Root -Action 'snapshot'
-        if ($code -ne 0) { Write-Host '[startup] Dashboard is ready; its source snapshot could not be recorded.'; return }
+        if ($code -ne 0) {
+            $detail = if ($script:LastSourceRecoveryResult.message -is [string]) {
+                Protect-SourceStartupText $script:LastSourceRecoveryResult.message 600
+            } else { 'Review the private startup-recovery diagnostics.' }
+            Write-Host ('[startup] Dashboard is ready; its optional recovery snapshot is held: ' + $detail)
+            return
+        }
         $report = $script:LastSourceRecoveryResult
         if (!$report -or !$report.pending_decision) { return }
         $paths = @($report.changed_files | Select-Object -First 32) -join "`n"

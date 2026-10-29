@@ -47,6 +47,8 @@ can latch a visible case; supported installed response paths separately check
 authority, policy and network-rule receipts before reporting containment.
 Source Observe shows response holds, and third-party findings remain leads.
 Startup recovery, storage controls and component heartbeat EKGs remain available.
+Follow-up fixes fit the dashboard frame to scaled display work areas and create
+private Windows toolkit output with explicit current-user ownership.
 [What changed and current limits](docs/releases/v1.14.2.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 

@@ -54,6 +54,34 @@ function Invoke-SourceRecoveryWindow { $script:Calls.Add('recovery-window');retu
 """
 
 
+def test_snapshot_capacity_reason_precedes_long_saved_history(tmp_path):
+    result = run(tmp_path, r"""
+$reason='Two ready snapshots are retained; review capacity before capturing another revision'
+$report=[pscustomobject]@{schema=1;changed=$false;message=$reason;changed_files=@(('historical/source.py ' * 500))}
+$raw=$report | ConvertTo-Json -Compress
+$diagnostic=Format-SourceRecoveryDiagnostic 'snapshot' $report $raw
+$bounded=Protect-SourceStartupText $diagnostic 2000
+Write-Output ('RESULT:' + (@{bounded=$bounded;reason=$reason;original_length=$raw.Length;changed=$report.changed} | ConvertTo-Json -Compress))
+""")
+    assert result["original_length"] > 2000
+    assert result["bounded"].startswith("Source operation snapshot. " + result["reason"])
+    assert result["changed"] is False
+
+
+def test_inspection_diagnostic_labels_history_without_mutating_report(tmp_path):
+    result = run(tmp_path, r"""
+$report=[pscustomobject]@{schema=1;changed=$true;message='Saved repair result password=fixture-secret';actions=@('Restored source')}
+$original=$report | ConvertTo-Json -Compress
+$diagnostic=Protect-SourceStartupText (Format-SourceRecoveryDiagnostic 'inspect' $report $original) 2000
+Write-Output ('RESULT:' + (@{diagnostic=$diagnostic;unchanged=($original -ceq ($report | ConvertTo-Json -Compress));changed=$report.changed} | ConvertTo-Json -Compress))
+""")
+    assert result["diagnostic"].startswith("Read-only source inspection;")
+    assert "not changes made by this inspection" in result["diagnostic"]
+    assert "fixture-secret" not in result["diagnostic"]
+    assert "[redacted]" in result["diagnostic"]
+    assert result["unchanged"] is True and result["changed"] is True
+
+
 WINDOW_DIAGNOSTICS = r"""
 # Fixture-only, read-only evidence for the exact retained native UI generation.
 # No RPC read exceeds100ms; the complete window/control pass has a2000ms budget.

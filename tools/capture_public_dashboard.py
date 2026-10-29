@@ -290,6 +290,10 @@ def _build_demo_window():
         )
 
     window = MainWindow(bus, storage, manager, config)
+    # Synthetic exports use an explicit viewport, independent of the offscreen
+    # display. Real application windows retain automatic work-area fitting.
+    window._screen_fit_enabled = False
+    window._did_center = True
     _stop_background_ui_helpers(window)
     # Suppress SystemPulseCard's constructor-scheduled first host sample. The
     # public image must be synthetic end to end, not merely overwritten later.

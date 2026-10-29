@@ -15,6 +15,11 @@
   and isolate compiler scratch from critical startup output admission.
 - Drain optional scan/review workers before closing shared stores on shutdown;
   preserve data and custody when native retirement cannot be proven.
+- Fit the outer dashboard frame to scaled monitor work areas while keeping its
+  sections open and scrollable. Create private Windows toolkit files and logs
+  with explicit current-user ownership before writing; retain strict readers.
+- Put the current startup-recovery reason before long saved repair history,
+  label inspection as read-only and explain optional snapshot capacity holds.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

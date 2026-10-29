@@ -274,3 +274,75 @@ authenticated operator stop remained active, and the following sixty-second
 canonical lease observation recorded no replacement Core. This concerns the old
 running revision; it cannot replace a fresh observation bound to the new
 revision's actual Core PID, birth, image and source hashes.
+
+## Published-revision follow-up
+
+Guarded publication of `5b258ab3baae7d299c02e9451e67e6b900ec54bf` verified clean
+canonical branch/default-main refs and sixteen byte-identical README images.
+An additional twelve public downloads (six assets at the exact commit and main)
+matched the reviewed GIF, Word/PDF/online manuals and settings/credits pictures.
+All fifteen hosted checks completed: eleven passed and four Python jobs failed.
+Each Python version passed 10,233 cases with 28 skips and the same fourteen
+private-toolkit custody failures. Earlier module-path casing failures were absent.
+
+Native private-file creation now supplies the established current-user owner and
+protected DACL at CREATE_NEW, before writing or publication. Generic atomic
+writes retain their default behavior, and POSIX mkstemp remains mode 0600. The
+stdout/stderr pumps use the existing exclusive private-file creator, close exact
+descriptors on failure and continue bounded pipe draining. The strict ownership
+and ACL reader is unchanged; no existing file is adopted or repaired to pass.
+The ordinary-user execution guard remains held for elevated toolkit execution.
+
+An elevated hosted token selecting an Administrators default owner is consistent
+with the old NULL-security-attributes creation path, but the old failure logs do
+not expose its owner/ACL and cannot establish that historical cause. The native
+regressions instead verify the required explicit owner, protected three-ACE ACL,
+empty file before writing, non-inheritance, publication order and refusal paths
+on actual retained temporary handles. The final 62-case gate passed in 97.64
+seconds with all 36 observed generations naturally retired and hashes fixed.
+Independent review passed curated-tools SHA-256
+2bd36fb4648f4b39f0b0d01909fce18e71288ca3a121a25dcbd3af4df08fbbb9 and
+source-sandbox f427b320c8b3371e62abe23291f109e1eb724f2435a0362a170bd3ee89561f6f.
+
+The real 1.14.2 normal Safe Startup painted its independent interface before
+runtime checks, then verified dashboard readiness and exited zero. An 80.406
+second observation proved unchanged source, responsive visible owned windows,
+two fresh matching status generations and no status gaps. Twelve samples had
+all four real component heartbeats advancing; shutdown-key metadata stayed fixed.
+The main window was visible and not minimized. Native PMv2 measurements then
+exposed a remaining layout defect: its bottom exceeded the 125%-scaled monitor's
+work area by 81 physical pixels. Responsive content tests had not proved outer
+frame fit.
+
+The frame helper now subtracts measured decorations from Qt's device-independent
+work area and retains a small rounding inset. Initial placement and settled
+reflow clamp the frame, preserve disclosure states and use the existing scroll
+viewport. Small screens can lower the drag floor and larger screens restore it;
+hidden, minimized, maximized and full-screen states remain alone. All 61 layout
+regressions passed at actual offscreen DPR 1.25, including the observed 880-DIP
+frame model, negative desktop origins, all-open scroll reachability and floor
+restoration. All three observed native generations retired. Independent review
+passed main-window SHA-256
+627d41418e9c11374a7845963345d8c6d48cda6c308f1b76871be95b981bf6a1.
+The synthetic media harness keeps its explicit export viewport; normal application
+windows retain automatic fitting. Reviewed public media bytes remain unchanged.
+
+The optional new source snapshot was held by the existing two-ready-copy limit.
+There was no pending source decision, new source mutation or settings loss; the
+inspection echoed an older saved repair summary. Both older copies remain
+retained, and the current revision was not added as a ready fallback. No copy,
+security baseline or trust decision was removed to clear that warning. Diagnostics
+now put the current hold reason before long saved history, explicitly label
+inspection read-only, and explain that the dashboard is already ready. Independent
+review confirmed diagnostic-only behavior and unchanged admission/exit policy.
+
+All 162 startup regressions passed with 293 native generations retired; its broad
+freeze check correctly reported the concurrent curated-tools edit, while all
+selected startup inputs stayed fixed. A subsequent frozen five-case replay of
+the new diagnostic cases, native first paint and pinned bootstrap restoration
+passed in 33.04 seconds with all 33 observed generations retired. The normal
+application was then stopped through its supported STOP confirmation. Core and
+all nine observed descendants retired; the 120-second lease observation saw no
+replacement and the authenticated stop remained active. Device approval was
+left untouched. Fresh frame-fit observation and hosted acceptance belong to
+the follow-up commit rather than the earlier published revision.

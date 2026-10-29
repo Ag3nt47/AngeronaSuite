@@ -14,7 +14,7 @@ import threading
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QDialog, QGridLayout, QHBoxLayout, QLabel, QLayout, QMainWindow, QMenu, QMessageBox,
@@ -365,6 +365,8 @@ class MainWindow(QMainWindow):
         # compress. The responsive UI-scale (see resizeEvent) keeps text legible
         # as the window shrinks toward this floor.
         self.setMinimumSize(480, 340)
+        self._screen_fit_minimum = self.minimumSize()
+        self._screen_fit_enabled = True
         # Auto scale stays within a readable band. A short debounce applies
         # the scale and reflows the layout after a window resize settles.
         self._ui_scale = 1.0
@@ -1334,6 +1336,8 @@ class MainWindow(QMainWindow):
             # The scroll canvas may resize after its new minimum is applied.
             # Reclaim that final allocation once its queued layout has settled.
             QTimer.singleShot(0, self._fit_collapsed_operations)
+        if getattr(self, "_screen_fit_enabled", False):
+            self._fit_dashboard_to_screen()
 
     def apply_theme(self, theme: str | None = None) -> None:
         # SettingsDialog passes the newly-chosen theme here; callers that just
@@ -6173,14 +6177,61 @@ class MainWindow(QMainWindow):
             screen = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
             if screen is None:
                 return
-            avail = screen.availableGeometry()
-            fg = self.frameGeometry()           # includes title bar/borders now that we're shown
-            fg.moveCenter(avail.center())
-            x = max(avail.left(), min(fg.left(), avail.right() - fg.width()))
-            y = max(avail.top(),  min(fg.top(),  avail.bottom() - fg.height()))
-            self.move(x, y)
+            self._fit_dashboard_to_screen(screen.availableGeometry(), center=True)
         except Exception:
             pass   # positioning must never break startup
+
+    def _fit_dashboard_to_screen(self, available=None, *, center: bool = False) -> bool:
+        """Fit the outer frame in Qt screen coordinates; content keeps scrolling.
+
+        QScreen geometry and QWidget geometry already share device-independent
+        coordinates, including mixed-DPI desktop origins. Subtract the measured
+        decorations from the client budget instead of scaling either rectangle.
+        """
+        if (not self.isVisible() or self.isMinimized()
+                or self.isMaximized() or self.isFullScreen()):
+            return False
+        if available is None:
+            screen = self.screen()
+            if screen is None:
+                return False
+            available = screen.availableGeometry()
+        work_area = QRect(available)
+        if work_area.isEmpty():
+            return False
+        # Keep fractional native-pixel rounding inside the usable work area.
+        if work_area.width() > 4 and work_area.height() > 4:
+            work_area.adjust(2, 2, -2, -2)
+        frame = self.frameGeometry()
+        decoration_width = max(0, frame.width() - self.width())
+        decoration_height = max(0, frame.height() - self.height())
+        client_width = max(1, work_area.width() - decoration_width)
+        client_height = max(1, work_area.height() - decoration_height)
+        # A small work area can be shorter than the normal drag-resize floor.
+        # Its readable dashboard remains inside the existing scroll viewport.
+        before = self.size()
+        minimum = getattr(self, "_screen_fit_minimum", None)
+        if minimum is None:
+            minimum = self.minimumSize()
+            self._screen_fit_minimum = minimum
+        minimum_width = min(minimum.width(), client_width)
+        minimum_height = min(minimum.height(), client_height)
+        if self.minimumWidth() != minimum_width or self.minimumHeight() != minimum_height:
+            self.setMinimumSize(minimum_width, minimum_height)
+        width = min(self.width(), client_width)
+        height = min(self.height(), client_height)
+        changed = width != before.width() or height != before.height()
+        if changed:
+            self.resize(width, height)
+        frame = self.frameGeometry()
+        if center:
+            frame.moveCenter(work_area.center())
+        x = max(work_area.left(), min(frame.left(), work_area.x() + work_area.width() - frame.width()))
+        y = max(work_area.top(), min(frame.top(), work_area.y() + work_area.height() - frame.height()))
+        moved = self.pos().x() != x or self.pos().y() != y
+        if moved:
+            self.move(x, y)
+        return changed or moved
 
     def closeEvent(self, event) -> None:
         event.ignore()

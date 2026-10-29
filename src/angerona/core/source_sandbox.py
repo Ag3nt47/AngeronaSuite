@@ -244,8 +244,10 @@ def _read_bytes(path: Path, *, root: Path) -> bytes:
     return content
 
 
-def _atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> None:
-    """Durably replace one plain file underneath a validated sandbox root."""
+def _atomic_bytes_write(path: Path, content: bytes, *, root: Path, private: bool = False) -> None:
+    """Durably replace one plain file, optionally with atomic private ownership."""
+    if type(private) is not bool:
+        raise ValueError("sandbox private-file selection must be a boolean")
     if len(content) > MAX_SOURCE_BYTES:
         raise ValueError("sandbox file exceeds the 4 MiB source limit")
     path = _absolute(path)
@@ -255,7 +257,10 @@ def _atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> None:
     _ensure_directory(root)
     _ensure_directory(path.parent)
     if os.name == "nt":
-        _windows_atomic_bytes_write(path, content, root=root)
+        if private:
+            _windows_atomic_bytes_write(path, content, root=root, private=True)
+        else:
+            _windows_atomic_bytes_write(path, content, root=root)
         return
     with _hold_plain_directories(root, path.parent):
         try:
@@ -294,7 +299,7 @@ def _atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> None:
                 pass
 
 
-def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> None:
+def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path, private: bool = False) -> None:
     """Write and rename through verified Windows handles.
 
     The temporary file's actual kernel path is checked against already-open
@@ -372,9 +377,29 @@ def _windows_atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> No
     open_reparse = 0x00200000
     normal_attributes = 0x00000080
 
+    security_buffer = attributes = None
+    if private:
+        # Match the established engine-state creation contract. In particular,
+        # an elevated token may default ownership to Administrators instead of
+        # TokenUser even when the parent directory is already user-owned.
+        # Supply owner and protected DACL at CREATE_NEW, before writing bytes;
+        # existing objects are never repaired or adopted here.
+        from angerona.core.engine_transport import _windows_private_attributes
+
+        class Attributes(ctypes.Structure):
+            _fields_ = (("size", wintypes.DWORD), ("descriptor", wintypes.LPVOID),
+                        ("inherit", wintypes.BOOL))
+
+        security_buffer = ctypes.create_string_buffer(
+            bytes(_windows_private_attributes().SECURITY_DESCRIPTOR)
+        )
+        attributes = Attributes(ctypes.sizeof(Attributes),
+                                ctypes.cast(security_buffer, wintypes.LPVOID), False)
+
     def open_handle(target: Path, access: int, share: int, disposition: int, flags: int):
+        security = ctypes.byref(attributes) if attributes is not None and disposition == create_new else None
         handle = create_file(
-            os.fspath(target), access, share, None, disposition, flags, None
+            os.fspath(target), access, share, security, disposition, flags, None
         )
         if handle == invalid:
             error = ctypes.get_last_error()

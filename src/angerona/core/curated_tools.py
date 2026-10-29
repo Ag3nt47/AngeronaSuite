@@ -31,7 +31,8 @@ from angerona.core.data_paths import data_dir, resource_root
 from angerona.core.executable_trust import _open_sealed
 from angerona.core.file_lease import ExclusiveFileLease
 from angerona.core.source_sandbox import (
-    _absolute, _atomic_bytes_write, _hold_plain_directories, _validate_chain,
+    _absolute, _atomic_bytes_write as _sandbox_atomic_bytes_write,
+    _hold_plain_directories, _validate_chain,
 )
 from angerona.core.startup_recovery import private_directory, private_repair_file
 
@@ -144,6 +145,11 @@ def _private(path: Path) -> None:
             raise ToolError("Optional tool storage could not be created privately.")
     if not private_directory(path, create=False):
         raise ToolError("Optional tool storage is not private current-user storage.")
+
+
+def _atomic_bytes_write(path: Path, content: bytes, *, root: Path) -> None:
+    """Create private tool files before publication; never repair existing ACLs."""
+    _sandbox_atomic_bytes_write(path, content, root=root, private=True)
 
 
 def _read(path: Path, limit: int, *, private=False) -> bytes:
@@ -680,18 +686,26 @@ class _OutputPump:
         self.thread.start()
 
     def _run(self):
+        from angerona.core.engine_transport import EngineError, create_private_file
+
         kept = 0
         try:
-            with self.path.open("xb") as output:
-                while True:
-                    raw = self.stream.read(8192)
-                    if not raw:
-                        break
-                    count = min(len(raw), MAX_LOG_BYTES - kept)
-                    if count:
-                        output.write(raw[:count]); output.flush(); kept += count
-                    self.dropped += len(raw) - count
-        except (OSError, ValueError) as exc:
+            descriptor = create_private_file(self.path)
+            try:
+                # Keep unambiguous ownership even if fdopen fails: closefd=False
+                # leaves this exact descriptor with this owner until finally.
+                with os.fdopen(descriptor, "wb", closefd=False) as output:
+                    while True:
+                        raw = self.stream.read(8192)
+                        if not raw:
+                            break
+                        count = min(len(raw), MAX_LOG_BYTES - kept)
+                        if count:
+                            output.write(raw[:count]); output.flush(); kept += count
+                        self.dropped += len(raw) - count
+            finally:
+                os.close(descriptor)
+        except (OSError, ValueError, EngineError) as exc:
             self.error = type(exc).__name__
             # Drain after a failed optional sink so a live producer cannot block.
             try:
