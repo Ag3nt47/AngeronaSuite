@@ -41,6 +41,11 @@ the supervisor stops. Neither button executes diagnostic text or grants response
 authority. Closing the shell does not terminate an unrelated or possibly live
 engine.
 
+Each Retry admits its critical working space inside the owned attempt loop.
+Retained diagnostic quotas and recommended free-space reserves are advisory on
+this route, so another attempt does not require deleting old nonempty logs.
+Optional logging can degrade without changing the returned application result.
+
 If the supervisor cannot prove retirement of an owned command, it retains that
 command's native job/process handles and startup leases. The shell shows
 **Process retirement requires review** and disables Retry. Closing the interface
@@ -71,7 +76,9 @@ candidate only after successful probes and a verified dashboard-child failure.
 
 An alive or unretired dashboard, occupied runtime, cancellation, unsafe path,
 missing trust, low persistent disk space or ambiguous custody stops automatic
-mutation. Read-only source inspection and launching an already coherent runtime
+mutation. Retained diagnostic capacity and recommended reserves do not stop a
+normal launch with validated private critical working space. Read-only source
+inspection and launching an already coherent runtime
 can coexist with another diagnostic job using that runtime; replacing the runtime
 or publishing changed application source still requires exclusive mutation
 custody. A timeout cannot justify a second engine or killing a process guessed
@@ -139,14 +146,35 @@ attestation or a guarantee of future stability.
 
 | Data | Limit and behavior |
 | --- | --- |
-| Source snapshots | Two ready snapshots and one preserved failed candidate at most; each archive up to 64 MiB, 4096 files, 2 MiB per file. Requires 2 GiB free reserve plus staging. Capacity holds preserve undecided edits. |
+| Source snapshots | Two ready snapshots and one preserved failed candidate at most; each archive up to 64 MiB, 4096 files, 2 MiB per file. New snapshot/repair work requires 2 GiB free reserve plus staging. Capacity holds preserve undecided edits. |
 | GitHub candidate | Compressed and eligible expanded source each up to 64 MiB; fixed endpoints, verified TLS, exact commit/tree/blob identities and scoped publication. |
 | Operational recovery originals | Private quarantine up to 32 MiB with an entry cap; full quarantine holds repair without deleting unreviewed originals. |
 | Runtime repair admission | Requires 5 GiB free before new work: 2 GiB reserve plus 3 GiB conservative transaction capacity. A retained full runtime backup holds another full repair (maximum one). At most two recognized repair-wheel staging transactions including the new one. Unknown/malformed retained work is held for review. |
 | Recovery diagnostic viewer | Status/report up to 64 KiB; requested log view up to 128 KiB. Untrusted text is displayed literally. |
 | Parent startup diagnostics | Supervisor journal rotates at 512 KiB with three retained generations; child capture retains up to 8 MiB per stdout/stderr stream and counts drained overflow. Persistent failure details survive scratch cleanup. |
-| Startup scratch | Only immediate named `startup-temp.*` attempts are inspected. Per base: at most 32 attempts, 128 files per attempt, no unknown nested directories, 256 MiB aggregate with 32 MiB reserved for a new attempt and 2 GiB free reserve. Full capacity holds; it does not erase unreviewed evidence. |
+| Critical startup working space | Four fixed `startup-temp.critical-*` purpose folders per canonical base: interface, control, preflight and recovery. At most eight across the data and repository temporary bases. Admission checks each folder against a 32 MiB / 128-entry flat budget; managed output uses the remaining byte budget. Live producer leases prevent reuse. No new GUID attempt folder is needed on this route. |
+| Retained startup diagnostics | Legacy `startup-temp.*` history is preserved. Its 32-attempt / 256 MiB admission policy is advisory for normal critical startup. Unknown and nonempty retained diagnostics are not swept to make room. |
+| Process helper compiler | Private scratch retains a 2 MiB / 120-entry content guard. Unknown compiler artifacts are preserved and can require review. Critical startup can waive the recommended drive reserve; actual compilation and private I/O still must work. |
 | ShadowShield file recovery | Separate configurable cache cap/reserve, admission holds and visible storage controls. Default cap 2048 MiB. Deleting copies removes their file restore points. |
+
+Critical folders carry a private, zero-byte `startup-critical.lease`. Read-only
+lease handles remain with the parent and its explicit child producers, including
+the launched core, through actual exit. Reuse requires exclusive custody and
+removes only fixed recognized disposable outputs after per-file checks. Unknown
+flat files are preserved and count toward the budget; unexpected nesting,
+redirected paths or oversized working space cannot be silently reclaimed.
+
+With a validated native critical lease and actual private read/write access,
+normal startup can proceed below the native 2 GiB and Python 128 MiB recommended
+reserves. An environment variable alone grants no bypass. Optional capture is
+bounded by each stream's 8 MiB cap and the folder's remaining budget; drained
+overflow is counted without replacing the application's exit result. Source
+control replies retain their 64 KiB view limit. Runtime repair, installation and
+source preservation keep their separate capacity requirements.
+
+These are admission and managed-output limits, not a filesystem-enforced folder
+quota. The core inherits temporary-file paths; general runtime temporary-file
+writers are not all hard-capped and still require monitoring and retention.
 
 These separate budgets do not cap total suite disk usage. Case evidence,
 protected history and pending transactions can require operator review. Use

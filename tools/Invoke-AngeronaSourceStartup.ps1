@@ -63,6 +63,7 @@ function Write-SourceStartupEvent([string]$Phase, [string]$Outcome,
 }
 
 function Write-SourceStartupStatus([string]$Phase, [string]$Outcome, [string]$Message) {
+    if ($script:StartupStorageWarning) { $Message += "`nStorage advisory: " + $script:StartupStorageWarning }
     Write-SourceStartupEvent $Phase $Outcome $Message
     if (!$script:StartupStatusPath) { return }
     $candidate = Join-Path $script:StartupDiagnosticRoot ('status.' + [Guid]::NewGuid().ToString('N') + '.tmp')
@@ -149,7 +150,7 @@ function Start-SourceStartupShell([string]$Root) {
         $script:StartupSupervisorCreationFileTime = $identity.CreationFileTime
     } finally { $identity.Dispose() }
     $storage = Initialize-SourceStartupStorage
-    $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage
+    $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage -Purpose interface
     $receipt = Join-Path $scratch 'startup-shell-painted.json'
     $file = Open-PrivateRepairFile $receipt
     $file.Dispose()
@@ -244,7 +245,7 @@ function Invoke-SourceRecoveryWindow([string]$Root, [string]$Message, [switch]$R
             $arguments = @('-I', $tool, '--status-file', $statusPath)
             if ($ReviewSource) { $arguments += '--review-source' }
             if ($ReviewSource -and $ExpectedReportId) { $arguments += @('--expected-report-id', $ExpectedReportId) }
-            $scratch = New-SourceStartupTemporary -Root $Root -Storage (Initialize-SourceStartupStorage)
+            $scratch = New-SourceStartupTemporary -Root $Root -Storage (Initialize-SourceStartupStorage) -Purpose recovery
             $environment = New-RepairChildEnvironment $scratch
             $process = Start-SourceStartupWindowProcess $python $arguments $Root $environment
             try { $process.WaitForExit(); $code = $process.ExitCode }
@@ -262,7 +263,7 @@ function Invoke-SourceRecoveryWindow([string]$Root, [string]$Message, [switch]$R
         if ($script:StartupStatusPath -and (Test-Path -LiteralPath $script:StartupStatusPath)) {
             $arguments += @('-StatusFile', $script:StartupStatusPath)
         } else { $arguments += @('-Message', (Protect-SourceStartupText $Message)) }
-        $scratch = New-SourceStartupTemporary -Root $Root -Storage (Initialize-SourceStartupStorage)
+        $scratch = New-SourceStartupTemporary -Root $Root -Storage (Initialize-SourceStartupStorage) -Purpose recovery
         $environment = New-RepairChildEnvironment $scratch
         $process = Start-SourceStartupWindowProcess $powershell $arguments $Root $environment
         try { $process.WaitForExit(); $code = $process.ExitCode }
@@ -501,8 +502,14 @@ function Initialize-SourceStartupStorage {
     $storage = [IO.Path]::GetFullPath((Join-Path $local 'Angerona\SourceData'))
     Assert-SourceStartupPath $storage
     $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($storage))
-    if (!$drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.AvailableFreeSpace -lt 128MB) {
+    if (!$drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed) {
+        throw "The canonical source data drive must be a ready fixed local drive: $storage"
+    }
+    if ($drive.AvailableFreeSpace -lt 128MB -and !$script:SourceStartupCriticalMode) {
         throw "The canonical source data drive needs at least 128 MB free: $storage. Free space there and retry; temporary storage on another drive cannot replace evidence capacity."
+    }
+    if ($drive.AvailableFreeSpace -lt 128MB) {
+        $script:StartupStorageWarning = 'The data drive is below its recommended reserve. Required private write/read checks still apply; optional startup history is limited.'
     }
     foreach ($path in @($storage, (Join-Path $storage 'logs'))) {
         Assert-SourceStartupPath $path
@@ -516,8 +523,10 @@ function Initialize-SourceStartupStorage {
 function Assert-SourceStartupScratchBudget([string]$Base) {
     # Inspect only our immediate, named startup scratch roots. Never recurse
     # through general temp, scan evidence, quarantine or arbitrary .tmp caches.
-    $directories = 0; $bytes = 0L
+    $visited = 0; $directories = 0; $bytes = 0L
     foreach ($directory in [IO.Directory]::EnumerateDirectories($Base, 'startup-temp.*')) {
+        if (++$visited -gt 128) { throw 'Startup scratch history exceeds its bounded directory inventory; unknown names were preserved.' }
+        if ([IO.Path]::GetFileName($directory) -cnotmatch '^startup-temp\.[a-f0-9]{32}$') { continue }
         if (++$directories -ge 32) { throw 'Startup scratch has 32 retained attempts; review its diagnostic files before another attempt.' }
         Assert-PrivateRepairCustody $directory
         $count = 0
@@ -533,39 +542,108 @@ function Assert-SourceStartupScratchBudget([string]$Base) {
     }
 }
 
-function New-SourceStartupTemporary([string]$Root, [string]$Storage) {
-    # Caller-selected TEMP/TMP never becomes path authority. Validate its fixed
-    # local ancestry/capacity before inspecting it, then select fresh owned
-    # scratch rather than forwarding an inherited directory to executable code.
-    foreach ($name in @('TEMP', 'TMP')) {
-        $candidate = [Environment]::GetEnvironmentVariable($name)
-        if ($candidate) {
-            try {
-                Assert-SourceStartupPath $candidate
-                $inheritedDrive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($candidate))
-                if (!$inheritedDrive.IsReady -or $inheritedDrive.DriveType -ne [IO.DriveType]::Fixed -or
-                    $inheritedDrive.AvailableFreeSpace -lt 2GB -or
-                    !(Test-Path -LiteralPath $candidate -PathType Container)) {
-                    throw 'Inherited temporary storage is unavailable.'
-                }
-            } catch { Write-Verbose "$name is unsuitable; choosing verified owned startup scratch." }
+function Reset-SourceStartupCriticalWorkingFiles([string]$Path, [string]$Purpose) {
+    $patterns = @{
+        interface = '^(?:startup-shell-painted\.json|recovery-window\.[a-f0-9]{32}\.log)$'
+        recovery = '^recovery-window\.[a-f0-9]{32}\.log$'
+        control = '^(?:source-action(?:-abi)?|verified-repair)\.log$'
+        preflight = '^(?:abi|pip|source-trust|source-setup|launcher-stdout|launcher-stderr)\.log$'
+    }
+    $count = 0; $bytes = 0L
+    foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($Path)) {
+        if (++$count -gt 128) { throw 'Critical startup working inventory exceeds its 128-entry bound; existing files were preserved.' }
+        Assert-PlainRepairPath $entry
+        $item = Get-Item -LiteralPath $entry -Force
+        if ($item.PSIsContainer) { throw 'Critical startup workspace contains an unexpected nested directory; existing contents were preserved.' }
+        $name = $item.Name
+        if ($name -cmatch $patterns[$Purpose]) {
+            # Only named, nonauthoritative working outputs are recycled. An
+            # actual writer/reader holding the file prevents this exclusive open.
+            Assert-PrivateRepairCustody $entry -AllowInherited
+            $probe = [IO.File]::Open($entry, 'Open', 'ReadWrite', 'None')
+            $probe.Dispose()
+            [IO.File]::Delete($entry)
+        } else {
+            $bytes += $item.Length
+            if ($bytes -gt 32MB) { throw 'Critical startup working data exceeds its 32 MiB bound; unknown files were preserved.' }
         }
     }
+}
+
+function Close-SourceStartupCriticalWorkspaces {
+    $script:SourceStartupScratchLease = $null
+    if (!$script:SourceStartupCriticalWorkspaces) { return }
+    foreach ($context in $script:SourceStartupCriticalWorkspaces.Values) {
+        if ($context.Guard) { $context.Guard.Dispose() }
+    }
+    $script:SourceStartupCriticalWorkspaces = @{}
+}
+
+function New-SourceStartupTemporary([string]$Root, [string]$Storage,
+    [ValidateSet('interface','control','preflight','recovery')][string]$Purpose = 'control') {
+    # A small fixed critical workspace is separate from optional retained
+    # diagnostics. Quota recommendations never turn old empty/log directories
+    # into a permanent admission veto for a healthy dashboard.
+    if (!$script:SourceStartupCriticalWorkspaces) { $script:SourceStartupCriticalWorkspaces = @{} }
+    $key = [IO.Path]::GetFullPath($Root) + '|' + [IO.Path]::GetFullPath($Storage) + '|' + $Purpose
+    if ($script:SourceStartupCriticalWorkspaces.ContainsKey($key)) {
+        $context = $script:SourceStartupCriticalWorkspaces[$key]
+        if (!$context.Guard.CanRead -or $context.Guard.CanWrite) { throw 'Critical startup workspace custody is unavailable.' }
+        Assert-PrivateRepairCustody $context.Path
+        Reset-SourceStartupCriticalWorkingFiles $context.Path $Purpose
+        Test-SourceStorageProof $context.Path
+        $script:SourceStartupScratchLease = $context.Guard
+        return $context.Path
+    }
     foreach ($base in @((Join-Path $Storage 'tmp'), (Join-Path $Root '.tmp'))) {
+        $writer = $null; $guard = $null
         try {
             Assert-SourceStartupPath $base
             $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($base))
-            if (!$drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed -or $drive.AvailableFreeSpace -lt (2GB+32MB)) { continue }
+            if (!$drive.IsReady -or $drive.DriveType -ne [IO.DriveType]::Fixed) { continue }
+            if (!$script:SourceStartupCriticalMode -and $drive.AvailableFreeSpace -lt (2GB+32MB)) { continue }
             [void][IO.Directory]::CreateDirectory($base)
             Assert-SourceStartupPath $base
-            Assert-SourceStartupScratchBudget $base
-            $scratch = Join-Path $base ('startup-temp.' + [Guid]::NewGuid().ToString('N'))
-            New-PrivateRepairDirectory -Path $scratch
+            try { Assert-SourceStartupScratchBudget $base }
+            catch { $script:StartupStorageWarning = 'Retained startup diagnostics reached their limit. Startup uses a bounded critical workspace; review retained diagnostics in storage settings.' }
+            if ($drive.AvailableFreeSpace -lt (2GB+32MB)) {
+                $script:StartupStorageWarning = 'The temporary drive is below its recommended reserve. Required private write/read checks still apply; optional startup history is limited.'
+            }
+            $scratch = Join-Path $base ('startup-temp.critical-' + $Purpose)
+            Assert-SourceStartupPath $scratch
+            if (!(Test-Path -LiteralPath $scratch)) { New-PrivateRepairDirectory -Path $scratch }
+            Assert-PrivateRepairCustody $scratch
+            $leasePath = Join-Path $scratch 'startup-critical.lease'
+            $writer = Open-PrivateRepairFile -Path $leasePath -Mode OpenOrCreate -Share None
+            if ($writer.Length -ne 0) { throw 'Critical startup lease file has unexpected data.' }
+            Reset-SourceStartupCriticalWorkingFiles $scratch $Purpose
+            $ownerPath = Join-Path $scratch 'startup-critical.owner.json'
+            if (Test-Path -LiteralPath $ownerPath) {
+                Assert-PrivateRepairCustody $ownerPath -AllowInherited
+                if ((Get-Item -LiteralPath $ownerPath).Length -gt 1024) { throw 'Critical startup ownership marker exceeds its bound.' }
+                [IO.File]::Delete($ownerPath)
+            }
+            $nonce = [Guid]::NewGuid().ToString('N')
+            $owner = Open-PrivateRepairFile -Path $ownerPath
+            try {
+                $payload = [Text.Encoding]::UTF8.GetBytes('{"schema":1,"nonce":"' + $nonce + '","pid":' + $PID + '}')
+                $owner.Write($payload, 0, $payload.Length); $owner.Flush($true)
+            } finally { $owner.Dispose() }
+            $writer.Dispose(); $writer = $null
+            $guard = [IO.File]::Open($leasePath, 'Open', 'Read', 'Read')
+            Assert-PrivateRepairCustody $leasePath
+            $observed = [IO.File]::ReadAllText($ownerPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            if ($observed.schema -ne 1 -or $observed.nonce -cne $nonce -or $observed.pid -ne $PID) {
+                throw 'A competing startup claimed the critical workspace before its read lease was retained.'
+            }
             Test-SourceStorageProof $scratch
+            $script:SourceStartupCriticalWorkspaces[$key] = [pscustomobject]@{ Path = $scratch; Guard = $guard }
+            $script:SourceStartupScratchLease = $guard; $guard = $null
             return $scratch
-        } catch { Write-Verbose 'A startup scratch candidate was unavailable; checking the next owned location.' }
+        } catch { Write-Verbose ('A private critical startup workspace is unavailable: ' + $_.Exception.Message) }
+        finally { if ($writer) { $writer.Dispose() }; if ($guard) { $guard.Dispose() } }
     }
-    throw 'Startup scratch is unavailable or has reached its retained-attempt/256 MiB budget or 2 GiB free-space reserve. Review owned startup-temp diagnostics under the local data or installation drive before Retry; settings and evidence were preserved.'
+    throw 'No critical startup workspace could be privately leased and written. Existing active producers and unknown data were preserved; retained diagnostic counts and recommended reserves did not waive custody or actual writability.'
 }
 
 function Invoke-SourceStartupAssistant([string]$Python, [string]$Root,
@@ -648,7 +726,7 @@ function Invoke-SourceStartupPass([string]$Root, [switch]$SetupOnly, [switch]$So
         # retains full process exclusion; the helper/core keep their own leases.
         $python = Join-Path $venv 'Scripts\python.exe'
         if (!(Test-Path -LiteralPath $python -PathType Leaf)) { return 81 }
-        $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage
+        $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage -Purpose preflight
         $child = New-RepairChildEnvironment -Scratch $scratch
         if ($script:StartupAutomaticAttempt) { $child['ANGERONA_SUPERVISED_RECOVERY'] = '1' }
         [void]$child.Remove('QT_QPA_PLATFORM')
@@ -704,6 +782,9 @@ function Invoke-SourceStartupRepair([string]$Root, [string]$Category) {
     # Repair independently acquires that same lease, validates authority and
     # refuses a still-live dashboard. This is the only repair call site.
     $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $previousCritical = $script:SourceStartupCriticalMode
+    $script:SourceStartupCriticalMode = $false
+    try {
     $storage = Initialize-SourceStartupStorage
     $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage
     $environment = New-RepairChildEnvironment $scratch
@@ -730,9 +811,12 @@ function Invoke-SourceStartupRepair([string]$Root, [string]$Category) {
         Write-Host "[startup] $script:LastStartupIssue"
     }
     return [int]$code
+    } finally { $script:SourceStartupCriticalMode = $previousCritical }
 }
 
 function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
+    $previousCritical = $script:SourceStartupCriticalMode
+    $script:SourceStartupCriticalMode = $true
     $categories = @{ 81 = 'Runtime'; 82 = 'Dependencies'; 83 = 'GuiRuntime' }
     $repairs = @{}
     $software = $false
@@ -742,7 +826,16 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
     $automaticSourceRetry = $false
     try {
     while ($true) {
-        if (!$SetupOnly) { Start-SourceStartupShell $Root }
+        if (!$SetupOnly) {
+            try { Start-SourceStartupShell $Root }
+            catch {
+                $script:LastStartupIssue = $_.Exception.Message
+                Write-SourceStartupEvent 'startup-interface' 'infrastructure-held' $_.Exception.Message 85
+                $choice = Invoke-SourceRecoveryWindow $Root $script:LastStartupIssue
+                if ($choice -eq 10) { continue }
+                return 1223
+            }
+        }
         if (('Angerona.StartupRepairProcess' -as [type]) -and [Angerona.StartupRepairProcess]::CustodyPending) {
             if (!$SetupOnly) { [void](Invoke-SourceRecoveryWindow $Root 'Owned process retirement requires review.') }
             return 85
@@ -914,6 +1007,8 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
             $script:StartupShell.Dispose()
             $script:StartupShell = $null
         }
+        Close-SourceStartupCriticalWorkspaces
+        $script:SourceStartupCriticalMode = $previousCritical
     }
 }
 
@@ -926,6 +1021,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
         Assert-SourceStartupSupervisorBoundary $fixedRoot
         . (Join-Path $fixedRoot 'tools\startup_repair_common.ps1')
+        $script:SourceStartupCriticalMode = $true
         $script:StartupRecoveryPreferences = @{ Enabled = $false; Github = $false }
         try {
             $storage = Initialize-SourceStartupStorage

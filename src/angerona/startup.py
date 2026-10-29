@@ -119,7 +119,127 @@ def _plain_path(path: Path) -> None:
             raise StartupError(f"Startup file has multiple links: {part}")
 
 
-def prepare_storage(root: Path) -> None:
+class _CriticalScratchLease:
+    """A kernel-validated read-only source workspace lease, never policy authority."""
+
+    def __init__(self, plan: LaunchPlan, raw: str):
+        if sys.platform != "win32" or plan.frozen or not re.fullmatch(r"[1-9][0-9]{0,19}", raw):
+            raise StartupError("The critical startup workspace lease is unavailable.")
+        import ctypes
+        from ctypes import wintypes as w
+
+        self._ctypes = ctypes
+        self._kernel = kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.handle = None
+        self.storage = plan.storage
+
+        class Info(ctypes.Structure):
+            _fields_ = [("attributes", w.DWORD), ("created_low", w.DWORD), ("created_high", w.DWORD),
+                        ("access_low", w.DWORD), ("access_high", w.DWORD), ("write_low", w.DWORD),
+                        ("write_high", w.DWORD), ("volume", w.DWORD), ("size_high", w.DWORD),
+                        ("size_low", w.DWORD), ("links", w.DWORD), ("index_high", w.DWORD), ("index_low", w.DWORD)]
+
+        prototypes = {
+            "GetCurrentProcess": ((), w.HANDLE),
+            "GetFileType": ((w.HANDLE,), w.DWORD),
+            "GetFileInformationByHandle": ((w.HANDLE, ctypes.POINTER(Info)), w.BOOL),
+            "GetFinalPathNameByHandleW": ((w.HANDLE, w.LPWSTR, w.DWORD, w.DWORD), w.DWORD),
+            "CreateFileW": ((w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE), w.HANDLE),
+            "DuplicateHandle": ((w.HANDLE, w.HANDLE, w.HANDLE, ctypes.POINTER(w.HANDLE), w.DWORD, w.BOOL, w.DWORD), w.BOOL),
+            "CloseHandle": ((w.HANDLE,), w.BOOL),
+        }
+        for name, (arguments, result) in prototypes.items():
+            function = getattr(kernel, name)
+            function.argtypes, function.restype = arguments, result
+        borrowed = int(raw)
+        if borrowed >= 2 ** (ctypes.sizeof(w.HANDLE) * 8) - 1:
+            raise StartupError("The critical startup handle value is invalid.")
+        info = Info()
+        if kernel.GetFileType(borrowed) != 1 or not kernel.GetFileInformationByHandle(borrowed, ctypes.byref(info)):
+            raise StartupError("The critical startup handle is not an actual disk file.")
+        if info.attributes & (0x10 | 0x400) or info.links != 1 or info.size_high or info.size_low:
+            raise StartupError("The critical startup guard must be a plain, zero-length, single-link file.")
+        ntdll = ctypes.WinDLL("ntdll")
+        ntdll.NtQueryObject.argtypes = (w.HANDLE, w.ULONG, w.LPVOID, w.ULONG, ctypes.POINTER(w.ULONG))
+        ntdll.NtQueryObject.restype = w.LONG
+        class Basic(ctypes.Structure):
+            _fields_ = [("attributes", w.ULONG), ("access", w.ULONG), ("handles", w.ULONG),
+                        ("references", w.ULONG), ("reserved", w.ULONG * 10)]
+
+        returned = w.ULONG()
+        basic = Basic()
+        if ntdll.NtQueryObject(borrowed, 0, ctypes.byref(basic), ctypes.sizeof(basic), ctypes.byref(returned)) < 0:
+            raise StartupError("The critical startup guard's granted access is unavailable.")
+        access = basic.access
+        if not access & 1 or access & ~0x120089:
+            raise StartupError("The critical startup guard must grant read access only.")
+        name = ctypes.create_unicode_buffer(32768)
+        length = kernel.GetFinalPathNameByHandleW(borrowed, name, len(name), 0)
+        if not 0 < length < len(name):
+            raise StartupError("The critical startup guard's bound path is unavailable.")
+        final = name.value
+        if final.startswith("\\\\?\\"):
+            final = final[4:]
+        path = Path(final)
+        if not re.match(r"^[A-Za-z]:[\\/]", final):
+            raise StartupError("Critical startup storage requires an absolute local drive.")
+        permitted = [base / "startup-temp.critical-preflight" / "startup-critical.lease"
+                     for base in (plan.storage / "tmp", plan.root / ".tmp")]
+        if os.path.normcase(str(path)) not in {os.path.normcase(str(item)) for item in permitted}:
+            raise StartupError("The critical startup guard is outside the fixed preflight workspaces.")
+        _plain_path(path)
+        if not private_directory(path.parent, create=False) or not private_repair_file(path):
+            raise StartupError("The critical startup workspace lacks private current-user custody.")
+        named = kernel.CreateFileW(str(path), 0x80000000, 3, None, 3, 0x00200000, None)
+        invalid = ctypes.c_void_p(-1).value
+        if named == invalid:
+            raise StartupError("The critical startup guard pathname could not be retained.")
+        try:
+            current = Info()
+            if (not kernel.GetFileInformationByHandle(named, ctypes.byref(current)) or
+                    (current.volume, current.index_high, current.index_low, current.links, current.attributes & (0x10 | 0x400)) !=
+                    (info.volume, info.index_high, info.index_low, 1, 0)):
+                raise StartupError("The critical startup guard pathname changed.")
+        finally:
+            kernel.CloseHandle(named)
+        # A real held sharing lease must exclude writers; an environment number
+        # or merely readable file cannot waive any capacity recommendation.
+        writer = kernel.CreateFileW(str(path), 2, 3, None, 3, 0x00200000, None)
+        if writer != invalid:
+            kernel.CloseHandle(writer)
+            raise StartupError("The critical startup guard does not exclude workspace reclamation.")
+        if ctypes.get_last_error() != 32:
+            raise StartupError("Critical startup writer exclusion could not be established.")
+        _plain_path(path)
+        self.directory = path.parent
+        self.handle = self._duplicate(borrowed, False)
+
+    def _duplicate(self, handle: int, inheritable: bool) -> int:
+        from ctypes import wintypes as w
+
+        output = w.HANDLE()
+        current = self._kernel.GetCurrentProcess()
+        if not self._kernel.DuplicateHandle(current, handle, current, self._ctypes.byref(output),
+                                             0x120089, inheritable, 0):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+        return output.value
+
+    def duplicate_for_child(self) -> int:
+        if self.handle is None:
+            raise StartupError("The critical startup workspace lease was released.")
+        return self._duplicate(self.handle, True)
+
+    def close_duplicate(self, handle: int) -> None:
+        if not self._kernel.CloseHandle(handle):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def close(self) -> None:
+        if self.handle is not None:
+            held, self.handle = self.handle, None
+            self.close_duplicate(held)
+
+
+def prepare_storage(root: Path, *, scratch_lease: _CriticalScratchLease | None = None) -> None:
     """Repair missing helper directories and verify a real write/flush cycle."""
     for path in (root, root / "logs"):
         _plain_path(path)
@@ -127,7 +247,10 @@ def prepare_storage(root: Path) -> None:
         _plain_path(path)
         if not path.is_dir():
             raise StartupError(f"Startup storage is not a directory: {path}")
-    if shutil.disk_usage(root).free < 128 * 1024 * 1024:
+    if scratch_lease is not None and (type(scratch_lease) is not _CriticalScratchLease or
+                                      scratch_lease.storage != root or scratch_lease.handle is None):
+        raise StartupError("Private storage cannot be admitted by an unverified critical lease.")
+    if scratch_lease is None and shutil.disk_usage(root).free < 128 * 1024 * 1024:
         raise StartupError("Less than 128 MB is free on the canonical startup data drive. Free space there and retry; a temporary directory on another drive cannot replace settings/evidence capacity.")
     write_read_proof(root / "logs")
     # A bad temp candidate does not become storage authority. A later selector
@@ -579,6 +702,11 @@ class _WindowsProbe:
             output = duplicate(stdout)
             with open(os.devnull, "rb") as null:
                 input_handle = duplicate(null)
+            critical = getattr(_STARTUP_CONTEXT, "critical_scratch_lease", None)
+            if critical is not None:
+                if type(critical) is not _CriticalScratchLease:
+                    raise StartupError("Disposable probes require an actual validated scratch lease.")
+                inherited.append(critical.duplicate_for_child())
             size = ctypes.c_size_t()
             kernel.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
             if not size.value:
@@ -587,7 +715,7 @@ class _WindowsProbe:
             checked(kernel.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size)))
             initialized = True
             jobs = (w.HANDLE * 1)(self._job)
-            handles = (w.HANDLE * 2)(output, input_handle)
+            handles = (w.HANDLE * len(inherited))(*inherited)
             checked(kernel.UpdateProcThreadAttribute(attributes, 0, 0x2000D, jobs,
                                                      ctypes.sizeof(jobs), None, None))
             checked(kernel.UpdateProcThreadAttribute(attributes, 0, 0x20002, handles,
@@ -1030,27 +1158,46 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
     plan = platform_plan()
     _STARTUP_CONTEXT.storage = plan.storage
     plan = replace(plan, rendering="software" if software_renderer else "default")
-    report("Preparing startup folders and checking available disk space...")
-    _STARTUP_CONTEXT.phase = "storage-capacity"
-    prepare_storage(plan.storage)
-    diagnostics = StartupDiagnostics(plan.storage)
-    diagnostics.record("storage", "verified", root=str(plan.root), executable=plan.command[0],
-                       strategy=plan.rendering, **process_identity())
-    if _interface_lease is not None and type(_interface_lease) is not StartupLease:
-        raise StartupError("Startup helper custody requires an actual retained OS lease.")
-    _STARTUP_CONTEXT.phase = "startup-lease"
-    lease = _interface_lease.borrow(plan.storage) if _interface_lease is not None else StartupLease(plan.storage)
+    critical = None
+    _STARTUP_CONTEXT.critical_scratch_lease = None
+    try:
+        raw_guard = os.environ.get("ANGERONA_STARTUP_SCRATCH_LEASE_HANDLE")
+        if raw_guard:
+            _STARTUP_CONTEXT.phase = "critical-workspace-lease"
+            critical = _CriticalScratchLease(plan, raw_guard)
+            _STARTUP_CONTEXT.critical_scratch_lease = critical
+        report("Preparing startup folders and checking available disk space...")
+        _STARTUP_CONTEXT.phase = "storage-capacity"
+        if critical is None:
+            prepare_storage(plan.storage)
+        else:
+            prepare_storage(plan.storage, scratch_lease=critical)
+            if shutil.disk_usage(plan.storage).free < 128 * 1024 * 1024:
+                report("Storage is below its recommended reserve. Required private write/read checks remain active; optional startup history is limited.")
+        diagnostics = StartupDiagnostics(plan.storage)
+        diagnostics.record("storage", "verified", root=str(plan.root), executable=plan.command[0],
+                           strategy=plan.rendering, **process_identity())
+        if _interface_lease is not None and type(_interface_lease) is not StartupLease:
+            raise StartupError("Startup helper custody requires an actual retained OS lease.")
+        _STARTUP_CONTEXT.phase = "startup-lease"
+        lease = _interface_lease.borrow(plan.storage) if _interface_lease is not None else StartupLease(plan.storage)
+    except BaseException:
+        if critical is not None:
+            critical.close()
+        _STARTUP_CONTEXT.critical_scratch_lease = None
+        raise
     try:
         _assert_no_pending_repair(plan)
         report(f"Startup logs: {plan.storage / 'logs'}")
         from angerona.core.data_paths import _fixed_volume_available
 
         _STARTUP_CONTEXT.phase = "temporary-storage"
-        plan = replace(plan, temporary=select_temporary(
-            plan.storage, plan.root, validate=_plain_path,
-            fixed=_fixed_volume_available if sys.platform == "win32" else lambda _root: True,
-            inherited=dict(os.environ),
-        ))
+        temporary_options = dict(validate=_plain_path,
+                                 fixed=_fixed_volume_available if sys.platform == "win32" else lambda _root: True,
+                                 inherited=dict(os.environ))
+        if critical is not None:
+            temporary_options["critical_directory"] = critical.directory
+        plan = replace(plan, temporary=select_temporary(plan.storage, plan.root, **temporary_options))
         diagnostics.record("temporary-storage", "verified", strategy=plan.rendering)
         environment = child_environment(plan)
         report("Checking dependencies in a separate process...")
@@ -1087,11 +1234,22 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
             _STARTUP_CONTEXT.phase = "dashboard-launch"
             started = time.time()
             with _log_file(plan.storage, "startup-dashboard.log") as log:
-                process = subprocess.Popen(
-                    command, cwd=plan.root, env=environment, stdin=subprocess.DEVNULL,
-                    stdout=log, stderr=log,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+                child_guard = None
+                options = {}
+                try:
+                    if critical is not None:
+                        child_guard = critical.duplicate_for_child()
+                        startup_info = subprocess.STARTUPINFO()
+                        startup_info.lpAttributeList = {"handle_list": [child_guard]}
+                        options = {"startupinfo": startup_info, "close_fds": True}
+                    process = subprocess.Popen(
+                        command, cwd=plan.root, env=environment, stdin=subprocess.DEVNULL,
+                        stdout=log, stderr=log,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), **options,
+                    )
+                finally:
+                    if child_guard is not None:
+                        critical.close_duplicate(child_guard)
             diagnostics.record("dashboard", "launched-awaiting-readiness", strategy=plan.rendering,
                                dashboard_log=str(plan.storage / "logs" / "startup-dashboard.log"),
                                process_role="dashboard-launcher",
@@ -1114,6 +1272,9 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
         return plan.storage
     finally:
         lease.close()
+        if critical is not None:
+            critical.close()
+        _STARTUP_CONTEXT.critical_scratch_lease = None
 
 
 def _configure_tk_environment() -> None:

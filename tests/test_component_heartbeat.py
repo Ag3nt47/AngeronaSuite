@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QMainWindow
+from PySide6.QtWidgets import QApplication, QLabel, QMainWindow, QPlainTextEdit
 
 from angerona.gui.component_heartbeat import (
     ComponentHeartbeatModel, ComponentHeartbeatStrip, EXPECTED_ROLES, MAX_COMPONENTS,
@@ -153,6 +153,49 @@ def test_supplier_failure_immediately_discards_old_live_claims_and_hidden_animat
         assert "publication is unavailable" in strip.details_text()
         assert "private diagnostic" not in strip.details_text()
     finally:
+        strip.close()
+        strip.deleteLater()
+
+
+@pytest.mark.parametrize("wrap", [True, False])
+def test_live_details_refresh_preserves_review_scroll_and_selection(wrap):
+    now = [100.0]
+    roles = (*EXPECTED_ROLES, *(f"helper-{index:02d}" for index in range(20)))
+    records = [beat(role=role, generation=f"pid{index + 100}:birth456",
+                    reason=f"Review target {index} 🌐 " + "diagnostic detail " * 25)
+               for index, role in enumerate(roles)]
+    strip = ComponentHeartbeatStrip(clock=lambda: now[0])
+    try:
+        strip.set_source(lambda: tuple(dict(row) for row in records))
+        strip.show_details()
+        dialog = strip._details_dialog
+        view = dialog.findChild(QPlainTextEdit, "ComponentHeartbeatDetailsText")
+        if not wrap:
+            view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        QApplication.processEvents()
+        assert not view.isUndoRedoEnabled()
+        cursor = view.document().find("Review target 12 🌐")
+        assert cursor.hasSelection()
+        view.setTextCursor(cursor)
+        vertical, horizontal = view.verticalScrollBar(), view.horizontalScrollBar()
+        assert vertical.maximum() > 10
+        vertical.setValue(vertical.maximum() // 2)
+        horizontal.setValue(horizontal.maximum() // 2)
+        position = (vertical.value(), horizontal.value())
+        selected = view.textCursor().selectedText()
+        original_dialog = dialog
+        for _ in range(3):
+            now[0] += 0.7
+            strip.refresh_snapshot()
+            QApplication.processEvents()
+            assert strip._details_dialog is original_dialog
+            assert (vertical.value(), horizontal.value()) == position
+            assert view.textCursor().selectedText() == selected
+        assert "2.1 s" in view.toPlainText()
+        assert not view.document().isUndoAvailable()
+    finally:
+        if strip._details_dialog is not None:
+            strip._details_dialog.reject()
         strip.close()
         strip.deleteLater()
 

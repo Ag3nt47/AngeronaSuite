@@ -559,6 +559,108 @@ retained; their discovery gaps remain in the original private receipt. The
 final read-only helper honored STOP and requested no actions. Angerona was left
 stopped. This supplements the earlier observation rather than replacing it.
 
+On `bb63a2a4`, all 15 GitHub jobs finished: 12 passed, two Python jobs failed
+only the early native first-paint case, and Python 3.11 failed a separate storage
+fixture synchronization case. Python 3.10 passed its complete 9,965-case suite
+with 26 skips. First paint passed both early and full-suite execution on Python
+3.10 and 3.11. The two early failures had an assigned live native shell, empty
+receipt and empty captured log; no caught post-paint exception was recorded.
+Those originals do not establish the stage or cause of the timeout.
+
+The next diagnostic scope adds fixed, bounded checking markers at script entry,
+UI assembly loading, form construction/showing, refresh and reader initialization.
+They grant no readiness. Failure capture distinguishes missing/empty known
+artifacts and binds read-only process/window diagnostics to the exact native
+generation, with bounded enumeration/text/time budgets and no foreign controls.
+
+Native launch review separately found that the shared command/window helper
+set `STARTF_USESHOWWINDOW` while leaving `wShowWindow` at zero (`SW_HIDE`).
+Owned GUI windows now explicitly request `SW_SHOWNORMAL`; background commands
+retain their hidden value. Standard handles, console suppression, jobs, custody
+and startup admission are unchanged. The Windows
+[startup-info contract](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow)
+explains its first-window effect. This corrects the launch contract without
+claiming it proves the historical CI timeout's cause.
+
+Isolation review also found that earlier native UI fixtures redirected dashboard
+storage but left the compiler's canonical-storage alias intact. Compilation
+could therefore use the operator's bounded `tmp/process-compiler` namespace;
+claims that SourceData was wholly untouched were too broad. That helper is
+limited to 120 entries/2 MiB with a 2 GiB reserve and does not access settings,
+keys or alert data. The fixtures now bind compiler storage to their own cases
+before native calls. No host compiler-cache enumeration or deletion was used
+to make validation pass; earlier receipts retain this scope qualification.
+
+### Retained-history startup blocker and live detail refresh
+
+A later real source attempt exposed a different, established blocker: the
+scratch admission counter rejected 32 retained attempt directories. A bounded
+inspection of that exact owned prefix found all 32 were old, empty directories,
+with no bytes, child entries or redirections. Both volumes had ample available
+space. Each empty directory was rechecked for expected name, containment, age,
+plain attributes and emptiness before a nonrecursive removal; no file, log,
+recovery copy or evidence was deleted. A subsequent normal source startup
+completed without repair or source restoration. Its actual core and all sampled
+visible windows remained responsive for 80.22 seconds, with two fresh matching
+version/status generations and no observed status gap. Four real component
+heartbeats were live in 12 samples, with authority-file metadata unchanged.
+
+The permanent correction separates critical startup work from retained history:
+four fixed purpose slots on each of two owned bases replace per-helper GUID
+directories. Retained-history counts and recommended free-space reserves are
+advisory on that route. Private actual I/O, bounded flat working data and native
+lease custody remain required. Repair installations retain their separate
+capacity gates. Existing unknown data and prior diagnostic directories remain
+preserved; this is not a general temp purge or a universal drive quota.
+
+At the maintainer's explicit request, a later launch used the supported direct
+main entry from the known runtime while recovery helper edits were still in
+progress. That manually selected route does not attest the modified Safe Startup
+path or waive the core's ordinary privilege, private-data and singleton checks.
+The fresh core remained responsive through 80.20 seconds, with unchanged Python
+source during observation, two fresh matching status generations and no status
+gap. Core, watchdog, scanner and Black Box all published live heartbeats in 12
+samples. It was left open. The preceding core's exit intent was not captured;
+no crash cause is inferred from its absence.
+
+Focused native validation passed six critical-storage cases, including 32 old
+empty/nonempty attempts, 40 fixed-slot reuses and 129 unknown prefix names.
+Discovery stops after 128 visited names before classifying them; overflow is
+advisory and unknown history stays intact. All 15 observed process generations
+retired. Seven Python bridge cases validate real granted access, private I/O
+below the recommendation and probe/core inheritance. Twelve final native
+plumbing cases passed with 70 observed generations retired. They include a dead
+supervisor and surviving producer outside the guard directory: exclusive reuse
+and both directory/ancestor moves fail while that exact child lives, then the
+same moves succeed after its retained native process generation retires.
+
+A broader local Python gate had 147 passes, one skip and 21 failures from one
+extracted-function fixture missing the new finalizer dependency. Its stub was
+updated without changing production behavior; all 21 cases then passed with
+exactly-once cleanup, no swallowed failure and restored mode asserted. Native
+retirement and original failed receipts were preserved. Independent read-only
+review found no remaining actionable issues after the discovery correction.
+
+The final pin-regenerated combined regression passed 151 cases in 388.14 seconds,
+covering source strategies, recovery bundle/bootstrap, repair storage, source
+authority and dashboard readiness. All 295 observed native test generations
+retired, with scoped source unchanged. The recovery manifest and batch bootstrap
+matched before and after validation. Workflow policy and Ruff checks passed.
+
+The revised master manual remains 76 pages: 68 pages are pixel-identical to
+their prior reviewed render and eight changed pages passed visual review.
+Only the Word document XML and startup diagram changed inside the preserved
+package. Builder, complete online export and documentation drift checks passed.
+All recorded renderer and native-job generations retired. Expected-identity
+cleanup removed 2,003,695,890 bytes of task-only rendering tools and installers,
+with no retained unknown or changed entries; QA and provenance remain private.
+
+Heartbeat details now edit changed lines in the existing document, preserving
+selection and vertical/horizontal review position. Two actual dialog cases,
+with wrapping on and off and Unicode text, verify continuing age updates without
+scroll reset or accumulating undo history. The focused component suite passed
+23 cases; all three observed native diagnostic process generations retired.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

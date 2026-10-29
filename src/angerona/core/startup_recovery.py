@@ -153,13 +153,36 @@ def private_repair_file(path: Path) -> bool:
 def select_temporary(storage: Path, installation: Path, *,
                      validate: Callable[[Path], None],
                      fixed: Callable[[Path], bool],
-                     inherited: dict[str, str]) -> Path:
+                     inherited: dict[str, str], critical_directory: Path | None = None) -> Path:
     """Select only owned scratch; never alter the caller's environment.
 
-    The caller must first prove persistent storage capacity independently.
-    Neither a healthy inherited temp nor an alternate drive waives that gate.
+    The caller must first prove private persistent storage and actual I/O.
+    Ordinary paths retain the free-space reserve. A kernel-validated critical
+    workspace makes that recommendation advisory and keeps bounded admission.
     """
     bases = (storage / "tmp", installation / ".tmp")
+    if critical_directory is not None:
+        candidate = Path(critical_directory)
+        if candidate.parent not in bases or candidate.name != "startup-temp.critical-preflight":
+            raise OSError("Critical temporary storage is outside the fixed preflight workspaces.")
+        validate(candidate)
+        if not fixed(Path(candidate.anchor)) or not private_directory(candidate, create=False):
+            raise OSError("Critical temporary storage lacks private fixed-drive custody.")
+        count = 0
+        total = 0
+        for entry in candidate.iterdir():
+            count += 1
+            if count > 128:
+                raise OSError("Critical temporary storage exceeds its bounded flat inventory.")
+            validate(entry)
+            info = entry.lstat()
+            if not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1:
+                raise OSError("Critical temporary storage contains an unknown or redirected entry.")
+            total += info.st_size
+            if total > 32 * 1024 * 1024:
+                raise OSError("Critical temporary storage exceeds its 32 MiB working budget.")
+        write_read_proof(candidate)
+        return candidate
     # Reuse a supervisor's fresh private scratch only after all the same native
     # custody, fixed-volume, capacity and real I/O checks. No environment flag
     # is itself authority to skip a check.

@@ -14,6 +14,29 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Write-StartupShellPhase {
+    param([ValidateSet('script-entry','ui-assemblies-start','ui-assemblies-ready',
+        'form-construction-start','show-dialog-start','shown-entry','refresh-complete',
+        'reader-initialization-start','reader-initialization-ready')][string]$Phase,
+        [bool]$Painted = $false)
+    # Fixed advisory markers expose pre-Shown stalls. They grant no receipt,
+    # report, engine readiness or protection authority and read no filesystem.
+    try {
+        $run = if ($StartupRunId -cmatch '^[a-f0-9]{32}$') { $StartupRunId } else { '' }
+        $line = '{"schema":1,"component":"startup-recovery-ui","phase":"' + $Phase +
+            '","outcome":"checking","utc":"' + [DateTime]::UtcNow.ToString('o') +
+            '","run_id":"' + $run + '","shell_pid":' + $PID +
+            ',"supervisor_pid":' + $SupervisorPid + ',"supervisor_creation_filetime":"' +
+            [string]$SupervisorCreationFileTime + '","painted":' + $Painted.ToString().ToLowerInvariant() + '}'
+        if (([Text.Encoding]::UTF8.GetByteCount($line) +
+                [Text.Encoding]::UTF8.GetByteCount([Console]::Error.NewLine)) -le 1024) {
+            [Console]::Error.WriteLine($line)
+        }
+    } catch { } # Stderr failure cannot change the original startup path.
+}
+
+if ($StartupShell -and !$Headless) { Write-StartupShellPhase 'script-entry' }
 $fixedRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $localRuntime = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona'
 $ownedScratch = Join-Path $fixedRoot '.tmp'
@@ -405,8 +428,11 @@ function Show-StartupDashboard {
     }
     # Only OS UI assemblies are loaded before first paint. In particular, no
     # report, dependency, application source or recovery log is read here.
+    Write-StartupShellPhase 'ui-assemblies-start'
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
+    Write-StartupShellPhase 'ui-assemblies-ready'
+    Write-StartupShellPhase 'form-construction-start'
     $form = [Windows.Forms.Form]::new()
     $form.Name = 'AngeronaStartupDashboard'; $form.Text = 'Angerona 1.14.1 - Safe Startup'
     $form.StartPosition = 'CenterScreen'; $form.MinimumSize = [Drawing.Size]::new(640, 500)
@@ -560,10 +586,14 @@ function Show-StartupDashboard {
     $form.Add_Shown({
         # Refresh completes the first native paint before any report/log read,
         # C# reader compilation, or paint-receipt filesystem operation.
+        Write-StartupShellPhase 'shown-entry'
         $form.Refresh(); $state.Painted = $true
+        Write-StartupShellPhase 'refresh-complete' $true
         $connectionPhase = 'reader-initialization'
         try {
+            Write-StartupShellPhase 'reader-initialization-start' $true
             Initialize-RecoveryReader
+            Write-StartupShellPhase 'reader-initialization-ready' $true
             $connectionPhase = 'supervisor-verification'
             $shellBirth = [AngeronaRecoveryReadV1]::ProcessCreationFileTime($PID)
             if ($shellBirth -le 0 -or
@@ -588,7 +618,7 @@ function Show-StartupDashboard {
         }
     })
     $form.Add_FormClosing({ $state.Closing = $true; $pollTimer.Stop(); $logTimer.Stop() })
-    try { [void]$form.ShowDialog(); return [int]$state.ExitCode }
+    try { Write-StartupShellPhase 'show-dialog-start'; [void]$form.ShowDialog(); return [int]$state.ExitCode }
     finally {
         $pollTimer.Stop(); $pollTimer.Dispose(); $logTimer.Stop(); $logTimer.Dispose(); $form.Dispose()
     }

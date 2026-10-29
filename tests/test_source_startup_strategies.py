@@ -54,6 +54,97 @@ function Invoke-SourceRecoveryWindow { $script:Calls.Add('recovery-window');retu
 """
 
 
+WINDOW_DIAGNOSTICS = r"""
+# Fixture-only, read-only evidence for the exact retained native UI generation.
+# No RPC read exceeds100ms; the complete window/control pass has a2000ms budget.
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+public sealed class AngeronaFixtureWindowSnapshot {
+    public string State {get;set;}
+    public string Error {get;set;}
+    public double CpuMilliseconds {get;set;}
+    public int ThreadCount {get;set;}
+    public int SessionId {get;set;}
+    public long MainWindowHandle {get;set;}
+    public int Windows {get;set;}
+    public int Controls {get;set;}
+    public long ElapsedMilliseconds {get;set;}
+    public bool BudgetReached {get;set;}
+    public bool WindowLimitReached {get;set;}
+    public bool[] WindowVisible {get;set;}
+    public string[] Text {get;set;}
+}
+public static class AngeronaFixtureWindowDiagnostic {
+    delegate bool Callback(IntPtr window,IntPtr parameter);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out long birth,out long exit,out long kernel,out long user);
+    [DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle,uint timeout);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr value);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr process,uint flags,StringBuilder image,ref uint size);
+    [DllImport("user32.dll")] static extern bool EnumWindows(Callback callback,IntPtr parameter);
+    [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr window,Callback callback,IntPtr parameter);
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint pid);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr window,uint command);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern IntPtr SendMessageTimeoutW(IntPtr window,uint message,UIntPtr count,StringBuilder value,uint flags,uint timeout,out UIntPtr result);
+    public static AngeronaFixtureWindowSnapshot Read(uint pid,long expectedBirth,string expectedImage) {
+        var result=new AngeronaFixtureWindowSnapshot{State="unavailable",Text=new string[0],WindowVisible=new bool[0]};
+        var clock=Stopwatch.StartNew(); var text=new List<string>();var visible=new List<bool>();
+        IntPtr process=OpenProcess(0x101000,false,pid);
+        if(process==IntPtr.Zero){result.Error="OpenProcess error="+Marshal.GetLastWin32Error();return result;}
+        try {
+            long birth,exit,kernel,user;uint capacity=1024;var image=new StringBuilder(1024);
+            if(WaitForSingleObject(process,0)!=258 || !GetProcessTimes(process,out birth,out exit,out kernel,out user) ||
+                birth!=expectedBirth || !QueryFullProcessImageNameW(process,0,image,ref capacity) ||
+                !String.Equals(image.ToString(),expectedImage,StringComparison.OrdinalIgnoreCase)) {
+                result.Error="Exact live image/birth witness unavailable; no window text read.";return result;
+            }
+            result.State="live";
+            using(Process managed=Process.GetProcessById((int)pid)) {
+                if(managed.StartTime.ToUniversalTime().ToFileTimeUtc()!=expectedBirth)throw new InvalidOperationException("Metadata generation changed.");
+                result.CpuMilliseconds=managed.TotalProcessorTime.TotalMilliseconds;
+                result.ThreadCount=managed.Threads.Count;result.SessionId=managed.SessionId;
+            }
+            Action<IntPtr,string> read=(window,kind)=>{
+                long remaining=2000-clock.ElapsedMilliseconds;
+                if(remaining<=0){result.BudgetReached=true;return;}
+                var value=new StringBuilder(256);UIntPtr copied;
+                if(SendMessageTimeoutW(window,0xDu,new UIntPtr(256u),value,3u,(uint)Math.Min(100,remaining),out copied)!=IntPtr.Zero &&
+                    copied.ToUInt64()>0)text.Add(kind+":"+value.ToString());
+            };
+            int visited=0;
+            EnumWindows((window,unused)=>{
+                if(clock.ElapsedMilliseconds>=2000){result.BudgetReached=true;return false;}
+                if(++visited>512){result.WindowLimitReached=true;return false;}
+                uint owner;GetWindowThreadProcessId(window,out owner);
+                if(owner!=pid)return true;
+                if(++result.Windows>=2)result.WindowLimitReached=true;
+                visible.Add(IsWindowVisible(window));
+                if(result.MainWindowHandle==0 && GetWindow(window,4u)==IntPtr.Zero)result.MainWindowHandle=window.ToInt64();
+                read(window,"window");int controls=0;
+                EnumChildWindows(window,(child,ignored)=>{
+                    if(clock.ElapsedMilliseconds>=2000){result.BudgetReached=true;return false;}
+                    if(controls++>=24)return false;
+                    uint childOwner;GetWindowThreadProcessId(child,out childOwner);
+                    if(childOwner==pid){result.Controls++;read(child,"control");}return true;
+                },IntPtr.Zero);
+                return result.Windows<2 && clock.ElapsedMilliseconds<2000;
+            },IntPtr.Zero);
+            result.Text=text.ToArray();result.WindowVisible=visible.ToArray();
+        }catch(Exception error){result.Error=error.GetType().Name+": "+error.Message;}
+        finally{CloseHandle(process);result.ElapsedMilliseconds=clock.ElapsedMilliseconds;}
+        return result;
+    }
+}
+'@
+"""
+
+
 @pytest.mark.parametrize("codes,expected", [
     ([83, 0], ["pass:software=False,no-window=False", "pass:software=True,no-window=False"]),
     ([84, 0], ["pass:software=False,no-window=False", "pass:software=False,no-window=True"]),
@@ -400,6 +491,7 @@ Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls);pending=$script:Sta
 def test_supervisor_waits_for_exact_native_first_paint_and_ready_retires_shell(tmp_path):
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 # Keep the original native reader's installation/.tmp scope. Hosted pytest
 # temporary directories live outside the real checkout, so pointing the real
 # installation's shell at arbitrary tmp_path diagnostics correctly refuses them.
@@ -421,6 +513,7 @@ function Start-OwnedRepairWindow {
     $script:FixturePaintReceipt=Join-Path $Environment['TEMP'] 'startup-shell-painted.json'
     return & $script:FixtureNativeWindowLaunch @PSBoundParameters
 }
+""" + WINDOW_DIAGNOSTICS + r"""
 try {
     Start-SourceStartupShell $fixtureRoot
     if(!$script:StartupShell -or $script:StartupShell.HasExited){throw 'Native shell did not survive its first paint.'}
@@ -428,6 +521,16 @@ try {
     if($status.outcome -cne 'checking' -or $status.run_id -cne $script:StartupRunId){throw 'Paint incorrectly conveyed dashboard readiness.'}
     Write-SourceStartupStatus 'dashboard' 'verified' 'Inert integration receipt; no application engine was launched.'
     if(!$script:StartupShell.WaitForExit(15000)){throw 'Matching ready status did not retire the independent shell.'}
+    $phases=@()
+    foreach($line in ((Read-SourceStartupLogTail $script:FixtureWindowLog) -split "`n")) {
+        try{$record=$line|ConvertFrom-Json}catch{continue}
+        if($record.component -ceq 'startup-recovery-ui' -and $record.outcome -ceq 'checking'){
+            if($record.run_id -cne $script:StartupRunId -or [string]$record.shell_pid -cne [string]$script:StartupShell.ProcessId){throw 'Phase diagnostic lost its exact launch identity.'}
+            if($record.phase -in @('script-entry','ui-assemblies-start','ui-assemblies-ready','form-construction-start','show-dialog-start','shown-entry') -and $record.painted){throw 'A pre-refresh phase claimed paint.'}
+            $phases+=,$record.phase
+        }
+    }
+    if(($phases -join ',') -cne 'script-entry,ui-assemblies-start,ui-assemblies-ready,form-construction-start,show-dialog-start,shown-entry,refresh-complete,reader-initialization-start,reader-initialization-ready'){throw 'Native startup phase order is incomplete or changed.'}
     Write-Output ('RESULT:'+(@{code=$script:StartupShell.ExitCode;painted=$true}|ConvertTo-Json -Compress))
 }catch{
     $originalFailure=$_
@@ -437,14 +540,24 @@ try {
             $diagnostic.shell_pid=$script:StartupShell.ProcessId
             $diagnostic.shell_creation_filetime=[string]$script:StartupShell.CreationFileTime
             $diagnostic.completion_ready=$script:StartupShell.HasExited
+            $expectedImage=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+            $snapshot=[AngeronaFixtureWindowDiagnostic]::Read($script:StartupShell.ProcessId,$script:StartupShell.CreationFileTime,$expectedImage)
+            $diagnostic.native_window=$snapshot
+            $snapshot.Text=@($snapshot.Text|ForEach-Object {Protect-SourceStartupText $_ 256})
         }
         foreach($entry in @(@('window_log',$script:FixtureWindowLog),
             @('paint_receipt',$script:FixturePaintReceipt),@('status',$script:StartupStatusPath),
             @('journal',$script:StartupJournalPath))) {
+            $known=$entry[1]
+            try{
+                $exists=Test-Path -LiteralPath $known -PathType Leaf
+                $diagnostic[$entry[0]+'_exists']=$exists
+                $diagnostic[$entry[0]+'_bytes']=if($exists){[long](Get-Item -LiteralPath $known).Length}else{-1}
+            }catch{$diagnostic[$entry[0]+'_metadata_error']=$_.Exception.Message}
             try {$diagnostic[$entry[0]]=Read-SourceStartupLogTail $entry[1]}
             catch{$diagnostic[$entry[0]]='Bounded diagnostic unavailable: '+$_.Exception.Message}
         }
-        Write-Output ('FIXTURE-DIAGNOSTIC:'+($diagnostic|ConvertTo-Json -Compress))
+        Write-Output ('FIXTURE-DIAGNOSTIC:'+($diagnostic|ConvertTo-Json -Depth 5 -Compress))
     }catch{Write-Output ('FIXTURE-DIAGNOSTIC-UNAVAILABLE:'+ $_.Exception.Message)}
     throw $originalFailure
 }finally{if($script:StartupShell){$script:StartupShell.Dispose()}}
@@ -455,12 +568,14 @@ try {
 def test_native_first_paint_supervisor_mismatch_logs_hold_without_receipt(tmp_path):
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 $fixtureRoot=Join-Path $env:ANGERONA_TEST_SCRATCH 'installation'
 [void][IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'tools'))
 [IO.File]::WriteAllBytes((Join-Path $fixtureRoot 'tools\Show-AngeronaStartupRecovery.ps1'),
     [IO.File]::ReadAllBytes((Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1')))
 $storage=Join-Path $fixtureRoot '.tmp\SourceData';New-PrivateRepairDirectory $storage
 $scratch=Join-Path $storage 'negative';New-PrivateRepairDirectory $scratch
+""" + WINDOW_DIAGNOSTICS + r"""
 $receipt=Join-Path $scratch 'startup-shell-painted.json'
 $file=Open-PrivateRepairFile $receipt;$file.Dispose()
 $status=Join-Path $scratch 'status.json'
@@ -480,7 +595,7 @@ try {
         foreach($line in ((Read-SourceStartupLogTail $log) -split "`n")) {
             try {
                 $candidate=$line|ConvertFrom-Json
-                if($candidate.component -ceq 'startup-recovery-ui'){$record=$candidate;break}
+                if($candidate.component -ceq 'startup-recovery-ui' -and $candidate.outcome -ceq 'held'){$record=$candidate;break}
             }catch{} # An incomplete captured line carries no diagnostic authority.
         }
         if(!$record){if($window.HasExited){throw ('Native hold window exited: '+(Read-SourceStartupLogTail $log))};Start-Sleep -Milliseconds 20}
@@ -492,12 +607,92 @@ try {
         [string]$record.shell_pid -cne [string]$window.ProcessId -or
         $record.shell_creation_filetime -cne [string]$window.CreationFileTime){throw 'Held diagnostic lost its exact run/process identities.'}
     if((Get-Item -LiteralPath $receipt).Length -ne 0 -or $window.HasExited){throw 'Held window admitted a paint receipt or changed its original hold.'}
+    $snapshot=[AngeronaFixtureWindowDiagnostic]::Read($window.ProcessId,$window.CreationFileTime,$powershell)
+    if($snapshot.State -cne 'live' -or $snapshot.Error -or $snapshot.Windows -lt 1 -or $snapshot.Text.Count -lt 1 -or
+        $snapshot.Windows -gt 2 -or $snapshot.WindowVisible.Count -ne $snapshot.Windows -or
+        $snapshot.Controls -gt 48 -or $snapshot.ThreadCount -lt 1 -or
+        $snapshot.SessionId -lt 0 -or $snapshot.CpuMilliseconds -lt 0 -or
+        $snapshot.ElapsedMilliseconds -gt 2100){throw 'Bounded exact-generation native window observation failed.'}
+    $foreign=[AngeronaFixtureWindowDiagnostic]::Read($window.ProcessId,($window.CreationFileTime+1),$powershell)
+    if($foreign.State -cne 'unavailable' -or $foreign.Text.Count -ne 0){throw 'A mismatched native generation allowed UI text inspection.'}
+    if((Get-Item -LiteralPath $receipt).Length -ne 0 -or $window.HasExited){throw 'Read-only UI evidence changed the original hold.'}
     $window.Dispose()
     if(!$window.HasExited -or $window.ExitCode -ne 1223){throw 'Owned held window did not retire with explicit cancellation.'}
     Write-Output ('RESULT:'+(@{held=$true;receipt_bytes=0;retired=$true;phase=$record.phase}|ConvertTo-Json -Compress))
 }finally{$window.Dispose()}
 """)
     assert outcome == {"held": True, "receipt_bytes": 0, "retired": True, "phase": "supervisor-verification"}
+
+
+def test_startup_shell_phase_markers_are_fixed_checking_without_authority(tmp_path):
+    outcome = run(tmp_path, r"""
+$ast=[Management.Automation.Language.Parser]::ParseFile(
+    (Join-Path $env:ANGERONA_TEST_ROOT 'tools\Show-AngeronaStartupRecovery.ps1'),[ref]$null,[ref]$null)
+$node=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Write-StartupShellPhase'},$true)
+. ([scriptblock]::Create($node.Extent.Text))
+$StartupRunId='Bearer fixture-secret';$SupervisorPid=$PID;$SupervisorCreationFileTime=123
+$PaintReceiptFile=Join-Path $env:ANGERONA_TEST_SCRATCH 'authority-must-not-exist.json'
+$originalError=[Console]::Error;$captured=[IO.StringWriter]::new();$rejected=$false
+try {
+    [Console]::SetError($captured)
+    Write-StartupShellPhase 'script-entry'
+    try {Write-StartupShellPhase 'unknown-unsafe-phase'}catch{$rejected=$true}
+}finally{[Console]::SetError($originalError)}
+$raw=$captured.ToString();$captured.Dispose();$record=$raw|ConvertFrom-Json
+if(!$rejected -or $record.phase -cne 'script-entry' -or $record.outcome -cne 'checking' -or
+    $record.painted -or $record.run_id -cne '' -or $raw.Contains('fixture-secret') -or
+    $raw -match '[^\x00-\x7f]' -or [Text.Encoding]::UTF8.GetByteCount($raw) -gt 1024 -or
+    (Test-Path -LiteralPath $PaintReceiptFile) -or $record.PSObject.Properties.Name -contains 'protection_status'){
+    throw 'Phase marker reflected untrusted text, exceeded its scope or granted authority.'
+}
+Write-Output ('RESULT:'+(@{checking=$true;allowlist=$true;no_receipt=$true;bounded=$true}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"checking": True, "allowlist": True, "no_receipt": True, "bounded": True}
+
+
+def test_native_gui_owner_requests_visible_startup_while_commands_stay_hidden(tmp_path):
+    outcome = run(tmp_path, r"""
+. (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
+$storage=Join-Path $env:ANGERONA_TEST_SCRATCH 'state';New-PrivateRepairDirectory $storage
+$probe=Join-Path $storage 'kernel-startup-info.ps1'
+[IO.File]::WriteAllText($probe,@'
+param($Receipt)
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class FixtureKernelStartup {
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] struct INFO {
+        public int cb;public IntPtr reserved,desktop,title;
+        public uint x,y,width,height,xChars,yChars,fill,flags;
+        public ushort show,reservedSize;public IntPtr reservedData,input,output,error;
+    }
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern void GetStartupInfoW(out INFO info);
+    public static string Read() {
+        INFO value;GetStartupInfoW(out value);
+        return "{\"flags\":"+value.flags+",\"show\":"+value.show+"}";
+    }
+}
+"@
+[IO.File]::WriteAllText($Receipt,[FixtureKernelStartup]::Read())
+'@)
+$powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$environment=New-RepairChildEnvironment $storage
+$guiReceipt=Join-Path $storage 'gui.json';$commandReceipt=Join-Path $storage 'command.json'
+$window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$guiReceipt) -WorkingDirectory $storage -Environment $environment -LogPath (Join-Path $storage 'gui.log')
+try {
+    if(!$window.WaitForExit(10000) -or $window.ExitCode -ne 0){throw 'Owned kernel startup-info probe did not retire.'}
+}finally{$window.Dispose()}
+$code=Invoke-OwnedRepairProcess -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$commandReceipt) -WorkingDirectory $storage -Environment $environment -TimeoutSeconds 10 -LogPath (Join-Path $storage 'command.log')
+if($code -ne 0){throw 'Background kernel startup-info probe failed.'}
+$gui=[IO.File]::ReadAllText($guiReceipt)|ConvertFrom-Json
+$command=[IO.File]::ReadAllText($commandReceipt)|ConvertFrom-Json
+if(($gui.flags -band 0x101) -ne 0x101 -or $gui.show -ne 1 -or
+    ($command.flags -band 0x101) -ne 0x101 -or $command.show -ne 0){throw 'Kernel-visible startup flags did not preserve GUI/command roles.'}
+Write-Output ('RESULT:'+(@{gui_show=$gui.show;command_show=$command.show;standard_handles=$true}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"gui_show": 1, "command_show": 0, "standard_handles": True}
 
 
 def test_startup_shell_diagnostic_is_redacted_bounded_json_without_json_cmdlet(tmp_path):
@@ -691,6 +886,7 @@ def test_native_preferences_fail_closed_and_preserve_explicit_off(tmp_path, raw,
         (tmp_path / "input.json").write_bytes(raw if isinstance(raw, bytes) else raw.encode("utf-8"))
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 $storage=Join-Path $env:ANGERONA_TEST_SCRATCH 'state';New-PrivateRepairDirectory $storage
 $input=Join-Path $env:ANGERONA_TEST_SCRATCH 'input.json'
 if(Test-Path -LiteralPath $input) {
@@ -759,6 +955,7 @@ Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Co
 def test_verbose_repair_returns_only_native_exit_code(tmp_path):
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 $fixture=Join-Path $env:ANGERONA_TEST_SCRATCH 'fixture'
 [void][IO.Directory]::CreateDirectory((Join-Path $fixture 'tools'))
 $scratch=Join-Path $fixture 'scratch';New-PrivateRepairDirectory $scratch
@@ -776,6 +973,7 @@ Write-Output ('RESULT:'+(@{count=@($value).Count;is_int=($value -is [int]);code=
 def test_private_supervisor_journal_caps_and_redacts(tmp_path):
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 $state=Join-Path $env:ANGERONA_TEST_SCRATCH 'state'
 [void][IO.Directory]::CreateDirectory((Join-Path $state 'logs'))
 Initialize-SourceStartupDiagnostics $state

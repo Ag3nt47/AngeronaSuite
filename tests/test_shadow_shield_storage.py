@@ -689,8 +689,10 @@ def test_primary_policy_and_limited_observation_advance_between_cleanup_passes(s
     between = threading.Event()
     observed = threading.Event()
     completed_helper = threading.Event()
+    release_primary = threading.Event()
     calls = []
     notes = []
+    primary_errors = []
     source = tmp_path / "document.txt"
     source.write_bytes(b"source stays")
 
@@ -713,7 +715,7 @@ def test_primary_policy_and_limited_observation_advance_between_cleanup_passes(s
         status = shield.storage_status()
         notes.append((shield.health, shield.health_note, status))
         observed.set()
-        assert completed_helper.wait(5)
+        assert release_primary.wait(5)
         shield.stop()
 
     monkeypatch.setitem(sys.modules, "angerona.core.shadow_cache_cleanup", SimpleNamespace(cleanup_cache=cleanup))
@@ -721,7 +723,13 @@ def test_primary_policy_and_limited_observation_advance_between_cleanup_passes(s
     monkeypatch.setattr(shield, "_protected_files", lambda: pytest.fail("maintenance admitted a protected-file scan"))
     monkeypatch.setattr(shield, "sleep", sleep)
     assert shield.request_cache_cleanup()
-    primary = threading.Thread(target=shield.run)
+    def run_primary():
+        try:
+            shield.run()
+        except BaseException as error:
+            primary_errors.append(error)
+
+    primary = threading.Thread(target=run_primary)
     try:
         assert between.wait(5)
         assert not shield.request_cache_cleanup()
@@ -731,14 +739,21 @@ def test_primary_policy_and_limited_observation_advance_between_cleanup_passes(s
                                         max_mib=128, min_free_mib=512)
         primary.start()
         assert observed.wait(5)
+        # Only the helper can establish that its second pass ran. Releasing
+        # the primary from teardown used to manufacture that signal and let
+        # STOP cancel the helper before it resumed from the interpass yield.
+        assert completed_helper.wait(5), "cleanup helper did not execute its second pass"
+        shield._cache_cleanup_thread.join(5)
+        assert not shield._cache_cleanup_thread.is_alive()
     finally:
         observed.set()
-        completed_helper.set()
+        release_primary.set()
         if primary.ident is not None:
             primary.join(5)
         shield._cache_cleanup_cancel.set()
         shield._cache_cleanup_thread.join(5)
     assert not primary.is_alive() and not shield._cache_cleanup_thread.is_alive()
+    assert not primary_errors, primary_errors
     assert len(calls) == 2 and calls[0] == calls[1]
     assert notes and notes[0][0] <= 50
     assert "coverage LIMITED" in notes[0][1] and "maintenance in progress" in notes[0][1]

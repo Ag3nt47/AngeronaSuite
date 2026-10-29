@@ -29,6 +29,14 @@ after its event loop responds. It does not certify sensors or response readiness
 [Safe Startup recovery](safe-startup-recovery.md) documents the alternatives,
 preserved edits, private transactions, independent UI and disk budgets.
 
+Windows source Safe Startup treats retained diagnostic history and recommended
+free-space reserves as advisory for normal dashboard startup. Critical launch
+work uses four reusable purposes per canonical temporary-data base, with fixed
+admission budgets and managed-output limits. A live
+producer's inherited lease prevents reuse until that producer exits. Actual
+private storage access, source/runtime trust and process custody remain checked;
+optional downloads and repairs retain their separate storage admission.
+
 ## 2 Inputs and collection
 
 Inputs include OS process/file/memory/network observations, event logs, Defender

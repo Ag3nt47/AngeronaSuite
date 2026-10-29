@@ -504,12 +504,15 @@ function Exit-RepairLease($Lease) {
 function Get-RepairProcessCompilerScratch {
     $storage = Get-CanonicalSourceStartupStorage
     $fixedRoot = Split-Path -Parent $PSScriptRoot
+    $critical = Get-Variable -Name SourceStartupCriticalMode -Scope Script -ErrorAction SilentlyContinue
+    $critical = $critical -and $critical.Value -is [bool] -and $critical.Value
     foreach ($path in @((Join-Path $storage 'tmp\process-compiler'),
             (Join-Path $fixedRoot '.tmp\process-compiler'))) {
         try {
             Assert-PlainRepairPath $path
             $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot([IO.Path]::GetFullPath($path)))
-            if (!$drive.IsReady -or $drive.DriveType -ne 'Fixed' -or $drive.AvailableFreeSpace -lt (2GB+2MB)) { continue }
+            if (!$drive.IsReady -or $drive.DriveType -ne 'Fixed' -or
+                (!$critical -and $drive.AvailableFreeSpace -lt (2GB+2MB))) { continue }
             if (!(Test-Path -LiteralPath $path)) { New-PrivateRepairDirectory $path }
             Assert-PrivateRepairCustody $path
             $count = 0; $bytes = 0L
@@ -651,6 +654,8 @@ using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
+using System.IO;
 namespace Angerona {
 public static class StartupRepairProcess {
     static readonly object custodyGuard=new object();
@@ -660,6 +665,7 @@ public static class StartupRepairProcess {
         internal IntPtr job,process,thread;
         internal System.Collections.Generic.List<IntPtr> members;
         internal Exception failure;
+        internal object outputOwner;
     }
     public static bool CustodyPending { get { lock(custodyGuard)return heldCustody.Count!=0; } }
     public static bool ParkLeaseIfPending(IDisposable lease) {
@@ -748,7 +754,91 @@ public static class StartupRepairProcess {
     [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr sourceProcess,IntPtr source,IntPtr targetProcess,out IntPtr target,uint access,bool inherit,uint options);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint GetFileType(IntPtr handle);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool CreatePipe(out IntPtr read,out IntPtr write,ref SECURITY_ATTRIBUTES security,uint size);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetHandleInformation(IntPtr handle,uint mask,uint flags);
     static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
+    static IntPtr DuplicateScratchLease(SafeFileHandle lease) {
+        if(lease==null)return IntPtr.Zero;
+        bool retained=false;IntPtr copy=IntPtr.Zero;
+        try {
+            lease.DangerousAddRef(ref retained);
+            Check(DuplicateHandle(GetCurrentProcess(),lease.DangerousGetHandle(),GetCurrentProcess(),out copy,0x120089u,true,0));
+            FILE_INFORMATION info;Check(GetFileInformationByHandle(copy,out info));
+            if(GetFileType(copy)!=1 || (info.attributes&0x410)!=0 || info.links!=1 || info.sizeHigh!=0 || info.sizeLow!=0)
+                throw new InvalidOperationException("Critical scratch requires a plain zero-byte read guard.");
+            var path=new StringBuilder(4096);uint size=GetFinalPathNameByHandleW(copy,path,4096,0);
+            if(size==0 || size>=4096)throw new InvalidOperationException("Critical scratch guard path is unavailable.");
+            string name=path.ToString();
+            if(name.StartsWith(@"\\?\",StringComparison.Ordinal))name=name.Substring(4);
+            string parent=System.IO.Path.GetFileName(System.IO.Path.GetDirectoryName(name));
+            if(!String.Equals(System.IO.Path.GetFileName(name),"startup-critical.lease",StringComparison.Ordinal) ||
+                (parent!="startup-temp.critical-interface" && parent!="startup-temp.critical-control" &&
+                parent!="startup-temp.critical-preflight" && parent!="startup-temp.critical-recovery"))
+                throw new InvalidOperationException("Critical scratch guard is outside its fixed workspace role.");
+            IntPtr result=copy;copy=IntPtr.Zero;return result;
+        } finally {
+            if(copy!=IntPtr.Zero)CloseHandle(copy);
+            if(retained)lease.DangerousRelease();
+        }
+    }
+    static long CriticalOutputLimit(string log,IntPtr scratchLease) {
+        const long workspace=32L*1024*1024, perLog=8L*1024*1024;
+        var path=new StringBuilder(4096);uint size=GetFinalPathNameByHandleW(scratchLease,path,4096,0);
+        if(size==0 || size>=4096)throw new InvalidOperationException("Critical output guard path is unavailable.");
+        string guard=path.ToString();if(guard.StartsWith(@"\\?\",StringComparison.Ordinal))guard=guard.Substring(4);
+        string directory=Path.GetDirectoryName(Path.GetFullPath(log));
+        if(!String.Equals(directory,Path.GetDirectoryName(guard),StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Critical output must remain in its guarded workspace.");
+        long used=0;int count=0;
+        foreach(string entry in Directory.EnumerateFileSystemEntries(directory)) {
+            if(++count>128)return 0;
+            var attributes=File.GetAttributes(entry);
+            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))!=0)return 0;
+            used+=new FileInfo(entry).Length;if(used>=workspace)return 0;
+        }
+        return Math.Min(perLog,workspace-used);
+    }
+    sealed class CriticalOutput {
+        readonly FileStream input,output;
+        readonly long limit;
+        readonly System.Threading.ManualResetEvent complete=new System.Threading.ManualResetEvent(false);
+        long dropped;
+        internal string Error;
+        internal long Dropped {get{return System.Threading.Interlocked.Read(ref dropped);}}
+        internal CriticalOutput(SafeFileHandle read,SafeFileHandle write,long limit) {
+            this.limit=limit;
+            input=new FileStream(read,FileAccess.Read,8192,false);
+            try {output=new FileStream(write,FileAccess.Write,8192,false);}
+            catch {input.Dispose();throw;}
+        }
+        internal void Start() {
+            var thread=new System.Threading.Thread(Pump);thread.IsBackground=true;
+            thread.Name="Angerona bounded critical output";thread.Start();
+        }
+        void Pump() {
+            var buffer=new byte[8192];long written=0;bool failed=false;
+            try {
+                int count;
+                while((count=input.Read(buffer,0,buffer.Length))>0) {
+                    int keep=failed?0:(int)Math.Min(count,Math.Max(0,limit-written));
+                    if(keep>0)try{output.Write(buffer,0,keep);written+=keep;}
+                        catch(Exception error){Error=error.GetType().Name+": critical output sink unavailable";failed=true;keep=0;}
+                    System.Threading.Interlocked.Add(ref dropped,count-keep);
+                }
+            }catch(Exception error){Error=error.GetType().Name+": critical output reader unavailable";}
+            finally {
+                try{output.Flush(true);}catch(Exception error){Error=error.GetType().Name+": critical output flush unavailable";}
+                try{output.Dispose();}catch(Exception error){Error=error.GetType().Name+": critical output close unavailable";}
+                try{input.Dispose();}catch(Exception error){Error=error.GetType().Name+": critical pipe close unavailable";}
+                complete.Set();
+            }
+        }
+        internal bool Wait(int milliseconds){return complete.WaitOne(milliseconds);}
+        internal void Release(){complete.Dispose();}
+    }
     public static string DirectoryIdentity(string path) {
         var sa=new SECURITY_ATTRIBUTES(); sa.length=Marshal.SizeOf(sa);
         IntPtr file=CreateFileW(path,0,7,ref sa,3,0x02200000,IntPtr.Zero);
@@ -908,9 +998,9 @@ public static class StartupRepairProcess {
         public long CreationFileTime { get; internal set; }
         public bool HasExited { get { return completion.IsCompleted; } }
         public int ExitCode { get { return completion.GetAwaiter().GetResult(); } }
-        internal Window(string file,string[] args,string directory,string environment,string log) {
+        internal Window(string file,string[] args,string directory,string environment,string log,IntPtr scratchLease,bool critical) {
             completion=System.Threading.Tasks.Task.Factory.StartNew(
-                ()=>RunCore(file,args,directory,environment,log,-1,stop.Token,this),
+                ()=>RunCore(file,args,directory,environment,log,-1,stop.Token,this,scratchLease,critical),
                 System.Threading.CancellationToken.None,System.Threading.Tasks.TaskCreationOptions.LongRunning,
                 System.Threading.Tasks.TaskScheduler.Default);
         }
@@ -924,7 +1014,15 @@ public static class StartupRepairProcess {
         }
     }
     public static Window StartWindow(string file,string[] args,string directory,string environment,string log) {
-        return new Window(file,args,directory,environment,log);
+        return new Window(file,args,directory,environment,log,IntPtr.Zero,false);
+    }
+    public static Window StartWindow(string file,string[] args,string directory,string environment,string log,
+        SafeFileHandle scratchLease,bool critical) {
+        IntPtr inherited=DuplicateScratchLease(scratchLease);
+        try {
+            if(critical && inherited==IntPtr.Zero)throw new InvalidOperationException("Critical startup requires a retained read guard.");
+            return new Window(file,args,directory,environment,log,inherited,critical);
+        } catch {if(inherited!=IntPtr.Zero)CloseHandle(inherited);throw;}
     }
     static void RetireJob(IntPtr job,IntPtr root,System.Collections.Generic.List<IntPtr> retained) {
         Exception custodyError=null;
@@ -967,21 +1065,55 @@ public static class StartupRepairProcess {
         }
     }
     public static int Run(string file,string[] args,string directory,string environment,string log,int timeout) {
-        return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null);
+        return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null,IntPtr.Zero,false);
+    }
+    public static int Run(string file,string[] args,string directory,string environment,string log,int timeout,
+        SafeFileHandle scratchLease,bool critical) {
+        IntPtr inherited=DuplicateScratchLease(scratchLease);
+        if(critical && inherited==IntPtr.Zero)throw new InvalidOperationException("Critical startup requires a retained read guard.");
+        return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null,inherited,critical);
+    }
+    static string BindScratchEnvironment(string environment,IntPtr scratchLease) {
+        if(environment==null)return null; // Existing direct native callers retain their original environment mode.
+        var entries=new System.Collections.Generic.List<string>();
+        foreach(string entry in environment.Split('\0')) {
+            if(entry.Length==0)continue;
+            int separator=entry.IndexOf('=');
+            string key=separator<0?entry:entry.Substring(0,separator);
+            if(!String.Equals(key,"ANGERONA_STARTUP_SCRATCH_LEASE_HANDLE",StringComparison.OrdinalIgnoreCase))entries.Add(entry);
+        }
+        if(scratchLease!=IntPtr.Zero)entries.Add("ANGERONA_STARTUP_SCRATCH_LEASE_HANDLE="+
+            scratchLease.ToInt64().ToString(System.Globalization.CultureInfo.InvariantCulture));
+        entries.Sort(StringComparer.OrdinalIgnoreCase);
+        return String.Join("\0",entries.ToArray())+"\0\0";
     }
     static int RunCore(string file,string[] args,string directory,string environment,string log,int timeout,
-        System.Threading.CancellationToken stop,Window owner) {
-        if(owner==null)RequireRetiredCustody(); // Independent diagnostic windows remain usable.
+        System.Threading.CancellationToken stop,Window owner,IntPtr scratchLease,bool critical) {
         IntPtr job=IntPtr.Zero, attrs=IntPtr.Zero, jobs=IntPtr.Zero, handles=IntPtr.Zero, env=IntPtr.Zero;
         IntPtr output=IntPtr.Zero, input=IntPtr.Zero; bool initialized=false;
+        bool boundedOutput=scratchLease!=IntPtr.Zero;
+        IntPtr pipeRead=IntPtr.Zero,pipeWrite=IntPtr.Zero;CriticalOutput criticalOutput=null;
         var pi = new PROCESS_INFORMATION();
         try {
+            if(owner==null)RequireRetiredCustody(); // Independent diagnostic windows remain usable.
             job=CreateJobObjectW(IntPtr.Zero,null); Check(job!=IntPtr.Zero);
             var limits=new EXTENDED_LIMITS(); limits.basic.flags=0x2000;
             Check(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(limits)));
             var sa=new SECURITY_ATTRIBUTES(); sa.length=Marshal.SizeOf(sa); sa.inherit=true;
             output=CreateFileW(log,0x40000000,1,ref sa,1,0x80,IntPtr.Zero);
             Check(output!=new IntPtr(-1));
+            if(boundedOutput) {
+                // Only the bounded pipe writer is inheritable. The raw disk
+                // sink must never escape into a concurrent Framework child.
+                Check(SetHandleInformation(output,1,0));
+                long limit=CriticalOutputLimit(log,scratchLease);
+                Check(CreatePipe(out pipeRead,out pipeWrite,ref sa,8192));
+                Check(SetHandleInformation(pipeRead,1,0));
+                var readHandle=new SafeFileHandle(pipeRead,true);pipeRead=IntPtr.Zero;
+                var writeHandle=new SafeFileHandle(output,true);output=IntPtr.Zero;
+                try{criticalOutput=new CriticalOutput(readHandle,writeHandle,limit);criticalOutput.Start();}
+                catch{readHandle.Dispose();writeHandle.Dispose();throw;}
+            }
             input=CreateFileW(@"\\.\NUL",0x80000000,3,ref sa,3,0x80,IntPtr.Zero);
             Check(input!=new IntPtr(-1));
             IntPtr size=IntPtr.Zero; InitializeProcThreadAttributeList(IntPtr.Zero,2,0,ref size);
@@ -989,16 +1121,26 @@ public static class StartupRepairProcess {
             initialized=true;
             jobs=Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jobs,job);
             Check(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x2000D),jobs,new IntPtr(IntPtr.Size),IntPtr.Zero,IntPtr.Zero));
-            handles=Marshal.AllocHGlobal(IntPtr.Size*2);
-            Marshal.WriteIntPtr(handles,0,output); Marshal.WriteIntPtr(handles,IntPtr.Size,input);
-            Check(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x20002),handles,new IntPtr(IntPtr.Size*2),IntPtr.Zero,IntPtr.Zero));
+            int handleCount=scratchLease==IntPtr.Zero?2:3;
+            handles=Marshal.AllocHGlobal(IntPtr.Size*handleCount);
+            IntPtr childOutput=boundedOutput?pipeWrite:output;
+            Marshal.WriteIntPtr(handles,0,childOutput); Marshal.WriteIntPtr(handles,IntPtr.Size,input);
+            if(scratchLease!=IntPtr.Zero)Marshal.WriteIntPtr(handles,IntPtr.Size*2,scratchLease);
+            Check(UpdateProcThreadAttribute(attrs,0,new IntPtr(0x20002),handles,new IntPtr(IntPtr.Size*handleCount),IntPtr.Zero,IntPtr.Zero));
             var startup=new STARTUPINFOEX(); startup.startup.cb=Marshal.SizeOf(startup);
             startup.startup.flags=0x101; startup.startup.input=input;
-            startup.startup.output=output; startup.startup.error=output; startup.attributes=attrs;
+            // An explicit GUI owner must show its first window. Background
+            // commands retain SW_HIDE; CREATE_NO_WINDOW still suppresses consoles.
+            startup.startup.show=(short)(owner!=null ? 1 : 0);
+            startup.startup.output=childOutput; startup.startup.error=childOutput; startup.attributes=attrs;
             var command=new StringBuilder(Quote(file));
             foreach (string arg in args) command.Append(' ').Append(Quote(arg));
-            env=Marshal.StringToHGlobalUni(environment);
+            env=Marshal.StringToHGlobalUni(BindScratchEnvironment(environment,scratchLease));
             Check(CreateProcessW(file,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref startup,out pi));
+            if(pipeWrite!=IntPtr.Zero){IntPtr bridge=pipeWrite;pipeWrite=IntPtr.Zero;Check(CloseHandle(bridge));}
+            // The child now owns its read-only copy. Do not keep an accidental
+            // parent bridge that could disguise failed inheritance in tests.
+            if(scratchLease!=IntPtr.Zero){Check(CloseHandle(scratchLease));scratchLease=IntPtr.Zero;}
             if(owner!=null) {
                 long created,exited,kernel,user;
                 Check(GetProcessTimes(pi.process,out created,out exited,out kernel,out user));
@@ -1015,7 +1157,7 @@ public static class StartupRepairProcess {
                 if(timeout<0)continue; // The read-only recovery UI waits for its operator.
                 foreach(string volume in volumes) {
                     var disk=new System.IO.DriveInfo(volume);
-                    if(!disk.IsReady || disk.AvailableFreeSpace<2L*1024*1024*1024) {
+                    if(!disk.IsReady || (!critical && disk.AvailableFreeSpace<2L*1024*1024*1024)) {
                         TerminateJobObject(job,112);WaitForSingleObject(pi.process,5000);
                         throw new System.IO.IOException("Owned startup command stopped at the 2 GiB drive-space reserve; existing runtime and evidence remain held.");
                     }
@@ -1028,6 +1170,7 @@ public static class StartupRepairProcess {
             Check(waited==0); uint code; Check(GetExitCodeProcess(pi.process,out code));
             return unchecked((int)code);
         } finally {
+            if(pipeWrite!=IntPtr.Zero){CloseHandle(pipeWrite);pipeWrite=IntPtr.Zero;}
             // Do not release a reader/mutation lease merely because a redirector
             // exited. Observe every descendant in this exact non-inherited job.
             var retained=new System.Collections.Generic.List<IntPtr>();
@@ -1035,24 +1178,38 @@ public static class StartupRepairProcess {
                 if(job!=IntPtr.Zero && pi.process!=IntPtr.Zero)RetireJob(job,pi.process,retained);
             } catch(Exception error) {
                 lock(custodyGuard)heldCustody.Add(new PendingCustody {
-                    job=job,process=pi.process,thread=pi.thread,members=retained,failure=error });
+                    job=job,process=pi.process,thread=pi.thread,members=retained,failure=error,outputOwner=criticalOutput });
                 // The failed proof must not become an apparent retirement just
                 // because a finally block discarded every native witness.
-                job=IntPtr.Zero;pi.process=IntPtr.Zero;pi.thread=IntPtr.Zero;retained=null;
+                job=IntPtr.Zero;pi.process=IntPtr.Zero;pi.thread=IntPtr.Zero;retained=null;criticalOutput=null;
                 throw new InvalidOperationException("Owned startup retirement is unresolved; exact native custody remains parked and Retry is held.",error);
             }
             finally {
+            Exception outputRetirementError=null;
+            if(criticalOutput!=null) {
+                if(!criticalOutput.Wait(5000)) {
+                    lock(custodyGuard)heldCustody.Add(criticalOutput);
+                    outputRetirementError=new InvalidOperationException("Critical output reader retirement is unverified; its exact stream owner remains retained.");
+                } else try {
+                    if(criticalOutput.Dropped>0 || criticalOutput.Error!=null) {
+                        try{Console.Error.WriteLine("{\"component\":\"critical-startup-output\",\"outcome\":\"limited\",\"dropped_bytes\":"+criticalOutput.Dropped+"}");}catch{}
+                    }
+                }finally{criticalOutput.Release();}
+            }
             if(retained!=null)foreach(IntPtr process in retained)CloseHandle(process);
             if (job!=IntPtr.Zero) CloseHandle(job);
             if (pi.thread!=IntPtr.Zero) CloseHandle(pi.thread);
             if (pi.process!=IntPtr.Zero) CloseHandle(pi.process);
             if (output!=IntPtr.Zero && output!=new IntPtr(-1)) CloseHandle(output);
             if (input!=IntPtr.Zero && input!=new IntPtr(-1)) CloseHandle(input);
+            if (scratchLease!=IntPtr.Zero) CloseHandle(scratchLease);
+            if (pipeRead!=IntPtr.Zero) CloseHandle(pipeRead);
             if (initialized) DeleteProcThreadAttributeList(attrs);
             if (attrs!=IntPtr.Zero) Marshal.FreeHGlobal(attrs);
             if (jobs!=IntPtr.Zero) Marshal.FreeHGlobal(jobs);
             if (handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles);
             if (env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
+            if(outputRetirementError!=null)throw outputRetirementError;
             }
         }
     }
@@ -1061,10 +1218,37 @@ public static class StartupRepairProcess {
 '@
 }
 
+function Get-SourceStartupReadLease([IO.FileStream]$ScratchLease, [bool]$ExplicitLease = $false) {
+    if (!$ExplicitLease -and $null -eq $ScratchLease) {
+        $current = Get-Variable -Name SourceStartupScratchLease -Scope Script -ErrorAction SilentlyContinue
+        if ($current) {
+            if ($null -ne $current.Value -and $current.Value -isnot [IO.FileStream]) { throw 'Critical scratch lease must be an actual read-only file stream.' }
+            $ScratchLease = $current.Value
+        }
+    }
+    if ($null -eq $ScratchLease) { return $null }
+    if (!$ScratchLease.CanRead -or $ScratchLease.CanWrite -or !$ScratchLease.CanSeek -or $ScratchLease.Length -ne 0) {
+        throw 'Critical scratch lease must remain a zero-byte read-only file stream.'
+    }
+    Assert-PlainRepairPath $ScratchLease.Name
+    Assert-PrivateRepairCustody $ScratchLease.Name
+    if ([IO.Path]::GetFileName($ScratchLease.Name) -cne 'startup-critical.lease' -or
+        [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($ScratchLease.Name)) -cnotmatch '^startup-temp\.critical-(interface|control|preflight|recovery)$') {
+        throw 'Critical scratch guard is outside its fixed workspace role.'
+    }
+    return ,$ScratchLease
+}
+
+function Get-SourceStartupCriticalMode([bool]$Requested, [bool]$ExplicitMode) {
+    if ($ExplicitMode) { return $Requested }
+    $current = Get-Variable -Name SourceStartupCriticalMode -Scope Script -ErrorAction SilentlyContinue
+    return [bool]($current -and $current.Value -is [bool] -and $current.Value)
+}
+
 function Invoke-OwnedRepairProcess {
     param([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory,
         [Collections.IDictionary]$Environment, [ValidateRange(1,1800)][int]$TimeoutSeconds,
-        [string]$LogPath)
+        [string]$LogPath, [IO.FileStream]$ScratchLease, [switch]$CriticalStartup)
     # Windows servicing legitimately hard-links system executables to WinSxS.
     # Callers choose/signature-check their fixed executable; it is never edited.
     Assert-PlainRepairPath $FilePath -AllowHardLinks
@@ -1081,14 +1265,17 @@ function Invoke-OwnedRepairProcess {
     }
     Initialize-OwnedRepairProcess
     [Angerona.StartupRepairProcess]::RequireRetiredCustody()
+    $scratchGuard = Get-SourceStartupReadLease $ScratchLease ($PSBoundParameters.ContainsKey('ScratchLease'))
+    $critical = Get-SourceStartupCriticalMode $CriticalStartup.IsPresent ($PSBoundParameters.ContainsKey('CriticalStartup'))
     $block = ($entries -join [char]0) + [char]0 + [char]0
     return [Angerona.StartupRepairProcess]::Run($FilePath, $Arguments,
-        $WorkingDirectory, $block, $LogPath, ($TimeoutSeconds * 1000))
+        $WorkingDirectory, $block, $LogPath, ($TimeoutSeconds * 1000),
+        $(if ($scratchGuard) { $scratchGuard.SafeFileHandle } else { $null }), $critical)
 }
 
 function Start-OwnedRepairWindow {
     param([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory,
-        [Collections.IDictionary]$Environment, [string]$LogPath)
+        [Collections.IDictionary]$Environment, [string]$LogPath, [IO.FileStream]$ScratchLease, [switch]$CriticalStartup)
     Assert-PlainRepairPath $FilePath -AllowHardLinks
     Assert-PlainRepairPath $WorkingDirectory
     Assert-PlainRepairPath $LogPath
@@ -1109,5 +1296,8 @@ function Start-OwnedRepairWindow {
         Initialize-OwnedRepairProcess
     } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
     $block = ($entries -join [char]0) + [char]0 + [char]0
-    return [Angerona.StartupRepairProcess]::StartWindow($FilePath, $Arguments, $WorkingDirectory, $block, $LogPath)
+    $scratchGuard = Get-SourceStartupReadLease $ScratchLease ($PSBoundParameters.ContainsKey('ScratchLease'))
+    $critical = Get-SourceStartupCriticalMode $CriticalStartup.IsPresent ($PSBoundParameters.ContainsKey('CriticalStartup'))
+    return [Angerona.StartupRepairProcess]::StartWindow($FilePath, $Arguments, $WorkingDirectory, $block, $LogPath,
+        $(if ($scratchGuard) { $scratchGuard.SafeFileHandle } else { $null }), $critical)
 }

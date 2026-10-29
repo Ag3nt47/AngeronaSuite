@@ -56,6 +56,7 @@ function Add-SourceStartupAttempt {}
 function Start-SourceStartupShell {}
 function Test-SourceStartupShellClosed { return $false }
 function Test-SourceStartupCapturesRetired { return $true }
+function Close-SourceStartupCriticalWorkspaces { $script:Events.Add('workspace-close') }
 function Invoke-SourceCodeAction {
     $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64);requires_mutation=$false;pending_kind='none'}
     return 0
@@ -118,7 +119,7 @@ function Invoke-SourceStartupRepair {
 }
 $code=1; $failure=''
 try {$code=Invoke-SourceStartupLoop -Root 'D:\fixture'} catch {$failure=$_.Exception.Message}
-Write-Output ('RESULT:'+(@{code=$code;passes=$script:Passes;repairs=$script:Repairs;dashboards=$script:Dashboards;lease=$script:Lease;events=@($script:Events);failure=$failure}|ConvertTo-Json -Compress))
+Write-Output ('RESULT:'+(@{code=$code;passes=$script:Passes;repairs=$script:Repairs;dashboards=$script:Dashboards;lease=$script:Lease;events=@($script:Events);failure=$failure;critical_mode=$script:SourceStartupCriticalMode}|ConvertTo-Json -Compress))
 """
 
 
@@ -155,6 +156,9 @@ def test_actual_source_supervisor_rechecks_and_launches_at_most_once(
         passes, repairs, dashboards, code,
     )
     assert result["lease"] == 0
+    assert result["failure"] == ""
+    assert result["critical_mode"] is None
+    assert result["events"].count("workspace-close") == 1
     if repairs:
         repair = next(i for i, event in enumerate(result["events"]) if event.startswith("repair:"))
         assert result["events"][repair - 1] == "release"

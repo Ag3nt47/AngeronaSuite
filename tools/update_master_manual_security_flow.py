@@ -172,7 +172,8 @@ def build_assets():
         ("6  Prove dashboard readiness", ["Fresh nonce • live PID generation", "Event loop responding • full gates retained"]),
         ("7  Review after recovery", ["Keep working • review later", "Try preserved edits at NEXT startup only"]),
         ("8  Recovery remains available", ["Bounded phase logs • missing logs explicit", "Retry / Close • protection unverified"]),
-    ], ["Trust, active processes, pending work, STOP or low space can hold startup.",
+    ], ["Diagnostic history and recommended free-space reserves do not block the dashboard.",
+        "Source trust, process custody and actual private data writes remain checked.",
         "Recovery never clears alerts, replaces keys or silently enrolls an altered baseline."])
     diagram(ASSETS[2], "Governed response flow", "Observations and AI text do not grant mutation authority", [
         ("1  Establish evidence", ["Enrolled producer and typed event contract", "Freshness • continuity • explicit coverage"]),
@@ -317,7 +318,9 @@ def chapter():
         "https://docs.github.com/en/rest/git/commits",
         "https://docs.github.com/en/rest/git/trees",
     ):
-        result += paragraph(url, small=True)
+        # Keep this short reference list compact without reducing its type size
+        # or pushing a lone final URL onto another page.
+        result += paragraph(url, small=True).replace(b'w:after="120"', b'w:after="0"', 1)
     return START + result + END
 
 

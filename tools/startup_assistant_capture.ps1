@@ -32,16 +32,23 @@ public sealed class StartupCaptureSession {
     [DllImport("kernel32.dll", SetLastError=true)]
     static extern bool GetProcessTimes(IntPtr process, out long created, out long exited,
         out long kernel, out long user);
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr sourceProcess,IntPtr source,IntPtr targetProcess,out IntPtr target,uint access,bool inherit,uint options);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint GetFileType(IntPtr handle);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle,StringBuilder path,uint size,uint flags);
     static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
     readonly List<SafeFileHandle> directories = new List<SafeFileHandle>();
     readonly object custody = new object();
     Pump stdout, stderr;
     int remaining;
+    long criticalOutputRemaining=Int64.MaxValue;
+    bool criticalOutputBound;
     public Process Process { get; private set; }
     public int ProcessId { get; private set; }
     public string ProcessRole { get { return "assistant-launcher"; } }
     public string CreationTimeUtc { get; private set; }
     public string CreationTimeFileTime { get; private set; }
+    public string ScratchLeaseHandle { get; private set; }
     public int ExitCode { get; private set; }
     public bool TimedOut { get; private set; }
     public bool ReadersComplete { get { return (stdout == null || stdout.Done) && (stderr == null || stderr.Done); } }
@@ -82,7 +89,7 @@ public sealed class StartupCaptureSession {
                     // reader. The supervisor never joins it without a deadline.
                     int count = input.Read(buffer, 0, buffer.Length);
                     if (count == 0) break;
-                    int keep = sinkFailed ? 0 : (int)Math.Min((long)count, OutputLimit - written);
+                    int keep = sinkFailed ? 0 : owner.ReserveOutput((int)Math.Min((long)count, OutputLimit - written));
                     if (keep > 0) {
                         try { output.Write(buffer, 0, keep); written += keep; }
                         catch (Exception error) {
@@ -103,7 +110,20 @@ public sealed class StartupCaptureSession {
         }
     }
     void ReaderFinished() {
-        if (Interlocked.Decrement(ref remaining) == 0) ReleaseDirectories();
+        if (Interlocked.Decrement(ref remaining) == 0) {
+            if(criticalOutputBound && (StdoutDropped>0 || StderrDropped>0)) {
+                try{Console.Error.WriteLine("{\"component\":\"critical-startup-output\",\"outcome\":\"limited\",\"dropped_bytes\":"+(StdoutDropped+StderrDropped)+"}");}catch{}
+            }
+            ReleaseDirectories();
+        }
+    }
+    int ReserveOutput(int requested) {
+        if(!criticalOutputBound)return requested;
+        while(true) {
+            long available=Interlocked.Read(ref criticalOutputRemaining);
+            int keep=(int)Math.Min(requested,Math.Max(0,available));
+            if(Interlocked.CompareExchange(ref criticalOutputRemaining,available-keep,available)==available)return keep;
+        }
     }
     void ReleaseDirectories() {
         lock (custody) {
@@ -158,6 +178,50 @@ public sealed class StartupCaptureSession {
             return result;
         } catch { result.Dispose(); throw; }
     }
+    static SafeFileHandle DuplicateScratchLease(SafeFileHandle lease) {
+        if(lease==null)return null;
+        bool retained=false;SafeFileHandle result=null;
+        try {
+            lease.DangerousAddRef(ref retained);IntPtr copy;
+            Check(DuplicateHandle(GetCurrentProcess(),lease.DangerousGetHandle(),GetCurrentProcess(),out copy,0x120089u,true,0));
+            result=new SafeFileHandle(copy,true);
+            FileInformation info;Check(GetFileInformationByHandle(result,out info));
+            if(GetFileType(copy)!=1 || (info.Attributes&0x410)!=0 || info.Links!=1 || info.SizeHigh!=0 || info.SizeLow!=0)
+                throw new IOException("Critical scratch requires a plain zero-byte read guard.");
+            var path=new StringBuilder(4096);uint size=GetFinalPathNameByHandleW(result,path,4096,0);
+            if(size==0 || size>=4096)throw new IOException("Critical scratch guard path is unavailable.");
+            string name=path.ToString();
+            if(name.StartsWith(@"\\?\",StringComparison.Ordinal))name=name.Substring(4);
+            string parent=Path.GetFileName(Path.GetDirectoryName(name));
+            if(Path.GetFileName(name)!="startup-critical.lease" ||
+                (parent!="startup-temp.critical-interface" && parent!="startup-temp.critical-control" &&
+                parent!="startup-temp.critical-preflight" && parent!="startup-temp.critical-recovery"))
+                throw new IOException("Critical scratch guard is outside its fixed workspace role.");
+            SafeFileHandle owned=result;result=null;return owned;
+        } finally {
+            if(result!=null)result.Dispose();
+            if(retained)lease.DangerousRelease();
+        }
+    }
+    static readonly object scratchStartGuard=new object();
+    static long CriticalOutputRemaining(string stdout,string stderr,SafeFileHandle lease) {
+        const long workspace=32L*1024*1024;
+        var path=new StringBuilder(4096);uint size=GetFinalPathNameByHandleW(lease,path,4096,0);
+        if(size==0 || size>=4096)throw new IOException("Critical output guard path is unavailable.");
+        string guard=path.ToString();if(guard.StartsWith(@"\\?\",StringComparison.Ordinal))guard=guard.Substring(4);
+        string directory=Path.GetDirectoryName(guard);
+        if(!String.Equals(directory,Path.GetDirectoryName(stdout),StringComparison.OrdinalIgnoreCase) ||
+            !String.Equals(directory,Path.GetDirectoryName(stderr),StringComparison.OrdinalIgnoreCase))
+            throw new IOException("Critical capture output must remain in its guarded workspace.");
+        long used=0;int count=0;
+        foreach(string entry in Directory.EnumerateFileSystemEntries(directory)) {
+            if(++count>128)return 0;
+            var attributes=File.GetAttributes(entry);
+            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))!=0)return 0;
+            used+=new FileInfo(entry).Length;if(used>=workspace)return 0;
+        }
+        return workspace-used;
+    }
     static string Quote(string argument) {
         if (argument == null || argument.IndexOf('\0') >= 0) throw new ArgumentException("Invalid capture argument.");
         StringBuilder value = new StringBuilder("\"");
@@ -173,6 +237,10 @@ public sealed class StartupCaptureSession {
     }
     public static StartupCaptureSession Run(string python, string[] arguments, string workingDirectory,
         string stdoutPath, string stderrPath, int timeoutSeconds, IDictionary environment) {
+        return Run(python,arguments,workingDirectory,stdoutPath,stderrPath,timeoutSeconds,environment,null);
+    }
+    public static StartupCaptureSession Run(string python, string[] arguments, string workingDirectory,
+        string stdoutPath, string stderrPath, int timeoutSeconds, IDictionary environment,SafeFileHandle scratchLease) {
         if (timeoutSeconds < 1 || timeoutSeconds > 900) throw new ArgumentOutOfRangeException("timeoutSeconds");
         if (arguments == null || arguments.Length > 64) throw new ArgumentException("Capture argument count is invalid.");
         StartupCaptureSession session = new StartupCaptureSession();
@@ -209,7 +277,20 @@ public sealed class StartupCaptureSession {
                 }
             }
             session.Process = new Process(); session.Process.StartInfo = start;
-            if (!session.Process.Start()) throw new IOException("The startup assistant did not start.");
+            // The value is generated only from this retained read guard. An
+            // ambient numeric environment value cannot create critical custody.
+            start.EnvironmentVariables.Remove("ANGERONA_STARTUP_SCRATCH_LEASE_HANDLE");
+            lock(scratchStartGuard) {
+                using(SafeFileHandle inherited=DuplicateScratchLease(scratchLease)) {
+                    if(inherited!=null) {
+                        session.criticalOutputRemaining=CriticalOutputRemaining(outPath,errPath,inherited);
+                        session.criticalOutputBound=true;
+                        session.ScratchLeaseHandle=inherited.DangerousGetHandle().ToInt64().ToString(System.Globalization.CultureInfo.InvariantCulture);
+                        start.EnvironmentVariables["ANGERONA_STARTUP_SCRATCH_LEASE_HANDLE"]=session.ScratchLeaseHandle;
+                    }
+                    if (!session.Process.Start()) throw new IOException("The startup assistant did not start.");
+                } // No parent bridge remains; the actual child must retain it.
+            }
             started = true;
             session.ProcessId = session.Process.Id;
             long created, exited, kernel, user;
@@ -285,14 +366,43 @@ function Invoke-SourceStartupCapturedAssistant {
         [Parameter(Mandatory=$true)][string]$StdoutPath,
         [Parameter(Mandatory=$true)][string]$StderrPath,
         [ValidateRange(1,900)][int]$TimeoutSeconds = 240,
-        [Collections.IDictionary]$Environment
+        [Collections.IDictionary]$Environment,
+        [IO.FileStream]$ScratchLease
     )
     # Command/function-produced strings can remain PSObject-wrapped inside an
     # IDictionary. Normalize only string bases, without inheriting ambient keys.
     $normalizedEnvironment = ConvertTo-SourceStartupCaptureEnvironment $Environment
+    if (!$PSBoundParameters.ContainsKey('ScratchLease')) {
+        $current = Get-Variable -Name SourceStartupScratchLease -Scope Script -ErrorAction SilentlyContinue
+        if ($current) {
+            if ($null -ne $current.Value -and $current.Value -isnot [IO.FileStream]) { throw 'Critical scratch lease must be an actual read-only file stream.' }
+            $ScratchLease = $current.Value
+        }
+    }
+    if ($ScratchLease) {
+        if (!$ScratchLease.CanRead -or $ScratchLease.CanWrite -or !$ScratchLease.CanSeek -or $ScratchLease.Length -ne 0) {
+            throw 'Critical scratch lease must remain a zero-byte read-only file stream.'
+        }
+        $acl = [IO.File]::GetAccessControl($ScratchLease.Name)
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        try { $sid = $identity.User.Value } finally { $identity.Dispose() }
+        if ([IO.Path]::GetFileName($ScratchLease.Name) -cne 'startup-critical.lease' -or
+            [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($ScratchLease.Name)) -cnotmatch '^startup-temp\.critical-(interface|control|preflight|recovery)$') {
+            throw 'Critical scratch guard is outside its fixed workspace role.'
+        }
+        if (!$acl.AreAccessRulesProtected -or $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid) {
+            throw 'Critical scratch guard lacks private current-user custody.'
+        }
+        foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -ne 'Allow' -or $rule.IdentityReference.Value -notin @($sid,'S-1-5-18','S-1-5-32-544')) {
+                throw 'Critical scratch guard contains an unexpected principal.'
+            }
+        }
+    }
     Initialize-SourceStartupCapture
     $capture = [Angerona.StartupCaptureSession]::Run($Python, $Arguments, $WorkingDirectory,
-        $StdoutPath, $StderrPath, $TimeoutSeconds, $normalizedEnvironment)
+        $StdoutPath, $StderrPath, $TimeoutSeconds, $normalizedEnvironment,
+        $(if ($ScratchLease) { $ScratchLease.SafeFileHandle } else { $null }))
     # Return one typed owner, never intermixed child stdout and an exit code.
     return $capture
 }

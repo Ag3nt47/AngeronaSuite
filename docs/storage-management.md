@@ -21,7 +21,8 @@ the warning names the affected drive and retains unavailable measurements.
 It warns when the cache reaches 80% of its limit, storage
 admission is held, or available space reaches the configured reserve. New
 recovery writes are held while a warning awaits a decision. Repeated readings
-of the same condition do not open repeated dialogs.
+of the same condition do not open repeated dialogs. Holding optional recovery
+writes does not require closing the dashboard.
 
 - **Block new recovery data** holds new recovery copies and automatic shadow
   requests for this run. Save the corresponding Settings choices to retain the
@@ -52,6 +53,27 @@ their attributes. On Windows, read-only deletion uses the documented
 [handle disposition flag](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_disposition_information_ex).
 Unsupported operations preserve the file and report incomplete work. The shared
 alert-archive writer and original documents are outside this deletion path.
+
+## Windows source startup working space
+
+In Windows source Safe Startup, retained logs and recommended free-space reserves
+do not prevent normal dashboard startup. Its critical launch route reuses four
+fixed purpose folders per canonical temporary-data base, with a 32 MiB / 128-entry
+admission budget per folder. Managed startup capture uses the remaining byte
+budget; this is not a filesystem quota on general runtime temporary-file writers.
+An inherited native lease prevents clearing a folder while an original or
+orphaned producer still holds it. Only recognized disposable outputs can be
+retired for reuse; legacy nonempty logs, unknown files and security originals
+remain preserved.
+
+The launcher can proceed below the native 2 GiB and Python 128 MiB recommended
+reserves after proving its actual private read/write access and critical lease.
+An unusable filesystem, unsafe path or ambiguous process ownership still needs
+attention. The process-helper compiler retains its separate 2 MiB / 120-entry
+content guard. Downloads, runtime replacement and source snapshots retain their
+own admission requirements; a storage hold on that optional work does not turn
+retained diagnostic history into a dashboard permission check. See
+[Safe Startup recovery](safe-startup-recovery.md#capacity-and-retention).
 
 ## Windows shadow copies and other data
 

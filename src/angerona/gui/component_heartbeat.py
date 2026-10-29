@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 import html
 import math
 import time
 
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractButton, QDialog, QDialogButtonBox, QLabel, QPlainTextEdit,
     QSizePolicy, QVBoxLayout,
@@ -18,6 +19,40 @@ EXPECTED_ROLES = ("core", "watchdog", "scanner", "blackbox")
 MAX_COMPONENTS = 24
 MAX_DEADLINE_SECONDS = 120.0
 _LIVE_STATES = frozenset(("running", "active", "ready", "healthy", "live", "verified"))
+
+
+def _update_details_text(view: QPlainTextEdit, content: str) -> None:
+    """Refresh changed lines without moving the reader's viewport or selection."""
+    previous = view.toPlainText()
+    if content == previous:
+        return
+    vertical = view.verticalScrollBar()
+    horizontal = view.horizontalScrollBar()
+    position = (vertical.value(), horizontal.value())
+    selection = view.textCursor()
+    old_lines = previous.splitlines(keepends=True)
+    new_lines = content.splitlines(keepends=True)
+    # QTextCursor positions count UTF-16 units, including diagnostic Unicode.
+    offsets = [0]
+    for line in old_lines:
+        offsets.append(offsets[-1] + len(line.encode("utf-16-le", "surrogatepass")) // 2)
+    edits = SequenceMatcher(None, old_lines, new_lines, autojunk=False).get_opcodes()
+    cursor = QTextCursor(view.document())
+    cursor.beginEditBlock()
+    try:
+        for operation, start, end, new_start, new_end in reversed(edits):
+            if operation == "equal":
+                continue
+            cursor.setPosition(offsets[start])
+            cursor.setPosition(offsets[end], QTextCursor.KeepAnchor)
+            cursor.insertText("".join(new_lines[new_start:new_end]))
+    finally:
+        cursor.endEditBlock()
+    # The copied cursor tracks edits before the selected text. Restore it
+    # before the bars, since setTextCursor may otherwise scroll it into view.
+    view.setTextCursor(selection)
+    vertical.setValue(position[0])
+    horizontal.setValue(position[1])
 
 
 def _text(value, limit: int) -> str:
@@ -301,13 +336,15 @@ class ComponentHeartbeatStrip(QAbstractButton):
         notice.setWordWrap(True)
         layout.addWidget(notice)
         text = QPlainTextEdit()
+        text.setObjectName("ComponentHeartbeatDetailsText")
         text.setReadOnly(True)
+        text.setUndoRedoEnabled(False)
         text.setPlainText(self.details_text())
         layout.addWidget(text, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Close)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
-        update = lambda: text.setPlainText(self.details_text())
+        update = lambda: _update_details_text(text, self.details_text())
         self.snapshot_changed.connect(update)
 
         def finished(_result) -> None:

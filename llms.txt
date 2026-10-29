@@ -38,6 +38,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   component heartbeat animates; absent, stale or unavailable evidence flatlines
   red. Details retain exact generations, ages and reasons. This is liveness,
   not attested detector coverage, response authority or a security baseline.
+  Live detail refreshes preserve the reader's selection and scroll position.
 - Corrected inherited-environment handling restores the supervisor's sidecar
   launch route without permitting credentials, proxies or Python path controls.
   Ensure-Angerona-Recovery.bat supports a read-only check or bounded requests
@@ -52,6 +53,16 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   unloaded; shared Ollama daemons and downloaded weights remain. POSIX process
   tree behavior and existing signed binaries were not verified by this work.
 - Recovery storage has separate admission budgets and free-space reserves.
+  Ordinary source startup uses at most eight fixed critical workspaces, with
+  32 MiB/128-entry flat admission and bounded launcher output. Retained
+  startup-history counts and recommended reserves become visible advisories;
+  actual private write/read and native read-lease custody still apply. Known
+  disposable working outputs can be reused after exclusive admission; unknown
+  files and existing recovery evidence are preserved. Inherited guards remain
+  retained by probes and the launched core. Optional diagnostic output is
+  bounded and excess bytes are counted without terminating an active core.
+  These are cooperating writer limits, not a filesystem quota on general
+  runtime temporary files or a lifetime quota on direct dashboard stdout.
   Source update staging admits two retained candidates with a 2 GiB logical
   aggregate ceiling and 2 GiB volume reserve, under its existing shared lease.
   Unknown or unsafe entries hold admission; no prior candidate is auto-deleted.
