@@ -167,6 +167,33 @@ def test_constructor_and_cached_lifecycle_do_not_launch_or_collect(monkeypatch):
     assert provider.stop() is False
 
 
+def test_first_failure_survives_cleanup_and_unavailable_receipts(monkeypatch):
+    w = _worker()
+    monkeypatch.setattr(w.subprocess, "Popen", lambda *a, **k: pytest.fail("diagnostic probe launched"))
+    provider = w.ProcessSnapshotProvider()
+    provider._fail("request-deadline")
+    provider._fail("EOFError")  # Consequence of closing an owned pipe, not the first cause.
+    assert _off_gui(lambda: provider.stop(1))
+    state = provider.lifecycle_snapshot()
+    assert state["retired"] and state["state"] == "retired"
+    assert state["error"] == "request-deadline"
+    receipt = _off_gui(provider.snapshot)
+    assert not receipt.complete and not receipt.enumeration_complete
+    assert "request-deadline" in receipt.error and "state=retired" in receipt.error
+    provider._fail("another-cleanup-error")
+    assert provider.lifecycle_snapshot()["state"] == "retired"
+    assert provider.lifecycle_snapshot()["error"] == "request-deadline"
+    assert not _off_gui(provider.start)
+
+
+def test_normal_retirement_does_not_invent_a_failure():
+    provider = _worker().ProcessSnapshotProvider()
+    assert _off_gui(lambda: provider.stop(1))
+    assert provider.lifecycle_snapshot()["error"] is None
+    receipt = _off_gui(provider.snapshot)
+    assert "retired" in receipt.error and "state=" not in receipt.error
+
+
 def test_native_child_preserves_original_collector_receipt_and_frozen_rows():
     provider = _provider()
     try:
@@ -254,6 +281,8 @@ def test_child_native_gil_block_does_not_block_qt_or_sensor_gui_admission(tmp_pa
     finally:
         _retire(provider)
         if thread is not None: thread.join(5)
+    assert provider.lifecycle_snapshot()["error"] == "request-deadline"
+    assert "request-deadline" in _off_gui(provider.snapshot).error
 
 
 def test_parent_cache_start_anchor_max_age_zero_and_no_failure_fallback(monkeypatch):

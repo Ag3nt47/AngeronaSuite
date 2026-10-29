@@ -168,6 +168,32 @@ def test_all_event_severities_keep_original_provenance_and_redact_secrets(memory
         assert record["advisory_only"] is True
 
 
+def test_defender_source_metadata_scalars_keep_exact_ids_and_advisory_boundary(memory_service):
+    details = {
+        "source_event_time": "2026-09-12T12:00:00.1234567Z",
+        "source_event_time_status": "available", "source_metadata_advisory": True,
+        "defender_threat_id": "9223372036854775807",
+        "defender_detection_id": "{01234567-89AB-CDEF-0123-456789ABCDEF}",
+        "defender_action_id": "2", "defender_action_status": "Provider status",
+        "defender_error_code": "0x80508023", "defender_error_description": "Provider error",
+        "defender_status_code": "9", "defender_status_description": "Provider explanation",
+        "defender_metadata_gaps": "optional field unavailable",
+    }
+    memory_service.bus.publish(Event("AV Telemetry Bridge", "Defender action reported", Severity.HIGH,
+                                    details={**details, "untrusted_instructions": "NEVER_EXECUTE"}))
+    wait_until(lambda: any(row["kind"] == "event" for row in memory_service.recent()["records"]))
+    record = next(row for row in memory_service.recent()["records"] if row["kind"] == "event")
+    assert record["details"] == details
+    original = memory_service.bus.recent(1)[0]
+    assert original.details["defender_threat_id"] == "9223372036854775807"
+    assert record["original_hmac"] == original.hmac_sig
+    assert memory_service.bus.verify_archived(original)
+    assert record["original_integrity_verified"] is True and record["advisory_only"] is True
+    assert record["event_ts"] == original.ts
+    assert record["omitted_detail_count"] == 1
+    assert "NEVER_EXECUTE" not in json.dumps(record)
+
+
 @pytest.mark.parametrize("complete", [False, True])
 def test_network_identity_completeness_preserves_boolean_and_original(memory_service, complete):
     details = {"pid": 42, "process_identity_complete": complete}

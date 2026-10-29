@@ -92,7 +92,10 @@ def run_headless(
         recorder=storage,
         high_water_provider=high_water_provider,
     )
-    reporter = StatusReporter(bus, storage, manager, config)
+    reporter = StatusReporter(
+        bus, storage, manager, config,
+        process_snapshot_lifecycle=process_snapshot_lifecycle,
+    )
     chill = None
     if getattr(config, "eco_mode", True):
         chill = ChillRuntimeController(

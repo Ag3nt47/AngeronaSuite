@@ -54,6 +54,10 @@ _SAFE_DETAILS = frozenset({
     "observed_severity", "single_rule_host_fallback",
     "detector_policy", "coverage_diagnostics", "evidence", "expected", "observed", "function",
     "expected_source_file", "expected_source_line", "source_hash", "code_hash", "expected_code_hash",
+    "source_event_time", "source_event_time_status", "source_metadata_advisory",
+    "defender_threat_id", "defender_detection_id", "defender_action_id",
+    "defender_action_status", "defender_error_code", "defender_error_description",
+    "defender_status_code", "defender_status_description", "defender_metadata_gaps",
 })
 _TAMPER_KINDS = frozenset({
     "runtime-callable-drift", "source-file-drift", "coverage-unavailable",

@@ -22,6 +22,14 @@ Identify this collector separately from the core, scanner and Black Box when
 accounting for CPU or proving retirement. Moving native work to it does not
 prove that every possible source of a GUI pause has been removed.
 
+The private status report includes a bounded `process_inventory` projection of
+the existing owner's and provider's cached lifecycle state. It retains the first
+provider failure after native retirement and cannot advertise readiness solely
+because startup once succeeded. This projection performs no native inventory
+query and starts no replacement worker. Its identifiers are advisory; a cached
+retirement summary does not replace independent retained-handle observations.
+Source Observe privilege gaps and unavailable collectors remain explicit.
+
 Sentinel Lens's advisory graph has a default one-second pause after each
 completed rebuild, plus polling, build and scheduling time. Explicit caller
 intervals remain supported. Event intake, retention, loss accounting, detector
@@ -192,6 +200,14 @@ not authenticate the edited/redacted JSON as the original record and do not
 give a reader response authority. `status()` exposes `enabled`, `running`,
 `endpoint`, `pid`, `birth`, `run_id`, `cursor`, `first_seq`, `queue_dropped`,
 `client_count`, `error`, `transport`, `history_size` and `queued`.
+
+AV Telemetry event details retain `source_event_time` independently from the
+event's delivery timestamp. `source_event_time_status` distinguishes missing,
+invalid and unavailable source metadata. Exact Defender IDs remain strings;
+provided action/error/status fields and explicit metadata gaps survive export.
+These are advisory source fields, not instructions, response permissions or
+proof that remediation succeeded. Native record digests and original event
+authentication remain separate from the redacted stream.
 
 ## Private Black Box diagnostic bundles
 

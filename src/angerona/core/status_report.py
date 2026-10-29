@@ -14,6 +14,7 @@ Files are written only to the configured runtime-data diagnostics directory.
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import tempfile
@@ -47,13 +48,119 @@ def _worker_identity(module) -> dict:
             "advisory_only": True}
 
 
+def _process_inventory_snapshot(owner) -> dict:
+    """Copy bounded cached lifecycle evidence; never start or query a process."""
+    result = {"state": "not-configured", "ready": False, "retired": False,
+              "error_type": "", "advisory_only": True,
+              "scope": "Cached inventory lifecycle; native identity and collection coverage are separate."}
+    if owner is None:
+        return result
+    result["state"] = "unavailable"
+    gaps = []
+
+    def text(value, default=""):
+        if type(value) is not str:
+            return default
+        if len(value) > 120:
+            gaps.append("Cached diagnostic text was truncated")
+        return "".join(char if char.isprintable() else " " for char in value[:120])
+
+    def flag(row, name):
+        value = row.get(name)
+        if type(value) is not bool:
+            gaps.append(f"Invalid cached {name} flag")
+            return False
+        return value
+
+    def error(row, name):
+        value = row.get(name)
+        if value is None:
+            return ""
+        if type(value) is not str:
+            gaps.append(f"Invalid cached {name}")
+            return ""
+        return text(value)
+
+    try:
+        snapshot = owner.lifecycle_snapshot()
+    except Exception as exc:
+        result["error_type"] = type(exc).__name__[:120]
+        return result
+    if type(snapshot) is not dict:
+        result["error_type"] = "invalid-lifecycle-snapshot"
+        return result
+    result.update(state=text(snapshot.get("state"), "unavailable"),
+                  ready=flag(snapshot, "ready"), retired=flag(snapshot, "retired"),
+                  error_type=error(snapshot, "error_type"))
+    if result["state"] not in {"configured", "starting", "running", "unavailable", "retiring", "stopped"}:
+        result.update(state="unavailable", ready=False, error_type="invalid-lifecycle-state")
+    raw = snapshot.get("provider")
+    if type(raw) is not dict:
+        result.update(state="unavailable", ready=False,
+                      error_type="invalid-provider-snapshot")
+        return result
+    provider = {"state": text(raw.get("state"), "unavailable"),
+                "ready": flag(raw, "ready"), "retired": flag(raw, "retired"),
+                "error": error(raw, "error"),
+                "retirement_error": error(raw, "retirement_error"),
+                "auxiliary_close_unproven": flag(raw, "auxiliary_close_unproven")}
+    for name in ("child_pid", "wrapper_pid"):
+        value = raw.get(name)
+        if value is None or type(value) is int and 0 < value <= 0xFFFFFFFF:
+            provider[name] = value
+        else:
+            provider[name] = None
+            gaps.append(f"Invalid cached {name}")
+    birth = raw.get("child_birth")
+    valid_birth = type(birth) is str and 0 < len(birth) <= 80 and birth.isascii()
+    if valid_birth:
+        if os.name == "nt":
+            valid_birth = birth.isdecimal() and 0 < int(birth) <= 0xFFFFFFFFFFFFFFFF
+        else:
+            try:
+                value = float.fromhex(birth)
+                valid_birth = math.isfinite(value) and value > 0 and value.hex() == birth
+            except (ValueError, OverflowError):
+                valid_birth = False
+    provider["child_birth_format"] = "windows-filetime" if os.name == "nt" else "posix-create-time-hex"
+    if birth is None or valid_birth:
+        provider["child_birth"] = birth  # Preserve the exact producer string, without numeric coercion.
+    else:
+        provider["child_birth"] = None
+        gaps.append("Invalid cached child_birth")
+    proofs = raw.get("retirement_proofs", [])
+    if type(proofs) is list and len(proofs) <= 3:
+        provider["retirement_proof_count"] = len(proofs)
+        provider["retirement_waits_signaled"] = bool(proofs) and all(
+            type(row) is dict and row.get("wait_signaled") is True for row in proofs)
+    else:
+        provider["retirement_proof_count"] = None
+        provider["retirement_waits_signaled"] = False
+        gaps.append("Cached retirement proof summary is unavailable")
+    result["provider"] = provider
+    if (result["state"] != "running" or result["retired"]
+            or result["ready"] is not True or provider["ready"] is not True
+            or provider["state"] != "ready" or provider["retired"]
+            or provider["error"] or provider["retirement_error"]
+            or provider["auxiliary_close_unproven"]):
+        result["ready"] = False
+        if result["state"] == "running":
+            result["state"] = "unavailable"
+    if provider["ready"] and any(provider[name] is None for name in ("child_pid", "child_birth", "wrapper_pid")):
+        gaps.append("Cached ready provider lacks process identity")
+    if gaps:
+        result.update(state="unavailable", ready=False, diagnostic_gaps=gaps[:8])
+    return result
+
+
 class StatusReporter:
     def __init__(
         self, bus, storage, manager, config, interval: float = 3.0,
-        telemetry_coverage=None,
+        telemetry_coverage=None, process_snapshot_lifecycle=None,
     ) -> None:
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
         self.telemetry_coverage = telemetry_coverage
+        self.process_snapshot_lifecycle = process_snapshot_lifecycle
         self.interval = interval
         self._stop = threading.Event()
         self._refresh = threading.Event()
@@ -271,6 +378,7 @@ class StatusReporter:
                 60.0 if getattr(self.config, "runtime_chill_active", False) else 30.0,
             ),
             "event_bus": self._bus_snapshot(),
+            "process_inventory": _process_inventory_snapshot(self.process_snapshot_lifecycle),
             "runtime_healer": recovery,
             "automatic_response": response,
             "app_version": __version__,
@@ -310,6 +418,10 @@ class StatusReporter:
 
     def _render_text(self, s: dict) -> str:
         c = s["counts"]
+        inventory = s.get("process_inventory", {})
+        inventory_error = (inventory.get("provider", {}).get("error")
+                           or inventory.get("error_type")
+                           or "cached lifecycle only; collection coverage is separate")
         lines = [
             "=" * 78,
             " ANGERONA — LIVE STATUS SNAPSHOT",
@@ -325,6 +437,7 @@ class StatusReporter:
             f"{s['ollama'].get('startup', {}).get('stage', 'Not requested')}",
             f" Response  : {s.get('automatic_response', {}).get('state', 'UNAVAILABLE')} "
             f"— {s.get('automatic_response', {}).get('reason', '')}",
+            f" Inventory : {inventory.get('state', 'unavailable')} — {inventory_error}",
             "",
             "-" * 78,
             " TELEMETRY COVERAGE",

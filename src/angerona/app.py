@@ -245,6 +245,7 @@ class AngeronaApp:
         self.reporter = StatusReporter(
             self.bus, self.storage, self.manager, self.config,
             telemetry_coverage=self.telemetry_coverage,
+            process_snapshot_lifecycle=self._process_snapshot_lifecycle,
         )
         self._resilience = None
         self._fleet_plane = None

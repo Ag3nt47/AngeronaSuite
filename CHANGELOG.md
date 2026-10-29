@@ -41,6 +41,15 @@
 - Keep active scan storage accounting compatible with normal generated
   temporary-file deletion and atomic report writes. Retained evidence and
   installed-file inventories remain strict, with unchanged storage limits.
+- Preserve toolkit finding/reference/withdrawn counts and bounded classification
+  context in scan results and after-action review. Keep coverage gaps and
+  unconfirmed external evidence explicit, including after early failures.
+- Preserve the shared process-inventory worker's first failure through cleanup,
+  reconcile cached owner readiness after provider failure, and expose bounded
+  inventory lifecycle diagnostics without starting a replacement collector.
+- Retain Defender source timestamps, exact threat/detection identifiers and
+  available action/error/status fields in alerts and Live Debug. Describe an
+  action as reported rather than inferring remediation success from its name.
 - Refresh the manual, diagrams, browser-readable exports and synthetic demo
   media. Keep source version metadata consistent at 1.14.2; signed installed
   release acceptance remains separate.

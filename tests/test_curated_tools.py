@@ -372,7 +372,7 @@ def test_phone_input_uses_phone_flag_and_never_password_argument(tmp_path):
 
 def report_document(*, state="completed", count=0, gaps=(), reference=False):
     detail = "MAL_DevilsTongue_HijackDll; author: MSTIC; license: DRL-1.1"
-    hit = {"indicator": "synthetic.invalid", "evidence": "file-content", "detail": detail}
+    hit = {"indicator": "synthetic.invalid", "evidence": "referenced" if reference else "file-content", "detail": detail}
     return {"schema_version": "1.6", "tool": {"name": "zero-breach-toolkit", "version": "0.1.10"},
             "scope": {"scanned": True, "cancelled": False}, "scan_state": state,
             "verdict": {"status": "untrusted status", "hits_total": count, "findings_total": 0 if reference else count,

@@ -33,10 +33,12 @@ import json
 import math
 import ntpath
 import os
+import re
 import secrets
 import subprocess
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Optional
@@ -225,6 +227,81 @@ def _extract(root: ET.Element, name: str) -> str:
     return ""
 
 
+def _native_metadata(root: ET.Element) -> dict:
+    """Keep bounded source fields as evidence, never as response authority."""
+    fields = {
+        "Threat ID": ("defender_threat_id", 20, "threat"),
+        "Detection ID": ("defender_detection_id", 38, "guid"),
+        "Action ID": ("defender_action_id", 10, "action"),
+        "Action Status": ("defender_action_status", 256, "text"),
+        "Error Code": ("defender_error_code", 256, "text"),
+        "Error Description": ("defender_error_description", 512, "text"),
+        "Status Code": ("defender_status_code", 256, "text"),
+        "Status Description": ("defender_status_description", 512, "text"),
+    }
+    found = {}
+    for node in root.iter(f"{{{_NS}}}Data"):
+        name = node.get("Name")
+        if name in fields:
+            found[name] = None if name in found else node.text
+    result, gaps = {}, []
+    for name, (key, limit, kind) in fields.items():
+        if name not in found:
+            if name in {"Threat ID", "Detection ID"}:
+                gaps.append(f"{key}:missing")
+            continue
+        value = found[name]
+        valid = (type(value) is str and 0 < len(value) <= limit
+                 and bool(value.strip()) and all(char.isprintable() for char in value))
+        if valid and kind in {"threat", "action"}:
+            # Keep IDs as exact decimal strings across JSON readers. Threat IDs
+            # are admitted in the nonnegative Int64 range; no absent-zero default.
+            valid = value.isascii() and value.isdecimal() and int(value) <= (
+                2**63 - 1 if kind == "threat" else 2**32 - 1)
+        elif valid and kind == "guid":
+            unbraced = value[1:-1] if value.startswith("{") and value.endswith("}") else value
+            try:
+                valid = len(unbraced) == 36 and str(uuid.UUID(unbraced)) == unbraced.lower()
+            except ValueError:
+                valid = False
+        if valid:
+            result[key] = value
+        else:
+            gaps.append(f"{key}:invalid-or-duplicate")
+    if gaps:
+        result["defender_metadata_gaps"] = "; ".join(gaps)
+    return result
+
+
+def _source_event_time(rec: object) -> tuple[str | None, str]:
+    """Preserve the native timestamp separately from Event.ts delivery time."""
+    try:
+        value = getattr(rec, "TimeGenerated", None)
+    except Exception:
+        return None, "unavailable"
+    if value is None:
+        return None, "missing"
+    if isinstance(value, datetime):
+        try:
+            value = datetime.isoformat(value)
+        except Exception:
+            return None, "invalid"
+    if type(value) is not str or len(value) > 80 or not value.isascii():
+        return None, "invalid"
+    match = re.fullmatch(
+        r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?(Z|[+-]\d{2}:\d{2})", value)
+    if match is None:
+        return None, "invalid"
+    # Older supported Python releases accept fewer fractional digits. Validate
+    # calendar/offset with microseconds, retaining the original source precision.
+    check = match[1] + ("." + match[2][:6] if match[2] else "") + match[3].replace("Z", "+00:00")
+    try:
+        datetime.fromisoformat(check)
+    except ValueError:
+        return None, "invalid"
+    return value, "available"
+
+
 def _parse_1116(root: ET.Element) -> tuple[str, dict]:
     threat    = _extract(root, "Threat Name")
     path      = _extract(root, "Path")
@@ -242,6 +319,7 @@ def _parse_1116(root: ET.Element) -> tuple[str, dict]:
         "action":         action,
         "process":        proc,
         "mitre_tags":     ["T1204", "T1059"],
+        **_native_metadata(root),
     }, path)
     return msg, details
 
@@ -250,14 +328,23 @@ def _parse_1117(root: ET.Element) -> tuple[str, dict]:
     threat  = _extract(root, "Threat Name")
     path    = _extract(root, "Path")
     action  = _extract(root, "Action Name")
-    result  = _extract(root, "Action Status")
-    msg = f"Defender remediated {threat!r} — {action} on {path!r} ({result})"
+    metadata = _native_metadata(root)
+    result = metadata.get("defender_action_status") or "; ".join(
+        f"{label}={metadata[key]}" for label, key in (
+            ("Error Code", "defender_error_code"), ("Status Code", "defender_status_code"))
+        if key in metadata)
+    if not result:
+        result = "result unavailable"
+        metadata["defender_metadata_gaps"] = "; ".join(filter(None, (
+            metadata.get("defender_metadata_gaps"), "action-result:unavailable")))
+    msg = f"Defender action reported for {threat!r} — {action} on {path!r} ({result})"
     details = _with_artifact_paths({
         "threat_name":    threat,
         "path":           path,
         "action":         action,
         "result":         result,
         "mitre_tags":     ["T1204"],
+        **metadata,
     }, path)
     return msg, details
 
@@ -925,6 +1012,11 @@ class AVTelemetryBridgeModule(BaseModule):
 
         record_number = self._record_number(rec)
         digest = self._record_digest(rec)
+        source_time, time_status = _source_event_time(rec)
+        metadata = {"source_event_time_status": time_status,
+                    "source_metadata_advisory": True}
+        if source_time is not None:
+            metadata["source_event_time"] = source_time
         return msg, severity, {
             "eid": eid,
             **details,
@@ -932,6 +1024,7 @@ class AVTelemetryBridgeModule(BaseModule):
             "channel_record_id": record_number or None,
             "channel_record_sha256": digest,
             "delivery_semantics": "durable-at-least-once",
+            **metadata,
         }
 
     def _process_record(self, rec: object) -> None:

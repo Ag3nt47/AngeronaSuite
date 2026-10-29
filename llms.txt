@@ -68,6 +68,18 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   Active quota polling separately accounts for generated file churn; default
   installed/retained inventories stay strict. Missing stable controls and
   observed redirects, links, permission failures and quota excess remain holds.
+- Runtime review maintenance preserves source toolkit verdict subcounts and
+  bounded row classifications; historical contact, contextual references and
+  withdrawn indicators are not confirmed infection or response authority.
+  Shared process-inventory diagnostics preserve the first provider failure and
+  reconcile cached owner/provider readiness. Status reports expose a bounded,
+  advisory process_inventory projection; no native query, fallback collector,
+  automatic replacement or changed custody deadline is implied. See
+  analysis/live-review-2026-10-29.md for this review's exact observation scope.
+  AV Telemetry now retains bounded native source time, exact string identifiers
+  and provided result fields; Event.ts stays delivery time. Missing/duplicate/
+  invalid source metadata is explicit. A reported action or zero error text is
+  not independently verified remediation, active-attack or response authority.
 - A latched Breached warning, critical report and borders require fresh native
   manager-enrolled LIVE mesh evidence, registered/current producer, an exact
   contract and explicit active attack/exploitation. Health/exposure/practice,

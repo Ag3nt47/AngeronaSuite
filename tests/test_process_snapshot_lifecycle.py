@@ -33,7 +33,7 @@ class Provider:
         return sum(action == "stop" for action, _ in self.calls) >= self.retire_after
 
     def lifecycle_snapshot(self):
-        return {"ready": self.ready, "advisory_only": True}
+        return {"ready": self.ready, "retired": False, "advisory_only": True}
 
 
 def retired(owner):
@@ -89,6 +89,77 @@ def test_one_owner_starts_once_and_retires_only_after_explicit_stop():
     assert [name for name, _ in provider.calls] == ["start", "stop"]
     assert configured == [provider]  # Never unregister and select a local fallback.
     assert not owner.start()
+
+
+@pytest.mark.parametrize("failure", [
+    {"ready": False, "retired": True, "error": "request-deadline"},
+    {"ready": False, "error": "InventoryWorkerError"},
+    {"ready": 1},
+    {"retired": "unknown"},
+    {"retirement_error": "InventoryCustodyCloseError"},
+    {"auxiliary_close_unproven": True},
+])
+def test_provider_failure_after_start_cannot_leave_owner_reported_ready(failure):
+    class FailingProvider(Provider):
+        snapshot = {"ready": True, "retired": False, "error": None}
+
+        def lifecycle_snapshot(self):
+            return dict(self.snapshot, advisory_only=True)
+
+    provider = FailingProvider()
+    owner = ProcessSnapshotLifecycle(provider, configure=lambda _: None)
+    try:
+        assert owner.start() and background(owner.wait_started)
+        provider.snapshot = {**provider.snapshot, **failure}
+        view = owner.lifecycle_snapshot()
+        assert view["state"] == "unavailable" and view["ready"] is False
+        assert not background(owner.wait_started)
+        assert not view["retired"] and owner._thread.is_alive()
+        owner.start()  # The existing lifetime remains owned; no replacement starts.
+        assert [action for action, _ in provider.calls] == ["start"]
+    finally:
+        owner.request_stop()
+        retired(owner)
+    assert [action for action, _ in provider.calls] == ["start", "stop"]
+
+
+def test_cached_provider_diagnostic_failure_is_unavailable_without_respawn():
+    class FailingProvider(Provider):
+        broken = False
+
+        def lifecycle_snapshot(self):
+            if self.broken:
+                raise RuntimeError("inert cached publication failure")
+            return super().lifecycle_snapshot()
+
+    provider = FailingProvider()
+    owner = ProcessSnapshotLifecycle(provider, configure=lambda _: None)
+    try:
+        assert owner.start() and background(owner.wait_started)
+        provider.broken = True
+        view = owner.lifecycle_snapshot()
+        assert view["state"] == "unavailable" and not view["ready"]
+        assert view["provider"] == {"error_type": "RuntimeError"}
+        assert [action for action, _ in provider.calls] == ["start"]
+    finally:
+        owner.request_stop()
+        retired(owner)
+
+
+def test_stop_racing_cached_provider_read_cannot_republish_running():
+    provider = Provider()
+    owner = ProcessSnapshotLifecycle(provider, configure=lambda _: None)
+    try:
+        assert owner.start() and background(owner.wait_started)
+        def stopping_snapshot():
+            owner.request_stop()
+            return {"ready": True, "retired": False}
+        provider.lifecycle_snapshot = stopping_snapshot
+        view = owner.lifecycle_snapshot()
+        assert not view["ready"] and view["state"] in {"retiring", "stopped"}
+    finally:
+        owner.request_stop()
+        retired(owner)
 
 
 def test_failed_start_keeps_provider_registered_and_does_not_respawn():

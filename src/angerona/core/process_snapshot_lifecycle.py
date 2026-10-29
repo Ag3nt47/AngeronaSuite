@@ -91,8 +91,7 @@ class ProcessSnapshotLifecycle:
         self._require_background_wait()
         if not self._start_finished.wait(max(0.0, min(30.0, float(timeout)))):
             return False
-        with self._lock:
-            return self._ready and not self._stop_requested.is_set()
+        return self.lifecycle_snapshot()["ready"]
 
     @staticmethod
     def _require_background_wait() -> None:
@@ -127,6 +126,20 @@ class ProcessSnapshotLifecycle:
             result["provider"] = dict(self.provider.lifecycle_snapshot())
         except Exception as exc:
             result["provider"] = dict(error_type=type(exc).__name__[:120])
+        provider = result["provider"]
+        # The owner remains alive to retain custody after a provider failure.
+        # Its successful startup is not evidence that the provider is still
+        # ready. Reconcile only the provider's existing memory publication;
+        # never probe, restart or select a local collector from this accessor.
+        if result["state"] == "running":
+            if self._stop_requested.is_set():
+                result.update(state="retiring", ready=False)
+            elif (provider.get("ready") is not True
+                    or provider.get("retired") is not False
+                    or provider.get("error")
+                    or provider.get("retirement_error")
+                    or provider.get("auxiliary_close_unproven") is True):
+                result.update(state="unavailable", ready=False)
         return result
 
 

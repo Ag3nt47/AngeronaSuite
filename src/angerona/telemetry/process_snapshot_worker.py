@@ -526,12 +526,22 @@ class ProcessSnapshotProvider:
         with self._lock:
             self._ready = False
             self._stopping = True
-            self._reason = reason[:120]
-            self._failure = reason[:120]
+            # A deadline can close the pipe and produce a second exception on
+            # the IPC worker. Preserve the first failure instead of replacing
+            # it with that cleanup consequence or the later retired state.
+            if self._failure is None:
+                self._failure = reason[:120]
+            if not self._retired:
+                self._reason = self._failure
             pending = self._pending
         self._startup.set()
         if pending is not None:
             pending.done.set()
+
+    def _unavailable_reason_locked(self) -> str:
+        if self._failure and self._reason != self._failure:
+            return f"{self._failure}; state={self._reason}"[:120]
+        return self._failure or self._reason
 
     def start(self) -> bool:
         if on_gui_thread():
@@ -577,7 +587,7 @@ class ProcessSnapshotProvider:
         try:
             with self._lock:
                 if not self._ready or self._stopping:
-                    return unavailable(self._reason)
+                    return unavailable(self._unavailable_reason_locked())
                 self._sequence += 1
                 request = _Request(self._sequence, secrets.token_hex(16))
                 self._pending = request
@@ -589,7 +599,8 @@ class ProcessSnapshotProvider:
             with self._lock:
                 valid = self._ready and not self._stopping and self._pending is request
                 self._pending = None
-            return request.result if valid and request.result is not None else unavailable(self._reason)
+                reason = self._unavailable_reason_locked()
+            return request.result if valid and request.result is not None else unavailable(reason)
         finally:
             self._operation.release()
 

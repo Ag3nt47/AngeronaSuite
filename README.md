@@ -59,6 +59,11 @@ Large profiles can use a separate per-run allowance of up to four hours; saved
 defaults and storage/resource controls remain unchanged.
 Active accounting tolerates normal generated-file cleanup while keeping strict
 checks on installed files, retained evidence and storage limits.
+Scan reports distinguish tool findings, contextual references and withdrawn
+indicators. Runtime diagnostics expose shared process-inventory readiness and
+preserve its first failure through worker retirement.
+Defender alerts retain native source time, correlation IDs and available result
+fields separately from delivery time and confirmed response outcomes.
 [What changed and current limits](docs/releases/v1.14.2.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 

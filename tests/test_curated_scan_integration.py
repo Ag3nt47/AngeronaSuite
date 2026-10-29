@@ -94,6 +94,7 @@ def test_qt_priority_chain_actual_pinned_positive_report_and_inert_native_progre
 
     monkeypatch.setattr(service, "_environment", isolated_environment)
     command = service._command
+    observation_ack = root / "qt-partial-observation.ack"
 
     def observed_command(image, request_path):
         values = command(image, request_path)
@@ -103,6 +104,7 @@ def test_qt_priority_chain_actual_pinned_positive_report_and_inert_native_progre
         # pinned scanner bytes and its returned reads remain unchanged.
         observer = """
 import sys,time
+from pathlib import Path
 def controlled_audit(event,args):
     if event.startswith('winreg.') or event in {'socket.connect','socket.bind','socket.getaddrinfo','socket.sendto','subprocess.Popen','os.system'}:
         print('CONTROLLED_CHAIN_FORBIDDEN_ACTION:'+event,file=sys.stderr,flush=True)
@@ -115,10 +117,17 @@ def observed_position(self,token,position):
     if self.current_file.endswith('owned-ui-evidence.bin') and self.item_total and 0 < position < self.item_total and not getattr(self,'_controlled_pause',False):
         self._controlled_pause=True
         self.publish(force=True)
-        time.sleep(1) # Bounded observation window after a genuine partial read.
+        # Keep this genuine read visible until Qt actually witnesses it. A
+        # fixed delay can expire between latest-snapshot samples under load.
+        deadline=time.monotonic()+30
+        while not Path(__CONTROLLED_ACK_PATH__).exists():
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Controlled Qt partial-read witness timed out')
+            time.sleep(.02)
 ScannerProgress.read_position=observed_position
 from angerona.core.curated_tool_worker import main
 """
+        observer = observer.replace("__CONTROLLED_ACK_PATH__", repr(str(observation_ack)))
         assert values[position].count(marker) == 1
         values[position] = values[position].replace(marker, "\n" + observer + "\n")
         return values
@@ -167,6 +176,7 @@ from angerona.core.curated_tool_worker import main
         assert "bytes read" in panel.item_caption.text()
         assert panel.progress_ring.percent < 100 and panel.cancel_button.isEnabled()
         assert panel.activity.textFormat().name == "PlainText"
+        tools._atomic_bytes_write(observation_ack, b"Observed genuine partial Qt file/unit/counters", root=root)
         _until(lambda: service.progress_snapshot().get("owner_retired") is True)
         assert controller.snapshot()["busy"] is True  # Exact native collector still owns its request.
         assert manager.priority_scan_focus_snapshot()["active"] is True
@@ -222,6 +232,10 @@ from angerona.core.curated_tool_worker import main
             "external_report_confirmed": dialog._confirmed,
         }, indent=2), encoding="utf-8")
     finally:
+        # Failure releases the private child barrier without satisfying or
+        # removing any assertion above; owned collection can then retire.
+        if not observation_ack.exists():
+            tools._atomic_bytes_write(observation_ack, b"Cleanup after unsuccessful observation", root=root)
         release.set()
         controller.shutdown()
         retire(native)

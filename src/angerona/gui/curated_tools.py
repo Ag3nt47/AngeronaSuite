@@ -64,6 +64,34 @@ def _literal(value, limit=32768):
     return str(value if value is not None else "").replace("\x00", "")[:limit]
 
 
+def _match_summary(report):
+    """Present external classifications; this never grants threat authority."""
+    if type(report) is not dict:
+        return ""
+    details = report.get("details")
+    details = details if type(details) is dict else {}
+    candidates = (report, details.get("zero_breach"), report.get("partial_result"))
+    source = next((item for item in candidates if type(item) is dict and type(item.get("match_counts")) is dict), None)
+    if source is None:
+        return ""
+    counts = source["match_counts"]
+    names = ("total", "tool_findings", "references", "withdrawn", "displayed", "omitted")
+    if (any(type(counts.get(name)) is not int or not 0 <= counts[name] <= 4000 for name in names)
+            or counts["total"] != sum(counts[name] for name in ("tool_findings", "references", "withdrawn"))
+            or counts["total"] != counts["displayed"] + counts["omitted"]):
+        return "Toolkit classification counts unavailable; review the preserved report."
+    finding = "tool finding" if counts["tool_findings"] == 1 else "tool findings"
+    reference = "contextual reference" if counts["references"] == 1 else "contextual references"
+    result = (f"Toolkit report: {counts['tool_findings']} {finding} · {counts['references']} {reference}"
+              f" · {counts['withdrawn']} withdrawn.")
+    coverage = source.get("coverage_incomplete")
+    result += (" Coverage incomplete." if coverage is True else
+               " Recorded coverage only." if coverage is False else " Coverage status unavailable.")
+    if counts["omitted"]:
+        result += f" {counts['displayed']}/{counts['total']} matches displayed; others remain in the original."
+    return result + " External matches are unconfirmed; contact does not establish infection."
+
+
 def _config(manager):
     candidate = getattr(manager, "cfg", None)
     return candidate if candidate is not None else getattr(manager, "config", None)
@@ -173,6 +201,7 @@ class CuratedToolsController(QObject):
             # An early failure must not present a previous request's evidence
             # as this run's findings. Saved report files remain untouched.
             for key in ("request_id", "native", "coverage", "findings", "details", "report",
+                        "match_counts", "coverage_incomplete", "display_omitted",
                         "partial_result", "error", "native_scan_completion", "review_gap",
                         "previous_attempt", "resource_usage", "admin_state", "job_id", "tool",
                         "created_at", "retained_files", "cleanup", "authority", "native_retired",
@@ -444,6 +473,7 @@ class CuratedToolsController(QObject):
                                  if incomplete else "Spyware scan finished. Review each scanner's findings and coverage."),
                         request_id=request_id, native=native_state, coverage={"native": native_state, "zero_breach": tool_result.get("coverage")},
                         findings=tool_result.get("findings", []), report=tool_result.get("report"),
+                        match_counts=tool_result.get("match_counts"), coverage_incomplete=tool_result.get("coverage_incomplete"),
                         details={"native": native_state, "zero_breach": tool_result},
                         scan_progress=scan_progress("finished", terminal=True))
         finally:
@@ -700,8 +730,10 @@ class CuratedToolsController(QObject):
             self._completion_dialog = dialog
         else:
             dialog.update_report(report, confirmed=False)
+        summary = _match_summary(report)
         dialog.notice.setText("Spyware scan review · " + _literal(report.get("state", "unknown"), 80)
-                              + ". Review native coverage and toolkit leads; completion does not establish a clean PC.")
+                              + ". Review native coverage and toolkit leads; completion does not establish a clean PC."
+                              + ("\n" + summary if summary else ""))
         if trace:
             dialog.show_trace()
         else:
@@ -1534,6 +1566,9 @@ class SpywareScanControls(QWidget):
         gap = snapshot.get("focus_lease_gap")
         if type(gap) is str and gap:
             reason = str(reason or "") + "\n" + gap
+        summary = _match_summary(snapshot)
+        if summary:
+            reason = str(reason or "") + ("\n" if reason else "") + summary
         self.outcome.setText(_literal(reason, 1800))
         self.outcome.setVisible(bool(reason))
 
@@ -1765,8 +1800,10 @@ class CuratedScannerWidget(QWidget):
         verified = bool(state.get("verified"))
         executable = state.get("execution_available") is not False
         enabled = bool(getattr(_config(self.controller.manager), "github_tools_enabled", True))
+        summary = _match_summary(state)
         self.status.setText(f"{_literal(state.get('state', 'unknown'), 80)} · v{_literal(state.get('version', '0.1.10'), 40)}\n"
-                            + _literal(state.get("message"), 1200))
+                            + _literal(state.get("message"), 1200)
+                            + ("\n" + summary if summary else ""))
         self.install_button.setEnabled(not busy and enabled)
         self.run_button.setEnabled(not busy and verified and enabled and executable)
         self.priority_button.setEnabled(not self.controller._closed)
@@ -1776,7 +1813,7 @@ class CuratedScannerWidget(QWidget):
         self.revert_button.setEnabled(not busy and bool(state.get("installed")))
         self.credits_button.setEnabled(not busy)
         self.settings_button.setEnabled(not busy)
-        selected = {key: state[key] for key in ("state", "message", "coverage", "findings", "details", "report", "latest_report", "partial_result")
+        selected = {key: state[key] for key in ("state", "message", "coverage", "coverage_incomplete", "match_counts", "findings", "details", "report", "latest_report", "partial_result")
                     if key in state}
         content = _literal(selected)
         if self.results.toPlainText() != content:

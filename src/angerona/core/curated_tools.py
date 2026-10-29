@@ -1665,18 +1665,46 @@ def _validate_report(job: Path, outcome: dict) -> dict:
             hits.append(dict(item, module=module_name))
             if len(hits) > 4000:
                 return dict(base, state="error", details="Scanner finding schema exceeded its bounds.")
+    # These are the pinned toolkit's classifications, not infection verdicts or
+    # response authority. Unknown evidence remains reviewable rather than benign.
+    classifications = []
+    for item in hits:
+        if any(type(item.get(flag, False)) is not bool for flag in ("withdrawn_only", "withdrawal_present")):
+            return dict(base, state="error", details="Scanner withdrawal metadata is invalid; review the preserved original.")
+        classifications.append("reference" if item.get("evidence") == "referenced" else
+                               "withdrawn" if item.get("withdrawn_only", False) else "tool-finding")
+    if (counts[0] != len(hits) or counts[0] != sum(counts[1:])
+            or counts[1:] != [classifications.count(name) for name in ("tool-finding", "reference", "withdrawn")]):
+        return dict(base, state="error", details="Scanner classification counts contradict its rows; review the preserved original.")
     # Never render upstream instructions, HTML, suggested commands or trust
     # decisions. Detail text retains original author attribution on pattern hits.
     display = []
     display_bytes = 0
-    for item in hits[:200]:
+    for item, classification in zip(hits[:200], classifications):
         if type(item) is dict:
             row = {key: _plain(item.get(key), 4096) for key in
-                   ("check", "module", "indicator", "family", "evidence", "detail", "author", "source", "license", "location") if isinstance(item.get(key), str)}
+                   ("check", "module", "indicator", "family", "evidence", "detail", "author", "source", "license", "location",
+                    "kind", "tier", "confidence", "observed", "artifact") if isinstance(item.get(key), str)}
         elif isinstance(item, str):
             row = {"detail": _plain(item, 4096)}
         else:
             continue
+        row["classification"] = classification
+        for flag in ("withdrawn_only", "withdrawal_present"):
+            row[flag] = item.get(flag, False)
+        context = item.get("indicator_context", [])
+        row["indicator_context"] = []
+        if type(context) is list:
+            for record in context[:8]:
+                if type(record) is dict:
+                    retained = {key: _plain(record[key], 256) for key in ("source", "artifact_type", "role")
+                                if type(record.get(key)) is str}
+                    if retained:
+                        row["indicator_context"].append(retained)
+            if len(context) != len(row["indicator_context"]):
+                row["indicator_context_omitted"] = len(context) - len(row["indicator_context"])
+        else:
+            row["classification_metadata_gap"] = "Indicator context had an unsupported type; review the original."
         count = len(json.dumps(row, ensure_ascii=True).encode())
         if display_bytes + count > 128 * 1024:
             break
@@ -1703,6 +1731,9 @@ def _validate_report(job: Path, outcome: dict) -> dict:
     else:
         state, message = "error", "Scanner ended with an error or inconsistent verdict."
     return dict(base, state=state, message=message, findings=display, display_omitted=max(0, len(hits) - len(display)),
+                match_counts=dict(total=counts[0], tool_findings=counts[1], references=counts[2], withdrawn=counts[3],
+                                  displayed=len(display), omitted=max(0, len(hits) - len(display))),
+                coverage_incomplete=has_gaps,
                 coverage={"checked": _plain(json.dumps(coverage.get("checked", []), ensure_ascii=True), 8192),
                           "not_checked": _plain(json.dumps(coverage.get("not_checked", []), ensure_ascii=True), 8192)},
                 details="A known-indicator check cannot establish that a device is infection-free. "
