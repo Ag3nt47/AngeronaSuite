@@ -305,6 +305,10 @@ $source=[IO.File]::ReadAllText((Join-Path $env:PROCESS_TEST_ROOT 'tools\startup_
 $needle='if(info.active!=0)throw new TimeoutException("Owned startup job is still active; retry is held.");'
 if(!$source.Contains($needle)){throw 'The native retirement fixture no longer identifies its proof boundary.'}
 $source=$source.Replace($needle,'if(System.Diagnostics.Stopwatch.GetTimestamp()>0)throw new TimeoutException("Injected native retirement proof failure.");')
+# ScriptBlock.Create has no declaring file. Preserve the reviewed file's root
+# context for its compiler fallback without changing the injected proof failure.
+$rootLiteral="'"+$env:PROCESS_TEST_ROOT.Replace("'","''")+"'"
+$source=$source.Replace('$fixedRoot = Split-Path -Parent $PSScriptRoot',('$fixedRoot = '+$rootLiteral))
 . ([scriptblock]::Create($source))
 function Get-CanonicalSourceStartupStorage {return (Join-Path $env:PROCESS_TEST_SCRATCH 'SourceData')}
 $storage=Get-CanonicalSourceStartupStorage;New-PrivateRepairDirectory $storage

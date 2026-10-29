@@ -712,6 +712,24 @@ passed 30 cases, with all 64 observed native generations retired and scoped
 source unchanged. The separate toolkit feature work was excluded from this
 diagnostic publication.
 
+Fresh hosted diagnostics on `ea8ec3cb` establish that the output limiter admitted
+zero bytes because it observed a non-flat entry. The entry was transient: the
+later flat fixture inventory no longer contained it. This locates output loss,
+not the separate first-paint delay. Native owner compilation still used the
+critical TEMP directory, unlike the identity helper's dedicated compiler area.
+It now uses the same private compiler namespace and restores the caller's TEMP
+and TMP in `finally`. A native regression deliberately retains a compiler
+directory while launching a child; critical output remains readable. Nineteen
+focused cases passed with all 116 observed native generations retired and scoped
+source unchanged. The actual hosted transient entry's creator is not inferred
+from its absence in the later inventory.
+A wider bundle, bootstrap and process-admission gate passed 42 cases and found
+one fixture-context failure: its dynamically created ScriptBlock did not retain
+the source file's root needed by the compiler fallback. The fixture now supplies
+that exact reviewed root without changing its injected retirement-proof failure.
+The focused replay passed. All 107 observed generations in the wider run and
+all seven in the replay retired; the runtime correction was unchanged.
+
 ## Remaining limits
 
 Angerona is a Ring 3 application. An editable source launcher is not an

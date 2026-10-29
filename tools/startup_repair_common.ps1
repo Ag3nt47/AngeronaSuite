@@ -649,6 +649,12 @@ function Initialize-OwnedRepairProcess {
     if ('Angerona.StartupRepairProcess' -as [type]) { return }
     # Windows 10+: atomic job assignment avoids the suspended-child orphan
     # window. The handle allowlist prevents unrelated parent handles leaking.
+    # Add-Type may retain transient compiler directories after returning. Keep
+    # those out of the flat critical workspace used for live output admission.
+    $compilerScratch = Get-RepairProcessCompilerScratch
+    $savedTemp, $savedTmp = $env:TEMP, $env:TMP
+    try {
+    $env:TEMP = $compilerScratch; $env:TMP = $compilerScratch
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -1248,6 +1254,7 @@ public static class StartupRepairProcess {
 }
 }
 '@
+    } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
 }
 
 function Get-SourceStartupReadLease([IO.FileStream]$ScratchLease, [bool]$ExplicitLease = $false) {

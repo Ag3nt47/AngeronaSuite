@@ -422,6 +422,47 @@ try{
     assert record["error_hresult"] == -2147024891
 
 
+def test_native_compiler_scratch_cannot_suppress_critical_live_output(tmp_path):
+    (tmp_path / "compiler-child.py").write_text("print('COMPILER_SCOPE_LIVE', flush=True)\n", encoding="utf-8")
+    source = SETUP + r"""
+$script:RealCompilerCommand=Get-Command Add-Type -CommandType Cmdlet
+$script:ObservedCompilerScratch='';$script:CompilerTransient=$null
+function Add-Type {
+    param([string]$TypeDefinition)
+    if($TypeDefinition.Contains('public static class StartupRepairProcess')) {
+        $script:ObservedCompilerScratch=[IO.Path]::GetFullPath($env:TEMP)
+        $script:CompilerTransient=Join-Path $script:ObservedCompilerScratch 'compiler-still-active'
+        [void][IO.Directory]::CreateDirectory($script:CompilerTransient)
+    }
+    & $script:RealCompilerCommand -TypeDefinition $TypeDefinition
+}
+$owner=$null
+try {
+    $log=Join-Path $private 'compiler-scope.log'
+    $owner=Start-OwnedRepairWindow -FilePath $env:LEASE_TEST_PYTHON -Arguments @('-B','-I',
+        (Join-Path $env:LEASE_TEST_SCRATCH 'compiler-child.py')) -WorkingDirectory $env:LEASE_TEST_ROOT `
+        -Environment $childEnvironment -LogPath $log
+    if(!$owner.WaitForExit(15000) -or $owner.ExitCode -ne 0){throw 'Actual compiler-scope child did not retire.'}
+    if(!$script:ObservedCompilerScratch -or $script:ObservedCompilerScratch -ceq $private -or
+        [IO.Path]::GetFileName($script:ObservedCompilerScratch) -cne 'process-compiler'){
+        throw 'Native compilation used the flat critical log workspace.'
+    }
+    if([IO.File]::ReadAllText($log).Trim() -cne 'COMPILER_SCOPE_LIVE'){
+        throw 'A retained compiler directory suppressed critical output.'
+    }
+    Write-Output 'RESULT:{"compiler_separate":true,"marker":true}'
+}finally {
+    if($owner){$owner.Dispose()};$guard.Dispose()
+    if($script:CompilerTransient -and [IO.Directory]::Exists($script:CompilerTransient)){
+        [IO.Directory]::Delete($script:CompilerTransient,$false)
+    }
+}
+"""
+    result = _run_script(tmp_path, source)
+    row = json.loads(next(line[7:] for line in result.stdout.splitlines() if line.startswith("RESULT:")))
+    assert row == {"compiler_separate": True, "marker": True}
+
+
 def test_critical_capture_streams_share_remaining_workspace_budget(tmp_path):
     (tmp_path / "quota.py").write_text("import sys\nsys.stdout.buffer.write(b'x'*(2*1024*1024))\nsys.stdout.flush()\nsys.stderr.buffer.write(b'y'*(2*1024*1024))\nsys.stderr.flush()\nraise SystemExit(23)\n", encoding="utf-8")
     source = SETUP + r"""
