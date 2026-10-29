@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 from pathlib import Path
 
@@ -66,7 +67,16 @@ def test_canonical_launcher_refuses_an_unreviewed_existing_venv_before_launch():
 
     assert abi_gate < pip_gate < dependency_preflight < launch
     assert "Enter-RepairLease -Root $Root" in supervisor
-    assert "Invoke-AngeronaSourceStartup.ps1" in canonical
+    # The mutable supervisor is reached only through the embedded pinned
+    # bootstrap and its byte-verified recovery-bundle boundary.
+    verifier = (ROOT / "tools" / "verify_startup_recovery_bundle.ps1").read_text(encoding="utf-8")
+    manifest = json.loads((ROOT / "assets" / "startup-recovery-manifest.json").read_text())
+    assert ":__ANGERONA_PINNED_BOOTSTRAP__" in canonical
+    assert "tools\\verify_startup_recovery_bundle.ps1" in canonical
+    assert "'-ExpectedVerifierSha256',$verifierSha,'-RunSupervisor'" in canonical
+    assert "Invoke-BundleVerifiedSupervisor" in verifier
+    assert "Join-Path $Root 'tools\\Invoke-AngeronaSourceStartup.ps1'" in verifier
+    assert "tools/Invoke-AngeronaSourceStartup.ps1" in {entry["path"] for entry in manifest["files"]}
     assert "Repair-Angerona-Python.bat" in canonical
     assert "Install-Angerona-Release.bat" in canonical
 
@@ -92,7 +102,10 @@ def test_source_python_repair_is_confirmed_bounded_and_hash_locked():
     assert "m.version('pip') == '26.2.2'" in repair
     assert "venv.incompatible.repair.$id" in repair
     assert "Remove-OwnedRepairDirectory" in repair
-    assert "Move-Item -LiteralPath $intent.Backup -Destination $venv" in repair
+    assert "Move-RepairRuntimeDirectory $intent.Backup $venv $intent.OriginalId -Reconcile" in repair
+    assert "RenameDirectoryExact($From, $To, $ExpectedIdentity)" in repair
+    assert "Get-RepairDirectoryIdentity $source" in repair
+    assert "(Test-Path -LiteralPath $destination)" in repair
     assert "Set-Acl" not in repair and "icacls" not in repair.casefold()
     assert "ANGERONA_DATA" not in repair
     assert "New-PrivateRepairDirectory" in common

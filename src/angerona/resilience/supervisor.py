@@ -238,7 +238,7 @@ def spawn_detached(argv: list[str], env: Optional[dict] = None,
     # mail, webhook, fleet, or provider credentials. Building the block from an
     # allowlist also prevents proxy/Python controls from crossing this boundary.
     kwargs: dict = {
-        "env": sanitized_child_environment(env),
+        "env": sanitized_child_environment(source=env),
         "close_fds": True,
     }
     if cwd is not None:

@@ -3,7 +3,7 @@
 This maintenance change bounds recovery storage, makes startup failures
 diagnosable, and retains an independent recovery interface. It also publishes
 the security boundaries and code owners for defensive review. The product
-remains v1.14.0; source Observe and signed installed Protect retain separate
+is now versioned v1.14.1 maintenance; source Observe and signed installed Protect retain separate
 authority and acceptance requirements.
 
 ## Reproduced failures
@@ -241,6 +241,216 @@ paths have the separate inert native test evidence above. A read-only local
 Ollama check before STOP found zero resident models. The app was left stopped,
 and its old descriptor remains a stale record of the retired core. Both private
 observer generations retired; the observed product hashes stayed unchanged.
+
+## Version, mobile manual and update verification
+
+The application/package version is 1.14.1; Windows packaging derives 1.14.1.0.
+An offline guard compares canonical package/source versions with current README,
+capability, llms and changelog headers. Its 35 cases passed, all 34 observed native
+generations retired, and no QApplication was created. Independent component
+implementation versions retain their own meaning. Only the editable Angerona
+metadata/entry points were refreshed offline; the interpreter and dependencies
+were preserved. Selected installed metadata and imported app version agree.
+The guard was subsequently extended to both native startup-window version labels;
+34 checker cases passed with unchanged scoped sources and all five observed
+generations retired. The offline repository documentation check also passed.
+
+GitHub mobile displayed the Word container as code. The Word document was valid
+and public-byte verified; the fix adds a complete online Markdown manual and a
+rendered PDF, with Word offered as a download. The 74-page 1.14.1 manual was
+reviewed again at original resolution, including corrected current evidence
+attribution. Its readable export retains 1,199 text nodes, 1,206 paragraphs,
+117 headings, 27 tables and all three figures. Current cover/footer dates are
+28 October; historical evidence and dates remain scoped. Exact renderer cleanup
+removed about 1.91 GiB of task-owned files; reviewed page/PDF receipts remain.
+
+The final versioned 45-second demo retains 90 exact-verified timed frames and
+shows the imported canonical 1.14.1 version in its DEMO banner. Public telemetry
+remains synthetic; capture and encoding generations retired.
+
+Updater verification passed 266 cases with one native availability skip and all
+three retained generations retired. Actual shared-script transport read canonical
+main successfully and treated a missing stable release as none, rather than
+claiming an installed update was current. Preferences, source, state and payload
+were unchanged by that live read-only check. GUI source preparation asks Yes/No
+with default No; declining prevents the download. Source staging retains local
+edits, additions, deletions and conflict sides; ignored files remain in the
+original checkout. Source activation remains held and is not a full source
+installation. Accepted signed updates require separate exact-candidate approval;
+unsigned custom code cannot be silently merged into signed binaries.
+
+The updater audit also found aggregate growth across individually bounded
+source candidates. Admission now happens under the existing stage lease before
+Git/download or a new identifier: two retained candidates, 2 GiB logical
+aggregate data and a 2 GiB volume reserve. Resolution checks prospective writes;
+validation can return an explicitly unpersisted review if capacity is unavailable.
+Bounded no-follow accounting holds unknown or incomplete namespaces without
+deleting user candidates. The focused seven-suite gate passed 141 cases with one
+existing native availability skip, unchanged scoped files and all nine retained
+process generations retired. These limits are separate from runtime repair,
+Shadow Shield, evidence retention and source activation authority.
+
+Review of an earlier failing practice test found a reproducible delayed-receipt
+window. A controlled 3.5-second delay reproduced missing persistence/response
+credit after the owned native action had already completed. The fix observes
+only the exact issuer's authenticated journal-backed completion and refreshes
+overflow-checked evidence before credit, without repeating the action. Its seven
+suites passed 183 cases with one existing native availability skip; all nine
+observed generations retired. The original delayed-receipt replay then passed,
+with all six retained generations retired. An independent review found no
+concrete blockers. Historical CI causation remains unproved without action timing
+evidence; the controlled reproduction establishes this specific race.
+
+## Later startup timeout and missing sidecars
+
+A later launch exposed a different preflight failure. The fixed dependency
+inventory passed all 74 pins, but it consumed most of a shared 30-second budget;
+the following consistency check timed out. That helper failure returned the
+generic application-failure code, so the supervisor selected source alternatives
+even though the trace had not established a source defect. Broad shared-runtime
+exclusion then held otherwise read-only Retry behind a separate diagnostic job.
+That job was preserved. The eventual Retry opened a dashboard without restoring
+source files. A later existing dashboard STOP record at 23:27:28 UTC passed
+read-only authentication, consistent with the subsequent core exit; no key was
+created or stop record cleared for that verification.
+
+Required probes now have separate 30-second phase allowances within a 100-second
+overall limit. A disposable Windows Job owns the redirector, interpreter and
+descendants, with only its explicit input/output handles inherited. Cancellation
+and timeout require exact tree retirement; they have closed outcomes distinct
+from application failure. Read-only source inspection reports explicit pending
+transaction kinds before exclusive mutation is requested. Its 53-case gate
+passed with unchanged scoped files and all three observed generations retired.
+
+The native startup shell paints before Python runtime work, reports verification
+pending, and follows a run/supervisor-generation-bound status publication. Its
+paint receipt grants no protection or response authority. A genuine dashboard
+receipt closes it; a hold exposes diagnostics and Retry. Loaded application code
+is never replaced merely because this independent window is visible.
+
+The same launch's retained core status reported watchdog, scanner and Black Box
+in safe mode; their independent observations were stale. Bounded diagnostic
+review identified repeated spawn refusals for `APPDATA`: the supervisor supplied
+the inherited environment as strict child overrides. This was an environment
+adapter error, not evidence of a compromised recovery key. The strict environment
+filter must remain; no key, baseline or durable failure record was cleared.
+
+The new compact footer presents actual component heartbeat publications. Fresh
+generation-bound observations animate; missing, expired, disabled or unavailable
+observations flatline red. The Qt widget copies memory only, bounds displayed
+components, expires freshness independently of publisher updates and exposes
+plain-text details. Its 60-case UI/viewport gate passed, including pixel-level
+pulse/flatline, expiry, supplier failure and keyboard checks.
+
+The final native supervisor/retained-custody gate passed 76 cases, including an
+injected failed retirement that preserved its native handles and coordination
+leases and refused further backend commands. Exact native window/reader fixture
+generations retired. The final manifest and embedded bootstrap then passed 37
+cases with unchanged pinned scope and all 104 observed generations retired.
+The independent helper/probe/STOP gate passed 153 cases with one existing native
+availability skip; cancellation/timeout retired the exact redirector, interpreter
+and descendants while unrelated sentinels survived until their fixture cleanup.
+
+The [one-shot mutual recovery helper](../docs/resilience-recovery.md) and corrected
+environment adapter passed 45 cases. An isolated existing supervisor consumed
+target-specific authenticated restart requests and launched real fixture peers;
+all eight retained peer/redirector generations retired. Hostile inherited wrapper
+text cannot change its fixed arguments or execute, check-only suppresses bytecode
+and mutation, disabled Black Box stays excluded, and a late STOP is carried into
+the guarded source route through an inhibition-only marker. No real host peer
+was killed or a competing manager attached by these fixtures.
+
+The final security-flow/manual update has 76 pages. Pages 1–54 match the prior
+reviewed rendering byte for byte; all 22 changed pages were inspected at original
+resolution. Complete Word/online/PDF consistency checks passed. Twelve exact
+renderer/extraction generations retired, followed by reviewed expected-identity
+retirement of task-only tools: 19,531 files and 1,626 empty directories,
+2,004,278,656 logical bytes, zero retained targets. Final documents, rendered QA
+and provenance remain; this cleanup did not delete application or user data.
+
+The earlier eight-suite CI fixture replay passed 79 cases and retained one live
+collector availability failure; all 53 observed native generations retired.
+Its first signed simulation completed 37/37 with independent OS evidence; the
+second admission refused collection loss and did not execute a payload. A later
+read-only diagnostic observed a complete snapshot followed by two
+`NoSuchProcess` row losses in another snapshot. That explains this current
+loss category, not the historical CI failure. No detector health, authority,
+collector deadline or refusal policy was relaxed to obtain a green result.
+The live GUI fixture now registers the same owned inventory lifecycle used by
+the application before constructing readers/modules. It uses the fixed original
+worker API and authenticated private protocol, with actual host rows. Its entry
+is separate from the independently tested application privilege guard, which
+remains unchanged. The first focused replay passed four cases and refused the
+live case's initial preflight after three lost rows; all 18 observed generations
+retired and scoped source stayed unchanged. This fidelity correction did not
+establish collection availability on the busy host.
+
+Separate cadence review found that `eco_mode=False` did not disable the
+independent adaptive scan pacing preference. The fixture's real responsiveness
+monitor could multiply a nominal one-second Process Monitor delay by eight
+under host/UI pressure. It now explicitly selects the supported
+`adaptive_scan_pacing_enabled=False` test profile before constructing the window.
+This does not mock native rows, change product defaults, extend readiness
+deadlines or authorize incomplete observations. It removes a discretionary
+resource-control delay from a test of collection and response.
+The fixture also uses the established Wi-Fi provider seam to avoid decorative
+`netsh` subprocesses while retaining the real CPU/RAM/network sampler thread,
+mailbox and shutdown. Native process rows, sensor health, approvals and response
+remain real. The subsequent five-case replay passed both required signed
+simulation runs and independent OS witnesses; all 36 observed generations
+retired and scoped source stayed unchanged. Earlier failed receipts remain.
+This scoped success does not establish that Wi-Fi polling caused every prior
+lost row or certify collection on an arbitrary busy host.
+
+## Final source launch and operator STOP
+
+The revised normal source route painted the independent native startup window
+before Python source/runtime work, passed the required probes and obtained a
+genuine responding dashboard receipt on its first ordinary attempt. No source
+files were restored and no runtime repair was selected. The two retained ready
+snapshots remained at their documented capacity; a new snapshot was held without
+preventing launch or deleting preserved originals.
+
+The actual dashboard's accessibility view reported core, watchdog, scanner and
+Black Box live. A separate read-only observer saw all four authenticated native
+generations advance in 12 samples; existing authority metadata was unchanged.
+The one-shot check reported live supervision with no actions and explicitly
+kept protection unverified. Core/scanner status showed forwarded telemetry,
+no reported ring drops and no crash-loop safe-mode components.
+
+The first 77-second window observation retained its original one-second timeout
+for an auxiliary window. The dashboard HWND responded in every sample; the
+other window was subsequently identified as a removable-media approval dialog.
+No media was approved or PIN enrolled. A separate subsequent 80.953-second
+observation received responses from every visible owned Angerona window, two
+fresh matching 1.14.1 status generations and unchanged source. This does not
+establish the cause of the earlier delay or guarantee future responsiveness.
+
+Dashboard STOP and its exact process-owned Yes confirmation then exited the
+actual core without force termination. All ten retained core/peer/inventory
+and console generations retired, and the separately retained core redirector
+also signaled retirement. Authenticated operator intent verified, and a
+continuous 75.047-second post-exit watch saw no new live descriptor-selected
+core. Three discovery gaps remain recorded; the two specifically named candidate
+PIDs were independently absent afterward. This is exact observed ownership
+evidence rather than proof about every short-lived or escaped process. A final
+read-only recovery check honored STOP and requested no action. The app was left
+stopped.
+
+The final 45-second, 90-frame public demo was recaptured with the complete
+Module health caption and synthetic green EKG/red-flatline details. All nine
+decoded chapters were visually approved and source/decoded frame comparisons
+passed. Capture, redirector and encoder generations retired; checksum-bound
+duplicate captures were removed. Public media still performs no host response.
+
+Final offline checks passed Ruff across the changed Python files, in-memory
+syntax compilation for 1,247 tracked/unignored Python files without bytecode,
+documentation/version drift, the regenerated recovery manifest/embedded
+bootstrap, master-manual chapter/inventory/diagrams and complete readable
+export identity. The source launcher also clears ambient `ERRORLEVEL`; its
+read-only bootstrap self-test passed with hostile inherited exit-status text
+and no injected command execution. GitHub publication and final-commit CI have
+their separate receipts; historical failed or cancelled runs remain history.
 
 ## Remaining limits
 

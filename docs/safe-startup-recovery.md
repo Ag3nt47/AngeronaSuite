@@ -1,8 +1,8 @@
 # Safe Startup recovery
 
-Windows source Safe Startup tries a fixed sequence of verified alternatives and
-keeps an independent recovery interface available when the application cannot
-open. It records the failed phase, attempted actions and remaining uncertainty.
+Windows source Safe Startup opens an independent native dashboard before Python
+and dependency checks. It then tries a fixed sequence of verified alternatives
+while showing the failed phase, attempted actions and remaining uncertainty.
 Every candidate needs fresh checks and the live dashboard-ready handshake.
 A recovery window is not a running protection engine.
 
@@ -24,6 +24,28 @@ Enabling recovery does not authorize overwriting a new concurrent editor change.
 
 ## Ordered alternatives
 
+After the fixed operational files are verified, the source supervisor starts the
+OS Windows Forms startup dashboard without importing Python, Qt or application
+code. It waits up to 20 seconds for a first-paint receipt tied to the exact
+supervisor and shell PID generations and the current run. Only then do backend
+checks begin. The native window remains responsive while those checks and
+eligible repairs run in owned background processes. Missing or unsafe reports
+leave it open with **Verification pending / Protection unavailable**.
+
+The shell follows bounded private status records from its own run. It closes
+automatically only after the supervisor verifies the real dashboard-ready
+handshake. A successful setup-only check does not count as an open dashboard.
+**Retry safe startup** becomes available when recovery is held. **Close** during
+checking cancels further attempts; the current bounded check may finish before
+the supervisor stops. Neither button executes diagnostic text or grants response
+authority. Closing the shell does not terminate an unrelated or possibly live
+engine.
+
+If the supervisor cannot prove retirement of an owned command, it retains that
+command's native job/process handles and startup leases. The shell shows
+**Process retirement requires review** and disables Retry. Closing the interface
+cannot grant a second attempt against ambiguous process ownership.
+
 The normal unelevated source supervisor can try ordinary startup, software Qt
 rendering, a dashboard path without the Tk startup window, and one independently
 verified runtime repair for a recognized runtime/dependency/native GUI failure.
@@ -34,17 +56,28 @@ Each explicit Retry starts another bounded round; this is not an unbounded loop
 of downloads, child processes or writes.
 
 Launcher admission, scratch, process-capture and monitoring failures are
-infrastructure holds. They do not establish an application-source defect and
+infrastructure outcomes. They do not establish an application-source defect and
 cannot select source rollback or runtime reinstallation. The diagnostics retain
 the failed phase and native result; Retry repeats the ownership checks. A
 genuine returned application failure remains eligible for its scoped recovery.
 
+Each disposable dependency/import probe has its own 30-second phase budget,
+inside a 100-second overall probe budget. Exit **85** identifies infrastructure
+failure, **87** identifies a timed-out disposable probe whose owned process tree
+was retired, and **1223** identifies cancellation. A retired probe timeout may
+try the independently verified path without the Tk startup window once. These
+outcomes do not select source rollback. Exit **1** becomes an application-code
+candidate only after successful probes and a verified dashboard-child failure.
+
 An alive or unretired dashboard, occupied runtime, cancellation, unsafe path,
 missing trust, low persistent disk space or ambiguous custody stops automatic
-mutation. A timeout cannot justify a second engine or killing a process guessed
-from memory use. Independent Tk recovery has a Windows Forms fallback when
-verified Python/Tk is unavailable. No source program can guarantee a functioning
-window when the operating system and both GUI runtimes are unavailable.
+mutation. Read-only source inspection and launching an already coherent runtime
+can coexist with another diagnostic job using that runtime; replacing the runtime
+or publishing changed application source still requires exclusive mutation
+custody. A timeout cannot justify a second engine or killing a process guessed
+from memory use. The native startup shell needs no Python/Tk/Qt runtime; the
+separate source-review interface retains its existing fallback. No source program can guarantee a functioning
+window when the operating system's windowing services are unavailable.
 
 ## Preserve edits before source rollback
 

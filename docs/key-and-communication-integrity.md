@@ -2,7 +2,8 @@
 
 This maintenance review covers credential concurrency, scanner-ring key custody,
 key migration, memory identity and truthful encryption status. Angerona remains
-in development at v1.14.0; broader v1.15 integration is incomplete. Consult the
+in development at v1.14.1; broader v1.15 integration is incomplete. The evidence
+below retains its original v1.14.0 review scope. Consult the
 [current scoped evidence](../analysis/live-debug-2026-10-22/README.md) and the
 [historical key/memory review](../analysis/live-debug-2026-10-22/key-and-memory-review.md)
 for their separate validation states.

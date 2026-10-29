@@ -19,7 +19,11 @@ alone cannot establish publisher trust or privileged deployment.
 
 The source launcher checks canonical local paths, explicit settings, operational
 startup bytes, runtime/dependency consistency, storage and process exclusion.
-The parent uses fixed repair tools and ordered candidates; every candidate must
+After operational verification, an independent OS Windows Forms startup dashboard
+paints before Python/dependency checks. It reports verification pending and
+protection unavailable while the parent runs checks and eligible repairs in
+owned background processes. A current-run first-paint receipt is separate from
+application readiness. The parent uses fixed repair tools and ordered candidates; every candidate must
 pass fresh checks. Readiness is a nonce-bound receipt from a fresh live dashboard
 after its event loop responds. It does not certify sensors or response readiness.
 [Safe Startup recovery](safe-startup-recovery.md) documents the alternatives,
@@ -72,6 +76,21 @@ separate. Collapse choices apply to the current run; folded stat cards retain
 their current values. Critical/failed, degraded and live coverage counts remain
 visible, as does the CPU/RAM/network footer. Small windows can scroll.
 
+The compact EKG beside that footer shows **Core**, **Watch**, **Scan** and
+**BlackBox**. A green pulse requires a real recent heartbeat for the exact
+component generation. Missing, stale, disabled, starting, stopped or unavailable
+evidence produces a red flatline with its state retained in details. Process
+presence alone never produces a pulse. Click the strip or press Enter/Space for
+the PID, native birth-bound generation, heartbeat age, deadline and reason;
+additional helpers appear there when they publish actual heartbeat evidence.
+
+The GUI consumes only copied in-memory publications. It does not query processes,
+read heartbeat files or acquire native inspection locks while painting. Freshness
+uses monotonic time and a finite deadline of at most 120 seconds; the configured
+component deadline can be shorter. A replacement generation cannot reuse the
+preceding generation's timestamp. A pulse reports liveness, not sensor coverage,
+response authority or a verified security state.
+
 Modules keeps search visible while its panel is open. Its **Filters** disclosure
 retains the active summary, such as **Filters: observe**; **Columns** reveals
 optional metadata. Live Alerts **Columns** exposes optional artifact/evidence
@@ -107,6 +126,14 @@ Source Observe and a diagnostic response-service fixture cannot claim a fully
 deployed privileged service or process-bound egress adapter.
 
 ### STOP and deliberate shutdown
+
+The core-side supervisor watches the watchdog, scanner and BlackBox. The peer
+watchdog watches the core and shared helpers. Authenticated advancing heartbeat
+records, exact process generations, adoption checks, spawn exclusion and bounded
+backoff govern recovery. Repeated failures enter a visible safe mode rather than
+an unlimited process-spawn loop. An optional native watchdog requires its own
+deployment evidence. These peers remain within the same user-mode failure domain;
+they are not independent protection against a hostile administrator or kernel.
 
 The red **STOP** confirmation and tray **Quit** use the same application-owned
 teardown. Closing the window hides it to the tray. On explicit operator exit,
@@ -229,6 +256,8 @@ own receipts.
 | Wrong Python/dependency, native GUI failure | `tools/Invoke-AngeronaStartupRepair.ps1`, `tools/startup_repair_common.ps1`, `tools/source_trust_preflight.py` | `tests/test_startup_repair_tools.py`, `tests/test_startup_python_discovery.py`, `tests/test_startup_repair_storage.py` | Signed interpreter discovery, hash-locked candidate, independent validation, durable runtime transaction and capacity admission. |
 | App crash, source edits and interrupted rollback | `tools/Invoke-AngeronaSourceStartup.ps1`, `tools/startup_source_recovery.py` | `tests/test_source_startup_strategies.py`, `tests/test_startup_source_recovery.py` | Fingerprint before launch, preserve failed revision, no live source publication, reconcile only provable generations. |
 | Recovery unavailable or hostile log text | `tools/angerona_recovery.py`, `tools/Show-AngeronaStartupRecovery.ps1`, `core/startup_diagnostics.py` | `tests/test_independent_startup_recovery.py`, `tests/test_startup_source_review_ui.py`, `tests/test_startup_diagnostics.py` | No app imports, plain bounded display, safe internal log view, independent native fallback. |
+| Dependency timeout misclassified as broken source | `startup.py`, `tools/Invoke-AngeronaSourceStartup.ps1`, `tools/startup_repair_common.ps1` | `tests/test_safe_startup.py`, `tests/test_source_startup_strategies.py` | Separate phase/overall budgets, exact disposable-tree retirement, typed infrastructure/cancellation outcomes, no source rollback from probe failure. |
+| Helper presence mistaken for a real heartbeat | `gui/component_heartbeat.py`, `resilience/heartbeat.py`, `resilience/manager.py` | `tests/test_component_heartbeat.py`, `tests/test_resilience_heartbeat_auth.py` | Copied memory only on Qt, exact generation and advancing evidence, finite monotonic freshness, red unavailable/stale flatline. |
 | Dashboard density hides context or changes operation | `gui/main_window.py`, `gui/dashboard_sections.py`, `gui/pages.py` | `tests/test_dashboard_compact_sections.py`, `tests/test_dashboard_compact_tables.py` | Individual heading controls, visible coverage summary, active-filter summary, full-text details and native-font column sizing; presentation remains separate from module lifecycle. |
 | Operator STOP races queued recovery or AI startup | `app.py`, `gui/main_window.py`, `resilience/shutdown_token.py`, `resilience/supervisor.py`, `core/windows_child_job.py` | `tests/test_operator_stop_lifecycle.py`, `tests/test_cycle8_recovery_supervisor.py` | Explicit-exit intent before teardown, persistent authenticated standdown, inhibit-only automatic recovery, bounded owned-work cleanup and no broad process kill; ordinary startup failure retains recovery eligibility. |
 | Spoofed readiness, duplicate engine | `startup.py`, `core/startup_protocol.py`, `core/startup_recovery.py` | `tests/test_safe_startup.py`, `tests/test_startup_dashboard_ready.py`, `tests/test_startup_recovery_flow.py` | Fresh nonce/process generation, event-loop readiness, singleton and owned-process retirement evidence. |

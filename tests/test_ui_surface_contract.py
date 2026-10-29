@@ -87,6 +87,14 @@ def test_every_declared_gui_push_button_has_click_wiring() -> None:
         for function in functions:
             created: list[tuple[str, int]] = []
             connected: set[str] = set()
+            menus = {
+                name
+                for node in ast.walk(function)
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+                and _expression_name(node.value.func) in {"QMenu", "QtWidgets.QMenu"}
+                for target in node.targets
+                if (name := _expression_name(target))
+            }
             loop_aliases: list[tuple[str, tuple[str, ...]]] = []
             for node in ast.walk(function):
                 target = _button_target(node)
@@ -101,6 +109,14 @@ def test_every_declared_gui_push_button_has_click_wiring() -> None:
                     in {"clicked", "pressed", "released", "toggled"}
                 ):
                     target = _expression_name(node.func.value.value)
+                    if target:
+                        connected.add(target)
+                if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "setMenu" and len(node.args) == 1
+                        and _expression_name(node.args[0]) in menus):
+                    # Qt provides click dispatch for a QPushButton with an
+                    # actual menu. A bare setMenu(None) is not wiring.
+                    target = _expression_name(node.func.value)
                     if target:
                         connected.add(target)
                 if isinstance(node, ast.For):
@@ -166,7 +182,7 @@ def test_every_declared_menu_action_has_signal_or_exact_menu_dispatch() -> None:
                     and isinstance(node.func, ast.Attribute)
                     and node.func.attr == "connect"
                     and isinstance(node.func.value, ast.Attribute)
-                    and node.func.value.attr == "triggered"
+                    and node.func.value.attr in {"triggered", "toggled"}
                 ):
                     name = _expression_name(node.func.value.value)
                     if name:

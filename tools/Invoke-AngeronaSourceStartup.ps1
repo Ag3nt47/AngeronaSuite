@@ -70,6 +70,8 @@ function Write-SourceStartupStatus([string]$Phase, [string]$Outcome, [string]$Me
         $rows = @()
         if ($script:StartupAttempts) { $rows = @($script:StartupAttempts | Select-Object -Last 32) }
         $status = [ordered]@{ schema = 1; phase = $Phase; outcome = $Outcome
+            run_id = $script:StartupRunId; supervisor_pid = $PID
+            supervisor_creation_filetime = [string]$script:StartupSupervisorCreationFileTime
             message = (Protect-SourceStartupText $Message 4000); log_path = $script:StartupJournalPath
             protection_status = 'unknown'; attempts = $rows }
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($status | ConvertTo-Json -Depth 5 -Compress))
@@ -124,30 +126,109 @@ function ConvertTo-SourceStartupArgument([string]$Value) {
 
 function Start-SourceStartupWindowProcess([string]$Executable, [string[]]$Arguments,
     [string]$WorkingDirectory, [Collections.IDictionary]$Environment) {
-    $saved = [Environment]::GetEnvironmentVariables('Process')
-    try {
-        foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-            [Environment]::SetEnvironmentVariable($key, $null, 'Process')
-        }
-        foreach ($key in $Environment.Keys) {
-            [Environment]::SetEnvironmentVariable($key, [string]$Environment[$key], 'Process')
-        }
-        $line = ($Arguments | ForEach-Object { ConvertTo-SourceStartupArgument $_ }) -join ' '
-        return Start-Process -FilePath $Executable -ArgumentList $line `
-            -WorkingDirectory $WorkingDirectory -WindowStyle Hidden -PassThru
-    } finally {
-        foreach ($key in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
-            [Environment]::SetEnvironmentVariable($key, $null, 'Process')
-        }
-        foreach ($key in $saved.Keys) {
-            [Environment]::SetEnvironmentVariable($key, [string]$saved[$key], 'Process')
-        }
+    $log = Join-Path $Environment['TEMP'] ('recovery-window.' + [Guid]::NewGuid().ToString('N') + '.log')
+    return Start-OwnedRepairWindow -FilePath $Executable -Arguments $Arguments -WorkingDirectory $WorkingDirectory `
+        -Environment $Environment -LogPath $log
+}
+
+function Test-SourceStartupShellClosed {
+    if (!$script:StartupShell -or !$script:StartupShell.HasExited) { return $false }
+    return $script:StartupShell.ExitCode -ne 10
+}
+
+function Start-SourceStartupShell([string]$Root) {
+    if (!$script:StartupStatusPath) { return }
+    if ($script:StartupShell) {
+        if (!$script:StartupShell.HasExited) { return }
+        if ($script:StartupShell.ExitCode -ne 10) { return }
+        $script:StartupShell.Dispose(); $script:StartupShell = $null
     }
+    $identity = Get-LiveRepairProcessIdentity ([uint32]$PID)
+    try {
+        if ($identity.State -ne 'live' -or $identity.CreationFileTime -le 0) { throw 'The startup supervisor generation is unavailable.' }
+        $script:StartupSupervisorCreationFileTime = $identity.CreationFileTime
+    } finally { $identity.Dispose() }
+    $storage = Initialize-SourceStartupStorage
+    $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage
+    $receipt = Join-Path $scratch 'startup-shell-painted.json'
+    $file = Open-PrivateRepairFile $receipt
+    $file.Dispose()
+    $shell = Join-Path $Root 'tools\Show-AngeronaStartupRecovery.ps1'
+    Assert-SourceStartupPath $shell
+    $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $environment = New-RepairChildEnvironment $scratch
+    Write-SourceStartupStatus 'startup' 'checking' 'Opening the recovery dashboard before runtime checks. Protection has not yet been verified.'
+    $script:StartupShell = Start-SourceStartupWindowProcess $powershell @('-NoProfile', '-STA', '-File', $shell,
+        '-StartupShell', '-StatusFile', $script:StartupStatusPath, '-StartupRunId', $script:StartupRunId,
+        '-SupervisorPid', [string]$PID, '-SupervisorCreationFileTime', [string]$script:StartupSupervisorCreationFileTime,
+        '-PaintReceiptFile', $receipt) $Root $environment
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    while ($clock.ElapsedMilliseconds -lt 20000) {
+        if ($script:StartupShell.HasExited) { throw 'The independent startup dashboard closed before its first paint.' }
+        Assert-PrivateRepairCustody $receipt
+        $info = Get-Item -LiteralPath $receipt
+        if ($info.Length -gt 1024) { throw 'The startup paint receipt exceeded its bound.' }
+        if ($info.Length -gt 0) {
+            try {
+                $paint = [IO.File]::ReadAllText($receipt, [Text.UTF8Encoding]::new($false, $true)) | ConvertFrom-Json
+                if ($paint.schema -eq 1 -and $paint.run_id -ceq $script:StartupRunId -and
+                    [string]$paint.supervisor_pid -ceq [string]$PID -and
+                    [string]$paint.supervisor_creation_filetime -ceq [string]$script:StartupSupervisorCreationFileTime -and
+                    [string]$paint.shell_pid -ceq [string]$script:StartupShell.ProcessId -and
+                    [string]$paint.shell_creation_filetime -ceq [string]$script:StartupShell.CreationFileTime) {
+                    Write-SourceStartupEvent 'startup-shell' 'painted' 'Independent recovery dashboard painted; runtime and protection checks are pending.'
+                    return
+                }
+            } catch { } # A partial bounded publication carries no launch authority.
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    throw 'The independent startup dashboard did not confirm its first paint within 20 seconds.'
+}
+
+function Test-SourceStartupCapturesRetired {
+    if (!$script:StartupPendingCaptures -or !$script:StartupPendingCaptures.Count) { return $true }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        foreach ($capture in @($script:StartupPendingCaptures)) {
+            if ($capture.ReadersComplete -and $capture.Process.HasExited) {
+                $capture.Process.Dispose(); [void]$script:StartupPendingCaptures.Remove($capture)
+            }
+        }
+        if (!$script:StartupPendingCaptures.Count) { return $true }
+        if ($clock.ElapsedMilliseconds -ge 1000) { break }
+        Start-Sleep -Milliseconds 25
+    } while ($true)
+    $capture = $script:StartupPendingCaptures[0]
+    $script:LastStartupIssue = "The retained assistant generation (PID $($capture.ProcessId), native creation FILETIME $($capture.CreationTimeFileTime)) or its diagnostic readers is still active. Further startup and mutation attempts are held; an actual dashboard is preserved."
+    Write-SourceStartupEvent 'assistant-retirement' 'held' $script:LastStartupIssue 85
+    return $false
 }
 
 function Invoke-SourceRecoveryWindow([string]$Root, [string]$Message, [switch]$ReviewSource,
     [string]$ReportPath = '', [string]$ExpectedReportId = '') {
-    Write-SourceStartupStatus 'recovery' 'needs-attention' $Message
+    $custodyHeld = ('Angerona.StartupRepairProcess' -as [type]) -and [Angerona.StartupRepairProcess]::CustodyPending
+    if ($custodyHeld) {
+        $Message = 'Owned process retirement could not be proved. Exact native handles and coordination leases remain retained; no further launch or mutation is admitted. Closing this interface does not prove independent process retirement. Review this generation before a new startup.'
+    }
+    Write-SourceStartupStatus 'recovery' $(if ($custodyHeld) { 'custody-held' } else { 'needs-attention' }) $Message
+    if (!$ReviewSource -and $script:StartupShell) {
+        try { $script:StartupShell.WaitForExit() }
+        catch {
+            if (!$custodyHeld) { throw }
+            # The failed window's native owner remains parked in the custody
+            # registry. A separate inert shell may still explain the hold.
+            $script:StartupShell = $null
+            try {
+                Start-SourceStartupShell $Root
+                Write-SourceStartupStatus 'recovery' 'custody-held' $Message
+                $script:StartupShell.WaitForExit()
+            } catch { Write-Host '[startup] Native retirement remains held; retain the diagnostics and review the existing generation.' }
+            return 0
+        }
+        if ($custodyHeld) { return 0 }
+        return [int]$script:StartupShell.ExitCode
+    }
     $python = Join-Path $Root 'venv\Scripts\python.exe'
     $tool = Join-Path $Root 'tools\angerona_recovery.py'
     # This window imports only standard-library code; broken application imports
@@ -163,9 +244,10 @@ function Invoke-SourceRecoveryWindow([string]$Root, [string]$Message, [switch]$R
             $arguments = @('-I', $tool, '--status-file', $statusPath)
             if ($ReviewSource) { $arguments += '--review-source' }
             if ($ReviewSource -and $ExpectedReportId) { $arguments += @('--expected-report-id', $ExpectedReportId) }
-            $environment = New-RepairChildEnvironment $script:StartupDiagnosticRoot
+            $scratch = New-SourceStartupTemporary -Root $Root -Storage (Initialize-SourceStartupStorage)
+            $environment = New-RepairChildEnvironment $scratch
             $process = Start-SourceStartupWindowProcess $python $arguments $Root $environment
-            try { $null = $process.Handle; $process.WaitForExit(); $process.Refresh(); $code = $process.ExitCode }
+            try { $process.WaitForExit(); $code = $process.ExitCode }
             finally { $process.Dispose() }
             if ($null -ne $code -and [int]$code -in @(0, 10, 20, 21)) { return [int]$code }
             Write-SourceStartupEvent 'recovery-python' 'unavailable' 'The independent Python recovery view could not open.'
@@ -180,14 +262,12 @@ function Invoke-SourceRecoveryWindow([string]$Root, [string]$Message, [switch]$R
         if ($script:StartupStatusPath -and (Test-Path -LiteralPath $script:StartupStatusPath)) {
             $arguments += @('-StatusFile', $script:StartupStatusPath)
         } else { $arguments += @('-Message', (Protect-SourceStartupText $Message)) }
-        $environment = if ($script:StartupDiagnosticRoot) { New-RepairChildEnvironment $script:StartupDiagnosticRoot } else {
-            @{ SystemRoot = [Environment]::GetFolderPath('Windows'); WINDIR = [Environment]::GetFolderPath('Windows')
-                PATH = [Environment]::SystemDirectory; TEMP = [IO.Path]::GetTempPath(); TMP = [IO.Path]::GetTempPath() }
-        }
+        $scratch = New-SourceStartupTemporary -Root $Root -Storage (Initialize-SourceStartupStorage)
+        $environment = New-RepairChildEnvironment $scratch
         $process = Start-SourceStartupWindowProcess $powershell $arguments $Root $environment
-        try { $null = $process.Handle; $process.WaitForExit(); $process.Refresh(); $code = $process.ExitCode }
+        try { $process.WaitForExit(); $code = $process.ExitCode }
         finally { $process.Dispose() }
-        if ($null -ne $code -and [int]$code -eq 10) { return 10 }
+        if (!$custodyHeld -and $null -ne $code -and [int]$code -eq 10) { return 10 }
     } catch { Write-Host "[startup] Recovery display failed: $($_.Exception.Message)" }
     return 0
 }
@@ -214,8 +294,11 @@ function Invoke-SourceCodeAction([string]$Root, [string]$Action, [string]$Strate
         # Source tooling is independent of app imports, but must not run from a
         # runtime whose promotion/rollback is still unresolved.
         Assert-NoPendingRepair $Root
-        if ($Action -in @('recover', 'apply-pending', 'fingerprint')) {
+        if ($Action -in @('recover', 'apply-pending', 'fingerprint', 'inspect')) {
             $helperLease = Enter-CanonicalSourceHelperLease
+        }
+        if ($Action -in @('recover', 'apply-pending')) {
+            if (Test-SourceStartupShellClosed) { return 1223 }
             $instanceLease = Enter-CanonicalCoreMutationLease
             Assert-NoActiveVenv -VenvPath (Join-Path $Root 'venv')
         }
@@ -561,7 +644,8 @@ function Invoke-SourceStartupPass([string]$Root, [switch]$SetupOnly, [switch]$So
             throw
         }
         $venv = Join-Path $Root 'venv'
-        Assert-NoActiveVenv -VenvPath $venv
+        # This pass only reads the shared runtime. Actual runtime/source repair
+        # retains full process exclusion; the helper/core keep their own leases.
         $python = Join-Path $venv 'Scripts\python.exe'
         if (!(Test-Path -LiteralPath $python -PathType Leaf)) { return 81 }
         $scratch = New-SourceStartupTemporary -Root $Root -Storage $storage
@@ -588,6 +672,7 @@ function Invoke-SourceStartupPass([string]$Root, [switch]$SetupOnly, [switch]$So
         $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments @('-c', $abi) `
             -WorkingDirectory $Root -Environment $child -TimeoutSeconds 30 -LogPath (Join-Path $scratch 'abi.log')
         if ($code -ne 0) { if ($code -eq 81) { return 81 }; return 85 }
+        if (Test-SourceStartupShellClosed) { return 1223 }
         $pip = @'
 import importlib.metadata as m
 try:
@@ -598,14 +683,16 @@ except m.PackageNotFoundError:
         $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments @('-c', $pip) `
             -WorkingDirectory $Root -Environment $child -TimeoutSeconds 30 -LogPath (Join-Path $scratch 'pip.log')
         if ($code -ne 0) { if ($code -eq 82) { return 82 }; return 85 }
+        if (Test-SourceStartupShellClosed) { return 1223 }
         $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments @((Join-Path $Root 'tools\source_trust_preflight.py')) `
             -WorkingDirectory $Root -Environment $child -TimeoutSeconds 30 -LogPath (Join-Path $scratch 'source-trust.log')
         if ($code -ne 0) { return 85 }
+        if (Test-SourceStartupShellClosed) { return 1223 }
         if ($SetupOnly) {
             $arguments = @('-m', 'angerona.startup', '--check-only', '--chill')
             if ($SoftwareRenderer) { $arguments += '--software-renderer' }
             return Invoke-OwnedRepairProcess -FilePath $python -Arguments $arguments `
-                -WorkingDirectory $Root -Environment $child -TimeoutSeconds 45 -LogPath (Join-Path $scratch 'source-setup.log')
+                -WorkingDirectory $Root -Environment $child -TimeoutSeconds 120 -LogPath (Join-Path $scratch 'source-setup.log')
         }
         return Invoke-SourceStartupAssistant -Python $python -Root $Root -Environment $child `
             -Scratch $scratch -SoftwareRenderer:$SoftwareRenderer -NoStartupWindow:$NoStartupWindow
@@ -653,7 +740,20 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
     $sourceStrategies = @{}
     $sourceReportId = ''
     $automaticSourceRetry = $false
+    try {
     while ($true) {
+        if (!$SetupOnly) { Start-SourceStartupShell $Root }
+        if (('Angerona.StartupRepairProcess' -as [type]) -and [Angerona.StartupRepairProcess]::CustodyPending) {
+            if (!$SetupOnly) { [void](Invoke-SourceRecoveryWindow $Root 'Owned process retirement requires review.') }
+            return 85
+        }
+        if (Test-SourceStartupShellClosed) { return 1223 }
+        if (!(Test-SourceStartupCapturesRetired)) {
+            if ($SetupOnly) { return 85 }
+            $choice = Invoke-SourceRecoveryWindow $Root $script:LastStartupIssue
+            if ($choice -eq 10) { continue }
+            return 1223
+        }
         $enabled = !$script:StartupRecoveryPreferences -or $script:StartupRecoveryPreferences.Enabled
         $githubEnabled = !$script:StartupRecoveryPreferences -or $script:StartupRecoveryPreferences.Github
         $sourceAdmission = 0
@@ -662,8 +762,19 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
         # Advisory diagnostic availability must never control this safety gate.
         if ($true) {
             try {
-                $admissionAction = if ($enabled -and !$SetupOnly) { 'apply-pending' } else { 'inspect' }
-                $pendingCode = Invoke-SourceCodeAction -Root $Root -Action $admissionAction
+                # Inspect first. Sharing Python for a read-only review must not
+                # make every ordinary launch request an exclusive source repair.
+                $pendingCode = Invoke-SourceCodeAction -Root $Root -Action 'inspect'
+                $inspection = $script:LastSourceRecoveryResult
+                if ($pendingCode -ne 81 -and (!$inspection -or $inspection.requires_mutation -isnot [bool] -or
+                    $inspection.pending_kind -cnotin @('none', 'edits', 'transaction') -or
+                    $inspection.requires_mutation -ne ($inspection.pending_kind -cne 'none') -or
+                    ($inspection.pending_kind -ceq 'transaction' -and !$inspection.launch_held))) {
+                    throw 'The read-only source coherence response is incomplete or invalid.'
+                }
+                if ($pendingCode -ne 81 -and $enabled -and !$SetupOnly -and $inspection.requires_mutation) {
+                    $pendingCode = Invoke-SourceCodeAction -Root $Root -Action 'apply-pending'
+                }
                 if ($pendingCode -eq 81) { $sourceAdmission = 81 }
                 elseif ($pendingCode -ne 0 -or !$script:LastSourceRecoveryResult -or $script:LastSourceRecoveryResult.launch_held) { $sourceAdmission = 1 }
                 if ($script:LastSourceRecoveryResult.report_id) { $sourceReportId = [string]$script:LastSourceRecoveryResult.report_id }
@@ -722,16 +833,22 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
             Write-Host "[startup] $($_.Exception.Message)"
         }
         Add-SourceStartupAttempt $strategy $code $script:LastStartupIssue
+        if ($code -eq 1223) {
+            Write-SourceStartupStatus 'startup' 'closed' 'Startup monitoring was cancelled. Further attempts are stopped; any actual dashboard remains preserved.'
+            return 1223
+        }
         if ($code -eq 86) {
             Write-SourceStartupStatus 'startup' 'operator-stopped' 'Authenticated STOP was honored. No dashboard readiness or protection was claimed.'
             return 0
         }
         if ($code -eq 0) {
+            $script:StartupDashboardVerified = !$SetupOnly
             if ($SetupOnly) { Write-SourceStartupStatus 'preflight' 'verified' 'Setup checks passed. No dashboard was launched or observed.' }
             else { Write-SourceStartupStatus 'dashboard' 'verified' 'The dashboard readiness receipt passed; protection coverage is reported separately by the application.' }
             if (!$SetupOnly -and $script:StartupDiagnosticRoot) { Complete-SourceStartupRecovery $Root }
             return 0
         }
+        if (Test-SourceStartupShellClosed) { return 1223 }
         if ($enabled -and $code -eq 1 -and $script:StartupDiagnosticRoot -and !$SetupOnly) {
             $automaticSourceRetry = $true
             $restored = $false
@@ -752,9 +869,9 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
             }
             if ($restored) { $software = $false; $noWindow = $false; continue }
         }
-        if ($enabled -and $code -eq 84 -and !$noWindow) {
+        if ($enabled -and $code -in @(84, 87) -and !$noWindow -and !$SetupOnly) {
             $noWindow = $true
-            Write-Host '[startup] Startup-window failure: trying the independent non-Tk bootstrap with all dashboard checks.'
+            Write-Host '[startup] Trying the independent non-Tk bootstrap after a startup-window failure or fully retired preflight timeout; every dependency and dashboard check remains required.'
             continue
         }
         if ($enabled -and $code -eq 83 -and !$software) {
@@ -779,7 +896,7 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
             }
         }
         if ($SetupOnly) { return 1 }
-        $message = if ($code -in @(85, 124, 125)) {
+        $message = if ($code -in @(85, 87, 124, 125)) {
             'Launcher infrastructure or monitoring is held. This result does not establish an application-source defect; no source rollback or runtime reinstall was selected. Any existing assistant or dashboard generation is preserved. Review the diagnostic phase before Retry, which repeats the complete ownership and startup checks. Protection remains unverified.'
         } else {
             'Normal startup is not ready. Automatic distinct verified strategies have been tried for this failure. The independent recovery screen remains available; Retry runs the complete checks again. No protection or successful repair is inferred from an open recovery window.'
@@ -790,6 +907,13 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
         # Only an explicit user Retry starts a fresh round; ambient flags and
         # repeated identical failures cannot create an unattended repair loop.
         $repairs = @{}; $software = $false; $noWindow = $false; $sourceStrategies = @{}; $automaticSourceRetry = $false
+    }
+    } finally {
+        if ($script:StartupShell) {
+            if ($script:StartupDashboardVerified) { [void]$script:StartupShell.WaitForExit(10000) }
+            $script:StartupShell.Dispose()
+            $script:StartupShell = $null
+        }
     }
 }
 
@@ -809,12 +933,15 @@ if ($MyInvocation.InvocationName -ne '.') {
             Initialize-SourceStartupDiagnostics $storage
         }
         catch { Write-Host "[startup] Persistent diagnostics unavailable: $($_.Exception.Message)" }
-        exit (Invoke-SourceStartupLoop -Root $fixedRoot -SetupOnly:$SetupOnly)
+        $result = Invoke-SourceStartupLoop -Root $fixedRoot -SetupOnly:$SetupOnly
+        if (('Angerona.StartupRepairProcess' -as [type]) -and [Angerona.StartupRepairProcess]::CustodyPending) { exit 85 }
+        exit $result
     } catch {
         Write-Host "[!] Angerona Safe Startup: $($_.Exception.Message)"
         Write-SourceStartupEvent 'supervisor' 'exception' $_.Exception.Message 1
         if (!$SetupOnly -and $fixedRoot) {
             $choice = Invoke-SourceRecoveryWindow $fixedRoot $_.Exception.Message
+            if (('Angerona.StartupRepairProcess' -as [type]) -and [Angerona.StartupRepairProcess]::CustodyPending) { exit 85 }
             if ($choice -eq 10) { exit 10 }
             exit 1223
         }

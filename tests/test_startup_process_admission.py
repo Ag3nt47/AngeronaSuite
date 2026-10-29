@@ -104,3 +104,139 @@ if('__FAILURE__' -eq 'False'){Initialize-RepairLiveProcessIdentity}
 if(!$script:compiled -or $failed -ne ('__FAILURE__' -eq 'True')){throw 'Unexpected compiler test outcome.'}
 if($env:TEMP -cne $beforeTemp -or $env:TMP -cne $beforeTmp){throw 'Caller TEMP/TMP were not restored.'}
 """.replace("__FAILURE__", str(failure)))
+
+
+def test_owned_recovery_window_retires_its_exact_reader_tree_before_retry(tmp_path):
+    run(tmp_path, r"""
+$storage=Get-CanonicalSourceStartupStorage;New-PrivateRepairDirectory $storage
+$scratch=Join-Path $storage 'window';New-PrivateRepairDirectory $scratch
+Initialize-RepairLiveProcessIdentity
+$systemPowerShell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$childScript=Join-Path $scratch 'reader.ps1'
+$identityPath=Join-Path $scratch 'reader.json'
+[IO.File]::WriteAllText($childScript,@'
+param($IdentityPath)
+$self=[Diagnostics.Process]::GetCurrentProcess()
+[IO.File]::WriteAllText($IdentityPath,(@{pid=$PID;birth=$self.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()}|ConvertTo-Json -Compress))
+Start-Sleep -Seconds 60
+'@)
+$parentScript=Join-Path $scratch 'window.ps1'
+[IO.File]::WriteAllText($parentScript,@'
+param($ChildScript,$IdentityPath)
+$start=[Diagnostics.ProcessStartInfo]::new()
+$start.FileName=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$start.Arguments='-NoProfile -NonInteractive -File "'+$ChildScript+'" "'+$IdentityPath+'"'
+$start.UseShellExecute=$false;$start.CreateNoWindow=$true
+$child=[Diagnostics.Process]::Start($start)
+try {
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while(!(Test-Path -LiteralPath $IdentityPath) -and $clock.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 20}
+    Start-Sleep -Milliseconds 1200
+}finally{$child.Dispose()}
+exit 10
+'@)
+$environment=New-RepairChildEnvironment $scratch
+$window=Start-OwnedRepairWindow -FilePath $systemPowerShell -Arguments @('-NoProfile','-NonInteractive','-File',$parentScript,$childScript,$identityPath) -WorkingDirectory $scratch -Environment $environment -LogPath (Join-Path $scratch 'window.log')
+$reader=$null
+try {
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while(!(Test-Path -LiteralPath $identityPath) -and $clock.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 20}
+    $record=[IO.File]::ReadAllText($identityPath)|ConvertFrom-Json
+    $reader=[Diagnostics.Process]::GetProcessById([int]$record.pid);$null=$reader.Handle
+    if($reader.HasExited -or $reader.StartTime.ToUniversalTime().ToFileTimeUtc().ToString() -cne $record.birth){throw 'Owned reader generation was not retained before window exit.'}
+    if(!$window.WaitForExit(10000) -or $window.ExitCode -ne 10){throw 'Retry result was not preserved.'}
+    if($window.ProcessId -le 0 -or $window.CreationFileTime -le 0){throw 'Window launch identity was not recorded.'}
+    if(!$reader.WaitForExit(0)){throw 'Retry returned while its exact owned reader was still active.'}
+}finally{
+    if($reader){$reader.Dispose()}
+    $window.Dispose()
+}
+""")
+
+
+def test_owned_recovery_window_disposal_retires_only_its_generation(tmp_path):
+    run(tmp_path, r"""
+$storage=Get-CanonicalSourceStartupStorage;New-PrivateRepairDirectory $storage
+$scratch=Join-Path $storage 'window';New-PrivateRepairDirectory $scratch
+Initialize-RepairLiveProcessIdentity
+$systemPowerShell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$environment=New-RepairChildEnvironment $scratch
+$window=Start-OwnedRepairWindow -FilePath $systemPowerShell -Arguments @('-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60') -WorkingDirectory $scratch -Environment $environment -LogPath (Join-Path $scratch 'window.log')
+$owned=$null;$self=[Diagnostics.Process]::GetCurrentProcess();$null=$self.Handle
+try {
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while($window.ProcessId -eq 0 -and $clock.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 20}
+    $owned=[Diagnostics.Process]::GetProcessById([int]$window.ProcessId);$null=$owned.Handle
+    if($owned.HasExited -or $owned.StartTime.ToUniversalTime().ToFileTimeUtc() -ne $window.CreationFileTime){throw 'Window generation was not retained before disposal.'}
+    $window.Dispose()
+    if(!$owned.WaitForExit(0) -or $self.HasExited){throw 'Window disposal did not isolate its owned generation.'}
+    if($window.ExitCode -ne 1223){throw 'Window disposal lost its explicit cancellation result.'}
+}finally{
+    if($owned){$owned.Dispose()}
+    $self.Dispose();$window.Dispose()
+}
+""")
+
+
+def test_actual_occupied_core_instance_lease_still_excludes_mutation(tmp_path):
+    run(tmp_path, r"""
+$storage=Get-CanonicalSourceStartupStorage;New-PrivateRepairDirectory $storage
+$path=Join-Path $storage 'angerona.instance.lock'
+$file=Open-PrivateRepairFile -Path $path -Mode OpenOrCreate -Share ReadWrite;$file.Dispose()
+$ready=Join-Path $storage 'core-ready'
+$scriptPath=Join-Path $storage 'core-lease.ps1'
+[IO.File]::WriteAllText($scriptPath,@'
+param($LockPath,$ReadyPath)
+$lease=[IO.File]::Open($LockPath,'Open','ReadWrite','ReadWrite')
+try {$lease.Lock(0,1);[IO.File]::WriteAllText($ReadyPath,'held');Start-Sleep -Seconds 60}
+finally{$lease.Dispose()}
+'@)
+$powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$scriptPath,$path,$ready) -WorkingDirectory $storage -Environment (New-RepairChildEnvironment $storage) -LogPath (Join-Path $storage 'core-lease.log')
+try {
+    $clock=[Diagnostics.Stopwatch]::StartNew()
+    while(!(Test-Path -LiteralPath $ready) -and $clock.ElapsedMilliseconds -lt 10000){Start-Sleep -Milliseconds 20}
+    if(!(Test-Path -LiteralPath $ready)){throw 'The inert core fixture did not acquire its instance lease.'}
+    $held=$false
+    try {$unexpected=Enter-CanonicalCoreMutationLease;Exit-RepairLease $unexpected}
+    catch {$held=$_.Exception.Message -match 'core owns the instance lease'}
+    if(!$held){throw 'An actual occupied singleton byte-range lease permitted mutation.'}
+}finally{$window.Dispose()}
+$lease=Enter-CanonicalCoreMutationLease;Exit-RepairLease $lease
+""")
+
+
+def test_failed_native_retirement_keeps_handles_and_coordination_lease_and_blocks_new_work(tmp_path):
+    run(tmp_path, r"""
+# Compile a task-local fault fixture. Product code has no bypass or injection flag.
+$source=[IO.File]::ReadAllText((Join-Path $env:PROCESS_TEST_ROOT 'tools\startup_repair_common.ps1'))
+$needle='if(info.active!=0)throw new TimeoutException("Owned startup job is still active; retry is held.");'
+if(!$source.Contains($needle)){throw 'The native retirement fixture no longer identifies its proof boundary.'}
+$source=$source.Replace($needle,'if(System.Diagnostics.Stopwatch.GetTimestamp()>0)throw new TimeoutException("Injected native retirement proof failure.");')
+. ([scriptblock]::Create($source))
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:PROCESS_TEST_SCRATCH 'SourceData')}
+$storage=Get-CanonicalSourceStartupStorage;New-PrivateRepairDirectory $storage
+$lease=Enter-CanonicalSourceHelperLease
+$powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+$environment=New-RepairChildEnvironment $storage
+$window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-Command','exit 10') -WorkingDirectory $storage -Environment $environment -LogPath (Join-Path $storage 'failed-window.log')
+$held=$false
+try {$window.WaitForExit()}catch{$held=$true}
+if(!$held -or ![Angerona.StartupRepairProcess]::CustodyPending){throw 'A failed retirement proof discarded custody.'}
+Exit-RepairLease $lease
+if(!$lease.CanRead){throw 'A failed retirement proof released its coordination lease.'}
+$other=Open-PrivateRepairFile -Path (Join-Path $storage 'startup-helper.lock') -Mode OpenOrCreate -Share ReadWrite
+try {
+    $locked=$false
+    try {$other.Lock(0,1)}catch{$locked=$true}
+    if(!$locked){throw 'Another generation bypassed the retained helper lease.'}
+}finally{$other.Dispose()}
+$marker=Join-Path $storage 'must-not-launch'
+$refused=$false
+try {
+    Invoke-OwnedRepairProcess -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-Command',('[IO.File]::WriteAllText("'+$marker+'","launched")')) -WorkingDirectory $storage -Environment $environment -TimeoutSeconds 10 -LogPath (Join-Path $storage 'must-not-launch.log')
+}catch{$refused=$true}
+if(!$refused -or (Test-Path -LiteralPath $marker)){throw 'Unresolved native custody admitted another backend command.'}
+# Fixture exits with all proved-terminated native generations still retained.
+# Exiting is not asserted to be an independent retirement proof in production.
+""")

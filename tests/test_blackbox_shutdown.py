@@ -13,7 +13,7 @@ import pytest
 import blackbox_recorder as blackbox
 
 
-@pytest.mark.parametrize("mode", ["close", "hidden-close", "quit", "delayed-read", "partial-start"])
+@pytest.mark.parametrize("mode", ["close", "hidden-close", "quit", "delayed-read", "partial-start", "heartbeat"])
 def test_real_entry_point_retires_workers_before_native_shutdown(mode):
     root = Path(__file__).resolve().parents[1]
     data = Path(os.environ["ANGERONA_DATA"]) / mode
@@ -29,11 +29,20 @@ def test_real_entry_point_retires_workers_before_native_shutdown(mode):
         import blackbox_recorder as b
         from PySide6.QtCore import QTimer
         from angerona.core.uiwatchdog import UiWatchdog
+        from angerona.resilience.component_status import ProgressHeartbeat
 
         mode = sys.argv[1]
         entered, release = threading.Event(), threading.Event()
         retired, watches = [], []
         beats = []
+        component_beats = []
+        original_component_beat = ProgressHeartbeat.beat
+        def track_component_beat(self):
+            result = original_component_beat(self)
+            if result:
+                component_beats.append(time.monotonic())
+            return result
+        ProgressHeartbeat.beat = track_component_beat
         original_start = UiWatchdog.start
         def track_watchdog(self):
             watches.append(self)
@@ -66,9 +75,26 @@ def test_real_entry_point_retires_workers_before_native_shutdown(mode):
                     # The reverse-reveal coordinator hides before the final
                     # close. Qt need not emit lastWindowClosed in this case.
                     QTimer.singleShot(150, self.hide_then_close)
+                elif mode == "heartbeat":
+                    # Construction/config/reveal can precede event dispatch.
+                    # Arm the bound from the actual Qt loop, then close only
+                    # after the real production heartbeat slot has advanced.
+                    QTimer.singleShot(0, self.arm_heartbeat_probe)
                 else:
                     QTimer.singleShot(150, self.close if mode == "close"
                                       else b.QApplication.instance().quit)
+
+            def arm_heartbeat_probe(self):
+                self.heartbeat_probe = QTimer(self)
+                self.heartbeat_probe.setInterval(25)
+                self.heartbeat_probe.timeout.connect(self.check_component_beat)
+                self.heartbeat_probe.start()
+                QTimer.singleShot(5000, self.close)
+
+            def check_component_beat(self):
+                if component_beats:
+                    self.heartbeat_probe.stop()
+                    self.close()
 
             def activate_memory(self):
                 self.showNormal()
@@ -107,6 +133,14 @@ def test_real_entry_point_retires_workers_before_native_shutdown(mode):
         assert retired and min(retired) >= 6, retired
         assert b.QApplication.instance() is None
         assert watches and all(not w._thread.is_alive() for w in watches)
+        if mode == "heartbeat":
+            from angerona.resilience import heartbeat as hb
+            reader = hb.HeartbeatReader('blackbox')
+            record = reader.read()
+            assert component_beats, 'No real Qt heartbeat callback advanced before the bound'
+            assert reader.authentication_status(record=record) == 'authenticated', record
+            assert record['counter'] >= 2 and record['flags'] == 0, record
+            assert hb.hb_path('blackbox').stat().st_size == hb.RECORD_SIZE
         if mode == "delayed-read":
             assert entered.is_set() and release.is_set()
             assert len(beats) >= 5, beats

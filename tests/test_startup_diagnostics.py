@@ -55,7 +55,7 @@ def test_error_sink_failure_is_visible_and_preserves_original_outcome(storage, m
     monkeypatch.setattr(diagnostics.StartupDiagnostics, "record", lambda self, *_a, **_kw: False)
     monkeypatch.setattr(startup, "run_startup", lambda *_a, **_kw: (_ for _ in ()).throw(startup.StartupError("original failure")))
     monkeypatch.setattr(startup.sys, "argv", ["startup", "--check-only"])
-    assert startup.main() == 1
+    assert startup.main() == 85
     message = capsys.readouterr().err
     assert "original failure" in message and "persistence unavailable" in message
 
@@ -63,7 +63,7 @@ def test_error_sink_failure_is_visible_and_preserves_original_outcome(storage, m
 def test_unknown_fault_records_actual_exception_without_graphics_retry_hint(storage, monkeypatch, capsys):
     monkeypatch.setattr(startup, "run_startup", lambda *_a, **_kw: (_ for _ in ()).throw(OSError(5, "synthetic access denied")))
     monkeypatch.setattr(startup.sys, "argv", ["startup", "--check-only"])
-    assert startup.main() == 1
+    assert startup.main() == 85
     assert "synthetic access denied" in capsys.readouterr().err
     row = records(storage)[-1]
     assert row["exception_type"] == "OSError" and row["error_code"] == 5
@@ -239,7 +239,10 @@ def test_dependency_consistency_output_is_capped_without_changing_exit82(monkeyp
 
 
 @pytest.mark.parametrize("error,code", [(None, 0), (startup.RepairableStartupError(82, "pins"), 82),
-                                      (ValueError("source failure"), 1)])
+                                      (ValueError("source failure"), 85),
+                                      (startup.ProbeTimedOut("retired probe"), 87),
+                                      (startup.StartupCancelled("operator cancelled"), 1223),
+                                      (startup.DashboardProcessFailed("core exited"), 1)])
 def test_no_startup_window_keeps_same_launch_checks_flags_and_closed_outcomes(storage, monkeypatch, capsys, error, code):
     called = []
     def run(*_args, **kwargs):

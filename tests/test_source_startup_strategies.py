@@ -40,7 +40,7 @@ function Write-SourceStartupEvent {}
 function Write-SourceStartupStatus {}
 function Add-SourceStartupAttempt {}
 function Invoke-SourceCodeAction {
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
     return 0
 }
 function Complete-SourceStartupRecovery { $script:Calls.Add('snapshot-and-review') }
@@ -57,6 +57,7 @@ function Invoke-SourceRecoveryWindow { $script:Calls.Add('recovery-window');retu
 @pytest.mark.parametrize("codes,expected", [
     ([83, 0], ["pass:software=False,no-window=False", "pass:software=True,no-window=False"]),
     ([84, 0], ["pass:software=False,no-window=False", "pass:software=False,no-window=True"]),
+    ([87, 0], ["pass:software=False,no-window=False", "pass:software=False,no-window=True"]),
     ([81, 82, 0], ["pass:software=False,no-window=False", "repair:Runtime",
                     "pass:software=False,no-window=False", "repair:Dependencies",
                     "pass:software=False,no-window=False"]),
@@ -81,6 +82,34 @@ Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Co
     assert outcome["code"] == 1223
     assert outcome["calls"].count("repair:Dependencies") == 1
     assert outcome["calls"][-1] == "recovery-window"
+
+
+def test_retired_probe_timeout_uses_one_distinct_bootstrap_then_holds_without_source_recovery(tmp_path):
+    outcome = run(tmp_path, PROVIDERS + r"""
+$script:StartupDiagnosticRoot='D:\inert-private-diagnostics'
+$script:Codes.Enqueue(87);$script:Codes.Enqueue(87);$script:Choices.Enqueue(0)
+function Invoke-SourceCodeAction {
+    param($Root,$Action)
+    $script:Calls.Add('source:'+$Action)
+    if($Action -eq 'recover'){throw 'Preflight timeout cannot authorize source rollback.'}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
+    return 0
+}
+$code=Invoke-SourceStartupLoop 'D:\inert-root'
+Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"code": 1223, "calls": [
+        "source:inspect", "source:fingerprint", "pass:software=False,no-window=False",
+        "source:inspect", "source:fingerprint", "pass:software=False,no-window=True", "recovery-window"]}
+
+
+def test_cancelled_helper_is_terminal_without_another_window_or_source_mutation(tmp_path):
+    outcome = run(tmp_path, PROVIDERS + r"""
+$script:Codes.Enqueue(1223)
+$code=Invoke-SourceStartupLoop 'D:\inert-root'
+Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"code": 1223, "calls": ["pass:software=False,no-window=False"]}
 
 
 def test_operator_retry_starts_fresh_verified_round(tmp_path):
@@ -115,7 +144,7 @@ function Invoke-SourceStartupPass {
 function Invoke-SourceCodeAction {
     param($Root,$Action,$Strategy,$ExpectedId)
     $changed=($Action -eq 'recover' -and $script:AttemptKinds.Count -eq 1)
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;changed=$changed;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';changed=$changed;source_digest=('a'*64)}
     return 0
 }
 $script:Choices.Enqueue(10)
@@ -158,7 +187,7 @@ $script:Codes.Enqueue(1);$script:Codes.Enqueue(0)
 function Invoke-SourceCodeAction {
     param($Root,$Action,$Strategy,$ExpectedId)
     $script:Calls.Add("source:$Action`:$Strategy")
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
     if($Action -eq 'recover') {
         $script:LastSourceRecoveryResult=[pscustomobject]@{changed=$true;report_id='aabbccdd-1111-2222-3333-444455556666'}
     }
@@ -168,8 +197,8 @@ $code=Invoke-SourceStartupLoop 'D:\inert-root'
 Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
 """)
     assert outcome["code"] == 0
-    assert outcome["calls"] == ["source:apply-pending:", "source:fingerprint:", "pass:software=False,no-window=False",
-                                 "source:recover:last-ready", "source:apply-pending:", "source:fingerprint:",
+    assert outcome["calls"] == ["source:inspect:", "source:fingerprint:", "pass:software=False,no-window=False",
+                                 "source:recover:last-ready", "source:inspect:", "source:fingerprint:",
                                  "pass:software=False,no-window=False",
                                  "snapshot-and-review"]
 
@@ -184,7 +213,7 @@ function Invoke-SourceCodeAction {
     param($Root,$Action,$Strategy)
     $script:Calls.Add('source:'+$Action)
     if($Action -eq 'recover') {throw 'Infrastructure must never roll back application source.'}
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
     return 0
 }
 function Invoke-SourceStartupPass {
@@ -195,7 +224,7 @@ $code=Invoke-SourceStartupLoop 'D:\inert-root'
 Write-Output ('RESULT:'+(@{code=$code;attempts=@($script:Attempts);calls=@($script:Calls)}|ConvertTo-Json -Compress))
 """)
     assert outcome == {"code": 1223, "attempts": [85], "calls": [
-        "source:apply-pending", "source:fingerprint", "pass:infrastructure-failed", "recovery-window"]}
+        "source:inspect", "source:fingerprint", "pass:infrastructure-failed", "recovery-window"]}
 
 
 @pytest.mark.parametrize("native_code", [85, 124, 125])
@@ -208,14 +237,14 @@ function Invoke-SourceCodeAction {
     param($Root,$Action,$Strategy)
     $script:Calls.Add('source:'+$Action)
     if($Action -eq 'recover') {throw 'An uncertain capture cannot authorize source mutation.'}
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
     return 0
 }
 $code=Invoke-SourceStartupLoop 'D:\inert-root'
 Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
 """
     assert run(tmp_path, body.replace("NATIVE_CODE", str(native_code))) == {"code": 1223, "calls": [
-        "source:apply-pending", "source:fingerprint", "pass:software=False,no-window=False", "recovery-window"]}
+        "source:inspect", "source:fingerprint", "pass:software=False,no-window=False", "recovery-window"]}
 
 
 @pytest.mark.parametrize("failed_probe", [1, 2, 3], ids=["abi", "pip", "source-trust"])
@@ -243,6 +272,149 @@ Write-Output ('RESULT:'+(@{code=$code;probes=$script:ProbeStep;released=$script:
 """
     assert run(tmp_path, body.replace("FAILED_PROBE", str(failed_probe))) == {
         "code": 85, "probes": failed_probe, "released": 1}
+
+
+def test_read_only_startup_does_not_require_shared_python_jobs_to_exit(tmp_path):
+    outcome = run(tmp_path, r"""
+$script:Calls=[Collections.Generic.List[string]]::new()
+function Assert-SourceStartupBoundary {}
+function Initialize-SourceStartupStorage {return $env:ANGERONA_TEST_SCRATCH}
+function Enter-RepairLease {return 'repair-coordination'}
+function Exit-RepairLease {$script:Calls.Add('lease-released')}
+function Assert-NoPendingRepair {}
+function Assert-NoActiveVenv {throw 'An unrelated review is using shared Python; mutation is held.'}
+function Test-Path {return $true}
+function New-SourceStartupTemporary {return $env:ANGERONA_TEST_SCRATCH}
+function New-RepairChildEnvironment {return @{TEMP=$env:ANGERONA_TEST_SCRATCH;TMP=$env:ANGERONA_TEST_SCRATCH}}
+function Initialize-OwnedRepairProcess {}
+function Invoke-OwnedRepairProcess {$script:Calls.Add('read-only-probe');return 0}
+function Invoke-SourceStartupAssistant {$script:Calls.Add('leased-startup-helper');return 0}
+$code=Invoke-SourceStartupPass $env:ANGERONA_TEST_SCRATCH
+Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"code": 0, "calls": ["read-only-probe"] * 3 + ["leased-startup-helper", "lease-released"]}
+
+
+@pytest.mark.parametrize("action", ["inspect", "fingerprint", "recover", "apply-pending"])
+def test_source_mutation_alone_requires_core_and_active_runtime_exclusion(tmp_path, action):
+    body = r"""
+$root=$env:ANGERONA_TEST_SCRATCH
+[void][IO.Directory]::CreateDirectory((Join-Path $root 'tools'))
+[void][IO.Directory]::CreateDirectory((Join-Path $root 'venv\Scripts'))
+[IO.File]::WriteAllText((Join-Path $root 'tools\startup_source_recovery.py'),'inert fixture')
+[IO.File]::WriteAllText((Join-Path $root 'venv\Scripts\python.exe'),'inert fixture')
+$script:Calls=[Collections.Generic.List[string]]::new()
+function Initialize-SourceStartupStorage {return $env:ANGERONA_TEST_SCRATCH}
+function Assert-SourceStartupPath {}
+function Assert-PlainRepairPath {}
+function Enter-RepairLease {return 'repair'}
+function Exit-RepairLease {param($Lease);$script:Calls.Add('release:'+$Lease)}
+function Assert-NoPendingRepair {}
+function Enter-CanonicalSourceHelperLease {$script:Calls.Add('helper');return 'helper'}
+function Enter-CanonicalCoreMutationLease {$script:Calls.Add('core');return 'core'}
+function Assert-NoActiveVenv {$script:Calls.Add('runtime-exclusion');throw 'Shared review generation is active; mutation refused.'}
+function New-SourceStartupTemporary {return $env:ANGERONA_TEST_SCRATCH}
+function New-RepairChildEnvironment {return @{TEMP=$env:ANGERONA_TEST_SCRATCH;TMP=$env:ANGERONA_TEST_SCRATCH}}
+function Initialize-OwnedRepairProcess {}
+function Write-SourceStartupEvent {}
+function Invoke-OwnedRepairProcess {
+    param($FilePath,$Arguments,$WorkingDirectory,$Environment,$TimeoutSeconds,$LogPath)
+    if($Arguments -contains '--action') {
+        [IO.File]::WriteAllText($LogPath,'{"schema":1,"launch_held":false,"requires_mutation":false,"pending_kind":"none"}')
+    }
+    return 0
+}
+$held=$false;$code=-1
+try {$code=Invoke-SourceCodeAction -Root $root -Action 'ACTION'}catch{$held=$true}
+Write-Output ('RESULT:'+(@{code=$code;held=$held;calls=@($script:Calls)}|ConvertTo-Json -Compress))
+"""
+    outcome = run(tmp_path, body.replace("ACTION", action))
+    mutates = action in {"recover", "apply-pending"}
+    assert outcome == {"code": -1 if mutates else 0, "held": mutates,
+        "calls": ["helper"] + (["core", "runtime-exclusion", "release:core"] if mutates else [])
+                 + ["release:helper", "release:repair"]}
+
+
+@pytest.mark.parametrize("kind,held", [("none", False), ("edits", False), ("transaction", True)])
+def test_source_inspection_only_requests_exclusive_apply_for_actual_pending_mutation(tmp_path, kind, held):
+    body = PROVIDERS + r"""
+$script:Codes.Enqueue(0)
+function Invoke-SourceCodeAction {
+    param($Root,$Action)
+    $script:Calls.Add('source:'+$Action)
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
+    if($Action -eq 'inspect') {
+        $script:LastSourceRecoveryResult.requires_mutation=('KIND' -ne 'none')
+        $script:LastSourceRecoveryResult.pending_kind='KIND'
+        $script:LastSourceRecoveryResult.launch_held=HELD
+        if(HELD){return 1}
+    }
+    return 0
+}
+$code=Invoke-SourceStartupLoop 'D:\inert-root'
+Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
+"""
+    outcome = run(tmp_path, body.replace("KIND", kind).replace("HELD", "$true" if held else "$false"))
+    assert outcome == {"code": 0, "calls": ["source:inspect"] + (
+        ["source:apply-pending"] if kind != "none" else []) + ["source:fingerprint", "pass:software=False,no-window=False"]}
+
+
+def test_missing_runtime_during_inspection_still_selects_verified_runtime_repair(tmp_path):
+    outcome = run(tmp_path, PROVIDERS + r"""
+$script:Inspections=0;$script:Codes.Enqueue(0)
+function Invoke-SourceCodeAction {
+    param($Root,$Action)
+    if($Action -eq 'inspect'){$script:Inspections++}
+    if($script:Inspections -eq 1) {
+        $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$true;reason_code='runtime-missing'}
+        return 81
+    }
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
+    return 0
+}
+$code=Invoke-SourceStartupLoop 'D:\inert-root'
+Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"code": 0, "calls": ["repair:Runtime", "pass:software=False,no-window=False"]}
+
+
+def test_retry_waits_for_retained_assistant_generation_and_readers(tmp_path):
+    outcome = run(tmp_path, PROVIDERS + r"""
+$script:Retired=$false
+$process=[pscustomobject]@{}
+$process|Add-Member ScriptProperty HasExited {$script:Retired}
+$process|Add-Member ScriptMethod Dispose {$script:Calls.Add('owned-capture-disposed')}
+$capture=[pscustomobject]@{Process=$process;ProcessId=41234;CreationTimeFileTime='1122334455'}
+$capture|Add-Member ScriptProperty ReadersComplete {$script:Retired}
+$script:StartupPendingCaptures=[Collections.Generic.List[object]]::new();$script:StartupPendingCaptures.Add($capture)
+function Invoke-SourceRecoveryWindow {
+    $script:Calls.Add('recovery-window');$script:Retired=$true;return 10
+}
+$script:Codes.Enqueue(0)
+$code=Invoke-SourceStartupLoop 'D:\inert-root'
+Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls);pending=$script:StartupPendingCaptures.Count}|ConvertTo-Json -Compress))
+""")
+    assert outcome == {"code": 0, "calls": ["recovery-window", "owned-capture-disposed", "pass:software=False,no-window=False"], "pending": 0}
+
+
+def test_supervisor_waits_for_exact_native_first_paint_and_ready_retires_shell(tmp_path):
+    outcome = run(tmp_path, r"""
+. (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+$script:InertStorage=Join-Path $env:ANGERONA_TEST_SCRATCH 'SourceData'
+New-PrivateRepairDirectory $script:InertStorage
+function Initialize-SourceStartupStorage {return $script:InertStorage}
+Initialize-SourceStartupDiagnostics $script:InertStorage
+try {
+    Start-SourceStartupShell $env:ANGERONA_TEST_ROOT
+    if(!$script:StartupShell -or $script:StartupShell.HasExited){throw 'Native shell did not survive its first paint.'}
+    $status=[IO.File]::ReadAllText($script:StartupStatusPath)|ConvertFrom-Json
+    if($status.outcome -cne 'checking' -or $status.run_id -cne $script:StartupRunId){throw 'Paint incorrectly conveyed dashboard readiness.'}
+    Write-SourceStartupStatus 'dashboard' 'verified' 'Inert integration receipt; no application engine was launched.'
+    if(!$script:StartupShell.WaitForExit(15000)){throw 'Matching ready status did not retire the independent shell.'}
+    Write-Output ('RESULT:'+(@{code=$script:StartupShell.ExitCode;painted=$true}|ConvertTo-Json -Compress))
+}finally{if($script:StartupShell){$script:StartupShell.Dispose()}}
+""")
+    assert outcome == {"code": 0, "painted": True}
 
 
 @pytest.mark.parametrize("native_code", [0, 1, 82, 124, 125])
@@ -285,7 +457,7 @@ Write-Output ('RESULT:'+(@{codes=$results}|ConvertTo-Json -Compress))
     assert outcome == {"codes": [0, 7, 124]}
 
 
-@pytest.mark.parametrize("failed_action", ["apply-pending", "fingerprint"])
+@pytest.mark.parametrize("failed_action", ["inspect", "apply-pending", "fingerprint"])
 def test_source_admission_hold_never_loads_engine_or_busy_retries(tmp_path, failed_action):
     outcome = run(tmp_path, PROVIDERS + r"""
 $script:StartupDiagnosticRoot='D:\inert-private-diagnostics'
@@ -293,7 +465,8 @@ $script:Choices.Enqueue(0)
 function Invoke-SourceCodeAction {
     param($Root,$Action)
     $script:Calls.Add("source:$Action")
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=($Action -eq 'FAILED_ACTION');source_digest=('a'*64)}
+    $needsMutation=('FAILED_ACTION' -eq 'apply-pending' -and $Action -eq 'inspect')
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=($Action -eq 'FAILED_ACTION');requires_mutation=$needsMutation;pending_kind=$(if($needsMutation){'edits'}else{'none'});source_digest=('a'*64)}
     if($Action -eq 'FAILED_ACTION') { return 1 }; return 0
 }
 $code=Invoke-SourceStartupLoop 'D:\inert-root'
@@ -312,7 +485,7 @@ $script:Codes.Enqueue(82);$script:Choices.Enqueue(0)
 function Invoke-SourceCodeAction {
     param($Root,$Action)
     $script:Calls.Add("source:$Action")
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none';source_digest=('a'*64)}
     return 0
 }
 $code=Invoke-SourceStartupLoop 'D:\inert-root'
@@ -362,7 +535,7 @@ $script:StartupDiagnosticRoot='D:\inert-private-diagnostics'
 function Invoke-SourceCodeAction {
     param($Root,$Action)
     if($Action -ne 'inspect') {throw 'Mutating source action in check-only'}
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none'}
     return 0
 }
 $script:Codes.Enqueue(1)
@@ -380,7 +553,7 @@ $script:Choices.Enqueue(0)
 function Invoke-SourceCodeAction {
     param($Root,$Action)
     $script:Calls.Add('source:'+$Action)
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$true}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$true;requires_mutation=$false;pending_kind='none'}
     return 1
 }
 $code=Invoke-SourceStartupLoop 'D:\inert-root' SETUP
@@ -389,16 +562,16 @@ Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Co
     outcome = run(tmp_path, body.replace("DIAGNOSTICS", "'D:\\inert-diagnostics'" if diagnostics else "$null")
                   .replace("SETUP", "-SetupOnly" if setup_only else ""))
     assert outcome["code"] == (1 if setup_only else 1223)
-    assert outcome["calls"] == (["source:inspect"] if setup_only else ["source:apply-pending", "recovery-window"])
+    assert outcome["calls"] == (["source:inspect"] if setup_only else ["source:inspect", "recovery-window"])
 
 
-@pytest.mark.parametrize("result", ["$null", "[pscustomobject]@{launch_held=$false}"])
+@pytest.mark.parametrize("result", ["$null", "[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none'}"])
 def test_invalid_fingerprint_never_loads_application(tmp_path, result):
     body = PROVIDERS + r"""
 $script:Choices.Enqueue(0)
 function Invoke-SourceCodeAction {
     param($Root,$Action)
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;requires_mutation=$false;pending_kind='none'}
     if($Action -eq 'fingerprint') {$script:LastSourceRecoveryResult=BAD_RESULT;return 1}
     return 0
 }

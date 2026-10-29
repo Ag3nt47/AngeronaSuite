@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.14.1 — startup, storage and dashboard reliability (2026-10-28)
+
+- Bound Shadow Shield recovery data with aggregate capacity/free-space admission,
+  visible storage warnings and Block/Delete/Change controls; keep destructive
+  cleanup separate from settings, original files and retained security evidence.
+- Add bounded Safe Startup alternatives, detailed phase/native diagnostics,
+  independent recovery interfaces, exact-source preservation and reviewable
+  recovery decisions. Repair the dependency closure and Windows runtime/capture
+  boundaries found during a real clean rebuild.
+- Make dashboard panels minimize individually, start everything except Module
+  health open, and retain readable table columns across supported screen sizes.
+- Paint the independent Windows startup dashboard before runtime checks. Give
+  each dependency probe its own bounded wait, retain its complete native child
+  tree through cancellation, and separate infrastructure holds from source faults.
+  Allow read-only startup alongside shared-runtime diagnostics while retaining
+  exclusive custody for source/runtime replacement.
+- Add component heartbeat EKGs alongside resource status: real fresh heartbeats
+  beat, while absent, expired or unavailable observations flatline red. Details
+  distinguish liveness from detector coverage and response authority.
+- Fix inherited-environment handling that blocked watchdog, scanner and Black
+  Box launches. Add a bounded STOP-aware supervision check/recovery helper;
+  preserve strict environment validation, disabled preferences and peer ownership.
+- Bound retained source update candidates to two and 2 GiB aggregate data, with
+  a separate 2 GiB volume reserve and no automatic deletion of earlier candidates.
+- Make STOP/tray Quit persist authenticated intent, fence automatic restart/AI
+  admission, unload configured model residency and retire owned helpers while
+  preserving shared services and downloaded model files.
+- Refresh the professional introduction, platform size estimates, security-flow
+  manual and 45-second synthetic real-UI demonstration. Provide an online manual
+  and PDF alongside the Word download for browser/mobile readers.
+- Keep application/package versions consistent and preserve independently
+  versioned components. Source availability and signed installed delivery remain
+  separate: this maintenance publication does not create a trusted signed release.
+- Observe delayed, verified practice-response receipts within the existing
+  budget without repeating a native action. Retain exact event, signature,
+  journal, lease, overflow and native postcondition checks before credit.
+
+See [version notes and update availability](docs/releases/v1.14.1.md) and the
+[scoped implementation evidence](analysis/startup-storage-recovery-2026-10-28.md).
+Historical v1.14.0 validation entries below retain their original scope.
+
 ## 1.14.0 — model parser error normalization
 
 - Normalize malformed manifest, inventory and approved-baseline parsing failures

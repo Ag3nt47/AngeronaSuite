@@ -251,7 +251,11 @@ def _find_response(bus: EventBus, trigger: Event, since: float,
             same_trigger = abs(float(details.get("trigger_ts")) - trigger.ts) < 0.000001
         except (TypeError, ValueError):
             same_trigger = False
-        if same_trigger and details.get("mitigated") is True:
+        if (same_trigger and details.get("mitigated") is True
+                and details.get("trigger_module") == trigger.module
+                and details.get("origin_event_digest") == trigger.hmac_sig
+                and details.get("delegation_mode") == "issuer-original-event"
+                and bus.verify(event)):
             return event
     return None
 
@@ -486,14 +490,28 @@ def verify_practice_fixes(
                 raise RuntimeError("detector event lacks the exact issuer-backed control receipt")
 
             _emit_progress(progress, base_pct + 4, f"Testing {mitre} response and cleanup")
+            response_deadline = time.monotonic() + min(10.0, max(0.1, float(recorder_timeout)))
             with _scoped_practice_response(root):
                 active_response.process_pending_once()
-            _response_revision, response_events, response_overflow = bus.priority_since(
-                priority_cursor
-            )
-            if response_overflow:
-                raise RuntimeError("priority evidence lane overflowed during response test")
-            response = _find_response(bus, detection, started, events=response_events)
+                _response_revision, response_events, response_overflow = bus.priority_since(
+                    priority_cursor
+                )
+                if response_overflow:
+                    raise RuntimeError("priority evidence lane overflowed during response test")
+                response = _find_response(bus, detection, started, events=response_events)
+                if response is None:
+                    # Dispatch already happened through the production owner.
+                    # Observe only its exact committed receipt while this same
+                    # issuer lease remains held; never retry the native action.
+                    active_response.observe_issuer_completion(
+                        detection, timeout=max(0.0, response_deadline - time.monotonic()),
+                    )
+                    _response_revision, response_events, response_overflow = bus.priority_since(
+                        priority_cursor
+                    )
+                    if response_overflow:
+                        raise RuntimeError("priority evidence lane overflowed during response observation")
+                    response = _find_response(bus, detection, started, events=response_events)
             detection_persisted = _recorded(
                 Path(db_path), detection, recorder_timeout
             )

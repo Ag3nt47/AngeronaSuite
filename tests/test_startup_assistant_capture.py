@@ -76,7 +76,8 @@ $answer|ConvertTo-Json -Compress
     # Python capture_output pipe open and delay observation of the PS exit.
     with harness_out.open("wb") as stdout, harness_err.open("wb") as stderr:
         result = subprocess.run([str(POWERSHELL), "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(source)],
-                                cwd=ROOT, env=environment, stdout=stdout, stderr=stderr, timeout=35, check=False)
+                                cwd=ROOT, env=environment, stdout=stdout, stderr=stderr,
+                                timeout=max(35, timeout + 15), check=False)
     captured, errors = harness_out.read_text(), harness_err.read_text()
     assert result.returncode == 0, captured + errors
     return json.loads(captured.strip()), tmp_path / "private-capture"
@@ -144,9 +145,14 @@ def test_capture_rejects_nonstring_or_nul_values_before_start_without_disclosing
 def test_capture_caps_both_streams_and_reports_exact_discarded_bytes(tmp_path):
     count = LIMIT + 131_073
     body = f"import os\nleft={count}\nwhile left:\n n=min(left,8192)\n os.write(1,b'o'*n)\n os.write(2,b'e'*n)\n left-=n\n"
-    result, scratch = run_capture(tmp_path, body)
+    # This is a 16+ MiB byte-cap/dual-pipe test, not a throughput benchmark.
+    # WriteThrough output intentionally performs durable 8 KiB writes; loaded
+    # volumes exceeded the generic 10/30-second fixture throughput budgets.
+    # Use the unchanged production capture deadline for the full volume test.
+    # The separate one-second case still exercises the exact timeout contract.
+    result, scratch = run_capture(tmp_path, body, timeout=240)
     try:
-        assert result["ExitCode"] == 0 and result["ReadersComplete"]
+        assert result["ExitCode"] == 0 and result["ReadersComplete"], json.dumps(result)
         assert (scratch / "stdout.log").stat().st_size == LIMIT
         assert (scratch / "stderr.log").stat().st_size == LIMIT
         assert result["StdoutDropped"] == result["StderrDropped"] == count - LIMIT

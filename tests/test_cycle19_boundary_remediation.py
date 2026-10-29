@@ -243,6 +243,7 @@ def test_supervisor_sidecar_receives_runtime_coordinates_not_credentials(
     tmp_path, monkeypatch
 ):
     from angerona.resilience import supervisor
+    from angerona.core import windows_child_job
 
     _patch_windows_paths(monkeypatch, tmp_path)
     monkeypatch.setenv("ANGERONA_DATA", str(tmp_path / "runtime"))
@@ -253,18 +254,23 @@ def test_supervisor_sidecar_receives_runtime_coordinates_not_credentials(
     captured = {}
     sentinel = object()
 
-    def fake_popen(argv, **kwargs):
+    def fake_owned_launch(argv, environment, **kwargs):
         captured["argv"] = argv
-        captured["environment"] = kwargs["env"]
+        captured["environment"] = environment
+        captured["ownership"] = kwargs
         return sentinel
 
-    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(windows_child_job, "launch_windows_child", fake_owned_launch)
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail(
+        "Windows sidecars must use retained native Job custody, not an unowned Popen"
+    ))
     result = supervisor.spawn_detached(
         [str(Path(os.sys.executable).resolve()), "-m", "angerona.resilience.scanner"],
         window="hidden",
     )
 
     assert result is sentinel
+    assert captured["ownership"] == {"cwd": None, "window": "hidden", "kill_on_close": False}
     environment = captured["environment"]
     assert environment["ANGERONA_DATA"] == str(tmp_path / "runtime")
     assert environment["ANGERONA_DIAG_DIR"].endswith("diag")

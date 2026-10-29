@@ -153,22 +153,22 @@ def build_assets():
         canvas.save(output, optimize=True)
 
     diagram(ASSETS[0], "Angerona security flow", "User-mode workbench • evidence, authority and readiness are separate", [
-        ("1  Verify startup", ["Source Observe or signed installed scope", "Paths • runtime • storage • fresh readiness"]),
+        ("1  Paint and verify startup", ["Native shell before Python / Qt checks", "Source Observe or signed installed scope"]),
         ("2  Collect observations", ["Process • files • memory • network • logs", "Platform, privilege, age and loss stay visible"]),
         ("3  Authenticate evidence", ["Producer schema • continuity • replay", "Record authentication is a separate check"]),
         ("4  Detect and correlate", ["86 declared capabilities • shared services", "Lead, exposure, detection and gap differ"]),
         ("5  Investigate and authorize", ["Dashboard • cases • optional advisory AI", "Typed target • policy • approval • capability"]),
         ("6  Act and verify outcome", ["Authorized adapter • durable action journal", "Exact target • result receipt • supported Undo"]),
         ("7  Retain and recover", ["Cases and keys differ from disposable cache", "Bounded budgets • preserved originals"]),
-        ("8  Show independent recovery", ["No application imports • Tk / Forms fallback", "Retry safely • never claim engine protection"]),
+        ("8  Show liveness and recovery", ["Real heartbeat EKG • stale = red flatline", "Native Retry / Close • protection unverified"]),
     ], ["Ring 3 boundary: no kernel immunity or universal coverage claim.",
         "A ready window does not prove live sensors, installed authority or successful response."], stop_branch="left")
-    diagram(ASSETS[1], "Safe Startup recovery flow", "Each round is bounded • all candidates repeat fresh checks", [
+    diagram(ASSETS[1], "Safe Startup recovery flow", "Native dashboard paints first • engine remains unverified", [
         ("1  Read explicit controls", ["STOP state • recovery / GitHub controls", "Automatic retries never clear STOP"]),
-        ("2  Verify exclusion and trust", ["Canonical paths • no active engine", "Operational pins • disk reserve • runtime"]),
-        ("3  Try safe launch alternatives", ["Ordinary • software Qt • no Tk window", "Recognized failure may use verified repair"]),
-        ("4  Preserve source edits", ["Private original archive • manifest • journal", "Concurrent editor changes cause a hold"]),
-        ("5  Try eligible source candidates", ["Last ready • exact GitHub HEAD / parent", "STOP-contract floor • no baseline authority"]),
+        ("2  Paint independent dashboard", ["Verified operational pins • native OS UI", "Run + PID/birth receipt • 20 s bound"]),
+        ("3  Check and repair in background", ["Probe phase 30 s • overall 100 s", "85 / 87 / 1223 never mean source defect"]),
+        ("4  Try safe launch alternatives", ["Ordinary • software Qt • no Tk window", "Verified repair • exclusive mutation only"]),
+        ("5  Preserve and recover source", ["Last ready • exact GitHub HEAD / parent", "Private originals • no concurrent overwrite"]),
         ("6  Prove dashboard readiness", ["Fresh nonce • live PID generation", "Event loop responding • full gates retained"]),
         ("7  Review after recovery", ["Keep working • review later", "Try preserved edits at NEXT startup only"]),
         ("8  Recovery remains available", ["Bounded phase logs • missing logs explicit", "Retry / Close • protection unverified"]),
@@ -335,11 +335,108 @@ def replace_paragraph(document, before, after, properties=None):
     return document
 
 
+def canonical_version():
+    """Read the product version without loading any application code."""
+    tree = ast.parse((ROOT / 'src/angerona/__init__.py').read_text(encoding='utf-8-sig'))
+    values = [ast.literal_eval(node.value) for node in tree.body
+              if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == '__version__'
+                      for target in node.targets)]
+    if len(values) != 1 or not isinstance(values[0], str) or not re.fullmatch(r'\d+\.\d+\.\d+', values[0]):
+        raise ValueError('canonical product version is missing or ambiguous')
+    return values[0]
+
+
+def current_version_parts(mapping):
+    """Patch current display versions in place, retaining runs and dated history."""
+    version_text = canonical_version()
+    version = version_text.encode('ascii')
+    document = mapping['word/document.xml']
+    anchors = (
+        'Current development: v',
+        ' source update. Validation is recorded in analysis/live-debug-2026-10-22;',
+        'Angerona unifies Windows endpoint and network visibility,',
+    )
+    counts = [0, 0, 0, 0]
+    previous_text = ''
+    frontmatter_open = True
+    cover_dates = 0
+
+    def patch(match):
+        nonlocal previous_text, frontmatter_open, cover_dates
+        raw = match.group(0)
+        text = unescape(''.join(part.decode('utf-8') for part in re.findall(
+            rb'<w:t(?:\s[^>]*)?>(.*?)</w:t>', raw, re.DOTALL)))
+        follows_version_label = previous_text == 'Version'
+        previous_text = text
+        if text == 'Document control':
+            frontmatter_open = False
+        if frontmatter_open and re.fullmatch(r'\d{1,2} [A-Za-z]+ \d{4}', text):
+            cover_dates += 1
+            return re.sub(rb'(?<=>)\d{1,2} [A-Za-z]+ \d{4}(?=</w:t>)',
+                          b'28 October 2026', raw, count=1)
+        for index, anchor in enumerate(anchors):
+            # The source-update wording is a stable frontmatter anchor; only its
+            # current version changes. Dated v1.14 integration prose stays intact.
+            selected = (text.startswith('v') and (anchor in text or ' source maintenance. Current validation:' in text)
+                        if index == 1 else text.startswith(anchor))
+            if selected:
+                counts[index] += 1
+                if index == 1:
+                    return replace_single_run_text(raw,
+                        f'v{version_text} source maintenance. Current validation: '
+                        'analysis/startup-storage-recovery-2026-10-28.md. '
+                        'Signed-package and clean-VM acceptance remain separate.')
+                return re.sub(rb'(?<=v)\d+\.\d+\.\d+', lambda _: version, raw, count=1)
+        if text.startswith('Current repository code, the 86-capability inventory and '):
+            return replace_single_run_text(raw,
+                'Current repository code, the 86-capability inventory and '
+                'analysis/startup-storage-recovery-2026-10-28.md; '
+                'October 22 validation and historical chapters retain their dated scope.')
+        if follows_version_label and re.fullmatch(r'\d+\.\d+\.\d+', text):
+            counts[3] += 1
+            return re.sub(rb'(?<=>)\d+\.\d+\.\d+(?=</w:t>)', lambda _: version, raw, count=1)
+        return raw
+
+    mapping['word/document.xml'] = re.sub(rb'<w:p(?:\s[^>]*)?(?<!/)>.*?</w:p>', patch, document, flags=re.DOTALL)
+    if counts != [1, 1, 1, 1]:
+        raise ValueError(f'current manual version anchors are missing or ambiguous: {counts}')
+    if cover_dates != 1:
+        raise ValueError('current manual cover revision date is missing or ambiguous')
+    for name, anchor in (
+        ('word/header1.xml', b'ANGERONA  |  MASTER MANUAL  |  v'),
+        ('word/footer2.xml', b'Angerona Suite  |  v'),
+    ):
+        raw = mapping[name]
+        if raw.count(anchor) != 1:
+            raise ValueError(f'current manual version anchor is ambiguous: {name}')
+        mapping[name], changed = re.subn(re.escape(anchor) + rb'\d+\.\d+\.\d+',
+            lambda _: anchor + version, raw, count=1)
+        if changed != 1:
+            raise ValueError(f'current manual display version is missing: {name}')
+    mapping['word/footer2.xml'], count = re.subn(
+        rb'(?<=  \|  )\d{1,2} [A-Za-z]+ \d{4}(?=</w:t>)',
+        b'28 October 2026', mapping['word/footer2.xml'], count=1)
+    if count != 1:
+        raise ValueError('current manual footer revision date is missing')
+
+
+def replace_single_run_text(paragraph_bytes, text):
+    """Retain the original frontmatter run format and reject split anchors."""
+    pattern = rb'(<w:t(?:\s[^>]*)?>).*?(</w:t>)'
+    if len(re.findall(pattern, paragraph_bytes, re.DOTALL)) != 1:
+        raise ValueError('current frontmatter text must have exactly one text run')
+    return re.sub(pattern, lambda match: match[1] + escape(text).encode('utf-8') + match[2],
+                  paragraph_bytes, count=1, flags=re.DOTALL)
+
+
 def update(check=False):
     refresh_inventory(check)
     with ZipFile(MANUAL) as archive:
         entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
     mapping = {info.filename: data for info, data in entries}
+    original_mapping = dict(mapping)
+    current_version_parts(mapping)
     document = mapping['word/document.xml']
     if START in document or END in document:
         if document.count(START) != 1 or document.count(END) != 1:
@@ -364,8 +461,11 @@ def update(check=False):
     updated = document[:insertion] + chapter() + document[insertion:]
     ET.fromstring(updated)
     if check:
-        if updated != mapping['word/document.xml']:
+        if updated != original_mapping['word/document.xml']:
             raise ValueError("master manual security-flow chapter differs from reviewed guides/assets")
+        for name in ('word/header1.xml', 'word/footer2.xml'):
+            if mapping[name] != original_mapping[name]:
+                raise ValueError(f'master manual current display version is stale: {name}')
         for name in ASSETS:
             if mapping.get('word/media/' + name) != (ROOT / 'assets' / name).read_bytes():
                 raise ValueError("master manual security-flow media is stale")

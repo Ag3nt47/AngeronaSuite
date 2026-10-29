@@ -35,8 +35,26 @@ def store(tmp_path, monkeypatch):
     (root / "external_modules").mkdir()
     (root / "external_modules/plugin.py").write_bytes(b"preserve external")
     monkeypatch.setattr(recovery, "SCRIPT_ROOT", root)
+    if os.name == "nt":
+        # This copied checkout models ordinary-user admission even when the
+        # hosted runner has an administrator token. Retain all actual native
+        # file/ACL operations; do not change ctypes for other product modules.
+        native = SimpleNamespace(**vars(recovery.ctypes))
+        native.windll = SimpleNamespace(shell32=SimpleNamespace(IsUserAnAdmin=lambda: False))
+        monkeypatch.setattr(recovery, "ctypes", native)
     monkeypatch.setattr(recovery.shutil, "disk_usage", lambda _path: SimpleNamespace(free=100 * 1024**3))
     return recovery.RecoveryStore(root, tmp_path / "startup-recovery")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows source elevation boundary")
+def test_elevated_source_recovery_is_refused_before_state_or_source_changes(store, monkeypatch):
+    before = recovery.inventory(store.root)
+    monkeypatch.setattr(recovery.ctypes.windll.shell32, "IsUserAnAdmin", lambda: True)
+    state = store.state.parent / "never-created-recovery"
+    with pytest.raises(recovery.Held, match="unelevated user session"):
+        recovery.RecoveryStore(store.root, state)
+    assert recovery.inventory(store.root) == before
+    assert not state.exists()
 
 
 def modify(store, data=b"def broken(\n"):
@@ -570,6 +588,8 @@ def test_inspect_missing_state_creates_nothing(store, tmp_path):
     missing = tmp_path / "absent-parent" / "startup-recovery"
     result = recovery.inspect_state(store.root, missing)
     assert result["launch_held"] is False
+    assert result["requires_mutation"] is False
+    assert result["pending_kind"] == "none"
     assert not missing.exists()
 
 
@@ -599,8 +619,24 @@ def test_inspect_pending_is_readonly_and_never_reconciles_or_applies_edits(store
     result = recovery.inspect_state(store.root, store.state)
     assert result["launch_held"] is True
     assert result["reason_code"] == "source-transaction-unresolved"
+    assert result["requires_mutation"] is True
+    assert result["pending_kind"] == "transaction"
     assert {path.name: path.read_bytes() for path in store.state.iterdir()} == before
     assert recovery.inventory(store.root) == source
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_inspect_pending_contract_uses_current_markers_not_retained_report(store, pending):
+    store.write("report.json", dict(requires_mutation=not pending,
+                                    pending_kind="transaction", launch_held=True))
+    if pending:
+        store.write("edits.pending.json", dict(schema=1, user_choice="pending"))
+    before = {path.name: path.read_bytes() for path in store.state.iterdir()}
+    result = recovery.inspect_state(store.root, store.state)
+    assert result["requires_mutation"] is pending
+    assert result["pending_kind"] == ("edits" if pending else "none")
+    assert result["launch_held"] is False
+    assert {path.name: path.read_bytes() for path in store.state.iterdir()} == before
 
 
 def test_operational_bootstrap_source_is_never_snapshot_or_rollback_content(store):

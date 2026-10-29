@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import io
 import os
+import stat
 import ctypes
 import subprocess
 import zipfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 
 import pytest
 
@@ -140,9 +142,282 @@ def test_combined_candidate_and_exact_disk_budget_hold_before_any_blob_or_candid
     with pytest.raises(stage.SourceStageError, match="budget|space"):
         stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare, download=archives.__getitem__)
     stages = list(state.glob("source-*"))
-    assert len(stages) == 1
-    assert not (stages[0] / "preserved-blobs").exists() and not (stages[0] / "candidate").exists()
+    assert len(stages) == (0 if limit_kind == "disk" else 1)
+    if stages:
+        assert not (stages[0] / "preserved-blobs").exists() and not (stages[0] / "candidate").exists()
     assert (source / "a").read_bytes() == b"user" and (source / "custom").read_bytes() == b"xx"
+
+
+def _retained_stage(root, number, content=b"USER_EDIT=True\n"):
+    candidate = root / f"source-{number:032x}"
+    candidate.mkdir(parents=True)
+    (candidate / "custom.py").write_bytes(content)
+    return candidate
+
+
+def _deny_producers(monkeypatch):
+    monkeypatch.setattr(stage, "source_git_session", lambda: pytest.fail("Git must not start before storage admission"))
+    return dict(fetch=lambda _path: pytest.fail("metadata must not be fetched"),
+                download=lambda _sha: pytest.fail("archives must not be downloaded"))
+
+
+def test_third_retained_candidate_holds_before_git_download_and_preserves_readonly_data(tmp_path, monkeypatch):
+    source, state, _archives, _compare = _budget_fixture(tmp_path, monkeypatch)
+    first = _retained_stage(state, 1)
+    second = _retained_stage(state, 2, b"PREFS_AND_CODE=unchanged\n")
+    payload = first / "custom.py"
+    original_mode = payload.stat().st_mode
+    payload.chmod(stat.S_IREAD)
+    before = payload.read_bytes(), payload.stat().st_mtime_ns, payload.stat().st_mode
+    try:
+        with pytest.raises(stage.SourceStageError, match="retained source-stage limit"):
+            stage.prepare_source_update(source, state, TARGET, **_deny_producers(monkeypatch))
+        assert (payload.read_bytes(), payload.stat().st_mtime_ns, payload.stat().st_mode) == before
+        assert (second / "custom.py").read_bytes() == b"PREFS_AND_CODE=unchanged\n"
+        assert (source / "a").read_bytes() == b"user"
+        assert len(list(state.glob("source-*"))) == 2
+    finally:
+        payload.chmod(original_mode)
+
+
+def test_first_and_second_preparations_are_admitted_but_never_activate(tmp_path, monkeypatch):
+    source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
+    first = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                        download=archives.__getitem__)
+    second = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                         download=archives.__getitem__)
+    assert first.stage_id != second.stage_id
+    assert first.activation_status == second.activation_status == "not_authorized"
+    assert (source / "a").read_bytes() == b"user" and not (source / "new").exists()
+    assert len(list(state.glob("source-*"))) == 2
+
+
+@pytest.mark.parametrize("kind", ["aggregate", "reserve", "entries", "time", "unknown-file", "unknown-directory"])
+def test_storage_admission_failure_is_bounded_and_precedes_every_producer(tmp_path, monkeypatch, kind):
+    source, state, _archives, _compare = _budget_fixture(tmp_path, monkeypatch)
+    existing = _retained_stage(state, 1, b"12345678")
+    if kind == "aggregate":
+        monkeypatch.setattr(stage, "MAX_TRANSACTION_BYTES", 12)
+        monkeypatch.setattr(stage, "MAX_STAGE_METADATA_BYTES", 4)
+        monkeypatch.setattr(stage, "MAX_RETAINED_STAGE_BYTES", 20)
+    elif kind == "reserve":
+        monkeypatch.setattr(stage.shutil, "disk_usage", lambda _path: SimpleNamespace(free=stage.MIN_STAGE_FREE_BYTES))
+    elif kind == "entries":
+        monkeypatch.setattr(stage, "MAX_STAGE_SCAN_ENTRIES", 2)
+    elif kind == "time":
+        monkeypatch.setattr(stage, "MAX_STAGE_SCAN_SECONDS", 0)
+    elif kind == "unknown-file":
+        (state / "unrecognized.txt").write_bytes(b"KEEP")
+    else:
+        (state / "unrecognized-directory").mkdir()
+    before = (existing / "custom.py").read_bytes()
+    with pytest.raises(stage.SourceStageError, match="storage held"):
+        stage.prepare_source_update(source, state, TARGET, **_deny_producers(monkeypatch))
+    assert (existing / "custom.py").read_bytes() == before
+    assert (source / "a").read_bytes() == b"user" and (source / "custom").read_bytes() == b"xx"
+    assert len(list(state.glob("source-*"))) == 1
+
+
+def test_retained_hardlink_is_preserved_and_blocks_another_stage(tmp_path, monkeypatch):
+    source, state, _archives, _compare = _budget_fixture(tmp_path, monkeypatch)
+    existing = _retained_stage(state, 1)
+    sentinel = tmp_path / "original-custom.py"
+    os.link(existing / "custom.py", sentinel)
+    before = sentinel.read_bytes(), sentinel.stat().st_mtime_ns
+    with pytest.raises(stage.SourceStageError, match="unsafe"):
+        stage.prepare_source_update(source, state, TARGET, **_deny_producers(monkeypatch))
+    assert (sentinel.read_bytes(), sentinel.stat().st_mtime_ns) == before
+    assert sentinel.stat().st_nlink == 2
+
+
+def test_retained_directory_reparse_is_rejected_without_following_or_deleting_it(tmp_path, monkeypatch):
+    source, state, _archives, _compare = _budget_fixture(tmp_path, monkeypatch)
+    state.mkdir()
+    target = tmp_path / "owned-target"
+    target.mkdir()
+    sentinel = target / "keep.py"
+    sentinel.write_bytes(b"UNCHANGED")
+    link = state / ("source-" + "1" * 32)
+    _owned_directory_link(tmp_path, tmp_path / "owned-link", target)
+    # Move only the exact fixture link within its verified private workspace.
+    (tmp_path / "owned-link").rename(link)
+    with pytest.raises(stage.SourceStageError, match="unsafe|link|reparse"):
+        stage.prepare_source_update(source, state, TARGET, **_deny_producers(monkeypatch))
+    assert sentinel.read_bytes() == b"UNCHANGED" and os.path.lexists(link)
+
+
+def test_file_edit_during_completed_inventory_holds_without_reverting_the_edit(tmp_path, monkeypatch):
+    source, state, _archives, _compare = _budget_fixture(tmp_path, monkeypatch)
+    existing = _retained_stage(state, 1)
+    payload = existing / "custom.py"
+    real = stage._held_storage_file
+
+    @contextmanager
+    def edited_after_close(path):
+        with real(path) as stamp:
+            yield stamp
+        if path == payload:
+            path.write_bytes(b"USER_NEW_EDIT=True\n")
+
+    monkeypatch.setattr(stage, "_held_storage_file", edited_after_close)
+    with pytest.raises(stage.SourceStageError, match="changed during inventory"):
+        stage.prepare_source_update(source, state, TARGET, **_deny_producers(monkeypatch))
+    assert payload.read_bytes() == b"USER_NEW_EDIT=True\n"
+    assert (source / "a").read_bytes() == b"user"
+
+
+def test_reserve_drop_after_download_preserves_originals_and_preparing_evidence(tmp_path, monkeypatch):
+    source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
+    available = [16 * 1024**3]
+    monkeypatch.setattr(stage.shutil, "disk_usage", lambda _path: SimpleNamespace(free=available[0]))
+    downloaded = []
+
+    def download(revision):
+        downloaded.append(revision)
+        available[0] = stage.MIN_STAGE_FREE_BYTES - 1
+        return archives[revision]
+
+    with pytest.raises(stage.SourceStageError, match="free-space reserve"):
+        stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare, download=download)
+    assert downloaded == ["a" * 40]
+    retained = list(state.glob("source-*"))
+    assert len(retained) == 1 and (retained[0] / "intent.json").is_file()
+    assert not (retained[0] / "candidate").exists()
+    assert (source / "a").read_bytes() == b"user"
+
+
+def test_planned_directory_and_file_entry_budget_precedes_payload_writes(tmp_path, monkeypatch):
+    source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(stage, "MAX_STAGE_OUTPUT_ENTRIES", 9)
+    with pytest.raises(stage.SourceStageError, match="output entry budget"):
+        stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                    download=archives.__getitem__)
+    retained = list(state.glob("source-*"))
+    assert len(retained) == 1 and not (retained[0] / "candidate").exists()
+    assert not (retained[0] / "preserved-blobs").exists()
+    assert (source / "a").read_bytes() == b"user"
+
+
+def test_capture_rechecks_reserve_between_bounded_chunks_and_keeps_partial_bytes(tmp_path, monkeypatch):
+    original = stage._require_stage_free
+    calls = []
+
+    def guarded(path, pending_bytes=0):
+        calls.append(pending_bytes)
+        if len(calls) == 3:
+            raise stage.SourceStageError("reserve held during owned write")
+        return original(path, pending_bytes)
+
+    monkeypatch.setattr(stage, "_require_stage_free", guarded)
+    target = tmp_path / "owned-partial.bin"
+    with pytest.raises(stage.SourceStageError, match="reserve held"):
+        stage._write_capture(target, b"x" * (128 * 1024), lambda: False)
+    assert target.read_bytes() == b"x" * (64 * 1024)
+    assert len(calls) == 3
+
+
+def _prepared_conflict(tmp_path, monkeypatch):
+    source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
+    raw = io.BytesIO()
+    with zipfile.ZipFile(raw, "w") as output:
+        output.writestr(f"AngeronaSuite-{TARGET}/a", b"remote")
+    archives[TARGET] = raw.getvalue()
+    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                         download=archives.__getitem__)
+    assert result.conflicts == ("a",)
+    return source, state, state / result.stage_id, result
+
+
+def _fixture_bytes(root):
+    return {path.relative_to(root).as_posix(): (path.read_bytes(), path.stat().st_mtime_ns)
+            for path in root.rglob("*") if path.is_file()}
+
+
+def test_existing_resolution_at_full_stage_count_uses_actual_growth_not_new_stage_reservation(tmp_path, monkeypatch):
+    source, state, existing, result = _prepared_conflict(tmp_path, monkeypatch)
+    _retained_stage(state, 7)
+    retained = stage._stage_storage_inventory(state, lambda: False)
+    monkeypatch.setattr(stage, "MAX_RETAINED_STAGE_BYTES", retained.logical_bytes + 32768)
+    resolution = stage.resolve_source_conflict(existing, result.manifest_sha256, "a", "upstream")
+    assert resolution["choice"] == "upstream" and (existing / "candidate/a").read_bytes() == b"remote"
+    assert (source / "a").read_bytes() == b"user" and len(list(state.glob("source-*"))) == 2
+
+
+def test_resolution_storage_hold_preserves_every_retained_byte_and_preference(tmp_path, monkeypatch):
+    source, state, existing, result = _prepared_conflict(tmp_path, monkeypatch)
+    before = _fixture_bytes(state)
+    monkeypatch.setattr(stage.shutil, "disk_usage", lambda _path: SimpleNamespace(free=stage.MIN_STAGE_FREE_BYTES - 1))
+    with pytest.raises(stage.SourceStageError, match="storage held"):
+        stage.resolve_source_conflict(existing, result.manifest_sha256, "a", "upstream")
+    assert _fixture_bytes(state) == before
+    assert (source / "a").read_bytes() == b"user"
+
+
+def test_static_review_remains_available_under_reserve_hold_without_new_report_or_lease(tmp_path, monkeypatch):
+    source, state, existing, result = _prepared_conflict(tmp_path, monkeypatch)
+    before = _fixture_bytes(state)
+    monkeypatch.setattr(stage.shutil, "disk_usage", lambda _path: SimpleNamespace(free=stage.MIN_STAGE_FREE_BYTES - 1))
+    report = stage.validate_source_candidate(existing, result.manifest_sha256)
+    assert report["activation"] == "held" and report["report_persisted"] is False
+    assert report["storage_status"] == "held" and report["unresolved_conflicts"] == ["a"]
+    assert _fixture_bytes(state) == before
+    assert not (existing / "validation.json").exists() and not (existing / "resolution.lock").exists()
+    assert (source / "custom").read_bytes() == b"xx"
+
+
+@pytest.mark.parametrize("missing", ["stage", "candidate"])
+def test_static_review_never_recreates_a_missing_namespace_under_storage_pressure(tmp_path, monkeypatch, missing):
+    if missing == "stage":
+        existing = tmp_path / ("source-" + "1" * 32)
+        digest = "a" * 64
+    else:
+        _source, _state, existing, result = _prepared_conflict(tmp_path, monkeypatch)
+        # Remove only exact, small owned fixture files and empty directories.
+        for path in (existing / "candidate").iterdir():
+            assert path.is_file() and not path.is_symlink()
+            path.unlink()
+        (existing / "candidate").rmdir()
+        digest = result.manifest_sha256
+    monkeypatch.setattr(stage.shutil, "disk_usage", lambda _path: SimpleNamespace(free=stage.MIN_STAGE_FREE_BYTES - 1))
+    with pytest.raises(stage.SourceStageError, match="physical|missing|existing"):
+        stage.validate_source_candidate(existing, digest)
+    assert not (existing / "candidate").exists()
+    assert not (existing / "resolution.lock").exists()
+
+
+def test_competing_preparation_cannot_reserve_the_last_slot_twice(tmp_path, monkeypatch):
+    source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
+    _retained_stage(state, 1)
+    entered, release = threading.Event(), threading.Event()
+    results, errors = [], []
+
+    @contextmanager
+    def retained_git():
+        entered.set()
+        assert release.wait(10), "owned fixture wait exceeded its budget"
+        yield
+
+    monkeypatch.setattr(stage, "source_git_session", retained_git)
+
+    def prepare():
+        try:
+            results.append(stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                                        download=archives.__getitem__))
+        except BaseException as exc:
+            errors.append(exc)
+
+    owner = threading.Thread(target=prepare)
+    owner.start()
+    try:
+        assert entered.wait(10)
+        with pytest.raises(file_lease.ExclusiveFileLeaseError):
+            stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                        download=archives.__getitem__)
+    finally:
+        release.set()
+        owner.join(10)
+    assert not owner.is_alive() and not errors and len(results) == 1
+    assert len(list(state.glob("source-*"))) == 2 and (source / "a").read_bytes() == b"user"
 
 
 def _owned_directory_link(owned: Path, link: Path, target: Path) -> None:

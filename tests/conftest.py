@@ -80,6 +80,20 @@ def keep_qt_application_alive():
 
 
 @pytest.fixture(autouse=True)
+def isolate_startup_supervision_environment(monkeypatch):
+    """A simulated automatic entry cannot mark the next test automatic.
+
+    main() owns process environment in production. Calling it directly under
+    pytest must still restore a key it creates when the key was initially
+    absent; delenv(..., raising=False) alone would not record that absence.
+    Dedicated admission cases set their own exact marker after this boundary.
+    """
+    for name in ("ANGERONA_SUPERVISED_RECOVERY", "ANGERONA_STARTUP_SUPERVISED"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
 def isolate_process_inventory_provider(monkeypatch):
     """Entry fixtures must not select an unavailable provider for later tests.
 

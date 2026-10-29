@@ -28,7 +28,7 @@ def ps_literal(path):
     return "'" + str(path).replace("'", "''") + "'"
 
 
-def make_fixture(tmp_path, supervisor=None):
+def make_fixture(tmp_path, supervisor=None, *, elevated=False):
     root = tmp_path / "installation"
     storage = tmp_path / "private-source-data"
     state = tmp_path / "private-bundle-state"
@@ -46,6 +46,15 @@ if(!$SetupOnly) {throw 'Fixture must never open a real app or recovery UI.'}
 exit 0
 """, encoding="utf-8")
     verifier = (TOOLS / "verify_startup_recovery_bundle.ps1").read_text(encoding="utf-8-sig")
+    # The hosted runner may be elevated; this newly pinned inert installation
+    # supplies only the native-role answer. All original admission, file/ACL,
+    # namespace and mutation-lease checks remain in its copied verifier.
+    principal = "$principal=[Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())"
+    assert verifier.count(principal) == 1
+    verifier = verifier.replace(principal,
+        "$principal=[pscustomobject]@{}\n"
+        "    $principal | Add-Member -MemberType ScriptMethod -Name IsInRole -Value {param($role);return "
+        + ("$true" if elevated else "$false") + "}")
     for name, value in (("Get-BundleStateRoot", state), ("Get-BundleDataRoot", storage)):
         verifier, count = re.subn(rf"(?ms)^function {name}\s*\{{.*?^\}}",
                                   lambda match: f"function {name} {{ return {ps_literal(value)} }}", verifier)
@@ -114,6 +123,18 @@ def test_full_intact_payload_honors_master_off_and_runs_only_verified_inert_supe
                      '{"startup_recovery_enabled":false,"startup_recovery_github_enabled":false}')
     assert result.returncode == 0, result.stdout + result.stderr
     assert (root / "supervisor-receipt.json").read_text() == "inert supervisor executed"
+    assert not (root / ".tmp/repair-wheels/startup-repair.lock").exists()
+
+
+def test_elevated_fixture_is_refused_before_any_supervisor_or_source_mutation(tmp_path):
+    root, storage, _, payload = make_fixture(tmp_path, elevated=True)
+    original = (root / "src/angerona/startup.py").read_bytes()
+    result = execute(tmp_path, root, storage, payload,
+                     '{"startup_recovery_enabled":true,"startup_recovery_github_enabled":false}')
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "requires an unelevated user session" in result.stdout + result.stderr
+    assert not (root / "supervisor-receipt.json").exists()
+    assert (root / "src/angerona/startup.py").read_bytes() == original
     assert not (root / ".tmp/repair-wheels/startup-repair.lock").exists()
 
 

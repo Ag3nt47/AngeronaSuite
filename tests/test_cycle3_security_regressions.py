@@ -207,22 +207,34 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert "call :harden_trust_root" not in text
     assert 'icacls.exe" "%~dp0*" /reset /T' not in text
     assert "Removing an untrusted pre-existing virtual environment" not in text
-    assert '-File "%~dp0tools\\Invoke-AngeronaSourceStartup.ps1" -RepositoryRoot "%~dp0."' in text
-    assert supervisor.index("Assert-SourceStartupBoundary $Root") < supervisor.index(
+    assert ":__ANGERONA_PINNED_BOOTSTRAP__" in text
+    assert "tools\\verify_startup_recovery_bundle.ps1" in text
+    assert "'-ExpectedVerifierSha256',$verifierSha,'-RunSupervisor'" in text
+    startup_pass = supervisor.split("function Invoke-SourceStartupPass(", 1)[1].split(
+        "function Invoke-SourceStartupRepair(", 1
+    )[0]
+    assert startup_pass.index("Assert-SourceStartupBoundary $Root") < startup_pass.index(
         "Enter-RepairLease -Root $Root"
-    ) < supervisor.index("Invoke-OwnedRepairProcess -FilePath $python")
-    assert supervisor.index("Join-Path $Root 'tools\\source_trust_preflight.py'") < supervisor.index(
+    ) < startup_pass.index("Invoke-OwnedRepairProcess -FilePath $python")
+    assert startup_pass.index("Join-Path $Root 'tools\\source_trust_preflight.py'") < startup_pass.index(
         "return Invoke-SourceStartupAssistant"
     )
     for log in ("abi.log", "pip.log", "source-trust.log", "launcher-stderr.log"):
         assert log in supervisor
-    assert "Startup assistant details: $stderr" in supervisor
-    assert "Start-Process -FilePath $Python -ArgumentList @('-m', 'angerona.startup', '--chill')" in supervisor
-    assert "$process.WaitForExit()" in supervisor
+    assert "Startup assistant stderr: $stderr" in supervisor
+    assert "$arguments = @('-m', 'angerona.startup', '--chill')" in supervisor
+    assert "Invoke-SourceStartupCapturedAssistant -Python $Python -Arguments $arguments" in supervisor
+    assert "$code = $capture.ExitCode" in supervisor
+    assert "$script:StartupPendingCaptures.Add($capture)" in supervisor
+    assert "-TimeoutSeconds 240" in supervisor
     assert "-PassThru -Wait" not in supervisor
     assert "-TimeoutSeconds 30" in supervisor
-    assert "$attempt -ge 1" in supervisor
-    assert "-FailureCategory $Category -Attempt 1" in supervisor
+    # Each recognized category can repair once in an automatic round; only
+    # an explicit Recovery Retry opens a new round.
+    assert "!$repairs.ContainsKey($code)" in supervisor
+    assert "$repairs[$code] = $true" in supervisor
+    assert "'-FailureCategory', $Category, '-Attempt', '1'" in supervisor
+    assert "if ($choice -ne 10)" in supervisor
     helper = open(os.path.join(root, "src/angerona/startup.py"), encoding="utf-8").read()
     assert "deadline = time.monotonic() + 30" in helper
     assert 'QT_QPA_PLATFORM="offscreen"' in helper
@@ -230,6 +242,6 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
     assert "wait_dashboard(listener, process" in helper
     assert "Startup will not retry" in helper
     assert "Start-Sleep -Milliseconds 1500" not in text
-    assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($r))" in text
+    assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))" in text
     assert "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($Root))" in supervisor
     assert "$r.PSDrive.DriveType" not in text

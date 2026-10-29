@@ -848,6 +848,7 @@ class MainWindow(QMainWindow):
             "Module health & activity", ribbon_content,
             "Starting… · expand for per-module coverage and estimated workload",
         )
+        self._module_ribbons_disclosure.toggle.setText("Module health")
         self._module_ribbons_disclosure.expanded_changed.connect(
             lambda _expanded: self._resize_timer.start())
         root.addWidget(self._module_ribbons_disclosure)
@@ -872,6 +873,9 @@ class MainWindow(QMainWindow):
         self.system_pulse.set_external_view_active(True)
         self.statusBar().setSizeGripEnabled(False)
         self.statusBar().addPermanentWidget(self._dashboard_footer, 1)
+        from angerona.gui.component_heartbeat import ComponentHeartbeatStrip
+        self.component_heartbeat_strip = ComponentHeartbeatStrip(self)
+        self.statusBar().addPermanentWidget(self.component_heartbeat_strip)
         from angerona.gui.responsiveness_monitor import ResponsivenessMonitor
         self._responsiveness_monitor = ResponsivenessMonitor(self._dashboard_footer, self)
         self._responsiveness_monitor.sample_ready.connect(
@@ -1473,6 +1477,10 @@ class MainWindow(QMainWindow):
         finally:
             if metrics is not None:
                 metrics.record_tick((time.perf_counter() - started) * 1000)
+
+    def set_component_heartbeat_source(self, supplier) -> None:
+        """Attach only the service's nonblocking copied memory publication."""
+        self.component_heartbeat_strip.set_source(supplier)
 
     def _quiet_chill_active(self) -> bool:
         return bool(

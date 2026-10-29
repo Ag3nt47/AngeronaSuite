@@ -109,6 +109,40 @@ def _app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture
+def live_process_inventory(isolate_process_inventory_provider):
+    """Use the runtime's owned rich collector instead of a GUI-local fallback.
+
+    This fixture tests collection/response, not the separate application-entry
+    privilege gate. Calling the fixed worker API directly lets elevated hosted
+    runners exercise the same real collector and authenticated private protocol
+    without changing the production source-entry refusal or supplying fake rows.
+    """
+    from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
+    from angerona.telemetry.process_snapshot_worker import ProcessSnapshotProvider
+
+    provider = ProcessSnapshotProvider(command=[
+        sys.executable, "-c",
+        "from angerona.telemetry.process_snapshot_worker import worker_main; "
+        "raise SystemExit(worker_main())",
+    ])
+    owner = ProcessSnapshotLifecycle(provider)
+    assert owner.start()
+    try:
+        yield owner
+    finally:
+        owner.request_stop()
+        retired = []
+        waiter = threading.Thread(
+            target=lambda: retired.append(owner.wait_retired(timeout=30.0)),
+            name="GuiLiveInventoryRetirement",
+        )
+        waiter.start()
+        waiter.join(timeout=31.0)
+        assert not waiter.is_alive(), "Inventory retirement waiter did not finish"
+        assert retired == [True], "The exact owned inventory process did not retire"
+
+
 def _os_witness_accepts(
     witness: dict, *, expected_markers: int, require_process: bool,
     require_digest: bool = True,
@@ -534,9 +568,13 @@ def test_response_failure_diagnostic_bounds_cache_and_never_waits_for_receipt_lo
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows response clickthrough")
 def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
-    isolated_root: Path, monkeypatch: pytest.MonkeyPatch,
+    isolated_root: Path, monkeypatch: pytest.MonkeyPatch, live_process_inventory,
 ) -> None:
-    """Two UI clicks reach signed AAR and independent OS response evidence."""
+    """Two accepted UI launches reach signed AAR and native response evidence.
+
+    One explicit operator retry may follow a refused collector observation;
+    every attempt still needs the unchanged fresh native admission proof.
+    """
     monkeypatch.setenv("ANGERONA_DATA", str(isolated_root))
     monkeypatch.setenv("ANGERONA_DIAG_DIR", str(isolated_root / "diagnostics"))
     monkeypatch.setenv("ANGERONA_SOAR_RESPONSE_SCOPE", str(isolated_root / "drill-sandbox"))
@@ -708,6 +746,9 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         data_dir=isolated_root,
         autostart_enabled=False,
         eco_mode=False,
+        # This tests native collection/response with the explicit full-speed
+        # profile. Host pressure must not independently multiply its cadence.
+        adaptive_scan_pacing_enabled=False,
         blackbox_enabled=False,
         adversary_combat_enabled=False,
         adversary_combat_block_network=False,
@@ -740,6 +781,19 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         )
         manager.modules[module.name] = module
     combat.bind_manager(manager)
+    native_dispatches: list[str] = []
+
+    def observe_native_dispatch(name: str) -> None:
+        original = getattr(combat, name)
+
+        def observed(*args: object, **kwargs: object):
+            native_dispatches.append(name)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(combat, name, observed)
+
+    for action_entry in ("_quarantine_file", "_act_on_process"):
+        observe_native_dispatch(action_entry)
 
     # Reduce only the inert probe's pauses; actual GUI, sensors, response,
     # authenticated recorder and AAR remain unmodified and live.
@@ -782,6 +836,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
     monkeypatch.setattr(RedTeamEngine, "_marker", record_created_marker)
 
+    # Wi-Fi decoration is outside this collection/response test. Keep the real
+    # sampler lifecycle without introducing periodic short-lived netsh children.
+    from angerona.gui import system_pulse
+    monkeypatch.setattr(system_pulse, "_wifi_signal_windows", lambda: None)
     app = _app()
     window = MainWindow(bus, recorder, manager, config)
     pulse_worker = window.system_pulse._sample_worker
@@ -996,7 +1054,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         console.sld.setValue(0)
         assert console.loc_edit.text() == str(isolated_root / "drill-sandbox")
 
-        def capture_failed_launch_admission(run_index: int) -> None:
+        def capture_failed_launch_admission(run_index: int) -> dict:
             """Record a bounded refused-launch view; grant no readiness proof."""
             try:
                 status_limit, log_limit = 16_384, 4096
@@ -1104,6 +1162,15 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     observation_diagnostic=diagnostic,
                     console_log_tail=log_tail, console_log_note=log_note,
                 )
+                return {
+                    "collector_refusal": bool(
+                        not status_truncated and status.startswith("Launch blocked")
+                        and "RedTeamProcessObservationReadinessError:" in status
+                        and diagnostic.get("available") is True
+                        and diagnostic.get("last_refusal_reason") == "collector-error-reported"
+                    ),
+                    "observation_diagnostic": diagnostic,
+                }
             except Exception as exc:
                 # Capture/formatting/IO failure must never replace the original
                 # unchanged admission assertion or turn its refusal into a pass.
@@ -1114,9 +1181,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     )
                 except Exception:
                     pass
+                return {}
 
 
-        def await_real_process_preflight(run_index: int) -> None:
+        def await_real_process_preflight(run_index: int) -> tuple[int, int]:
             """Synchronize fixture work; the launch still needs its own proof."""
             initial = process.operational_snapshot()
             expected_generation = initial.get("lifecycle_generation")
@@ -1171,29 +1239,60 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 trace("prelaunch_observation_failed", summary=summary)
             assert ready, summary
             trace("prelaunch_observation_passed", summary=summary)
+            return request
 
+        accepted_run_ids: list[str] = []
         try:
             for run_index in (1, 2):
-                await_real_process_preflight(run_index)
                 started = time.monotonic()
                 previous_deliveries = len(delivered)
-                QTest.mouseClick(console.launch_btn, Qt.MouseButton.LeftButton)
-                trace("launch_clicked", run_index=run_index,
-                      run_id=window.red_team_engine.run_id)
-                assert console._run_pending
-                # Preparation runs off Qt. Only its accepted GUI handoff may
-                # publish the actual run ID; a pending click is not acceptance.
-                deadline = time.monotonic() + 180.0
-                acceptance_deadline = min(deadline, time.monotonic() + 30.0)
-                while (
-                    console._run_pending
-                    and not console._report_runs.get("red_team")
-                    and time.monotonic() < acceptance_deadline
-                ):
-                    app.processEvents()
-                    time.sleep(0.05)
-                if not console._report_runs.get("red_team"):
-                    capture_failed_launch_admission(run_index)
+                previous_preflight = None
+                for attempt in (0, 1):
+                    preflight = await_real_process_preflight(run_index)
+                    if previous_preflight is not None:
+                        assert preflight != previous_preflight
+                    previous_preflight = preflight
+                    with marker_lock:
+                        payload_before = {key: dict(value) for key, value in marker_digests.items()}
+                        spawns_before = dict(spawn_births)
+                    dispatches_before = len(native_dispatches)
+                    accepted_before = len(accepted_run_ids)
+                    started = time.monotonic()
+                    deadline = started + 180.0
+                    QTest.mouseClick(console.launch_btn, Qt.MouseButton.LeftButton)
+                    trace("launch_clicked", run_index=run_index, attempt=attempt,
+                          run_id=window.red_team_engine.run_id)
+                    assert console._run_pending
+                    # Each click retains the original production admission
+                    # budget; a pending click is never treated as acceptance.
+                    acceptance_deadline = min(deadline, time.monotonic() + 30.0)
+                    while (
+                        console._run_pending
+                        and not console._report_runs.get("red_team")
+                        and time.monotonic() < acceptance_deadline
+                    ):
+                        app.processEvents()
+                        time.sleep(0.05)
+                    if console._report_runs.get("red_team"):
+                        break
+                    refusal = capture_failed_launch_admission(run_index)
+                    if attempt != 0 or not refusal.get("collector_refusal"):
+                        break
+                    # A refused fresh observation may be retried by the
+                    # operator only if no validation payload, accepted run,
+                    # response dispatch or AAR was issued by that attempt.
+                    assert not console._launch_preparing and not console._run_pending
+                    assert not window.red_team_engine.is_running
+                    assert len(accepted_run_ids) == accepted_before
+                    assert len(delivered) == previous_deliveries
+                    assert len(native_dispatches) == dispatches_before
+                    with marker_lock:
+                        assert marker_digests == payload_before
+                        assert spawn_births == spawns_before
+                    trace("operator_retry_after_refused_collector", run_index=run_index,
+                          refused_preflight=list(preflight), diagnostic_only=True,
+                          issued_payload=False, accepted_run=False, containment_dispatched=False,
+                          observation_diagnostic=refusal["observation_diagnostic"])
                 assert console._report_runs.get("red_team"), {
                     "console": console.live_status.text(),
                     "modal_errors": modal_errors,
@@ -1201,6 +1300,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 }
                 assert not console._launch_preparing
                 assert console._report_runs["red_team"] == window.red_team_engine.run_id
+                assert window.red_team_engine.run_id not in accepted_run_ids
+                accepted_run_ids.append(window.red_team_engine.run_id)
                 assert not console._report_runs.get("shark")
                 trace("launch_accepted", run_index=run_index,
                       run_id=console._report_runs["red_team"])

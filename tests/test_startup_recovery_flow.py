@@ -53,8 +53,11 @@ $script:Passes=0; $script:Repairs=0; $script:Dashboards=0; $script:Lease=0
 function Write-SourceStartupStatus {}
 function Write-SourceStartupEvent {}
 function Add-SourceStartupAttempt {}
+function Start-SourceStartupShell {}
+function Test-SourceStartupShellClosed { return $false }
+function Test-SourceStartupCapturesRetired { return $true }
 function Invoke-SourceCodeAction {
-    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64)}
+    $script:LastSourceRecoveryResult=[pscustomobject]@{launch_held=$false;source_digest=('a'*64);requires_mutation=$false;pending_kind='none'}
     return 0
 }
 function Protect-SourceStartupText { param($Value,$Limit=2000) return [string]$Value }
@@ -98,6 +101,9 @@ function Invoke-SourceStartupAssistant {
     if($script:Lease -ne 1) {throw 'helper escaped lease'}
     if($Environment.ContainsKey('QT_QPA_PLATFORM')) {throw 'offscreen leaked to dashboard'}
     $script:Events.Add('helper')
+    # A shared Python review is permitted; a real active dashboard is an
+    # explicit helper/admission hold, rather than broad venv exclusion.
+    if($env:ANGERONA_TEST_CASE -eq 'live-dashboard') {return 85}
     if($env:ANGERONA_TEST_CASE -in @('unknown','timeout-live','cancel-live')) {return 1}
     if($env:ANGERONA_TEST_CASE -in @('repair-recheck-failed','repair-failed')) {return 82}
     if($script:Passes -eq 1 -and $env:ANGERONA_TEST_CASE -notin @('normal','runtime','pip')) {return 83}
@@ -164,6 +170,10 @@ class _Probe:
         self.returncode = code
     def poll(self):
         return self.returncode
+    def wait_tree(self, timeout):
+        return True
+    def close(self):
+        pass
 
 
 @pytest.mark.parametrize("codes,eligible", [
@@ -175,10 +185,11 @@ def test_only_closed_pre_dashboard_probe_results_are_repairable(tmp_path, monkey
     plan = startup.LaunchPlan(tmp_path, tmp_path / "state", ("fake-python.exe",), False)
     startup.prepare_storage(plan.storage)
     remaining = iter(codes)
-    monkeypatch.setattr(startup.subprocess, "Popen", lambda *_a, **_kw: _Probe(next(remaining)))
+    monkeypatch.setattr(startup, "_spawn_probe", lambda *_a, **_kw: _Probe(next(remaining)))
     with pytest.raises(startup.StartupError) as error:
         startup.probe_source(plan, {}, threading.Event())
     assert getattr(error.value, "exit_code", None) == eligible
+    assert startup._startup_exit_code(error.value) == (eligible if eligible is not None else 85)
 
 
 def test_temp_fallback_is_private_verified_and_changes_only_child_environment(tmp_path, monkeypatch):
@@ -335,13 +346,13 @@ raise SystemExit(startup.main())
 """
         direct = subprocess.run([sys.executable, "-c", direct_code, str(checkout), str(state)],
             capture_output=True, text=True, timeout=15, check=False)
-        assert direct.returncode == 1
+        assert direct.returncode == 85
         assert "already working" in direct.stderr
         assert "Unexpected probe" not in direct.stderr
         # The direct Tk route must stop at the same guard before loading Tk.
         monkeypatch.setattr(startup, "_configure_tk_environment", lambda: pytest.fail("Tk loaded during repair"))
         monkeypatch.setattr(startup.sys, "argv", ["startup", "--chill"])
-        assert startup.main() == 1
+        assert startup.main() == 85
     finally:
         if holder.poll() is None:
             holder.communicate("release\n", timeout=10)
@@ -368,7 +379,7 @@ def test_direct_helper_refuses_pending_or_marker_before_any_probe_or_tk(tmp_path
         startup.run_startup(lambda _message: None, threading.Event(), check_only=True)
     monkeypatch.setattr(startup, "_configure_tk_environment", lambda: pytest.fail("Pending repair reached Tk"))
     monkeypatch.setattr(startup.sys, "argv", ["startup", "--chill"])
-    assert startup.main() == 1
+    assert startup.main() == 85
 
 
 def test_ui_and_worker_references_retain_helper_custody_until_both_finish(tmp_path):
@@ -493,7 +504,7 @@ def test_orphan_witness_without_closed_resolution_refuses_api_and_pre_tk(tmp_pat
         startup.run_startup(lambda _message: None, threading.Event(), check_only=True)
     monkeypatch.setattr(startup, "_configure_tk_environment", lambda: pytest.fail("Orphan repair evidence reached Tk"))
     monkeypatch.setattr(startup.sys, "argv", ["startup", "--chill"])
-    assert startup.main() == 1
+    assert startup.main() == 85
     assert {path.name: path.read_bytes() for path in scratch.iterdir()} == before
 
 

@@ -495,6 +495,8 @@ function Enter-RepairLease([string]$Root) {
 
 function Exit-RepairLease($Lease) {
     if ($Lease) {
+        if (('Angerona.StartupRepairProcess' -as [type]) -and
+            [Angerona.StartupRepairProcess]::ParkLeaseIfPending($Lease)) { return }
         try { $Lease.Unlock(0, 1) } finally { $Lease.Dispose() }
     }
 }
@@ -651,6 +653,24 @@ using System.Runtime.InteropServices;
 using System.Text;
 namespace Angerona {
 public static class StartupRepairProcess {
+    static readonly object custodyGuard=new object();
+    static readonly System.Collections.Generic.List<object> heldCustody=new System.Collections.Generic.List<object>();
+    static readonly System.Collections.Generic.List<IDisposable> heldLeases=new System.Collections.Generic.List<IDisposable>();
+    sealed class PendingCustody {
+        internal IntPtr job,process,thread;
+        internal System.Collections.Generic.List<IntPtr> members;
+        internal Exception failure;
+    }
+    public static bool CustodyPending { get { lock(custodyGuard)return heldCustody.Count!=0; } }
+    public static bool ParkLeaseIfPending(IDisposable lease) {
+        lock(custodyGuard) {
+            if(heldCustody.Count==0)return false;
+            heldLeases.Add(lease);return true;
+        }
+    }
+    public static void RequireRetiredCustody() {
+        if(CustodyPending)throw new InvalidOperationException("An owned startup generation has unresolved retirement custody. Its native handles and coordination leases remain retained; further startup and mutation attempts are held.");
+    }
     [StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES {
         public int length; public IntPtr descriptor;
         [MarshalAs(UnmanagedType.Bool)] public bool inherit;
@@ -716,6 +736,17 @@ public static class StartupRepairProcess {
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out long created,out long exited,out long kernel,out long user);
+    [StructLayout(LayoutKind.Sequential)] struct JOB_ACCOUNTING {
+        public long user,kernel,periodUser,periodKernel;
+        public uint faults,total,active,terminated;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool QueryInformationJobObject(IntPtr job,int kind,out JOB_ACCOUNTING info,int size,IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    static extern bool QueryInformationJobObject(IntPtr job,int kind,IntPtr info,int size,IntPtr returned);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,uint pid);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool member);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
     public static string DirectoryIdentity(string path) {
@@ -869,7 +900,78 @@ public static class StartupRepairProcess {
         }
         result.Append('\\', slashes * 2); return result.Append('"').ToString();
     }
+    public sealed class Window : IDisposable {
+        readonly System.Threading.CancellationTokenSource stop=new System.Threading.CancellationTokenSource();
+        readonly System.Threading.Tasks.Task<int> completion;
+        bool disposed;
+        public uint ProcessId { get; internal set; }
+        public long CreationFileTime { get; internal set; }
+        public bool HasExited { get { return completion.IsCompleted; } }
+        public int ExitCode { get { return completion.GetAwaiter().GetResult(); } }
+        internal Window(string file,string[] args,string directory,string environment,string log) {
+            completion=System.Threading.Tasks.Task.Factory.StartNew(
+                ()=>RunCore(file,args,directory,environment,log,-1,stop.Token,this),
+                System.Threading.CancellationToken.None,System.Threading.Tasks.TaskCreationOptions.LongRunning,
+                System.Threading.Tasks.TaskScheduler.Default);
+        }
+        public bool WaitForExit(int milliseconds) { return completion.Wait(milliseconds); }
+        public void WaitForExit() { completion.GetAwaiter().GetResult(); }
+        public void Dispose() {
+            if(disposed)return;
+            stop.Cancel();
+            if(!completion.Wait(10000))throw new TimeoutException("Owned recovery window retirement could not be verified.");
+            disposed=true;stop.Dispose();
+        }
+    }
+    public static Window StartWindow(string file,string[] args,string directory,string environment,string log) {
+        return new Window(file,args,directory,environment,log);
+    }
+    static void RetireJob(IntPtr job,IntPtr root,System.Collections.Generic.List<IntPtr> retained) {
+        Exception custodyError=null;
+        IntPtr list=Marshal.AllocHGlobal(8+4096*IntPtr.Size);
+        try {
+            try {
+                Check(QueryInformationJobObject(job,3,list,8+4096*IntPtr.Size,IntPtr.Zero));
+                uint count=unchecked((uint)Marshal.ReadInt32(list,4));
+                if(count>4096)throw new InvalidOperationException("Owned startup process capacity requires review.");
+                for(int i=0;i<count;i++) {
+                    long pid=Marshal.ReadIntPtr(list,8+i*IntPtr.Size).ToInt64();
+                    if(pid<1 || pid>uint.MaxValue)throw new InvalidOperationException("Owned startup process identity is invalid.");
+                    IntPtr handle=OpenProcess(0x101000,false,(uint)pid);
+                    if(handle==IntPtr.Zero) {
+                        if(Marshal.GetLastWin32Error()==87)continue;
+                        Check(false);
+                    }
+                    bool member;
+                    if(!IsProcessInJob(handle,job,out member)) {
+                        int error=Marshal.GetLastWin32Error();CloseHandle(handle);throw new Win32Exception(error);
+                    }
+                    if(member)retained.Add(handle);else CloseHandle(handle); // PID reuse never gains custody.
+                }
+            } catch(Exception error) { custodyError=error; }
+            Check(TerminateJobObject(job,1223));
+            var clock=System.Diagnostics.Stopwatch.StartNew();
+            // Job accounting can reach zero before a terminating process has
+            // signaled its handle or released file locks. Retain exact handles.
+            if(WaitForSingleObject(root,5000)!=0)throw new TimeoutException("Owned startup root has not retired; retry is held.");
+            foreach(IntPtr process in retained) {
+                uint remaining=(uint)Math.Max(0,5000-clock.ElapsedMilliseconds);
+                if(WaitForSingleObject(process,remaining)!=0)throw new TimeoutException("An owned startup descendant has not retired; retry is held.");
+            }
+            JOB_ACCOUNTING info;
+            Check(QueryInformationJobObject(job,1,out info,Marshal.SizeOf(typeof(JOB_ACCOUNTING)),IntPtr.Zero));
+            if(info.active!=0)throw new TimeoutException("Owned startup job is still active; retry is held.");
+            if(custodyError!=null)throw new InvalidOperationException("Owned startup descendant custody could not be established.",custodyError);
+        } finally {
+            Marshal.FreeHGlobal(list);
+        }
+    }
     public static int Run(string file,string[] args,string directory,string environment,string log,int timeout) {
+        return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null);
+    }
+    static int RunCore(string file,string[] args,string directory,string environment,string log,int timeout,
+        System.Threading.CancellationToken stop,Window owner) {
+        if(owner==null)RequireRetiredCustody(); // Independent diagnostic windows remain usable.
         IntPtr job=IntPtr.Zero, attrs=IntPtr.Zero, jobs=IntPtr.Zero, handles=IntPtr.Zero, env=IntPtr.Zero;
         IntPtr output=IntPtr.Zero, input=IntPtr.Zero; bool initialized=false;
         var pi = new PROCESS_INFORMATION();
@@ -897,13 +999,20 @@ public static class StartupRepairProcess {
             foreach (string arg in args) command.Append(' ').Append(Quote(arg));
             env=Marshal.StringToHGlobalUni(environment);
             Check(CreateProcessW(file,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref startup,out pi));
+            if(owner!=null) {
+                long created,exited,kernel,user;
+                Check(GetProcessTimes(pi.process,out created,out exited,out kernel,out user));
+                owner.CreationFileTime=created;owner.ProcessId=pi.processId;
+            }
             Check(ResumeThread(pi.thread)!=0xFFFFFFFF);
             var clock=System.Diagnostics.Stopwatch.StartNew();
             uint waited=258;
             var volumes=new string[]{System.IO.Path.GetPathRoot(directory),System.IO.Path.GetPathRoot(log)};
-            while(clock.ElapsedMilliseconds<timeout) {
-                waited=WaitForSingleObject(pi.process,(uint)Math.Min(100,timeout-clock.ElapsedMilliseconds));
+            while(timeout<0 || clock.ElapsedMilliseconds<timeout) {
+                if(stop.IsCancellationRequested)return 1223;
+                waited=WaitForSingleObject(pi.process,(uint)(timeout<0 ? 100 : Math.Min(100,timeout-clock.ElapsedMilliseconds)));
                 if(waited!=258) break;
+                if(timeout<0)continue; // The read-only recovery UI waits for its operator.
                 foreach(string volume in volumes) {
                     var disk=new System.IO.DriveInfo(volume);
                     if(!disk.IsReady || disk.AvailableFreeSpace<2L*1024*1024*1024) {
@@ -919,8 +1028,21 @@ public static class StartupRepairProcess {
             Check(waited==0); uint code; Check(GetExitCodeProcess(pi.process,out code));
             return unchecked((int)code);
         } finally {
-            // Closing our non-inherited job kills only this command's descendants,
-            // including children left behind after a normal parent exit.
+            // Do not release a reader/mutation lease merely because a redirector
+            // exited. Observe every descendant in this exact non-inherited job.
+            var retained=new System.Collections.Generic.List<IntPtr>();
+            try {
+                if(job!=IntPtr.Zero && pi.process!=IntPtr.Zero)RetireJob(job,pi.process,retained);
+            } catch(Exception error) {
+                lock(custodyGuard)heldCustody.Add(new PendingCustody {
+                    job=job,process=pi.process,thread=pi.thread,members=retained,failure=error });
+                // The failed proof must not become an apparent retirement just
+                // because a finally block discarded every native witness.
+                job=IntPtr.Zero;pi.process=IntPtr.Zero;pi.thread=IntPtr.Zero;retained=null;
+                throw new InvalidOperationException("Owned startup retirement is unresolved; exact native custody remains parked and Retry is held.",error);
+            }
+            finally {
+            if(retained!=null)foreach(IntPtr process in retained)CloseHandle(process);
             if (job!=IntPtr.Zero) CloseHandle(job);
             if (pi.thread!=IntPtr.Zero) CloseHandle(pi.thread);
             if (pi.process!=IntPtr.Zero) CloseHandle(pi.process);
@@ -931,6 +1053,7 @@ public static class StartupRepairProcess {
             if (jobs!=IntPtr.Zero) Marshal.FreeHGlobal(jobs);
             if (handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles);
             if (env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
+            }
         }
     }
 }
@@ -957,7 +1080,34 @@ function Invoke-OwnedRepairProcess {
         "$name=$value"
     }
     Initialize-OwnedRepairProcess
+    [Angerona.StartupRepairProcess]::RequireRetiredCustody()
     $block = ($entries -join [char]0) + [char]0 + [char]0
     return [Angerona.StartupRepairProcess]::Run($FilePath, $Arguments,
         $WorkingDirectory, $block, $LogPath, ($TimeoutSeconds * 1000))
+}
+
+function Start-OwnedRepairWindow {
+    param([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory,
+        [Collections.IDictionary]$Environment, [string]$LogPath)
+    Assert-PlainRepairPath $FilePath -AllowHardLinks
+    Assert-PlainRepairPath $WorkingDirectory
+    Assert-PlainRepairPath $LogPath
+    if (!(Test-Path -LiteralPath $FilePath -PathType Leaf) -or (Test-Path -LiteralPath $LogPath)) {
+        throw 'Owned recovery window paths are unavailable.'
+    }
+    $entries = foreach ($name in ($Environment.Keys | Sort-Object)) {
+        $value = [string]$Environment[$name]
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$' -or $value.Contains([char]0)) {
+            throw 'Invalid owned recovery window environment.'
+        }
+        "$name=$value"
+    }
+    Assert-PrivateRepairCustody $Environment['TEMP'] -AllowInherited
+    $savedTemp, $savedTmp = $env:TEMP, $env:TMP
+    try {
+        $env:TEMP = $Environment['TEMP']; $env:TMP = $Environment['TMP']
+        Initialize-OwnedRepairProcess
+    } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
+    $block = ($entries -join [char]0) + [char]0 + [char]0
+    return [Angerona.StartupRepairProcess]::StartWindow($FilePath, $Arguments, $WorkingDirectory, $block, $LogPath)
 }

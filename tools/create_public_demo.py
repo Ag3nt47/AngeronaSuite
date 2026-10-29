@@ -162,6 +162,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     import capture_public_dashboard as demo
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QDialog, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QProgressBar, QStackedWidget, QTextEdit, QVBoxLayout, QWidget
+    from angerona import __version__
     from angerona.core.config import Config
     from angerona.core.eventbus import Event, Severity
     from angerona.gui.pages import AlertDetailDialog
@@ -174,7 +175,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     layout = QVBoxLayout(wrapper)
     layout.setContentsMargins(14, 12, 14, 12)
     layout.setSpacing(8)
-    banner = QLabel("DEMO  |  REAL APPLICATION UI  |  SYNTHETIC DATA  |  NO HOST ACTIONS")
+    banner = QLabel(f"DEMO  |  ANGERONA {__version__}  |  REAL APPLICATION UI  |  SYNTHETIC DATA  |  NO HOST ACTIONS")
     banner.setStyleSheet("color:#fbbf24;background:#172033;font:700 16px 'Segoe UI';padding:10px;")
     layout.addWidget(banner)
     title = QLabel()
@@ -205,6 +206,21 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         "Evidence must satisfy separate policy and exact-target checks before response.\n"
         "Source Observe and signed installed Windows authority remain distinct.")
     window.system_pulse.shutdown()
+    # The compact EKG consumes copied synthetic publications only. Its clock
+    # advances by the GIF slot duration, never by a real host heartbeat.
+    fixture_clock = [2000.0]
+    fixture_missing_blackbox = [False]
+    heartbeat_strip = window.component_heartbeat_strip
+    heartbeat_strip._clock = lambda: fixture_clock[0]
+    def heartbeat_publication():
+        return tuple({"role": role, "generation_id": f"DEMO-{role}-001-synthetic",
+                      "pid": 41001 + index, "deadline_seconds": 3.0,
+                      "last_heartbeat_monotonic": None if role == "blackbox" and fixture_missing_blackbox[0] else fixture_clock[0] - .2,
+                      "state": "unavailable" if role == "blackbox" and fixture_missing_blackbox[0] else "running",
+                      "reason": "DEMO - synthetic missing heartbeat; no real process inspected" if role == "blackbox" and fixture_missing_blackbox[0]
+                                else "DEMO - fixed synthetic heartbeat publication; no real process inspected"}
+                     for index, role in enumerate(("core", "watchdog", "scanner", "blackbox")))
+    window.set_component_heartbeat_source(heartbeat_publication)
     window._update_module_ribbon_summary()
     # Scan Center starts with the user's Downloads path even before any scan.
     # Replace that default input before inspecting/capturing any scene, including
@@ -214,10 +230,12 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     chapter_names = []
     interactions = {"dashboard_panels_collapsed": {"console": [], "activity": [], "pulse": []},
                     "alerts": {"row_count": 0, "positions": []},
-                    "settings_tabs": [], "attack_tabs": [], "attack_horizontal_positions": []}
+                    "settings_tabs": [], "attack_tabs": [], "attack_horizontal_positions": [],
+                    "heartbeats": [], "heartbeat_details_steps": []}
     captured_bytes = 0
     detail = None
     settings = spyware = attack = None
+    heartbeat_details = None
 
     def chapter(number, heading, description, widget, navigate=None):
         nonlocal captured_bytes
@@ -227,6 +245,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         stack.setCurrentWidget(widget)
         demo._settle(app, .2)
         for step in range(FRAMES_PER_CHAPTER):
+            fixture_clock[0] = 2000.0 + len(frames) * FRAME_DURATION_MS / 1000
             if navigate is not None:
                 navigate(step)
                 # Disclosure resize and tab/scroll layout are queued by Qt.
@@ -251,7 +270,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
             frames.append(destination.name)
             if len(frames) == 1:
                 print(json.dumps({"outcome": "first-dashboard-frame", "path": str(destination),
-                                  "capture": identity()}), flush=True)
+                                  "app_version": __version__, "capture": identity()}), flush=True)
     try:
         panel_controls = {"console": window._console_collapse, "activity": window._activity_collapse,
                           "pulse": window._pulse_collapse}
@@ -260,16 +279,35 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
             raise RuntimeError("the demo requires panels open by default with only module health folded")
 
         def browse_dashboard(step):
+            nonlocal heartbeat_details
+            fixture_missing_blackbox[0] = step >= 4
+            heartbeat_strip.refresh_snapshot()
+            interactions["heartbeats"].append([
+                {"role": row.role, "state": row.state, "fresh": row.fresh}
+                for row in heartbeat_strip.snapshot()])
             # Exercise the real Console heading button, never the internal
             # grouping adapter. Other panels retain their open startup state.
             console = panel_controls["console"]
-            if console.is_collapsed() != (step in (7, 8)):
+            if console.is_collapsed() != (step in (2, 3)):
                 console._minimize_button.click()
             for name, control in panel_controls.items():
                 interactions["dashboard_panels_collapsed"][name].append(control.is_collapsed())
+            if step == 6:
+                heartbeat_strip.click()
+                heartbeat_details = heartbeat_strip._details_dialog
+                for label in heartbeat_details.findChildren(QLabel):
+                    label.setText("DEMO - synthetic heartbeat publications. No real process or sensor is being monitored; liveness does not establish protection.")
+                heartbeat_details.setParent(stack)
+                heartbeat_details.setWindowFlags(Qt.Widget)
+                stack.addWidget(heartbeat_details)
+            if 6 <= step <= 8:
+                stack.setCurrentWidget(heartbeat_details)
+                interactions["heartbeat_details_steps"].append(step)
+            else:
+                stack.setCurrentWidget(window)
 
         chapter(1, "One workbench for local security evidence",
-                "Each panel can minimize; panels start open except module health. All metrics are synthetic, with no protection result claimed.",
+                "Panels start open except module health. Synthetic EKG beats turn red when evidence is missing; click details for generations and reasons. No protection result is claimed.",
                 window, browse_dashboard)
         selected = next(event for event in window.bus.recent(12) if event.module == "C2 Beacon Detector")
 
@@ -405,8 +443,13 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         help_dialog.setWindowFlags(Qt.Widget)
         stack.addWidget(help_dialog)
         chapter(9, "Find the implementation and honest operating limits",
-                "Help & Info documents source Observe mode, Ring 3 boundaries, evidence versus authority, storage choices and optional services.", help_dialog)
+                f"Angerona {__version__}: Help & Info documents source Observe mode, Ring 3 boundaries, evidence versus authority, storage choices and optional services.", help_dialog)
         demo._privacy_guard()
+        if (not all(row["fresh"] for row in interactions["heartbeats"][0])
+                or not any(row["role"] == "blackbox" and not row["fresh"]
+                           for row in interactions["heartbeats"][-1])
+                or interactions["heartbeat_details_steps"] != [6, 7, 8]):
+            raise RuntimeError("synthetic EKG beat, flatline or actual details interaction was not captured")
         if forbidden_attempts:
             raise RuntimeError("a demo callback attempted an external effect; inspect the private failure")
         positions = interactions["alerts"]["positions"]
@@ -417,7 +460,8 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         report = {"schema": 1, "frames": frames, "chapters": chapter_names,
                   "duration_ms": FRAME_DURATION_MS, "width": wrapper.width(),
                   "height": wrapper.height(), "synthetic": True, "host_actions": False,
-                  "external_effect_attempts": 0, "interactions": interactions, "capture": identity()}
+                  "external_effect_attempts": 0, "app_version": __version__,
+                  "interactions": interactions, "capture": identity()}
         (frames_root / "frames.json").write_text(json.dumps(report), encoding="ascii")
         staged_poster = frames_root / "poster.png"
         with (frames_root / frames[0]).open("rb") as source, staged_poster.open("xb") as target:
@@ -429,7 +473,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     finally:
         if detail is not None:
             detail.hide()
-        for widget in (settings, spyware, attack):
+        for widget in (settings, spyware, attack, heartbeat_details):
             if widget is not None:
                 widget.close()
         wrapper.hide()
@@ -474,7 +518,12 @@ def encode(frames_root: Path, output: Path, *, replace: bool = False) -> None:
         sample = images[index * FRAMES_PER_CHAPTER].copy()
         sample.thumbnail((800, 530))
         palette_sample.paste(sample, (0, index * 530))
-    palette = palette_sample.quantize(colors=256)
+    palette = palette_sample.quantize(colors=252)
+    # Preserve the UI's liveness/absence colors; tiny EKG lanes must not lose
+    # their meaning when a global chapter palette favors the blue dashboard.
+    colors = palette.getpalette()[:252 * 3]
+    colors.extend((40, 223, 148, 255, 83, 99, 47, 227, 138, 251, 191, 36))
+    palette.putpalette(colors)
     quantized = [image.quantize(palette=palette, dither=Image.Dither.NONE) for image in images]
     staged = frames_root / "encoded-demo.gif"
     with staged.open("xb") as target:

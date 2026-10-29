@@ -10,12 +10,14 @@ and Response (SOAR), forensics and defensive practice in one desktop application
 Deterministic defense works without an AI model; optional local AI helps explain
 evidence and propose next steps.
 
-## Current development: v1.14.0
+## Current development: v1.14.1
 
 [Download and installation choices](#choose-your-installation) ·
 [Release downloads](https://github.com/Ag3nt47/AngeronaSuite/releases) ·
 [Latest changes](CHANGELOG.md) ·
-[Master Manual](Angerona_Master_Manual.docx) ·
+[Read the Master Manual online](docs/master-manual.md) ·
+[PDF manual](Angerona_Master_Manual.pdf) ·
+[Download Word manual](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx) ·
 [Security flow and review map](docs/security-flow.md)
 
 [![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
@@ -35,11 +37,15 @@ performed to create this demonstration.
 
 ## Latest maintenance
 
-This v1.14.0 maintenance update adds independent startup recovery, clearer
-failure diagnostics and storage admission limits. Dashboard sections minimize
-individually and start open except Module health. STOP unloads local AI and
-retires owned helpers/watchdogs; automatic recovery honors the recorded stop.
+This v1.14.1 maintenance update opens an independent startup dashboard before
+runtime checks, with clearer failure diagnostics and storage admission limits.
+Dashboard sections minimize individually and start open except Module health.
+Component EKGs show fresh heartbeats or a red flatline with inspection details.
+STOP unloads local AI and retires owned helpers/watchdogs; automatic recovery
+honors the recorded stop.
 The updated master manual maps the security boundaries and recovery paths.
+[Heartbeat and mutual-recovery guide](docs/resilience-recovery.md) ·
+[Version notes and update availability](docs/releases/v1.14.1.md).
 
 ## Suite at a glance
 
@@ -62,7 +68,8 @@ The updated master manual maps the security boundaries and recovery paths.
 - **Optional AI:** local Ollama explanations and manual sanitized preview/Send
   assist review; model text has no response authority.
 - **Operations and recovery:** resource controls, watchdogs, storage warnings,
-  safe startup alternatives and preserved-edit recovery decisions.
+  component heartbeat EKGs, safe startup alternatives and preserved-edit recovery
+  decisions.
 - **Integration and review:** module contracts, optional intelligence/fleet/SIEM
   connections and bounded read-only Live AI Review.
 

@@ -308,12 +308,52 @@ class AngeronaApp:
         # Settings consumes only this bounded, privacy-safe status provider; it
         # never receives fleet service keys or endpoint private-key material.
         self.window.enterprise_runtime_provider = self.enterprise_runtime_snapshot
+        heartbeat_setter = getattr(self.window, "set_component_heartbeat_source", None)
+        if callable(heartbeat_setter):
+            heartbeat_setter(self._component_heartbeats_cached)
         orb = getattr(self.window, "_holographic_orb", None)
         if orb is not None:
             orb.set_service_status_source(self._orb_cached_service_statuses)
         # Open sharing only after all mandatory construction has succeeded. A
         # failed constructor must not leave a live endpoint with no App owner.
         self._start_live_debug(live_debug)
+
+    def _component_heartbeats_cached(self) -> tuple[dict, ...]:
+        """GUI publication copy only: no files, native probes or held locks."""
+        resilience = getattr(self, "_resilience", None)
+        supplier = getattr(resilience, "component_heartbeats", None)
+        records = supplier() if callable(supplier) else ()
+        if not records:
+            records = tuple({"role": role, "generation_id": "", "pid": None,
+                             "last_heartbeat_monotonic": None, "deadline_seconds": 10.0,
+                             "state": "unavailable",
+                             "reason": "No real component heartbeat publication is available."}
+                            for role in ("core", "watchdog", "scanner", "blackbox"))
+        rows = [dict(record) for record in records[:4]]
+        if getattr(self.config, "blackbox_enabled", True) is not True:
+            for row in rows:
+                if row.get("role") == "blackbox":
+                    row.update(state="disabled", reason="Black Box is disabled in current settings.")
+        with_ui = bool(getattr(resilience, "with_ui", False))
+        for role in ("watchdog_ui", "scanner_ui"):
+            rows.append({"role": role, "generation_id": "", "pid": None,
+                         "last_heartbeat_monotonic": None, "deadline_seconds": 10.0,
+                         "state": "unavailable" if with_ui else "disabled",
+                         "reason": "This monitor has no authenticated progress heartbeat." if with_ui else "Separate monitor windows are not enabled for this core generation."})
+        for role in ("inventory", "local_ai"):
+            rows.append({"role": role, "generation_id": "", "pid": None,
+                         "last_heartbeat_monotonic": None, "deadline_seconds": 10.0,
+                         "state": "unavailable",
+                         "reason": "This helper does not publish an authenticated component progress heartbeat."})
+        if getattr(self.config, "runtime_chill_ai_blocked", getattr(
+                self.config, "runtime_chill_active", getattr(self.config, "eco_mode", False))) is True:
+            rows[-1].update(state="disabled", reason="Chill Mode blocks local AI; no model heartbeat is expected.")
+        requested = getattr(self, "_shutdown_requested", None)
+        if requested is not None and requested.is_set():
+            for row in rows:
+                row.update(state="stopped", last_heartbeat_monotonic=None,
+                           reason="The core requested shutdown; component heartbeat observation is stopped.")
+        return tuple(rows)
 
     def _orb_cached_service_statuses(self) -> dict:
         """Expose existing manager/supervisor fields without host I/O or locks.

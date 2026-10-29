@@ -1,14 +1,21 @@
 # GitHub update checks and preserving custom code
 
-This v1.14 feature has two separate parts: discovering changes and preparing a
+Current development version: v1.14.1. This feature has two separate parts: discovering changes and preparing a
 source candidate. Preparing a candidate does not install it.
 
-**Validation:** daily/settings/setup/manual controls passed 179 focused cases
+**Historical validation:** daily/settings/setup/manual controls passed 179 focused cases
 with one optional native-8.3 skip. Frozen full R10 passed 7,554/0/49 for its
 exact snapshot; later installer/tooltip changes passed 141 controls and a
 default 29-phase selfcheck. Those are separate scopes. Daily checks default off;
 preparing or downloading source never authorizes installation. Activation
 remains held until trusted release, recovery and runtime checks are satisfied.
+
+The October 28 review separately exercised 266 updater cases with one native
+availability skip and the actual shared discovery transport. Canonical main
+returned HTTP 200; no stable release returned HTTP 404 and was reported as
+unavailable for installation. App and selected package metadata agreed on
+1.14.1. This read-only check did not download a payload or change preferences.
+See the [current review](../analysis/startup-storage-recovery-2026-10-28.md).
 
 ## Choose when Angerona checks
 
@@ -43,6 +50,8 @@ python tools/check_github_updates.py --check-now --json
 
 When an observed source revision differs, the dashboard offers to prepare an
 isolated source candidate. Declining keeps the working installation unchanged.
+The Yes/No question defaults to No and describes candidate preparation. It does
+not authorize activating the candidate or granting installed-release trust.
 Preparation requires a canonical source checkout, a known canonical ancestor,
 and the installed trusted Git runtime. Missing prerequisites hold preparation.
 
@@ -52,6 +61,14 @@ Preparation retains the base, user and upstream bytes in content-addressed
 blobs. Local committed changes, working-file edits, deletions and non-ignored
 new files are included as file content. Ignored files remain in the original
 installation and are excluded from the candidate.
+
+Source preparation admits at most two retained candidates and 2 GiB of total
+logical candidate data, with a separate 2 GiB free-space reserve on the stage
+volume. Admission happens under the shared stage lease before a new download.
+Resolution and validation use the same capacity checks. Unknown entries,
+unsafe paths or incomplete accounting hold preparation for review; the updater
+does not silently delete earlier candidates to make room. A low-space validation
+result may be shown without persisting another report, and says so explicitly.
 
 Clean, disjoint UTF-8 edits can be merged automatically. Overlapping edits,
 different binary content, incompatible additions or deletions, and work-limit

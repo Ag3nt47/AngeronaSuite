@@ -89,8 +89,12 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
                                 [(b.accessibleName(), b.geometry().getRect()) for b in buttons],
                                 group.geometry().getRect(), group.minimumSizeHint().toTuple(),
                                 group.layout().minimumSize().toTuple(), window._header_layout.minimumSize().toTuple())
-                        edge = group.mapTo(window._dashboard_content, QPoint()).x() + group.width()
-                        assert edge <= window._dashboard_content.width() - 16, (width, scale, edge)
+                        # Check the actual visible scroll viewport rather than
+                        # an obsolete fixed margin from the former dashboard.
+                        viewport = window.centralWidget().viewport()
+                        left = group.mapTo(viewport, QPoint()).x()
+                        edge = left + group.width()
+                        assert viewport.contentsRect().left() <= left < edge <= viewport.contentsRect().right() + 1, (width, scale, left, edge)
                     assert spy.width() > window.threat_intel_btn.width(), (width, scale)
                     widths.append((scale, width, window._selftest_btn.width(),
                                    window.threat_intel_btn.width(), spy.width()))

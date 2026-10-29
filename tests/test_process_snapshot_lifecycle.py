@@ -183,12 +183,15 @@ def test_app_start_barrier_does_not_hold_teardown_lock_or_load_after_cancel():
         loader.join(3)
 
 
-def test_app_provider_stop_follows_modules_even_when_module_stop_raises():
+def test_app_provider_stop_fences_before_modules_and_reasserts_after_stop_raises(monkeypatch):
     from angerona.app import AngeronaApp
+    from angerona.core import ollama_lifecycle
 
     calls = []
     app = AngeronaApp.__new__(AngeronaApp)
     app.reporter = SimpleNamespace(stop=lambda: None)
+    app.config = SimpleNamespace()
+    monkeypatch.setattr(ollama_lifecycle, "shutdown_ollama", lambda *_args: calls.append("ai-stop"))
     app._mcp = app._fleet_service = app._fleet_plane = None
     app._process_snapshot_lifecycle = SimpleNamespace(
         request_stop=lambda: calls.append("inventory-stop"),
@@ -199,7 +202,7 @@ def test_app_provider_stop_follows_modules_even_when_module_stop_raises():
     app.manager = SimpleNamespace(stop_all=stop_modules)
     with pytest.raises(RuntimeError, match="inert stop failure"):
         app._shutdown_owned()
-    assert calls == ["module-stop", "inventory-stop"]
+    assert calls == ["inventory-stop", "ai-stop", "module-stop", "inventory-stop"]
 
 
 @pytest.mark.parametrize("suffix", [

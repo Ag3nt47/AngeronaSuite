@@ -50,6 +50,13 @@ class Process:
         self.actions.append(("wait", timeout))
         return self.returncode
 
+    def wait_tree(self, timeout=None):
+        self.actions.append(("wait-tree", timeout))
+        return True
+
+    def close(self):
+        self.actions.append("close")
+
 
 def _send(listener: startup.ReadyListener, frame: bytes) -> None:
     port = int(listener.endpoint.split(":", 1)[0])
@@ -136,8 +143,9 @@ def test_dashboard_failure_or_cancel_never_terminates_or_restarts_child(
     monkeypatch.setattr(startup.time, "monotonic", lambda: next(clock))
     with pytest.raises(startup.StartupError, match={
         "timeout": "did not respond", "cancel": "left running", "exit": "code 7",
-    }[reason]):
+    }[reason]) as error:
         startup.wait_dashboard(listener, process, _plan(tmp_path), 0, cancel, timeout=0.5)
+    assert startup._startup_exit_code(error.value) == {"timeout": 85, "cancel": 1223, "exit": 1}[reason]
     assert process.actions == []
 
 
@@ -478,14 +486,15 @@ def test_source_probe_cancellation_and_timeout_only_kill_disposable_probe(
             cancel.set()
         return process
 
-    monkeypatch.setattr(startup.subprocess, "Popen", launch)
+    monkeypatch.setattr(startup, "_spawn_probe", launch)
     if reason == "timeout":
         cancel = SimpleNamespace(wait=lambda _timeout: False, is_set=lambda: False)
-        clock = iter([0, 0.1, 31])
+        clock = iter([0, 0.1, 0.1, 31])
         monkeypatch.setattr(startup.time, "monotonic", lambda: next(clock))
-    with pytest.raises(startup.StartupError, match="cancelled or timed out"):
+    with pytest.raises(startup.StartupError, match="cancelled|timed out") as error:
         startup.probe_source(plan, {}, cancel)
-    assert process.actions == ["kill", ("wait", 5)]
+    assert startup._startup_exit_code(error.value) == (1223 if reason == "cancel" else 87)
+    assert process.actions == ["kill", ("wait", 5), ("wait-tree", 5), "close"]
     assert len(launched) == 1
     assert launched[0][0][0][:2] == [plan.command[0], "-c"]
     assert launched[0][1]["env"]["QT_QPA_PLATFORM"] == "offscreen"
@@ -498,11 +507,11 @@ def test_failed_dependency_probe_preserves_settings_and_evidence(tmp_path, monke
     evidence = plan.storage / "config.json"
     evidence.write_bytes(b"preserved")
     process = Process(1)
-    monkeypatch.setattr(startup.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(startup, "_spawn_probe", lambda *_args, **_kwargs: process)
     with pytest.raises(startup.StartupError, match="settings and evidence were preserved"):
         startup.probe_source(plan, {}, threading.Event())
     assert evidence.read_bytes() == b"preserved"
-    assert process.actions == []
+    assert process.actions == [("wait-tree", 5), "close"]
 
 
 def test_run_startup_launches_once_and_finishes_only_after_real_nonce_notice(
@@ -668,7 +677,7 @@ def test_helper_ui_closes_on_ready_and_keeps_errors_visible_until_user_closes(
     monkeypatch.setattr(startup, "run_startup", run)
     monkeypatch.setattr(startup.threading, "Thread", thread)
     monkeypatch.setattr(startup.sys, "argv", ["AngeronaStartup.exe", "--setup", "--chill"])
-    assert startup.main() == (1 if failure else 0)
+    assert startup.main() == (85 if failure else 0)
     assert len(runs) == 1 and runs[0][1] is True
     assert runs[0][0].is_set()
     assert threads[0]["daemon"] is False
@@ -705,11 +714,11 @@ def test_closing_helper_retains_worker_until_its_owned_probe_is_reaped(tmp_path,
         return thread
 
     monkeypatch.setattr(startup, "run_startup", lambda _report, cancel, **_kwargs: startup.probe_source(plan, {}, cancel))
-    monkeypatch.setattr(startup.subprocess, "Popen", process_created)
+    monkeypatch.setattr(startup, "_spawn_probe", process_created)
     monkeypatch.setattr(startup.threading, "Thread", owned_thread)
     monkeypatch.setattr(startup.sys, "argv", ["AngeronaStartup.exe"])
     try:
-        assert startup.main() == 1
+        assert startup.main() == 1223
         assert window.destroyed
         assert len(threads) == 1
         assert threads[0].daemon is False
@@ -717,7 +726,7 @@ def test_closing_helper_retains_worker_until_its_owned_probe_is_reaped(tmp_path,
         for thread in threads:
             thread.join(timeout=2)
     assert not threads[0].is_alive()
-    assert process.actions == ["kill", ("wait", 5)]
+    assert process.actions == ["kill", ("wait", 5), ("wait-tree", 5), "close"]
 
 
 @pytest.mark.parametrize("code", [81, 82, 83])
@@ -754,7 +763,7 @@ def test_supervised_generic_failure_closes_only_after_logging_and_worker_handoff
     monkeypatch.setattr(startup, "_record_startup_failure", record)
     monkeypatch.setattr(startup.threading, "Thread", lambda **kwargs: SimpleNamespace(start=kwargs["target"]))
     monkeypatch.setattr(startup.sys, "argv", ["startup"])
-    assert startup.main() == 1
+    assert startup.main() == 85
     assert window.destroyed and not window.closed_by_user
     assert 250 in window.scheduled_delays
     assert events == ["worker-unwinding", "persist-and-print"]

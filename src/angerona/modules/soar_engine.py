@@ -60,7 +60,7 @@ class ActiveResponseSOAR(BaseModule):
     name = "Active Response SOAR"
     description = "Opt-in: terminates the offending process and rolls back its file artifact on real CRITICAL alerts."
     category = "Response"
-    version = "1.14.0"
+    version = "1.14.1"
     supported_platforms = ("windows",)
     capability_mode = "respond"
     capability_inputs = ("authenticated-critical-event", "operator-response-scope")
@@ -825,6 +825,78 @@ class ActiveResponseSOAR(BaseModule):
                 Severity.HIGH, disposition="health", response_authorized=False,
             )
             return
+        if (receipt is not None and receipt.details.get("action_succeeded") is True
+                and (self.stopping or self._issuer_original_combat(event) is not combat)):
+            return
+        self._emit_issuer_response_summary(event, receipt, t0=t0, path=path)
+
+    def observe_issuer_completion(self, event, *, timeout: float = 0.0) -> bool:
+        """Observe one prior issuer action; never submit or repeat a response.
+
+        A native action may finish before its signed summary reaches the bus.
+        Keep the exact issuer lease and all existing journal/postcondition
+        checks while the caller's remaining observation budget permits it.
+        Mere target absence, an expired issuer or a matching timestamp cannot
+        substitute for that proof.
+        """
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or timeout < 0 or self.stopping):
+            return False
+        try:
+            if (not self._event_integrity_ok(event) or is_remote_observe_only(event)
+                    or not self._event_in_response_scope(event)):
+                return False
+            deadline = time.monotonic() + min(10.0, timeout)
+            t0 = time.time()
+            while True:
+                combat = self._issuer_original_combat(event)
+                if combat is None:
+                    # An exact file handoff can temporarily withhold its full
+                    # proof. It permits waiting only, never response credit.
+                    if self._issuer_original_combat(event, pending_handoff=True) is None:
+                        return False
+                else:
+                    receipt = self._verified_origin_receipt(combat, event)
+                    if receipt is not None:
+                        if self.stopping or self._issuer_original_combat(event) is not combat:
+                            return False
+                        claim = receipt.details if isinstance(receipt.details, dict) else {}
+                        if (claim.get("action_succeeded") is not True
+                                or claim.get("postcondition_verified") is not True):
+                            return False
+                        # A background consumer may have completed between the
+                        # verifier's snapshot and this observation. Its exact
+                        # signed summary already supplies the same evidence.
+                        for summary in self._bus.recent(500):
+                            details = summary.details if isinstance(summary.details, dict) else {}
+                            if (summary.module == self.name and self._bus.verify(summary)
+                                    and summary.ts >= event.ts
+                                    and details.get("delegation_mode") == "issuer-original-event"
+                                    and details.get("origin_event_digest") == event.hmac_sig
+                                    and details.get("trigger_module") == event.module
+                                    and details.get("trigger_ts") == event.ts
+                                    and details.get("mitigated") is True
+                                    and details.get("receipt_status") == "verified-applied"
+                                    and details.get("combat_action_ids") == claim.get("action_ids")):
+                                if self.stopping or self._issuer_original_combat(event) is not combat:
+                                    return False
+                                return True
+                        if self.stopping or self._issuer_original_combat(event) is not combat:
+                            return False
+                        self._emit_issuer_response_summary(
+                            event, receipt, t0=t0, path=self._event_path(event) or None,
+                        )
+                        return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self.stopping:
+                    return False
+                time.sleep(min(0.05, remaining))
+        except Exception:
+            # Observation cannot recover unknown authority or turn a parser,
+            # custody or journal failure into another action.
+            return False
+
+    def _emit_issuer_response_summary(self, event, receipt, *, t0: float, path):
         claim = receipt.details if receipt is not None else {}
         mitigated = bool(receipt is not None and claim.get("action_succeeded") is True
                          and claim.get("postcondition_verified") is True)

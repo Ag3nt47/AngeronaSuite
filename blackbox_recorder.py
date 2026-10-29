@@ -3344,7 +3344,7 @@ def main() -> None:
     except Exception:
         _crash_log = DATA_DIR / "blackbox_startup.log"
 
-    app = win = ui_watchdog = beat_timer = None
+    app = win = ui_watchdog = beat_timer = component_beat = None
     try:
         app = QApplication(sys.argv)
         app.setApplicationName(APP_NAME)
@@ -3367,6 +3367,17 @@ def main() -> None:
         app.aboutToQuit.connect(lambda: win.stop_workers(timeout_ms=0))
         beat_timer = QTimer()
         beat_timer.timeout.connect(ui_watchdog.beat)
+        # This independent recorder pulses only when its real Qt event loop
+        # dispatches the timer. A separate thread must not mask a frozen window.
+        from angerona.resilience.component_status import ProgressHeartbeat
+        component_beat = ProgressHeartbeat("blackbox")
+        beat_timer.timeout.connect(component_beat.beat)
+        if component_beat.failure:
+            try:
+                with open(_crash_log, "a", encoding="utf-8") as stream:
+                    stream.write("BLACKBOX HEARTBEAT UNAVAILABLE: " + component_beat.failure + "\n")
+            except OSError:
+                pass
         beat_timer.start(1000)
         try:
             from angerona.core.config import Config
@@ -3398,6 +3409,11 @@ def main() -> None:
     finally:
         if beat_timer is not None:
             beat_timer.stop()
+        if component_beat is not None:
+            try:
+                component_beat.close()
+            except Exception:
+                pass  # A stale/missing heartbeat remains explicitly unavailable.
         if ui_watchdog is not None:
             ui_watchdog.stop()
             if ui_watchdog._thread is not None:

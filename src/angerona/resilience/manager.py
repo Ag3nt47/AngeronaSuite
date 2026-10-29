@@ -172,6 +172,7 @@ class ResilienceManager:
         self.frames_ingested = 0
         self.frames_rejected = 0
         self.status = "stopped"
+        self._component_heartbeat_cache = None
 
     def _sup_event(self, level: str, msg: str, details: dict) -> None:
         self._publish("Resilience Supervisor", f"[{level}] {msg}", level, details)
@@ -221,12 +222,30 @@ class ResilienceManager:
         # is lean and reliable; the BlackBox + watchdog_ui already give visibility.
         os.environ["ANGERONA_SCANNER_UI"] = "0"
 
+        # The footer reads immutable memory only. This separate bounded loop
+        # validates known authenticated heartbeat files and native process
+        # generations; a supervisor state/process-presence label cannot pulse.
+        from angerona.resilience.component_status import ComponentHeartbeatCache
+        blackbox_entry = _blackbox_script()
+        external_wd = os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1"
+        blackbox_enabled = os.environ.get("ANGERONA_BLACKBOX_ENABLED", "1").strip().lower() not in (
+            "0", "false", "no", "off")
+        producer_path = getattr(self._core_beat, "path", None)
+        self._component_heartbeat_cache = ComponentHeartbeatCache({
+            "core": (py,) if getattr(sys, "frozen", False) else (py, "-m", "angerona"),
+            "watchdog": None if external_wd else (pyw, "-m", "angerona.resilience.watchdog"),
+            "scanner": (pyw, "-m", "angerona.resilience.scanner"),
+            "blackbox": (pyw, str(blackbox_entry)) if blackbox_entry is not None else None,
+        }, enabled={"blackbox": blackbox_enabled,
+                    "watchdog": external_wd or self.start_watchdog},
+            heartbeat_directory=producer_path.parent if isinstance(producer_path, Path) else None)
+        self._spawn_thread(self._component_heartbeat_loop, "component-heartbeat-status")
+
         # 1) Watchdog. BL-01: the compiled Go watchdog is a resilience PARENT that
         # LAUNCHES + hashes + relaunches Angerona (deployed by start-angerona.bat,
         # which sets ANGERONA_EXTERNAL_WATCHDOG=1). It is NOT a child to spawn here —
         # doing so passed no agent arg and just errored. So: if an external parent
         # watchdog is running, skip our own; otherwise run the Python PEER watchdog.
-        external_wd = os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1"
         if external_wd:
             self._publish("Resilience Manager",
                           "External signed watchdog is the resilience parent — skipping the "
@@ -248,10 +267,7 @@ class ResilienceManager:
                       stale_after_s=8.0, window="hidden")
 
         # 3) BlackBox — decoupled recorder, its own themed self-minimizing window.
-        bb = _blackbox_script()
-        blackbox_enabled = os.environ.get(
-            "ANGERONA_BLACKBOX_ENABLED", "1"
-        ).strip().lower() not in ("0", "false", "no", "off")
+        bb = blackbox_entry
         if bb is not None and blackbox_enabled:
             self._sup.add("blackbox", [pyw, str(bb)], window="hidden",
                           running_probe=_cmdline_probe("blackbox_recorder.py", expected_argv=[pyw, str(bb)]))
@@ -361,8 +377,40 @@ class ResilienceManager:
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
             })
 
+    def component_heartbeats(self) -> tuple[dict, ...]:
+        cache = self._component_heartbeat_cache
+        return cache.snapshot() if cache is not None else ()
+
+    def _component_heartbeat_loop(self):
+        cache = self._component_heartbeat_cache
+        if cache is None:
+            return
+        try:
+            while not self._stop.wait(1.0):
+                held = {}
+                components = getattr(self._sup, "components", {})
+                for role in ("watchdog", "scanner", "blackbox"):
+                    component = components.get(role)
+                    if component is not None and (component.safe_mode or component.state_fault):
+                        held[role] = "Component recovery is held by authenticated supervisor safety state."
+                if os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1":
+                    held["watchdog"] = "The external native watchdog uses a separate protocol; no compatible component heartbeat is published."
+                cache.sample(held=held)
+        except Exception as exc:
+            self._publish("Component Heartbeats", "Read-only heartbeat observation is unavailable.",
+                          "LOW", {"error_type": type(exc).__name__})
+        finally:
+            try:
+                cache.close()
+            except Exception as exc:
+                self._publish("Component Heartbeats", "Read-only native observation handles could not all be released.",
+                              "LOW", {"error_type": type(exc).__name__})
+
     def request_stop(self) -> None:
         self._stop.set()
+        cache = self._component_heartbeat_cache
+        if cache is not None:
+            cache.mark_stopped()
         self._sup.request_stop()
 
     def stop(self, terminate_children: bool = False) -> None:

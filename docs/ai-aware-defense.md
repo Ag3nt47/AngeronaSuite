@@ -28,7 +28,8 @@ Final-source offline validation and canonical guarded publication require their
 own receipts; this reference does not attest their completion. Preserve the
 historical OPEN SEC-19 object and all host/parser/unknown findings. See the
 [central evidence reference](../analysis/live-debug-2026-10-22/model-integrity-review.md).
-Product remains 1.14.0; broader 1.15 is incomplete.
+Current product version is 1.14.1; broader 1.15 is incomplete. The preceding
+validation describes the original 1.14.0 review rather than this maintenance revision.
 
 
 ## Historical model-integrity reader boundary

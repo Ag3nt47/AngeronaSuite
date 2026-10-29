@@ -297,3 +297,160 @@ def test_native_receipt_rejects_wrong_generation_or_uncertain_exit(field, value)
     assert ActiveResponseSOAR._native_origin_termination(record, details)
     record[field] = value
     assert not ActiveResponseSOAR._native_origin_termination(record, details)
+
+
+def _observation_clock(monkeypatch, *, settle=None):
+    clock = {"now": time.monotonic(), "sleeps": []}
+
+    def sleep(seconds):
+        assert 0 < seconds <= 0.05
+        clock["sleeps"].append(seconds)
+        clock["now"] += seconds
+        if settle is not None:
+            settle(clock)
+
+    monkeypatch.setattr("angerona.modules.soar_engine.time", SimpleNamespace(
+        monotonic=lambda: clock["now"], time=time.time, sleep=sleep,
+    ))
+    return clock
+
+
+def test_late_committed_receipt_is_observed_without_another_submission(issuer, monkeypatch):
+    ctx = issuer
+    submitted, rows = [], []
+    row = _committed(ctx)
+    start = time.monotonic()
+    delivered = []
+
+    def settle(clock):
+        if clock["now"] - start >= 3.5 and not delivered:
+            rows.append(row)
+            delivered.append(_publish_receipt(ctx, row))
+
+    clock = _observation_clock(monkeypatch, settle=settle)
+    monkeypatch.setattr(ctx.combat, "list_actions", lambda **_kwargs: rows)
+    monkeypatch.setattr(ctx.combat, "_submit", lambda event: submitted.append(event))
+    ctx.soar._kill_and_rollback(ctx.event)
+    pending = ctx.bus.recent(1)[0]
+    assert pending.details["receipt_status"] == "pending-timeout"
+    assert submitted == [ctx.event]
+    monkeypatch.setattr(ctx.combat, "_submit", lambda _event: pytest.fail("observation resubmitted action"))
+    assert ctx.soar.observe_issuer_completion(ctx.event, timeout=2.0) is True
+    summary = ctx.bus.recent(1)[0]
+    assert ctx.bus.verify(summary) and summary.details["mitigated"] is True
+    assert summary.details["origin_event_digest"] == ctx.event.hmac_sig
+    assert summary.details["combat_action_ids"] == [row["action_id"]]
+    assert summary.details["queue_request_id"] is None
+    assert 3.5 <= clock["now"] - start <= 5.0
+    # Re-observing the same exact completion reuses its existing signed summary.
+    assert ctx.soar.observe_issuer_completion(ctx.event, timeout=0.0) is True
+    assert ctx.bus.recent(1)[0] is summary
+
+
+@pytest.mark.parametrize("broken", [
+    "missing", "wrong-event", "tampered-receipt", "uncommitted", "undone",
+    "released", "expired", "custody-failed", "no-action", "outside-scope",
+])
+def test_completion_observation_never_recovers_unknown_authority(issuer, monkeypatch, broken):
+    ctx = issuer
+    _observation_clock(monkeypatch)
+    row = _committed(ctx)
+    monkeypatch.setattr(ctx.combat, "_submit", lambda _event: pytest.fail("observation dispatched"))
+    monkeypatch.setattr(ctx.combat, "list_actions", lambda **_kwargs: [row])
+    if broken != "missing":
+        event = ctx.event
+        if broken == "wrong-event":
+            ctx.bus.publish(Event(event.module, "another signed event", event.severity,
+                                  details=copy.deepcopy(event.details)))
+            event = ctx.bus.recent(1)[0]
+        if broken == "tampered-receipt":
+            before = ctx.bus.recent(500)
+            receipt = _publish_receipt(ctx, row)
+            forged = Event(receipt.module, receipt.message + " altered", receipt.severity,
+                           ts=receipt.ts, details=receipt.details, hmac_sig=receipt.hmac_sig)
+            assert not ctx.bus.verify(forged)
+            monkeypatch.setattr(ctx.bus, "recent", lambda _limit: [forged, *before])
+        else:
+            _publish_receipt(ctx, row, event=event, **(
+                {"action_succeeded": False, "mitigated": False, "action_ids": [], "actions": []}
+                if broken == "no-action" else {}
+            ))
+    state = purple._lease_authority(ctx.lease)
+    saved_state = {key: getattr(state, key) for key in (
+        "released", "run_deadline_monotonic", "artifact_custody_failed",
+    )}
+    if broken == "uncommitted":
+        row["status"] = "pending"
+    elif broken == "undone":
+        row["undone"] = True
+    elif broken == "released":
+        monkeypatch.setattr(state, "released", True)
+    elif broken == "expired":
+        monkeypatch.setattr(state, "run_deadline_monotonic", time.monotonic() - 1)
+    elif broken == "custody-failed":
+        monkeypatch.setattr(state, "artifact_custody_failed", True)
+    elif broken == "outside-scope":
+        monkeypatch.setenv("ANGERONA_SOAR_RESPONSE_SCOPE", str(ctx.marker.parent / "other"))
+    try:
+        assert ctx.soar.observe_issuer_completion(ctx.event, timeout=0.1) is False
+        assert not [event for event in ctx.bus.recent(500) if event.module == ctx.soar.name
+                    and event.details.get("mitigated") is True]
+    finally:
+        for key, value in saved_state.items():
+            setattr(state, key, value)
+
+
+@pytest.mark.parametrize("terminal", ["expired", "released"])
+def test_completion_rechecks_issuer_after_committed_journal_read(issuer, monkeypatch, terminal):
+    ctx = issuer
+    row = _committed(ctx)
+    state = purple._lease_authority(ctx.lease)
+    original_deadline = state.run_deadline_monotonic
+
+    def journal(**_kwargs):
+        if terminal == "released":
+            purple.RedTeamValidationLease.release(ctx.lease)
+        else:
+            state.run_deadline_monotonic = time.monotonic() - 1
+        return [row]
+
+    monkeypatch.setattr(ctx.combat, "list_actions", journal)
+    monkeypatch.setattr(ctx.combat, "_submit", lambda _event: pytest.fail("expired observation dispatched"))
+    _publish_receipt(ctx, row)
+    try:
+        assert ctx.soar.observe_issuer_completion(ctx.event, timeout=0.0) is False
+    finally:
+        if terminal != "released":
+            state.run_deadline_monotonic = original_deadline
+
+
+@pytest.mark.parametrize("existing_summary", [False, True])
+def test_completion_cannot_credit_issuer_released_during_summary_scan(
+    issuer, monkeypatch, existing_summary,
+):
+    ctx = issuer
+    row = _committed(ctx)
+    monkeypatch.setattr(ctx.combat, "list_actions", lambda **_kwargs: [row])
+    _publish_receipt(ctx, row)
+    if existing_summary:
+        ctx.soar._kill_and_rollback(ctx.event)
+    recent = ctx.bus.recent
+    scans = []
+
+    def release_during_scan(limit):
+        if limit == 500:
+            scans.append(limit)
+            if len(scans) == 2:
+                purple.RedTeamValidationLease.release(ctx.lease)
+        return recent(limit)
+
+    monkeypatch.setattr(ctx.bus, "recent", release_during_scan)
+    monkeypatch.setattr(ctx.combat, "_submit", lambda _event: pytest.fail("released observation dispatched"))
+    assert ctx.soar.observe_issuer_completion(ctx.event, timeout=0.0) is False
+    assert len(scans) == 2
+
+
+@pytest.mark.parametrize("timeout", [True, -1, float("nan"), float("inf"), "5", None])
+def test_completion_invalid_budget_never_polls_or_dispatches(issuer, monkeypatch, timeout):
+    monkeypatch.setattr(issuer.soar, "_issuer_original_combat", lambda *_a, **_k: pytest.fail("invalid budget polled"))
+    assert issuer.soar.observe_issuer_completion(issuer.event, timeout=timeout) is False

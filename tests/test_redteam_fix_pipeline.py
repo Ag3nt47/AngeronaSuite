@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import time
 import json
+import threading
 from types import SimpleNamespace
 
+import pytest
+
 from angerona.core import drill_resolution
-from angerona.core.eventbus import Event, EventBus, Severity
-from angerona.core.practice_verification import verify_practice_fixes
+from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
+from angerona.core.practice_verification import _find_response, verify_practice_fixes
 from angerona.core.storage import FlightRecorder
 from angerona.modules.purple_guard import PurpleGuard, install_policies
 from angerona.modules.soar import SOARModule
@@ -374,6 +377,119 @@ def test_practice_fix_requires_detection_recorder_response_and_cleanup(
     assert closure["state"] == drill_resolution.VERIFIED_STATE
     assert closure["verification_mode"] == "practice-probe"
     assert closure["verification_receipt_id"]
+
+
+@pytest.mark.parametrize("outcome", ["late-success", "priority-overflow"])
+def test_practice_observes_committed_receipt_without_repeating_native_action(
+    tmp_path, monkeypatch, outcome,
+) -> None:
+    _offline_practice_inventory(monkeypatch)
+    _key(tmp_path)
+    recorder = FlightRecorder(tmp_path / "flight-recorder.db")
+    bus = EventBus()
+    bus.arm(recorder.authority)
+    bus.subscribe(recorder.record_bus)
+    guard, response = PurpleGuard(tmp_path), ActiveResponseSOAR()
+    guard.bind(bus)
+    response.bind(bus)
+    manager = SimpleNamespace(bus=bus, recorder=recorder, modules={
+        guard.name: guard, response.name: response,
+    })
+    combat = _shared_practice_combat(tmp_path, manager, response)
+    install_policies([{"mitre": "T1059"}], "source-run", tmp_path)
+    drill_resolution.apply_contracts(
+        [{"mitre": "T1059", "name": "Benign Execution"}], "source-run", tmp_path,
+        installed=["T1059"],
+    )
+    release_receipt = threading.Event()
+    receipts, observations = [], []
+    emit = combat.emit
+    observe = response.observe_issuer_completion
+    priority_since = bus.priority_since
+
+    def delayed_emit(message, *args, **details):
+        if (details.get("trigger_module") == guard.name
+                and details.get("action_succeeded") is True
+                and details.get("actions") == ["terminate_process"]):
+            receipts.append(details)
+            # The action has already committed. Release only when the verifier
+            # enters observation; no real-time scheduling assumption is needed.
+            assert release_receipt.wait(8.0)
+        return emit(message, *args, **details)
+
+    def observe_without_dispatch(event, *, timeout):
+        observations.append(event.hmac_sig)
+        assert 0.0 <= timeout <= 5.0
+        release_receipt.set()
+        with monkeypatch.context() as patch:
+            submit = combat._submit
+            observer_thread = threading.get_ident()
+            def deny_observer_submission(candidate):
+                if (threading.get_ident() == observer_thread
+                        and candidate.hmac_sig == event.hmac_sig):
+                    pytest.fail("observation resubmitted its original action")
+                return submit(candidate)
+            patch.setattr(combat, "_submit", deny_observer_submission)
+            completed = observe(event, timeout=timeout)
+        if outcome == "priority-overflow":
+            def overflow(cursor):
+                current, events, _overflow = priority_since(cursor)
+                return current, events, True
+            monkeypatch.setattr(bus, "priority_since", overflow)
+        return completed
+
+    monkeypatch.setattr(combat, "emit", delayed_emit)
+    monkeypatch.setattr(response, "observe_issuer_completion", observe_without_dispatch)
+    try:
+        result = verify_practice_fixes(
+            ["T1059"], source_run_id="source-run", data_dir=tmp_path,
+            db_path=tmp_path / "flight-recorder.db", bus=bus, purple_guard=guard,
+            active_response=response, manager=manager, recorder=recorder,
+            recorder_timeout=5.0,
+        )
+        actions = [row for row in combat.list_actions(limit=500)
+                   if row.get("action") == "terminate_process" and row.get("status") == "applied"]
+    finally:
+        release_receipt.set()
+        combat.stop()
+        recorder.close()
+    assert len(receipts) == len(actions) == len(observations) == 1
+    assert len(receipts[0]["action_ids"]) == 1
+    assert guard._validation_lease is None
+    if outcome == "late-success":
+        assert result["ok"], json.dumps(result, indent=2)
+        _assert_issuer_original_response(bus, result)
+        assert all(result["results"][0]["checks"].values())
+    else:
+        assert not result["ok"]
+        assert result["verified"] == 0
+        assert "overflowed during response observation" in result["results"][0]["error"]
+
+
+@pytest.mark.parametrize("broken", ["valid", "digest", "module", "mode", "signature"])
+def test_practice_response_summary_requires_exact_signed_original(tmp_path, monkeypatch, broken):
+    monkeypatch.setattr(BusAuthority, "_key_path", staticmethod(lambda: tmp_path / "bus.key"))
+    recorder = FlightRecorder(tmp_path / "flight-recorder.db")
+    try:
+        bus = EventBus()
+        bus.arm(recorder.authority)
+        bus.publish(Event("Purple Remediation Guard", "original", Severity.HIGH))
+        trigger = bus.recent(1)[0]
+        details = {"trigger_ts": trigger.ts, "trigger_module": trigger.module,
+                   "origin_event_digest": trigger.hmac_sig,
+                   "delegation_mode": "issuer-original-event", "mitigated": True}
+        if broken == "digest": details["origin_event_digest"] = "0" * 64
+        elif broken == "module": details["trigger_module"] = "another detector"
+        elif broken == "mode": details["delegation_mode"] = "copied metadata"
+        bus.publish(Event("Active Response SOAR", "receipt", Severity.HIGH, details=details))
+        response = bus.recent(1)[0]
+        if broken == "signature":
+            response = Event(response.module, "altered receipt", response.severity,
+                             ts=response.ts, details=response.details, hmac_sig=response.hmac_sig)
+        found = _find_response(bus, trigger, trigger.ts, events=[response])
+        assert (found is response) is (broken == "valid")
+    finally:
+        recorder.close()
 
 
 def test_process_practice_fix_kills_only_its_tagged_child_and_closes(

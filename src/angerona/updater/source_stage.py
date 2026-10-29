@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import ast
+import contextlib
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ import os
 import re
 import stat
 import shutil
+import time
 import uuid
 import zipfile
 from dataclasses import asdict, dataclass
@@ -23,7 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Callable, Mapping
 from urllib.request import Request
 
-from angerona.core.file_lease import ExclusiveFileLease
+from angerona.core.file_lease import ExclusiveFileLease, ExclusiveFileLeaseError
 from angerona.core.url_policy import host_policy, read_bounded, safe_urlopen
 from angerona.updater.source_git import read_source_git, source_git_session
 from angerona.updater.github_updater import (
@@ -41,6 +43,15 @@ MAX_PATH = 240
 MAX_TEXT_BYTES = 2 * 1024 * 1024
 MAX_TEXT_LINES = 20000
 MAX_MERGE_COMPARISONS = 2_000_000
+MAX_RETAINED_STAGES = 2
+MAX_RETAINED_STAGE_BYTES = 2 * 1024**3
+MIN_STAGE_FREE_BYTES = 2 * 1024**3
+MAX_STAGE_METADATA_BYTES = 16 * 1024**2
+MAX_STAGE_OUTPUT_ENTRIES = 32768
+MAX_STAGE_SCAN_ENTRIES = MAX_RETAINED_STAGES * MAX_STAGE_OUTPUT_ENTRIES + 4
+MAX_STAGE_SCAN_SECONDS = 10.0
+MAX_STAGE_SCAN_DEPTH = 128
+_STAGE_NAME = re.compile(r"source-[0-9a-f]{32}\Z")
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _RESERVED = re.compile(r"^(CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)", re.I)
 _ARCHIVE_POLICY = host_policy("canonical source archive", {"codeload.github.com"})
@@ -48,6 +59,156 @@ _ARCHIVE_POLICY = host_policy("canonical source archive", {"codeload.github.com"
 
 class SourceStageError(RuntimeError):
     """A preservation or provenance precondition was not established."""
+
+
+@dataclass(frozen=True)
+class _StageStorage:
+    count: int
+    logical_bytes: int
+
+
+def _storage_stamp(info, *, directory: bool = False):
+    if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+            or (not stat.S_ISDIR(info.st_mode) if directory else
+                not stat.S_ISREG(info.st_mode) or info.st_nlink != 1)
+            or type(info.st_dev) is not int or type(info.st_ino) is not int or info.st_ino <= 0):
+        raise SourceStageError("retained source stage contains an unsafe or unavailable object")
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+@contextlib.contextmanager
+def _held_storage_file(path: Path):
+    """Read metadata through a no-follow descriptor; never request write access."""
+    before = _storage_stamp(path.lstat())
+    if os.name == "nt":
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        create = kernel.CreateFileW
+        create.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                           wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        create.restype = wintypes.HANDLE
+        close = kernel.CloseHandle
+        close.argtypes, close.restype = (wintypes.HANDLE,), wintypes.BOOL
+        handle = create(str(path), 0x80000000, 1, None, 3, 0x00200000, None)
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            descriptor = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
+        except BaseException:
+            close(handle)
+            raise
+    else:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        opened = _storage_stamp(os.fstat(descriptor))
+        if opened != before or _storage_stamp(path.lstat()) != before:
+            raise SourceStageError("retained source stage changed during inventory")
+        yield opened
+        if (_storage_stamp(os.fstat(descriptor)) != before
+                or _storage_stamp(path.lstat()) != before):
+            raise SourceStageError("retained source stage changed during inventory")
+    finally:
+        os.close(descriptor)
+
+
+def _stage_storage_inventory(root: Path, cancelled: Callable[[], bool]) -> _StageStorage:
+    """Inspect only this exact staging namespace; incomplete inventory holds writes."""
+    from angerona.core.source_sandbox import _hold_plain_directories
+
+    deadline = time.monotonic() + MAX_STAGE_SCAN_SECONDS
+    seen = []
+    entries_used = 0
+    logical_bytes = count = 0
+
+    def checkpoint():
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        if time.monotonic() >= deadline:
+            raise SourceStageError("retained source-stage inventory exceeded its time budget")
+
+    def walk(directory: Path, *, top: bool = False):
+        nonlocal entries_used, logical_bytes, count
+        checkpoint()
+        if len(directory.relative_to(root).parts) > MAX_STAGE_SCAN_DEPTH:
+            raise SourceStageError("retained source-stage inventory exceeded its depth budget")
+        with _hold_plain_directories(directory):
+            before = _storage_stamp(directory.lstat(), directory=True)
+            seen.append((directory, before, True))
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    checkpoint()
+                    entries_used += 1
+                    if entries_used > MAX_STAGE_SCAN_ENTRIES:
+                        raise SourceStageError("retained source-stage inventory exceeded its entry budget")
+                    path = directory / entry.name
+                    info = path.lstat()
+                    if ((top and entry.name == "stage.lock")
+                            or (directory.parent == root and entry.name == "resolution.lock")):
+                        stamp = _storage_stamp(info)
+                        if info.st_size > 4096:
+                            raise SourceStageError("source-stage lease metadata is oversized")
+                        seen.append((path, stamp, False))
+                        logical_bytes += info.st_size
+                    elif top:
+                        if not _STAGE_NAME.fullmatch(entry.name):
+                            raise SourceStageError("unrecognized staging-root entries require review")
+                        _storage_stamp(info, directory=True)
+                        count += 1
+                        if count > MAX_RETAINED_STAGES:
+                            raise SourceStageError(f"retained source-stage count {count} exceeds limit {MAX_RETAINED_STAGES}")
+                        walk(path)
+                    elif stat.S_ISDIR(info.st_mode):
+                        walk(path)
+                    else:
+                        with _held_storage_file(path) as stamp:
+                            logical_bytes += stamp[2]
+                            seen.append((path, stamp, False))
+                    if logical_bytes > MAX_RETAINED_STAGE_BYTES:
+                        raise SourceStageError(f"retained source-stage bytes {logical_bytes} exceed their aggregate budget")
+            if _storage_stamp(directory.lstat(), directory=True) != before:
+                raise SourceStageError("retained source-stage directory changed during inventory")
+
+    walk(root, top=True)
+    # Detect a changed or newly populated directory after a completed child walk.
+    for path, stamp, directory in seen:
+        checkpoint()
+        if _storage_stamp(path.lstat(), directory=directory) != stamp:
+            raise SourceStageError("retained source stage changed during inventory")
+    return _StageStorage(count, logical_bytes)
+
+
+def _require_stage_free(path: Path, pending_bytes: int = 0) -> None:
+    available = shutil.disk_usage(path).free
+    if (type(pending_bytes) is not int or pending_bytes < 0 or type(available) is not int
+            or available < MIN_STAGE_FREE_BYTES + pending_bytes):
+        raise SourceStageError("source-stage storage held to preserve its 2 GiB free-space reserve")
+
+
+@contextlib.contextmanager
+def _stage_storage_budget(root: Path, *, additional_bytes: int, new_stage: bool = False,
+                          cancelled: Callable[[], bool] = lambda: False):
+    from angerona.core.source_sandbox import _hold_plain_directories
+    storage = None
+    with contextlib.ExitStack() as stack:
+        try:
+            stack.enter_context(_hold_plain_directories(root))
+            storage = _stage_storage_inventory(root, cancelled)
+            if new_stage and storage.count >= MAX_RETAINED_STAGES:
+                raise SourceStageError("the retained source-stage limit is reached")
+            if (type(additional_bytes) is not int or additional_bytes < 0
+                    or storage.logical_bytes + additional_bytes > MAX_RETAINED_STAGE_BYTES):
+                raise SourceStageError("another source-stage write would exceed the aggregate byte budget")
+            _require_stage_free(root, additional_bytes + MAX_STAGE_METADATA_BYTES)
+        except (OSError, ValueError, SourceStageError) as exc:
+            observed = ("inventory incomplete" if storage is None else
+                        f"{storage.count} retained candidates, {storage.logical_bytes} logical bytes")
+            raise SourceStageError(
+                f"Source-stage storage held ({observed}): {exc}. Review retained candidates at {root}. "
+                "Existing candidates, custom code and preferences were preserved; nothing was deleted."
+            ) from exc
+        yield storage
 
 
 @dataclass(frozen=True)
@@ -394,7 +555,10 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
     # Containment rejection must not create even an empty directory in the
     # installed checkout, launch Git, or make a network request.
     root = _safe_state_root(root)
-    with ExclusiveFileLease(root / "stage.lock"), source_git_session():
+    with (ExclusiveFileLease(root / "stage.lock"),
+          _stage_storage_budget(root, additional_bytes=MAX_TRANSACTION_BYTES + MAX_STAGE_METADATA_BYTES,
+                                new_stage=True, cancelled=cancelled) as retained,
+          source_git_session()):
         local = local_source_revision(source_root)
         if not local:
             raise SourceStageError(f"source checkout must have exact origin {CANONICAL_ORIGIN}")
@@ -418,6 +582,7 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
         original_digest = hashlib.sha256(json.dumps({name: _digest(data) for name, data in original.items()}, sort_keys=True).encode()).hexdigest()
         stage_id = "source-" + uuid.uuid4().hex
         stage = root / stage_id
+        _require_stage_free(root, MAX_STAGE_METADATA_BYTES)
         stage.mkdir(mode=0o700)
         intent = {"schema": "angerona.source-stage/v1", "stage_id": stage_id,
                   "status": "preparing", "base_revision": base_revision,
@@ -429,11 +594,13 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
             if cancelled():
                 raise SourceStageError("source staging was cancelled")
             captured_bytes = sum(map(len, original.values()))
+            _require_stage_free(root, MAX_STAGE_METADATA_BYTES)
             base = read_source_archive(download(base_revision), base_revision,
                                        remaining_bytes=MAX_TRANSACTION_BYTES - captured_bytes, cancelled=cancelled)
             captured_bytes += sum(map(len, base.values()))
             if cancelled():
                 raise SourceStageError("source staging was cancelled")
+            _require_stage_free(root, MAX_STAGE_METADATA_BYTES)
             incoming = read_source_archive(download(target_revision), target_revision,
                                            remaining_bytes=MAX_TRANSACTION_BYTES - captured_bytes, cancelled=cancelled)
             captured_bytes += sum(map(len, incoming.values()))
@@ -442,6 +609,8 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
             changes = candidate_count = 0
             candidate_bytes = 0
             plan = []
+            output_paths = set()
+            blob_names = set()
             combined = set(base) | set(original) | set(incoming)
             if len(combined) > MAX_FILES:
                 raise SourceStageError("combined source file count exceeds limit")
@@ -462,9 +631,16 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                           "action": decision.action, "reason": decision.reason}
                 records.append(record)
                 plan.append((name, before, user, after, decision))
-            required_space = captured_bytes + candidate_bytes + 16 * 1024 * 1024
-            if shutil.disk_usage(root).free < required_space:
-                raise SourceStageError("insufficient free space for preserved copies and candidate")
+                blob_names.update(_digest(value) for value in (before, user, after) if value is not None)
+                if decision.content is not None:
+                    parts = PurePosixPath(name).parts
+                    output_paths.update(parts[:count] for count in range(1, len(parts) + 1))
+                if len(output_paths) + len(blob_names) + 8 > MAX_STAGE_OUTPUT_ENTRIES:
+                    raise SourceStageError("source-stage output entry budget would be exceeded")
+            required_space = captured_bytes + candidate_bytes + MAX_STAGE_METADATA_BYTES
+            if retained.logical_bytes + required_space > MAX_RETAINED_STAGE_BYTES:
+                raise SourceStageError("preserved copies and candidate exceed the aggregate source-stage budget")
+            _require_stage_free(root, required_space)
             blobs = stage / "preserved-blobs"
             blobs.mkdir(mode=0o700)
             candidate = stage / "candidate"
@@ -479,6 +655,7 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                     conflicts.append(name)
                 elif decision.content is not None:
                     target = candidate.joinpath(*PurePosixPath(name).parts)
+                    _require_stage_free(stage, MAX_STAGE_METADATA_BYTES)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     _write_capture(target, decision.content, cancelled)
                     candidate_count += 1
@@ -488,26 +665,38 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
             manifest = dict(intent, status="conflicts" if conflicts else "prepared", files=records,
                             conflicts=conflicts, validation="not_run", activation="not_authorized")
             encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            result = StageResult(stage_id, manifest["status"], base_revision, target_revision, local,
+                                 candidate_count, changes, tuple(conflicts), hashlib.sha256(encoded).hexdigest())
+            final_intent = dict(intent, status=result.status)
+            if (len(encoded) + len(json.dumps(asdict(result), ensure_ascii=True).encode())
+                    + 2 * len(json.dumps(final_intent, ensure_ascii=True).encode()) > MAX_STAGE_METADATA_BYTES):
+                raise SourceStageError("source-stage metadata exceeds its reserved budget")
+            _require_stage_free(stage, len(encoded) + MAX_STAGE_METADATA_BYTES)
             with (stage / "manifest.json").open("xb") as handle:
                 handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
-            result = StageResult(stage_id, manifest["status"], base_revision, target_revision, local,
-                                 candidate_count, changes, tuple(conflicts), hashlib.sha256(encoded).hexdigest())
             _write_json(stage / "result.json", asdict(result))
-            _write_state(stage / "intent.json", dict(intent, status=result.status))
+            _require_stage_free(stage, MAX_STAGE_METADATA_BYTES)
+            _write_state(stage / "intent.json", final_intent)
             return result
         except BaseException as exc:
-            _write_state(stage / "intent.json", dict(intent, status="cancelled" if cancelled() else "failed",
-                                                     failure_type=type(exc).__name__))
+            try:
+                _require_stage_free(stage, MAX_STAGE_METADATA_BYTES)
+                _write_state(stage / "intent.json", dict(intent, status="cancelled" if cancelled() else "failed",
+                                                         failure_type=type(exc).__name__))
+            except (OSError, SourceStageError):
+                pass  # The retained preparing record still counts; preserve the primary failure.
             raise
 
 
 def _write_capture(path: Path, value: bytes, cancelled: Callable[[], bool]) -> None:
+    _require_stage_free(path.parent, min(len(value), 64 * 1024) + MAX_STAGE_METADATA_BYTES)
     with path.open("xb") as handle:
         for offset in range(0, len(value), 64 * 1024):
             if cancelled():
                 raise SourceStageError("source staging was cancelled")
+            _require_stage_free(path.parent, min(len(value) - offset, 64 * 1024) + MAX_STAGE_METADATA_BYTES)
             handle.write(value[offset:offset + 64 * 1024])
         handle.flush()
         os.fsync(handle.fileno())
@@ -517,6 +706,7 @@ def _write_json(path: Path, value: dict, *, maximum: int = 4 * 1024 * 1024) -> N
     raw = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if len(raw) > maximum:
         raise SourceStageError("source-stage metadata exceeds byte limit")
+    _require_stage_free(path.parent, len(raw) + MAX_STAGE_METADATA_BYTES)
     temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".pending")
     with temporary.open("xb") as handle:
         handle.write(raw)
@@ -680,6 +870,35 @@ def _verify_recorded_resolution_candidate(target: Path, intent: dict, data: byte
 
 
 def resolve_source_conflict(stage: Path, manifest_digest: str, path: str, choice: str) -> dict:
+    """Admit only this existing stage's actual additional mutation/metadata peak."""
+    stage = _physical_source_root(stage)
+    if not _STAGE_NAME.fullmatch(stage.name):
+        raise SourceStageError("conflict writes require a recognized retained source stage")
+    path = safe_relative(path)
+    if choice not in {"user", "upstream", "base", "delete"}:
+        raise SourceStageError("conflict resolution must explicitly name a retained side or deletion")
+    with ExclusiveFileLease(stage.parent / "stage.lock"):
+        manifest = _stage_manifest(stage, manifest_digest)
+        records = [row for row in manifest["files"] if isinstance(row, dict) and row.get("path") == path]
+        if len(records) != 1 or records[0].get("action") != "conflict":
+            raise SourceStageError("path is not an original unresolved conflict")
+        index = _resolution_index(stage, manifest_digest)
+        data = None if choice == "delete" else _read_blob(stage, records[0][choice])
+        resolution = {"choice": choice, "sha256": _digest(data)}
+        planned = dict(index, files=dict(index["files"]))
+        planned["files"][path] = resolution
+        target = stage / "candidate" / Path(*PurePosixPath(path).parts)
+        # Existing or interrupted candidate bytes already count in inventory;
+        # only a genuinely absent target needs a new full data reservation.
+        data_growth = len(data) if data is not None and not os.path.lexists(target) else 0
+        metadata_peak = (len(json.dumps(planned, sort_keys=True, ensure_ascii=True).encode("utf-8"))
+                         + 2 * len(json.dumps(dict(path=path, **resolution), ensure_ascii=True).encode("utf-8"))
+                         + 4096)
+        with _stage_storage_budget(stage.parent, additional_bytes=data_growth + metadata_peak):
+            return _resolve_source_conflict_admitted(stage, manifest_digest, path, choice)
+
+
+def _resolve_source_conflict_admitted(stage: Path, manifest_digest: str, path: str, choice: str) -> dict:
     """Choose a retained side; retry only the same recorded choice after interruption.
 
     Recovery checks a completed candidate's recorded OS identity and exact bytes.
@@ -736,7 +955,10 @@ def resolve_source_conflict(stage: Path, manifest_digest: str, path: str, choice
                 info = _named_resolution_file(handle, target)
                 intent = dict(expected, candidate_identity=_resolution_file_identity(info))
                 _write_json(intent_path, intent)
-                handle.write(data)
+                for offset in range(0, len(data), 64 * 1024):
+                    chunk = data[offset:offset + 64 * 1024]
+                    _require_stage_free(target.parent, len(chunk) + MAX_STAGE_METADATA_BYTES)
+                    handle.write(chunk)
                 handle.flush()
                 os.fsync(handle.fileno())
                 _verify_resolution_candidate(handle, target, intent, data)
@@ -753,14 +975,29 @@ def resolve_source_conflict(stage: Path, manifest_digest: str, path: str, choice
         # existing index is the commit record; retained intents permit safe retry.
         return dict(path=path, **resolution)
 
+@contextlib.contextmanager
+def _source_review_lease(stage: Path):
+    path = stage / "resolution.lock"
+    if not os.path.lexists(path):
+        try:
+            _require_stage_free(stage, MAX_STAGE_METADATA_BYTES)
+        except (OSError, SourceStageError):
+            # A bounded, hash-checked preview needs no new lock-file allocation
+            # when all cooperating stage writers are held by the reserve.
+            yield
+            return
+    with ExclusiveFileLease(path):
+        yield
+
+
 def validate_source_candidate(stage: Path, manifest_digest: str) -> dict:
     """Check preserved hashes and Python syntax without executing candidate code.
 
     Passing static checks is explicitly insufficient for activation. Dependency,
     service, runtime, and UGCAP verification require a separate reviewed phase.
     """
-    stage = _safe_state_root(stage)
-    with ExclusiveFileLease(stage / "resolution.lock"):
+    stage = _physical_source_root(stage)
+    with _source_review_lease(stage):
         manifest = _stage_manifest(stage, manifest_digest)
         index = _resolution_index(stage, manifest_digest)
         expected = {}
@@ -785,7 +1022,7 @@ def validate_source_candidate(stage: Path, manifest_digest: str) -> dict:
             else:
                 digest = row.get("candidate")
             expected[name] = digest
-        root = _safe_state_root(stage / "candidate")
+        root = _physical_source_root(stage / "candidate")
         actual_names = []
         directory_count = 0
         for current, directories, files in os.walk(root, followlinks=False):
@@ -793,7 +1030,7 @@ def validate_source_candidate(stage: Path, manifest_digest: str) -> dict:
                 directory_count += 1
                 if directory_count > MAX_FILES * 16:
                     raise SourceStageError("candidate directory count exceeds limit")
-                _safe_state_root(Path(current) / name)
+                _physical_source_root(Path(current) / name)
             for name in files:
                 actual_names.append((Path(current) / name).relative_to(root).as_posix())
                 if len(actual_names) > MAX_FILES:
@@ -822,5 +1059,16 @@ def validate_source_candidate(stage: Path, manifest_digest: str) -> dict:
                                          "explicit UGCAP baseline review if enabled"],
                   "trust_roots_changed": False, "golden_baseline_reenrolled": False,
                   "original_installation_changed": False}
-        _write_json(stage / "validation.json", result)
+        try:
+            if not _STAGE_NAME.fullmatch(stage.name):
+                raise SourceStageError("report persistence requires a recognized retained source stage")
+            raw_size = len(json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            with (ExclusiveFileLease(stage.parent / "stage.lock"),
+                  _stage_storage_budget(stage.parent, additional_bytes=raw_size + 4096)):
+                _write_json(stage / "validation.json", result)
+        except (SourceStageError, ExclusiveFileLeaseError, OSError) as exc:
+            # Read-only static review remains available during storage pressure.
+            # This returned report is not a persisted record or activation proof.
+            result.update(report_persisted=False, storage_status="held",
+                          storage_message=str(exc))
         return result

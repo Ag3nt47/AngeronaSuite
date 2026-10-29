@@ -1,11 +1,18 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.14.0
+Version: 1.14.1
 Date: 2026-10-28
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.14.0 — live review, response recovery and runtime corrections)
+## LATEST (v1.14.1 — startup, storage and dashboard reliability)
+
+- Current source/app/package version is 1.14.1, a scoped maintenance update;
+  broader 1.15 remains incomplete. Historical 1.14.0 observations below retain
+  their original version and do not prove this revision. Source update discovery
+  compares canonical main; installed delivery still requires accepted signed
+  release assets and independently provisioned authority. No stable signed
+  release is implied by this version bump.
 
 - Safe Startup now has private phase/error diagnostics, separate native output
   and exit status, typed bounded repair strategies, software-renderer/non-Tk
@@ -27,6 +34,16 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   health & activity. Responsive budgets retain readable evidence tables and
   resource summaries. Filters/Columns and full row details expose additional
   fields; styled native-font widths keep time/status/header text readable.
+- The compact footer EKG uses copied memory publications only. A fresh real
+  component heartbeat animates; absent, stale or unavailable evidence flatlines
+  red. Details retain exact generations, ages and reasons. This is liveness,
+  not attested detector coverage, response authority or a security baseline.
+- Corrected inherited-environment handling restores the supervisor's sidecar
+  launch route without permitting credentials, proxies or Python path controls.
+  Ensure-Angerona-Recovery.bat supports a read-only check or bounded requests
+  through existing authenticated restart inboxes. It honors STOP, disabled Black
+  Box and exact core/peer generations; it creates no competing manager. See
+  docs/resilience-recovery.md. An inhibited source launch request is not readiness.
 - STOP and tray Quit persist authenticated operator intent before AI/startup
   fences and owned-process teardown. Automatic recovery and modern sign-in
   routes honor it. Explicit source startup resumes once after preflight; child
@@ -35,6 +52,9 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   unloaded; shared Ollama daemons and downloaded weights remain. POSIX process
   tree behavior and existing signed binaries were not verified by this work.
 - Recovery storage has separate admission budgets and free-space reserves.
+  Source update staging admits two retained candidates with a 2 GiB logical
+  aggregate ceiling and 2 GiB volume reserve, under its existing shared lease.
+  Unknown or unsafe entries hold admission; no prior candidate is auto-deleted.
   Runtime repair preserves one prior environment, bounds retained transactions
   and requires 5 GiB available before staging. Owned disposable commands retain
   native job custody and monitor a 2 GiB working/log-volume reserve. Pip installs
@@ -49,7 +69,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   Final helper signing must precede pin embedding and final release evidence.
   The external release authority remains unprovisioned; source publication is
   not a signed package release. See docs/enterprise/RELEASE_SIGNING_BOUNDARY.md.
-- The 74-page master manual includes security flowcharts, all 86 source module
+- The 76-page master manual includes security flowcharts, all 86 source module
   entries and a code/test/attack-surface map. README and Welcome/Help explain
   source Observe, installed authority, default public recovery requests and
   Ring 3 limitations. The 45-second real-UI GIF uses synthetic data and blocked
@@ -79,6 +99,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   policy/observation progress with explicit limited maintenance coverage. Final
   integration: 218 passed/seven platform or privilege skips/native exit 0,
   unchanged scoped source and five retained owned process handles retired.
+## Historical v1.14.0 maintenance evidence
+
+The following observations and former current-state statements describe their
+original v1.14.0 revisions. They remain evidence and limitations, not fresh
+validation of the current v1.14.1 build.
+
 - Continuing GUI stalls exposed a shared process-inventory native call holding
   Python's execution lock. Embedded GUI and direct headless entries now register
   an owned, asynchronous inventory child before readers/modules. Qt refuses admission
@@ -977,7 +1003,7 @@ persistence, attack infrastructure, hack-back, log deletion, arbitrary
 response shell, downloaded executable skill, unverified model, or unsigned
 kernel component is a product capability.
 
-## LATEST (v1.14.0 — Live AI Review and integrated defensive diagnostics, 2026-10-22)
+## Historical v1.14.0 — Live AI Review and integrated defensive diagnostics, 2026-10-22
 
 - Prior local scoped source: SIDE-08 permits one retained Black Box firewall-detail
   dialog/query per tab and includes detached busy workers during shutdown.

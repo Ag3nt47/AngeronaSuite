@@ -32,6 +32,21 @@ from angerona.core.startup_diagnostics import (
 
 _STARTUP_CONTEXT = threading.local()
 STARTUP_INTERFACE_FAILURE = 84
+STARTUP_INFRASTRUCTURE_FAILURE = 85
+STARTUP_PROBE_TIMEOUT = 87
+STARTUP_CANCELLED = 1223
+_PROBE_PHASE_SECONDS = 30
+_PROBE_OVERALL_SECONDS = 100
+_PROBE_CUSTODY_HOLDS = set()
+_PROBE_CUSTODY_LOCK = threading.Lock()
+
+
+def _startup_exit_code(error: BaseException) -> int:
+    # Generic helper faults are not evidence of broken application source.
+    if type(error) is RepairableStartupError and error.exit_code in REPAIR_EXIT_CODES:
+        return error.exit_code
+    return {StartupCancelled: STARTUP_CANCELLED, ProbeTimedOut: STARTUP_PROBE_TIMEOUT,
+            DashboardProcessFailed: 1}.get(type(error), STARTUP_INFRASTRUCTURE_FAILURE)
 
 
 def _record_startup_failure(error: BaseException, phase: str, *, exit_code: int | None = None) -> str:
@@ -40,7 +55,7 @@ def _record_startup_failure(error: BaseException, phase: str, *, exit_code: int 
         phase = getattr(_STARTUP_CONTEXT, "phase", None) or phase
         storage = getattr(_STARTUP_CONTEXT, "storage", None) or canonical_storage()
         message = StartupDiagnostics(storage).failure(
-            phase, error, exit_code=getattr(error, "exit_code", 1) if exit_code is None else exit_code)
+            phase, error, exit_code=_startup_exit_code(error) if exit_code is None else exit_code)
     except Exception as diagnostic_error:
         message = (f"Startup failed in {safe_text(phase, 64)}: {safe_text(error)}\n"
                    f"Diagnostic persistence unavailable: {type(diagnostic_error).__name__}: "
@@ -55,6 +70,24 @@ def _record_startup_failure(error: BaseException, phase: str, *, exit_code: int 
 
 class StartupError(RuntimeError):
     """A startup condition requiring a visible, actionable explanation."""
+
+
+class StartupCancelled(StartupError):
+    """Cancellation never authorizes automatic retry or source rollback."""
+
+    exit_code = STARTUP_CANCELLED
+
+
+class ProbeTimedOut(StartupError):
+    """A timed-out disposable probe whose entire owned tree was retired."""
+
+    exit_code = STARTUP_PROBE_TIMEOUT
+
+
+class DashboardProcessFailed(StartupError):
+    """Only an actual launched dashboard exit selects application rollback."""
+
+    exit_code = 1
 
 
 class OperatorStopped(StartupError):
@@ -422,14 +455,365 @@ raise SystemExit(82 if result == 1 else result)
 _QT_NATIVE_FAILURES = {0xC0000005, 0xC000001D, 0xC000007B, 0xC0000135, 0xC0000142, 0xC0000409}
 
 
+class _WindowsProbe:
+    """A stdlib-only disposable child, atomically assigned to its own job.
+
+    Dependency checks cannot depend on pywin32 already being importable. The
+    job owns the venv redirector, actual interpreter and every descendant;
+    only NUL stdin and the retained output handle are inherited. Dashboard
+    processes never enter this job or this launcher.
+    """
+
+    def __init__(self, command, *, cwd, env, stdout):
+        import ctypes
+        from ctypes import wintypes as w
+        import msvcrt
+
+        self.pid = 0
+        self.returncode = None
+        self._handle = None
+        self._job = None
+        self.closed = False
+        self.tree_retired = False
+        self._members = {}
+        self._lease = None
+        self._custody_ambiguous = False
+        self._close_lock = threading.Lock()
+        self._ctypes = ctypes
+        kernel = self._kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+
+        class StartupInfo(ctypes.Structure):
+            _fields_ = [("cb", w.DWORD), ("reserved", w.LPWSTR), ("desktop", w.LPWSTR),
+                        ("title", w.LPWSTR), ("x", w.DWORD), ("y", w.DWORD),
+                        ("width", w.DWORD), ("height", w.DWORD), ("xchars", w.DWORD),
+                        ("ychars", w.DWORD), ("fill", w.DWORD), ("flags", w.DWORD),
+                        ("show", w.WORD), ("reserved_size", w.WORD),
+                        ("reserved_data", ctypes.POINTER(ctypes.c_byte)),
+                        ("stdin", w.HANDLE), ("stdout", w.HANDLE), ("stderr", w.HANDLE)]
+
+        class StartupInfoEx(ctypes.Structure):
+            _fields_ = [("startup", StartupInfo), ("attributes", w.LPVOID)]
+
+        class ProcessInfo(ctypes.Structure):
+            _fields_ = [("process", w.HANDLE), ("thread", w.HANDLE),
+                        ("pid", w.DWORD), ("tid", w.DWORD)]
+
+        class BasicLimits(ctypes.Structure):
+            _fields_ = [("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
+                        ("flags", w.DWORD), ("min_working", ctypes.c_size_t),
+                        ("max_working", ctypes.c_size_t), ("active", w.DWORD),
+                        ("affinity", ctypes.c_size_t), ("priority", w.DWORD), ("scheduling", w.DWORD)]
+
+        class IoCounters(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_ulonglong) for name in
+                        ("read_ops", "write_ops", "other_ops", "read_bytes", "write_bytes", "other_bytes")]
+
+        class ExtendedLimits(ctypes.Structure):
+            _fields_ = [("basic", BasicLimits), ("io", IoCounters),
+                        ("process_memory", ctypes.c_size_t), ("job_memory", ctypes.c_size_t),
+                        ("peak_process", ctypes.c_size_t), ("peak_job", ctypes.c_size_t)]
+
+        class Accounting(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_longlong) for name in
+                        ("user_time", "kernel_time", "period_user", "period_kernel")] + [
+                            (name, w.DWORD) for name in
+                            ("page_faults", "total_processes", "active_processes", "terminated_processes")]
+
+        self._accounting_type = Accounting
+        prototypes = {
+            "CreateJobObjectW": ((w.LPVOID, w.LPCWSTR), w.HANDLE),
+            "SetInformationJobObject": ((w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD), w.BOOL),
+            "QueryInformationJobObject": ((w.HANDLE, ctypes.c_int, w.LPVOID, w.DWORD, w.LPVOID), w.BOOL),
+            "TerminateJobObject": ((w.HANDLE, w.UINT), w.BOOL),
+            "OpenProcess": ((w.DWORD, w.BOOL, w.DWORD), w.HANDLE),
+            "IsProcessInJob": ((w.HANDLE, w.HANDLE, ctypes.POINTER(w.BOOL)), w.BOOL),
+            "GetCurrentProcess": ((), w.HANDLE),
+            "DuplicateHandle": ((w.HANDLE, w.HANDLE, w.HANDLE, ctypes.POINTER(w.HANDLE),
+                                 w.DWORD, w.BOOL, w.DWORD), w.BOOL),
+            "InitializeProcThreadAttributeList": ((w.LPVOID, w.DWORD, w.DWORD,
+                                                   ctypes.POINTER(ctypes.c_size_t)), w.BOOL),
+            "UpdateProcThreadAttribute": ((w.LPVOID, w.DWORD, ctypes.c_size_t, w.LPVOID,
+                                           ctypes.c_size_t, w.LPVOID, w.LPVOID), w.BOOL),
+            "DeleteProcThreadAttributeList": ((w.LPVOID,), None),
+            "CreateProcessW": ((w.LPCWSTR, w.LPWSTR, w.LPVOID, w.LPVOID, w.BOOL, w.DWORD,
+                               w.LPVOID, w.LPCWSTR, w.LPVOID, ctypes.POINTER(ProcessInfo)), w.BOOL),
+            "ResumeThread": ((w.HANDLE,), w.DWORD),
+            "WaitForSingleObject": ((w.HANDLE, w.DWORD), w.DWORD),
+            "GetExitCodeProcess": ((w.HANDLE, ctypes.POINTER(w.DWORD)), w.BOOL),
+            "CloseHandle": ((w.HANDLE,), w.BOOL),
+        }
+        for name, (arguments, result) in prototypes.items():
+            function = getattr(kernel, name)
+            function.argtypes, function.restype = arguments, result
+
+        def checked(ok):
+            if not ok:
+                raise ctypes.WinError(ctypes.get_last_error())
+
+        def duplicate(stream):
+            output = w.HANDLE()
+            current = kernel.GetCurrentProcess()
+            checked(kernel.DuplicateHandle(current, msvcrt.get_osfhandle(stream.fileno()),
+                                           current, ctypes.byref(output), 0, True, 2))
+            inherited.append(output.value)
+            return output.value
+
+        inherited = []
+        attributes = None
+        initialized = False
+        process = ProcessInfo()
+        try:
+            lease = getattr(_STARTUP_CONTEXT, "probe_lease", None)
+            if lease is not None:
+                self._lease = lease.borrow(lease.root)
+            if not command or not Path(command[0]).is_absolute():
+                raise StartupError("Disposable startup probes require the fixed absolute interpreter.")
+            if any(not isinstance(key, str) or not isinstance(value, str) or
+                   not key or "=" in key or "\0" in key or "\0" in value for key, value in env.items()):
+                raise StartupError("Disposable startup probe environment is invalid.")
+            self._job = kernel.CreateJobObjectW(None, None)
+            checked(self._job)
+            limits = ExtendedLimits()
+            limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+            checked(kernel.SetInformationJobObject(self._job, 9, ctypes.byref(limits), ctypes.sizeof(limits)))
+            output = duplicate(stdout)
+            with open(os.devnull, "rb") as null:
+                input_handle = duplicate(null)
+            size = ctypes.c_size_t()
+            kernel.InitializeProcThreadAttributeList(None, 2, 0, ctypes.byref(size))
+            if not size.value:
+                raise ctypes.WinError(ctypes.get_last_error())
+            attributes = ctypes.create_string_buffer(size.value)
+            checked(kernel.InitializeProcThreadAttributeList(attributes, 2, 0, ctypes.byref(size)))
+            initialized = True
+            jobs = (w.HANDLE * 1)(self._job)
+            handles = (w.HANDLE * 2)(output, input_handle)
+            checked(kernel.UpdateProcThreadAttribute(attributes, 0, 0x2000D, jobs,
+                                                     ctypes.sizeof(jobs), None, None))
+            checked(kernel.UpdateProcThreadAttribute(attributes, 0, 0x20002, handles,
+                                                     ctypes.sizeof(handles), None, None))
+            startup = StartupInfoEx()
+            startup.startup.cb = ctypes.sizeof(startup)
+            startup.startup.flags = 0x101  # STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW.
+            startup.startup.stdin = input_handle
+            startup.startup.stdout = startup.startup.stderr = output
+            startup.attributes = ctypes.cast(attributes, w.LPVOID)
+            command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+            environment = ctypes.create_unicode_buffer(
+                "\0".join(f"{key}={value}" for key, value in sorted(env.items(), key=lambda item: item[0].upper())) + "\0\0")
+            # Job assignment is atomic at creation. Suspension prevents any
+            # instruction running before this owner retains the native handle.
+            checked(kernel.CreateProcessW(command[0], command_line, None, None, True, 0x08080404,
+                                           environment, str(cwd), ctypes.byref(startup), ctypes.byref(process)))
+            self._handle, self.pid = process.process, process.pid
+            if kernel.ResumeThread(process.thread) != 1:
+                raise StartupError("The owned startup probe could not be resumed safely.")
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            if process.thread:
+                kernel.CloseHandle(process.thread)
+            if initialized:
+                kernel.DeleteProcThreadAttributeList(attributes)
+            for handle in inherited:
+                kernel.CloseHandle(handle)
+
+    def _capture_job_members(self):
+        """Retain native witnesses from this job; never adopt a reused PID."""
+        from ctypes import wintypes as w
+        ctypes = self._ctypes
+
+        class Members(ctypes.Structure):
+            _fields_ = [("assigned", w.DWORD), ("listed", w.DWORD),
+                        ("pids", ctypes.c_size_t * 4096)]
+
+        members = Members()
+        if not self._kernel.QueryInformationJobObject(
+                self._job, 3, ctypes.byref(members), ctypes.sizeof(members), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if members.assigned > 4096 or members.listed > 4096:
+            raise StartupError("Owned startup probe exceeds the bounded native custody capacity.")
+        for pid in members.pids[:members.listed]:
+            if pid == self.pid or pid in self._members:
+                continue
+            handle = self._kernel.OpenProcess(0x101000, False, pid)
+            if not handle:
+                error = ctypes.get_last_error()
+                if error == 87:
+                    continue  # The kernel no longer has this process object.
+                raise ctypes.WinError(error)
+            member = w.BOOL()
+            if not self._kernel.IsProcessInJob(handle, self._job, ctypes.byref(member)):
+                # Do not discard the owned reference after an ambiguous query.
+                self._members[pid] = handle
+                raise ctypes.WinError(ctypes.get_last_error())
+            if member:
+                self._members[pid] = handle
+            elif not self._kernel.CloseHandle(handle):
+                # The PID was reused outside our job. Its owned observation
+                # handle is quarantined on close ambiguity, never targeted.
+                self._custody_ambiguous = True
+                self._members[pid] = handle
+                raise ctypes.WinError(ctypes.get_last_error())
+
+    def poll(self):
+        self._capture_job_members()
+        if self.returncode is None:
+            result = self._kernel.WaitForSingleObject(self._handle, 0)
+            if result == 0:
+                from ctypes import wintypes as w
+                code = w.DWORD()
+                if not self._kernel.GetExitCodeProcess(self._handle, self._ctypes.byref(code)):
+                    raise self._ctypes.WinError(self._ctypes.get_last_error())
+                self.returncode = code.value
+            elif result != 258:
+                raise self._ctypes.WinError(self._ctypes.get_last_error())
+        return self.returncode
+
+    def wait(self, timeout=5):
+        result = self._kernel.WaitForSingleObject(self._handle, max(0, int(timeout * 1000)))
+        if result == 258:
+            raise subprocess.TimeoutExpired(["owned-startup-probe", str(self.pid)], timeout)
+        if result != 0:
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+        return self.poll()
+
+    def kill(self):
+        self._capture_job_members()
+        if not self._kernel.TerminateJobObject(self._job, STARTUP_CANCELLED):
+            raise self._ctypes.WinError(self._ctypes.get_last_error())
+
+    def wait_tree(self, timeout=5):
+        deadline = time.monotonic() + timeout
+        while True:
+            self._capture_job_members()
+            accounting = self._accounting_type()
+            if not self._kernel.QueryInformationJobObject(
+                    self._job, 1, self._ctypes.byref(accounting), self._ctypes.sizeof(accounting), None):
+                raise self._ctypes.WinError(self._ctypes.get_last_error())
+            # Job accounting may reach zero before process teardown releases
+            # executable/file locks. Retained process handles are the witnesses.
+            root_done = not self._handle or self._kernel.WaitForSingleObject(self._handle, 0) == 0
+            members_done = all(self._kernel.WaitForSingleObject(handle, 0) == 0
+                               for handle in self._members.values())
+            if accounting.active_processes == 0 and root_done and members_done:
+                self.tree_retired = True
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+    def _close_once(self):
+        """A failed retirement retains native owners and the startup lease."""
+        with self._close_lock:
+            if self.closed:
+                return
+            if self._custody_ambiguous:
+                raise StartupError("Startup probe native custody is ambiguous; automatic cleanup and Retry remain held.")
+            if self._job and not self.tree_retired:
+                self.kill()
+                if self._handle:
+                    self.wait(timeout=5)
+                if not self.wait_tree(timeout=5):
+                    raise StartupError("Owned startup probe tree retirement could not be verified.")
+            # Once CloseHandle has been attempted, failure makes that numeric
+            # value ambiguous. Never retry it: another thread/OS allocation
+            # could otherwise make a later call target a reused handle.
+            for pid, handle in list(self._members.items()):
+                if not self._kernel.CloseHandle(handle):
+                    self._custody_ambiguous = True
+                    raise self._ctypes.WinError(self._ctypes.get_last_error())
+                del self._members[pid]
+            for name in ("_handle", "_job"):
+                handle = getattr(self, name)
+                if handle:
+                    if not self._kernel.CloseHandle(handle):
+                        self._custody_ambiguous = True
+                        raise self._ctypes.WinError(self._ctypes.get_last_error())
+                    setattr(self, name, None)
+            self.closed = True
+            if self._lease is not None:
+                self._lease.close()
+                self._lease = None
+
+    def close(self):
+        try:
+            self._close_once()
+        except BaseException as exc:
+            if isinstance(exc, OSError):
+                self._custody_ambiguous = True
+            _start_probe_custody_reaper(self)
+            raise StartupError("Owned startup probe retirement is unresolved. Its native owner and startup lease remain held; no automatic launch or repair retry is permitted.") from exc
+
+
+def _reap_probe_custody(process):
+    # Only retirement is retried. No probe, dashboard, code repair or broad
+    # process discovery runs here. Every native wait remains bounded.
+    backoff = threading.Event()
+    for delay in (1, 2, 4):
+        if process.closed or process._custody_ambiguous:
+            break
+        backoff.wait(delay)
+        try:
+            process._close_once()
+        except OSError:
+            process._custody_ambiguous = True
+        except Exception:
+            pass  # Retain exact native custody and its borrowed lease.
+    if process.closed:
+        with _PROBE_CUSTODY_LOCK:
+            _PROBE_CUSTODY_HOLDS.discard(process)
+        return
+    # A permanently ambiguous handle must never be retried by numeric value.
+    # Keep this helper/non-daemon owner and lease alive so the external parent
+    # preserves the generation and holds manual Retry rather than hot repair.
+    while True:
+        backoff.wait(5)
+
+
+def _start_probe_custody_reaper(process):
+    with _PROBE_CUSTODY_LOCK:
+        if process in _PROBE_CUSTODY_HOLDS:
+            return
+        _PROBE_CUSTODY_HOLDS.add(process)
+    try:
+        threading.Thread(target=_reap_probe_custody, args=(process,),
+                         name="AngeronaProbeCustody", daemon=False).start()
+    except Exception:
+        # Even thread exhaustion cannot release an unretired child. The
+        # calling worker becomes the retained owner until retirement resolves.
+        _reap_probe_custody(process)
+
+
+def _spawn_probe(command, *, cwd, env, stdout):
+    if os.name != "nt":
+        raise StartupError("Source startup probes require native Windows child custody.")
+    return _WindowsProbe(command, cwd=cwd, env=env, stdout=stdout)
+
+
+def _retire_probe(process) -> None:
+    """Only an owned disposable tree may be stopped to permit a retry."""
+    try:
+        process.kill()
+        process.wait(timeout=5)
+        if not process.wait_tree(timeout=5):
+            raise StartupError("Owned startup probe tree retirement could not be verified; automatic retry is held.")
+    except StartupError:
+        raise
+    except Exception as exc:
+        raise StartupError("Owned startup probe tree retirement could not be verified; automatic retry is held.") from exc
+
+
 def probe_source(plan: LaunchPlan, environment: dict[str, str], cancel: threading.Event) -> None:
     if plan.frozen:
         return  # Main executable independently verifies package/UAC and imports Qt.
     probe_env = dict(environment, QT_QPA_PLATFORM="offscreen", PIP_CONFIG_FILE=os.devnull)
     diagnostics = StartupDiagnostics(plan.storage)
     diagnostics.record("preflight", "started", strategy=plan.rendering, root=str(plan.root),
+                       reason=f"Each required probe has {_PROBE_PHASE_SECONDS}s; overall preflight has {_PROBE_OVERALL_SECONDS}s.",
                        executable=plan.command[0], **process_identity())
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + _PROBE_OVERALL_SECONDS
     with _log_file(plan.storage, "startup-preflight.log") as log:
         for index, (phase, arguments) in enumerate((
             ("Dependencies", ["-c", _PROBE]),
@@ -438,40 +822,59 @@ def probe_source(plan: LaunchPlan, environment: dict[str, str], cancel: threadin
         )):
             detail_phase = ("dependency-pins", "dependency-consistency", "gui-runtime")[index]
             _STARTUP_CONTEXT.phase = detail_phase
-            if cancel.is_set() or time.monotonic() >= deadline:
-                raise StartupError("The dependency check was cancelled or timed out. No dashboard was started.")
-            process = subprocess.Popen(
-                [plan.command[0], *arguments], cwd=plan.root, env=probe_env,
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            diagnostics.record(detail_phase, "started", attempt=index + 1,
-                               process_role="probe-bootstrap", **process_identity(process))
-            while process.poll() is None:
-                if cancel.wait(0.1) or time.monotonic() >= deadline:
-                    # Only this disposable probe is terminated, never a dashboard.
-                    process.kill()
-                    process.wait(timeout=5)
-                    diagnostics.record(detail_phase, "cancelled" if cancel.is_set() else "timed-out",
-                                       exit_code=process.returncode, **process_identity(process))
-                    raise StartupError("The dependency check was cancelled or timed out. See startup-preflight.log; no dashboard was started.")
+            phase_started = time.monotonic()
             if cancel.is_set():
-                raise StartupError("Startup cancelled before launching the dashboard.")
-            code = process.returncode
-            log.flush()
-            details = {} if code == 0 else {"output_tail": _probe_failure_tail(plan.storage / "logs" / "startup-preflight.log")}
-            diagnostics.record(detail_phase, "passed" if code == 0 else "failed", attempt=index + 1,
-                               exit_code=code, **process_identity(process), **details)
-            if index == 0:
-                _record_dependency_audit(diagnostics, plan.storage / "logs" / "startup-preflight.log")
-            if code != 0:
-                repair_code = code if code in REPAIR_EXIT_CODES else None
-                if phase == "GuiRuntime" and (code & 0xFFFFFFFF) in _QT_NATIVE_FAILURES:
-                    repair_code = 83
-                message = "The Python/Qt startup check failed. See startup-preflight.log. Your settings and evidence were preserved."
-                if repair_code is not None:
-                    raise RepairableStartupError(repair_code, message)
-                raise StartupError(message)
+                raise StartupCancelled("Startup cancelled before launching the next required check; no dashboard was started.")
+            if phase_started >= deadline:
+                # Every preceding probe has already proved complete retirement.
+                raise ProbeTimedOut("The overall dependency/Qt check budget timed out; all owned probe trees are retired. No dashboard was started.")
+            phase_deadline = min(deadline, phase_started + _PROBE_PHASE_SECONDS)
+            process = _spawn_probe([plan.command[0], *arguments], cwd=plan.root, env=probe_env, stdout=log)
+            identity = process_identity(process)
+            diagnostics.record(detail_phase, "started", attempt=index + 1,
+                               expected=_PROBE_PHASE_SECONDS, process_role="probe-bootstrap", **identity)
+            try:
+                while process.poll() is None:
+                    cancelled = cancel.wait(0.1)
+                    if cancelled or time.monotonic() >= phase_deadline:
+                        # Job custody includes the venv redirector's actual
+                        # interpreter and descendants. Never touch a dashboard.
+                        _retire_probe(process)
+                        diagnostics.record(detail_phase, "cancelled" if cancelled else "timed-out",
+                                           exit_code=STARTUP_CANCELLED if cancelled else STARTUP_PROBE_TIMEOUT,
+                                           actual=process.returncode,
+                                           coverage="Entire owned disposable probe job retired.", **identity)
+                        if cancelled:
+                            raise StartupCancelled(f"The {detail_phase} check was cancelled; its owned probe tree is retired. No dashboard was started.")
+                        raise ProbeTimedOut(f"The {detail_phase} check timed out after its bounded wait; its entire owned probe tree is retired. See startup-preflight.log; no dashboard was started.")
+                if not process.wait_tree(timeout=5):
+                    _retire_probe(process)
+                    raise StartupError("A completed startup probe left descendants; they were retired, but the result requires review before retry.")
+                if cancel.is_set():
+                    raise StartupCancelled("Startup cancelled before launching the dashboard; its owned probe tree is retired.")
+                phase_finished = time.monotonic()
+                if phase_finished >= phase_deadline:
+                    diagnostics.record(detail_phase, "timed-out", exit_code=STARTUP_PROBE_TIMEOUT,
+                                       actual=process.returncode, coverage="Entire owned disposable probe job retired.", **identity)
+                    raise ProbeTimedOut(f"The {detail_phase} check exceeded its bounded phase/overall wait; its entire owned probe tree is retired. No dashboard was started.")
+                code = process.returncode
+                log.flush()
+                details = {} if code == 0 else {"output_tail": _probe_failure_tail(plan.storage / "logs" / "startup-preflight.log")}
+                diagnostics.record(detail_phase, "passed" if code == 0 else "failed", attempt=index + 1,
+                                   duration_ms=int((phase_finished - phase_started) * 1000),
+                                   exit_code=code, coverage="Entire owned disposable probe job retired.", **identity, **details)
+                if index == 0:
+                    _record_dependency_audit(diagnostics, plan.storage / "logs" / "startup-preflight.log")
+                if code != 0:
+                    repair_code = code if code in REPAIR_EXIT_CODES else None
+                    if phase == "GuiRuntime" and (code & 0xFFFFFFFF) in _QT_NATIVE_FAILURES:
+                        repair_code = 83
+                    message = "The Python/Qt startup check failed. See startup-preflight.log. Your settings and evidence were preserved."
+                    if repair_code is not None:
+                        raise RepairableStartupError(repair_code, message)
+                    raise StartupError(message)
+            finally:
+                process.close()
 
 
 def _record_dependency_audit(diagnostics: StartupDiagnostics, path: Path) -> None:
@@ -609,14 +1012,14 @@ def wait_dashboard(listener: ReadyListener, process, plan: LaunchPlan, started: 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if cancel.is_set():
-            raise StartupError("Startup monitoring closed. The dashboard process was left running; do not launch another copy while it opens.")
+            raise StartupCancelled("Startup monitoring closed. The dashboard process was left running; do not launch another copy while it opens.")
         pid = listener.receive()
         if pid is not None and _ready_process(pid, process, plan, started):
             return pid
         code = process.poll()
         if code is not None and (not plan.frozen or code != 0):
-            raise StartupError(f"Angerona exited before confirming its dashboard (code {code}). It may already be running; check the tray. Otherwise inspect startup-dashboard.log and the crash log before retrying.")
-    raise StartupError("The dashboard did not respond within 120 seconds. Startup will not retry or start another copy. Check the existing dashboard, startup-dashboard.log and the crash log.")
+            raise DashboardProcessFailed(f"Angerona exited before confirming its dashboard (code {code}). It may already be running; check the tray. Otherwise inspect startup-dashboard.log and the crash log before retrying.")
+    raise StartupError(f"The dashboard did not respond within {timeout:g} seconds. Startup will not retry or start another copy. Check the existing dashboard, startup-dashboard.log and the crash log.")
 
 
 def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup: bool = False,
@@ -651,10 +1054,14 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
         diagnostics.record("temporary-storage", "verified", strategy=plan.rendering)
         environment = child_environment(plan)
         report("Checking dependencies in a separate process...")
-        probe_source(plan, environment, cancel)
+        _STARTUP_CONTEXT.probe_lease = lease
+        try:
+            probe_source(plan, environment, cancel)
+        finally:
+            _STARTUP_CONTEXT.probe_lease = None
         diagnostics.record("preflight", "verified", strategy=plan.rendering)
         if cancel.is_set():
-            raise StartupError("Startup cancelled before launching the dashboard.")
+            raise StartupCancelled("Startup cancelled before launching the dashboard.")
         if check_only:
             report("All source startup checks passed. No dashboard was requested.")
             return plan.storage
@@ -773,10 +1180,10 @@ def main() -> int:
             return exc.exit_code
         except (StartupError, OSError) as exc:
             _record_startup_failure(exc, "source-check-only")
-            return 1
+            return _startup_exit_code(exc)
         except Exception as exc:
             _record_startup_failure(exc, "source-check-only")
-            return 1
+            return _startup_exit_code(exc)
     if options.no_startup_window:
         _STARTUP_CONTEXT.phase = "no-startup-window"
         try:
@@ -789,12 +1196,12 @@ def main() -> int:
             return exc.exit_code
         except Exception as exc:
             _record_startup_failure(exc, "no-startup-window")
-            return 1
+            return _startup_exit_code(exc)
     try:
         interface_lease = _interface_lease()
     except (StartupError, OSError) as exc:
         _record_startup_failure(exc, "startup-interface-authority")
-        return 1
+        return _startup_exit_code(exc)
     try:
         _STARTUP_CONTEXT.phase = "startup-interface"
         _configure_tk_environment()
@@ -805,7 +1212,7 @@ def main() -> int:
     except Exception as exc:
         interface_lease.close()
         frozen = bool(getattr(sys, "frozen", False))
-        code = 1 if frozen else STARTUP_INTERFACE_FAILURE
+        code = STARTUP_INFRASTRUCTURE_FAILURE if frozen else STARTUP_INTERFACE_FAILURE
         _record_startup_failure(exc, "startup-interface", exit_code=code)
         message = (
             f"The startup interface could not open ({type(exc).__name__}). " +
@@ -826,7 +1233,7 @@ def main() -> int:
     window.configure(background="#101820")
     messages: queue.Queue[tuple[str, str]] = queue.Queue(maxsize=32)
     cancel = threading.Event()
-    outcome = {"code": 1}
+    outcome = {"code": STARTUP_INFRASTRUCTURE_FAILURE, "completed": False}
     tk.Label(window, text="ANGERONA  |  SAFE STARTUP", bg="#101820", fg="#38bdf8",
              font=("Segoe UI", 18, "bold"), anchor="w").pack(fill="x", padx=24, pady=(22, 8))
     tk.Label(window, text="This window closes when your dashboard is ready.", bg="#101820",
@@ -839,6 +1246,8 @@ def main() -> int:
     details.pack(fill="both", expand=True, padx=24)
 
     def close() -> None:
+        if not outcome["completed"]:
+            outcome["code"] = STARTUP_CANCELLED
         cancel.set()
         window.destroy()
 
@@ -851,10 +1260,13 @@ def main() -> int:
         try:
             run_startup(lambda text: messages.put(("progress", text)), cancel,
                         setup=options.setup, _interface_lease=interface_lease, **strategy)
+            outcome.update(code=0, completed=True)
             messages.put(("ready", ""))
         except OperatorStopped as exc:
+            outcome.update(code=86 if supervised else 0, completed=True)
             messages.put(("operator-stopped", str(exc)))
         except Exception as exc:
+            outcome.update(code=STARTUP_CANCELLED if cancel.is_set() else _startup_exit_code(exc), completed=True)
             detail = _record_startup_failure(exc, "startup-worker")
             if isinstance(exc, RepairableStartupError) and not cancel.is_set():
                 messages.put((f"repair:{exc.exit_code}", detail))
@@ -894,7 +1306,8 @@ def main() -> int:
                     # The worker has unwound its probe/lease before queuing
                     # this error. Non-daemon ownership still prevents an
                     # interpreter exit while that worker is finishing.
-                    outcome["code"] = 1
+                    # Only a typed dashboard exit is an application failure.
+                    # Probe timeout/cancel/infrastructure outcomes remain closed.
                     window.after(250, close)
                     return
         window.after(100, drain)

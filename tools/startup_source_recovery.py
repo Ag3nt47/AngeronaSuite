@@ -1090,7 +1090,8 @@ def inspect_state(root, state_root):
     """Inspect safety holds without creating state, locks or applying a choice."""
     canonical_root(root)
     state = state_namespace(state_root)
-    result = dict(empty_summary(), outcome="no-source-state", reason_code="source-state-absent")
+    result = dict(empty_summary(), outcome="no-source-state", reason_code="source-state-absent",
+                  requires_mutation=False, pending_kind="none")
     if not os.path.lexists(state):
         return result
     plain(state.lstat(), directory=True)
@@ -1113,9 +1114,14 @@ def inspect_state(root, state_root):
         result.update(value)
     if os.path.lexists(state / "transaction.pending.json"):
         result.update(outcome="held", launch_held=True, reason_code="source-transaction-unresolved",
-                      message="An interrupted source transaction remains held while automatic recovery is disabled.")
+                      requires_mutation=True, pending_kind="transaction",
+                      message="An interrupted source transaction requires exclusive reconciliation before application startup.")
+    elif os.path.lexists(state / "edits.pending.json"):
+        result.update(outcome="source-state-inspected", launch_held=False, reason_code="source-edits-pending",
+                      requires_mutation=True, pending_kind="edits")
     else:
-        result.update(outcome="source-state-inspected", launch_held=False, reason_code="no-source-transaction")
+        result.update(outcome="source-state-inspected", launch_held=False, reason_code="no-source-transaction",
+                      requires_mutation=False, pending_kind="none")
     return result
 
 

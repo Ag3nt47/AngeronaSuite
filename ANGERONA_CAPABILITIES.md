@@ -1,7 +1,8 @@
 # Angerona Capabilities
 
-Current development version: **v1.14.0**. This is a present-tense capability and boundary
-summary. Operating detail is in the [Master Manual](Angerona_Master_Manual.docx);
+Current development version: **v1.14.1**. This is a present-tense capability and boundary
+summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
+or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
@@ -111,9 +112,9 @@ The current security model separates four kinds of claims:
   SpywareGuard and UGCAP added capabilities. Declaration completeness creates
   no new authority or collection, detection or response evidence.
   Compatibility metadata gaps remain visible and lower assurance
-  even though every shipped built-in module now carries the v1.14.0 release
-  implementation label. A shared version does not imply equal platform support,
-  evidence completeness, response authority, or independent efficacy.
+  while module implementation versions remain independent of the application
+  release version. Neither label implies equal platform support, evidence
+  completeness, response authority, or independent efficacy.
 - Capability Center and Module Inspector provide search, filter, typed sorting,
   bounded details, source/dependency/path information, and live operational
   evidence. Contract export remains machine-readable.

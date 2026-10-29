@@ -1,5 +1,6 @@
 @echo off
 setlocal DisableDelayedExpansion
+set "ERRORLEVEL="
 REM ============================================================================
 REM  Angerona source checkout - one-click UNELEVATED Observe/development start.
 REM  Distinct supervised strategies restore a reviewed hash-locked environment.
@@ -167,8 +168,8 @@ exit /b %ANGERONA_SOURCE_RC%
 # This readable payload is embedded in start-angerona.bat by the manifest builder
 # companion. The editable source batch file is its trust anchor, not an enclave.
 $ErrorActionPreference='Stop'
-$manifestSha='6b96b9b198966ffc99d231780059ccc0d1bef891550bbcbf317d06f30ae89223'
-$manifestBlob='5aae300b9f8a3d88b566cb31c267f8241e0adcc9'
+$manifestSha='aca70aacab090ac0ef55dce494b8256bce8850b44bbfa4c0dd9332ac7b0a0e51'
+$manifestBlob='e356494766adc5ea564791bab86b43852a5beb80'
 $verifierSha='49e169d2ed7a27dfbcf9bf97fa6e673cc1e10df823bdfdacea21adf019b19230'
 $verifierBlob='7ff691075c15f8a5e7775ff2d6f739fc77efe491'
 $root=[IO.Path]::GetFullPath($env:ANGERONA_INSTALL_ROOT).TrimEnd('\')

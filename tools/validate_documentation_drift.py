@@ -25,6 +25,8 @@ FINAL_RE = re.compile(
 IMAGE_RE = re.compile(r"!\[[^\]]*\]\(\s*(?P<target><[^>]+>|[^)\s]+)")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PUBLIC_IMAGE_BYTES = 16 * 1024 * 1024
+MAX_VERSION_METADATA_BYTES = 2 * 1024 * 1024
+STABLE_VERSION_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 
 ACRONYMS = {
     "EDR": "Endpoint Detection and Response",
@@ -34,6 +36,122 @@ ACRONYMS = {
     "HMAC": "Hash-based Message Authentication Code",
     "RBAC": "Role-Based Access Control",
 }
+
+
+def _version_text(root: Path, relative: str, errors: list[str]) -> str | None:
+    try:
+        with (root / relative).open("rb") as stream:
+            raw = stream.read(MAX_VERSION_METADATA_BYTES + 1)
+        if len(raw) > MAX_VERSION_METADATA_BYTES:
+            raise ValueError("metadata exceeds its byte limit")
+        return raw.decode("utf-8-sig").replace("\r\n", "\n")
+    except (OSError, UnicodeError, ValueError):
+        errors.append(f"{relative}: current-version metadata is unreadable or oversized")
+        return None
+
+
+def _project_version(source: str) -> str | None:
+    # Require one explicit scalar in the project table. This deliberately
+    # avoids executing the package or depending on tomllib (Python 3.11+).
+    tables = list(re.finditer(r"(?m)^[ \t]*\[([^\]\r\n]+)\][ \t]*(?:#.*)?$", source))
+    indexes = [index for index, table in enumerate(tables) if table.group(1) == "project"]
+    if len(indexes) != 1:
+        return None
+    index = indexes[0]
+    end = tables[index + 1].start() if index + 1 < len(tables) else len(source)
+    project = source[tables[index].end():end]
+    assignments = [line for line in project.splitlines() if re.match(
+        r'''^[ \t]*(?:version|"version"|'version')[ \t]*=''', line,
+    )]
+    if len(assignments) != 1:
+        return None
+    match = re.fullmatch(r'''[ \t]*version[ \t]*=[ \t]*(["'])([^"'\r\n]+)\1[ \t]*(?:#.*)?''', assignments[0])
+    return match.group(2) if match else None
+
+
+def _package_version(source: str) -> str | None:
+    try:
+        tree = ast.parse(source, filename="src/angerona/__init__.py")
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    values = []
+    accepted_targets = set()
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else (
+            [node.target] if isinstance(node, ast.AnnAssign) else []
+        )
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id == "__version__":
+                accepted_targets.add(id(target))
+                values.append(node.value)
+    # Conditional/reassigned/computed versions cannot be proved statically.
+    if any(isinstance(node, ast.Name) and node.id == "__version__"
+           and isinstance(node.ctx, ast.Store) and id(node) not in accepted_targets
+           for node in ast.walk(tree)):
+        return None
+    if len(values) != 1 or not isinstance(values[0], ast.Constant) or type(values[0].value) is not str:
+        return None
+    return values[0].value
+
+
+def validate_current_versions(root: Path, *, readme: str | None = None) -> list[str]:
+    """Compare current release labels; older review/component versions are history."""
+    errors: list[str] = []
+    project = _version_text(root, "pyproject.toml", errors)
+    package = _version_text(root, "src/angerona/__init__.py", errors)
+    expected = _project_version(project) if project is not None else None
+    actual = _package_version(package) if package is not None else None
+    if project is not None and (expected is None or not STABLE_VERSION_RE.fullmatch(expected)):
+        errors.append("pyproject.toml: require one explicit stable three-part project.version")
+    if package is not None and (actual is None or not STABLE_VERSION_RE.fullmatch(actual)):
+        errors.append("src/angerona/__init__.py: require one literal stable three-part __version__")
+    if expected is None or not STABLE_VERSION_RE.fullmatch(expected):
+        return errors
+    if actual is not None and actual != expected:
+        errors.append(f"src/angerona/__init__.py: __version__ disagrees with project.version {expected}")
+
+    if readme is None:
+        readme = _version_text(root, "README.md", errors)
+    documents = [
+        ("README.md", readme, r"(?m)^##[ \t]+Current development:[ \t]+v([^\s]+)[ \t]*$", "current-development heading"),
+        ("ANGERONA_CAPABILITIES.md", _version_text(root, "ANGERONA_CAPABILITIES.md", errors),
+         r"(?m)^Current development version:[ \t]+\*\*v([^\s*]+)\*\*", "current-development header"),
+    ]
+    for relative, text, pattern, label in documents:
+        if text is None:
+            continue
+        matches = re.findall(pattern, text)
+        if len(matches) != 1 or matches[0] != expected:
+            errors.append(f"{relative}: {label} must name project.version {expected} exactly once")
+
+    llms = _version_text(root, "llms.txt", errors)
+    if llms is not None:
+        first_section = re.search(r"(?m)^##[ \t]", llms)
+        frontmatter = llms[:first_section.start()] if first_section else llms
+        versions = re.findall(r"(?m)^Version:[ \t]*([^\s]+)[ \t]*$", frontmatter)
+        latest = re.search(r"(?m)^##[ \t]+LATEST[ \t]+\(v([^\s)]+)", llms)
+        if len(versions) != 1 or versions[0] != expected:
+            errors.append(f"llms.txt: current Version header must name project.version {expected} exactly once")
+        if latest is None or latest.group(1) != expected:
+            errors.append(f"llms.txt: first LATEST heading must name project.version {expected}")
+
+    changelog = _version_text(root, "CHANGELOG.md", errors)
+    if changelog is not None:
+        newest = re.search(r"(?m)^##[ \t]+v?([^\s]+)", changelog)
+        if newest is None or newest.group(1) != expected:
+            errors.append(f"CHANGELOG.md: newest entry must name project.version {expected}")
+    shell_name = "tools/Show-AngeronaStartupRecovery.ps1"
+    shell = _version_text(root, shell_name, errors)
+    if shell is not None:
+        labels = (
+            (r"\$form\.Text\s*=\s*'Angerona ([^ '\r\n]+) - Safe Startup'", "window title"),
+            (r'\$brand\.Text\s*=\s*"ANGERONA[ \t]+([^ \t`"\r\n]+)`r`nSafe Startup dashboard"', "dashboard brand"),
+        )
+        for pattern, label in labels:
+            matches = re.findall(pattern, shell)
+            if matches != [expected]:
+                errors.append(f"{shell_name}: {label} must name project.version {expected} exactly once")
+    return errors
 
 
 def _module_count(root: Path) -> int:
@@ -260,6 +378,8 @@ def validate(root: Path) -> list[str]:
         readme = readme_path.read_text(encoding="utf-8")
     except OSError as exc:
         return [f"README.md: cannot read: {exc}"]
+
+    errors.extend(validate_current_versions(root, readme=readme))
 
     markers = list(STATUS_RE.finditer(readme))
     if len(markers) != 1:
