@@ -58,6 +58,12 @@
   existing response-authority boundaries.
 - Remove posture copy that promised full security from a 100% score; scoring,
   bands and policy are unchanged.
+- Publish immutable cached WER admission diagnostics through a memory-only
+  JSON/TXT status projection. Recheck expiry/lifecycle without refreshing source
+  evidence, extending leases or granting upstream delivery/response authority.
+- Correct ETW guidance to keep mutable source unelevated and separate polling
+  observations from accepted privileged-provider coverage; logic and health
+  policy are unchanged.
 
 Focused offline gates and a fresh Full-mode observation are recorded in the
 [1.15 version notes](docs/releases/v1.15.0.md) and
@@ -83,6 +89,12 @@ records the later 498-file lifecycle acceptance, partial native request results
 and held paired comparison. Different live CPU contexts do not prove a causal
 speedup. The prior published revision passed all 15 hosted checks; new-commit
 publication/checks remain separate, as do actual WER availability and P0 repair.
+The [later WER/status/CI review](analysis/hardening-v1.15-2026-10-30-wer-status-ci.md)
+records copied admitted and expired WER views, partial thread-cost evidence,
+normal retirement of 53 observed generations and missed fresh fault-log capture.
+Its preceding hosted revision had eleven passes/four failures; new test-only
+fixes and their recheck do not become fresh hosted results. Cached admission
+does not prove current upstream telemetry or continuous coverage.
 
 ## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
 

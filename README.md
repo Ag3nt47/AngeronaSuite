@@ -50,7 +50,7 @@ review remain available.
 - **Telemetry assurance:** separate kernel-provider canary observations,
   polling coverage and process liveness.
 - **Tampering review:** bounded WER precursor correlation with current owned
-  process context, consistent cache timing and explicit missing identity evidence.
+  process context, consistent cache timing and read-only cached availability.
 - **Advisory identity reads:** bounded, compatibility-gated Windows birth maps
   retain fresh observations and explicit partial coverage.
 - **Containment custody:** retained process and executable identities across
@@ -77,7 +77,7 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [What changed, validation and current limits](docs/releases/v1.15.0.md) ·
 [Reviewed observation](analysis/hardening-v1.15-2026-10-30.md) ·
 [Follow-up fixes and observation](analysis/hardening-v1.15-2026-10-30-followup.md) ·
-[Current inventory and WER review](analysis/hardening-v1.15-2026-10-30-inventory-wer.md) ·
+[Latest WER status and CI review](analysis/hardening-v1.15-2026-10-30-wer-status-ci.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

@@ -56,6 +56,7 @@ def test_current_loop_uses_every_supplied_typed_snapshot(tool, processes, polls,
     ("psutil.process_iter", "__import__('psutil').process_iter()"),
     ("psutil.net_connections", "__import__('psutil').net_connections()"),
     ("psutil._ppid_map", "__import__('psutil')._ppid_map()"),
+    ("psutil._psplatform", "__import__('psutil')._psplatform"),
     ("psutil.cpu_percent", "__import__('psutil').cpu_percent()"),
     ("subprocess.Popen", "__import__('subprocess').Popen(['inert-never-launched'])"),
     ("threading.Thread.start", "__import__('threading').Thread(target=lambda: None).start()"),
@@ -106,7 +107,10 @@ def _attempt_saved_collector(self):
     return _original_run(self)
 ProcessMonitorModule.run = _attempt_saved_collector
 """
-    with pytest.raises(tool.InertBenchmarkViolation, match=r"blocked psutil\.Process$"):
+    # Windows birth-adapter compatibility can inspect the forbidden backend
+    # before Process construction. Either fixed denial must survive the
+    # collector's caught exception; cached host rows must never escape.
+    with pytest.raises(tool.InertBenchmarkViolation, match=r"blocked psutil\.(?:Process|_psplatform)$"):
         tool.benchmark(source, processes=2, polls=2, arguments=1)
     assert sensors._proc_cache is original_cache
 

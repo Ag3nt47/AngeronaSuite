@@ -7,6 +7,47 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Latest WER/status/CI follow-up: immutable cached admission summaries retain minimum expiry,
+  lifecycle generation, fixed reason/count/roles and independent loss. Pure
+  getter plus JSON/TXT `wer_observation` whitelist performs no native/file/
+  supplier query and extends no lease; Live Debug schema/tail unchanged. States:
+  unmeasured/stopped/stale/unavailable/admitted-at-last-check. Cached fields and
+  counters, queue size and later lifecycle check are NOT one atomic receipt or
+  current-at-file-write evidence. Source lease 2s/DTO max 5s/queue 64/drain 16,
+  dedup/alerts/cadence/authority unchanged. Source gate 244 passes/1 skip, 11.68s;
+  earlier cohorts separate. ETW copy keeps mutable source unelevated and polling
+  partial/separate, with privileged provider deployment requirements unchanged.
+- Latest 120s Full/STOP met bounded lifecycle acceptance/native exit 0: 53 unique
+  observed generations/57 wait rows all retired/source 498+prefs unchanged/no force,
+  five child admission gaps, polling not complete. Final 75 running: 17 critical,
+  34 degraded, 1 failed, 23 OK/69 unknown; native ETW/Sysmon unavailable. All 56
+  Full samples had four fresh authenticated role heartbeats; unavailable counts
+  ONLY after STOP. Initial loss 2919; 238 new events/88 non-INFO = 39 declared
+  exposures, 6 unavailable, 43 leads; zero supported active within those records,
+  NO clean-host/compromise verdict. All 1355 diagnostics/183 coverage retained
+  history. Reader REPORTED 700 HMAC-only originals verified; this analysis did
+  NOT independently reverify bytes/keys/producer.
+- WER: 56 copies, 23 admitted/33 stale lease-expired; 38 unique, 15 admitted/
+  23 stale. Retained last admission was admitted in all, not current availability.
+  55 copies had four roles/one stale Core-only; copied queue/loss/skipped zero,
+  upstream delivery unverified. Copies up to 3.325s old; admission can expire
+  before reading. No continuous-zero-failure, between-sample no-loss, delivery/
+  prevention or historical-cause claims.
+- CPU over 118.764644s: Core 112.959755%/inventory 9.814579% of one logical CPU,
+  diagnostic 5.972948%, different context, no controlled speedup. Native thread
+  API worked but partial: 19 Full snapshots, 13 accepted/6 partial; 126 TID/birth
+  endpoint matches, GUI about 17.03% of one CPU. Status worker labels lack thread
+  birth; inline callbacks charge publishers, so labels are NOT isolated module
+  cost. WM_NULL 56/56, max 94ms; cached lag 94–422ms/metric age 10.125s. Status
+  settling 58.45s is not click latency.
+- P0 native AV unresolved. Pre-STOP fault copy MISSED; both known post-STOP crash
+  logs ABSENT, cause unproved, no fresh native fault-coverage claim. Old private
+  bytes/dump preserved. Preceding public CI: 15 terminal, 11 passes/4 failures
+  (normal pytest exit1, not native crashes/timeouts). Two TEST-ONLY denial-layer/
+  inert-clock corrections preserve host guard/cache identity/ownership/real
+  deadlines. Six-file local cohort 121 passes in 21.06s with native cleanup/
+  unchanged source+prefs; new publication/new hosted CI required. Current evidence:
+  analysis/hardening-v1.15-2026-10-30-wer-status-ci.md.
 - Second 30 October follow-up: WER acquires cached ownership before sampling
   the shared admission/correlation clock. Future/exact-expiry/TTL/authentication,
   queue 64/drain 16/dedup stay strict. Typed reasons use existing coverage_reason;

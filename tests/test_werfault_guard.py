@@ -372,7 +372,9 @@ def test_queued_authenticated_wer_uses_post_acquisition_time_for_admission_and_c
     assert (row.observed_monotonic, row.expires_monotonic) == (100.25, 102.25)
     assert module._wer_seen[source_hmac] == 100.0
     coverage = module.wer_coverage_snapshot()
-    assert coverage["state"] == "available" and coverage["owned_roles"] == ("core",)
+    # A direct unit drain did not start the module's lifecycle worker.
+    assert coverage["state"] == "stopped" and coverage["last_admission_result"] == "admitted"
+    assert coverage["owned_roles"] == ("core",) and coverage["ownership_cache_current"] is False
     assert coverage["ownership_reason_code"] == "" and coverage["ownership_snapshot_count"] == 1
 
 
@@ -410,7 +412,8 @@ def test_ownership_rejection_and_ingress_loss_remain_independent_and_reason_dedu
     coverage = module.wer_coverage_snapshot()
     assert coverage["ownership_reason_code"] == "snapshot_empty" and coverage["ownership_snapshot_count"] == 0
     assert coverage["owned_roles"] == () and coverage["ingress_lost_records"] == 2
-    assert "cache unavailable" in coverage["reason"] and "ingress lost records" in coverage["reason"]
+    assert coverage["last_admission_result"] == "rejected" and coverage["state"] == "stopped"
+    assert coverage["ownership_cache_current"] is False
     assert len(emitted) == 1 and emitted[0][1] == Severity.LOW
     assert emitted[0][2]["ownership_reason_code"] == "snapshot_empty"
     assert emitted[0][2]["ingress_lost_records"] == 1
@@ -535,3 +538,158 @@ def test_event_driven_worker_unsubscribes_and_retires_on_stop(monkeypatch):
     before = module._wer_queue.qsize()
     bus.publish(Event("Unrelated", "inert", Severity.INFO, details={}))
     assert module._wer_queue.qsize() == before == 0
+
+
+def _diagnostic_admission(monkeypatch):
+    """Exercise the real drain with inert identities, without starting a worker."""
+    module = fast_path.FastPathModule()
+    module._lifecycle_generation = 7
+    module._thread = threading.current_thread()
+    module.status = "running"
+    clock, calls = [101.0], []
+    monkeypatch.setattr(fast_path, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(module, "emit", lambda *args, **kwargs: None)
+    rows = (replace(owned(), expires_monotonic=102.0),)
+
+    def supplier():
+        calls.append("supplier")
+        return rows
+
+    module.bind_owned_processes(supplier)
+    module._drain_wer_events()
+    return module, clock, calls
+
+
+def test_wer_diagnostic_retains_actual_supplier_expiry_and_last_outcome(monkeypatch):
+    module, clock, calls = _diagnostic_admission(monkeypatch)
+    publication = module._wer_publication
+    view = module.wer_coverage_snapshot()
+    assert view["state"] == "admitted-at-last-check" and view["ownership_cache_current"] is True
+    assert (view["checked_monotonic"], view["expires_monotonic"], view["checked_age_s"]) == (101.0, 102.0, 0)
+    assert view["observation_generation"] == view["lifecycle_generation"] == 7
+    assert view["response_authorized"] is False and view["upstream_delivery_verified"] is False
+    clock[0] = 102.0
+    expired = module.wer_coverage_snapshot()
+    assert expired["state"] == "stale" and expired["reason_code"] == "lease_expired"
+    assert expired["last_admission_result"] == "admitted" and expired["ownership_cache_current"] is False
+    assert module._wer_publication is publication and calls == ["supplier"]
+
+
+@pytest.mark.parametrize("now, code", [
+    (100.9, "clock_regressed"), (float("nan"), "clock_invalid"),
+    (float("inf"), "clock_invalid"), (True, "clock_invalid"),
+])
+def test_wer_diagnostic_clock_failure_does_not_revalidate_or_extend(monkeypatch, now, code):
+    module, clock, calls = _diagnostic_admission(monkeypatch)
+    clock[0] = now
+    view = module.wer_coverage_snapshot()
+    assert view["state"] in {"stale", "unavailable"} and view["reason_code"] == code
+    assert view["ownership_cache_current"] is False and view["last_admission_result"] == "admitted"
+    assert calls == ["supplier"]
+
+
+def test_wer_diagnostic_reads_exactly_one_publication_before_its_clock(monkeypatch):
+    module, _clock, calls = _diagnostic_admission(monkeypatch)
+    old = module._wer_publication
+    replacement = replace(old, checked_monotonic=102.0, expires_monotonic=104.0)
+
+    def clock():
+        module._wer_publication = replacement
+        return 102.25
+
+    monkeypatch.setattr(fast_path, "time", SimpleNamespace(monotonic=clock))
+    view = module.wer_coverage_snapshot()
+    assert view["state"] == "stale" and view["expires_monotonic"] == 102.0
+    assert module._wer_publication is replacement and calls == ["supplier"]
+
+
+def test_wer_diagnostic_initial_restart_and_stop_do_not_inherit_admission(monkeypatch):
+    initial = fast_path.FastPathModule()
+    initial._thread = threading.current_thread()
+    initial.status = "running"
+    monkeypatch.setattr(fast_path, "time", SimpleNamespace(monotonic=lambda: 101.0))
+    assert initial.wer_coverage_snapshot()["state"] == "unmeasured"
+    module, _clock, _calls = _diagnostic_admission(monkeypatch)
+    module._lifecycle_generation += 1
+    view = module.wer_coverage_snapshot()
+    assert view["state"] == "unmeasured" and view["reason_code"] == "generation_changed"
+    assert view["observation_generation"] == 7 and view["lifecycle_generation"] == 8
+    assert view["ownership_cache_current"] is False
+    module.stop()
+    stopped = module.wer_coverage_snapshot()
+    assert stopped["state"] == "stopped" and stopped["last_admission_result"] == "admitted"
+    assert stopped["ownership_cache_current"] is False
+
+
+@pytest.mark.parametrize("change", ["generation", "thread", "stop", "status"])
+def test_wer_diagnostic_lifecycle_change_during_read_wins(monkeypatch, change):
+    module, _clock, _calls = _diagnostic_admission(monkeypatch)
+
+    def clock():
+        if change == "generation":
+            module._lifecycle_generation += 1
+        elif change == "thread":
+            module._thread = None
+        elif change == "stop":
+            module._stop.set()
+        else:
+            module.status = "error"
+        return 101.0
+
+    monkeypatch.setattr(fast_path, "time", SimpleNamespace(monotonic=clock))
+    view = module.wer_coverage_snapshot()
+    assert view["state"] in {"unmeasured", "stopped", "unavailable"}
+    assert view["ownership_cache_current"] is False
+
+
+def test_wer_diagnostic_loss_after_drain_is_independent_and_immediate(monkeypatch):
+    module, _clock, _calls = _diagnostic_admission(monkeypatch)
+    publication = module._wer_publication
+    with module._wer_stats_lock:
+        module._wer_dropped += 1
+    view = module.wer_coverage_snapshot()
+    assert view["state"] == "unavailable" and view["reason_code"] == "ingress_lost"
+    assert view["ingress_lost_records"] == 1 and publication.ingress_lost_records == 0
+    assert view["last_admission_result"] == "admitted" and view["ownership_cache_current"] is True
+    assert view["ownership_reason_code"] == "" and view["owned_roles"] == ("core",)
+
+
+@pytest.mark.parametrize("change", [
+    {"generation": True}, {"checked_monotonic": float("nan")}, {"expires_monotonic": 106.01},
+    {"ownership_snapshot_count": True}, {"owned_roles": ("core",) * 17},
+    {"owned_roles": ("private C:\\host",)}, {"ingress_lost_records": False},
+    {"skipped_admission_attempts": -1}, {"ownership_reason_code": "private exception"},
+    pytest.param({"ownership_reason_code": "x" * 4096}, id="oversized-rejection-code"),
+])
+def test_malformed_exact_class_wer_publication_cannot_claim_current_admission(monkeypatch, change):
+    module, _clock, _calls = _diagnostic_admission(monkeypatch)
+    module._wer_publication = replace(module._wer_publication, **change)
+    view = module.wer_coverage_snapshot()
+    assert view["state"] == "unavailable" and view["reason_code"] == "invalid_publication"
+    assert view["ownership_cache_current"] is False and view["owned_roles"] == ()
+    assert "private" not in str(view)
+
+
+def test_missing_exact_class_wer_fields_and_counter_regression_are_held(monkeypatch):
+    module, _clock, _calls = _diagnostic_admission(monkeypatch)
+    publication = module._wer_publication
+    module._wer_publication = object.__new__(fast_path._WerCoveragePublication)
+    assert module.wer_coverage_snapshot()["reason_code"] == "invalid_publication"
+    module._wer_publication = replace(publication, ingress_lost_records=1)
+    assert module.wer_coverage_snapshot()["reason_code"] == "invalid_counters"
+
+
+def test_wer_diagnostic_does_not_refresh_supplier_or_open_host_resources(monkeypatch):
+    module, _clock, calls = _diagnostic_admission(monkeypatch)
+    module.bind_owned_processes(lambda: pytest.fail("diagnostic refreshed supplier"))
+    from pathlib import Path
+    import builtins
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("WER diagnostic performed I/O")
+
+    with monkeypatch.context() as guarded:
+        guarded.setattr(builtins, "open", forbidden)
+        guarded.setattr(Path, "open", forbidden)
+        view = module.wer_coverage_snapshot()
+    assert view["state"] == "admitted-at-last-check" and calls == ["supplier"]

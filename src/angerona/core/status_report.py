@@ -48,6 +48,118 @@ def _worker_identity(module) -> dict:
             "advisory_only": True}
 
 
+def _wer_observation_snapshot(manager) -> dict:
+    """Whitelist a memory-only diagnostic view; never refresh a WER supplier."""
+    result = {
+        "schema": 1, "state": "not-configured", "reason_code": "module_absent",
+        "advisory_only": True, "response_authorized": False,
+        "upstream_delivery_verified": False, "ownership_cache_current": False,
+        "scope": "Retained-owner admission only; no suspension or prevention attestation",
+        "upstream_scope": "ETW/Sysmon delivery and absent companions remain unproven",
+    }
+    name = "Deterministic Fast-Path Interceptor"
+    module = manager.modules.get(name)
+    if module is None:
+        return result
+    try:
+        enabled = manager.is_enabled(name)
+        if type(enabled) is not bool:
+            raise ValueError
+        if not enabled:
+            result.update(state="disabled", reason_code="module_disabled")
+            return result
+        reader = getattr(module, "wer_coverage_snapshot", None)
+        if not callable(reader):
+            result.update(state="unavailable", reason_code="reader_unavailable")
+            return result
+        source = reader()
+        if type(source) is not dict or len(source) > 40:
+            raise ValueError
+        source = dict(source)  # One bounded publication copy before later policy checks.
+        states = {"unmeasured", "unavailable", "stale", "admitted-at-last-check", "stopped"}
+        reasons = {"", "no_observation", "invalid_publication", "generation_changed", "clock_invalid",
+                   "clock_regressed", "ownership_rejected", "lease_expired", "invalid_counters",
+                   "ingress_lost", "module_stopped", "worker_unavailable"}
+        rejections = {"", "supplier_unbound", "caller_clock_invalid", "supplier_failed", "snapshot_type_invalid",
+                      "snapshot_empty", "snapshot_oversized", "observation_clock_invalid", "regressed",
+                      "row_type_invalid", "row_not_yet_valid", "row_expired", "duplicate_pid"}
+        if (type(source.get("schema")) is not int
+                or source["schema"] != 1 or type(source.get("state")) is not str
+                or len(source["state"]) > 32 or source["state"] not in states
+                or type(source.get("reason_code")) is not str
+                or len(source["reason_code"]) > 32 or source["reason_code"] not in reasons
+                or type(source.get("last_admission_result")) is not str
+                or len(source["last_admission_result"]) > 16
+                or source["last_admission_result"] not in {"unmeasured", "admitted", "rejected"}
+                or type(source.get("ownership_reason_code")) is not str
+                or len(source["ownership_reason_code"]) > 32
+                or source["ownership_reason_code"] not in rejections
+                or source.get("response_authorized") is not False
+                or source.get("upstream_delivery_verified") is not False
+                or source.get("advisory_only") is not True
+                or type(source.get("ownership_cache_current")) is not bool
+                or type(source.get("queue_capacity")) is not int or source["queue_capacity"] != 64):
+            raise ValueError
+        for key in ("lifecycle_generation", "observation_generation", "dropped", "ingress_lost_records",
+                    "skipped_admission_attempts", "ownership_snapshot_count", "queued"):
+            value = source.get(key)
+            if value is not None and (type(value) is not int or not 0 <= value <= (1 << 63) - 1):
+                raise ValueError
+            result[key] = value
+        if result["queued"] is not None and result["queued"] > 64:
+            raise ValueError
+        if result["dropped"] != result["ingress_lost_records"]:
+            raise ValueError
+        for key in ("attempted_monotonic", "checked_monotonic", "expires_monotonic", "checked_age_s"):
+            value = source.get(key)
+            if value is not None and (type(value) not in (int, float)
+                                      or not 0 <= value <= 253402300799 or not math.isfinite(value)):
+                raise ValueError
+            result[key] = value
+        roles = source.get("owned_roles")
+        if (type(roles) is not tuple or len(roles) > 16
+                or any(type(role) is not str or not 1 <= len(role) <= 32 or not role.isascii()
+                       or not role[0].islower() or not all(char.islower() or char.isdigit() or char == "-" for char in role)
+                       for role in roles)):
+            raise ValueError
+        if source["ownership_cache_current"]:
+            checked, expiry, age = (source.get(key) for key in ("checked_monotonic", "expires_monotonic", "checked_age_s"))
+            if (source["last_admission_result"] != "admitted" or source["ownership_reason_code"]
+                    or source["state"] not in {"admitted-at-last-check", "unavailable"}
+                    or source["state"] == "unavailable" and (source["reason_code"] != "ingress_lost"
+                                                              or not source.get("ingress_lost_records"))
+                    or source.get("lifecycle_generation") is None
+                    or source.get("observation_generation") != source.get("lifecycle_generation")
+                    or source.get("ownership_snapshot_count") != len(roles) or not roles
+                    or any(result[key] is None for key in ("dropped", "skipped_admission_attempts", "queued"))
+                    or checked is None or expiry is None or age is None or not checked < expiry <= checked + 5
+                    or checked + age >= expiry):
+                raise ValueError
+        if source["state"] == "admitted-at-last-check" and (
+                not source["ownership_cache_current"] or source.get("ingress_lost_records") != 0 or source["reason_code"]):
+            raise ValueError
+        # Re-check policy after the reader; a concurrent disable cannot export
+        # the old result as current. Free text and unknown keys are never copied.
+        enabled = manager.is_enabled(name)
+        if type(enabled) is not bool:
+            raise ValueError
+        if manager.modules.get(name) is not module:
+            result.update(state="unmeasured", reason_code="generation_changed", ownership_cache_current=False)
+            return result
+        if not enabled:
+            result.update(state="disabled", reason_code="module_disabled", ownership_cache_current=False)
+            return result
+        for key in ("state", "reason_code", "last_admission_result", "ownership_reason_code", "ownership_cache_current"):
+            result[key] = source[key]
+        result.update(owned_roles=roles, queue_capacity=64)
+    except Exception:
+        # No arbitrary provider exception class/text, path or source payload.
+        result = {key: result[key] for key in (
+            "schema", "advisory_only", "response_authorized", "upstream_delivery_verified", "scope", "upstream_scope")}
+        result.update(state="unavailable", reason_code="invalid_observation", ownership_cache_current=False)
+    return result
+
+
 def _process_inventory_snapshot(owner) -> dict:
     """Copy bounded cached lifecycle evidence; never start or query a process."""
     result = {"state": "not-configured", "ready": False, "retired": False,
@@ -379,6 +491,7 @@ class StatusReporter:
             ),
             "event_bus": self._bus_snapshot(),
             "process_inventory": _process_inventory_snapshot(self.process_snapshot_lifecycle),
+            "wer_observation": _wer_observation_snapshot(self.manager),
             "runtime_healer": recovery,
             "automatic_response": response,
             "app_version": __version__,
@@ -422,6 +535,7 @@ class StatusReporter:
         inventory_error = (inventory.get("provider", {}).get("error")
                            or inventory.get("error_type")
                            or "cached lifecycle only; collection coverage is separate")
+        wer = s.get("wer_observation", {})
         lines = [
             "=" * 78,
             " ANGERONA — LIVE STATUS SNAPSHOT",
@@ -438,6 +552,11 @@ class StatusReporter:
             f" Response  : {s.get('automatic_response', {}).get('state', 'UNAVAILABLE')} "
             f"— {s.get('automatic_response', {}).get('reason', '')}",
             f" Inventory : {inventory.get('state', 'unavailable')} — {inventory_error}",
+            f" WER       : {wer.get('state', 'unmeasured')} — {wer.get('reason_code', 'no_observation')}",
+            f"             last={wer.get('last_admission_result', 'unmeasured')} "
+            f"ownership={wer.get('ownership_reason_code', '') or 'no rejection recorded'} "
+            f"age={wer.get('checked_age_s')}s lost={wer.get('ingress_lost_records', 'unknown')}",
+            "             Retained-owner admission only; ETW/Sysmon delivery, absent companions and prevention remain unproven.",
             "",
             "-" * 78,
             " TELEMETRY COVERAGE",

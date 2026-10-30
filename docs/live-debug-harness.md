@@ -280,6 +280,21 @@ A selected capture without a WER typed cache/coverage receipt leaves actual
 availability unmeasured. No warning in a redacted window is not zero failures
 or a diagnosis of historical gaps.
 
+The later JSON/TXT status projection `wer_observation` reads immutable cached
+admission publications through `wer_coverage_snapshot()`. Its states are
+unmeasured, stopped, stale, unavailable and admitted-at-last-check, with fixed
+reasons, role/count metadata, minimum expiry and independent loss counters.
+The getter performs no native/file/supplier query, extends no lease and changes
+no Live Debug schema/tail. This is retained-owner admission, not verified
+upstream ETW/Sysmon delivery, absence of suspension or prevention authority.
+
+Cached fields/counters are copied under a lock, queue size separately, then
+lifecycle is rechecked; they are not one atomic kernel/queue/process snapshot.
+Read state as of its getter time, not at status-file write or later reader time.
+The [latest scoped review](../analysis/hardening-v1.15-2026-10-30-wer-status-ci.md)
+observed both admitted and expired copied views, some already 3.325 seconds old.
+Copied zero counters do not prove continuous no-loss or uninterrupted coverage.
+
 With `ANGERONA_RUNTIME_METRICS=1` set before launch, the private
 `diagnostics/status.json` module rows also include a `worker` object for the
 current primary module thread: `native_id` is a decimal string,

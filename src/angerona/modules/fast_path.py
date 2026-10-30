@@ -42,6 +42,7 @@ Maintenance
 """
 from __future__ import annotations
 
+import math
 import re
 import queue
 import threading
@@ -52,11 +53,73 @@ from typing import Optional
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.net_interfaces import detect_split_tunnel
 from angerona.core.werfault_guard import (
+    MAX_IDENTITY_AGE, MAX_OWNED_PROCESSES,
     OwnedProcessReadError, WerFaultCorrelator, capture_wer_telemetry,
     read_owned_process_snapshot,
 )
 
 DEDUP_TTL = 120.0   # seconds between repeat fast-path alerts for same triple
+
+_WER_REJECTIONS = frozenset({
+    "supplier_unbound", "caller_clock_invalid", "supplier_failed", "snapshot_type_invalid",
+    "snapshot_empty", "snapshot_oversized", "observation_clock_invalid", "regressed",
+    "row_type_invalid", "row_not_yet_valid", "row_expired", "duplicate_pid",
+})
+_WER_COUNTER_LIMIT = (1 << 63) - 1
+_WER_SCOPE = "Bounded WER precursor observations; no suspension or prevention attestation"
+_WER_OWNER_SCOPE = "Admitted retained owners only; absent companions remain unproven"
+_WER_UPSTREAM_SCOPE = "ETW/Sysmon delivery is not verified by ownership-cache admission"
+
+
+def _wer_clock(value) -> bool:
+    return (type(value) in (int, float) and 0 <= value <= 253402300799
+            and math.isfinite(value))
+
+
+def _wer_counter(value) -> bool:
+    return type(value) is int and 0 <= value <= _WER_COUNTER_LIMIT
+
+
+@dataclass(frozen=True)
+class _WerCoveragePublication:
+    """One worker result; times retain the supplier's original ownership lease."""
+
+    generation: int
+    attempted_monotonic: float | None
+    checked_monotonic: float | None
+    expires_monotonic: float | None
+    ownership_reason_code: str
+    ownership_snapshot_count: int | None
+    owned_roles: tuple[str, ...]
+    ingress_lost_records: int
+    skipped_admission_attempts: int
+
+    def valid(self) -> bool:
+        try:
+            if (not _wer_counter(self.generation)
+                    or self.attempted_monotonic is not None and not _wer_clock(self.attempted_monotonic)
+                    or type(self.ownership_reason_code) is not str
+                    or len(self.ownership_reason_code) > 32
+                    or self.ownership_reason_code not in _WER_REJECTIONS | {""}
+                    or self.ownership_snapshot_count is not None
+                    and not _wer_counter(self.ownership_snapshot_count)
+                    or type(self.owned_roles) is not tuple or len(self.owned_roles) > MAX_OWNED_PROCESSES
+                    or any(type(role) is not str or not re.fullmatch(r"[a-z][a-z0-9-]{0,31}", role)
+                           for role in self.owned_roles)
+                    or not _wer_counter(self.ingress_lost_records)
+                    or not _wer_counter(self.skipped_admission_attempts)):
+                return False
+            if self.ownership_reason_code:
+                return (self.checked_monotonic is None and self.expires_monotonic is None
+                        and not self.owned_roles)
+            return (self.attempted_monotonic is not None and _wer_clock(self.checked_monotonic)
+                    and _wer_clock(self.expires_monotonic)
+                    and self.attempted_monotonic <= self.checked_monotonic < self.expires_monotonic
+                    <= self.checked_monotonic + MAX_IDENTITY_AGE
+                    and 1 <= self.ownership_snapshot_count <= MAX_OWNED_PROCESSES
+                    and len(self.owned_roles) == self.ownership_snapshot_count)
+        except Exception:
+            return False
 
 
 @dataclass(frozen=True)
@@ -196,11 +259,8 @@ class FastPathModule(BaseModule):
         self._wer_seen: dict[str, float] = {}
         self._wer_dropped = 0
         self._wer_stats_lock = threading.Lock()
-        self._wer_owned_roles = ()
         self._wer_skipped = 0
-        self._wer_coverage = "current native-owned process cache unavailable"
-        self._wer_ownership_reason = "supplier_unbound"
-        self._wer_snapshot_count = None
+        self._wer_publication: _WerCoveragePublication | None = None
         self._wer_gap_reported = ()
 
     def bind_owned_processes(self, supplier) -> None:
@@ -213,16 +273,91 @@ class FastPathModule(BaseModule):
         self.bind_owned_processes(getattr(manager, "owned_process_identities", None))
 
     def wer_coverage_snapshot(self) -> dict:
-        return dict(state="available" if not self._wer_coverage else "unavailable",
-                    reason=self._wer_coverage, queued=self._wer_queue.qsize(),
-                    queue_capacity=self._wer_queue.maxsize, dropped=self._wer_dropped,
-                    owned_roles=self._wer_owned_roles, skipped_admission_attempts=self._wer_skipped,
-                    ownership_reason_code=self._wer_ownership_reason,
-                    ownership_snapshot_count=self._wer_snapshot_count,
-                    ingress_lost_records=self._wer_dropped,
-                    ownership_scope="Admitted retained owners only; absent companions remain unproven",
-                    scope="Bounded WER precursor observations; no suspension or prevention attestation",
-                    response_authorized=False)
+        """Copy diagnostic state without refreshing a supplier or extending its lease.
+
+        A successful check is only retained-owner admission at that check. It
+        establishes neither current upstream telemetry nor complete coverage.
+        Lifecycle and expiry are re-evaluated on every read; silence is not success.
+        """
+        before = (self._lifecycle_generation, self._thread, self._stop, self.status)
+        with self._wer_stats_lock:
+            publication = self._wer_publication
+            dropped, skipped = self._wer_dropped, self._wer_skipped
+        queued = self._wer_queue.qsize()
+        try:
+            now = time.monotonic()  # Sample only after acquiring this publication.
+        except Exception:
+            now = None
+        result = dict(
+            schema=1, state="unmeasured", reason_code="no_observation", reason="No WER admission result for this generation",
+            lifecycle_generation=before[0] if _wer_counter(before[0]) else None,
+            observation_generation=None, last_admission_result="unmeasured",
+            attempted_monotonic=None, checked_monotonic=None, expires_monotonic=None,
+            checked_age_s=None, ownership_cache_current=False,
+            queued=queued if type(queued) is int and 0 <= queued <= 64 else None,
+            queue_capacity=64, dropped=dropped if _wer_counter(dropped) else None,
+            ingress_lost_records=dropped if _wer_counter(dropped) else None,
+            skipped_admission_attempts=skipped if _wer_counter(skipped) else None,
+            owned_roles=(), ownership_reason_code="", ownership_snapshot_count=None,
+            ownership_scope=_WER_OWNER_SCOPE, scope=_WER_SCOPE, upstream_scope=_WER_UPSTREAM_SCOPE,
+            upstream_delivery_verified=False, response_authorized=False, advisory_only=True,
+        )
+        valid_publication = type(publication) is _WerCoveragePublication and _WerCoveragePublication.valid(publication)
+        if publication is not None:
+            if not valid_publication:
+                result.update(state="unavailable", reason_code="invalid_publication", reason="WER diagnostic publication is malformed")
+            else:
+                result.update(
+                    observation_generation=publication.generation,
+                    last_admission_result="rejected" if publication.ownership_reason_code else "admitted",
+                    attempted_monotonic=publication.attempted_monotonic,
+                    checked_monotonic=publication.checked_monotonic,
+                    expires_monotonic=publication.expires_monotonic,
+                    ownership_reason_code=publication.ownership_reason_code,
+                    ownership_snapshot_count=publication.ownership_snapshot_count,
+                    owned_roles=publication.owned_roles,
+                )
+                if not _wer_counter(before[0]) or publication.generation != before[0]:
+                    result.update(reason_code="generation_changed", reason="No WER admission result for the current generation")
+                elif not _wer_clock(now):
+                    result.update(state="unavailable", reason_code="clock_invalid", reason="WER diagnostic clock is unavailable")
+                elif (publication.attempted_monotonic is not None and now < publication.attempted_monotonic
+                      or publication.checked_monotonic is not None and now < publication.checked_monotonic):
+                    result.update(state="stale", reason_code="clock_regressed", reason="WER diagnostic clock precedes its observation")
+                elif publication.ownership_reason_code:
+                    result.update(state="unavailable", reason_code="ownership_rejected",
+                                  reason="current native-owned process cache unavailable, stale or malformed")
+                else:
+                    result["checked_age_s"] = now - publication.checked_monotonic
+                    if now >= publication.expires_monotonic:
+                        result.update(state="stale", reason_code="lease_expired", reason="Last admitted ownership lease has expired")
+                    else:
+                        result.update(state="admitted-at-last-check", reason_code="", reason="Ownership cache admitted at the last check",
+                                      ownership_cache_current=True)
+        if (not _wer_counter(dropped) or not _wer_counter(skipped) or result["queued"] is None
+                or valid_publication
+                and (dropped < publication.ingress_lost_records or skipped < publication.skipped_admission_attempts)):
+            result.update(state="unavailable", reason_code="invalid_counters", reason="WER diagnostic counters are malformed",
+                          ownership_cache_current=False)
+        elif dropped:
+            result["reason"] += "; WER telemetry ingress lost records; correlation coverage is incomplete"
+            if result["state"] != "unavailable":
+                result.update(state="unavailable", reason_code="ingress_lost")
+
+        # No stats lock is held while taking the lifecycle/health view. A restart,
+        # stop or dead worker wins even if its prior publication was successful.
+        after = (self._lifecycle_generation, self._thread, self._stop, self.status)
+        if (not _wer_counter(before[0]) or not _wer_counter(after[0])
+                or before[0] != after[0] or before[1] is not after[1] or before[2] is not after[2]):
+            result.update(state="unmeasured", reason_code="generation_changed",
+                          reason="WER lifecycle changed during diagnostic read", ownership_cache_current=False)
+        elif after[2].is_set() or after[3] == "stopped":
+            result.update(state="stopped", reason_code="module_stopped", reason="WER worker is stopped", ownership_cache_current=False)
+        elif after[3] == "restarting":
+            result.update(state="unmeasured", reason_code="generation_changed", reason="WER worker is restarting", ownership_cache_current=False)
+        elif after[3] != "running" or not isinstance(after[1], threading.Thread) or not after[1].is_alive():
+            result.update(state="unavailable", reason_code="worker_unavailable", reason="WER worker is not running", ownership_cache_current=False)
+        return result
 
     def _capture_wer_event(self, event) -> None:
         """Bounded, outward-only INFO ingress; no host/process or policy I/O."""
@@ -243,44 +378,44 @@ class FastPathModule(BaseModule):
 
     def _drain_wer_events(self) -> None:
         now = time.monotonic()
+        generation = self._lifecycle_generation
         self._wer_seen = {key: stamp for key, stamp in self._wer_seen.items() if now - stamp < DEDUP_TTL}
         try:
             snapshot = read_owned_process_snapshot(self._owned_process_source, not_before=now,
                                                    clock=time.monotonic)
             owned, checked_now = snapshot.rows, snapshot.checked_monotonic
-            self._wer_owned_roles = tuple(row.role for row in owned)
-            self._wer_ownership_reason = ""
-            self._wer_snapshot_count = len(owned)
-            self._wer_coverage = ""
+            owned_roles, ownership_reason, snapshot_count = tuple(row.role for row in owned), "", len(owned)
+            coverage = ""
         except OwnedProcessReadError as exc:
             owned = ()
-            self._wer_owned_roles = ()
-            self._wer_ownership_reason = exc.reason_code
-            self._wer_snapshot_count = exc.snapshot_count
-            self._wer_coverage = "current native-owned process cache unavailable, stale or malformed"
-        if self._wer_dropped:
+            owned_roles, ownership_reason, snapshot_count = (), exc.reason_code, exc.snapshot_count
+            checked_now = None  # The rejecting reader did not return an admitted check time.
+            coverage = "current native-owned process cache unavailable, stale or malformed"
+        with self._wer_stats_lock:
+            dropped = self._wer_dropped
+        if dropped:
             ingress_gap = "WER telemetry ingress lost records; correlation coverage is incomplete"
-            self._wer_coverage = (self._wer_coverage + "; " + ingress_gap
-                                  if self._wer_coverage else ingress_gap)
-        gap_key = (self._wer_ownership_reason, bool(self._wer_dropped))
-        if not self._wer_coverage:
+            coverage = coverage + "; " + ingress_gap if coverage else ingress_gap
+        gap_key = (ownership_reason, bool(dropped))
+        if not coverage:
             self._wer_gap_reported = ()
-        if self._wer_coverage and self._wer_gap_reported != gap_key:
+        if coverage and self._wer_gap_reported != gap_key:
             self._wer_gap_reported = gap_key
-            self.emit("WER tampering observation coverage: " + self._wer_coverage,
+            self.emit("WER tampering observation coverage: " + coverage,
                       Severity.LOW, disposition="health", active_attack=False,
                       response_authorized=False, coverage_failure=True,
-                      coverage_reason=self._wer_ownership_reason or "ingress_lost",
-                      ownership_reason_code=self._wer_ownership_reason,
-                      ownership_snapshot_count=self._wer_snapshot_count,
-                      owned_roles=self._wer_owned_roles, ingress_lost_records=self._wer_dropped)
+                      coverage_reason=ownership_reason or "ingress_lost",
+                      ownership_reason_code=ownership_reason,
+                      ownership_snapshot_count=snapshot_count,
+                      owned_roles=owned_roles, ingress_lost_records=dropped)
         for _index in range(16):
             try:
                 event = self._wer_queue.get_nowait()
             except queue.Empty:
                 break
             if not owned:
-                self._wer_skipped += 1
+                with self._wer_stats_lock:
+                    self._wer_skipped += 1
                 continue
             if event.source_hmac in self._wer_seen:
                 continue
@@ -295,6 +430,12 @@ class FastPathModule(BaseModule):
                            "Suspend-capable WER access follows a suite dump request; suspension is unconfirmed")
             self.emit(description, Severity.HIGH, fast_path=True,
                       **observation.event_details())
+        with self._wer_stats_lock:
+            self._wer_publication = _WerCoveragePublication(
+                generation, float(now) if _wer_clock(now) else None, checked_now,
+                min(row.expires_monotonic for row in owned) if owned else None,
+                ownership_reason, snapshot_count, owned_roles, self._wer_dropped, self._wer_skipped,
+            )
         if not self._wer_queue.empty():
             self._wer_wake.set()
 

@@ -350,7 +350,7 @@ focused checks, observed limits and unresolved work.
 | Attack surface | Implemented layer | Remaining boundary |
 | --- | --- | --- |
 | Alive but blind sensor process | Separate native ETW/Sysmon canary provenance, generation, benign probe and recorder acknowledgment; missing receipts remain explicit. | Userspace echoes and EKG liveness do not establish intact callbacks. Unavailable native collectors are unavailable, not a confirmed attack. |
-| WER dump/suspend precursor | Acquire cached native ownership before its shared admission/correlation clock; retain exact birth/GUID requirements and typed unavailable reasons. | Post-event observation cannot guarantee pre-dump blocking. Certified ELAM/PPL deployment is not supplied. |
+| WER dump/suspend precursor | Shared post-acquisition admission clock, exact birth/GUID requirements and read-only cached admission/expiry/loss status. | Copied status is not atomic upstream truth. Post-event observation cannot guarantee pre-dump blocking; certified ELAM/PPL is not supplied. |
 | Executable/path replacement during containment | Retained OS process, executable and ancestor leases through durable transaction outcomes and managed compensation. | The acquired file is not original mapped-image proof. PID-bound ALE admission, socket inheritance and established-flow teardown need a native backend. |
 | OS or whole-root rollback | Bounded recognized servicing operations, independent freshness composition and issuer-pinned TPM certification/policy-plan code. | Disk VERSIONINFO is not loaded-image or patch truth. Physical enrollment, protected serialized writes and vendor mitigations remain separate. |
 | Same-user history forgery | Optional remote signatures commit exact recorder row bytes; service-private engine admission separates installed key/storage custody. | Source Observe shares the user's failure domain. A compromised authority, whole-authority rollback and physical independence need separate controls. |
@@ -359,8 +359,10 @@ Native AMD64 Windows with reviewed psutil 7.2.2 can bracket advisory metadata
 with two fresh raw birth maps, retaining two fresh process objects and bounded
 partial/loss evidence. Maps neither establish executable custody nor authorize
 response. The [inventory/WER follow-up](../analysis/hardening-v1.15-2026-10-30-inventory-wer.md)
-separates a held paired comparison from candidate-only requests and later
-lifecycle acceptance; WER live typed availability remains unmeasured.
+separates a held paired comparison from candidate-only requests. The later
+[WER/status review](../analysis/hardening-v1.15-2026-10-30-wer-status-ci.md)
+measures copied admission/expiry views, without proving current upstream
+delivery or continuous availability.
 
 ### Independent recorder history and storage
 

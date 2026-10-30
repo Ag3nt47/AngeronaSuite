@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from angerona.core import ugcap_worker as worker
+from angerona.core import ugcap_job_witness, ugcap_worker as worker
 from ugcap_native_observer import ObserverPool, empty_members
 from angerona.core.engine_transport import private_directory
 
@@ -130,7 +130,16 @@ def test_terminate_failure_keeps_live_job_and_never_queries_or_closes(outcome):
 
 
 @pytest.mark.parametrize("outcome", [None, True, -1, "exception"])
-def test_unknown_job_count_never_authorizes_close_and_can_be_requeried(outcome):
+def test_unknown_job_count_never_authorizes_close_and_can_be_requeried(outcome, monkeypatch):
+    # This test exercises count outcomes, not scheduler latency. Both the job
+    # and its real empty-member witness must share the same inert clock so a
+    # 10 ms preemption cannot latch an unrelated capture-deadline failure.
+    clock = SimpleNamespace(
+        monotonic=lambda: 100.0,
+        sleep=lambda _seconds: pytest.fail("Unknown or zero counts must not poll"),
+    )
+    monkeypatch.setattr(worker, "time", clock)
+    monkeypatch.setattr(ugcap_job_witness, "time", clock)
     state, calls = [outcome], []
 
     def active(handle):

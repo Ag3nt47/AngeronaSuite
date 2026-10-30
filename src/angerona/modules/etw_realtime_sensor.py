@@ -3,9 +3,9 @@
 Purpose
     Event-driven, real-time process-creation capture via the
     Microsoft-Windows-Kernel-Process ETW provider (pywintrace). The kernel
-    notifies Angerona the instant a process spawns, closing the multi-second
-    blind spot that polling sensors (memory/lineage) leave open — a process
-    that spawns and exits inside a poll gap is otherwise invisible. Each event
+    can observe process starts that polling sensors (memory/lineage) miss
+    between polls. Delivery delay, loss and native consumer availability remain
+    separate coverage limits. Each accepted event
     is normalized and republished onto the AngeronaSuite EventBus as a PROC
     event so triage, the provenance graph, and speculative pre-warming see it
     immediately.
@@ -14,17 +14,18 @@ Relationship to etw_listener.py (ETWG)
     ETWG captures process/logon telemetry from the Windows **Security** channel
     (EID 4688) and degrades to psutil diffing. This module (ETWR) uses the
     lower-latency **Kernel-Process** trace session instead. The two are
-    complementary: ETWR gives instant detection when the suite runs elevated;
-    ETWG/psutil remains the always-on backstop. To avoid double-reporting the
+    complementary: ETWR needs a privileged native session; ETWG/psutil provides
+    separate best-effort observations when available. To avoid double-reporting the
     same spawn, ETWR does NOT run its own psutil fallback — when the ETW session
     can't open (non-Windows, no pywintrace, or not elevated) it reports itself
-    unavailable and lets the polling sensors cover process creation.
+    unavailable. Polling does not establish equivalent kernel-event coverage.
 
 Requirements / honest limits
     * pip install pywintrace   (pure-Python ctypes wrapper; no compiler needed)
-    * MUST run elevated (Administrator) to open the Kernel-Process session. If
-      not elevated it reports UNAVAILABLE and stays down; coverage is preserved
-      by the polling sensors (you lose real-time, not coverage).
+    * The Kernel-Process session requires privileges. Source/development launches
+      must remain unelevated; review privileged-provider deployment requirements.
+      Without the native session it reports UNAVAILABLE; polling may miss
+      short-lived processes and is not equivalent collection coverage.
     * pywintrace is unmaintained; under an extreme spawn storm TDH parsing can
       lag. A future Rust (ferrisetw) sidecar can feed the same event contract
       unchanged.
@@ -255,12 +256,14 @@ class ETWProcessSensor:
     def start(self) -> bool:
         ok, reason = is_available()
         if not ok:
-            self._warn(f"ETW sensor unavailable ({reason}). Polling sensors remain active.")
+            self._warn(f"ETW sensor unavailable ({reason}). "
+                       "Polling is separate and does not establish kernel-event coverage.")
             return False
         if not _is_elevated():
             self._warn("Not elevated — cannot open Kernel-Process ETW session. "
-                       "Run Angerona as Administrator to enable real-time process "
-                       "detection. Polling sensors remain active.")
+                       "Review privileged-provider deployment requirements; keep "
+                       "source/development launches unelevated. Polling is separate "
+                       "and does not establish kernel-event coverage.")
             return False
         try:
             providers = [ProviderInfo("Microsoft-Windows-Kernel-Process",
@@ -467,15 +470,15 @@ class EtwRealtimeSensorModule(BaseModule):
         started = self._sensor.start()
         if not started:
             # Unavailable by environment (off-Windows / no pywintrace / not
-            # elevated). Report clearly and idle — polling sensors (ETWG) cover
-            # process creation, so we deliberately do NOT run a duplicate psutil
-            # fallback here.
+            # elevated). Report clearly and idle. Separate polling (ETWG) is
+            # best effort; do not add a duplicate psutil fallback or equate it
+            # with native kernel-event coverage.
             reason = self._sensor.last_error or "ETW session could not start"
             self._collection_cache = self._collection_state("unavailable", False, 0, reason)
-            self.set_health(0, f"unavailable: {reason}; polling sensors cover process creation")
+            self.set_health(0, f"unavailable: {reason}; polling coverage is separate and partial")
             self.emit(
                 f"ETWR unavailable — {reason}. Real-time process detection off; "
-                "polling sensors remain active.",
+                "polling coverage is separate and partial.",
                 Severity.LOW,
                 unavailable=True,
             )
