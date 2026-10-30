@@ -1,11 +1,68 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.14.2
+Version: 1.15.0
 Date: 2026-10-29
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.14.2 — curated tools, priority scans and breach review)
+## LATEST (v1.15.0 — major hardening review)
+
+- This is the v1.15.0 source-development hardening milestone. Windows package
+  metadata derives 1.15.0.0. Component versions and historical evidence retain
+  their own scope. Native signing, service enrollment, hardware and physical-host
+  enforcement acceptance remain separate from a source version label.
+- This update separates kernel-provider canary observations from polling,
+  correlates WER precursors with bounded owned-generation context, retains
+  program-firewall identity custody and repairs independent freshness-provider
+  composition. It adds bounded servicing-queue review, optional independently
+  sealed exact recorder rows, a real remote response floor, retained enrollment
+  and reader workers, isolated installed engine admission and a status-only
+  console. Enrolled v2 driver policy has fixed materials, two independent
+  approvals and bounded jobs; default v1 remains diagnostic-only. TPM support
+  verifies issuer-pinned fresh certifications and builds policy plans; no
+  automatic hardware enrollment or NV write is performed.
+- Recorder archives default to 16 MiB/128 epochs and preserve-and-pause when full;
+  no automatic history rollover or baseline reset. Historical SQL reads require
+  freshly proved indexed row identity. Legacy RAG import no longer creates a
+  knowledge-base file. Watchdog green status is lifecycle/deadline evidence,
+  not a detector-coverage attestation. Counter-Agentic exposes bounded socket
+  state/endpoints/role without inferring hijack or initiation from port alone;
+  only explicit LISTEN plus a matching local port is a listener. Detection,
+  severity, exact approval and deduplication are unchanged. Native cleanup
+  uncertainty retains owners.
+- The fresh 180s Full observation had 75/75 enabled workers running, explicit
+  initial 4446-record retention gap, userspace echoes complete but native ETW/
+  Sysmon unavailable, six WER cache coverage warnings and no confirmed breach.
+  Correct matched-window CPU cost and UI delay remain unresolved. STOP retirement
+  is established by its separate confirmation receipt, not the failed first
+  harness enumeration. The broad offline selfcheck is 28 phase PASS/1 FAIL: existing
+  host Ollama wildcard-listener attestation remains visible and was not changed.
+  Do not sum overlapping focused test cohorts or describe all smoke checks as PASS.
+- Later 120s sessions remain separate. One ended with native PySide 0xC0000005
+  after STOP; static unwind implicated destruction/event dispatch but did not
+  identify the exact callback/ownership cause. This remains P0 unresolved.
+  The final logging-enabled 120s reader had initial 2898-record loss, 268 new events,
+  75/75 running with 18 critical/33 degraded/1 failed and 69 unknown collectors; native
+  ETW/Sysmon unavailable. No confirmed breach. Final Core native exit0 and all
+  retained generations retired; source/preferences unchanged. Observation
+  accepted:false due process_inventory_bound twice (4096 observations OR 2s;
+  which bound unknown). Never call this an all-pass result or native crash fix.
+- The 55-pass logging patch reports both STARTUP writes, Python/thread/Qt hooks
+  and one selected native-fault target. Actual arming was observed. A COM
+  0x8001010D exception preceded continued events, not an exit failure. Both named
+  crash logs later disappeared for an unproved reason; private text is preserved.
+  Do not attribute attacker/external-cleaner/source causation or claim complete
+  native/interpreter-teardown capture. Latest socket wording was observed;
+  Watchdog stayed stability-degraded, so green-path wording is offline-gated.
+- Track implementation, evidence and remaining deployment requirements in
+  docs/releases/v1.15.0.md. Missing kernel echoes remain coverage/cause-unconfirmed;
+  suspend-capable access is not actual suspension, and a path firewall rule is
+  not PID-bound ALE admission or an established-flow teardown receipt. Current
+  sanitized evidence: analysis/hardening-v1.15-2026-10-30.md. No actual WDAC/SCM/
+  ACL/TPM changes, certified ELAM/PPL boundary, signed deployment, physical-device
+  enrollment or native ALE acceptance were performed for this source update.
+
+## Historical v1.14.2 — curated tools, priority scans and breach review
 
 - Source/application version is 1.14.2; Windows package metadata derives 1.14.2.0.
   Component implementation versions remain independent. Broader 1.15 is still

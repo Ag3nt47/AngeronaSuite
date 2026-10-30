@@ -10,15 +10,17 @@ and Response (SOAR), forensics and defensive practice in one desktop application
 Deterministic defense works without an AI model; optional local AI helps explain
 evidence and propose next steps.
 
-## Current development: v1.14.2
+## Current development: v1.15.0
 
 [Download and installation choices](#choose-your-installation) ·
 [Release downloads](https://github.com/Ag3nt47/AngeronaSuite/releases) ·
 [Latest changes](CHANGELOG.md) ·
 [Read the Master Manual online](docs/master-manual.md) ·
 [PDF manual](Angerona_Master_Manual.pdf) ·
+[Security fixes and residual exposure report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) ·
 [Download Word manual](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx) ·
-[Security flow and review map](docs/security-flow.md)
+[Security flow and review map](docs/security-flow.md) ·
+[Download the 1.15 patch and residual risk report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx)
 
 [![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
@@ -38,22 +40,41 @@ performed to create this demonstration.
 | [![GitHub Tools hub with synthetic demonstration state](assets/screenshots/github-tools-demo.png)](docs/zero-breach-toolkit.md) | [![Native Zero Breach Toolkit tab with synthetic demonstration state](assets/screenshots/zero-breach-demo.png)](docs/zero-breach-toolkit.md) |
 | [![Priority Spyware Scan controls with synthetic resource and privilege state](assets/screenshots/spyware-scan-demo.png)](docs/zero-breach-toolkit.md#priority-spyware-scan) | [![Synthetic verified-breach and network-lockdown review demonstration](assets/screenshots/breach-lockdown-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) |
 | [![After-action investigation and response choices using a synthetic case](assets/screenshots/after-action-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) | All views are labeled DEMO. Shown lockdown and response states are synthetic; these images do not demonstrate a host network action. |
+| [![Independent recorder integrity controls with synthetic signed-history and bounded-storage status](assets/screenshots/recorder-integrity-demo.png)](docs/releases/v1.15.0.md) | [![Read-only installed protection service console with synthetic lifecycle status and explicitly unverified detector coverage](assets/screenshots/protection-service-console-demo.png)](docs/releases/v1.15.0.md) |
 
-## Latest maintenance
+## What's new in 1.15
 
-v1.14.2 connects **GitHub Tools**, the pinned **Zero Breach Toolkit**, priority
-**Spyware Scan** and automatic after-action review.
+v1.15.0 strengthens telemetry assurance, tampering review and containment
+identity custody. Existing **GitHub Tools**, **Spyware Scan** and after-action
+review remain available.
 
-- **Clear scan progress:** per-check and overall progress, current task/file,
-  available estimates and an optional longer per-run allowance.
-- **Breach review:** case-linked warnings and governed response controls;
-  third-party findings and coverage gaps retain their distinct meanings.
-- **Runtime reliability:** bounded storage, display fitting, component EKGs,
-  inventory failure diagnostics and preserved user preferences.
-- **Traceable evidence:** toolkit classifications, native Defender metadata
-  and diagnostic provenance support investigation without granting authority.
+- **Telemetry assurance:** separate kernel-provider canary observations,
+  polling coverage and process liveness.
+- **Tampering review:** bounded WER precursor correlation with current owned
+  process context and explicit missing identity evidence.
+- **Containment custody:** retained process and executable identities across
+  program-firewall operations and managed rollback.
+- **Independent freshness:** configured authorities reach integrity consumers
+  before their persisted state is admitted.
+- **Recorder history:** optional independent signatures, bounded receipt storage,
+  explicit missing-history gaps and protected public-key enrollment controls.
+- **Service separation:** an installed virtual-account engine boundary and a
+  status-only desktop console, subject to signed deployment and enrollment.
+- **Managed driver policy:** a separately enrolled installed profile with
+  reviewed materials, two independent approvals and verified configuration
+  readback; default source and diagnostic profiles cannot activate it.
+- **Rollback review:** bounded servicing-queue version checks and a policy-bound
+  TPM certification verifier; physical enrollment and hardware writes are separate.
+- **Operational accuracy:** lifecycle-scoped watchdog wording, retained native
+  cleanup ownership and bounded recorder verification; optional failures and
+  actual coverage gaps stay visible.
 
-[What changed and current limits](docs/releases/v1.14.2.md) ·
+**Development status:** source preview. An unresolved native shutdown crash,
+coverage gaps and CPU/UI pressure remain documented. A later normal exit does
+not establish a crash fix; signed deployment and hardware acceptance are separate.
+
+[What changed, validation and current limits](docs/releases/v1.15.0.md) ·
+[Reviewed observation](analysis/hardening-v1.15-2026-10-30.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

@@ -61,7 +61,16 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
     owner-only POSIX permissions without requiring Windows administration.
     """
     target = Path(path)
+    service = None
     try:
+        from .windows_engine_custody import active_engine_custody
+
+        service = active_engine_custody()
+        if service is not None:
+            # The service inherits its installer-provisioned private SID DACL.
+            # Never replace it with a desktop/admin profile or invoke icacls.
+            service.verify_private_path(target)
+            return True
         if os.name != "nt":
             target.chmod(stat.S_IRUSR | stat.S_IWUSR)
             return True
@@ -115,7 +124,7 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
                 )
         return True
     except Exception:
-        if required:
+        if required or service is not None:
             raise PermissionError(
                 f"Unable to establish protected key custody for {target}"
             )
@@ -125,6 +134,15 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
 def sensitive_file_is_protected(path: Path) -> bool:
     """Return True only when a Windows key has an admin/SYSTEM-only DACL."""
     target = Path(path)
+    from .windows_engine_custody import active_engine_custody
+
+    service = active_engine_custody()
+    if service is not None:
+        try:
+            service.verify_private_path(target)
+            return True
+        except Exception:
+            return False
     if os.name != "nt":
         try:
             return (target.stat().st_mode & 0o077) == 0
@@ -139,6 +157,12 @@ def sensitive_file_is_protected(path: Path) -> bool:
 
 def ensure_sensitive_parent(path: Path, *, required: bool = False) -> None:
     """Fail before key access unless the required Windows parent is protected."""
+    from .windows_engine_custody import active_engine_custody
+
+    service = active_engine_custody()
+    if service is not None:
+        service.verify_private_path(Path(path).parent, directory=True)
+        return
     if not required or os.name != "nt":
         return
     target = Path(path)
@@ -161,6 +185,16 @@ def prepare_sensitive_key(path: Path, *, required: bool = False) -> bool:
     """
     target = Path(path)
     ensure_sensitive_parent(target, required=required)
+    from .windows_engine_custody import active_engine_custody
+
+    service = active_engine_custody()
+    if service is not None:
+        if not os.path.lexists(target):
+            return False
+        # Unsafe service authority is preserved for investigation. Neither a
+        # failed DACL check nor an inherited desktop profile rotates its key.
+        service.verify_private_path(target)
+        return True
     if not target.exists():
         return False
     if not required:
@@ -181,8 +215,11 @@ def prepare_sensitive_key(path: Path, *, required: bool = False) -> bool:
 
 def key_acl_required() -> bool:
     """Whether failure to protect signing/shutdown keys must stop startup."""
+    from .windows_engine_custody import active_engine_custody
+
     return bool(
-        getattr(sys, "frozen", False)
+        active_engine_custody() is not None
+        or getattr(sys, "frozen", False)
         or os.environ.get("ANGERONA_ENFORCE_KEY_ACL", "").strip() == "1"
     )
 

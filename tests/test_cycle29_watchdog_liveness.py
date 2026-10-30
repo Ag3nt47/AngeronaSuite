@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from angerona.core import module_base
 from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
@@ -135,6 +137,37 @@ def test_disabled_module_is_never_restarted_and_incident_state_is_cleared() -> N
     assert probe.restart_calls == []
     assert "Fault Probe" not in watchdog._restart_state
     assert watchdog.health == 100
+
+
+@pytest.mark.parametrize("health,state", [(20, "critical"), (50, "degraded"), (0, "failed")])
+def test_watchdog_note_scopes_liveness_separately_from_detector_coverage(
+    health: int, state: str,
+) -> None:
+    restart_calls = []
+    probe = SimpleNamespace(
+        health=health, health_state=state,
+        operational_snapshot=lambda: {
+            "status": "running", "health": health, "health_state": state,
+            "thread_alive": True, "lifecycle_generation": 7,
+            "first_cycle_complete": True, "watchdog_deadline_missed": False,
+        },
+        restart_if_generation=lambda generation: restart_calls.append(generation),
+    )
+    watchdog = WatchdogMonitor()
+    watchdog._mgr = _Manager(probe)
+    bus = EventBus()
+    watchdog.bind(bus)
+
+    watchdog._sweep()
+
+    assert watchdog.health == 100
+    assert watchdog.health_note == (
+        "1 enabled sibling workers have no observed lifecycle/deadline faults; "
+        "detector coverage is separate."
+    )
+    assert restart_calls == []
+    assert (probe.health, probe.health_state) == (health, state)
+    assert bus.recent(10) == []
 
 
 def test_restart_exhaustion_is_bounded_and_terminal_alert_is_deduplicated(

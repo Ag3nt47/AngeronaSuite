@@ -35,9 +35,9 @@ CHILL_PAUSED_MODULES: tuple[str, ...] = (
     "Hardware-Rooted Integrity",
     "Kernel-Boundary Posture Ledger",
     "Compliance Mapper",
-    # Synthetic background work sleeps in Chill. Local AI stays locked even
-    # during sensor escalation, until the operator manually selects Full.
-    "Telemetry Canary Drills",
+    # Generic canary drills defer inside their module while its lightweight
+    # kernel-path health loop stays awake. Other synthetic background work
+    # sleeps. Local AI stays locked until the operator manually selects Full.
     "CHAOS",
     "AI Triage (Ollama)",
     "Speculative Triage Pre-Warm",

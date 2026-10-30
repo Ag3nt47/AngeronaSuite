@@ -173,6 +173,7 @@ class ResilienceManager:
         self.frames_rejected = 0
         self.status = "stopped"
         self._component_heartbeat_cache = None
+        self._owned_core_pid = os.getpid() if os.name == "nt" else None
 
     def _sup_event(self, level: str, msg: str, details: dict) -> None:
         self._publish("Resilience Supervisor", f"[{level}] {msg}", level, details)
@@ -238,7 +239,8 @@ class ResilienceManager:
             "blackbox": (pyw, str(blackbox_entry)) if blackbox_entry is not None else None,
         }, enabled={"blackbox": blackbox_enabled,
                     "watchdog": external_wd or self.start_watchdog},
-            heartbeat_directory=producer_path.parent if isinstance(producer_path, Path) else None)
+            heartbeat_directory=producer_path.parent if isinstance(producer_path, Path) else None,
+            owned_core_pid=self._owned_core_pid, owner_matcher=self._owns_component_native_identity)
         self._spawn_thread(self._component_heartbeat_loop, "component-heartbeat-status")
 
         # 1) Watchdog. BL-01: the compiled Go watchdog is a resilience PARENT that
@@ -381,6 +383,28 @@ class ResilienceManager:
         cache = self._component_heartbeat_cache
         return cache.snapshot() if cache is not None else ()
 
+    def owned_process_identities(self) -> tuple:
+        """Cached native context; no process/file query or lock on callers."""
+        cache = self._component_heartbeat_cache
+        return cache.owned_process_identities() if not self._stop.is_set() and cache is not None else ()
+
+    def _owns_component_native_identity(self, role, identity) -> bool:
+        """Background-only membership proof against a current retained owner."""
+        from angerona.core.windows_child_job import OwnedWindowsChild
+
+        if role not in {"watchdog", "scanner", "blackbox"} or self._stop.is_set():
+            return False
+        lock = getattr(self._sup, "_lifecycle_lock", None)
+        if lock is None or not lock.acquire(blocking=False):
+            return False
+        try:
+            component = self._sup.components.get(role)
+            owner = getattr(component, "proc", None)
+            return bool(component is not None and not component._dead
+                        and type(owner) is OwnedWindowsChild and owner.contains_native_process(identity))
+        finally:
+            lock.release()
+
     def _component_heartbeat_loop(self):
         cache = self._component_heartbeat_cache
         if cache is None:
@@ -396,6 +420,9 @@ class ResilienceManager:
                 if os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1":
                     held["watchdog"] = "The external native watchdog uses a separate protocol; no compatible component heartbeat is published."
                 cache.sample(held=held)
+                refresh = getattr(cache, "refresh_owned_processes", None)
+                if callable(refresh):
+                    refresh()
         except Exception as exc:
             self._publish("Component Heartbeats", "Read-only heartbeat observation is unavailable.",
                           "LOW", {"error_type": type(exc).__name__})

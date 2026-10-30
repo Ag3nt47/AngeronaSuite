@@ -840,6 +840,7 @@ class NetworkTrustMonitorModule(BaseModule):
         high_water: IndependentHighWater | None = None,
     ) -> None:
         super().__init__()
+        self._high_water = high_water
         self._observer = observer or observe_system_network
         if privacy_key is not None and (
             not isinstance(privacy_key, bytes) or len(privacy_key) < 32
@@ -880,6 +881,11 @@ class NetworkTrustMonitorModule(BaseModule):
         self._last_path_states: dict[str, tuple[str, str]] = {}
         self._active_finding_keys: set[tuple[str, str, str]] = set()
         self._freshness_reported = ""
+
+    @property
+    def high_water_provider(self) -> IndependentHighWater | None:
+        """The authority supplied before the persisted baseline was loaded."""
+        return self._high_water
 
     def _report_baseline_freshness(self) -> None:
         store = self._baseline_store

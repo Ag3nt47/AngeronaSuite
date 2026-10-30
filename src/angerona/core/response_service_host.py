@@ -3,7 +3,8 @@
 The independently signed installer must supply immutable MSIX pins, the fixed
 restricted service SID, protected installation/state ACLs and public enrollment
 policy. This checkout deliberately supplies none of those deployment proofs.
-The implemented wire surface is diagnostic only. In particular, authentication
+The default v1 wire surface is diagnostic only. Exact opt-in v2 provisioning
+can compose the reviewed managed driver-policy backend. Authentication alone
 does not register an executor or authorize baseline/firewall/file changes.
 """
 from __future__ import annotations
@@ -23,6 +24,7 @@ from .engine_transport import canonical, decode
 from .privileged_pipe import NativePeer, SERVICE_NAME, PrivilegedPipeServer
 
 PROVISION_SCHEMA = "angerona.response-service.provisioning.v1"
+DRIVER_PROVISION_SCHEMA = "angerona.response-service.provisioning.v2"
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}\Z")
 _CHANGE_KINDS = frozenset({"baseline.replace", "authority.expand", "safeguard.disable", "release-trust.replace"})
@@ -107,21 +109,22 @@ def verify_service_registration(service, pid):
     _check_acl(descriptor, _trusted_writers(native_service_sid()), 0x200D0172)
 
 
-def verify_service_token(process, service_sid):
+def verify_service_token(process, service_sid, *, _owner=None):
     """Configuration alone does not prove the already-running token rotated."""
     import win32security
-    token = win32security.OpenProcessToken(process, 8)
-    try:
-        user = win32security.ConvertSidToStringSid(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
-        groups = win32security.GetTokenInformation(token, win32security.TokenGroups)
-        restricted = win32security.GetTokenInformation(token, win32security.TokenRestrictedSids)
-        enabled = any(win32security.ConvertSidToStringSid(sid) == service_sid and flags & 4 and not flags & 0x10
-                      for sid, flags in groups)
-        isolated = any(win32security.ConvertSidToStringSid(sid) == service_sid for sid, _ in restricted)
-        if user not in {service_sid, "S-1-5-18", "S-1-5-19", "S-1-5-20"} or not enabled or not isolated:
-            raise PermissionError("Process lacks the actual enabled and restricted SCM service identity")
-    finally:
-        token.Close()
+    if _owner is None:
+        from .native_broker_custody import NativeCustodyOwner
+        with NativeCustodyOwner() as owner:
+            return verify_service_token(process, service_sid, _owner=owner)
+    token = _owner.open(win32security.OpenProcessToken, process, 8)
+    user = win32security.ConvertSidToStringSid(win32security.GetTokenInformation(token, win32security.TokenUser)[0])
+    groups = win32security.GetTokenInformation(token, win32security.TokenGroups)
+    restricted = win32security.GetTokenInformation(token, win32security.TokenRestrictedSids)
+    enabled = any(win32security.ConvertSidToStringSid(sid) == service_sid and flags & 4 and not flags & 0x10
+                  for sid, flags in groups)
+    isolated = any(win32security.ConvertSidToStringSid(sid) == service_sid for sid, _ in restricted)
+    if user not in {service_sid, "S-1-5-18", "S-1-5-19", "S-1-5-20"} or not enabled or not isolated:
+        raise PermissionError("Process lacks the actual enabled and restricted SCM service identity")
 
 
 def _fixed_state_root():
@@ -137,19 +140,9 @@ def _fixed_state_root():
 
 def _read_provisioning(path, service_sid):
     """Installer-owned public policy, pinned against write/delete while read."""
-    import win32file
-    verify_protected_path(path, service_sid)
-    handle = win32file.CreateFile(str(path), 0x80000000, 1, None, 3, 0x00200000, None)
-    try:
-        info = win32file.GetFileInformationByHandle(handle)
-        if info[0] & (0x400 | 0x10) or info[7] != 1 or info[5] or not 1 <= info[6] <= _MAX_POLICY:
-            raise PermissionError("Invalid protected provisioning file custody")
-        _, data = win32file.ReadFile(handle, _MAX_POLICY + 1)
-        if len(data) != info[6] or len(data) > _MAX_POLICY:
-            raise PermissionError("Protected provisioning file size changed")
-        return decode(data)
-    finally:
-        handle.Close()
+    from .driver_policy_service import ProtectedArtifactReader
+    reader = ProtectedArtifactReader(lambda item: verify_protected_path(item, service_sid))
+    return decode(reader(path, _MAX_POLICY))
 
 
 @dataclass(frozen=True)
@@ -235,6 +228,23 @@ def _parse_policy(value):
     return users, DiagnosticBroker(credentials, candidates)
 
 
+def _parse_runtime_policy(value):
+    """V1 remains closed diagnostic-only; v2 grants one explicit profile."""
+    if isinstance(value, dict) and value.get("schema") == DRIVER_PROVISION_SCHEMA:
+        if set(value) != {"schema", "allowed_user_sids", "credentials", "candidates", "driver_policy"}:
+            raise PermissionError("Exact installed driver-policy provisioning required")
+        profile = value["driver_policy"]
+        if (type(profile) is not dict or set(profile) != {"profile", "manifest_sha256"}
+                or profile["profile"] != "own-unsigned-multiple-policy"
+                or type(profile["manifest_sha256"]) is not str or not _HEX.fullmatch(profile["manifest_sha256"])):
+            raise PermissionError("Pinned installed driver-policy profile required")
+        users, diagnostic = _parse_policy({key: item for key, item in dict(value, schema=PROVISION_SCHEMA).items()
+                                          if key != "driver_policy"})
+        return users, diagnostic, profile["manifest_sha256"]
+    users, diagnostic = _parse_policy(value)
+    return users, diagnostic, None
+
+
 def prepare_runtime():
     """Production-only factory; fails before storage creation or listener start."""
     from .engine_windows_service import require_package_service
@@ -242,17 +252,13 @@ def prepare_runtime():
     import win32api
     import win32service
     from .privileged_pipe import _package_path, _native_package_string, _process_image
+    from .native_broker_custody import NativeCustodyOwner
     service_sid = native_service_sid()
-    verify_service_token(win32api.GetCurrentProcess(), service_sid)
-    scm = win32service.OpenSCManager(None, None, 1)
-    service = None
-    try:
-        service = win32service.OpenService(scm, SERVICE_NAME, 0x20005)  # READ_CONTROL, QUERY_CONFIG/STATUS
+    with NativeCustodyOwner() as owner:
+        verify_service_token(win32api.GetCurrentProcess(), service_sid, _owner=owner)
+        scm = owner.open(win32service.OpenSCManager, None, None, 1, closer=win32service.CloseServiceHandle)
+        service = owner.open(win32service.OpenService, scm, SERVICE_NAME, 0x20005, closer=win32service.CloseServiceHandle)
         verify_service_registration(service, os.getpid())
-    finally:
-        if service is not None:
-            win32service.CloseServiceHandle(service)
-        win32service.CloseServiceHandle(scm)
     process = win32api.GetCurrentProcess()
     package = _package_path(_native_package_string("GetPackageFullName", process))
     image = _process_image(process)
@@ -263,7 +269,49 @@ def prepare_runtime():
     root = _fixed_state_root()
     verify_protected_path(root, service_sid, directory=True)
     policy_path = root / "provisioning.json"
-    allowed, _ = _parse_policy(_read_provisioning(policy_path, service_sid))
+    initial = _read_provisioning(policy_path, service_sid)
+    allowed, diagnostic, driver_pin = _parse_runtime_policy(initial)
+
+    if driver_pin is not None:
+        from .driver_policy_service import DriverPolicyServiceRuntime, DriverPolicyPipeServer, ProtectedArtifactReader
+        driver_root = root / "DriverPolicy"
+        verify_protected_path(driver_root, service_sid, directory=True)
+        initial_bytes = canonical(initial)
+
+        def guard():
+            # No profile reload can silently replace authority or resurrect a
+            # proposal. Any enrollment/revocation generation change holds all
+            # dispatch/native barriers until the old owner retires safely.
+            require_package_service()
+            with NativeCustodyOwner() as owner:
+                verify_service_token(win32api.GetCurrentProcess(), service_sid, _owner=owner)
+                scm_now = owner.open(win32service.OpenSCManager, None, None, 1, closer=win32service.CloseServiceHandle)
+                service_now = owner.open(win32service.OpenService, scm_now, SERVICE_NAME, 0x20005, closer=win32service.CloseServiceHandle)
+                verify_service_registration(service_now, os.getpid())
+            if (_package_path(_native_package_string("GetPackageFullName", process)) != package
+                    or _process_image(process) != image):
+                return False
+            verify_protected_path(package, service_sid, directory=True)
+            verify_protected_path(image, service_sid)
+            verify_protected_path(root, service_sid, directory=True)
+            verify_protected_path(driver_root, service_sid, directory=True)
+            return canonical(_read_provisioning(policy_path, service_sid)) == initial_bytes
+
+        reader = ProtectedArtifactReader(lambda path: verify_protected_path(path, service_sid))
+        runtime = DriverPolicyServiceRuntime(driver_root, manifest_sha256=driver_pin,
+            credentials=tuple(diagnostic.verifier.credentials.values()), installed_guard=guard, read_artifact=reader)
+        try:
+            def driver_dispatch(request, peer):
+                if not runtime._guard():
+                    runtime.fence_profile()
+                    raise PermissionError("Installed response profile changed or native custody is held")
+                return runtime.dispatch(request, peer)
+            listener = DriverPolicyPipeServer(driver_dispatch, server_sid=service_sid, allowed_sids=allowed)
+            runtime.attach_listener(listener)
+            return runtime
+        except BaseException:
+            runtime.stop()
+            raise
 
     def dispatch(request, peer):
         # Reload protected public bindings/revocations for every diagnostic.

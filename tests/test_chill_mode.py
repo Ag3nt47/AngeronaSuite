@@ -78,6 +78,7 @@ def test_chill_policy_is_network_first_and_names_are_exact() -> None:
         "Temporal Tradecraft Correlator",
         "Identity Session Guard",
         "Process Egress Lease Guard",
+        "Telemetry Canary Drills",
     ):
         assert name not in CHILL_PAUSED_MODULES
         assert name not in CHILL_THROTTLE_FLOORS

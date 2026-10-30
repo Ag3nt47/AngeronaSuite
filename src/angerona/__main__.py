@@ -6,6 +6,33 @@ import os
 from types import ModuleType
 
 
+def _run_kernel_telemetry_canary(arguments: tuple[str, ...]) -> int:
+    """Run only the fixed inert packaged probe, before application startup.
+
+    This route grants no engine, response or elevation authority. Frozen
+    Windows builds retain the same immutable process-bound package admission;
+    neither this helper nor its caller ever requests a UAC handoff.
+    """
+    import re
+
+    if (len(arguments) != 2 or arguments[0] != "--kernel-telemetry-canary"
+            or re.fullmatch(r"DRILLCANARY_[0-9A-F]{16}", arguments[1]) is None):
+        print("[Angerona] Invalid kernel telemetry canary arguments.", file=sys.stderr, flush=True)
+        return 2
+    if bool(getattr(sys, "frozen", False)) and sys.platform == "win32":
+        from angerona.core.windows_package_identity import verify_current_msix_authority
+
+        authority = verify_current_msix_authority()
+        if not authority.trusted:
+            print("[Angerona] Refusing packaged telemetry canary: " + authority.reason,
+                  file=sys.stderr, flush=True)
+            return 2
+    import time
+
+    time.sleep(2.0)
+    return 0
+
+
 def _install_fast_pyside_feature_detection() -> bool:
     """Avoid Shiboken rereading every imported source file during startup.
 
@@ -54,6 +81,14 @@ def _install_fast_pyside_feature_detection() -> bool:
         return False
 
 def main() -> int:
+    if any(argument.startswith("--kernel-telemetry-canary") for argument in sys.argv[1:]):
+        # Reserved malformed variants must also fail here; they must never
+        # fall through to Config, GUI startup or automatic-start mutation.
+        return _run_kernel_telemetry_canary(tuple(sys.argv[1:]))
+    if any(argument.startswith("--protection-console") for argument in sys.argv[1:]):
+        if sys.argv[1:] != ["--protection-console"]:
+            print("[Angerona] Installed service status requires exactly --protection-console.", flush=True)
+            return 2
     if "--automatic-start" in sys.argv[1:]:
         # An inhibit-only flag: scheduled/recovery launches cannot resume STOP.
         os.environ["ANGERONA_SUPERVISED_RECOVERY"] = "1"
@@ -68,7 +103,7 @@ def main() -> int:
         return 2
     setup_requested = "--setup" in sys.argv
     chill_requested = "--chill" in sys.argv
-    engine_flags = {"--engine-console", "--engine-serve", "--engine-service", "--response-service"}.intersection(sys.argv)
+    engine_flags = {"--engine-console", "--engine-serve", "--engine-service", "--response-service", "--protection-console"}.intersection(sys.argv)
     if len(engine_flags) > 1:
         print("[Angerona] Choose exactly one engine launch mode.", flush=True)
         return 2
@@ -206,8 +241,28 @@ def main() -> int:
     try:
         from angerona.core.crashlog import install as _install_crashlog
         _install_crashlog()
-    except Exception:
-        pass
+    except Exception as error:
+        # A logging failure must neither hide its coverage gap nor prevent the
+        # dashboard from starting. Keep details private and stderr bounded.
+        diagnostic_written = False
+        try:
+            from angerona.core.data_paths import data_dir
+            from angerona.core.startup_diagnostics import StartupDiagnostics
+            diagnostic_written = StartupDiagnostics(data_dir()).record(
+                "crash-log-arming", "unavailable",
+                reason="Crash logger installer/import failed; startup continues.",
+                exception_type=type(error).__name__[:64], process_role="core",
+                error_code=getattr(error, "winerror", None) or getattr(error, "errno", None),
+                coverage="Crash capture was not verified by this installer attempt.",
+            )
+        except Exception:
+            diagnostic_written = False
+        try:
+            print(f"[Angerona] Crash logging unavailable ({type(error).__name__[:64]}; "
+                  f"private receipt {'written' if diagnostic_written else 'unavailable'}). Startup continues.",
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
 
     # Self-harden this process (block legacy injection vectors, remote/low-IL
     # image loads, weak ASLR) before we load Qt and the module set. Best-effort;
@@ -298,6 +353,12 @@ def main() -> int:
 
 def _run_engine_mode(mode: str, *, force_chill: bool = False) -> int:
     """Route before the embedded GUI singleton so only the engine owns sensors."""
+    if mode == "--protection-console":
+        from angerona.core.persistent_engine import _require_user
+        _require_user()
+        _install_fast_pyside_feature_detection()
+        from angerona.gui.protection_service_console import run_console
+        return run_console()
     if mode == "--response-service":
         from angerona.core.response_service_host import run_dispatcher
         try:

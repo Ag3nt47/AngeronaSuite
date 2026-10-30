@@ -218,12 +218,42 @@ def test_captured_verifier_closure_cell_cannot_redirect_acceptance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Captured callables are mutable through ordinary Python closure cells."""
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    inventory_reads = []
+
+    def supplied_inventory(*, max_age=None):
+        # This closure-authority fixture has an empty process universe. The
+        # real Process Monitor still consumes a fresh typed receipt, completes
+        # its requested cycle and passes the unmodified lease-readiness gate.
+        # This input makes no claim about the machine running the test.
+        snapshot = ProcessSnapshot(
+            processes=(), collected_at=time.time(), complete=True,
+            enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+            error="", enumeration_complete=True,
+        )
+        inventory_reads.append((max_age, snapshot))
+        return snapshot
+
+    monkeypatch.setattr(process_monitor, "process_snapshot", supplied_inventory)
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
-    lease = purple_guard.acquire_redteam_validation_lease(
-        manager, bus, recorder, tmp_path, target, timeout=3
-    )
+    lease = None
     try:
+        lease = purple_guard.acquire_redteam_validation_lease(
+            manager, bus, recorder, tmp_path, target, timeout=3
+        )
+        assert any(
+            age == 0.0 and type(snapshot) is ProcessSnapshot
+            for age, snapshot in inventory_reads
+        )
+        process = manager.modules["Process Monitor"]
+        readiness = lease.readiness["process_sensor"]
+        assert type(process) is process_monitor.ProcessMonitorModule
+        assert readiness["generation"] == process.lifecycle_generation
+        assert readiness["first_cycle_complete"] is True
+        assert readiness["event_overflow_count"] == 0
         RedTeamValidationLease.consume_for_run(
             lease, run_id="sixth-independent-closure", target=target, data_root=tmp_path
         )
@@ -246,9 +276,14 @@ def test_captured_verifier_closure_cell_cannot_redirect_acceptance(
         finally:
             verifier_cell.cell_contents = original
     finally:
-        RedTeamValidationLease.release(lease)
-        guard.stop()
-        recorder.close()
+        try:
+            if lease is not None:
+                RedTeamValidationLease.release(lease)
+        finally:
+            try:
+                guard.stop()
+            finally:
+                recorder.close()
 
 
 _NATIVE_RECEIPT_KEYS = {

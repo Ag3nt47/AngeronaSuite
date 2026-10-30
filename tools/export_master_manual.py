@@ -28,6 +28,7 @@ FIGURES = {
     'security-flow-response.png': 'Governed response and operator STOP flow',
     'security-flow-tools.png': 'Pinned toolkit preparation, separate execution and report review',
     'security-flow-breach.png': 'Native breach qualification, governed containment and managed Lift',
+    'security-flow-hardening.png': 'Version 1.15 telemetry assurance, independent history and service authority layers',
 }
 LOCAL_PATH = re.compile(
     r'(?<![\w/])(?:(?:src|tests|tools|docs|analysis|assets)/[\w./-]+\.(?:py|ps1|md|png|json|txt|bat|toml|go)|'

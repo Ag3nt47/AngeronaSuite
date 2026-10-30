@@ -245,6 +245,10 @@ def _parser() -> argparse.ArgumentParser:
         help="symmetric key accepted only by explicit loopback test mode",
     )
     parser.add_argument("--test-hmac-key-id", default="sentinel-test-hmac-v1")
+    parser.add_argument("--enable-recorder-epochs", action="store_true",
+                        help="enroll append-only recorder receipts; requires independent Ed25519 authority signing")
+    parser.add_argument("--enable-client-response-floors", action="store_true",
+                        help="enroll bounded remote client sequence/time floors; requires independent Ed25519 keys")
     parser.add_argument("--tls-cert", type=Path)
     parser.add_argument("--tls-key", type=Path)
     parser.add_argument(
@@ -418,6 +422,8 @@ def main(argv: list[str] | None = None) -> int:
             request_verifier=request_verifier,
             response_signer=response_signer,
             response_verifier=response_verifier,
+            enable_recorder_epochs=args.enable_recorder_epochs,
+            enable_client_response_floors=args.enable_client_response_floors,
         )
     except Exception as exc:
         parser.error(f"authority configuration rejected: {exc}")

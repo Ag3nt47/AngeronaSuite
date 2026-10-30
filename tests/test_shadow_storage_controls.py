@@ -235,27 +235,58 @@ def test_queued_request_does_not_reuse_prior_complete_report_as_success():
 def test_volume_probe_runs_off_qt_and_polling_coalesces(setup, monkeypatch):
     config, _, _, controller, _, _ = setup
     entered, release = threading.Event(), threading.Event()
-    calls = []
+    calls, collection_threads = [], []
     gui_thread = threading.get_ident()
+    real_collect = gui._collect_volume_capacity
+
+    def collect(data_root, reserve):
+        collection_threads.append(threading.current_thread())
+        return real_collect(data_root, reserve)
+
     def probe(_path):
         calls.append(threading.get_ident())
         entered.set()
         assert release.wait(2)
         return SimpleNamespace(free=20_000 * gui.MIB)
+
+    monkeypatch.setattr(gui, "_collect_volume_capacity", collect)
     monkeypatch.setattr(gui.shutil, "disk_usage", probe)
     monkeypatch.setattr(gui.tempfile, "gettempdir", lambda: str(config.data_dir))
-    controller.poll()
-    assert entered.wait(2)
-    for _ in range(20):
+    try:
         controller.poll()
-    assert len(calls) == 1 and calls[0] != gui_thread
-    release.set()
-    deadline = time.monotonic() + 2
-    while controller._reader.busy and time.monotonic() < deadline:
-        QApplication.processEvents()
-        time.sleep(.005)
-    assert not controller._reader.busy
-    assert len(calls) <= 2
+        assert entered.wait(2)
+        for _ in range(20):
+            controller.poll()
+        assert len(collection_threads) == 1
+        assert len(calls) == 1 and calls[0] != gui_thread
+        release.set()
+        deadline = time.monotonic() + 2
+        while controller._reader.busy and time.monotonic() < deadline:
+            QApplication.processEvents()
+            time.sleep(.005)
+        assert not controller._reader.busy
+        # A real collection may probe one or two volumes when device identity
+        # cannot deduplicate them. Coalescing bounds collections, not FS calls.
+        assert 1 <= len(collection_threads) <= 2
+        assert all(thread.ident != gui_thread for thread in collection_threads)
+        assert all(thread_id != gui_thread for thread_id in calls)
+    finally:
+        release.set()
+        try:
+            controller.close()
+        finally:
+            owned_threads = set(collection_threads)
+            if controller._reader.thread is not None:
+                owned_threads.add(controller._reader.thread)
+            cleanup_errors = []
+            for thread in owned_threads:
+                try:
+                    thread.join(2)
+                    if thread.is_alive():
+                        cleanup_errors.append(f"{thread.name} did not retire")
+                except RuntimeError as exc:
+                    cleanup_errors.append(f"{thread.name}: {exc}")
+            assert not cleanup_errors, "; ".join(cleanup_errors)
 
 
 def test_close_cancels_prompt_without_queuing_delete(setup):

@@ -80,6 +80,9 @@ class AngeronaApp:
         self._shutdown_gate = threading.Lock()
         self._startup_lifecycle_lock = threading.Lock()
         self.config = Config.load()
+        if high_water_provider is None:
+            from angerona.core.recorder_integrity import provider_from_config
+            high_water_provider = provider_from_config(self.config)
         # Native logon/launcher entry points pass --chill. This is a runtime
         # safety profile, not a rewrite of the operator's saved manual-launch
         # preference: a crash/restart during an unattended session therefore
@@ -215,6 +218,10 @@ class AngeronaApp:
             high_water_provider=high_water_provider,
         )
         self.manager.live_debug_service = self.live_debug_service
+        self.manager.owned_process_identities = self._owned_process_identities_cached
+        from angerona.core.recorder_integrity_runtime import RecorderIntegrityRuntime
+        self.recorder_integrity_runtime = RecorderIntegrityRuntime(self.config, self.bus, high_water_provider)
+        self.manager.recorder_integrity_runtime = self.recorder_integrity_runtime
         self._breach_state_controller = None
         try:
             from angerona.core.breach_state import ensure_breach_controller
@@ -327,6 +334,15 @@ class AngeronaApp:
         # Open sharing only after all mandatory construction has succeeded. A
         # failed constructor must not leave a live endpoint with no App owner.
         self._start_live_debug(live_debug)
+
+    def _owned_process_identities_cached(self) -> tuple:
+        """WER context reads immutable native-owner memory, never UI status."""
+        requested = getattr(self, "_shutdown_requested", None)
+        if requested is not None and requested.is_set():
+            return ()
+        resilience = getattr(self, "_resilience", None)
+        supplier = getattr(resilience, "owned_process_identities", None)
+        return supplier() if callable(supplier) else ()
 
     def _component_heartbeats_cached(self) -> tuple[dict, ...]:
         """GUI publication copy only: no files, native probes or held locks."""
@@ -533,6 +549,9 @@ class AngeronaApp:
             self.window.show()
             self._schedule_dashboard_ready()
         self.qt.aboutToQuit.connect(self.shutdown)
+        # __main__ owns this fully constructed graph before starting a new
+        # non-daemon reader. A later start failure therefore runs shutdown.
+        self._start_recorder_integrity()
         from PySide6.QtCore import QTimer
         if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
             # Covers a native-parent launch already past its admission check
@@ -560,6 +579,13 @@ class AngeronaApp:
         ):
             QTimer.singleShot(800, self._launch_blackbox)
         return True
+
+    def _start_recorder_integrity(self):
+        try:
+            self.recorder_integrity_runtime.start()
+        except Exception as exc:
+            self._record_startup_degradation("Recorder Integrity",
+                "independent history witnessing is unavailable; local records are preserved", exc)
 
     def _honor_operator_stop(self) -> None:
         from angerona.resilience.shutdown_token import is_standdown_requested
@@ -1249,6 +1275,9 @@ class AngeronaApp:
             requested = threading.Event()
             self._shutdown_requested = requested
         requested.set()
+        integrity = getattr(self, "recorder_integrity_runtime", None)
+        if integrity is not None:
+            integrity.request_stop()
         tools_controller = getattr(getattr(self, "manager", None), "_curated_tools_controller", None)
         if tools_controller is not None:
             try:
@@ -1477,6 +1506,12 @@ class AngeronaApp:
         # If a bounded drain times out, process teardown will reclaim it; this
         # is safer than creating a worker/use-after-close race during shutdown.
         optional_drained = getattr(self, "_optional_owned_drained", True)
+        integrity = getattr(self, "recorder_integrity_runtime", None)
+        if integrity is not None:
+            try:
+                optional_drained = integrity.stop(timeout=3.0) and optional_drained
+            except Exception:
+                optional_drained = False
         if recorder_drained and optional_drained:
             self.storage.close()
         try:

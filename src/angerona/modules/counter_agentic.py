@@ -25,8 +25,9 @@ Signals
     2. Discovery→action chain — the first command in that rhythm is
        reconnaissance (whoami/net/get-process…) and a later one is an action
        (iex/download/schtasks/reg…).
-    3. Ollama port watch — connections to the local inference port
-       (127.0.0.1:11434) from a process not on the expected allowlist.
+    3. Ollama port watch — sockets with either endpoint matching the configured
+       inference port number, owned by a process without exact-path/digest
+       approval. A port match alone does not establish locality or misuse.
 
 Inputs
     Consumes process-creation events already on the EventBus (from ETWG / ETWR /
@@ -67,6 +68,15 @@ _DISCOVERY_KW = ("whoami", "net ", "net.exe", "systeminfo", "sysinfo",
 _ACTION_KW = ("download", "invoke-expression", "iex", "invoke-webrequest",
               "iwr", "schtasks", "reg add", "reg.exe add", "new-service",
               "bitsadmin", "certutil", "-enc", "frombase64string")
+
+
+def _socket_advisory_text(value: object, limit: int) -> str:
+    """Bound untrusted socket labels without changing matching or dedup data."""
+    if not isinstance(value, str):
+        return ""
+    clipped = value if len(value) <= limit else value[:limit - 1] + "…"
+    return "".join(character if character.isprintable() else "�" for character in clipped)
+
 
 def _configured_inference_port() -> tuple[int | None, str, str]:
     """Return the configured loopback endpoint without trusting a basename."""
@@ -241,10 +251,9 @@ class CounterAgenticModule(BaseModule):
         for c in conns:
             laddr = c.get("laddr") or ""
             raddr = c.get("raddr") or ""
-            port_hit = (
-                (laddr and laddr.rsplit(":", 1)[-1] == str(port))
-                or (raddr and raddr.rsplit(":", 1)[-1] == str(port))
-            )
+            local_match = bool(laddr and laddr.rsplit(":", 1)[-1] == str(port))
+            remote_match = bool(raddr and raddr.rsplit(":", 1)[-1] == str(port))
+            port_hit = local_match or remote_match
             pid = c.get("pid")
             if (
                 not port_hit
@@ -292,12 +301,34 @@ class CounterAgenticModule(BaseModule):
                     continue
                 self._port_alerted[key] = now
                 self._detections += 1
+                raw_status = c.get("status")
+                socket_status = _socket_advisory_text(raw_status, 64) or "UNKNOWN"
+                matched_endpoint = (
+                    "both" if local_match and remote_match
+                    else "local" if local_match else "remote"
+                )
+                # Local/remote describe the snapshot endpoints, not who
+                # initiated a connection. Only an explicit listening state
+                # establishes a listener; every other role remains a match.
+                socket_role = (
+                    "listener" if isinstance(raw_status, str)
+                    and raw_status == "LISTEN" and local_match
+                    else f"{matched_endpoint}-port-match"
+                )
                 self.emit(
-                    f"Unexpected process '{pname}' (PID {pid}) connected to the local "
-                    f"inference port {port}. Possible attempt to hijack/abuse the "
-                    f"local LLM. Review (detection only).",
+                    f"Unexpected process '{pname}' (PID {pid}) owns an observed socket "
+                    f"matching configured inference port number {port} "
+                    f"(state {socket_status}; role {socket_role}). "
+                    "Review socket and process identity; a port match alone does not "
+                    "establish locality, initiator or misuse (detection only).",
                     Severity.HIGH, pid=pid, process=pname, port=port,
                     configured_endpoint=self._inference_endpoint,
+                    socket_status=socket_status,
+                    local_endpoint=_socket_advisory_text(laddr, 1024),
+                    remote_endpoint=_socket_advisory_text(raddr, 1024),
+                    matched_endpoint=matched_endpoint,
+                    socket_role=socket_role,
+                    socket_metadata_advisory=True,
                     process_create_time=created,
                     process_path=executable,
                     process_identity_complete=created is not None and bool(executable),

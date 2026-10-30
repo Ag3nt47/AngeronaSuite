@@ -43,12 +43,17 @@ Maintenance
 from __future__ import annotations
 
 import re
+import queue
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.net_interfaces import detect_split_tunnel
+from angerona.core.werfault_guard import (
+    WerFaultCorrelator, capture_wer_telemetry, read_owned_processes,
+)
 
 DEDUP_TTL = 120.0   # seconds between repeat fast-path alerts for same triple
 
@@ -183,6 +188,100 @@ class FastPathModule(BaseModule):
         super().__init__()
         # (rule_label, source_module, pid_str) → last_alert_ts
         self._seen: dict[tuple[str, str, str], float] = {}
+        self._owned_process_source = None
+        self._wer_queue = queue.Queue(maxsize=64)
+        self._wer_wake = threading.Event()
+        self._wer_guard = WerFaultCorrelator()
+        self._wer_seen: dict[str, float] = {}
+        self._wer_dropped = 0
+        self._wer_stats_lock = threading.Lock()
+        self._wer_owned_roles = ()
+        self._wer_skipped = 0
+        self._wer_coverage = "current native-owned process cache unavailable"
+        self._wer_gap_reported = ""
+
+    def bind_owned_processes(self, supplier) -> None:
+        """Bind only a composition-owned immutable cache, never event claims."""
+        if supplier is not None and not callable(supplier):
+            raise TypeError("Native-owned process supplier must be callable")
+        self._owned_process_source = supplier
+
+    def bind_manager(self, manager) -> None:
+        self.bind_owned_processes(getattr(manager, "owned_process_identities", None))
+
+    def wer_coverage_snapshot(self) -> dict:
+        return dict(state="available" if not self._wer_coverage else "unavailable",
+                    reason=self._wer_coverage, queued=self._wer_queue.qsize(),
+                    queue_capacity=self._wer_queue.maxsize, dropped=self._wer_dropped,
+                    owned_roles=self._wer_owned_roles, skipped_admission_attempts=self._wer_skipped,
+                    ownership_scope="Admitted retained owners only; absent companions remain unproven",
+                    scope="Bounded WER precursor observations; no suspension or prevention attestation",
+                    response_authorized=False)
+
+    def _capture_wer_event(self, event) -> None:
+        """Bounded, outward-only INFO ingress; no host/process or policy I/O."""
+        if self.stopping or self._bus is None:
+            return
+        try:
+            captured = capture_wer_telemetry(event, now=time.monotonic(), mesh_required=self._bus.mesh_required)
+            if captured is None or self._bus.integrity_enabled is not True or not self._bus.verify(event):
+                return
+            self._wer_queue.put_nowait(captured)
+            self._wer_wake.set()
+        except queue.Full:
+            with self._wer_stats_lock:
+                self._wer_dropped += 1
+            self._wer_wake.set()
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            return
+
+    def _drain_wer_events(self) -> None:
+        now = time.monotonic()
+        self._wer_seen = {key: stamp for key, stamp in self._wer_seen.items() if now - stamp < DEDUP_TTL}
+        try:
+            owned = read_owned_processes(self._owned_process_source, now=now)
+            self._wer_owned_roles = tuple(row.role for row in owned)
+            self._wer_coverage = ""
+        except Exception:
+            owned = ()
+            self._wer_owned_roles = ()
+            self._wer_coverage = "current native-owned process cache unavailable, stale or malformed"
+        if self._wer_dropped:
+            self._wer_coverage = "WER telemetry ingress lost records; correlation coverage is incomplete"
+        if not self._wer_coverage:
+            self._wer_gap_reported = ""
+        if self._wer_coverage and self._wer_gap_reported != self._wer_coverage:
+            self._wer_gap_reported = self._wer_coverage
+            self.emit("WER tampering observation coverage: " + self._wer_coverage,
+                      Severity.LOW, disposition="health", active_attack=False,
+                      response_authorized=False, coverage_failure=True)
+        for _index in range(16):
+            try:
+                event = self._wer_queue.get_nowait()
+            except queue.Empty:
+                break
+            if not owned:
+                self._wer_skipped += 1
+                continue
+            if event.source_hmac in self._wer_seen:
+                continue
+            self._wer_seen[event.source_hmac] = now
+            if len(self._wer_seen) > 256:
+                self._wer_seen.pop(next(iter(self._wer_seen)))
+            observation = self._wer_guard.observe(event, owned, now=now)
+            if observation is None:
+                continue
+            description = ("WER dump flags reference a currently owned suite PID; target generation remains unbound"
+                           if observation.kind == "suite-dump-request" else
+                           "Suspend-capable WER access follows a suite dump request; suspension is unconfirmed")
+            self.emit(description, Severity.HIGH, fast_path=True,
+                      **observation.event_details())
+        if not self._wer_queue.empty():
+            self._wer_wake.set()
+
+    def stop(self) -> None:
+        super().stop()
+        self._wer_wake.set()
 
     @property
     def state(self) -> str:
@@ -201,11 +300,32 @@ class FastPathModule(BaseModule):
         )
         self.set_health(100, "")
 
-        while not self.stopping:
-            self.sleep(self._POLL_INTERVAL, cycle_complete=False)
-            self._scan_bus()
-            self._evict_stale_dedup()
-            self.mark_cycle_complete()
+        subscribed = False
+        try:
+            if self._bus is not None:
+                self._bus.subscribe(self._capture_wer_event)
+                subscribed = True
+            next_general = time.monotonic() + self._POLL_INTERVAL
+            while not self.stopping:
+                self.sleep(max(0.0, next_general - time.monotonic()), cycle_complete=False,
+                           _wake_event=self._wer_wake)
+                self._wer_wake.clear()
+                if self.stopping:
+                    break
+                self._drain_wer_events()
+                if time.monotonic() >= next_general:
+                    self._scan_bus()
+                    self._evict_stale_dedup()
+                    next_general = time.monotonic() + self._POLL_INTERVAL
+                self.mark_cycle_complete()
+        finally:
+            if subscribed:
+                self._bus.unsubscribe(self._capture_wer_event)
+            while not self._wer_queue.empty():
+                try:
+                    self._wer_queue.get_nowait()
+                except queue.Empty:
+                    break
 
     def _scan_bus(self) -> None:
         if self._bus is None:
@@ -214,7 +334,7 @@ class FastPathModule(BaseModule):
         for ev in events:
             if ev.module == self.name:
                 continue   # never process our own output
-
+            self._capture_wer_event(ev)
             self._check_event(ev)
 
     def _check_event(self, ev) -> None:

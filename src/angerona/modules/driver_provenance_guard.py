@@ -26,6 +26,7 @@ from typing import Callable, Mapping, Protocol
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.privilege import trusted_powershell_path
 from angerona.core.win import run_hidden
+from angerona.core.windows_rollback_audit import RollbackAudit, WindowsRollbackAuditProvider
 from angerona.modules.intel_sync import is_known_bad_driver
 from angerona.modules.platform_attestation_guard import (
     BootPostureProvider,
@@ -879,7 +880,7 @@ class DriverProvenanceGuard(BaseModule):
         "kernel load receipt."
     )
     category = "Integrity"
-    version = "1.14.0"
+    version = "1.15.0"
     supported_platforms = frozenset(SUPPORTED_PLATFORMS)
     capability_mode = "observe"
     platform_requirements = (
@@ -888,8 +889,9 @@ class DriverProvenanceGuard(BaseModule):
     )
     # The serialized inventory and boot queries allow 45s + 10s, followed by
     # bounded evidence processing. Keep both watchdog phases finite and aligned.
-    startup_cycle_timeout = 60.0
-    watchdog_work_budget_seconds = 60.0
+    # Includes a separate cooperative five-second servicing-version audit.
+    startup_cycle_timeout = 70.0
+    watchdog_work_budget_seconds = 70.0
     _INTERVAL = 900.0
 
     def __init__(
@@ -897,9 +899,13 @@ class DriverProvenanceGuard(BaseModule):
         provider: DriverEvidenceProvider | None = None,
         *,
         receipt_verifier: DriverLoadReceiptVerifier | None = None,
+        rollback_provider: WindowsRollbackAuditProvider | None = None,
     ) -> None:
         super().__init__()
         self._provider = provider or WindowsDriverEvidenceProvider()
+        self._rollback_provider = (rollback_provider if rollback_provider is not None
+                                   else WindowsRollbackAuditProvider() if provider is None else None)
+        self._rollback_digest = ""
         if receipt_verifier is not None and not isinstance(
             receipt_verifier, DriverLoadReceiptVerifier
         ):
@@ -1070,6 +1076,39 @@ class DriverProvenanceGuard(BaseModule):
             self.set_health(worst, note)
         return tuple(assessments)
 
+    def observe_rollback_once(self) -> RollbackAudit | None:
+        """Read-only servicing leads; no reboot, file, policy or trust mutation."""
+        if self._rollback_provider is None:
+            return None
+        try:
+            result = self._rollback_provider.collect()
+            if not isinstance(result, RollbackAudit):
+                raise ValueError("invalid rollback audit provider result")
+        except Exception:
+            result = RollbackAudit("unavailable-or-unsupported", 0, 1, 0, 0, (), False)
+        details = result.event_details()
+        scheduled = any(lead.origin == "pending-queue" for lead in result.leads)
+        redirected = result.queue_reference == "custom-local-reference"
+        gap = (result.pending_state == "unavailable-or-unsupported" or result.unavailable
+               or result.unsupported or result.budget_exhausted)
+        if scheduled or redirected:
+            self.set_health(min(self.health, 20), "scheduled critical-image version regression needs review"
+                            if scheduled else "custom servicing queue needs review")
+        elif gap:
+            self.set_health(min(self.health, 55), "servicing rollback audit has coverage gaps")
+        digest = hashlib.sha256(json.dumps(details, sort_keys=True).encode("utf-8")).hexdigest()
+        if digest != self._rollback_digest:
+            self.emit(
+                "Scheduled critical-image version regression needs review" if scheduled
+                else "Custom Windows servicing queue requires review" if redirected
+                else "Windows servicing rollback audit has coverage gaps" if gap
+                else "Windows servicing disk-version sample completed",
+                Severity.HIGH if scheduled or redirected else Severity.MEDIUM if gap else Severity.INFO,
+                **details,
+            )
+            self._rollback_digest = digest
+        return result
+
     def run(self) -> None:
         if not sys.platform.startswith("win"):
             self.set_health(0, "Windows driver provenance evidence is unavailable on this host")
@@ -1078,6 +1117,8 @@ class DriverProvenanceGuard(BaseModule):
             return
         while not self.stopping:
             self.observe_once()
+            if not self.stopping:
+                self.observe_rollback_once()
             self.sleep(self._INTERVAL)
 
     def self_test(self) -> tuple[bool, str]:

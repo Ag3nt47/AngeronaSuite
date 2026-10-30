@@ -337,6 +337,99 @@ The GitHub recovery implementation follows the official
 [tree](https://docs.github.com/en/rest/git/trees) object APIs. Each integration's
 actual configured endpoint and live contract remain the operating authority.
 
+## 10 Version 1.15 hardening layers
+
+![Version 1.15 evidence, custody and optional independent authority layers](../assets/security-flow-hardening.png)
+
+The source implementation adds the layers below. Installed and independent
+paths require their own enrollment; they do not silently become active because
+the source version changes. [Release notes](releases/v1.15.0.md) and the
+[sanitized Full-mode review](../analysis/hardening-v1.15-2026-10-30.md) retain the
+focused checks, observed limits and unresolved work.
+
+| Attack surface | Implemented layer | Remaining boundary |
+| --- | --- | --- |
+| Alive but blind sensor process | Separate native ETW/Sysmon canary provenance, generation, benign probe and recorder acknowledgment; missing receipts remain explicit. | Userspace echoes and EKG liveness do not establish intact callbacks. Unavailable native collectors are unavailable, not a confirmed attack. |
+| WER dump/suspend precursor | Bounded creation/access correlation against a current native-owned process cache, with exact birth/GUID evidence where available. | Post-event observation cannot guarantee pre-dump blocking. Certified ELAM/PPL deployment is not supplied. |
+| Executable/path replacement during containment | Retained OS process, executable and ancestor leases through durable transaction outcomes and managed compensation. | The acquired file is not original mapped-image proof. PID-bound ALE admission, socket inheritance and established-flow teardown need a native backend. |
+| OS or whole-root rollback | Bounded recognized servicing operations, independent freshness composition and issuer-pinned TPM certification/policy-plan code. | Disk VERSIONINFO is not loaded-image or patch truth. Physical enrollment, protected serialized writes and vendor mitigations remain separate. |
+| Same-user history forgery | Optional remote signatures commit exact recorder row bytes; service-private engine admission separates installed key/storage custody. | Source Observe shares the user's failure domain. A compromised authority, whole-authority rollback and physical independence need separate controls. |
+
+### Independent recorder history and storage
+
+[Independent recorder integrity](recorder-integrity.md) is off by default.
+Enrollment uses the protected runtime request identity, pinned private HTTPS,
+mTLS, distinct authority signing keys and fresh signed head replies. The
+authority admits only the next epoch/predecessor/nonoverlapping row range. A
+durable pending claim supports exact reply-loss reconciliation; missing and
+changed history are separate outcomes. It does not rotate or claim secure
+erasure of Python keys.
+
+The archive defaults to 16 MiB and 128 epochs, with a 4–64 MiB setting. At the
+60-second cadence the count limit can fill in roughly two hours of new data.
+Existing receipts are preserved and sealing pauses; there is no silent rollover
+or protection-startup block. Historical SQL work uses freshly proved indexed
+row identity, at most ten ranges per cycle and a five-second cooperative budget.
+STOP drains the retained reader and enrollment owner before SQLite release.
+
+### Installed service and driver-policy authority
+
+The isolated engine validates the actual `NT SERVICE\AngeronaProtection`
+virtual account, SCM own-process registration, restricted service token,
+package and native ProgramData root before loading configuration, keys or
+sensors. A separate enrolled desktop viewer receives bounded status only,
+with no key/settings mutation or fallback local engine. Lifecycle counts do
+not attest detector coverage. Actual signed installer provisioning and
+clean-VM acceptance remain required.
+
+[Managed driver policy](managed-driver-policy.md) is diagnostic-only in default
+v1. Only an explicitly pinned installed v2 `own-unsigned-multiple-policy`
+profile registers its executor. Server-owned plans, two independent OS-bound
+non-requester approvals, durable single-use capabilities, fixed reviewed local
+materials and native readback govern each operation. Bounded asynchronous jobs
+retain native custody through STOP. Uncertain completion holds rather than
+retrying stale handle numbers. Its unsigned removable policy, admin tampering,
+boot fallback/reboot and already-loaded-driver limits remain explicit;
+`kernel_prevention_verified` stays false.
+
+### Observation and version history
+
+| Version | Change | Evidence |
+| --- | --- | --- |
+| 1.15.0 | Telemetry assurance, transaction custody, independent recorder history, installed service admission, governed driver policy and bounded rollback review. | Focused offline cohorts and a fresh 180-second Full observation, with coverage and CPU/UI follow-ups retained; signed/hardware acceptance remains separate. |
+
+The Full observation ran 75/75 enabled workers but kept native ETW/Sysmon gaps,
+six intermittent WER-owned-cache warnings and an initial 4,446-record retention
+gap. No confirmed breach was established. Core/inventory CPU cost and occasional
+UI delays remain unresolved. The broad selfcheck retains its host Ollama
+listener-attestation failure. A later focused Watchdog wording fix describes
+worker lifecycle/deadlines without overriding detector health or coverage.
+Counter-Agentic's later focused presentation fix includes bounded socket state,
+endpoints and role; a port observation alone does not imply a listener, hijack
+or connection initiator. Both fixes have offline gates and preserve detection
+and response policy; the 180-second capture predates the changed wording.
+
+### Availability and evidence continuity
+
+An earlier 120-second follow-up session ended with a confirmed native PySide access
+violation after STOP. Static saved-dump unwinding included QObject/widget
+destruction and event dispatch, but the exact cause is unknown. This remains
+an unresolved P0 availability finding. The final logging-enabled 120-second
+session exited natively with zero and retired retained generations with source
+and preferences unchanged; that does not establish a crash fix. Its observation
+was not accepted because a bounded inventory guard fired twice, with count
+versus deadline cause unknown. It retained an initial 2,898-record gap, native
+ETW/Sysmon unavailability and 69 unknown collector states despite 75/75 running
+workers. No confirmed breach was established.
+
+Crash logging now reports both configured STARTUP writes, Python/thread/Qt
+hook arming and one native-fault destination, with partial/unavailable states
+that do not block startup. Its 55-pass observability gate is separate from
+native availability. Both named crash logs were later absent for an unproved
+reason; captured diagnostic text is preserved privately. A logged COM exception
+preceded continued events and was not the process exit failure. Missing logs
+are not attributed to an attacker, source cleanup or an external cleaner.
+
 ## Attack surface review matrix
 
 The patch column describes the maintained guard or review action, not an

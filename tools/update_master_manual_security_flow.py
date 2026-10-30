@@ -19,14 +19,21 @@ from zipfile import ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 MANUAL = ROOT / "Angerona_Master_Manual.docx"
 DOCS = (ROOT / "docs/security-flow.md", ROOT / "docs/safe-startup-recovery.md",
-        ROOT / "docs/zero-breach-toolkit.md")
+        ROOT / "docs/zero-breach-toolkit.md", ROOT / "docs/recorder-integrity.md",
+        ROOT / "docs/managed-driver-policy.md")
 ASSETS = ("security-flow-overview.png", "security-flow-startup.png", "security-flow-response.png",
-          "security-flow-tools.png", "security-flow-breach.png")
+          "security-flow-tools.png", "security-flow-breach.png", "security-flow-hardening.png")
 START = b"<!-- ANGERONA_SECURITY_FLOW_START -->"
 END = b"<!-- ANGERONA_SECURITY_FLOW_END -->"
 TITLE = "Security flow integrations and recovery"
-REVISION_DATE = "29 October 2026"
-REVISION_UTC = b"2026-10-29T00:00:00Z"
+REVISION_DATE = "30 October 2026"
+REVISION_UTC = b"2026-10-30T00:00:00Z"
+CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-10-30.md"
+LIST_RESTART_START = b"<!-- ANGERONA_LIST_RESTARTS_START -->"
+LIST_RESTART_END = b"<!-- ANGERONA_LIST_RESTARTS_END -->"
+LIST_ABSTRACT_START = b"<!-- ANGERONA_LIST_ABSTRACTS_START -->"
+LIST_ABSTRACT_END = b"<!-- ANGERONA_LIST_ABSTRACTS_END -->"
+LIST_FORMAT_V3 = b"<!-- ANGERONA_LIST_FORMAT_V3 -->"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT = "http://schemas.openxmlformats.org/package/2006/content-types"
@@ -212,6 +219,18 @@ def build_assets():
         ("8  Resolve the breach review", ["Lift and review resolution are separate", "New case rechecks • STOP does not lift"]),
     ], ["Rule receipts do not attest packet drops, kernel truth or hostile-admin resistance.",
         "Emergency local-console recovery matches exact managed receipts, never a blanket reset."])
+    diagram(ASSETS[5], "1.15 hardening: evidence and authority",
+        "Source checks and optional enrolled services have separate acceptance gates", [
+        ("1  Admit the actual runtime", ["Source Observe or installed service identity", "Package • SCM • token • private root"]),
+        ("2  Challenge collection paths", ["Native ETW / Sysmon • nonce • generation", "Userspace echoes cannot prove kernel health"]),
+        ("3  Correlate tamper precursors", ["WER event + native-owned process context", "Fresh identity • bounded queue • explicit gaps"]),
+        ("4  Retain containment custody", ["Process + executable + ancestor leases", "Intent through outcome and compensation"]),
+        ("5  Seal committed history", ["Optional independent authority signatures", "Exact row bytes • pending-first reconciliation"]),
+        ("6  Review rollback evidence", ["Bounded servicing queue / disk versions", "Pinned TPM certifications • no auto NV write"]),
+        ("7  Govern driver policy", ["Enrolled v2 • pinned plans • two approvals", "Audit / enforce / remove • native readback"]),
+        ("8  Retain limits and ownership", ["Capacity pauses • missing history visible", "STOP drains owners • uncertain cleanup held"]),
+    ], ["Implemented source layers do not attest signed deployment or physical independence.",
+        "No certified ELAM/PPL, PID-bound ALE/socket teardown or kernel immunity is claimed."])
 
 
 def plain(text):
@@ -293,19 +312,23 @@ def markdown_parts(text, *, include_catalog=False):
             pass
         elif line.startswith('```'):
             flush()
+            mermaid = line == '```mermaid'
             index += 1
             while index < len(lines) and not lines[index].lstrip().startswith('```'):
-                output.append(paragraph(lines[index], small=True))
+                if not mermaid:
+                    output.append(paragraph(lines[index], small=True))
                 index += 1
             if index == len(lines):
                 raise ValueError("manual source has an unclosed fenced block")
+            if mermaid:
+                output.append(paragraph("The online guide includes this workflow diagram; Figure 6 shows the combined 1.15 hardening layers."))
         elif line.startswith('!['):
             flush()
             for number, name in enumerate(ASSETS, 1):
                 if name in line:
                     output.append(picture(name, number))
                     display_number = {ASSETS[0]: 1, ASSETS[3]: 2, ASSETS[2]: 3,
-                                      ASSETS[4]: 4, ASSETS[1]: 5}[name]
+                                      ASSETS[4]: 4, ASSETS[1]: 5, ASSETS[5]: 6}[name]
                     output.append(paragraph("Figure " + str(display_number) + " " + name.replace('security-flow-', '').replace('.png', '') + " flow", "Caption"))
         elif line.startswith('#'):
             flush()
@@ -324,7 +347,19 @@ def markdown_parts(text, *, include_catalog=False):
             continue
         elif line.startswith('- '):
             flush()
-            output.append(paragraph("• " + line[2:]))
+            if line.startswith('- AndroidQF acquisition is separate from examining an existing collection.'):
+                item_lines = [line[2:]]
+                while index + 1 < len(lines) and lines[index + 1].startswith('  ') and lines[index + 1].strip():
+                    index += 1
+                    item_lines.append(lines[index].strip())
+                output.append(paragraph_flag(paragraph("• " + " ".join(item_lines)), "keepLines"))
+            else:
+                output.append(paragraph("• " + line[2:]))
+        elif re.match(r'^\d+\.\s+', line):
+            # Keep the source's one visible step number. Continuation lines
+            # join this step, while the next explicit number starts a new one.
+            flush()
+            buffer.append(line)
         elif not line:
             flush()
         else:
@@ -346,6 +381,8 @@ def chapter():
     ])
     result += markdown_parts(DOCS[2].read_text(encoding="utf-8"))
     result += markdown_parts(DOCS[1].read_text(encoding="utf-8"))
+    result += markdown_parts(DOCS[3].read_text(encoding="utf-8"))
+    result += markdown_parts(DOCS[4].read_text(encoding="utf-8"))
     result += paragraph("Primary platform and toolkit references", "Heading2", first=True)
     for url in (
         "https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/user-mode-and-kernel-mode",
@@ -429,13 +466,13 @@ def current_version_parts(mapping):
                 if index == 1:
                     return replace_single_run_text(raw,
                         f'v{version_text} source maintenance. Current validation: '
-                        'analysis/curated-tools-breach-2026-10-29.md. '
+                        f'{CURRENT_EVIDENCE}. '
                         'Signed-package and clean-VM acceptance remain separate.')
                 return re.sub(rb'(?<=v)\d+\.\d+\.\d+', lambda _: version, raw, count=1)
         if text.startswith('Current repository code, the 86-capability inventory and '):
             return replace_single_run_text(raw,
                 'Current repository code, the 86-capability inventory and '
-                'analysis/curated-tools-breach-2026-10-29.md; '
+                f'{CURRENT_EVIDENCE}; '
                 'October 22 validation and historical chapters retain their dated scope.')
         if follows_version_label and re.fullmatch(r'\d+\.\d+\.\d+', text):
             counts[3] += 1
@@ -474,6 +511,270 @@ def replace_single_run_text(paragraph_bytes, text):
                   paragraph_bytes, count=1, flags=re.DOTALL)
 
 
+def current_history_row(document):
+    """Append this release to the retained history without rebuilding its table."""
+    description = ("Telemetry assurance and WER precursor correlation; retained containment identity; "
+        "independent recorder history and freshness; installed service admission; governed driver policy; "
+        "bounded servicing/TPM verification. Source validation and native/hardware deployment remain separate.")
+    rows = re.findall(rb'<w:tr(?:\s[^>]*)?>.*?</w:tr>',
+        table([("Version", "Change"), (canonical_version(), description)]), re.DOTALL)
+    replacement_row = rows[1]
+    found = 0
+
+    def patch(match):
+        nonlocal found
+        raw = match.group(0)
+        text = unescape(''.join(part.decode('utf-8') for part in re.findall(
+            rb'<w:t(?:\s[^>]*)?>(.*?)</w:t>', raw, re.DOTALL)))
+        if '1.13.0 / Cycle 34 maintenance' not in text:
+            return raw
+        found += 1
+        version = canonical_version()
+        def remove_current(row_match):
+            values = re.findall(rb'<w:t(?:\s[^>]*)?>(.*?)</w:t>', row_match.group(0), re.DOTALL)
+            return b'' if values and unescape(values[0].decode('utf-8')) == version else row_match.group(0)
+        raw = re.sub(rb'<w:tr(?:\s[^>]*)?>.*?</w:tr>', remove_current, raw, flags=re.DOTALL)
+        return raw[:-len(b'</w:tbl>')] + replacement_row + b'</w:tbl>'
+
+    result = re.sub(rb'<w:tbl(?:\s[^>]*)?>.*?</w:tbl>', patch, document, flags=re.DOTALL)
+    if found != 1:
+        raise ValueError('retained version-history table is missing or ambiguous')
+    return result
+
+
+def historical_scope_parts(document):
+    """Clarify superseded retained prose without rewriting its dated results."""
+    document = replace_paragraph(document,
+        "R6-03 remains a defense-in-depth proposal: retaining an OS process handle and a bounded executable identity lease across the complete program-firewall action would strengthen identity custody. October review separately reproduced and fixed failed compensation being terminalized despite uncertain effects; unverified reversal now remains in recovery. Neither finding establishes complete host-mutation safety.",
+        "Historical pre-1.15 scope: R6-03 was a defense-in-depth proposal to retain an OS process handle and bounded executable identity lease across the complete program-firewall action. That proposal is superseded by the 1.15 retained process, executable and ancestor transaction custody described in the current hardening chapter. The earlier October compensation fix retains its dated scope: unverified reversal remains in recovery. Neither change establishes original mapped-image proof, PID-bound socket admission or complete host-mutation safety.")
+    document = replace_paragraph(document,
+        "The installed response-service boundary is separate from the ordinary-user desktop and sensor graph. Its native pipe authenticates the actual Windows peer token and verifies the installed service before sending requests. Source Python, a caller-supplied name or a same-user bearer secret does not become privileged authority. Immutable publisher/package pins, protected state and a restricted SCM identity must be provisioned independently. The initial service surface is diagnostic only; unavailable native process-egress enforcement remains visibly unavailable. A path firewall rule or observed connection cannot prove PID-birth-bound socket admission.",
+        "Historical v1.14 integration scope: the installed response-service boundary is separate from the ordinary-user desktop and sensor graph. Its native pipe authenticates the actual Windows peer token and verifies the installed service before requests. Source Python, a caller-supplied name or a same-user bearer secret does not become privileged authority. Immutable publisher/package pins, protected state and a restricted SCM identity require independent provisioning. The initial/default v1 profile remains diagnostic-only. Current 1.15 adds a separately enrolled, pinned v2 managed driver-policy executor; its unsigned policy and deployment limits are described in the current hardening chapter. Native PID-bound process-egress enforcement remains unavailable. A path firewall rule or observed connection cannot prove PID-birth-bound socket admission.")
+    document = replace_paragraph(document,
+        "Current v1.14 reference route: use docs/live-debug-harness.md for AI-assisted testing, docs/releases/v1.14-security-integration.md for the nine security workstreams and analysis/live-debug-2026-10-22 for the current issue map, observations and validation. The Live debug and AI review chapter gives current connection and operator workflows. Earlier numbered validation, performance and version-history sections retain their dated source revisions and results; they are not the current release acceptance record.",
+        "Historical v1.14 reference route: docs/releases/v1.14-security-integration.md and analysis/live-debug-2026-10-22 retain that integration's dated scope and validation. For current v1.15 implementation, validation and unresolved limits, use docs/releases/v1.15.0.md, analysis/hardening-v1.15-2026-10-30.md and the current security-flow chapter. docs/live-debug-harness.md and the Live debug and AI review chapter provide connection and operator workflows. Earlier numbered validation, performance and version-history sections retain their dated source revisions and results; they are not the current release acceptance record.")
+    return document
+
+
+def paragraph_flag(raw, flag):
+    """Set one paragraph pagination flag without rebuilding its runs or text."""
+    value = f'<w:{flag}/>'.encode()
+    pattern = rb'<w:' + flag.encode() + rb'\b[^>]*/>'
+    if re.search(pattern, raw):
+        return re.sub(pattern, lambda _: value, raw, count=1)
+    props = re.search(rb'<w:pPr>.*?</w:pPr>', raw, re.DOTALL)
+    if props:
+        # pStyle precedes pagination flags in the WordprocessingML schema.
+        prefix = re.match(rb'<w:pPr>(?:<w:pStyle\b[^>]*/>)?', props[0])[0]
+        changed = props[0].replace(prefix, prefix + value, 1)
+        return raw[:props.start()] + changed + raw[props.end():]
+    return re.sub(rb'(<w:p(?:\s[^>]*)?>)', lambda match: match[0] + b'<w:pPr>' + value + b'</w:pPr>',
+                  raw, count=1)
+
+
+def current_list_format(document, numbering, styles):
+    """Resolve actual list semantics and own independent restart instances."""
+    ET.register_namespace('w', W)
+    tag = lambda name: f'{{{W}}}{name}'
+    full = ET.fromstring(numbering)
+    all_nums = {node.get(tag('numId')): node for node in full.findall(tag('num'))}
+
+    def remove_block(raw, first, last):
+        if raw.count(first) != raw.count(last) or raw.count(first) > 1:
+            raise ValueError('manual list-format ownership markers are ambiguous')
+        if first not in raw:
+            return raw, b''
+        start, end = raw.index(first), raw.index(last)
+        if end < start:
+            raise ValueError('manual list-format ownership markers are reversed')
+        end += len(last)
+        return raw[:start] + raw[end:], raw[start:end]
+
+    numbering, old_nums = remove_block(numbering, LIST_RESTART_START, LIST_RESTART_END)
+    numbering, old_abstracts = remove_block(numbering, LIST_ABSTRACT_START, LIST_ABSTRACT_END)
+    previous_ids = {value.decode() for value in re.findall(rb'<w:num\b[^>]*\bw:numId="(\d+)"', old_nums)}
+    # The first format pass owned only the originally malformed shared bullet
+    # groups. Restore their declared bullet semantics during this one migration.
+    legacy_bullets = previous_ids if old_nums and LIST_FORMAT_V3 not in old_nums else set()
+    origins = {a.decode(): b.decode() for a, b in re.findall(
+        rb'<!-- ANGERONA_BULLET_SOURCE (\d+) (\d+) -->', old_abstracts)}
+    base = ET.fromstring(numbering)
+    abstracts = {node.get(tag('abstractNumId')): node for node in base.findall(tag('abstractNum'))}
+    unowned_nums = {node.get(tag('numId')) for node in base.findall(tag('num'))}
+    style_nodes = {node.get(tag('styleId')): node for node in ET.fromstring(styles).findall(tag('style'))}
+    definitions, owned_abstracts, abstract_targets = [], [], {}
+    active = {}
+    in_contents, contents_seen, contents_entries = False, 0, 0
+
+    def style_number(style_id):
+        result = {}
+        seen = set()
+        while style_id and style_id in style_nodes:
+            if style_id in seen or len(seen) >= 16:
+                raise ValueError('manual list style ancestry is cyclic or unbounded')
+            seen.add(style_id)
+            node = style_nodes[style_id]
+            properties = node.find(tag('pPr') + '/' + tag('numPr'))
+            if properties is not None:
+                for name in ('numId', 'ilvl'):
+                    value = properties.find(tag(name))
+                    if value is not None:
+                        result.setdefault(name, value.get(tag('val')))
+            parent = node.find(tag('basedOn'))
+            style_id = parent.get(tag('val')) if parent is not None else None
+        return result
+
+    def normalize_bullet(level):
+        fmt = level.find(tag('numFmt'))
+        if fmt is None or fmt.get(tag('val')) != 'bullet':
+            return
+        value = level.find(tag('lvlText'))
+        if value is None:
+            raise ValueError('manual bullet level has no label')
+        value.set(tag('val'), '\u2022')
+        properties = level.find(tag('rPr'))
+        if properties is None:
+            properties = ET.SubElement(level, tag('rPr'))
+        fonts = properties.find(tag('rFonts'))
+        if fonts is None:
+            fonts = ET.Element(tag('rFonts'))
+            properties.insert(0, fonts)
+        for key in ('ascii', 'hAnsi', 'eastAsia', 'cs'):
+            fonts.set(tag(key), 'Calibri')
+
+    def target_abstract(source):
+        if source in abstract_targets:
+            return abstract_targets[source]
+        original = abstracts.get(source)
+        if original is None:
+            raise ValueError('manual list source abstract is unavailable')
+        has_bullet = any(level.find(tag('numFmt')) is not None and
+            level.find(tag('numFmt')).get(tag('val')) == 'bullet' for level in original.findall(tag('lvl')))
+        if not has_bullet:
+            abstract_targets[source] = source
+            return source
+        number = str(1000 + len(owned_abstracts))
+        if number in abstracts:
+            raise ValueError('manual bullet abstract collides with an unowned definition')
+        copied = ET.fromstring(ET.tostring(original))
+        copied.set(tag('abstractNumId'), number)
+        for level in copied.findall(tag('lvl')):
+            normalize_bullet(level)
+        owned_abstracts.append(b'<!-- ANGERONA_BULLET_SOURCE ' + number.encode() + b' ' + source.encode() + b' -->'
+                               + ET.tostring(copied, encoding='utf-8'))
+        abstract_targets[source] = number
+        return number
+
+    def new_instance(original, source, level):
+        number = str(1000 + len(definitions))
+        if number in unowned_nums:
+            raise ValueError('manual list instance collides with an unowned definition')
+        copied = ET.fromstring(ET.tostring(original))
+        copied.set(tag('numId'), number)
+        copied.find(tag('abstractNumId')).set(tag('val'), target_abstract(source))
+        for override in copied.findall(tag('lvlOverride')):
+            nested = override.find(tag('lvl'))
+            if nested is not None:
+                normalize_bullet(nested)
+        override = copied.find(tag('lvlOverride') + f'[@{tag("ilvl")}="{level}"]')
+        if override is None:
+            override = ET.SubElement(copied, tag('lvlOverride'), {tag('ilvl'): str(level)})
+        start = override.find(tag('startOverride'))
+        if start is None:
+            start = ET.Element(tag('startOverride'))
+            override.insert(0, start)
+        start.set(tag('val'), '1')
+        definitions.append(ET.tostring(copied, encoding='utf-8'))
+        return number
+
+    def patch(match):
+        nonlocal in_contents, contents_seen, contents_entries
+        raw = match[0]
+        text = unescape(''.join(part.decode('utf-8') for part in re.findall(
+            rb'<w:t(?:\s[^>]*)?>(.*?)</w:t>', raw, re.DOTALL)))
+        style_match = re.search(rb'<w:pStyle\b[^>]*\bw:val="([^"]+)"', raw)
+        style = style_match[1].decode() if style_match else ''
+        if text == 'Contents':
+            in_contents, contents_seen = True, contents_seen + 1
+            active.clear()
+            return raw
+        if in_contents and style == 'Heading1':
+            in_contents = False
+        if in_contents:
+            if re.match(r'^\d+\.\s+', text) or text.startswith('Appendices:'):
+                contents_entries += 1
+                return re.sub(rb'<w:numPr>.*?</w:numPr>', b'', raw, count=1, flags=re.DOTALL)
+            return raw
+        if style.startswith('Heading'):
+            active.clear()
+            return raw
+        properties = style_number(style)
+        explicit = re.search(rb'<w:numPr>.*?</w:numPr>', raw, re.DOTALL)
+        if explicit:
+            for key, value in re.findall(rb'<w:(numId|ilvl)\b[^>]*\bw:val="(\d+)"', explicit[0]):
+                properties[key.decode()] = value.decode()
+        number, level = properties.get('numId'), int(properties.get('ilvl', '0'))
+        original = all_nums.get(number)
+        if original is None or number == '0':
+            if text.strip() or b'<w:drawing' in raw:
+                active.clear()
+            return raw
+        source = '9' if number in legacy_bullets or number == '10' else original.find(tag('abstractNumId')).get(tag('val'))
+        source = origins.get(source, source)
+        abstract = abstracts.get(source)
+        definition = abstract.find(tag('lvl') + f'[@{tag("ilvl")}="{level}"]') if abstract is not None else None
+        override = original.find(tag('lvlOverride') + f'[@{tag("ilvl")}="{level}"]/' + tag('lvl'))
+        fmt = (override if override is not None else definition)
+        fmt = fmt.find(tag('numFmt')) if fmt is not None else None
+        if fmt is None or fmt.get(tag('val')) not in {'bullet', 'decimal'}:
+            active.clear()
+            return raw
+        for child in [value for value in active if value > level]:
+            del active[child]
+        current = active.get(level)
+        if current is None or current['source'] != source:
+            parent = next((active[value] for value in sorted(active, reverse=True)
+                if value < level and active[value]['source'] == source and active[value]['old'] == number), None)
+            current = parent or {'id': new_instance(original, source, level), 'source': source, 'old': number}
+            active[level] = current
+        value = (b'<w:numPr><w:ilvl w:val="' + str(level).encode() + b'"/>'
+                 b'<w:numId w:val="' + current['id'].encode() + b'"/></w:numPr>')
+        if explicit:
+            return raw[:explicit.start()] + value + raw[explicit.end():]
+        props = re.search(rb'<w:pPr>.*?</w:pPr>', raw, re.DOTALL)
+        if props:
+            prefix = re.match(rb'<w:pPr>(?:<w:(?:pStyle|keepNext|keepLines|pageBreakBefore|widowControl)\b[^>]*/>)*', props[0])[0]
+            changed = props[0].replace(prefix, prefix + value, 1)
+            return raw[:props.start()] + changed + raw[props.end():]
+        return re.sub(rb'(<w:p(?:\s[^>]*)?>)', lambda node: node[0] + b'<w:pPr>' + value + b'</w:pPr>', raw, count=1)
+
+    document = re.sub(rb'<w:p(?:\s[^>]*)?(?<!/)>.*?</w:p>', patch, document, flags=re.DOTALL)
+    if contents_seen != 1 or contents_entries != 18:
+        raise ValueError('retained Contents paragraphs are missing or changed')
+    # Abstract definitions precede all instances in the OOXML schema.
+    first_num = re.search(rb'<w:num\b', numbering)
+    if first_num is None or b'</w:numbering>' not in numbering:
+        raise ValueError('manual numbering root is unsupported')
+    owned = LIST_ABSTRACT_START + b''.join(owned_abstracts) + LIST_ABSTRACT_END
+    numbering = numbering[:first_num.start()] + owned + numbering[first_num.start():]
+    owned = LIST_RESTART_START + LIST_FORMAT_V3 + b''.join(definitions) + LIST_RESTART_END
+    return document, numbering.replace(b'</w:numbering>', owned + b'</w:numbering>')
+
+
+def keep_table_headers(document):
+    """Keep only each repeated header row with the table's first data row."""
+    def patch(match):
+        raw = match[0]
+        rows = list(re.finditer(rb'<w:tr(?:\s[^>]*)?>.*?</w:tr>', raw, re.DOTALL))
+        if len(rows) < 2 or not re.search(rb'<w:tblHeader\b', rows[0][0]):
+            return raw
+        header = re.sub(rb'<w:p(?:\s[^>]*)?(?<!/)>.*?</w:p>',
+            lambda paragraph_match: paragraph_flag(paragraph_match[0], 'keepNext'),
+            rows[0][0], flags=re.DOTALL)
+        return raw[:rows[0].start()] + header + raw[rows[0].end():]
+    return re.sub(rb'<w:tbl(?:\s[^>]*)?>.*?</w:tbl>', patch, document, flags=re.DOTALL)
+
+
 def update(check=False):
     refresh_inventory(check)
     with ZipFile(MANUAL) as archive:
@@ -489,6 +790,8 @@ def update(check=False):
         if last < first:
             raise ValueError("security flow chapter markers are reversed")
         document = document[:first] + document[last + len(END):]
+    document = current_history_row(document)
+    document = historical_scope_parts(document)
     document = replace_paragraph(document,
         "Run Windows Protect with elevation when full telemetry and response are required. Use macOS and Linux according to their Observe contracts.",
         "Windows Protect requires the trusted signed installed distribution and its accepted authority; elevating a writable source checkout does not establish Protect. Normal source startup is unelevated Observe/development. Use macOS and Linux according to their platform contracts.")
@@ -503,11 +806,13 @@ def update(check=False):
     if insertion < 0:
         raise ValueError("manual has no final section properties")
     updated = document[:insertion] + chapter() + document[insertion:]
+    updated, mapping['word/numbering.xml'] = current_list_format(updated, mapping['word/numbering.xml'], mapping['word/styles.xml'])
+    updated = keep_table_headers(updated)
     ET.fromstring(updated)
     if check:
         if updated != original_mapping['word/document.xml']:
             raise ValueError("master manual security-flow chapter differs from reviewed guides/assets")
-        for name in ('word/header1.xml', 'word/footer2.xml'):
+        for name in ('word/header1.xml', 'word/footer2.xml', 'word/numbering.xml'):
             if mapping[name] != original_mapping[name]:
                 raise ValueError(f'master manual current display version is stale: {name}')
         for name in ASSETS:

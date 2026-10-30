@@ -1,18 +1,34 @@
 # Angerona Capabilities
 
-Current development version: **v1.14.2**. This is a present-tense capability and boundary
+Current development version: **v1.15.0**. This is a present-tense capability and boundary
 summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
 or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
 
-The 1.14.2 source update adds [GitHub Tools and pinned Zero-Breach integration](docs/zero-breach-toolkit.md),
+The 1.15.0 hardening milestone adds provider-specific canary context, WER
+precursor correlation, program-firewall identity custody, independent freshness
+composition, [independently signed recorder epochs](docs/recorder-integrity.md),
+an installed virtual-account engine boundary and status-only console, bounded
+servicing-queue review and TPM certification verification. The explicitly
+enrolled [managed driver-policy service](docs/managed-driver-policy.md) adds a
+reviewed unsigned deny-policy workflow; default v1 remains diagnostic-only.
+Its [version notes](docs/releases/v1.15.0.md) distinguish implemented source
+controls from signed deployment, physical enrollment and native acceptance.
+The [fresh Full-mode review](analysis/hardening-v1.15-2026-10-30.md) keeps actual
+coverage gaps, CPU/UI pressure and the host AI attestation failure visible.
+Native shutdown availability remains a P0 unresolved finding: one later normal
+exit does not establish a fix for a prior PySide access violation. Crash-log
+arming now has explicit coverage receipts, but later missing diagnostic files
+have an unproved cause. See the current release notes before deployment claims.
+
+The preceding 1.14.2 source update added [GitHub Tools and pinned Zero-Breach integration](docs/zero-breach-toolkit.md),
 a shared priority SpywareScan workflow, visible tool credits and typed breach
 review with scoped response controls. Source Observe mode does not authorize
 host mutation. Elevated toolkit execution, optional advanced dependencies and
 signed-release acceptance have explicit limits in the
-[current version notes](docs/releases/v1.14.2.md).
+[1.14.2 version notes](docs/releases/v1.14.2.md).
 
 The v1.14.0 update adds [Live AI Review](docs/live-debug-harness.md), a bounded
 read-only local alert/error stream for authorised AI-assisted debugging,

@@ -226,22 +226,22 @@ def test_driver_watchdog_covers_bounded_collection_and_still_expires(monkeypatch
     try:
         assert entered.wait(5)
         assert not guard.first_cycle_complete
-        assert guard._watchdog_startup_budget_seconds() == 60.0
-        assert guard._watchdog_work_budget_seconds() == 60.0
+        assert guard._watchdog_startup_budget_seconds() == 70.0
+        assert guard._watchdog_work_budget_seconds() == 70.0
         with monkeypatch.context() as clock:
             clock.setattr(
                 module_base.time, "monotonic", lambda: guard._generation_started_at + 55.0
             )
             assert not guard.operational_snapshot()["watchdog_deadline_missed"]
             clock.setattr(
-                module_base.time, "monotonic", lambda: guard._generation_started_at + 61.0
+                module_base.time, "monotonic", lambda: guard._generation_started_at + 71.0
             )
             assert guard.operational_snapshot()["watchdog_deadline_missed"]
 
         release.set()
         assert guard.wait_for_first_cycle(5)
         assert guard._watchdog_deadline_at == pytest.approx(
-            guard._last_cycle_completed_at + guard._INTERVAL + 60.0
+            guard._last_cycle_completed_at + guard._INTERVAL + 70.0
         )
         with monkeypatch.context() as clock:
             clock.setattr(

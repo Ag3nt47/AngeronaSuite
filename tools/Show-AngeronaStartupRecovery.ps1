@@ -439,7 +439,7 @@ function Show-StartupDashboard {
     Write-StartupShellPhase 'ui-assemblies-ready'
     Write-StartupShellPhase 'form-construction-start'
     $form = [Windows.Forms.Form]::new()
-    $form.Name = 'AngeronaStartupDashboard'; $form.Text = 'Angerona 1.14.2 - Safe Startup'
+    $form.Name = 'AngeronaStartupDashboard'; $form.Text = 'Angerona 1.15.0 - Safe Startup'
     $form.StartPosition = 'CenterScreen'; $form.MinimumSize = [Drawing.Size]::new(640, 500)
     $working = [Windows.Forms.Screen]::FromPoint([Windows.Forms.Cursor]::Position).WorkingArea
     $form.Size = [Drawing.Size]::new([Math]::Min(980, $working.Width - 32), [Math]::Min(730, $working.Height - 48))
@@ -459,7 +459,7 @@ function Show-StartupDashboard {
     [void]$layout.RowStyles.Add([Windows.Forms.RowStyle]::new([Windows.Forms.SizeType]::Absolute, 82))
     $form.Controls.Add($layout)
     $brand = [Windows.Forms.Label]::new()
-    $brand.Text = "ANGERONA  1.14.2`r`nSafe Startup dashboard"
+    $brand.Text = "ANGERONA  1.15.0`r`nSafe Startup dashboard"
     $brand.Dock = 'Fill'; $brand.Font = [Drawing.Font]::new('Segoe UI', 17, [Drawing.FontStyle]::Bold)
     $brand.ForeColor = [Drawing.ColorTranslator]::FromHtml('#28a4ff')
     $layout.Controls.Add($brand, 0, 0)

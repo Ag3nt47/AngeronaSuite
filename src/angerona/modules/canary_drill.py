@@ -10,8 +10,8 @@ Purpose
     DRILL checks the echo path with **synthetic canary probes** at a configurable
     interval:
 
-    1. Spawn a very short-lived, benign subprocess (``cmd /c exit 0`` with a
-       unique comment tag embedded in the command line so it is identifiable).
+    1. Launch one isolated benign interpreter with an opaque command-line nonce,
+       retained native identity and private Job custody; let it sleep two seconds.
     2. Subscribe to the EventBus and wait up to ``CANARY_TIMEOUT_S`` seconds for
        an ETWG 4688 event whose details contain the canary tag.
     3. If the canary arrives → pipeline is healthy; reset the miss counter.
@@ -26,27 +26,30 @@ Drop-in contract
     BaseModule subclass + CODE/NAME/state/health_pct/self_test + register().
 
 Safety
-    Canary subprocess is ``cmd /c exit 0`` — entirely benign, no payload.
+    Canary subprocess executes only a fixed two-second sleep; no shell or payload.
     The tag is a UUID prefix so DRILL never misidentifies a legitimate event.
     No external network calls; no file writes outside the flight recorder.
 """
 from __future__ import annotations
 
 import os
+import math
 import queue
-import subprocess
+import re
 import time
 import uuid
 
 from angerona.core.eventbus import Event
 from angerona.core.jitter import jittered
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.kernel_telemetry_probe import (
+    KernelEcho, KernelIdentityCandidate, KernelProbeTracker, OwnedCanaryProcess, PROVIDERS, ProviderReceipt,
+)
 from angerona.core.telemetry_contracts import (
     ExpectationContract,
     TelemetryExpectationEngine,
     self_test as contract_engine_self_test,
 )
-from angerona.core.win import popen_hidden
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 DRILL_INTERVAL_S: float = 60.0   # how often to fire a canary
@@ -77,6 +80,7 @@ _TRUSTED_PROCESS_SENSORS: frozenset[str] = frozenset({
     # which is honest — if ETW is blinded but psutil still sees processes, that's
     # exactly what this reports.
     "Telemetry Scanner",
+    "ETW Real-Time Process Sensor",
 })
 # Process-creation event IDs we accept from a trusted sensor: 4688 (Windows
 # Security channel) and 1 (Sysmon process-create).
@@ -157,6 +161,190 @@ class CanaryDrillModule(BaseModule):
         self._coverage_alerted: set[str] = set()   # dedup: one alert per silence episode
         self._next_coverage_check: float = time.monotonic() + _SENSOR_WARMUP_S
         self._start_time: float = time.monotonic()
+        self._manager = None
+        self._kernel_tracker = KernelProbeTracker()
+        self._kernel_echo_queue: queue.Queue[KernelEcho | KernelIdentityCandidate] = queue.Queue(maxsize=64)
+        self._kernel_echo_dropped = 0
+        self._native_receipt_cache: dict[str, ProviderReceipt] = {}
+        self._owned_probes: dict[str, tuple[OwnedCanaryProcess, float]] = {}
+        self._probe_retirement = ()
+        self._generic_pending_tags: set[str] = set()
+        self._generic_cancelled = 0
+        self._kernel_probes_fired = 0
+        self._last_kernel_only: bool | None = None
+
+    def bind_manager(self, manager) -> None:
+        self._manager = manager
+
+    def _kernel_only(self) -> bool:
+        return getattr(getattr(self._manager, "config", None), "runtime_chill_active", None) is True
+
+    def _sync_loop_mode(self, kernel_only: bool, now: float) -> None:
+        if kernel_only == self._last_kernel_only:
+            return
+        if kernel_only:
+            # Cancel only transient expectations. Original events and historical
+            # misses remain evidence; an intentionally deferred path is no miss.
+            for tag in tuple(self._generic_pending_tags):
+                self._expectations.cancel(tag)
+                self._pending_durable.pop(tag, None)
+                self._forget_tag(tag)
+                self._generic_cancelled += 1
+            while True:
+                try:
+                    self._echo_queue.get_nowait()
+                except queue.Empty:
+                    break
+        elif self._last_kernel_only is True:
+            # Generic sensors may have been intentionally paused. Start a new
+            # coverage warmup instead of attributing their Chill silence.
+            self._sensor_last_seen.clear()
+            self._coverage_alerted.clear()
+            self._next_coverage_check = now + _SENSOR_WARMUP_S
+        self._last_kernel_only = kernel_only
+
+    def _wait_control_tick(self) -> None:
+        """Bound control checks without scaling the separate probe cadence."""
+        self.mark_cycle_complete(interval_seconds=1.0)
+        self.generation_stop_event().wait(timeout=1.0)
+
+    def _native_receipts(self) -> tuple[ProviderReceipt, ...]:
+        modules = getattr(self._manager, "modules", {})
+        now, receipts = time.monotonic(), []
+        expected = {"kernel-etw": ("angerona.modules.etw_realtime_sensor", "EtwRealtimeSensorModule"),
+                    "sysmon-native": ("angerona.modules.sysmon_listener", "SysmonListenerModule")}
+        for provider, name in PROVIDERS.items():
+            module = modules.get(name)
+            value = None
+            if module is not None and (type(module).__module__, type(module).__name__) == expected[provider]:
+                try:
+                    value = module.collection_snapshot()  # Existing worker's cached result only.
+                except Exception:
+                    pass
+            receipts.append(ProviderReceipt.from_snapshot(provider, value, now=now))
+        result = tuple(receipts)
+        self._native_receipt_cache = {receipt.provider: receipt for receipt in result}
+        self._kernel_tracker.refresh_receipts(result)
+        return result
+
+    def kernel_coverage_snapshot(self) -> dict:
+        return dict(scope="Per-provider nonce echo and authenticated persistence; no general kernel-integrity proof",
+                    providers=tuple(outcome.event_details() for outcome in self._kernel_tracker.snapshot()),
+                    cached_collectors=tuple(dict(provider=row.provider, generation=row.generation,
+                                                 available=row.available, sampled_monotonic=row.sampled_monotonic,
+                                                 reason=row.reason) for row in self._native_receipt_cache.values()),
+                    generic_process_loop_caught=self._drills_caught,
+                    generic_scope="May be satisfied by polling; never establishes a native kernel path",
+                    mode="kernel-only" if self._kernel_only() else "full-generic-and-kernel",
+                    generic_coverage="deferred in Chill" if self._kernel_only() else "enabled",
+                    generic_attempts_cancelled=self._generic_cancelled,
+                    kernel_probe_children_launched=self._kernel_probes_fired,
+                    ingress_dropped=self._kernel_echo_dropped, retained_probe_children=len(self._owned_probes),
+                    latest_probe_retirements=self._probe_retirement, response_authorized=False)
+
+    def _capture_kernel_echo(self, event: Event) -> None:
+        details = event.details if type(getattr(event, "details", None)) is dict else {}
+        provider = None
+        if (event.module == PROVIDERS["kernel-etw"] and details.get("source") == "ETW:Kernel-Process"
+                and details.get("event_type") == "process_creation"):
+            provider = "kernel-etw"
+        elif (event.module == PROVIDERS["sysmon-native"] and details.get("sensor_source") == "sysmon-native"
+              and type(details.get("eid")) is int and details["eid"] == 1):
+            provider = "sysmon-native"
+        if provider is None or self._bus is None or self.stopping:
+            return
+        receipt = self._native_receipt_cache.get(provider)
+        generation, now = details.get("collection_generation"), time.monotonic()
+        if (receipt is None or not receipt.available or generation != receipt.generation
+                or not 0 <= now - receipt.sampled_monotonic <= 15):
+            return
+        values = (details.get("command_line"), details.get("cmdline"), details.get("CommandLine"))
+        tag = None
+        for value in values:
+            if type(value) is str and len(value) <= 8192:
+                match = re.search(r"(?<![A-Za-z0-9_])DRILLCANARY_[0-9A-F]{16}(?![A-Za-z0-9_])", value)
+                if match:
+                    tag = match.group()
+                    break
+        pid, stamp, signature = self._event_pid(event), getattr(event, "ts", None), getattr(event, "hmac_sig", None)
+        birth = details.get("process_birth_ticks")
+        exact_birth = (provider == "kernel-etw" and type(birth) is str and 1 <= len(birth) <= 20
+                       and birth.isascii() and birth.isdecimal() and birth == str(int(birth))
+                       and 116444736000000000 < int(birth) <= 0xFFFFFFFFFFFFFFFF)
+        if ((tag is None and not exact_birth) or pid is None or type(stamp) not in (int, float)
+                or not 0 < stamp <= 253402300799 or not math.isfinite(stamp)
+                or type(signature) is not str or not re.fullmatch(r"[0-9a-f]{64}", signature)):
+            return
+        try:
+            mode_before = self._bus.mesh_required
+            if not self._bus.integrity_enabled or not self._bus.verify(event):
+                return
+            live = mode_before is True and self._bus.mesh_required is True
+            captured = (KernelEcho(tag, provider, generation, pid, stamp, signature, now, live) if tag is not None else
+                        KernelIdentityCandidate(provider, generation, pid, birth, stamp, signature, now, live))
+            self._kernel_echo_queue.put_nowait(captured)
+        except queue.Full:
+            self._kernel_echo_dropped += 1
+        except (ValueError, TypeError, AttributeError, OverflowError):
+            return
+
+    def _kernel_outcome(self, outcome) -> None:
+        if outcome.state == "observed":
+            severity = Severity.INFO
+        elif outcome.prior_path_observed and outcome.state == "missed":
+            severity = Severity.CRITICAL if outcome.consecutive_misses >= MAX_CONSECUTIVE_MISSES else Severity.HIGH
+        else:
+            severity = Severity.MEDIUM if outcome.prior_path_observed else Severity.LOW
+        self.emit(f"Native telemetry loop {outcome.provider}: {outcome.state}; {outcome.reason}.",
+                  severity, **outcome.event_details())
+
+    def _check_kernel_echoes(self) -> None:
+        while True:
+            try:
+                echo = self._kernel_echo_queue.get_nowait()
+            except queue.Empty:
+                break
+            if type(echo) is KernelIdentityCandidate:
+                match = next(((tag, owner) for tag, (owner, _deadline) in tuple(self._owned_probes.items())
+                              if owner.identity.pid == echo.pid and str(owner.identity.birth_ticks) == echo.birth_ticks), None)
+                if match is None:
+                    continue
+                tag, _owner = match
+                echo = KernelEcho(tag, echo.provider, echo.generation, echo.pid, echo.event_ts, echo.hmac,
+                                  echo.observed_monotonic, echo.live_enrolled_observed, "native-pid-birth")
+            self._kernel_tracker.observe(echo)
+        recorder = self._recorder
+        for echo in self._kernel_tracker.awaiting_durable():
+            if recorder is None or not hasattr(recorder, "bounded_events_in_window"):
+                continue
+            try:
+                events, _total = recorder.bounded_events_in_window(echo.event_ts - 0.000001, echo.event_ts + 0.000001, limit=512)
+                exact = any(row.hmac_sig == echo.hmac and row.module == PROVIDERS[echo.provider]
+                            and (row.details or {}).get("collection_generation") == echo.generation
+                            and (row.details or {}).get("_ledger_integrity") != "invalid"
+                            and self._bus.integrity_enabled and self._bus.verify_archived(row) for row in events)
+            except Exception:
+                exact = False
+            if exact:
+                outcome = self._kernel_tracker.persisted(echo, now=time.monotonic())
+                if outcome is not None:
+                    self._kernel_outcome(outcome)
+        for outcome in self._kernel_tracker.expire(now=time.monotonic()):
+            self._kernel_outcome(outcome)
+
+    def _retire_owned_probes(self, *, cancel=False) -> None:
+        records = []
+        for tag, (probe, deadline) in tuple(self._owned_probes.items()):
+            try:
+                receipt = probe.retire(cancel=cancel or time.monotonic() >= deadline)
+                if receipt is not None:
+                    records.append(receipt)
+                    self._owned_probes.pop(tag, None)
+            except Exception:
+                self.last_error = "Owned canary retirement remains unverified"
+                # Retain custody and refuse unbounded replacement probes.
+        if records:
+            self._probe_retirement = tuple(records[-8:])
 
     def bind_recorder(self, recorder) -> None:
         self._recorder = recorder
@@ -179,9 +367,10 @@ class CanaryDrillModule(BaseModule):
         announcement (or another module quoting the tag) from satisfying the
         telemetry contract.
         """
-        if self.stopping or event.module not in _TRUSTED_PROCESS_SENSORS:
+        self._capture_kernel_echo(event)
+        if self.stopping or self._kernel_only() or event.module not in _TRUSTED_PROCESS_SENSORS:
             return
-        details = event.details or {}
+        details = event.details if isinstance(event.details, dict) else {}
         # Accept the echo if it's a process-creation record. Windows/Sysmon paths
         # carry an EID (4688 / 1); the psutil snapshot-diff scanner carries no EID
         # but tags the record type="process_creation" — that record still proves
@@ -201,6 +390,7 @@ class CanaryDrillModule(BaseModule):
         def tag_in(value: object) -> str | None:
             if not isinstance(value, str):
                 return None
+            value = value[:8192]
             start = value.find(_CANARY_PREFIX)
             if start < 0:
                 return None
@@ -213,14 +403,14 @@ class CanaryDrillModule(BaseModule):
                 return candidate
             return None
 
-        raw = event.details.get("raw", [])
+        raw = details.get("raw", [])
         if not isinstance(raw, (list, tuple)):
             raw = [raw]
-        raw = list(raw)
+        raw = list(raw[:16])
         # Sysmon (and some ETW paths) carry the command line — where our canary
         # tag lives — in a structured field rather than in `raw`.
         for key in ("command_line", "cmdline", "CommandLine"):
-            val = event.details.get(key)
+            val = details.get(key)
             if isinstance(val, str):
                 raw.append(val)
         tag = next(
@@ -237,12 +427,15 @@ class CanaryDrillModule(BaseModule):
             pid = self._event_pid(event)
             if pid is not None:
                 tag = self._pending_pids.get(pid)
+        stamp = getattr(event, "ts", None)
+        if (type(stamp) not in (int, float) or not 0 < stamp <= 253402300799 or not math.isfinite(stamp)):
+            return
         if tag:
             echo = (
                 tag,
                 time.monotonic(),
-                float(getattr(event, "ts", 0.0)),
-                str(getattr(event, "hmac_sig", "") or ""),
+                stamp,
+                event.hmac_sig if type(getattr(event, "hmac_sig", None)) is str else "",
             )
             try:
                 self._echo_queue.put_nowait(echo)
@@ -262,14 +455,15 @@ class CanaryDrillModule(BaseModule):
         """Extract the new-process id from an ETWG event (decimal ``pid`` from the
         psutil fallback, or ``pid_hex`` like ``0x1a2b`` from the Security channel)."""
         p = event.details.get("pid")
-        if isinstance(p, int):
+        if type(p) is int and 1 <= p <= 0xFFFFFFFF:
             return p
-        if isinstance(p, str) and p.isdigit():
+        if type(p) is str and 1 <= len(p) <= 10 and p.isascii() and p.isdecimal() and 1 <= int(p) <= 0xFFFFFFFF:
             return int(p)
         ph = event.details.get("pid_hex")
-        if isinstance(ph, str) and ph.lower().startswith("0x"):
+        if type(ph) is str and re.fullmatch(r"0[xX][0-9a-fA-F]{1,16}", ph):
             try:
-                return int(ph, 16)
+                value = int(ph, 16)
+                return value if 1 <= value <= 0xFFFFFFFF else None
             except ValueError:
                 return None
         return None
@@ -278,36 +472,48 @@ class CanaryDrillModule(BaseModule):
         """Drop any pending PID→tag mapping once a canary is resolved."""
         for pid in [p for p, t in self._pending_pids.items() if t == tag]:
             self._pending_pids.pop(pid, None)
+        if tag not in self._pending_durable:
+            self._generic_pending_tags.discard(tag)
 
     # ── canary fire ──────────────────────────────────────────────────────────
-    def _fire_canary(self) -> str:
+    def _fire_canary(self, *, kernel_only: bool | None = None) -> str | None:
         """Spawn a benign process tagged with a unique canary ID."""
+        if kernel_only is None:
+            kernel_only = self._kernel_only()
         tag = _CANARY_PREFIX + uuid.uuid4().hex[:16].upper()
-        if not self._expectations.arm(tag, _PROCESS_CONTRACT, now=time.monotonic()):
-            raise RuntimeError("telemetry expectation capacity exhausted")
+        receipts = self._native_receipts()
+        if kernel_only and not any(row.available for row in receipts):
+            for outcome in self._kernel_tracker.unavailable(tag, receipts, now=time.monotonic()):
+                self._kernel_outcome(outcome)
+            return None
+        if not kernel_only:
+            if not self._expectations.arm(tag, _PROCESS_CONTRACT, now=time.monotonic()):
+                raise RuntimeError("telemetry expectation capacity exhausted")
+            self._generic_pending_tags.add(tag)
 
         if os.name == "nt":
-            # The tag appears in the 4688/Sysmon CommandLine StringInsert that ETW
-            # reads (when command-line auditing is on); we also record the pid so
-            # the echo can be matched by PID when the command line is unavailable.
-            #
-            # It must LINGER ~2s: the only sensor on an un-elevated host is the
-            # 1 Hz psutil snapshot-diff scanner, which compares process sets each
-            # poll. A fire-and-exit `REM` (sub-millisecond) never appears in any
-            # snapshot, so the canary was structurally invisible — the real reason
-            # the echo path never verified. `ping -n 3` keeps cmd.exe alive ~2s so
-            # at least one poll snapshots it (well within the 6s echo window).
-            cmd = ["cmd", "/c", f"REM {tag} & ping -n 3 127.0.0.1 >nul"]
-            proc = popen_hidden(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            if proc is not None and getattr(proc, "pid", None):
-                if len(self._pending_pids) > 64:      # belt-and-suspenders bound
-                    self._pending_pids.clear()
-                self._pending_pids[proc.pid] = tag
-        else:
+            self._retire_owned_probes()
+            if len(self._owned_probes) >= 8:
+                self._expectations.cancel(tag)
+                self._forget_tag(tag)
+                raise RuntimeError("Owned canary retirement capacity is held")
+            started_wall, started = time.time(), time.monotonic()
+            try:
+                probe = OwnedCanaryProcess(tag)
+            except Exception:
+                self._expectations.cancel(tag)
+                self._forget_tag(tag)
+                raise
+            self._owned_probes[tag] = (probe, started + CANARY_TIMEOUT_S)
+            self._kernel_probes_fired += 1
+            if not kernel_only:
+                self._pending_pids[probe.identity.pid] = tag
+            for outcome in self._kernel_tracker.arm(
+                tag, pid=probe.identity.pid, birth_ticks=str(probe.identity.birth_ticks),
+                started_wall=started_wall, now=started, receipts=receipts, timeout=CANARY_TIMEOUT_S,
+            ):
+                self._kernel_outcome(outcome)
+        elif not kernel_only:
             # Non-Windows: emit a synthetic bus event that DRILL can catch
             # (smoke-test only — blinding detection requires real ETW).
             from angerona.core.eventbus import Event as _Ev
@@ -321,7 +527,8 @@ class CanaryDrillModule(BaseModule):
             if self._bus is not None:
                 self._bus.publish(fake)
 
-        self._drills_fired += 1
+        if not kernel_only:
+            self._drills_fired += 1
         return tag
 
     # ── result harvesting ────────────────────────────────────────────────────
@@ -388,6 +595,7 @@ class CanaryDrillModule(BaseModule):
                     self.last_error = str(exc)
             if found:
                 self._pending_durable.pop(tag, None)
+                self._forget_tag(tag)
                 self._drills_caught += 1
                 self._consecutive_misses = 0
                 self._ever_caught = True
@@ -401,6 +609,7 @@ class CanaryDrillModule(BaseModule):
                 )
             elif now >= deadline:
                 self._pending_durable.pop(tag, None)
+                self._forget_tag(tag)
                 self._durable_misses += 1
                 missed.append(tag)
         return missed
@@ -464,6 +673,15 @@ class CanaryDrillModule(BaseModule):
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
+        try:
+            self._run_drills()
+        finally:
+            self._retire_owned_probes(cancel=True)
+            if self._bus is not None and self._subscribed:
+                self._bus.unsubscribe(self._on_event)
+                self._subscribed = False
+
+    def _run_drills(self) -> None:
         if self._bus is not None and not self._subscribed:
             self._bus.subscribe(self._on_event)
             self._subscribed = True
@@ -474,6 +692,37 @@ class CanaryDrillModule(BaseModule):
 
         while not self.stopping:
             now = time.monotonic()
+            kernel_only = self._kernel_only()
+            self._sync_loop_mode(kernel_only, now)
+            receipts = self._native_receipts()
+            self._check_kernel_echoes()
+            self._retire_owned_probes()
+
+            if kernel_only:
+                outcomes = self._kernel_tracker.snapshot()
+                observed = sum(row.state == "observed" and any(
+                    receipt.provider == row.provider and receipt.generation == row.generation and receipt.available
+                    for receipt in receipts) for row in outcomes)
+                prior_misses = [row for row in outcomes if row.state == "missed" and row.prior_path_observed]
+                health = 10 if any(row.consecutive_misses >= MAX_CONSECUTIVE_MISSES for row in prior_misses) else (
+                    40 if prior_misses or not observed else 100 if observed == len(PROVIDERS) else 60)
+                self.set_health(health, f"Chill: {observed}/{len(PROVIDERS)} scoped native paths observed; "
+                                "generic process/network/file/drill coverage deferred")
+                if now >= next_drill:
+                    try:
+                        tag = self._fire_canary(kernel_only=True)
+                        if tag is not None:
+                            self.emit(f"DRILL native-path canary fired: {tag}; generic checks deferred in Chill.",
+                                      Severity.INFO, canary_tag=tag, kernel_only=True,
+                                      generic_coverage="deferred in Chill", disposition="health",
+                                      response_authorized=False)
+                    except Exception as exc:
+                        self.last_error = str(exc)
+                        self.emit(f"DRILL native-path canary spawn failed: {exc}", Severity.LOW,
+                                  disposition="health", response_authorized=False)
+                    next_drill = time.monotonic() + jittered(DRILL_INTERVAL_S)
+                self._wait_control_tick()
+                continue
 
             # Collect any echoes that arrived
             late_misses = self._collect_echoes()
@@ -589,8 +838,9 @@ class CanaryDrillModule(BaseModule):
                 self._check_sensor_coverage()
 
             # Health update
-            if self._consecutive_misses == 0 and self._drills_fired > 0:
-                catch_rate = self._drills_caught / self._drills_fired
+            completed_or_pending = self._drills_fired - self._generic_cancelled
+            if self._consecutive_misses == 0 and completed_or_pending > 0:
+                catch_rate = self._drills_caught / completed_or_pending
                 pct = int(catch_rate * 100)
                 if self._pending_durable:
                     pct = min(pct, 80)
@@ -598,7 +848,7 @@ class CanaryDrillModule(BaseModule):
                     pct = min(pct, 60)
                 self.set_health(
                     min(100, pct),
-                    f"{self._drills_caught}/{self._drills_fired} full pipeline; "
+                    f"{self._drills_caught}/{completed_or_pending} full pipeline; "
                     f"sensor_echoes={self._sensor_echoes}; "
                     f"recorder_misses={self._durable_misses}; "
                     f"persistence_pending={len(self._pending_durable)}",
@@ -617,16 +867,17 @@ class CanaryDrillModule(BaseModule):
             # Fire the next canary
             if now >= next_drill:
                 try:
-                    tag = self._fire_canary()
-                    self.emit(f"DRILL canary fired: {tag}", Severity.INFO,
-                              canary_tag=tag, drills_fired=self._drills_fired)
+                    tag = self._fire_canary(kernel_only=False)
+                    if tag is not None:
+                        self.emit(f"DRILL canary fired: {tag}", Severity.INFO,
+                                  canary_tag=tag, drills_fired=self._drills_fired)
                 except Exception as exc:
                     self.last_error = str(exc)
                     self.emit(f"DRILL canary spawn failed: {exc}", Severity.LOW)
                 # Jittered cadence (anti-TOCTOU): no fixed 60s rhythm to exploit.
                 next_drill = time.monotonic() + jittered(DRILL_INTERVAL_S)
 
-            self.sleep(1.0)
+            self._wait_control_tick()
 
     def self_test(self) -> tuple[bool, str]:
         """Verify contracts and reject self/untrusted echoes before ETWG smoke-test."""
@@ -651,6 +902,11 @@ class CanaryDrillModule(BaseModule):
             details={"eid": 4688, "raw": [tag], "source": "self_test"},
         )
         self._on_event(fake_event)
+        if self._kernel_only():
+            contracts_ok, contracts_detail = contract_engine_self_test()
+            ok = self_echo_rejected and self._echo_queue.empty() and contracts_ok
+            return ok, ("Chill kernel-only mode: synthetic generic coverage explicitly deferred; "
+                        f"contract controls: {contracts_detail}")
         try:
             received, _observed_at, _event_ts, _event_hmac = self._echo_queue.get(
                 timeout=1.0

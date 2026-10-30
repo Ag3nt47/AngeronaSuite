@@ -220,6 +220,7 @@ def test_actual_headless_cli_dispatch_preserves_runtime_force(monkeypatch, force
 def test_scm_dispatch_closure_carries_force_to_headless_worker(monkeypatch):
     import sys
     from angerona.core import engine_windows_service, data_paths, singleton, headless
+    from angerona.core import engine_service_status, windows_engine_custody
 
     calls, closed = [], []
 
@@ -229,6 +230,14 @@ def test_scm_dispatch_closure_carries_force_to_headless_worker(monkeypatch):
 
     hosted = []
     monkeypatch.setattr(engine_windows_service, "require_package_service", lambda: None)
+    # This closure test owns only launch intent/lifetime. Native service
+    # admission is exercised by test_windows_engine_custody, never bypassed in
+    # production by a package label or a fake SCM process.
+    custody = SimpleNamespace(close=lambda: closed.append("custody"))
+    control = SimpleNamespace(start=lambda: None, close=lambda: closed.append("control"))
+    monkeypatch.setattr(windows_engine_custody, "prepare_engine_custody", lambda: custody)
+    monkeypatch.setattr(engine_service_status, "ServiceStatusControl", lambda owner:
+                        control if owner is custody else pytest.fail("service custody changed"))
     monkeypatch.setitem(sys.modules, "win32serviceutil", SimpleNamespace(ServiceFramework=ServiceBase))
     monkeypatch.setitem(sys.modules, "win32service", SimpleNamespace(SERVICE_STOP_PENDING=1))
     monkeypatch.setitem(sys.modules, "servicemanager", SimpleNamespace(
@@ -237,12 +246,13 @@ def test_scm_dispatch_closure_carries_force_to_headless_worker(monkeypatch):
     ))
     monkeypatch.setattr(data_paths, "configure_runtime_environment", lambda: None)
     monkeypatch.setattr(singleton, "acquire_single_instance", lambda:
-                        SimpleNamespace(close=lambda: closed.append(True)))
+                        SimpleNamespace(close=lambda: closed.append("lease")))
     monkeypatch.setattr(headless, "run_headless", lambda **kwargs: calls.append(kwargs))
     assert engine_windows_service.run_dispatcher() == 0
     assert calls[0]["force_chill"] is True
     assert isinstance(calls[0]["stop_event"], threading.Event)
-    assert closed == [True]
+    assert calls[0]["service_custody"] is custody and calls[0]["runtime_control"] is control
+    assert closed == ["control", "lease", "custody"]
 
 
 def test_unflagged_detached_service_always_passes_chill_to_headless(monkeypatch):

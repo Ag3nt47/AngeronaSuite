@@ -326,6 +326,31 @@ class Ed25519PublicVerifier:
             return False
 
 
+def require_independent_ed25519_enrollment(*, request_verifier, response_verifier,
+                                         response_signer=None) -> None:
+    """One raw-key separation proof for archival receipts and remote floors.
+
+    Different key identifiers do not prove distinct cryptographic custody.
+    A server additionally proves its signing key matches the enrolled verifier.
+    """
+    if (type(request_verifier) is not Ed25519PublicVerifier
+            or type(response_verifier) is not Ed25519PublicVerifier
+            or (response_signer is not None and (
+                type(response_signer) is not Ed25519PrivateSigner
+                or response_signer.key_id != response_verifier.key_id
+                or response_verifier.verify(b"Angerona-Recorder-Enrollment-v1",
+                    response_signer.sign(b"Angerona-Recorder-Enrollment-v1")) is not True))):
+        raise ValueError("Enrollment requires a matching independent Ed25519 authority")
+    from cryptography.hazmat.primitives import serialization
+
+    request_public = request_verifier._public_key.public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    response_public = response_verifier._public_key.public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    if hmac.compare_digest(request_public, response_public):
+        raise ValueError("Request and authority signing keys must be cryptographically distinct")
+
+
 class _DuplicateJsonKey(ValueError):
     pass
 
@@ -543,6 +568,8 @@ class PersonalSentinelAuthority:
         receipt_lifetime: float = 30.0,
         clock_rollback_tolerance: float = 1.0,
         max_nonces: int = MAX_NONCES,
+        enable_recorder_epochs: bool = False,
+        enable_client_response_floors: bool = False,
     ) -> None:
         self.state_path = Path(state_path)
         self.installation_id = validate_installation_id(installation_id)
@@ -563,6 +590,15 @@ class PersonalSentinelAuthority:
                 raise ValueError(f"Personal Sentinel {label} key identifier is invalid")
         if response_signer.key_id != response_verifier.key_id:
             raise ValueError("Personal Sentinel response signer and state verifier disagree")
+        if type(enable_recorder_epochs) is not bool:
+            raise ValueError("Recorder epoch enrollment must be explicit")
+        if type(enable_client_response_floors) is not bool:
+            raise ValueError("Client response floor enrollment must be explicit")
+        if enable_recorder_epochs or enable_client_response_floors:
+            # A shared response MAC would let a compromised request client forge
+            # historical receipts. Archival signing needs a server-only key.
+            require_independent_ed25519_enrollment(request_verifier=request_verifier,
+                response_signer=response_signer, response_verifier=response_verifier)
         if (
             not isinstance(allowed_domains, frozenset)
             or not allowed_domains
@@ -601,6 +637,8 @@ class PersonalSentinelAuthority:
         self.response_verifier = response_verifier
         self.generation_floor = generation_floor
         self.allowed_domains = allowed_domains
+        self.enable_recorder_epochs = enable_recorder_epochs
+        self.enable_client_response_floors = enable_client_response_floors
         self._clock = clock
         self._max_request_age = float(max_request_age)
         self._receipt_lifetime = float(receipt_lifetime)
@@ -657,7 +695,24 @@ class PersonalSentinelAuthority:
             if not 1 <= size <= 512 * 1024:
                 raise SentinelStateIntegrityError("authority state size is invalid")
             raw = self.state_path.read_bytes()
-            document = _strict_json(raw, maximum=512 * 1024, exact_keys=_STATE_KEYS)
+            # All optional extensions remain authenticated and bounded. An
+            # unavailable feature holds its state instead of resetting it.
+            document = None
+            for extension in (frozenset(), frozenset({"recorder_epoch_head"}),
+                              frozenset({"client_response_floors"}),
+                              frozenset({"recorder_epoch_head", "client_response_floors"})):
+                try:
+                    document = _strict_json(raw, maximum=512 * 1024,
+                                            exact_keys=_STATE_KEYS | extension)
+                    break
+                except SentinelRequestRejected:
+                    continue
+            if document is None:
+                raise SentinelStateIntegrityError("Authority state schema is invalid")
+            if "recorder_epoch_head" in document and not self.enable_recorder_epochs:
+                raise SentinelStateIntegrityError("Recorder state requires its enrolled authority feature")
+            if "client_response_floors" in document and not self.enable_client_response_floors:
+                raise SentinelStateIntegrityError("Client floor state requires its enrolled authority feature")
         except SentinelStateIntegrityError:
             raise
         except Exception as exc:
@@ -696,6 +751,22 @@ class PersonalSentinelAuthority:
             raise SentinelStateIntegrityError("authority state verification failed") from exc
         if not authentic:
             raise SentinelStateIntegrityError("authority state signature does not match")
+        if "recorder_epoch_head" in document:
+            from .recorder_epoch import parse_receipt, verify_receipt
+
+            try:
+                verify_receipt(parse_receipt(document["recorder_epoch_head"]), self.response_verifier,
+                               installation_id=self.installation_id, client_instance_id=self.client_instance_id)
+            except Exception as exc:
+                raise SentinelStateIntegrityError("Recorder archival head is invalid") from exc
+        if "client_response_floors" in document:
+            from .sentinel_remote_floor import validate_floor_state
+
+            try:
+                validate_floor_state(document["client_response_floors"],
+                    installation_id=self.installation_id, client_instance_id=self.client_instance_id)
+            except Exception as exc:
+                raise SentinelStateIntegrityError("Client response floor state is invalid") from exc
         domains: set[str] = set()
         for item in document["heads"]:
             if not isinstance(item, dict):
@@ -830,7 +901,8 @@ class PersonalSentinelAuthority:
         if request.get("schema") != REQUEST_SCHEMA:
             raise SentinelRequestRejected("request schema version is invalid")
         operation = request.get("operation")
-        if operation not in {"read-head", "compare-and-advance", "time-receipt"}:
+        if operation not in {"read-head", "compare-and-advance", "time-receipt",
+                             "recorder-read", "recorder-append", "client-floor-advance"}:
             raise SentinelRequestRejected("authority operation is invalid")
         if request.get("installation_id") != self.installation_id:
             raise SentinelRequestRejected("installation identity is not enrolled")
@@ -948,6 +1020,39 @@ class PersonalSentinelAuthority:
                         allowed_domains=self.allowed_domains,
                     )
                     response_payload = {"head": _head_document(self._advance(state, transition))}
+                elif operation in {"recorder-read", "recorder-append"}:
+                    if not self.enable_recorder_epochs:
+                        raise SentinelRequestRejected("Recorder epochs are not enrolled at this authority")
+                    from .recorder_epoch import issue_receipt, parse_claim, parse_receipt
+
+                    current = (parse_receipt(state["recorder_epoch_head"])
+                               if "recorder_epoch_head" in state else None)
+                    if operation == "recorder-read":
+                        if request["payload"]:
+                            raise SentinelRequestRejected("Recorder read payload must be empty")
+                        response_payload = {"receipt": None if current is None else asdict(current)}
+                    else:
+                        if set(request["payload"]) != {"claim"}:
+                            raise SentinelRequestRejected("Recorder append schema is invalid")
+                        try:
+                            receipt = issue_receipt(parse_claim(request["payload"]["claim"]),
+                                current=current, signer=self.response_signer,
+                                installation_id=self.installation_id, client_instance_id=self.client_instance_id,
+                                sealed_at=authority_time)
+                        except ValueError as exc:
+                            raise SentinelRequestRejected("Recorder append would overlap, fork or violate its bounds") from exc
+                        state["recorder_epoch_head"] = asdict(receipt)
+                        response_payload = {"receipt": state["recorder_epoch_head"]}
+                elif operation == "client-floor-advance":
+                    if not self.enable_client_response_floors:
+                        raise SentinelRequestRejected("Client response floors are not enrolled at this authority")
+                    from .sentinel_remote_floor import advance_floor_state, parse_floor_tuple
+
+                    proposal = parse_floor_tuple(request["payload"],
+                        installation_id=self.installation_id, client_instance_id=self.client_instance_id)
+                    advanced = advance_floor_state(state, proposal,
+                        installation_id=self.installation_id, client_instance_id=self.client_instance_id)
+                    response_payload = {**proposal, "advanced": advanced}
                 else:
                     if request["payload"]:
                         raise SentinelRequestRejected("time-receipt payload must be empty")
@@ -1147,6 +1252,13 @@ class PersonalSentinelAuthorityClient:
         return self._installation_id
 
     def _request(self, operation: str, payload: dict) -> tuple[dict, str]:
+        # One enrolled client may serve several integrity consumers. Serialize
+        # the complete exchange so two valid replies cannot arrive out of order
+        # and make our own monotonic response floor reject the older one.
+        with self._lock:
+            return self._request_serial(operation, payload)
+
+    def _request_serial(self, operation: str, payload: dict) -> tuple[dict, str]:
         try:
             now = _finite_time(self._clock(), "client time")
             nonce = self._nonce_factory()
@@ -1264,6 +1376,38 @@ class PersonalSentinelAuthorityClient:
             installation_id=self.installation_id,
             domain=transition.domain,
         )
+
+    def _recorder_receipt(self, payload: dict):
+        from .recorder_epoch import parse_receipt, verify_receipt
+
+        if type(self.response_verifier) is not Ed25519PublicVerifier:
+            raise HighWaterRejected("Recorder archives require a pinned verify-only Ed25519 authority")
+        if type(payload) is not dict or set(payload) != {"receipt"}:
+            raise HighWaterRejected("Recorder response payload is invalid")
+        if payload["receipt"] is None:
+            return None
+        try:
+            return verify_receipt(parse_receipt(payload["receipt"]), self.response_verifier,
+                                  installation_id=self.installation_id, client_instance_id=self.client_instance_id)
+        except Exception as exc:
+            raise HighWaterRejected("Recorder archival receipt was rejected") from exc
+
+    def read_recorder_head(self):
+        if type(self.response_verifier) is not Ed25519PublicVerifier:
+            raise HighWaterRejected("Recorder archives require a pinned verify-only Ed25519 authority")
+        response, _signature_value = self._request("recorder-read", {})
+        return self._recorder_receipt(response["payload"])
+
+    def append_recorder_epoch(self, claim):
+        from .recorder_epoch import EpochClaim
+
+        if type(claim) is not EpochClaim or type(self.response_verifier) is not Ed25519PublicVerifier:
+            raise HighWaterRejected("Recorder append requires a typed claim and independent public verifier")
+        response, _signature_value = self._request("recorder-append", {"claim": asdict(claim)})
+        receipt = self._recorder_receipt(response["payload"])
+        if receipt is None or receipt.claim != claim:
+            raise HighWaterRejected("Recorder append receipt did not echo the exact claim")
+        return receipt
 
     def get_time_receipt(self) -> SignedTimeReceipt:
         response, signature = self._request("time-receipt", {})

@@ -6112,8 +6112,12 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
         event: Event,
         combat_id: str,
     ) -> CombatAction | None:
-        if not self._host_mutation_allowed():
+        if not self._host_mutation_allowed() or not _WINDOWS_PROCESS_CUSTODY:
             return None
+        from angerona.core.program_firewall_lease import (
+            ProgramFirewallLease, ProgramFirewallLeaseError,
+        )
+
         program_key = os.path.normcase(os.path.abspath(exe))
         if program_key in self._blocked_programs:
             return None
@@ -6131,41 +6135,98 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
                 "rules": [rule],
             },
         )
-        try:
-            with self._journaled_mutation(action):
-                if not self._run_firewall([
-                    "add", "rule", f"name={rule}", "dir=out", "action=block",
-                    f"program={exe}", "enable=yes",
-                ]):
+        baseline = self.policy()
+
+        def authorize_dispatch() -> None:
+            self._require_host_mutation_authority(action=action)
+            if self.policy() != baseline or baseline.block_network is not True:
+                raise HostMutationHeld("Program isolation policy changed before dispatch.")
+            supplied, expected_birth = self._expected_process_start(event.details)
+            if (not self._integrity_ok(event)
+                    or "isolate_program" not in (self._response_actions(event) or ())
+                    or event.details.get("pid") != pid or not supplied or expected_birth is None
+                    or abs(expected_birth - create_time) > .001):
+                raise HostMutationHeld("Original program isolation contract is unavailable or changed.")
+
+        with self._receipt_lock:
+            lease = None
+            possible_effect = False
+            compensated = False
+            committed = None
+            try:
+                authorize_dispatch()
+                # Failure is a refusal, never a fallback to PID/path snapshots.
+                # This is current acquired file identity, not an original mapped
+                # image or a new detector-signed file-ID contract.
+                lease = ProgramFirewallLease(pid, create_time, exe)
+                action = CombatAction(**{**asdict(action), "details": {
+                    **action.details, **lease.proof(),
+                }})
+                authorize_dispatch()
+                with self._journaled_mutation(action):
+                    lease.validate()  # Durable intent may have blocked.
+                    authorize_dispatch()
+                    lease.check_deadline()  # No native read after final authority.
+                    possible_effect = True
+                    if not self._run_firewall([
+                        "add", "rule", f"name={rule}", "dir=out", "action=block",
+                        f"program={lease.path}", "enable=yes",
+                    ]):
+                        raise ProgramFirewallLeaseError("program firewall postcondition failed")
+                    lease.validate()
+
+                    def terminal_proof() -> dict[str, Any]:
+                        proof = lease.proof()
+                        authorize_dispatch()
+                        lease.check_deadline()
+                        return proof
+
+                    # The generic writer invokes this proof before encoding and
+                    # fsync. Keep custody through its return AND recheck then.
+                    with self._terminal_commit_validator(terminal_proof):
+                        committed = self._commit_after_mutation(
+                            action, release_before_rollback=lambda: None,
+                        )
+                    if committed is None:
+                        compensated = True  # Commit helper owns rollback/recovery.
+                    else:
+                        lease.validate()
+                        authorize_dispatch()
+                        lease.check_deadline()
+                        self._blocked_programs.add(program_key)
+            except Exception as exc:
+                if possible_effect and not compensated:
                     self._rollback_uncertain_reversible_mutation(
-                        action, "program firewall postcondition failed",
+                        action, f"program custody/postcondition failed: {type(exc).__name__}",
                         release_custody=lambda: None,
                     )
-                    return None
-                identity_matches = False
-                try:
-                    current = psutil.Process(pid) if psutil is not None else None
-                    current_exe = current.exe() if current is not None else ""
-                    identity_matches = bool(
-                        current is not None
-                        and abs(
-                            float(current.create_time()) - float(create_time)
-                        ) <= 0.001
-                        and os.path.normcase(os.path.abspath(current_exe))
-                        == program_key
-                    )
-                except Exception:
-                    identity_matches = False
-                if not identity_matches:
-                    self._rollback_uncertain_reversible_mutation(
-                        action, "program identity changed after firewall mutation",
-                        release_custody=lambda: None,
-                    )
-                    return None
-                self._blocked_programs.add(program_key)
-                return self._commit_after_mutation(action)
-        except JournalIntegrityError:
-            return None
+                    compensated = True
+                elif not possible_effect:
+                    self._journal_failure(action, f"program custody refused: {type(exc).__name__}")
+                committed = None
+            finally:
+                if lease is not None:
+                    try:
+                        lease.close()
+                    except Exception as exc:
+                        if possible_effect and not compensated:
+                            self._rollback_uncertain_reversible_mutation(
+                                action, "program custody close is unproven",
+                                release_custody=lambda: None,
+                            )
+                        # A failed close is not retried against a reused raw
+                        # handle. Keep the uncertainty durable and visible even
+                        # if exact-rule compensation was independently proven.
+                        orphan = {**asdict(action), "record_type": "orphan", "status": "orphaned",
+                            "orphaned_at": time.time(), "error": "program custody close is unproven",
+                            "rollback_state": "custody-release-unproven"}
+                        try:
+                            orphan = self._append_journal(orphan)
+                        except Exception:
+                            pass
+                        self._trip_mutation_circuit(orphan, "program custody close is unproven", cause=exc)
+                        committed = None
+            return committed
 
     def _isolate_host(self, event: Event, combat_id: str, *,
                       breach_case_id: str = "", verify_scope: bool = False,

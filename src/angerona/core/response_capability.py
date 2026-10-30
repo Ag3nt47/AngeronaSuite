@@ -83,6 +83,9 @@ class PrivilegedOpcode(str, Enum):
     DRIVER_QUARANTINE = "driver.quarantine"
     LOGON_AUDIT_CONFIGURE = "prevention.logon.configure"
     LOGON_AUDIT_RESTORE = "prevention.logon.restore"
+    DRIVER_POLICY_AUDIT = "prevention.driver-policy.audit"
+    DRIVER_POLICY_ENFORCE = "prevention.driver-policy.enforce"
+    DRIVER_POLICY_REMOVE = "prevention.driver-policy.remove"
 
 
 class CapabilityError(ValueError):

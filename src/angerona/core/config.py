@@ -299,6 +299,19 @@ class Config:
     ugcap_witness_client_certificate_path: str = ""
     ugcap_witness_client_key_path: str = ""
     ugcap_witness_ca_bundle_path: str = ""
+    # Public enrollment only. The request private key belongs to the protected
+    # credential store; the archive signing key stays on the remote witness.
+    recorder_witness_enabled: bool = False
+    recorder_witness_independent_host: bool = False
+    recorder_witness_endpoint: str = ""
+    recorder_witness_certificate_sha256: str = ""
+    recorder_witness_authority_public_key: str = ""
+    recorder_witness_installation_id: str = ""
+    recorder_witness_client_id: str = ""
+    recorder_witness_client_certificate_path: str = ""
+    recorder_witness_client_key_path: str = ""
+    recorder_witness_ca_bundle_path: str = ""
+    recorder_witness_archive_mib: int = 16
 
     # ── Adversary Combat standing authority ────────────────────────────────
     # Maximum mode is deliberately availability-aggressive: detections are
@@ -745,6 +758,9 @@ class Config:
                     witness["ugcap_witness_enabled"] = data.get("ugcap_witness_enabled") is True
                 for name, value in witness.items():
                     setattr(cfg, name, value)
+                from angerona.core.recorder_integrity import load_settings as load_recorder_settings
+                for name, value in load_recorder_settings(data).items():
+                    setattr(cfg, name, value)
                 cfg.aria_enabled = _bool_setting(
                     data, "aria_enabled", cfg.aria_enabled)
                 cfg.perf_governor_enabled = _bool_setting(
@@ -1053,6 +1069,8 @@ class Config:
         self.validate_shadow_storage_settings()
         self.validate_integration_settings()
         self.validate_curated_tool_settings()
+        from angerona.core.recorder_integrity import settings_from_config, validate_settings as validate_recorder_settings
+        validate_recorder_settings(settings_from_config(self))
         from angerona.core.alert_retention import RetentionPolicy
         RetentionPolicy(self.alert_retention_enabled, self.alert_retention_days,
                         self.alert_retention_max_mib)
@@ -1145,6 +1163,7 @@ class Config:
                     "ugcap_vault_path": self.ugcap_vault_path,
                     "ugcap_key_name": self.ugcap_key_name,
                     "ugcap_lockdown": self.ugcap_lockdown,
+                    **settings_from_config(self),
                     **{name: getattr(self, name) for name in (
                         "ugcap_witness_enabled", "ugcap_witness_endpoint", "ugcap_witness_certificate_sha256",
                         "ugcap_witness_authority_public_key", "ugcap_witness_installation_id", "ugcap_witness_client_id",

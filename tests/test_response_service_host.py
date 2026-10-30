@@ -299,7 +299,9 @@ def test_native_provisioning_read_keeps_installer_file_bounded_and_unchanged(mon
     # factory has no bypass flag and always requires installer ACL checks.
     monkeypatch.setattr(host, "verify_protected_path", lambda p, sid: observed.append((p, sid)))
     assert host._read_provisioning(path, SERVICE) == value
-    assert observed == [(path, SERVICE)]
+    # The reader validates ancestry/ACLs again after its pinned read and then
+    # independently compares the native FileID of the named object.
+    assert observed == [(path, SERVICE), (path, SERVICE)]
     assert path.read_bytes() == canonical(value)
     path.write_bytes(b"x" * (host._MAX_POLICY + 1))
     with pytest.raises(PermissionError, match="custody"):

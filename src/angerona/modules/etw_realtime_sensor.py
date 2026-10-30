@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Callable, Optional
@@ -179,6 +180,16 @@ class ETWProcessSensor:
             ppid = g("ParentProcessID", "ParentProcessId")
             image = g("ImageName", "ImageFileName", "Image")
             cmdline = g("CommandLine", "Commandline", default="")
+            # Preserve only an exact native FILETIME representation. Floats or
+            # locale-formatted dates cannot prove a particular process birth.
+            raw_birth = g("CreateTime", "ProcessCreateTime")
+            birth = None
+            if type(raw_birth) is int and 116444736000000000 < raw_birth <= 0xFFFFFFFFFFFFFFFF:
+                birth = str(raw_birth)
+            elif (type(raw_birth) is str and 1 <= len(raw_birth) <= 20 and raw_birth.isascii()
+                  and raw_birth.isdecimal() and raw_birth == str(int(raw_birth))
+                  and 116444736000000000 < int(raw_birth) <= 0xFFFFFFFFFFFFFFFF):
+                birth = raw_birth
 
             if pid is None and image is None:
                 return None  # not a process-start record we can use
@@ -209,6 +220,7 @@ class ETWProcessSensor:
                 "ppid":        ppid,
                 "parent_name": parent_name,
                 "cmdline":     cmdline,
+                "process_birth_ticks": birth,
                 "user":        g("UserSID", "SubjectUserName"),
                 "event_type":  "process_creation",
                 "source":      "etw",
@@ -392,6 +404,26 @@ class EtwRealtimeSensorModule(BaseModule):
         self._restart_attempts = 0
         self._next_restart_at = 0.0
         self._continuity_gaps = 0
+        self._collection_generation = uuid.uuid4().hex
+        self._collection_cache = self._collection_state("unavailable", False, 0, "native session not started")
+
+    def _collection_state(self, mode, live, losses, reason, *, generation=None):
+        return dict(source_module=self.name, generation=generation or self._collection_generation,
+                    sampled_monotonic=time.monotonic(), mode=mode, live=live,
+                    loss_count=losses, reason=str(reason)[:240])
+
+    def collection_snapshot(self) -> dict:
+        """Read the last worker-owned native query; no QueryTrace on readers."""
+        cache = self._collection_cache
+        if cache["generation"] != self._collection_generation:
+            return self._collection_state("unavailable", False, 0, "collector generation changed")
+        return dict(cache)
+
+    def _new_sensor(self):
+        generation = uuid.uuid4().hex
+        self._collection_generation = generation
+        self._collection_cache = self._collection_state("starting", False, 0, "native session starting")
+        return ETWProcessSensor(lambda event, token=generation: self._on_event(event, _generation=token), logger=None)
 
     # Mirror etw_listener.py's exposed surface.
     @property
@@ -403,7 +435,10 @@ class EtwRealtimeSensorModule(BaseModule):
         return self.health
 
     # ── bridge: ETW event -> EventBus ────────────────────────────────────────
-    def _on_event(self, evt: dict) -> None:
+    def _on_event(self, evt: dict, *, _generation=None) -> None:
+        if (_generation is not None and _generation != self._collection_generation) or self.stopping:
+            return
+        generation = self._collection_generation if _generation is None else _generation
         name = evt.get("name") or "unknown"
         parent = evt.get("parent_name")
         suffix = f" (parent {parent})" if parent else ""
@@ -422,11 +457,13 @@ class EtwRealtimeSensorModule(BaseModule):
             user=evt.get("user"),
             event_type="process_creation",
             source="ETW:Kernel-Process",
+            collection_generation=generation,
+            process_birth_ticks=evt.get("process_birth_ticks"),
         )
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def run(self) -> None:
-        self._sensor = ETWProcessSensor(self._on_event, logger=None)
+        self._sensor = self._new_sensor()
         started = self._sensor.start()
         if not started:
             # Unavailable by environment (off-Windows / no pywintrace / not
@@ -434,6 +471,7 @@ class EtwRealtimeSensorModule(BaseModule):
             # process creation, so we deliberately do NOT run a duplicate psutil
             # fallback here.
             reason = self._sensor.last_error or "ETW session could not start"
+            self._collection_cache = self._collection_state("unavailable", False, 0, reason)
             self.set_health(0, f"unavailable: {reason}; polling sensors cover process creation")
             self.emit(
                 f"ETWR unavailable — {reason}. Real-time process detection off; "
@@ -452,7 +490,12 @@ class EtwRealtimeSensorModule(BaseModule):
         try:
             while not self.stopping:
                 self.sleep(self._HEALTH_POLL)
+                generation = self._collection_generation
                 receipt = self._sensor.status_receipt()
+                self._collection_cache = self._collection_state(
+                    "native", receipt.live,
+                    receipt.loss_count + receipt.parse_failures + receipt.callback_failures, receipt.reason,
+                    generation=generation)
                 seen = receipt.events_seen
                 if receipt.live and receipt.loss_count == 0 and not (
                     receipt.parse_failures or receipt.callback_failures
@@ -487,7 +530,7 @@ class EtwRealtimeSensorModule(BaseModule):
                             self._sensor.stop()
                         except Exception:
                             pass
-                        replacement = ETWProcessSensor(self._on_event, logger=None)
+                        replacement = self._new_sensor()
                         if replacement.start():
                             self._sensor = replacement
                             self.set_health(
@@ -502,9 +545,12 @@ class EtwRealtimeSensorModule(BaseModule):
                             self.last_error = replacement.last_error
                 self._last_seen = seen
         finally:
+            self._collection_cache = self._collection_state("stopped", False, 0, "native session stopped")
             self._sensor.stop()
 
     def stop(self) -> None:
+        self._collection_generation = uuid.uuid4().hex
+        self._collection_cache = self._collection_state("stopped", False, 0, "native session stop requested")
         # Ensure the ETW session is torn down promptly on shutdown.
         if self._sensor is not None:
             try:

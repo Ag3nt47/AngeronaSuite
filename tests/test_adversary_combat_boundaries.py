@@ -284,7 +284,7 @@ def test_invalid_supplied_process_identity_fails_closed(tmp_path, monkeypatch):
     assert process.killed is False
 
 
-def test_program_firewall_rule_is_removed_if_pid_identity_changes_after_netsh(
+def test_program_firewall_rule_is_removed_if_retained_identity_changes_after_netsh(
     tmp_path, monkeypatch
 ):
     expected_exe = str(tmp_path / "malware.exe")
@@ -313,12 +313,33 @@ def test_program_firewall_rule_is_removed_if_pid_identity_changes_after_netsh(
 
     monkeypatch.setattr(module, "_run_firewall", firewall)
     monkeypatch.setattr(module, "_firewall_rule_exists", lambda name: name in rules)
+    from angerona.core import program_firewall_lease
+
+    class InertLease:
+        path = expected_exe
+
+        def validate(self):
+            if rules:
+                raise OSError("inert retained identity changed after dispatch")
+
+        def proof(self):
+            self.validate()
+            return {"program_custody": "inert-unit-test"}
+
+        def check_deadline(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(program_firewall_lease, "ProgramFirewallLease", lambda *_args: InertLease())
+    monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
 
     result = module._block_program(
         expected_exe,
         500,
         20.0,
-        _event("EDR", Severity.CRITICAL),
+        _event("EDR", Severity.CRITICAL, pid=500, process_create_time=20.0),
         "combat-aaaaaaaaaaaa",
     )
 

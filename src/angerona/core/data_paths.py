@@ -426,6 +426,14 @@ def data_dir(create: bool = True) -> Path:
     ``XDG_STATE_HOME`` and macOS uses the current user's Application Support
     directory. ``ANGERONA_DATA`` remains an explicit override on every platform.
     """
+    from .windows_engine_custody import active_engine_custody
+
+    service = active_engine_custody()
+    if service is not None:
+        # Only completed native admission installs this in-process profile.
+        # Installer provisioning already established the root; never create or
+        # migrate a machine service root from desktop/environment preferences.
+        return service.root
     frozen = getattr(sys, "frozen", False)
     elevated_source = _elevated_source_runtime()
     # An elevated source process derives its key-custody root from the loaded
@@ -525,6 +533,11 @@ def runtime_temp_dir(create: bool = True) -> Path:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not sys.platform.startswith("win"):
             os.chmod(path, 0o700)
+        from .windows_engine_custody import active_engine_custody
+
+        service = active_engine_custody()
+        if service is not None:
+            service.verify_private_path(path, directory=True)
     return path
 
 
@@ -532,7 +545,13 @@ def configure_runtime_environment() -> Path:
     """Pin app data, diagnostics, and inherited temp files to the canonical root."""
     root = data_dir()
     tmp = runtime_temp_dir()
-    os.environ.setdefault("ANGERONA_DIAG_DIR", str(root / "diagnostics"))
+    from .windows_engine_custody import active_engine_custody
+
+    if active_engine_custody() is not None:
+        os.environ["ANGERONA_DATA"] = str(root)
+        os.environ["ANGERONA_DIAG_DIR"] = str(root / "diagnostics")
+    else:
+        os.environ.setdefault("ANGERONA_DIAG_DIR", str(root / "diagnostics"))
     os.environ["TEMP"] = str(tmp)
     os.environ["TMP"] = str(tmp)
     return root

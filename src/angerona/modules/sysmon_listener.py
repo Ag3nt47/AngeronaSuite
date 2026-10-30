@@ -26,6 +26,7 @@ import json
 import math
 import os
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -171,6 +172,9 @@ def _build_details(eid: int, root: ET.Element, label: str, tags: list[str]) -> d
         base["disposition"] = "health"
     if eid == 1:
         base.update({
+            "process_guid":   get("ProcessGuid"),
+            "parent_process_guid": get("ParentProcessGuid"),
+            "source_utc_time": get("UtcTime"),
             "image":          get("Image"),
             "command_line":   get("CommandLine"),
             "parent_image":   get("ParentImage"),
@@ -231,8 +235,11 @@ def _build_details(eid: int, root: ET.Element, label: str, tags: list[str]) -> d
             "source_image":   source_image,
             "image":          source_image,
             "source_pid":     get("SourceProcessId"),
+            "source_process_guid": get("SourceProcessGUID"),
             "target_image":   get("TargetImage"),
             "target_pid":     get("TargetProcessId"),
+            "target_process_guid": get("TargetProcessGUID"),
+            "source_utc_time": get("UtcTime"),
             "granted_access": get("GrantedAccess"),
             "call_trace":     get("CallTrace")[:300],
         })
@@ -337,6 +344,38 @@ class SysmonListenerModule(BaseModule):
         self._using_fallback = False
         self._evtlog_handle = None   # win32evtlog handle, if available
         self._seen_pids: set[int] = set()   # for psutil fallback dedup
+        self._collection_session = uuid.uuid4().hex
+        self._collection_cache = self._collection_state("unavailable", False, "native channel not started")
+
+    def _collection_generation(self) -> str:
+        channel = self._channel_generation
+        try:
+            valid = channel is not None and self._valid_generation(channel)
+        except (TypeError, ValueError, OverflowError):
+            valid = False
+        if not valid:
+            return ""
+        generation = self._generation_id(channel)
+        return hashlib.sha256((self._collection_session + ":" + generation).encode("ascii")).hexdigest()
+
+    def _collection_state(self, mode, live, reason):
+        return dict(source_module=self.name, generation=self._collection_generation(),
+                    sampled_monotonic=time.monotonic(), mode=mode, live=live,
+                    loss_count=int(self._continuity_state in {"delivery-gap", "collection-failed"}),
+                    reason=reason[:240])
+
+    def collection_snapshot(self) -> dict:
+        """Read cached channel/fallback state; no Event Log or cursor I/O."""
+        cached = self._collection_cache
+        current = self._collection_generation()
+        if not current:
+            result = dict(cached, generation="", live=False)
+            if result["mode"] == "native":
+                result.update(mode="unavailable", reason="native channel generation unavailable")
+            return result
+        if cached["generation"] != current:
+            return self._collection_state("unavailable", False, "native channel generation changed")
+        return dict(cached)
 
     @property
     def _cursor_path(self) -> Path:
@@ -975,6 +1014,9 @@ class SysmonListenerModule(BaseModule):
     def _reseek_and_drain(self, backend: object) -> None:
         """Establish continuity and explicitly reseek after every channel open."""
         cursor, newest = self._establish_continuity(backend)
+        self._collection_cache = self._collection_state(
+            "native", self._evtlog_handle is not None and not self._using_fallback,
+            "cached native channel observation; continuity=" + self._continuity_state)
         desired = cursor + 1
         if self.stopping or not newest or desired > newest:
             return
@@ -1041,6 +1083,8 @@ class SysmonListenerModule(BaseModule):
         return type(provider) is str and provider.casefold() == _SYSMON_PROVIDER.casefold()
 
     def _close_sysmon(self) -> None:
+        self._collection_session = uuid.uuid4().hex
+        self._collection_cache = self._collection_state("stopped", False, "native channel closed")
         handle, self._evtlog_handle = self._evtlog_handle, None
         if handle is not None:
             try:
@@ -1077,6 +1121,7 @@ class SysmonListenerModule(BaseModule):
                     raise ValueError("Sysmon provider identity unavailable")
             self._evtlog_handle, handle = handle, None
             self._using_fallback = False
+            self._collection_cache = self._collection_state("starting", False, "native channel generation not verified yet")
             self._continuity_state = "unverified"
             self.set_health(70, "Sysmon channel/provider open; durable continuity not yet verified")
             self.emit(f"Sysmon channel opened: {_SYSMON_CHANNEL}", Severity.INFO,
@@ -1084,6 +1129,7 @@ class SysmonListenerModule(BaseModule):
             return True
         except Exception:
             self._using_fallback = True
+            self._collection_cache = self._collection_state("fallback", False, "process-diff fallback cannot prove a native Sysmon path")
             self.set_health(50, "Sysmon channel/provider unavailable; process-diff fallback only")
             self.emit(
                 "Sysmon channel/provider could not be verified. Running process-diff "
@@ -1117,6 +1163,7 @@ class SysmonListenerModule(BaseModule):
             try:
                 self._reseek_and_drain(win32evtlog)
             except Exception as exc:
+                self._collection_cache = self._collection_state("unavailable", False, "native channel read failed")
                 if not self._cursor_persist_failed:
                     self.set_health(50, f"Sysmon continuity/read error: {exc}")
                 self.emit(
@@ -1160,6 +1207,7 @@ class SysmonListenerModule(BaseModule):
         if not self._verified_provider(rec):
             self._reject_sensor_record("ProviderMismatch")
             return
+        generation = self._collection_generation()
         try:
             eid = int(rec.EventID & 0xFFFF)
         except Exception:
@@ -1185,13 +1233,16 @@ class SysmonListenerModule(BaseModule):
             root = ET.fromstring(xml_str)
             msg = _build_message(eid, root)
             details = _build_details(eid, root, label, tags)
+            details["sensor_source"] = "sysmon-native"
+            details["collection_generation"] = generation
         except ET.ParseError:
             self._reject_sensor_record("XmlParseError", eid=eid, observed_severity=severity)
             return
         except DefusedXmlException:
             self._reject_sensor_record("XmlUnsafe", eid=eid, observed_severity=severity)
             return
-        self.emit(msg, severity, **details)
+        if generation == self._collection_generation() and not self.stopping:
+            self.emit(msg, severity, **details)
 
     # ── psutil fallback loop ──────────────────────────────────────────────────
     def _run_fallback_loop(self) -> None:
@@ -1222,6 +1273,7 @@ class SysmonListenerModule(BaseModule):
 
         while not self.stopping:
             self.sleep(self.background_interval(self._FALLBACK_INTERVAL))
+            self._collection_cache = self._collection_state("fallback", False, "process-diff fallback cannot prove a native Sysmon path")
             try:
                 current: dict[int, psutil.Process] = {}
                 # Inventory needs identities only. Rich process_iter attributes

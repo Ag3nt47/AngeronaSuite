@@ -36,8 +36,8 @@ def _misses(monkeypatch, count):
     def record(pct,note=""):
         health.append((pct,note));original(pct,note)
     monkeypatch.setattr(module,"set_health",record)
-    monkeypatch.setattr(module,"sleep",lambda _:module._stop.set())
-    monkeypatch.setattr(module,"_fire_canary",lambda:pytest.fail("fixture spawned a probe"))
+    monkeypatch.setattr(module,"_wait_control_tick",lambda:module._stop.set())
+    monkeypatch.setattr(module,"_fire_canary",lambda **_:pytest.fail("fixture spawned a probe"))
     module.run()
     alerts=[e for e in bus.recent(100) if e.module==module.name and e.severity>=Severity.HIGH]
     return module,bus,alerts,health

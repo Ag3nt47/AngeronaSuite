@@ -245,7 +245,11 @@ class WatchdogMonitor(BaseModule):
                 f"{self.STABILITY_RESET_SECONDS:.0f}s stability window",
             )
         else:
-            self.set_health(100, f"all {monitored} enabled sibling modules healthy")
+            self.set_health(
+                100,
+                f"{monitored} enabled sibling workers have no observed "
+                "lifecycle/deadline faults; detector coverage is separate.",
+            )
 
     def self_test(self) -> tuple[bool, str]:
         class _Fake:

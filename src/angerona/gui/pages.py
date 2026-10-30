@@ -8922,6 +8922,9 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self._accept_async_results = False
+        integrity_controls = getattr(self, "_recorder_integrity_controls", None)
+        if integrity_controls is not None:
+            integrity_controls.shutdown_reader()
         storage_controls = getattr(self, "_storage_controls", None)
         if storage_controls is not None:
             storage_controls.close()
@@ -8934,6 +8937,9 @@ class SettingsDialog(QDialog):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        integrity_controls = getattr(self, "_recorder_integrity_controls", None)
+        if integrity_controls is not None:
+            integrity_controls.shutdown_reader()
         storage_controls = getattr(self, "_storage_controls", None)
         if storage_controls is not None:
             storage_controls.close()
@@ -10020,6 +10026,10 @@ class SettingsDialog(QDialog):
         self._storage_controls = StorageControls(
             self._cfg, getattr(self.parent(), "manager", None), self)
         lay.addWidget(self._storage_controls)
+        from angerona.gui.recorder_integrity_controls import RecorderIntegrityControls
+        self._recorder_integrity_controls = RecorderIntegrityControls(
+            self._cfg, getattr(self.parent(), "manager", None), self)
+        lay.addWidget(self._recorder_integrity_controls)
 
         lay.addWidget(self._section("Removable media (USB)"))
         usb_grid = QGridLayout()
@@ -12002,6 +12012,9 @@ class SettingsDialog(QDialog):
         storage_controls = getattr(self, "_storage_controls", None)
         if storage_controls is not None:
             storage_controls.write_candidate(candidate)
+        integrity_controls = getattr(self, "_recorder_integrity_controls", None)
+        if integrity_controls is not None:
+            integrity_controls.write_candidate(candidate)
         candidate.deception_user_folders = self._deception_user_folders_chk.isChecked()
         candidate.mcp_enabled = self._mcp_chk.isChecked()
         try:

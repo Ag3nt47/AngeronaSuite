@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 
 
+class NativeOwnershipObservationError(OSError):
+    """A query-only ownership observation could not release its native custody."""
+
+
 class WindowsChildJob:
     def __init__(self, *, kill_on_close=True):
         import win32job
@@ -75,9 +79,72 @@ class OwnedWindowsChild:
             code = win32process.GetExitCodeProcess(self._process)
         return None if code == 259 else code
 
+    def contains_native_process(self, identity) -> bool:
+        """Observe one exact live member of this retained Job, without mutation.
+
+        This is background-only identity context. A redirector's PID is not
+        substituted for its actual role child, and membership grants no response
+        authority. Duplicate only JOB_OBJECT_QUERY while the owner is pinned;
+        no borrowed numeric Job handle escapes the owner lock.
+        """
+        from angerona.core.windows_process_lease import ProcessObjectIdentity, _Native
+
+        if type(identity) is not ProcessObjectIdentity:
+            return False
+        if not self._handle_lock.acquire(blocking=False):
+            return False
+        retained_job = None
+        try:
+            if self._process is None or self._job._handle is None:
+                return False
+            import win32api
+            current = win32api.GetCurrentProcess()
+            retained_job = win32api.DuplicateHandle(
+                current, self._job._handle, current, 0x0004, False, 0,
+            )
+        except Exception:
+            return False
+        finally:
+            self._handle_lock.release()
+        process = None
+        native = None
+        try:
+            import ctypes
+            from ctypes import wintypes as w
+
+            native = _Native()
+            process = native.open(identity.pid, 0x101000, False)
+            if native.wait(process, 0) or native.identity(process) != identity:
+                return False
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.IsProcessInJob.argtypes = (w.HANDLE, w.HANDLE, ctypes.POINTER(w.BOOL))
+            kernel.IsProcessInJob.restype = w.BOOL
+            member = w.BOOL()
+            if not kernel.IsProcessInJob(process, int(retained_job), ctypes.byref(member)):
+                return False
+            return bool(member.value and not native.wait(process, 0)
+                        and native.identity(process) == identity)
+        except Exception:
+            return False
+        finally:
+            cleanup_failure = False
+            if process is not None:
+                try:
+                    native.close(process)
+                except Exception:
+                    cleanup_failure = True
+            if retained_job is not None:
+                try:
+                    retained_job.Close()
+                except Exception:
+                    cleanup_failure = True
+            if cleanup_failure:
+                raise NativeOwnershipObservationError("Query-only native observation cleanup remains unproven")
+
     def terminate(self):
         # Terminate the job even after its server exits: a runner can outlive it.
-        self._job.terminate()
+        with self._handle_lock:
+            self._job.terminate()
 
     kill = terminate
 
@@ -107,8 +174,8 @@ class OwnedWindowsChild:
             retained.Close()
 
     def close(self):
-        self._job.close()
         with self._handle_lock:
+            self._job.close()
             handle, self._process = self._process, None
             if handle is not None:
                 handle.Close()

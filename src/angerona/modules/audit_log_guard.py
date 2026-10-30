@@ -103,6 +103,11 @@ class AuditLogIntegrityGuard(BaseModule):
         self._freshness_reported = ""
 
     @property
+    def high_water_provider(self) -> IndependentHighWater | None:
+        """The authority composed before checkpoint state can be admitted."""
+        return self._high_water
+
+    @property
     def state(self) -> str:
         return self.status
 

@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
+
+- Separate kernel-provider canary observations from generic polling coverage;
+  retain lifecycle, native probe custody and explicit missing-receipt outcomes.
+- Correlate WER dump/suspend precursors using bounded source metadata and cached
+  native-owned process generations. Precursor telemetry is distinct from a
+  prevented dump, observed suspension or response permission.
+- Retain process and executable identity across program-firewall transactions,
+  including durable intent, postconditions and exact managed compensation.
+- Bind configured independent freshness providers before audit/network state
+  admission; exclude lookalike external classes from implicit service binding.
+- Add optional independent recorder signatures over exact committed row bytes,
+  remote append admission, protected request-key enrollment, bounded archives,
+  explicit loss/change/backlog status and restart reconciliation. Defaults stay
+  off; an unavailable witness never blocks local protection startup.
+- Add the installed virtual-account engine admission boundary and status-only
+  console. Keep service-private configuration, keys and sensors behind actual
+  package, SCM, token and protected-root admission.
+- Compose a managed driver-policy executor only for the explicitly provisioned
+  v2 unsigned multiple-policy profile. Use fixed reviewed artifacts, server-owned
+  plans, two independent OS-bound approvals, durable capabilities and bounded
+  asynchronous jobs. Default v1 remains diagnostic-only.
+- Add bounded registry-selected servicing-queue version review, issuer-pinned
+  TPM certification verification and pure NV policy plans. Hardware provisioning,
+  writes and native deployment acceptance remain separate.
+- Preserve native pipe/process/token/SCM owners on uncertain completion or close;
+  retain recorder reader/enrollment ownership through STOP before closing SQLite.
+- Bound recorder historical reads using a freshly proved SQLite rowid alias and
+  indexed seeks; remove legacy retrieval import-time file creation and bound its
+  advisory output. Preserve existing user files and preferences.
+- Describe Watchdog Monitor results as worker lifecycle/deadline observations,
+  preserving independent critical, degraded and unavailable detector coverage.
+- Describe Counter-Agentic inference-port records as observed socket state with
+  bounded endpoints and role. A listener requires explicit LISTEN plus a matching
+  local port; a port observation alone does not imply hijacking or initiation.
+  Existing detection criteria, severity, approvals and deduplication remain.
+- Report crash-log target/STARTUP results, hook arming and the selected native
+  fault destination; retain partial/unavailable logging without blocking startup.
+  The 55-pass observability gate does not repair the unresolved native Qt fault.
+
+Focused offline gates and a fresh Full-mode observation are recorded in the
+[1.15 version notes](docs/releases/v1.15.0.md) and
+[sanitized review](analysis/hardening-v1.15-2026-10-30.md). The broad selfcheck
+retains an existing host Ollama listener-attestation failure. Kernel-provider,
+signed-service, WDAC and physical-TPM acceptance are not established by that
+capture; substantial CPU cost and intermittent UI delay remain follow-up work.
+A later native shutdown access violation remains a P0 availability finding.
+The final 120-second session exited zero but failed observation acceptance on a
+bounded inventory guard; it does not prove the earlier crash fixed. Missing
+post-STOP crash-log files have an unproved cause and preserved private evidence.
+
 ## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
 
 - Add a GitHub Tools workspace and a shared SpywareGuard integration for the

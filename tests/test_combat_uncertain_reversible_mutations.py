@@ -71,6 +71,30 @@ def test_uncertain_firewall_effects_close_only_after_verified_rollback(
     elif kind == "isolate_host":
         result = module._isolate_host(event, "combat-aaaaaaaaaaaa")
     else:
+        from angerona.core import program_firewall_lease
+
+        class InertLease:
+            path = "C:/fixture/inert.exe"
+
+            def validate(self):
+                if add_count:
+                    raise OSError("inert retained identity changed after dispatch")
+
+            def proof(self):
+                self.validate()
+                return {"program_custody": "inert-unit-test"}
+
+            def check_deadline(self):
+                pass
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(program_firewall_lease, "ProgramFirewallLease", lambda *_args: InertLease())
+        monkeypatch.setattr(combat, "_WINDOWS_PROCESS_CUSTODY", True)
+        event = Event("Inert Detector", "fixture", Severity.HIGH,
+            details={"pid": 999999, "process_create_time": 11.0,
+                     **authorize_response(["isolate_program"], pid=999999, process_create_time=11.0)})
         result = module._block_program("C:/fixture/inert.exe", 999999, 11.0,
                                        event, "combat-aaaaaaaaaaaa")
     assert result is None

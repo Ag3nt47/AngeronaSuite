@@ -66,6 +66,15 @@ def _dlq_write_exclusive(path: Path, entry: str) -> None:
             fh.write(entry)
 
 
+class RecorderInitializationPending(RuntimeError):
+    """A failed constructor retains an ambiguously closed connection owner."""
+
+    def __init__(self, owner):
+        super().__init__("Recorder construction failed and connection retirement remains unproven")
+        self.owner = owner
+        self.recorder_retirement_pending = True
+
+
 class FlightRecorder:
     # Retention: bound the ledger so every query (and the DB file) stays fast as
     # telemetry accumulates. Tunable / patchable for tests.
@@ -89,6 +98,28 @@ class FlightRecorder:
     def __init__(self, db_path: Path) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._db = self._ui_db = None
+        self._failed_initialization_connections = ()
+        try:
+            self._open_connections()
+        except BaseException as original:
+            pending = []
+            for name in ("_ui_db", "_db"):
+                owned = getattr(self, name)
+                setattr(self, name, None)
+                if owned is not None:
+                    try:
+                        owned.close()
+                    except BaseException:
+                        # Retain the actual connection object; no constructor
+                        # caller received ownership and no retry is inferred.
+                        pending.append(owned)
+            self._failed_initialization_connections = tuple(pending)
+            if pending:
+                raise RecorderInitializationPending(self) from original
+            raise
+
+    def _open_connections(self) -> None:
         # check_same_thread=False: the bus may publish from any module thread.
         self._db = sqlite3.connect(str(self._path), check_same_thread=False)
         self._authority = BusAuthority.load()

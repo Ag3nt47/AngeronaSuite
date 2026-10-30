@@ -51,6 +51,27 @@ _TRUE = frozenset({"1", "true", "yes", "on"})
 _UGCAP_BOOTSTRAP = frozenset({"angerona.modules.ugcap_guard", "angerona.modules.adversary_combat"})
 _UGCAP_TOKEN = re.compile(r"[0-9a-f]{32}\Z")
 _UGCAP_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_HIGH_WATER_CONSUMERS = {
+    ("angerona.modules.audit_log_guard", "AuditLogIntegrityGuard"): "constructor",
+    ("angerona.modules.network_trust_monitor", "NetworkTrustMonitorModule"): "constructor",
+    ("angerona.modules.smart_deception", "SmartDeception"): "binder",
+}
+
+
+def _high_water_binding_kind(cls: type) -> str | None:
+    """Recognize an already-discovered bundled class without importing it.
+
+    A matching module-name prefix alone is not service enrollment. In strict
+    UGCAP startup these consumers must remain unimported until discovery has
+    admitted their source, so this lookup never imports or loads a module.
+    """
+    identity = (cls.__module__, cls.__name__)
+    kind = _HIGH_WATER_CONSUMERS.get(identity)
+    module = sys.modules.get(identity[0]) if kind else None
+    if (module is None or vars(module).get(identity[1]) is not cls
+            or getattr(cls, "_angerona_manifest", None) is not None):
+        return None
+    return kind
 
 
 def _is_ugcap_control(module) -> bool:
@@ -456,17 +477,24 @@ class ModuleManager:
         Independent high-water authority is offered only to bundled modules;
         an external drop-in never receives this privileged service implicitly.
         """
-        instance = self._module_factory(cls) if self._module_factory else cls()
+        provider = self.high_water_provider
+        binding = _high_water_binding_kind(cls) if provider is not None else None
+        if self._module_factory is not None:
+            # Preserve the public factory(cls) contract. A custom factory must
+            # compose constructor-time consumers before they admit local state.
+            instance = self._module_factory(cls)
+        elif binding == "constructor":
+            instance = cls(high_water=provider)
+        else:
+            instance = cls()
         if not isinstance(instance, BaseModule):
             raise TypeError("module factory did not return a BaseModule")
-        if (
-            self.high_water_provider is not None
-            and cls.__module__.startswith("angerona.modules.")
-            and getattr(cls, "_angerona_manifest", None) is None
-        ):
-            binder = getattr(instance, "bind_high_water", None)
-            if callable(binder):
-                binder(self.high_water_provider)
+        if binding is not None and type(instance) is not cls:
+            raise TypeError("independent high-water consumer factory changed the bundled class")
+        if binding == "constructor" and instance.high_water_provider is not provider:
+            raise ValueError("module factory omitted constructor-time independent high-water authority")
+        if binding == "binder":
+            instance.bind_high_water(provider)
         return instance
 
     def _builtin_classes(self) -> List[type]:
