@@ -595,3 +595,27 @@ def test_metadata_close_uncertainty_is_sticky_without_retrying_a_reused_descript
         client=stack.client, interval=3600)
     with pytest.raises(RuntimeError, match="cannot be restarted"):
         replacement.start()
+
+
+def test_native_metadata_creation_uncertainty_retains_worker_before_any_authority_append(stack, monkeypatch):
+    from angerona.core.recorder_metadata_custody import MetadataCreationUncertain
+    append(stack)
+    retained = SimpleNamespace(raw_handle=900, descriptor=None, transfer_pending=True)
+    calls = []
+    def uncertain(path, flags, mode):
+        calls.append((path.name, flags, mode))
+        raise MetadataCreationUncertain(retained)
+    monkeypatch.setattr(worker_module, "open_private_metadata", uncertain)
+    worker = start(stack)
+    stack.expected_held.add(id(worker))
+    wait_for(worker, lambda status: status.state == "retirement-held")
+    worker.thread.join(5)
+    assert not worker.thread.is_alive() and not worker.stop()
+    assert worker._creation_owners == [retained] and calls[0][0] == ".writer.lock" and len(calls) == 1
+    assert stack.client.read_recorder_head() is None and not (stack.archive / "pending.json").exists()
+    append(stack, "protection writer remains usable while optional native creation is held")
+    assert stack.connection.execute("SELECT count(*) FROM events").fetchone()[0] == 2
+    replacement = worker_module.RecorderEpochWorker(db_path=stack.database, archive_dir=stack.archive,
+        client=stack.client, interval=3600)
+    with pytest.raises(RuntimeError, match="cannot be restarted"):
+        replacement.start()

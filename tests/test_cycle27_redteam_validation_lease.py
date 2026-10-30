@@ -32,7 +32,9 @@ def _supply_contract_inventory(monkeypatch):
     return ages
 
 
-def _runtime(tmp_path: Path, monkeypatch):
+def _runtime(tmp_path: Path, monkeypatch, *, supplied_inventory: bool = True):
+    if supplied_inventory:
+        _supply_contract_inventory(monkeypatch)
     monkeypatch.setattr(
         BusAuthority,
         "_key_path",
@@ -57,7 +59,7 @@ def test_validation_lease_temporarily_starts_sensor_and_proves_recorder(
     tmp_path: Path, monkeypatch
 ) -> None:
     inventory_ages = _supply_contract_inventory(monkeypatch)
-    bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch)
+    bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch, supplied_inventory=False)
     target = tmp_path / "selected-target"
     try:
         lease = purple_guard.acquire_redteam_validation_lease(
@@ -84,6 +86,51 @@ def test_validation_lease_temporarily_starts_sensor_and_proves_recorder(
         assert target.resolve() not in purple_guard._runtime_targets_snapshot()
     finally:
         guard.stop()
+        assert worker.stop(timeout=3.0)
+        recorder.close()
+
+
+def test_incomplete_typed_process_inventory_still_holds_validation_lease(tmp_path, monkeypatch):
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch)
+    supplied, owned = [], []
+    real_request = process_monitor.ProcessMonitorModule.request_fresh_observation
+
+    def incomplete(*, max_age=None):
+        supplied.append(max_age)
+        return ProcessSnapshot(
+            processes=(), collected_at=time.time(), complete=False,
+            enumerated=1, skipped=1, unreadable=1, identity_incomplete=0,
+            error="explicit offline collector gap", enumeration_complete=False)
+
+    def request(module, *, expected_generation):
+        owned.append((module, module._thread, module.lifecycle_generation))
+        return real_request(module, expected_generation=expected_generation)
+
+    monkeypatch.setattr(process_monitor, "process_snapshot", incomplete)
+    monkeypatch.setattr(process_monitor.ProcessMonitorModule, "request_fresh_observation", request)
+    target = tmp_path / "held-target"
+    try:
+        with pytest.raises(purple_guard.RedTeamProcessObservationReadinessError,
+                           match="healthy fresh loss-free observation cycle"):
+            purple_guard.acquire_redteam_validation_lease(
+                manager, bus, recorder, tmp_path, target, timeout=1)
+        assert 0.0 in supplied
+        assert target.resolve() not in purple_guard._runtime_targets_snapshot()
+    finally:
+        guard.stop()
+        for module, thread, generation in owned:
+            assert module.lifecycle_generation == generation and module._thread is thread
+            module.stop()
+        guard_thread = guard._thread
+        if guard_thread is not None:
+            guard_thread.join(5)
+            assert not guard_thread.is_alive()
+        for _module, thread, _generation in owned:
+            thread.join(5)
+            assert not thread.is_alive()
         assert worker.stop(timeout=3.0)
         recorder.close()
 
@@ -543,7 +590,7 @@ def test_lease_release_revokes_unconsumed_nonce(
     tmp_path: Path, monkeypatch
 ) -> None:
     inventory_ages = _supply_contract_inventory(monkeypatch)
-    bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch)
+    bus, recorder, worker, guard, manager = _runtime(tmp_path, monkeypatch, supplied_inventory=False)
     target = tmp_path / "target"
     lease = purple_guard.acquire_redteam_validation_lease(
         manager, bus, recorder, tmp_path, target, timeout=3

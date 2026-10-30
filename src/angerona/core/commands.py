@@ -173,8 +173,8 @@ class CommandConsole:
             return f"Could not read threat intel: {exc}"
         items = data if isinstance(data, list) else data.get("threats", data.get("items", []))
         if not items:
-            return "Threat-intel file present but no host-applicable CVEs right now."
-        lines = [f"CISA KEV — {len(items)} host-applicable item(s), newest first:"]
+            return "Threat-intel file present but no KEV review candidates right now."
+        lines = [f"CISA KEV — {len(items)} review candidate(s), applicability unverified, newest first:"]
         for it in items[:15]:
             cve = it.get("cve") or it.get("cveID") or it.get("id", "?")
             name = it.get("vulnerabilityName") or it.get("name") or it.get("product", "")

@@ -179,6 +179,21 @@ def residual_appendix(doc):
     residual_matrix(doc)
 
 
+def native_metadata_followup(doc):
+    """Prepared source only; final observation and render review stay separate."""
+    doc.add_page_break()
+    doc.add_heading("Windows metadata and validation follow up", 1)
+    paragraph(doc, "New recorder pending, scratch and writer-lock files receive explicit current-token-user ownership and a protected private DACL before data. Opened-object security, file identity and single-link checks gate admission. Existing inherited private files are accepted; unsuitable existing objects remain preserved and held.", lead="Implemented:")
+    paragraph(doc, "Native-to-CRT transfer has one owner. Uncertain creation, transfer or close retains custody and fences optional recorder replacement while the SQLite protection writer remains usable. Default lease callers and POSIX mode 0600 remain unchanged. Parent-directory checks are path checks, not retained directory leases; same-user, administrator and kernel limitations remain.", lead="Boundary:")
+    paragraph(doc, "Full Setup exposes optional public witness enrollment/storage values and points to running-dashboard protected identity controls. It stores TLS file paths, not private key contents. Witnessing stays off by default; its unavailability does not block local protection. Release fixtures use explicit installed versions while product equal-version and downgrade rejection remain intact.", lead="Setup and updates:")
+    paragraph(doc, "Recorder checks covered 82 distinct cases across two runs: 79 passes and three fixture failures, then three corrected-fixture passes on unchanged product bytes. This is not a single 82-pass run. Setup/updater checks reported 167 passes. Overlapping local cohorts are not summed, and local repairs are separate from fresh hosted CI. The ordinary probe did not reproduce the proposed elevated-CI token-owner cause.", lead="Validation:")
+    paragraph(doc, "The final changed-source 120-second Full/STOP met bounded lifecycle acceptance: native exit zero, all 52 observed generations retired and unchanged source/preferences. Yet 17 workers were critical, 34 degraded, one failed and 69 sensor states unknown. Fresh status and paint followed the single Full invocation after about 60 seconds; this is a settling delay, not click latency. The earlier P0 native crash remains unresolved.", lead="Latest observation:")
+    paragraph(doc, "Core and inventory CPU remained substantial; separate native requests had partial ordinary-user coverage and a changing-process profile was held. A batch-map improvement changed the private observer only. No product speedup, complete child discovery or all-detector pass follows. Retained historical diagnostics are not fresh collector verification.", lead="Operational limits:")
+    paragraph(doc, "Messages now distinguish assurance gaps, KEV review candidates and configured startup references from proven regressions, applicability and execution. Severity, evidence and approval decisions remain. The reviewed redacted alerts did not establish either compromise or a clean host.", lead="Alert precision:")
+    link(doc, "Sanitized follow-up evidence and remaining acceptance",
+        "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-10-30-followup.md")
+
+
 def build(*, service_reviewed=False):
     if not service_reviewed:
         raise ValueError("final service/custody review must complete before producing the summary")
@@ -248,12 +263,13 @@ def build(*, service_reviewed=False):
 
     doc.add_heading("Validation and operational findings", 1)
     paragraph(doc, "Focused cohorts: native/service/status 183 passes; recorder 64; credential composition 71 plus one POSIX skip; TPM 83; retrieval 11; watchdog nine; socket presentation 39; crash-log observability 55. Cohorts overlap and are not summed. Broad selfcheck: 28 phase passes and one existing host Ollama listener-attestation failure; its 30-step defensive drill passes.")
-    paragraph(doc, "The earlier 180-second Full observation retained a 4,446-record initial gap. The final logging-enabled 120-second session retained a separate 2,898-record gap and 268 new events, with 75/75 workers running but native ETW/Sysmon unavailable and 69 collector states unknown. No confirmed breach was established. CPU cost and UI delays remain; the sessions are not a controlled benchmark.")
-    paragraph(doc, "Final STOP retired all retained generations with actual Core exit zero and unchanged source/preferences. Observation acceptance still failed on two process-inventory bounds; count versus deadline cause is unknown. A prior session's native shutdown crash remains unresolved. Both crash logs later disappeared for an unproved reason; private diagnostic text is preserved. The 55-pass logging patch verifies arming visibility, not complete capture or crash repair.")
+    paragraph(doc, "The earlier 180-second Full observation retained a 4,446-record initial gap. A later logging-enabled 120-second session retained a separate 2,898-record gap and 268 new events, with 75/75 workers running but native ETW/Sysmon unavailable and 69 collector states unknown. No confirmed breach was established. CPU cost and UI delays remain; the sessions are not a controlled benchmark.")
+    paragraph(doc, "That session's STOP retired all retained generations with actual Core exit zero and unchanged source/preferences. Observation acceptance still failed on two process-inventory bounds; count versus deadline cause is unknown. A prior session's native shutdown crash remains unresolved. Both crash logs later disappeared for an unproved reason; private diagnostic text is preserved. The 55-pass logging patch verifies arming visibility, not complete capture or crash repair. The subsequent follow-up records the final changed-source lifecycle result separately.")
     link(doc, "Release scope, evidence and deployment limits",
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/releases/v1.15.0.md")
     link(doc, "Master Manual security flow",
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/security-flow.md")
+    native_metadata_followup(doc)
     residual_appendix(doc)
     return doc
 

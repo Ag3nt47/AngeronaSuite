@@ -529,7 +529,7 @@ class MainWindow(QMainWindow):
         attack_heatmap_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 attack_heatmap_btn, self._open_attack_heatmap, "#fb923c"))
-        # Threat Intel button — pulses red/amber when INTL has host-applicable
+        # Threat Intel button — pulses red/amber when INTL has review-candidate
         # KEV CVEs waiting for operator review.  Style toggles in _refresh().
         self.threat_intel_btn = HeaderActionButton(
             "THREAT INTEL",
@@ -4896,7 +4896,7 @@ class MainWindow(QMainWindow):
             f"Contributing factors (each lowers the score):\n"
             f"  • Active threats (last 10 min): {f.get('active_threats', 0)}\n"
             f"  • Degraded / stopped modules: {f.get('degraded_modules', 0)}\n"
-            f"  • Host-applicable KEV CVEs: {f.get('kev_exposure', 0)}\n"
+            f"  • KEV review candidates: {f.get('kev_exposure', 0)}\n"
             f"  • Recent ATT&CK heat: {f.get('attack_heat', 0)}\n\n"
             "100 = fully secure & healthy. Open Threat Intel, Modules, and the "
             "ATT&CK map to drill into each factor.")
@@ -6287,6 +6287,16 @@ class MainWindow(QMainWindow):
             )
             return
         self._termination_started = True
+        # Revoke cosmetic close interception before any owned window closes.
+        # A rejected or unrecorded STOP must leave normal UI motion available.
+        reveal = getattr(self, "_panel_reveal", None)
+        if reveal is not None:
+            try:
+                reveal.shutdown()
+            except RuntimeError:
+                # Qt may already have disposed the coordinator or its children.
+                # Durable operator STOP must still retire the owned runtime.
+                pass
         cleanup_done = threading.Event()
 
         def cleanup_owned():

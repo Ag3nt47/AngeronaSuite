@@ -4,10 +4,22 @@ from __future__ import annotations
 import os
 import stat
 from pathlib import Path
+from typing import Callable
+
+
+_PRIVATE_RETIREMENT_HOLDS: list[object] = []
 
 
 class ExclusiveFileLeaseError(RuntimeError):
     """An exclusive authority lease could not be acquired safely."""
+
+
+class PrivateLeaseRetirementHeld(ExclusiveFileLeaseError):
+    """A private-opener lease retains an ambiguously retired descriptor."""
+
+    def __init__(self, owner):
+        super().__init__("Private authority lease descriptor retirement remains unproven")
+        self.owner = owner
 
 
 class ExclusiveFileLease:
@@ -19,14 +31,18 @@ class ExclusiveFileLease:
     authoritative.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, opener: Callable | None = None) -> None:
         self.path = Path(path)
+        self._private_opener = opener
+        self._private_candidate = Path(os.path.abspath(self.path)) if opener is not None else None
         self._descriptor = -1
         self._closed = True
+        self._ambiguous_descriptor = None
+        self._cleanup_proven = True
         self._acquire()
 
     def _acquire(self) -> None:
-        candidate = self.path
+        candidate = self.path if self._private_opener is None else self._private_candidate
         candidate.parent.mkdir(parents=True, exist_ok=True)
         if candidate.is_symlink() or candidate.parent.is_symlink():
             raise ExclusiveFileLeaseError("authority lease path is an alias")
@@ -58,8 +74,17 @@ class ExclusiveFileLease:
             flags |= os.O_BINARY
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
+        # A supplied built-in private opener verifies/creates custody before
+        # the first lease byte. Default callers keep their existing path.
+        if self._private_opener is not None:
+            held_owner = next((owner for owner in _PRIVATE_RETIREMENT_HOLDS
+                               if owner._private_candidate == candidate), None)
+            if held_owner is not None:
+                raise PrivateLeaseRetirementHeld(held_owner)
+            descriptor = self._private_opener(candidate, flags, 0o600)
         try:
-            descriptor = os.open(os.fspath(candidate), flags, 0o600)
+            if self._private_opener is None:
+                descriptor = os.open(os.fspath(candidate), flags, 0o600)
             info = os.fstat(descriptor)
             # Validate the actual descriptor and its named identity BEFORE the
             # first write. An empty hardlink must never receive the NUL byte.
@@ -82,16 +107,34 @@ class ExclusiveFileLease:
                 import fcntl
 
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except ExclusiveFileLeaseError:
-            if "descriptor" in locals():
-                os.close(descriptor)
-            raise
-        except (OSError, BlockingIOError) as exc:
+        except BaseException as exc:
+            if self._private_opener is not None:
+                if "descriptor" in locals():
+                    try:
+                        os.close(descriptor)
+                    except BaseException as close_exc:
+                        self._hold_private_descriptor(descriptor)
+                        raise PrivateLeaseRetirementHeld(self) from close_exc
+                if isinstance(exc, (ExclusiveFileLeaseError, OSError)):
+                    raise ExclusiveFileLeaseError("authority lease is already held or unavailable") from exc
+                raise
+            if isinstance(exc, ExclusiveFileLeaseError):
+                if "descriptor" in locals():
+                    os.close(descriptor)
+                raise
+            if not isinstance(exc, OSError):
+                raise
             if "descriptor" in locals():
                 os.close(descriptor)
             raise ExclusiveFileLeaseError("authority lease is already held or unavailable") from exc
         self._descriptor = descriptor
         self._closed = False
+
+    def _hold_private_descriptor(self, descriptor):
+        self._ambiguous_descriptor = descriptor
+        self._cleanup_proven = False
+        if not any(owner is self for owner in _PRIVATE_RETIREMENT_HOLDS):
+            _PRIVATE_RETIREMENT_HOLDS.append(self)
 
     @property
     def held(self) -> bool:
@@ -99,6 +142,8 @@ class ExclusiveFileLease:
 
     def close(self) -> None:
         if self._closed:
+            if self._private_opener is not None and not self._cleanup_proven:
+                raise PrivateLeaseRetirementHeld(self)
             return
         descriptor = self._descriptor
         self._descriptor = -1
@@ -114,7 +159,14 @@ class ExclusiveFileLease:
 
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
-            os.close(descriptor)
+            if self._private_opener is None:
+                os.close(descriptor)
+            else:
+                try:
+                    os.close(descriptor)
+                except BaseException as exc:
+                    self._hold_private_descriptor(descriptor)
+                    raise PrivateLeaseRetirementHeld(self) from exc
 
     def __enter__(self) -> "ExclusiveFileLease":
         return self
@@ -129,4 +181,4 @@ class ExclusiveFileLease:
             pass
 
 
-__all__ = ["ExclusiveFileLease", "ExclusiveFileLeaseError"]
+__all__ = ["ExclusiveFileLease", "ExclusiveFileLeaseError", "PrivateLeaseRetirementHeld"]

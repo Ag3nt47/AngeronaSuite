@@ -79,6 +79,7 @@ def test_setup_profiles_never_enable_egress_or_local_listeners() -> None:
         "spyware_network_enabled",
         "spyware_beacon_enabled",
         "live_debug_enabled",
+        "recorder_witness_enabled",
     }
     for profile in SETUP_PROFILES.values():
         assert not any(bool(profile.get(key, False)) for key in forbidden)
@@ -100,6 +101,76 @@ def test_setup_validation_fails_closed_for_incomplete_connectors() -> None:
     values = _default_values()
     values["mobile_enabled"] = True
     assert any("Signal bridge" in error for error in validate_setup(values))
+
+
+def test_independent_recorder_setup_maps_public_settings_and_enrollment_handoff() -> None:
+    from angerona.core.recorder_integrity import DEFAULTS, KEY_NAME
+
+    step = next(step for step in STEPS if step.title == "Independent recorder integrity")
+    mapped = {field.key: field for field in step.fields}
+    assert len(step.fields) == len(mapped) == len(DEFAULTS)
+    assert set(mapped) == set(DEFAULTS)
+    assert all(sum(field.key == key for page in STEPS for field in page.fields) == 1
+               for key in DEFAULTS)
+    values = _default_values()
+    assert {key: values[key] for key in DEFAULTS} == DEFAULTS
+    assert all(profile["recorder_witness_enabled"] is False for profile in SETUP_PROFILES.values())
+    assert mapped["recorder_witness_enabled"].kind == "check"
+    assert mapped["recorder_witness_independent_host"].kind == "check"
+    assert mapped["recorder_witness_authority_public_key"].kind == "multiline"
+    assert mapped["recorder_witness_authority_public_key"].maximum == 2048
+    assert mapped["recorder_witness_endpoint"].maximum == 512
+    assert mapped["recorder_witness_certificate_sha256"].maximum == 64
+    for key in ("recorder_witness_installation_id", "recorder_witness_client_id"):
+        assert mapped[key].maximum == 32
+    for key in ("recorder_witness_client_certificate_path", "recorder_witness_client_key_path",
+                "recorder_witness_ca_bundle_path"):
+        assert mapped[key].kind == "text" and mapped[key].maximum == 4096
+        assert "FILE path" in mapped[key].label
+    archive = mapped["recorder_witness_archive_mib"]
+    assert archive.kind == "spin" and (archive.minimum, archive.maximum) == (4, 64)
+    assert "Settings > General > Independent recorder integrity" in step.intro
+    assert "public enrollment key" in step.intro
+    assert "local protection" in step.intro
+    assert KEY_NAME not in mapped
+    assert collect(step, {**DEFAULTS, KEY_NAME: "never-stage-a-private-key"}) == DEFAULTS
+
+
+def test_independent_recorder_setup_validation_never_provisions_or_contacts_witness(
+    tmp_path, monkeypatch
+) -> None:
+    from angerona.core import recorder_integrity
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("Setup validation cannot generate protected keys or construct a witness client")
+
+    for name in ("provision_host_identity", "client_from_settings", "provider_from_config"):
+        monkeypatch.setattr(recorder_integrity, name, forbidden)
+    values = _default_values()
+    assert validate_setup(values) == []
+    assert values["recorder_witness_enabled"] is False
+    values["recorder_witness_client_key_path"] = str(tmp_path / "not-created" / "client.key")
+    assert validate_setup(values) == []
+    values["recorder_witness_enabled"] = True
+    assert any("Independent recorder enrollment" in error for error in validate_setup(values))
+    assert not (tmp_path / "not-created").exists()
+
+
+@pytest.mark.parametrize("key,value", [
+    ("recorder_witness_enabled", "true"),
+    ("recorder_witness_independent_host", 1),
+    ("recorder_witness_archive_mib", True),
+    ("recorder_witness_archive_mib", 3),
+    ("recorder_witness_archive_mib", 65),
+    ("recorder_witness_endpoint", "https://127.0.0.1/v1/authority"),
+    ("recorder_witness_endpoint", "https://public.example/v1/authority"),
+    ("recorder_witness_client_key_path", "relative/client.key"),
+    ("recorder_witness_authority_public_key", "private-or-invalid-PEM"),
+])
+def test_setup_rejects_invalid_independent_recorder_settings(key, value) -> None:
+    values = _default_values()
+    values[key] = value
+    assert any("Independent recorder enrollment" in error for error in validate_setup(values))
 
 
 def test_setup_exposes_and_validates_optional_signal_cli_trust_pins() -> None:

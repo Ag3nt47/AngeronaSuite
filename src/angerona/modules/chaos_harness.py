@@ -326,13 +326,14 @@ class ChaosHarness(BaseModule):
             if broken:
                 self._failures += 1
                 self.emit(
-                    "PIPELINE REGRESSION — no detection echo from: "
+                    "PIPELINE ASSURANCE GAP — no verified detection echo from: "
                     + ", ".join(broken)
-                    + ". These sensors may be blind; investigate immediately.",
+                    + ". Review probe eligibility and collector availability; "
+                    "the cause is unconfirmed.",
                     Severity.CRITICAL,
                     broken=broken, results=results,
                 )
-                self.set_health(40, f"{len(broken)} sensor(s) failed last chaos run")
+                self.set_health(40, f"{len(broken)} unverified assurance echo(es)")
             else:
                 self.emit("Chaos self-test passed — APID, NDRD, FIM, AMSI all proved.",
                           Severity.INFO, results=results)

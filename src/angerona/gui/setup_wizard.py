@@ -69,6 +69,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
         "github_daily_check_enabled": False,
+        "recorder_witness_enabled": False,
     },
     "Maximum local coverage": {
         "eco_mode": False,
@@ -95,6 +96,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
         "github_daily_check_enabled": False,
+        "recorder_witness_enabled": False,
     },
     "Low-resource local": {
         "eco_mode": True,
@@ -121,6 +123,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
         "github_daily_check_enabled": False,
+        "recorder_witness_enabled": False,
     },
 }
 
@@ -549,6 +552,36 @@ STEPS: tuple[Step, ...] = (
         ),
     ),
     Step(
+        "Independent recorder integrity",
+        "Optionally retain independently signed recorder receipts on a separately administered "
+        "witness. This is off by default. Setup stages only public enrollment settings and "
+        "local TLS file paths; it never generates a signing key, contacts the authority or "
+        "requires witness availability for local protection.\n\n"
+        "After the dashboard opens, go to Settings > General > Independent recorder integrity > "
+        "Create or show this host's public enrollment key. Enroll that public key and the host "
+        "IDs with the independent authority before enabling this option. An unavailable or full "
+        "witness archive pauses witnessing while local protection continues.",
+        (
+            Field("check", "recorder_witness_enabled", "Enable independently witnessed recorder history"),
+            Field("check", "recorder_witness_independent_host", "Confirm the witness is independently administered"),
+            Field("text", "recorder_witness_endpoint", "Private HTTPS authority endpoint", maximum=512,
+                  note="An enrolled remote machine with the /v1/authority endpoint; no loopback service."),
+            Field("text", "recorder_witness_certificate_sha256", "Witness TLS certificate SHA-256", maximum=64),
+            Field("multiline", "recorder_witness_authority_public_key", "Witness Ed25519 PUBLIC key (PEM)", maximum=2048),
+            Field("text", "recorder_witness_installation_id", "Enrolled installation ID", maximum=32),
+            Field("text", "recorder_witness_client_id", "Enrolled host client ID", maximum=32),
+            Field("text", "recorder_witness_client_certificate_path", "Local mTLS certificate FILE path", maximum=4096),
+            Field("text", "recorder_witness_client_key_path", "Protected local mTLS key FILE path", maximum=4096,
+                  note="Enter a fixed local file path, never the key contents. The host request-signing "
+                       "key stays in the OS protected credential store and is not setup input."),
+            Field("text", "recorder_witness_ca_bundle_path", "Local witness CA certificate FILE path", maximum=4096),
+            Field("spin", "recorder_witness_archive_mib", "Maximum recorder receipt archive (MiB)",
+                  minimum=4, maximum=64,
+                  note="Default 16 MiB. Full archives preserve history and pause witnessing; "
+                       "setup does not discard existing records."),
+        ),
+    ),
+    Step(
         "Performance and startup",
         "Choose the resource profile and sign-in behavior.",
         (
@@ -798,6 +831,19 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     except (ValueError, RuntimeError, TypeError):
         errors.append("UGCAP witness enrollment is invalid or incomplete. Review its private HTTPS endpoint, "
                       "public identity pins, IDs and mTLS files in the UGCAP Witness page.")
+
+    from angerona.core.recorder_integrity import (
+        DEFAULTS as RECORDER_WITNESS_DEFAULTS,
+        validate_settings as validate_recorder_witness_settings,
+    )
+    try:
+        validate_recorder_witness_settings({
+            key: values.get(key, default) for key, default in RECORDER_WITNESS_DEFAULTS.items()
+        })
+    except (ValueError, RuntimeError, TypeError):
+        errors.append("Independent recorder enrollment is invalid or incomplete. Review its remote HTTPS "
+                      "endpoint, public pins, IDs, independent custody, local TLS file paths and archive "
+                      "limit in Settings > General > Independent recorder integrity.")
 
     try:
         interval = int(values.get("aria_inbox_interval_min", 0))

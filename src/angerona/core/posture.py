@@ -4,7 +4,7 @@ Blends four live signals into one number the operator can read in a second:
 
     active threats   (recent HIGH/CRITICAL detections)     up to −40
     module health    (unhealthy / stopped-but-enabled)     up to −30
-    KEV exposure     (host-applicable CISA CVEs)           up to −20
+    KEV review       (unverified CISA correlations)       up to −20
     ATT&CK heat      (recent technique activity)           up to −10
 
 100 = fully secure & healthy; lower = worse. Every input is best-effort and the
@@ -174,6 +174,6 @@ def posture_tooltip(p: dict) -> str:
     return (f"Threat Posture {p['score']}/100 — {p['label']}\n"
             f"• active threats (10 min): {f.get('active_threats', 0)}\n"
             f"• degraded/stopped modules: {f.get('degraded_modules', 0)}\n"
-            f"• host-applicable KEV CVEs: {f.get('kev_exposure', 0)}\n"
+            f"• KEV review candidates: {f.get('kev_exposure', 0)}\n"
             f"• ATT&CK heat: {f.get('attack_heat', 0)}\n"
             "Higher is safer. Click for detail.")

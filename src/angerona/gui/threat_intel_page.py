@@ -257,7 +257,7 @@ class ThreatIntelDashboard(QDialog):
         hdr.addWidget(self._ts_label)
 
         analyze_btn = QPushButton("🔎  Analyze Fixes (AI)")
-        analyze_btn.setToolTip("Ask the LOCAL model (llama3) whether each host-applicable CVE "
+        analyze_btn.setToolTip("Ask the LOCAL model (llama3) whether each candidate CVE "
                                "has a specific scriptable fix. Rows with a fix show ❗.")
         analyze_btn.setStyleSheet(
             "background:#134e2e; color:#6ee7b7; border:1px solid #10b981;"
@@ -435,19 +435,19 @@ class ThreatIntelDashboard(QDialog):
 
         active, ignored_n = cve_ignore.counts(matches)
         if len(matches) == 0:
-            self._footer.setText("✅  No host-applicable KEV CVEs found.")
+            self._footer.setText("No KEV token correlations found; applicability is not assessed.")
             self._footer.setStyleSheet("color:#22c55e; font-size:11px;")
         elif active == 0:
             self._footer.setText(
-                f"✅  {len(matches)} applicable CVE(s), all {ignored_n} IGNORED — "
+                f"✅  {len(matches)} KEV review candidate(s), all {ignored_n} IGNORED — "
                 "none affect the exposure score.")
             self._footer.setStyleSheet("color:#22c55e; font-size:11px;")
         else:
             rans_note = f"  |  {rans_hits} ransomware-linked" if rans_hits else ""
             ign_note = f"  |  {ignored_n} ignored (excluded from exposure score)" if ignored_n else ""
             self._footer.setText(
-                f"⚠  {active} applicable CVE exposure(s){ign_note}{rans_note}. "
-                "These are patch priorities, not proof of an active attack. "
+                f"⚠  {active} KEV review candidate(s){ign_note}{rans_note}. "
+                "Verify installed components and versions before choosing a patch. "
                 "Double-click a row for detail, AI fix, ignore/revert & history.")
             self._footer.setStyleSheet("color:#f59e0b; font-size:11px;")
 

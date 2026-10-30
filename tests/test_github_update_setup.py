@@ -44,9 +44,11 @@ def test_daily_preference_round_trips_without_enabling_other_network_features(tm
     config.save()
     stored = json.loads(config.settings_path.read_bytes())
     assert stored["github_daily_check_enabled"] is enabled
+    assert stored["recorder_witness_enabled"] is False
     restored = Config.load()
     assert restored.github_daily_check_enabled is enabled
     assert not restored.spyware_network_enabled and not restored.spyware_beacon_enabled
+    assert not restored.recorder_witness_enabled and not restored.recorder_witness_independent_host
     stored["github_daily_check_enabled"] = "true"
     config.settings_path.write_text(json.dumps(stored), encoding="utf-8")
     assert Config.load().github_daily_check_enabled is False

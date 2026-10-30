@@ -88,6 +88,46 @@ under that actual service account and its protected data root. An interactive
 user's identity does not automatically enroll the service. The status-only
 protection console has no key or settings mutation endpoint.
 
+Full Setup also exposes these eleven public enrollment/storage settings and
+points to the running-dashboard controls above for protected host identity
+enrollment. Setup does not generate a request identity, collect private PEM
+contents or contact the authority. A client TLS key setting is a local file
+path, not the private key's contents. Profiles keep witnessing disabled; a
+missing witness or credential holds this optional feature while local
+protection continues.
+
+## Windows metadata custody
+
+New pending, write-scratch and writer-lock files are created with the actual
+current token user's owner SID and a protected DACL for that user, SYSTEM and
+Administrators before bytes are written. Admission checks the opened object's
+security descriptor, file identity and single-link state. Existing inherited
+private files can be admitted; nonprivate, aliased or multilink objects are
+preserved and held rather than repaired, deleted or overwritten automatically.
+
+The native file handle has one owner across transfer to the CRT descriptor.
+Uncertain creation, transfer or auxiliary/file/descriptor cleanup retains
+tracked custody and prevents optional-worker replacement. Numeric handles are
+not blindly retried after an ambiguous close. The SQLite protection writer
+remains usable, and ordinary file-lease callers and POSIX mode 0600 keep their
+existing behavior. Parent-directory checks are path checks, **not retained
+directory leases**. Private files in source mode remain inside the same-user,
+administrator and kernel trust boundaries; these DACLs do not establish a new
+independent security principal.
+
+An ordinary-user probe accepted inherited private fixtures and observed token
+owner equal to token user. It did not reproduce the proposed elevated-CI
+Administrators-owner explanation. Focused checks covered 82 distinct cases
+across a 79-pass/three-fixture-failure run and a corrected three-pass rerun with
+unchanged product bytes. This is not a single all-pass cohort or signed-service
+deployment acceptance. See the [sanitized follow-up](../analysis/hardening-v1.15-2026-10-30-followup.md).
+
+The final changed-source Full/STOP observation met bounded lifecycle acceptance
+and retired all observed generations with unchanged source/preferences. It did
+not enroll a witness or prove complete sensor coverage. Critical/degraded and
+unknown states, a fresh-status settling delay and the earlier unresolved native
+shutdown crash remain separate limitations in the follow-up record.
+
 ## Storage, progress and recovery
 
 The default receipt archive budget is **16 MiB**, configurable from **4–64 MiB**,

@@ -58,9 +58,55 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   docs/releases/v1.15.0.md. Missing kernel echoes remain coverage/cause-unconfirmed;
   suspend-capable access is not actual suspension, and a path firewall rule is
   not PID-bound ALE admission or an established-flow teardown receipt. Current
-  sanitized evidence: analysis/hardening-v1.15-2026-10-30.md. No actual WDAC/SCM/
-  ACL/TPM changes, certified ELAM/PPL boundary, signed deployment, physical-device
+  sanitized evidence: analysis/hardening-v1.15-2026-10-30.md. No host WDAC/SCM/TPM
+  or system-ACL reconfiguration, certified ELAM/PPL boundary, signed deployment, physical-device
   enrollment or native ALE acceptance were performed for this source update.
+- 30 October follow-up: new Windows recorder pending/scratch/lock files receive
+  explicit TokenUser ownership and private protected DACLs before bytes. Check
+  the opened object's security descriptor, identity and single-link state;
+  preserve held existing data and retain uncertain native-to-CRT/close custody.
+  Default lease callers/POSIX mode 0600 stay unchanged. Parent checks are path checks,
+  not retained directory leases; no stronger same-SID/admin/kernel boundary.
+  The ordinary probe did not reproduce the hypothesized elevated-CI owner cause.
+  Recorder gates covered 82 distinct cases in two runs: 79 passes/3 fixture
+  failures, then 3 corrected-fixture passes with unchanged product, never a
+  single 82-pass gate.
+- Full Setup discovers optional recorder enrollment; private request keys stay
+  protected and unavailable witnessing does not block local startup. Setup/
+  updater checks: 167 passes. The stopped-canary/source-authority/headless/red-team
+  run retained 134 passes/2 fixture failures, followed by an overlapping two-file
+  18-pass recheck after test-only fixes; do not sum or erase the first result.
+  Earlier hosted CI had 11 passes/4 Python
+  failures; local fixes
+  are not new hosted results. CHAOS wording says assurance gap, KEV matches are
+  review candidates, and startup references do not prove execution. Severity,
+  counts, evidence, approval and exclusion policy remain unchanged.
+- A later 120s Full/STOP retired all retained generations with native exit 0 and
+  unchanged source/preferences, but accepted:false on three proven TIME holds:
+  92/225/363 observations at about 2.016s, not the count cap. This neither resolves
+  earlier ambiguous holds nor repairs the prior native crash. Three separate
+  native inventory requests cost 1.547/1.500/1.406s and 95.792% of one logical CPU
+  over their matched window, with 144 unreadable/3 incomplete identities. Direct
+  getter profiling was held after one disappearing process; inclusive timings
+  do not prove a speedup or production cadence. Reviewed 33 high/critical records
+  were 11 unavailable/3 exposures/19 unresolved; no compromise or all-clear verdict.
+  Sanitized follow-up: analysis/hardening-v1.15-2026-10-30-followup.md. Final fresh
+  post-remediation lifecycle result is recorded separately below.
+- Final changed-source Full 120s/STOP lifecycle accepted:true: native Core exit 0,
+  all 52 observed unique generations retired, no topology gaps/forced retirement,
+  source 497 and saved preferences unchanged. This is lifecycle scope only;
+  polling cannot prove all short-lived children and the earlier P0 crash is
+  unresolved. Initial retention loss 2941; 436 new events include one critical
+  CHAOS assurance gap, not confirmed breach. All 1337 diagnostic/179 coverage
+  records were retained history, none new during the reader window. Final
+  75/75 enabled workers running but 17 critical/34 degraded/1 failed/23 OK and
+  69 unknown sensor states. Fresh status/paint followed the single Full invoke
+  about 60s later, not measured click latency. WM_NULL: 54/55 responded, one about
+  516ms timeout. Common 118.284491s aggregate CPU: Core 121.780%, inventory 74.925% of one
+  logical CPU, with competing diagnostic load; not a controlled speedup. The
+  private batch Toolhelp map changed the observer only. COM exception preceded
+  continued events/normal exit, not the P0 access violation. Hosted CI still
+  refers to the older 11-pass/4-failure revision until new publication/check receipts.
 
 ## Historical v1.14.2 — curated tools, priority scans and breach review
 

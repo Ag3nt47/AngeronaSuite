@@ -389,7 +389,7 @@ class IntelSyncModule(BaseModule):
 
     @classmethod
     def match_kev(cls, kev: list[dict], tokens: set[str]) -> list[dict]:
-        """Isolate KEV records whose vendor/product matches something on this host."""
+        """Correlate vendor/product tokens; installed-version applicability is unverified."""
         matches = []
         for rec in kev:
             hay = f"{rec.get('vendorProject','')} {rec.get('product','')}".lower()
@@ -658,10 +658,12 @@ class IntelSyncModule(BaseModule):
                 if active:
                     self.alert_pending = True
                     note = f" ({ignored_n} verified not applicable)" if ignored_n else ""
-                    self.set_health(60, f"{len(active)} applicable KEV CVE(s){note}")
+                    self.set_health(60, f"{len(active)} KEV review candidate(s){note}")
                     top = ", ".join(m["cve"] for m in active[:5] if m.get("cve"))
-                    self.emit(f"{len(active)} host-applicable CISA KEV CVEs (e.g. {top}). "
-                              f"Operator confirmation required before any fix.",
+                    self.emit(f"{len(active)} CISA KEV review candidates (e.g. {top}). "
+                              "Vendor/product token correlations do not establish "
+                              "installed-version applicability. Operator confirmation "
+                              "required before any fix.",
                               Severity.HIGH, count=len(active), cves=top,
                               not_applicable=ignored_n)
                 elif matches:
@@ -671,7 +673,7 @@ class IntelSyncModule(BaseModule):
                         100, f"{len(matches)} KEV correlation(s), all verified not applicable")
                 else:
                     self.alert_pending = False
-                    self.set_health(100, f"{kev_count} KEV records, none applicable")
+                    self.set_health(100, f"{kev_count} KEV records, no token correlations")
 
             # Ring 2: refresh opt-in IOC fusion feed (no-op if unconfigured).
             self._refresh_iocs()

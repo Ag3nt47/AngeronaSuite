@@ -264,7 +264,7 @@ def analyze_persistence(records: Iterable[dict[str, Any]]) -> list[dict[str, Any
         elif risky_path and any(re.search(r"\.(?:exe|dll|ps1|vbs|js|sh|py)$", path, re.I)
                                 for path in (executable, *payloads)):
             findings.append(_finding(record, "persistence_transient_payload", "medium",
-                "Persistence executes a payload from a temporary/public/download directory."))
+                "Configured startup command references a target in a temporary/public/download directory; execution is unverified."))
         elif source == "windows.services" and _unquoted_service_path(command):
             finding = _finding(record, "service_unquoted_path", "low",
                 "Unquoted service executable contains spaces; review path permissions and service configuration.")

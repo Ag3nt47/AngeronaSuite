@@ -3,7 +3,7 @@
 Two-panel window:
 
   Left  — Scrollable CVE cards
-    Each card shows the full detail for one host-applicable KEV entry:
+    Each card shows the full detail for one KEV review candidate:
     CVE ID (hyperlink to NVD), vendor/product, vulnerability name, date added,
     due date (colour-coded), MITRE technique, ransomware-campaign flag, CISA
     required action, and a "driver-related" badge for .sys/.driver entries.
@@ -244,8 +244,10 @@ class CveCard(QFrame):
 def _build_ai_prompt(matches: list[dict]) -> str:
     """Build the user message containing the CVE list for Ollama."""
     lines = [
-        f"Analyse these {len(matches)} host-applicable CISA KEV entries and provide "
-        "a prioritised remediation plan with driver-specific mitigations where applicable.\n"
+        f"Review these {len(matches)} CISA KEV vendor/product token correlations. "
+        "Installed-version applicability is unverified. Check installed components, "
+        "versions and vendor guidance before proposing a prioritised remediation plan "
+        "with driver-specific mitigations where applicable.\n"
     ]
     for i, rec in enumerate(matches, 1):
         rans = "YES — known ransomware use" if str(rec.get("ransomware", "")).lower() == "known" \
@@ -291,7 +293,7 @@ def _call_ollama(prompt: str) -> Optional[str]:
 def _fallback_analysis(matches: list[dict]) -> str:
     """Structured plain-text summary when Ollama is unavailable."""
     if not matches:
-        return "No host-applicable CVEs found."
+        return "No KEV review candidates found; applicability is not assessed."
     lines = ["OFFLINE / AI UNAVAILABLE — STRUCTURED CISA SUMMARY\n",
              "=" * 56, ""]
     # Sort: ransomware-known first, then driver CVEs, then rest
@@ -506,7 +508,7 @@ class CveAnalysisWindow(QDialog):
         matches = self._matches
         if not matches:
             placeholder = QLabel(
-                "No host-applicable CVEs found in shared_logs/upstream_threats.json.\n\n"
+                "No KEV review candidates found in shared_logs/upstream_threats.json.\n\n"
                 "The INTL module fetches the CISA KEV catalog every 6 hours.\n"
                 "Ensure internet access is available and wait for the next sync,\n"
                 "or click ↺ Refresh CVEs after the INTL module runs."
@@ -541,7 +543,7 @@ class CveAnalysisWindow(QDialog):
     # ── Online AI consult (Claude first) → save/download ─────────────────────
     def _open_online_ai(self, local_ok: bool) -> None:
         """Open the online AI consult window (Claude first) to build a
-        comprehensive fix/patch for the host-applicable CVEs, with Save/Discard.
+        comprehensive fix/patch review for candidate CVEs, with Save/Discard.
 
         local_ok=True  → "Consult AI" (falls back to local Ollama if offline).
         local_ok=False → "AI Proposed Solution" (online providers only)."""
@@ -549,7 +551,7 @@ class CveAnalysisWindow(QDialog):
         self._render_cards()
         if not self._matches:
             self._ai_pane.setPlainText(
-                "No host-applicable CVEs to solve yet. The INTL module must detect "
+                "No KEV review candidates yet. The INTL module must identify "
                 "KEV entries first (needs internet for the CISA catalog fetch).")
             return
         try:
@@ -581,7 +583,7 @@ class CveAnalysisWindow(QDialog):
 
         if not self._matches:
             self._ai_pane.setPlainText(
-                "No CVEs to analyse.  The INTL module needs to detect host-applicable "
+                "No CVEs to analyse. The INTL module needs to identify candidate "
                 "entries first (requires internet access for KEV catalog fetch)."
             )
             return

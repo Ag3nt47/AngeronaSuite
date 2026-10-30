@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -72,8 +73,43 @@ def test_python_entrypoint_requires_package_authority_before_elevation() -> None
     elevation = main.index("ensure_admin()", frozen_branch)
     source_refusal = main.index('elif sys.platform == "win32" and is_admin():')
     assert frozen_branch < package_proof < elevation < source_refusal
-    assert main.count("verify_current_msix_authority()") == 2
+    entrypoint = next(node for node in ast.parse(main).body
+                      if isinstance(node, ast.FunctionDef) and node.name == "main")
+    packaged = next(node for node in entrypoint.body if isinstance(node, ast.If)
+                    and ast.unparse(node.test) == "frozen and sys.platform == 'win32'")
+    roles = {}
+    for index, statement in enumerate(packaged.body):
+        if isinstance(statement, ast.Assign) and isinstance(statement.value, ast.Call):
+            call = statement.value.func
+            if isinstance(call, ast.Name) and call.id in {"verify_current_msix_authority", "ensure_admin"}:
+                assert len(statement.targets) == 1 and isinstance(statement.targets[0], ast.Name)
+                roles[statement.targets[0].id] = (index, call.id)
+    assert roles["authority"][1] == roles["authority_after_elevation"][1] == "verify_current_msix_authority"
+    assert roles["elevation"][1] == "ensure_admin"
+    engine_branch = next(index for index, node in enumerate(packaged.body)
+                         if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+                         and node.test.id == "engine_mode")
+    assert roles["authority"][0] < engine_branch < roles["elevation"][0] < roles["authority_after_elevation"][0]
     assert "Refusing elevated source execution" in main
+
+
+@pytest.mark.parametrize("trusted", [False, True])
+def test_protected_service_console_requires_package_pin_without_uac(monkeypatch, trusted) -> None:
+    import angerona.__main__ as entry
+    from angerona.core import privilege, windows_package_identity
+
+    calls = []
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(entry.sys, "platform", "win32")
+    monkeypatch.setattr(entry.sys, "argv", ["Angerona.exe", "--protection-console"])
+    monkeypatch.setattr(privilege, "is_admin", lambda: False)
+    monkeypatch.setattr(privilege, "ensure_admin", lambda: pytest.fail("read-only console requested UAC"))
+    monkeypatch.setattr(windows_package_identity, "verify_current_msix_authority",
+                        lambda: calls.append("package-pin") or
+                        windows_package_identity.PackageAuthority(trusted, "inert fixture"))
+    monkeypatch.setattr(entry, "_run_engine_mode", lambda mode, **_kwargs: calls.append(mode) or 73)
+    assert entry.main() == (73 if trusted else 2)
+    assert calls == (["package-pin", "--protection-console"] if trusted else ["package-pin"])
 
 
 def test_elevated_mutable_python_source_is_refused(monkeypatch) -> None:
@@ -118,15 +154,16 @@ def test_exact_package_authority_is_rechecked_after_elevation(monkeypatch) -> No
         )
     )
     calls = []
-    monkeypatch.setattr(
-        windows_package_identity,
-        "verify_current_msix_authority",
-        lambda: next(decisions),
-    )
+    def package_decision():
+        result = next(decisions)
+        calls.append("package-before" if result.trusted else "package-after")
+        return result
+
+    monkeypatch.setattr(windows_package_identity, "verify_current_msix_authority", package_decision)
     monkeypatch.setattr(privilege, "ensure_admin", lambda: calls.append("uac"))
 
     assert entry.main() == 2
-    assert calls == ["uac"]
+    assert calls == ["package-before", "uac", "package-after"]
 
 
 @pytest.mark.parametrize("state", ("cancelled", "failed"))

@@ -17,6 +17,7 @@ import pytest
 
 from angerona.updater import release_update as updates
 
+FIXTURE_INSTALLED_VERSION = "1.14.0"
 ARCHIVE = b"inert test bytes: never extracted or executed"
 NAME = "Angerona-v1.15.0-win64.zip"
 CHECKSUM = hashlib.sha256(ARCHIVE).hexdigest().encode() + b"  " + NAME.encode() + b"\n"
@@ -50,7 +51,56 @@ def metadata() -> dict:
 
 
 def candidate() -> updates.ReleaseCandidate:
-    return updates.select_release(metadata(), version="1.14.0")
+    return updates.select_release(metadata(), version=FIXTURE_INSTALLED_VERSION)
+
+
+@pytest.mark.parametrize("installed_version", ["1.15.0", "1.15.1"])
+def test_equal_or_newer_installation_rejects_approved_fixture_before_payload(
+    tmp_path, installed_version
+):
+    document = metadata()
+    with pytest.raises(updates.ReleaseUpdateError, match="not newer"):
+        updates.select_release(document, version=installed_version)
+
+    selected = candidate()
+    stage = tmp_path / "must-not-be-created"
+    with pytest.raises(updates.ReleaseUpdateError, match="not newer"):
+        updates.download_release(
+            selected,
+            updates.approve_release(selected, action="download", accepted=True),
+            stage,
+            version=installed_version,
+            fetch=lambda _: document,
+            transport=lambda *args: pytest.fail("Nonnewer releases cannot request payloads"),
+        )
+    assert not stage.exists()
+
+
+def test_real_product_defaults_reject_current_equal_metadata_before_staging(tmp_path):
+    document = metadata()
+    document["tag_name"] = "v" + updates.__version__
+    archive_name = f"Angerona-{document['tag_name']}-win64.zip"
+    checksum = hashlib.sha256(ARCHIVE).hexdigest().encode() + b"  " + archive_name.encode() + b"\n"
+    document["assets"][0]["name"] = archive_name
+    document["assets"][1].update(
+        name=archive_name + ".sha256",
+        size=len(checksum),
+        digest="sha256:" + hashlib.sha256(checksum).hexdigest(),
+    )
+    # Prove this is valid release metadata before exercising real default comparison.
+    selected = updates.select_release(document, version="0.0.0")
+    with pytest.raises(updates.ReleaseUpdateError, match="not newer"):
+        updates.select_release(document)
+    stage = tmp_path / "must-not-be-created"
+    with pytest.raises(updates.ReleaseUpdateError, match="not newer"):
+        updates.download_release(
+            selected,
+            updates.approve_release(selected, action="download", accepted=True),
+            stage,
+            fetch=lambda _: document,
+            transport=lambda *args: pytest.fail("Default version comparison must precede payloads"),
+        )
+    assert not stage.exists()
 
 
 def transport(url, target, expected, maximum, seconds):
@@ -65,7 +115,8 @@ def staged(tmp_path, *, action="install"):
     selected = candidate()
     approval = updates.approve_release(selected, action=action, accepted=True)
     downloaded = updates.download_release(
-        selected, approval, tmp_path / "stages", fetch=lambda _: metadata(), transport=transport
+        selected, approval, tmp_path / "stages", version=FIXTURE_INSTALLED_VERSION,
+        fetch=lambda _: metadata(), transport=transport
     )
     return downloaded, approval
 
@@ -90,6 +141,7 @@ def test_download_budget_clamps_rounding_overshoot_without_resetting_deadline(
         selected,
         updates.approve_release(selected, action="download", accepted=True),
         tmp_path,
+        version=FIXTURE_INSTALLED_VERSION,
         fetch=lambda _: metadata(),
         transport=bounded_transport,
         seconds=budget,
@@ -114,6 +166,7 @@ def test_download_expired_shared_deadline_does_not_start_second_asset(tmp_path, 
             selected,
             updates.approve_release(selected, action="download", accepted=True),
             tmp_path,
+            version=FIXTURE_INSTALLED_VERSION,
             fetch=lambda _: metadata(),
             transport=bounded_transport,
             seconds=1,
@@ -159,7 +212,7 @@ def test_noncanonical_prerelease_or_nonnewer_tags_are_held(tag):
     document = metadata()
     document["tag_name"] = tag
     with pytest.raises(updates.ReleaseUpdateError):
-        updates.select_release(document)
+        updates.select_release(document, version=FIXTURE_INSTALLED_VERSION)
 
 
 @pytest.mark.parametrize(
@@ -198,7 +251,7 @@ def test_incomplete_unsigned_and_malformed_assets_are_held(change):
     else:
         document["id"] = True
     with pytest.raises(updates.ReleaseUpdateError):
-        updates.select_release(document)
+        updates.select_release(document, version=FIXTURE_INSTALLED_VERSION)
 
 
 def test_decline_or_stale_approval_never_requests_payload_or_metadata(tmp_path):
@@ -211,7 +264,8 @@ def test_decline_or_stale_approval_never_requests_payload_or_metadata(tmp_path):
     ]:
         with pytest.raises(updates.ReleaseUpdateError, match="Explicit approval"):
             updates.download_release(
-                selected, approval, tmp_path, fetch=no_request, transport=no_request
+                selected, approval, tmp_path, version=FIXTURE_INSTALLED_VERSION,
+                fetch=no_request, transport=no_request
             )
     assert not list(tmp_path.iterdir())
 
@@ -225,6 +279,7 @@ def test_changed_metadata_requires_fresh_review_before_payload(tmp_path):
             selected,
             updates.approve_release(selected, action="install", accepted=True),
             tmp_path,
+            version=FIXTURE_INSTALLED_VERSION,
             fetch=lambda _: changed,
             transport=lambda *args: pytest.fail("No payload allowed"),
         )
@@ -279,6 +334,7 @@ def test_failed_download_removes_only_its_owned_stage(tmp_path, fault):
             selected,
             updates.approve_release(selected, action="download", accepted=True),
             tmp_path / "stages",
+            version=FIXTURE_INSTALLED_VERSION,
             fetch=lambda _: metadata(),
             transport=broken,
         )
@@ -296,16 +352,25 @@ def test_same_day_startup_reuses_shared_attempt_and_candidate_cache(tmp_path, mo
             {"name": "main", "commit": {"sha": "b" * 40}} if path == "branches/main" else metadata()
         )
 
-    first = updates.check_release_updates(tmp_path, tmp_path, fetch=fetch, now=100)
-    second = updates.check_release_updates(tmp_path, tmp_path, fetch=fetch, now=101)
+    first = updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, fetch=fetch, now=100
+    )
+    second = updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, fetch=fetch, now=101
+    )
     manual_held = updates.check_release_updates(
-        tmp_path, tmp_path, force=True, fetch=fetch, now=159
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION,
+        force=True, fetch=fetch, now=159
     )
     assert first.candidate == second.candidate == manual_held.candidate
     assert second.cached and manual_held.cached and len(calls) == 2
-    updates.check_release_updates(tmp_path, tmp_path, force=True, fetch=fetch, now=160)
+    updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, force=True, fetch=fetch, now=160
+    )
     assert len(calls) == 4
-    updates.check_release_updates(tmp_path, tmp_path, fetch=fetch, now=160 + 86400)
+    updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, fetch=fetch, now=160 + 86400
+    )
     assert len(calls) == 6
 
 
@@ -317,8 +382,12 @@ def test_outage_is_cached_without_up_to_date_claim_or_retry_storm(tmp_path, monk
         calls.append(path)
         raise OSError("do not publish private details")
 
-    first = updates.check_release_updates(tmp_path, tmp_path, fetch=offline, now=100)
-    second = updates.check_release_updates(tmp_path, tmp_path, fetch=offline, now=101)
+    first = updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, fetch=offline, now=100
+    )
+    second = updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, fetch=offline, now=101
+    )
     assert len(calls) == 2 and first.report.status == second.report.status == "partial"
     assert second.cached and second.candidate is None
     assert "private details" not in second.report.summary()
@@ -333,7 +402,8 @@ def test_ui_shared_attempt_without_asset_cache_holds_download_without_network(
     )
     updates.discovery.daily_update_check(tmp_path, now=100, fetch=fetch)
     result = updates.check_release_updates(
-        tmp_path, tmp_path, now=101, fetch=lambda _: pytest.fail("No repeat request")
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION,
+        now=101, fetch=lambda _: pytest.fail("No repeat request")
     )
     assert result.cached and result.candidate is None and "No release-asset cache" in result.hold
 
@@ -343,15 +413,20 @@ def test_clock_rollback_and_corrupt_cache_fail_closed(tmp_path, monkeypatch):
     fetch = lambda path: (
         {"name": "main", "commit": {"sha": "b" * 40}} if path == "branches/main" else metadata()
     )
-    updates.check_release_updates(tmp_path, tmp_path, now=100, fetch=fetch)
+    updates.check_release_updates(
+        tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, now=100, fetch=fetch
+    )
     assert (
-        updates.check_release_updates(tmp_path, tmp_path, now=99, fetch=fetch).report.status
+        updates.check_release_updates(
+            tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION, now=99, fetch=fetch
+        ).report.status
         == "clock_rollback"
     )
     (tmp_path / "release-check.json").write_text('{"schema":"wrong"}')
     assert (
         updates.check_release_updates(
-            tmp_path, tmp_path, now=101, fetch=lambda _: pytest.fail("No repeat request")
+            tmp_path, tmp_path, version=FIXTURE_INSTALLED_VERSION,
+            now=101, fetch=lambda _: pytest.fail("No repeat request")
         ).report.status
         == "failed"
     )
@@ -419,7 +494,7 @@ def installed_fixture(tmp_path, monkeypatch):
                 "statement": {
                     "schema": "angerona.release-authorization/v2",
                     "product": "Angerona",
-                    "version": "1.14.0",
+                    "version": FIXTURE_INSTALLED_VERSION,
                 }
             }
         )
@@ -994,13 +1069,13 @@ def test_archive_metadata_sha256_is_required_before_approval_offer(missing_diges
     else:
         document["assets"][0]["digest"] = missing_digest
     with pytest.raises(updates.ReleaseUpdateError, match="SHA256 metadata digest is required"):
-        updates.select_release(document)
+        updates.select_release(document, version=FIXTURE_INSTALLED_VERSION)
 
 
 def test_reviewed_archive_digest_rejects_equal_size_replacement_with_matching_checksum(tmp_path):
     document = metadata()
     document["assets"][1]["digest"] = None
-    selected = updates.select_release(document)
+    selected = updates.select_release(document, version=FIXTURE_INSTALLED_VERSION)
     replaced_archive = b"x" * len(ARCHIVE)
     replaced_checksum = (
         hashlib.sha256(replaced_archive).hexdigest().encode() + b"  " + NAME.encode() + b"\n"
@@ -1015,6 +1090,7 @@ def test_reviewed_archive_digest_rejects_equal_size_replacement_with_matching_ch
             selected,
             updates.approve_release(selected, action="download", accepted=True),
             tmp_path,
+            version=FIXTURE_INSTALLED_VERSION,
             fetch=lambda _: document,
             transport=replaced,
         )
@@ -1024,7 +1100,7 @@ def test_reviewed_archive_digest_rejects_equal_size_replacement_with_matching_ch
 def test_absent_checksum_digest_still_requires_exact_checksum_filename(tmp_path):
     document = metadata()
     document["assets"][1]["digest"] = None
-    selected = updates.select_release(document)
+    selected = updates.select_release(document, version=FIXTURE_INSTALLED_VERSION)
 
     def wrong_name(url, target, *args):
         target.write_bytes(
@@ -1038,6 +1114,7 @@ def test_absent_checksum_digest_still_requires_exact_checksum_filename(tmp_path)
             selected,
             updates.approve_release(selected, action="download", accepted=True),
             tmp_path,
+            version=FIXTURE_INSTALLED_VERSION,
             fetch=lambda _: document,
             transport=wrong_name,
         )
@@ -1155,6 +1232,7 @@ def test_unretired_network_worker_keeps_private_stage_for_explicit_review(tmp_pa
             selected,
             updates.approve_release(selected, action="download", accepted=True),
             tmp_path,
+            version=FIXTURE_INSTALLED_VERSION,
             fetch=lambda _: metadata(),
             transport=unretired,
         )

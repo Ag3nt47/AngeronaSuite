@@ -19,7 +19,7 @@ import stat
 import threading
 import time
 
-from .file_lease import ExclusiveFileLease
+from .file_lease import ExclusiveFileLease, PrivateLeaseRetirementHeld
 from .independent_high_water import HighWaterRejected, HighWaterUnavailable
 from .personal_sentinel_authority import (
     Ed25519PrivateSigner, Ed25519PublicVerifier, PersonalSentinelAuthorityClient,
@@ -31,6 +31,9 @@ from .recorder_epoch import (
     rows_root, verify_receipt, verify_row_range,
 )
 from .startup_recovery import private_directory, private_repair_file
+from .recorder_metadata_custody import (
+    MetadataCreationUncertain, metadata_retirement_held, open_private_metadata,
+)
 
 ARCHIVE_SCHEMA = "angerona.recorder-epoch-archive.v1"
 ARCHIVE_LIMIT = 16 * 1024 * 1024
@@ -164,6 +167,7 @@ class RecorderEpochWorker:
         self._io_deadline = 0.0
         self._client_admitted = False
         self._metadata_owners = []
+        self._creation_owners = []
 
     @property
     def thread(self):
@@ -176,6 +180,7 @@ class RecorderEpochWorker:
         if self.client is None:
             return False
         if (self._thread is not None or self._stop.is_set()
+                or metadata_retirement_held()
                 or any(holder.archive_dir == self.archive_dir for holder in _RETIREMENT_HOLDS)):
             raise RuntimeError("Recorder witness cannot be restarted")
         self._thread = threading.Thread(target=self._run, name="RecorderEpochWitness", daemon=False)
@@ -255,7 +260,12 @@ class RecorderEpochWorker:
         owner = _MetadataOwner()
         self._metadata_owners.append(owner)
         try:
-            owner.descriptor = os.open(path, flags, mode)
+            owner.descriptor = (open_private_metadata(path, flags, mode)
+                                if flags & os.O_CREAT else os.open(path, flags, mode))
+        except MetadataCreationUncertain as exc:
+            self._metadata_owners.remove(owner)
+            self._hold_creation(exc.owner)
+            raise _MetadataCloseHeld("Recorder metadata native creation retirement remains unproven") from exc
         except BaseException:
             self._metadata_owners.remove(owner)
             raise
@@ -275,6 +285,11 @@ class RecorderEpochWorker:
             else:
                 owner.close_proven = True
                 self._metadata_owners.remove(owner)
+
+    def _hold_creation(self, owner):
+        self._creation_owners.append(owner)
+        self._cleanup_proven = False
+        self.request_stop()
 
     def _inventory(self):
         _no_alias(self.archive_dir)
@@ -627,7 +642,11 @@ class RecorderEpochWorker:
             if not private_directory(self.archive_dir, create=True):
                 raise WitnessHeld("Recorder witness private archive could not be created")
         if self._lease is None:
-            self._lease = ExclusiveFileLease(self.archive_dir / ".writer.lock")
+            try:
+                self._lease = ExclusiveFileLease(self.archive_dir / ".writer.lock", opener=open_private_metadata)
+            except (MetadataCreationUncertain, PrivateLeaseRetirementHeld) as exc:
+                self._hold_creation(exc.owner)
+                raise _MetadataCloseHeld("Recorder private lease creation retirement remains unproven") from exc
         total, records, tip, pending = self._load()
         self._verify_history(records)
         if self._stop.is_set():

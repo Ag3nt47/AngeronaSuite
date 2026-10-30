@@ -39,6 +39,16 @@
 - Report crash-log target/STARTUP results, hook arming and the selected native
   fault destination; retain partial/unavailable logging without blocking startup.
   The 55-pass observability gate does not repair the unresolved native Qt fault.
+- Create new Windows recorder metadata with the current token user as owner
+  and a protected private DACL before bytes are written. Verify opened-object
+  identity and retain uncertain native/CRT cleanup; preserve existing held files.
+  Parent-directory path checks are not retained directory leases.
+- Expose optional recorder enrollment in Full Setup and keep protected request
+  keys out of ordinary settings. Make release fixtures use explicit installed
+  versions while retaining equal-version and downgrade rejection.
+- Distinguish missing assurance from a proved pipeline regression, KEV review
+  candidates from confirmed applicability, and configured startup references
+  from observed execution. Preserve severity, evidence and approval boundaries.
 
 Focused offline gates and a fresh Full-mode observation are recorded in the
 [1.15 version notes](docs/releases/v1.15.0.md) and
@@ -50,6 +60,15 @@ A later native shutdown access violation remains a P0 availability finding.
 The final 120-second session exited zero but failed observation acceptance on a
 bounded inventory guard; it does not prove the earlier crash fixed. Missing
 post-STOP crash-log files have an unproved cause and preserved private evidence.
+The [30 October follow-up](analysis/hardening-v1.15-2026-10-30-followup.md)
+records local CI remediation, partial collector measurements and a later STOP
+that retired normally but still failed observation acceptance on three timed
+inventory samples. Local checks are separate from new hosted-CI acceptance;
+the unresolved native crash and substantial collector cost remain visible.
+The final changed-source Full/STOP observation met bounded lifecycle acceptance
+and retired all 52 observed unique generations with unchanged source/preferences.
+Worker health, unknown coverage, the fresh-status settling delay and the earlier
+P0 crash remain explicit; this is not an all-detector or performance pass.
 
 ## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
 

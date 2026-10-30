@@ -90,7 +90,6 @@ their owners and fence replacement; they cannot become successful cleanup
 receipts. This implementation does not grant ELAM/PPL protection or immunity
 to an administrator or kernel compromise.
 
-No WDAC, SCM, ACL, HVCI, Secure Boot or TPM change is performed merely by
-installing the source update or opening its dashboard. Signed installation,
-native rights, real enrollment/materials, ConfigCI availability, independent
-operator workflows and clean-VM acceptance remain deployment requirements.
+Source updates do not activate host enforcement. Signed installation, native
+rights, enrollment, ConfigCI availability, independent approvals and clean-VM
+acceptance remain required.

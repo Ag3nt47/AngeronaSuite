@@ -972,7 +972,10 @@ class SpywareGuardModule(BaseModule):
                 severity = Severity.CRITICAL
         summary = str(finding.get("summary") or finding.get("reason") or kind)[:1024]
         if (kind == "persistence_transient_payload" and finding.get("source") == "windows.run"
-                and finding.get("reason") == "Persistence executes a payload from a temporary/public/download directory."):
+                and finding.get("reason") in {
+                    "Persistence executes a payload from a temporary/public/download directory.",
+                    "Configured startup command references a target in a temporary/public/download directory; execution is unverified.",
+                }):
             summary = ("Startup entry points to a temporary/public/download payload; "
                        "execution and maliciousness are unconfirmed.")
         hit = {"id": token, "ts": now, "kind": kind, "severity": severity.name,

@@ -208,7 +208,7 @@ _BASE_GUIDES = (
         "threat-intel", "Threat Intelligence", "Exposure",
         "Correlates trusted vulnerability intelligence with locally observed software.",
         ("Open Threat Intel.", "Refresh intelligence when online access is allowed.",
-         "Review host-applicable entries.", "Stage rather than auto-run a fix."),
+         "Review candidate applicability.", "Stage rather than auto-run a fix."),
         "Confirm ignored or remediated entries no longer inflate posture incorrectly.",
         "Feed retrieval is inbound; host evidence is not uploaded.",
         "_open_threat_intel", DestinationKind.WINDOW,
@@ -313,7 +313,7 @@ _BASE_GUIDES = (
     CapabilityGuide(
         "exposure-management", "Vulnerability and Exposure Management", "Exposure",
         "A durable lifecycle for assigning, mitigating, accepting, resolving, "
-        "and auditing host-applicable vulnerabilities.",
+        "and reviewing candidate vulnerability applicability.",
         ("Correlate inventory with trusted vulnerability intelligence.",
          "Assign an owner and deadline.", "Stage and verify remediation.",
          "Attach a SHA-256 closure artifact or a bounded risk exception."),

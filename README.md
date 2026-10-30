@@ -19,8 +19,7 @@ evidence and propose next steps.
 [PDF manual](Angerona_Master_Manual.pdf) ·
 [Security fixes and residual exposure report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) ·
 [Download Word manual](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx) ·
-[Security flow and review map](docs/security-flow.md) ·
-[Download the 1.15 patch and residual risk report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx)
+[Security flow and review map](docs/security-flow.md)
 
 [![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
@@ -75,6 +74,7 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 
 [What changed, validation and current limits](docs/releases/v1.15.0.md) ·
 [Reviewed observation](analysis/hardening-v1.15-2026-10-30.md) ·
+[Follow-up fixes and observation](analysis/hardening-v1.15-2026-10-30-followup.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

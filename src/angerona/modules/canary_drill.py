@@ -367,6 +367,8 @@ class CanaryDrillModule(BaseModule):
         announcement (or another module quoting the tag) from satisfying the
         telemetry contract.
         """
+        if self.stopping:
+            return
         self._capture_kernel_echo(event)
         if self.stopping or self._kernel_only() or event.module not in _TRUSTED_PROCESS_SENSORS:
             return

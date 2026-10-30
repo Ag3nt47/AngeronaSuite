@@ -35,7 +35,21 @@ def _install_keys(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
     monkeypatch.setattr(BusAuthority, "_key_path", staticmethod(lambda: key_path))
 
 
-def _runtime(root: Path, monkeypatch: pytest.MonkeyPatch, *, fim: bool = False):
+def _runtime(root: Path, monkeypatch: pytest.MonkeyPatch, *, fim: bool = False, inventory=None):
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    if inventory is None:
+        def inventory(*, max_age=None):
+            # Receipt/custody tests have an explicitly empty process universe.
+            # Real Process Monitor freshness/generation/native-target admission
+            # still runs; this fixture does not attest live-host coverage.
+            return ProcessSnapshot(
+                processes=(), collected_at=time.time(), complete=True,
+                enumerated=0, skipped=0, unreadable=0, identity_incomplete=0,
+                error="", enumeration_complete=True)
+
+    monkeypatch.setattr(process_monitor, "process_snapshot", inventory)
     _install_keys(monkeypatch, root)
     bus = EventBus(ring_size=4096)
     recorder = FlightRecorder(root / "flight-recorder.db")
@@ -236,8 +250,7 @@ def test_captured_verifier_closure_cell_cannot_redirect_acceptance(
         inventory_reads.append((max_age, snapshot))
         return snapshot
 
-    monkeypatch.setattr(process_monitor, "process_snapshot", supplied_inventory)
-    bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
+    bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch, inventory=supplied_inventory)
     target = tmp_path / "target"
     lease = None
     try:

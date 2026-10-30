@@ -1638,7 +1638,7 @@ class MobileResponseBridge(BaseModule):
             return (f"📊 Threat Posture {p['score']}/100 — {p['label']}\n"
                     f"Active threats(10m): {f.get('active_threats', 0)}\n"
                     f"Degraded modules: {f.get('degraded_modules', 0)}\n"
-                    f"Host-applicable KEV CVEs: {f.get('kev_exposure', 0)}\n"
+                    f"KEV review candidates: {f.get('kev_exposure', 0)}\n"
                     f"ATT&CK heat: {f.get('attack_heat', 0)}")
         except Exception as exc:
             return f"STATUS unavailable: {exc}"

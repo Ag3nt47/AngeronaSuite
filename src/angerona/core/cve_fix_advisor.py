@@ -1,6 +1,6 @@
 """core/cve_fix_advisor.py — local-AI CVE analysis + inert proposal staging.
 
-For each host-applicable CVE, ask the LOCAL model (Ollama / llama3) to compare
+For each candidate CVE, ask the LOCAL model (Ollama / llama3) to compare
 the vulnerability against this machine's system info and decide whether a
 *specific, actionable* fix (concrete PowerShell + a matching revert) is possible.
 
