@@ -7,8 +7,9 @@ Blends four live signals into one number the operator can read in a second:
     KEV review       (unverified CISA correlations)       up to −20
     ATT&CK heat      (recent technique activity)           up to −10
 
-100 = fully secure & healthy; lower = worse. Every input is best-effort and the
-function never raises — a missing signal simply contributes 0.
+100 is the highest advisory score from available inputs, not proof of protection
+or complete coverage. Inputs are best-effort; missing signals contribute no
+penalty, so this score cannot establish that an unavailable sensor is healthy.
 """
 from __future__ import annotations
 
@@ -176,4 +177,5 @@ def posture_tooltip(p: dict) -> str:
             f"• degraded/stopped modules: {f.get('degraded_modules', 0)}\n"
             f"• KEV review candidates: {f.get('kev_exposure', 0)}\n"
             f"• ATT&CK heat: {f.get('attack_heat', 0)}\n"
-            "Higher is safer. Click for detail.")
+            "A higher score means fewer penalties in the available inputs. "
+            "This score does not verify protection or complete coverage. Click for detail.")

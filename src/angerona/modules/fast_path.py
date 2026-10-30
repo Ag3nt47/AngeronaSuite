@@ -52,7 +52,8 @@ from typing import Optional
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.net_interfaces import detect_split_tunnel
 from angerona.core.werfault_guard import (
-    WerFaultCorrelator, capture_wer_telemetry, read_owned_processes,
+    OwnedProcessReadError, WerFaultCorrelator, capture_wer_telemetry,
+    read_owned_process_snapshot,
 )
 
 DEDUP_TTL = 120.0   # seconds between repeat fast-path alerts for same triple
@@ -198,7 +199,9 @@ class FastPathModule(BaseModule):
         self._wer_owned_roles = ()
         self._wer_skipped = 0
         self._wer_coverage = "current native-owned process cache unavailable"
-        self._wer_gap_reported = ""
+        self._wer_ownership_reason = "supplier_unbound"
+        self._wer_snapshot_count = None
+        self._wer_gap_reported = ()
 
     def bind_owned_processes(self, supplier) -> None:
         """Bind only a composition-owned immutable cache, never event claims."""
@@ -214,6 +217,9 @@ class FastPathModule(BaseModule):
                     reason=self._wer_coverage, queued=self._wer_queue.qsize(),
                     queue_capacity=self._wer_queue.maxsize, dropped=self._wer_dropped,
                     owned_roles=self._wer_owned_roles, skipped_admission_attempts=self._wer_skipped,
+                    ownership_reason_code=self._wer_ownership_reason,
+                    ownership_snapshot_count=self._wer_snapshot_count,
+                    ingress_lost_records=self._wer_dropped,
                     ownership_scope="Admitted retained owners only; absent companions remain unproven",
                     scope="Bounded WER precursor observations; no suspension or prevention attestation",
                     response_authorized=False)
@@ -239,22 +245,35 @@ class FastPathModule(BaseModule):
         now = time.monotonic()
         self._wer_seen = {key: stamp for key, stamp in self._wer_seen.items() if now - stamp < DEDUP_TTL}
         try:
-            owned = read_owned_processes(self._owned_process_source, now=now)
+            snapshot = read_owned_process_snapshot(self._owned_process_source, not_before=now,
+                                                   clock=time.monotonic)
+            owned, checked_now = snapshot.rows, snapshot.checked_monotonic
             self._wer_owned_roles = tuple(row.role for row in owned)
+            self._wer_ownership_reason = ""
+            self._wer_snapshot_count = len(owned)
             self._wer_coverage = ""
-        except Exception:
+        except OwnedProcessReadError as exc:
             owned = ()
             self._wer_owned_roles = ()
+            self._wer_ownership_reason = exc.reason_code
+            self._wer_snapshot_count = exc.snapshot_count
             self._wer_coverage = "current native-owned process cache unavailable, stale or malformed"
         if self._wer_dropped:
-            self._wer_coverage = "WER telemetry ingress lost records; correlation coverage is incomplete"
+            ingress_gap = "WER telemetry ingress lost records; correlation coverage is incomplete"
+            self._wer_coverage = (self._wer_coverage + "; " + ingress_gap
+                                  if self._wer_coverage else ingress_gap)
+        gap_key = (self._wer_ownership_reason, bool(self._wer_dropped))
         if not self._wer_coverage:
-            self._wer_gap_reported = ""
-        if self._wer_coverage and self._wer_gap_reported != self._wer_coverage:
-            self._wer_gap_reported = self._wer_coverage
+            self._wer_gap_reported = ()
+        if self._wer_coverage and self._wer_gap_reported != gap_key:
+            self._wer_gap_reported = gap_key
             self.emit("WER tampering observation coverage: " + self._wer_coverage,
                       Severity.LOW, disposition="health", active_attack=False,
-                      response_authorized=False, coverage_failure=True)
+                      response_authorized=False, coverage_failure=True,
+                      coverage_reason=self._wer_ownership_reason or "ingress_lost",
+                      ownership_reason_code=self._wer_ownership_reason,
+                      ownership_snapshot_count=self._wer_snapshot_count,
+                      owned_roles=self._wer_owned_roles, ingress_lost_records=self._wer_dropped)
         for _index in range(16):
             try:
                 event = self._wer_queue.get_nowait()
@@ -268,7 +287,7 @@ class FastPathModule(BaseModule):
             self._wer_seen[event.source_hmac] = now
             if len(self._wer_seen) > 256:
                 self._wer_seen.pop(next(iter(self._wer_seen)))
-            observation = self._wer_guard.observe(event, owned, now=now)
+            observation = self._wer_guard.observe(event, owned, now=checked_now)
             if observation is None:
                 continue
             description = ("WER dump flags reference a currently owned suite PID; target generation remains unbound"

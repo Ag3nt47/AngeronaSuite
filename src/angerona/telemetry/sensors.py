@@ -227,7 +227,182 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
 
 
 def _collect_process_snapshot() -> ProcessSnapshot:
-    """Existing rich collector, local only in its worker or offline fixtures."""
+    """Rich worker-local inventory with an admitted scan-local birth adapter."""
+    if _WINDOWS_PROCESS_MAP:
+        try:
+            import psutil
+        except Exception:
+            return _collect_process_snapshot_legacy()
+        from angerona.telemetry.windows_process_births import create_reader
+        try:
+            reader = create_reader(psutil)
+        except Exception as exc:
+            # An admitted self-witness failure is visible loss, never a
+            # second legacy scan or an apparently healthy empty receipt.
+            return ProcessSnapshot((), time.time(), False, 0, 0, error=(
+                "Windows birth adapter admission failed: " + _birth_failure_code(exc)
+            ), enumeration_complete=False)
+        if reader is not None:
+            return _collect_process_snapshot_bulk(psutil, reader)
+    return _collect_process_snapshot_legacy()
+
+
+def _birth_failure_code(exc: Exception) -> str:
+    from angerona.telemetry.windows_process_births import BirthObservationError
+    return exc.code if type(exc) is BirthObservationError else type(exc).__name__[:80]
+
+
+def _normalize_process_row(pid, info, after, parents):
+    """Common evidence/coverage rules for legacy and bulk birth acquisition."""
+    if type(after.get("pid")) is not int or after["pid"] != pid:
+        raise ValueError("process verification PID changed")
+    before_birth = _positive_birth(info.get("create_time"))
+    after_birth = _positive_birth(after.get("create_time"))
+    before_image = _process_image(info.get("exe"))
+    after_image = _process_image(after.get("exe"))
+    if (before_birth is not None and after_birth is not None
+            and before_birth != after_birth):
+        raise ValueError("process birth changed during collection")
+    if (before_image is not None and after_image is not None
+            and before_image != after_image):
+        raise ValueError("process image changed during collection")
+    coherent = bool(pid > 0 and before_birth is not None
+                    and after_birth is not None and before_image is not None
+                    and after_image is not None)
+    if before_birth is None or after_birth is None:
+        info["create_time"] = None
+    if before_image is None or after_image is None:
+        info["exe"] = None
+    if _WINDOWS_PROCESS_MAP:
+        info["ppid"] = parents.get(pid) if coherent and parents is not None else None
+        coherent = coherent and info["ppid"] is not None
+    elif not coherent:
+        info["ppid"] = None
+    command = info.get("cmdline")
+    unreadable = 0
+    if not isinstance(command, (tuple, list)) or any(
+        not isinstance(value, str) for value in command
+    ):
+        command = None
+        unreadable = 1
+    else:
+        command = tuple(command)
+    info["cmdline"] = command
+    return MappingProxyType(info), int(not coherent), unreadable
+
+
+def _collect_process_snapshot_bulk(psutil, reader) -> ProcessSnapshot:
+    """Bracket all metadata and both fresh image passes with distinct queries.
+
+    Only birth acquisition differs: public Process construction still performs
+    its fresh fast query and neither object's identity/cache is modified. An
+    admitted native failure preserves visible metadata as unknown evidence.
+    """
+    from angerona.telemetry.windows_process_births import bracket_births, cached_fast_birth
+
+    out: list[Mapping[str, object]] = []
+    pending = []
+    verified = []
+    enumerated = skipped = unreadable = identity_incomplete = 0
+    enumeration_complete = True
+    error = ""
+    before = after_births = None
+    try:
+        pids = psutil.pids()
+        if type(pids) is not list:
+            return ProcessSnapshot((), time.time(), False, 0, 0,
+                                   error="Windows PID table shape unavailable",
+                                   enumeration_complete=False)
+        if not pids:
+            # Admission already witnessed this worker's live generation. An
+            # empty public PID list cannot establish an empty, healthy host.
+            return ProcessSnapshot((), time.time(), False, 0, 0,
+                                   error="Windows PID table unexpectedly empty",
+                                   enumeration_complete=False)
+        own_pid = reader.own_pid
+        if (len(pids) <= _MAX_PROCESS_ROWS and type(own_pid) is int
+                and 0 < own_pid <= 0xFFFFFFFF
+                and own_pid not in pids):
+            # A bounded table must include the already witnessed worker. Keep
+            # other visible rows, but never call an omitted-self table healthy.
+            enumeration_complete = False
+            error = "Windows PID table omitted current worker"
+        try:
+            before = reader.read()
+        except Exception as exc:
+            enumeration_complete = False
+            error = error or "Windows birth observation unavailable: " + _birth_failure_code(exc)
+        for pid in pids:
+            enumerated += 1
+            if enumerated > _MAX_PROCESS_ROWS:
+                enumeration_complete = False
+                skipped += 1
+                error = "process inventory exceeded the bounded row limit"
+                break
+            try:
+                if type(pid) is not int or pid < 0:
+                    raise ValueError("invalid enumerated PID")
+                process = psutil.Process(pid)
+                fast = cached_fast_birth(process)
+                info = process.as_dict(
+                    attrs=["pid", "name", "exe", "username", "cmdline"], ad_value=None,
+                )
+                if type(info.get("pid")) is not int or info["pid"] != pid:
+                    raise ValueError("process metadata PID changed")
+                pending.append((pid, info, fast))
+            except Exception:
+                skipped += 1
+    except Exception as exc:
+        enumeration_complete = False
+        error = f"process enumeration failed: {type(exc).__name__}"[:500]
+    parents = None
+    if pending:
+        try:
+            parents = _windows_parent_map(psutil)
+        except Exception as exc:
+            enumeration_complete = False
+            error = error or f"Windows parent map unavailable: {type(exc).__name__}"
+    for pid, info, before_fast in pending:
+        try:
+            process = psutil.Process(pid)
+            after_fast = cached_fast_birth(process)
+            after = process.as_dict(attrs=["pid", "exe"], ad_value=None)
+            if type(after.get("pid")) is not int or after["pid"] != pid:
+                raise ValueError("process verification PID changed")
+            verified.append((pid, info, after, before_fast, after_fast))
+        except Exception:
+            skipped += 1
+    if pending:
+        # B2 must follow EVERY second image read, including failed attempts.
+        # Taking it before that pass would leave a wider PID-reuse gap.
+        try:
+            after_births = reader.read()
+        except Exception as exc:
+            enumeration_complete = False
+            error = error or "Windows birth observation unavailable: " + _birth_failure_code(exc)
+    for pid, info, after, before_fast, after_fast in verified:
+        try:
+            info["create_time"], after["create_time"] = bracket_births(
+                pid, before_fast, after_fast, before, after_births,
+            )
+            row, incomplete, lost_command = _normalize_process_row(pid, info, after, parents)
+            identity_incomplete += incomplete
+            unreadable += lost_command
+            out.append(row)
+        except Exception:
+            skipped += 1
+    if skipped and not error:
+        error = f"{skipped} process row(s) could not be normalized"
+    return ProcessSnapshot(
+        tuple(out), time.time(),
+        enumeration_complete and not (skipped or unreadable or identity_incomplete),
+        enumerated, skipped, unreadable, identity_incomplete, error,
+        enumeration_complete and skipped == 0,
+    )
+
+
+def _collect_process_snapshot_legacy() -> ProcessSnapshot:
+    """Existing collector selected before collection on unsupported runtimes."""
     out: list[Mapping[str, object]] = []
     enumerated = skipped = unreadable = identity_incomplete = 0
     error = ""
@@ -275,46 +450,13 @@ def _collect_process_snapshot() -> ProcessSnapshot:
             after = psutil.Process(pid).as_dict(
                 attrs=["pid", "create_time", "exe"], ad_value=None,
             )
-            if type(after.get("pid")) is not int or after["pid"] != pid:
-                raise ValueError("process verification PID changed")
-            before_birth = _positive_birth(info.get("create_time"))
-            after_birth = _positive_birth(after.get("create_time"))
-            before_image = _process_image(info.get("exe"))
-            after_image = _process_image(after.get("exe"))
             # Different known observations are loss, not a stitched row.
             # Independent objects avoid the denied-fast-birth (PID,None)
             # identity comparison and the lifetime cached exe() result.
-            if (before_birth is not None and after_birth is not None
-                    and before_birth != after_birth):
-                raise ValueError("process birth changed during collection")
-            if (before_image is not None and after_image is not None
-                    and before_image != after_image):
-                raise ValueError("process image changed during collection")
-            coherent = bool(pid > 0 and before_birth is not None
-                            and after_birth is not None and before_image is not None
-                            and after_image is not None)
-            if before_birth is None or after_birth is None:
-                info["create_time"] = None
-            if before_image is None or after_image is None:
-                info["exe"] = None
-            if _WINDOWS_PROCESS_MAP:
-                # Bind the PID-only parent map only between matching fresh
-                # observations. Unreadable/protected identity stays unknown.
-                info["ppid"] = parents.get(pid) if coherent and parents is not None else None
-                coherent = coherent and info["ppid"] is not None
-            elif not coherent:
-                info["ppid"] = None
-            identity_incomplete += int(not coherent)
-            command = info.get("cmdline")
-            if not isinstance(command, (tuple, list)) or any(
-                not isinstance(value, str) for value in command
-            ):
-                command = None
-                unreadable += 1
-            else:
-                command = tuple(command)
-            info["cmdline"] = command
-            out.append(MappingProxyType(info))
+            row, incomplete, lost_command = _normalize_process_row(pid, info, after, parents)
+            identity_incomplete += incomplete
+            unreadable += lost_command
+            out.append(row)
         except Exception:
             skipped += 1
     if skipped and not error:

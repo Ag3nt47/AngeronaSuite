@@ -4898,7 +4898,8 @@ class MainWindow(QMainWindow):
             f"  • Degraded / stopped modules: {f.get('degraded_modules', 0)}\n"
             f"  • KEV review candidates: {f.get('kev_exposure', 0)}\n"
             f"  • Recent ATT&CK heat: {f.get('attack_heat', 0)}\n\n"
-            "100 = fully secure & healthy. Open Threat Intel, Modules, and the "
+            "100 is the highest advisory score from available inputs; it does not "
+            "verify protection or complete coverage. Open Threat Intel, Modules, and the "
             "ATT&CK map to drill into each factor.")
 
     def _open_top_talkers(self) -> None:

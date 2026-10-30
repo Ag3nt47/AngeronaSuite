@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import math
 import ntpath
 import re
-from typing import Callable
+from typing import Callable, Literal
 
 MAX_OWNED_PROCESSES = 16
 MAX_IDENTITY_AGE = 5.0
@@ -65,6 +65,10 @@ class OwnedProcessIdentity:
     expires_monotonic: float
 
     def __post_init__(self):
+        object.__setattr__(self, "image", self._validated_image())
+
+    def _validated_image(self) -> str:
+        """Validate the complete DTO without changing a supplier-owned row."""
         if type(self.pid) is not int or not 1 <= self.pid <= 0xFFFFFFFF:
             raise ValueError("Owned PID is invalid")
         if (type(self.birth_ticks) is not str or not 1 <= len(self.birth_ticks) <= 20
@@ -81,27 +85,108 @@ class OwnedProcessIdentity:
                 or not self.observed_monotonic < self.expires_monotonic
                 <= self.observed_monotonic + MAX_IDENTITY_AGE):
             raise ValueError("Owned identity needs a bounded monotonic lease")
-        object.__setattr__(self, "image", _image(self.image))
+        return _image(self.image)
 
     def fresh(self, now: float) -> bool:
         return _finite(now) and self.observed_monotonic <= now < self.expires_monotonic
 
 
 OwnedProcessSupplier = Callable[[], tuple[OwnedProcessIdentity, ...]]
+OwnedProcessReadReason = Literal[
+    "supplier_unbound", "caller_clock_invalid", "supplier_failed", "snapshot_type_invalid",
+    "snapshot_empty", "snapshot_oversized", "observation_clock_invalid", "regressed",
+    "row_type_invalid", "row_not_yet_valid", "row_expired", "duplicate_pid",
+]
+
+
+class OwnedProcessReadError(ValueError):
+    """A fixed consumer rejection code, without supplier exception text or identity."""
+
+    def __init__(self, reason_code: OwnedProcessReadReason, *, snapshot_count: int | None = None):
+        if reason_code in {"row_type_invalid", "row_not_yet_valid", "row_expired"}:
+            message = "Native-owned process cache is stale or malformed"
+        elif reason_code == "duplicate_pid":
+            message = "Native-owned process cache has ambiguous process IDs"
+        else:
+            message = "Current native-owned process cache is unavailable"
+        super().__init__(message)
+        self.reason_code = reason_code
+        self.snapshot_count = snapshot_count
+
+
+@dataclass(frozen=True)
+class OwnedProcessRead:
+    """An unchanged immutable cache admitted at its post-acquisition clock sample."""
+
+    rows: tuple[OwnedProcessIdentity, ...]
+    checked_monotonic: float
+
+
+def _read_owned_supplier(supplier: OwnedProcessSupplier | None) -> object:
+    if supplier is None or not callable(supplier):
+        raise OwnedProcessReadError("supplier_unbound")
+    try:
+        return supplier()
+    except Exception:
+        raise OwnedProcessReadError("supplier_failed") from None
+
+
+def _validate_owned_processes(rows: object, *, now: float) -> tuple[OwnedProcessIdentity, ...]:
+    """Reject an entire cache on any type, lease or PID ambiguity failure."""
+    if type(rows) is not tuple:
+        raise OwnedProcessReadError("snapshot_type_invalid")
+    count = len(rows)
+    if not count:
+        raise OwnedProcessReadError("snapshot_empty", snapshot_count=count)
+    if count > MAX_OWNED_PROCESSES:
+        raise OwnedProcessReadError("snapshot_oversized", snapshot_count=count)
+    try:
+        for row in rows:
+            if (type(row) is not OwnedProcessIdentity
+                    or OwnedProcessIdentity._validated_image(row) != row.image):
+                raise OwnedProcessReadError("row_type_invalid", snapshot_count=count)
+            if now < row.observed_monotonic:
+                raise OwnedProcessReadError("row_not_yet_valid", snapshot_count=count)
+            if not row.fresh(now):
+                raise OwnedProcessReadError("row_expired", snapshot_count=count)
+        if len({row.pid for row in rows}) != count:
+            raise OwnedProcessReadError("duplicate_pid", snapshot_count=count)
+    except OwnedProcessReadError:
+        raise
+    except Exception:
+        raise OwnedProcessReadError("row_type_invalid", snapshot_count=count) from None
+    return rows
 
 
 def read_owned_processes(supplier: OwnedProcessSupplier | None, *, now: float) -> tuple[OwnedProcessIdentity, ...]:
-    """Read only an already cached typed tuple; reject partial/ambiguous caches."""
-    if supplier is None or not callable(supplier) or not _finite(now):
-        raise ValueError("Current native-owned process cache is unavailable")
-    rows = supplier()
-    if type(rows) is not tuple or not 1 <= len(rows) <= MAX_OWNED_PROCESSES:
-        raise ValueError("Current native-owned process cache is unavailable")
-    if any(type(row) is not OwnedProcessIdentity or not row.fresh(now) for row in rows):
-        raise ValueError("Native-owned process cache is stale or malformed")
-    if len({row.pid for row in rows}) != len(rows):
-        raise ValueError("Native-owned process cache has ambiguous process IDs")
-    return rows
+    """Read a cached typed tuple at an explicitly fixed validation time."""
+    if not _finite(now):
+        raise OwnedProcessReadError("caller_clock_invalid")
+    return _validate_owned_processes(_read_owned_supplier(supplier), now=now)
+
+
+def read_owned_process_snapshot(supplier: OwnedProcessSupplier | None, *, not_before: float,
+                                clock: Callable[[], float]) -> OwnedProcessRead:
+    """Acquire once, then sample once; validate and correlate using that same time.
+
+    A cache publisher may replace its immutable tuple between a caller's initial
+    clock sample and acquisition. Sampling after acquisition admits a fresh row
+    without changing its producer lease or accepting a future observation.
+    """
+    if not _finite(not_before):
+        raise OwnedProcessReadError("caller_clock_invalid")
+    if not callable(clock):
+        raise OwnedProcessReadError("observation_clock_invalid")
+    rows = _read_owned_supplier(supplier)
+    try:
+        checked = clock()
+    except Exception:
+        raise OwnedProcessReadError("observation_clock_invalid") from None
+    if not _finite(checked):
+        raise OwnedProcessReadError("observation_clock_invalid")
+    if checked < not_before:
+        raise OwnedProcessReadError("regressed")
+    return OwnedProcessRead(_validate_owned_processes(rows, now=checked), float(checked))
 
 
 def _pid(value: object) -> int | None:

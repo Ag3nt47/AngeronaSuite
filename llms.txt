@@ -7,6 +7,43 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Second 30 October follow-up: WER acquires cached ownership before sampling
+  the shared admission/correlation clock. Future/exact-expiry/TTL/authentication,
+  queue 64/drain 16/dedup stay strict. Typed reasons use existing coverage_reason;
+  legacy text remains compatible, malformed exact-class cache is wholly held,
+  private exceptions are not exported. Live typed WER availability was NOT
+  measured: selected capture has no coverage_snapshot/typed-cache/source-failure
+  receipt, so no zero-failure or historical-warning-cause claim.
+- Native AMD64 Windows/psutil 7.2.2 advisory inventory uses fresh birth maps
+  before rich metadata and after every second-image read, existing parent map
+  and two fresh Process objects. Both raw FILETIME maps witness self; raw birth
+  mismatch catches float collisions. Read fast cache only; no request-observation
+  reuse or in-flight fallback. Native bounds: 16 MiB/4 attempts/65,536 rows, no
+  returned pointer dereference; only 2 DLL bindings cached. Unsupported legacy preselected.
+  Empty/nonlist PID tables are loss, missing self preserves bounded partial rows,
+  oversized lists skip only the self-membership prewalk, then the existing
+  bounded row loop retains rows/reports row-limit loss. No custody or elevation.
+- Gates: four-file WER/context/fast-path cohort 120 passes, inventory 385 passes,
+  Posture/AI advisory regression checks 2 passes
+  (overlapping scopes, earlier 378/379 retained separately). Review fixed genuine builtin
+  psutil module pin and tightened bounds. Paired native comparison HELD after
+  first legacy leg/two skips of unconfirmed cause: no candidate read/no redo/no
+  controlled speedup. Separate candidate-only three-request protocol accepted
+  with partial coverage, .235/.234/.281s and worker 81.25% of one CPU over 0.75s.
+- Latest changed-source Full 120s lifecycle accepted:true/native exit 0, all 48
+  observed unique generations retired/no app TerminateProcess/no force, source 498
+  and prefs unchanged. Four transient admission gaps, no topology bound; 56 Full
+  samples had fresh authenticated four roles. Final 75 running: 16 critical,
+  35 degraded, 1 failed, 23 OK/69 unknown sensors; native ETW/Sysmon unavailable.
+  Capture initial loss 2860, 252 new events; all 1403 diagnostic/190 coverage
+  records RETAINED history, not new probes. HMAC-only originals are not producer
+  attestation. CPU Core 114.281%/inventory 10.862% of one CPU over 117.527861s,
+  different context than prior capture; no causal speedup. WM_NULL 56/56, max
+  422ms; cached GUI lag 109–265ms/age up to 9.75s. Full invoke 125ms/button 1.70s/
+  status 56.66s settling, not click delay. P0 native
+  crash unresolved; COM exception then continued events/normal exit is separate.
+  Prior published revision hosted 15/15 passes; new changes need new commit CI.
+  Current evidence: analysis/hardening-v1.15-2026-10-30-inventory-wer.md.
 - This is the v1.15.0 source-development hardening milestone. Windows package
   metadata derives 1.15.0.0. Component versions and historical evidence retain
   their own scope. Native signing, service enrollment, hardware and physical-host

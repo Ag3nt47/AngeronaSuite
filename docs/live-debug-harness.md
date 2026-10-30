@@ -261,8 +261,24 @@ records the shared collector, exact primary-worker CPU attribution, focused
 regressions, fresh observation and explicit measurement gaps. Its sanitized
 JSON links source scopes to private-receipt digests without publishing host
 process rows. Compare like-for-like CPU fields and keep failed diagnostic
-setups separate from actual scanner calls. The latest observation did not
-demonstrate lower CPU use.
+setups separate from actual scanner calls. Those dated measurements did not
+demonstrate lower CPU use. The later
+[inventory/WER follow-up](../analysis/hardening-v1.15-2026-10-30-inventory-wer.md)
+keeps a held paired comparison, candidate-only native requests and distinct
+Full captures separate; different contexts do not establish a causal speedup.
+
+The compatibility-gated native AMD64/psutil 7.2.2 inventory adapter takes fresh
+raw birth maps before rich metadata and after all second-image reads. Its
+self witnesses, two fresh process objects, strict bounds and partial/loss
+outcomes are advisory observation, not response identity leases. Only system-DLL
+bindings are cached; process observations are not reused across requests.
+
+WER cache admission and correlation share a clock sampled after snapshot
+acquisition; expiry and source/authentication checks remain strict. Fixed typed
+failures use exported `coverage_reason` while private exception text stays out.
+A selected capture without a WER typed cache/coverage receipt leaves actual
+availability unmeasured. No warning in a redacted window is not zero failures
+or a diagnosis of historical gaps.
 
 With `ANGERONA_RUNTIME_METRICS=1` set before launch, the private
 `diagnostics/status.json` module rows also include a `worker` object for the

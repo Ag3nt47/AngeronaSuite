@@ -49,6 +49,15 @@
 - Distinguish missing assurance from a proved pipeline regression, KEV review
   candidates from confirmed applicability, and configured startup references
   from observed execution. Preserve severity, evidence and approval boundaries.
+- Admit WER ownership-cache publications against one post-acquisition clock
+  shared with correlation. Preserve expiry/authentication/bounds and export
+  fixed typed coverage reasons without private exception text.
+- Add bounded fresh Windows birth maps for native AMD64/psutil 7.2.2 advisory
+  inventory, raw-FILETIME consistency and explicit loss. Preserve two fresh
+  process objects, source freshness, unsupported-platform legacy selection and
+  existing response-authority boundaries.
+- Remove posture copy that promised full security from a 100% score; scoring,
+  bands and policy are unchanged.
 
 Focused offline gates and a fresh Full-mode observation are recorded in the
 [1.15 version notes](docs/releases/v1.15.0.md) and
@@ -69,6 +78,11 @@ The final changed-source Full/STOP observation met bounded lifecycle acceptance
 and retired all 52 observed unique generations with unchanged source/preferences.
 Worker health, unknown coverage, the fresh-status settling delay and the earlier
 P0 crash remain explicit; this is not an all-detector or performance pass.
+The [second inventory/WER follow-up](analysis/hardening-v1.15-2026-10-30-inventory-wer.md)
+records the later 498-file lifecycle acceptance, partial native request results
+and held paired comparison. Different live CPU contexts do not prove a causal
+speedup. The prior published revision passed all 15 hosted checks; new-commit
+publication/checks remain separate, as do actual WER availability and P0 repair.
 
 ## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
 
