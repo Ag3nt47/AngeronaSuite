@@ -1,8 +1,8 @@
 {
   "schema": "angerona.publication-git-runtime/v1",
   "platform": "win32-x86_64",
-  "git_version": "2.56.0.windows.3",
-  "git_build_commit": "0e9926caea36270e3e9067b5ac512ac0335a004a",
+  "git_version": "2.56.0.windows.4",
+  "git_build_commit": "581291682ad5a238c08c93d1f5bd4518382a3230",
   "tree_roots": [
     "cmd",
     "ucrt64/bin",
@@ -30,38 +30,38 @@
     },
     {
       "path": "cmd/git-gui.exe",
-      "size": 135512,
-      "sha256": "b5e935565b17fed4dbc20c1bd6d2d4677ca8bad6154b0e5c0e870913fb19282f"
+      "size": 135528,
+      "sha256": "8faf8eef0c2f72c81e3d0ccac75059f9e616831474dbd75c99332960279ab8b4"
     },
     {
       "path": "cmd/git-lfs.exe",
-      "size": 44872,
-      "sha256": "3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3"
+      "size": 44888,
+      "sha256": "20d0dde30a65afb6e5810a883700a94dcd77fbf3b44b32868d45bf7c9b30137c"
     },
     {
       "path": "cmd/git-receive-pack.exe",
-      "size": 44888,
-      "sha256": "81f3e8ae1cd3ac303164b4beed38831bdfbe5233883a7f81b9f93a74a47ab989"
+      "size": 44904,
+      "sha256": "d009f0fabda3168c9e2fc00f6b113ccf7a36f83d7bd6afcd814025cc0af252fe"
     },
     {
       "path": "cmd/git-upload-pack.exe",
-      "size": 44888,
-      "sha256": "f1e4f89b50a9c3137971941449e583cee3ed4235149d806ca03a59a647d9e437"
+      "size": 44904,
+      "sha256": "497cd119f0cbb1155507c2d289cef1260932e48e72c2edec72bad0804bac2756"
     },
     {
       "path": "cmd/git.exe",
-      "size": 44872,
-      "sha256": "3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3"
+      "size": 44888,
+      "sha256": "20d0dde30a65afb6e5810a883700a94dcd77fbf3b44b32868d45bf7c9b30137c"
     },
     {
       "path": "cmd/gitk.exe",
-      "size": 135496,
-      "sha256": "11300cdb5b349dea62c0864104d85c670402db21864865f60357a9c4bf7cfc52"
+      "size": 135528,
+      "sha256": "f9c3453bfd154a26428075490d4e815ad12449e12615c0241fb8a3552d702a0a"
     },
     {
       "path": "cmd/scalar.exe",
-      "size": 44872,
-      "sha256": "3b64043b9e4dc225225f43ff9c1173b57493ff72e5b729accfae051eb160cca3"
+      "size": 44888,
+      "sha256": "20d0dde30a65afb6e5810a883700a94dcd77fbf3b44b32868d45bf7c9b30137c"
     },
     {
       "path": "cmd/start-ssh-agent.cmd",
@@ -75,8 +75,8 @@
     },
     {
       "path": "cmd/tig.exe",
-      "size": 44864,
-      "sha256": "48ce4bae6a870f77ded08595a1e432ac4632a4bed873a7d15f7b72919b4e6f48"
+      "size": 44888,
+      "sha256": "f8468a2c44f2778f8b3a2196743a0c20635a7e89ecae561511250b1fbc82a973"
     },
     {
       "path": "ucrt64/bin/Atlassian.Bitbucket.dll",
@@ -330,8 +330,8 @@
     },
     {
       "path": "ucrt64/bin/brotli.exe",
-      "size": 70985,
-      "sha256": "5b60e2138ca183792eda3b646f719a5eb5e6851bd10846f0c7686953fc4a9178"
+      "size": 66366,
+      "sha256": "d617d36fb7ff465d0a70ca301feb21b2c02a336140edbef89d6da154643a35df"
     },
     {
       "path": "ucrt64/bin/bunzip2.exe",
@@ -480,13 +480,13 @@
     },
     {
       "path": "ucrt64/bin/git-lfs.exe",
-      "size": 13640192,
-      "sha256": "881d1c507e9acc9a6fff9a2fb1cb6c11c7f48259bb110341e5682623ed0057b8"
+      "size": 13727008,
+      "sha256": "7b38b496056a452ef1ce7df3e3b5f18ef5e252c943f754cf22bfddb59ca4db1c"
     },
     {
       "path": "ucrt64/bin/git-receive-pack.exe",
-      "size": 4412744,
-      "sha256": "9c131f3052b17c8bbd1bce7211414cf589b85cbdbd74d0b0aa40e0a602d47930"
+      "size": 4412760,
+      "sha256": "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8"
     },
     {
       "path": "ucrt64/bin/git-update-git-for-windows",
@@ -495,18 +495,18 @@
     },
     {
       "path": "ucrt64/bin/git-upload-archive.exe",
-      "size": 4412744,
-      "sha256": "9c131f3052b17c8bbd1bce7211414cf589b85cbdbd74d0b0aa40e0a602d47930"
+      "size": 4412760,
+      "sha256": "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8"
     },
     {
       "path": "ucrt64/bin/git-upload-pack.exe",
-      "size": 4412744,
-      "sha256": "9c131f3052b17c8bbd1bce7211414cf589b85cbdbd74d0b0aa40e0a602d47930"
+      "size": 4412760,
+      "sha256": "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8"
     },
     {
       "path": "ucrt64/bin/git.exe",
-      "size": 4412744,
-      "sha256": "9c131f3052b17c8bbd1bce7211414cf589b85cbdbd74d0b0aa40e0a602d47930"
+      "size": 4412760,
+      "sha256": "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8"
     },
     {
       "path": "ucrt64/bin/gitk",
@@ -525,18 +525,18 @@
     },
     {
       "path": "ucrt64/bin/libbrotlicommon.dll",
-      "size": 144565,
-      "sha256": "c62c08223e450dfc2fff33c752cc228505ffd9d755201958ba800d5d30481a2c"
+      "size": 140697,
+      "sha256": "7b0047dc16dd92a7932124dfd5a6e698d342f533a15d37d61f710def66091436"
     },
     {
       "path": "ucrt64/bin/libbrotlidec.dll",
-      "size": 62619,
-      "sha256": "e270b6e576594ee8ee6e33ccc54e34a54304616dd6225652e11e49d6f17ef896"
+      "size": 60224,
+      "sha256": "c4c987a01597ddf969d93023f933f999a20f285588b0decb4deeb780c9e9cdf8"
     },
     {
       "path": "ucrt64/bin/libbrotlienc.dll",
-      "size": 789189,
-      "sha256": "82573820fe9cc3f57004b6603428e2fa1bfc9d2048707bfcead3cfc5ef3ab284"
+      "size": 786797,
+      "sha256": "03f9a82d293caf5b4065a9641dd5309e27aefc5c8111eeec25f906e47ec6c934"
     },
     {
       "path": "ucrt64/bin/libbz2-1.dll",
@@ -665,8 +665,8 @@
     },
     {
       "path": "ucrt64/bin/libwinpthread-1.dll",
-      "size": 68731,
-      "sha256": "817e5b2636f532666e8f255e225af75e9d0c41b141512fde45264070a65b1c92"
+      "size": 71836,
+      "sha256": "d837ef67644c195210daebe7612ccebebc47773f66085eeedd4892800dac8634"
     },
     {
       "path": "ucrt64/bin/libzstd.dll",
@@ -745,8 +745,8 @@
     },
     {
       "path": "ucrt64/bin/scalar.exe",
-      "size": 2580808,
-      "sha256": "6bc4b7e32fa5e6e0e683598562a78b903485fbdbca111d81f0c0dd5259d580f8"
+      "size": 2580824,
+      "sha256": "d472bf88c969aa7a3b42c59d18d5dd752987f4685c7b47b6526308f3bfa3d921"
     },
     {
       "path": "ucrt64/bin/sexp-conv.exe",
@@ -870,8 +870,8 @@
     },
     {
       "path": "ucrt64/bin/zlib1.dll",
-      "size": 127291,
-      "sha256": "11cd91171765cd65f1c3362e3df67e5f5a618a6b88c8cdec899b802eaf1c7b0d"
+      "size": 121530,
+      "sha256": "8ae7aeb0467763a1e271cd831ca8e2f7fd101602adb9923100ea26c6be2a559b"
     },
     {
       "path": "ucrt64/libexec/git-core/Atlassian.Bitbucket.dll",
@@ -1115,13 +1115,13 @@
     },
     {
       "path": "ucrt64/libexec/git-core/git-credential-wincred.exe",
-      "size": 62328,
-      "sha256": "b0483b17ff786d4339d5eecb8e0e357005645f2710f09de10377fc3cabcb75b7"
+      "size": 62344,
+      "sha256": "097ac1edaf523ffc24b5cf33440c9640f8de4aac9c06336161cf6a57f0d0e532"
     },
     {
       "path": "ucrt64/libexec/git-core/git-daemon.exe",
-      "size": 2547544,
-      "sha256": "e8fc7dfbcd849f4e388a747b18a547b564a98842fe718b0d058b02cfbc111f24"
+      "size": 2548072,
+      "sha256": "b67208d1001026578b0cfae61d9d8e4444afc8450f303e748d87663c6d808334"
     },
     {
       "path": "ucrt64/libexec/git-core/git-difftool--helper",
@@ -1155,23 +1155,23 @@
     },
     {
       "path": "ucrt64/libexec/git-core/git-http-backend.exe",
-      "size": 2542936,
-      "sha256": "32b8f5089faa8dfe5188c0b7dcf5a5d36154a9fb1bd1e24f09971e5a6f736088"
+      "size": 2542952,
+      "sha256": "f3954e7a4c9a2f741a6b5b66698ed15fdd5116913722e5df7e2b870e11d54d99"
     },
     {
       "path": "ucrt64/libexec/git-core/git-http-fetch.exe",
-      "size": 2597208,
-      "sha256": "399585ff6bee31d1a2bd360d94e1029460385dda3b96abdc7864c6fe08eb7fb0"
+      "size": 2597224,
+      "sha256": "5fdba139c48f348233f93ec5860dd0a3f7323e1cb83cb842cebe319f8816bfac"
     },
     {
       "path": "ucrt64/libexec/git-core/git-http-push.exe",
-      "size": 2607960,
-      "sha256": "c60897e2b331e2263b06f439ac24f42426cfe3f0df2ef97f09c98281e75d4948"
+      "size": 2607976,
+      "sha256": "4153e9bb7ff5082f2540c1db9d3d21e40c078b75c31acb711465d289ff8a863f"
     },
     {
       "path": "ucrt64/libexec/git-core/git-imap-send.exe",
-      "size": 2609496,
-      "sha256": "84e5316bb77c634524339c589ee20a99db5357f01e065af01260e9b5e7e2111e"
+      "size": 2610024,
+      "sha256": "0494b4360a095eeb5411d1c22ac2d46f8aeacd16af8a043eb20bd8f5d74eedfc"
     },
     {
       "path": "ucrt64/libexec/git-core/git-merge-octopus",
@@ -1205,23 +1205,23 @@
     },
     {
       "path": "ucrt64/libexec/git-core/git-remote-ftp.exe",
-      "size": 2614616,
-      "sha256": "af74ceca0f55f029dde8a400b5e144f8c4a5d427ebbcd1fcf1266bb680d20114"
+      "size": 2614632,
+      "sha256": "ad461657eca12dfeb50f281d107ac3760ac355a20882e4a3b0d470cb6bab77c6"
     },
     {
       "path": "ucrt64/libexec/git-core/git-remote-ftps.exe",
-      "size": 2614616,
-      "sha256": "af74ceca0f55f029dde8a400b5e144f8c4a5d427ebbcd1fcf1266bb680d20114"
+      "size": 2614632,
+      "sha256": "ad461657eca12dfeb50f281d107ac3760ac355a20882e4a3b0d470cb6bab77c6"
     },
     {
       "path": "ucrt64/libexec/git-core/git-remote-http.exe",
-      "size": 2614616,
-      "sha256": "af74ceca0f55f029dde8a400b5e144f8c4a5d427ebbcd1fcf1266bb680d20114"
+      "size": 2614632,
+      "sha256": "ad461657eca12dfeb50f281d107ac3760ac355a20882e4a3b0d470cb6bab77c6"
     },
     {
       "path": "ucrt64/libexec/git-core/git-remote-https.exe",
-      "size": 2614616,
-      "sha256": "af74ceca0f55f029dde8a400b5e144f8c4a5d427ebbcd1fcf1266bb680d20114"
+      "size": 2614632,
+      "sha256": "ad461657eca12dfeb50f281d107ac3760ac355a20882e4a3b0d470cb6bab77c6"
     },
     {
       "path": "ucrt64/libexec/git-core/git-request-pull",
@@ -1231,7 +1231,7 @@
     {
       "path": "ucrt64/libexec/git-core/git-send-email",
       "size": 73893,
-      "sha256": "a8b96502921f9b3abbb8176e4853081a73c63de600544f9e674519d536793621"
+      "sha256": "c52b8fd04db9075f13c4bba73d7e0255508ad2297cc60f922bbf41fb2f9a0331"
     },
     {
       "path": "ucrt64/libexec/git-core/git-sh-i18n",
@@ -1240,8 +1240,8 @@
     },
     {
       "path": "ucrt64/libexec/git-core/git-sh-i18n--envsubst.exe",
-      "size": 2532184,
-      "sha256": "f4158592014c4b9bb504cfaee33f9bd1668d3ff9f2074833c7c838fefa688756"
+      "size": 2532200,
+      "sha256": "9767f715a76d3e2ad7c11f7490e0f64114872f44394083c6617b2bd800baea9a"
     },
     {
       "path": "ucrt64/libexec/git-core/git-sh-setup",
@@ -1270,13 +1270,13 @@
     },
     {
       "path": "ucrt64/libexec/git-core/git.exe",
-      "size": 4412744,
-      "sha256": "9c131f3052b17c8bbd1bce7211414cf589b85cbdbd74d0b0aa40e0a602d47930"
+      "size": 4412760,
+      "sha256": "9c75f3f41eb5686bacde4b7c4fdfcd7970e8b699ee05c8d7a0cc9c8a7ddaffe8"
     },
     {
       "path": "ucrt64/libexec/git-core/headless-git.exe",
-      "size": 32600,
-      "sha256": "40964398cc6c3d6af986f34584c3668d3fc299b727ab275366296c5f1fb26094"
+      "size": 32616,
+      "sha256": "33b693d589907b0c0ca906b9bfcca73ada14463489f397593446495b9dbde4c7"
     },
     {
       "path": "ucrt64/libexec/git-core/libHarfBuzzSharp.dll",
@@ -1290,18 +1290,18 @@
     },
     {
       "path": "ucrt64/libexec/git-core/libbrotlicommon.dll",
-      "size": 144565,
-      "sha256": "c62c08223e450dfc2fff33c752cc228505ffd9d755201958ba800d5d30481a2c"
+      "size": 140697,
+      "sha256": "7b0047dc16dd92a7932124dfd5a6e698d342f533a15d37d61f710def66091436"
     },
     {
       "path": "ucrt64/libexec/git-core/libbrotlidec.dll",
-      "size": 62619,
-      "sha256": "e270b6e576594ee8ee6e33ccc54e34a54304616dd6225652e11e49d6f17ef896"
+      "size": 60224,
+      "sha256": "c4c987a01597ddf969d93023f933f999a20f285588b0decb4deeb780c9e9cdf8"
     },
     {
       "path": "ucrt64/libexec/git-core/libbrotlienc.dll",
-      "size": 789189,
-      "sha256": "82573820fe9cc3f57004b6603428e2fa1bfc9d2048707bfcead3cfc5ef3ab284"
+      "size": 786797,
+      "sha256": "03f9a82d293caf5b4065a9641dd5309e27aefc5c8111eeec25f906e47ec6c934"
     },
     {
       "path": "ucrt64/libexec/git-core/libbz2-1.dll",
@@ -1430,8 +1430,8 @@
     },
     {
       "path": "ucrt64/libexec/git-core/libwinpthread-1.dll",
-      "size": 68731,
-      "sha256": "817e5b2636f532666e8f255e225af75e9d0c41b141512fde45264070a65b1c92"
+      "size": 71836,
+      "sha256": "d837ef67644c195210daebe7612ccebebc47773f66085eeedd4892800dac8634"
     },
     {
       "path": "ucrt64/libexec/git-core/libzstd.dll",
@@ -1565,8 +1565,8 @@
     },
     {
       "path": "ucrt64/libexec/git-core/scalar.exe",
-      "size": 2580808,
-      "sha256": "6bc4b7e32fa5e6e0e683598562a78b903485fbdbca111d81f0c0dd5259d580f8"
+      "size": 2580824,
+      "sha256": "d472bf88c969aa7a3b42c59d18d5dd752987f4685c7b47b6526308f3bfa3d921"
     },
     {
       "path": "ucrt64/libexec/git-core/tcl86.dll",
@@ -1580,8 +1580,8 @@
     },
     {
       "path": "ucrt64/libexec/git-core/zlib1.dll",
-      "size": 127291,
-      "sha256": "11cd91171765cd65f1c3362e3df67e5f5a618a6b88c8cdec899b802eaf1c7b0d"
+      "size": 121530,
+      "sha256": "8ae7aeb0467763a1e271cd831ca8e2f7fd101602adb9923100ea26c6be2a559b"
     },
     {
       "path": "usr/bin/msys-2.0.dll",
@@ -1595,8 +1595,8 @@
     }
   ],
   "file_count": 314,
-  "total_bytes": 193726694,
-  "tree_sha256": "de2401ecbf6b350c14356734f45dc5781f54935beba53db56286a59e3c22d88b",
+  "total_bytes": 193787749,
+  "tree_sha256": "a732ddc473e02b78a07aac66bf0fe5063d397b54e73076046bba1020506dfd99",
   "system_dll_trust_boundary": "Windows System32 DLLs protected by the operating-system servicing boundary",
-  "reviewed_at": "2026-10-25"
+  "reviewed_at": "2026-11-01"
 }

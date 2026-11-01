@@ -252,21 +252,52 @@ update activation or packaged-recovery authority.
 ## Maintainer publication staging errors
 
 The reviewed Windows publication runtime now pins Git for Windows
-`2.56.0.windows.3` and its UCRT layout: 314 exact files, eight directories and
-193,726,694 bytes. The compiled profile digest and aggregate tree authority
+`2.56.0.windows.4` and its UCRT layout: 314 exact files, eight directories and
+193,787,749 bytes. The compiled profile digest and aggregate tree authority
 remain independent of the JSON document. Runtime discovery does not authorize
 an installed binary or a different Git version. A later machine Git upgrade
 can therefore hold publication until another reviewed profile update.
 
-This pin was checked against official release archive bytes and selected
-payloads from the validly signed official installer. Four preexisting packaging
-alias names were individually derived from their exact official Git executable
-bytes and checked against the previous reviewed alias relationships; the
-published profile contains only literal paths and hashes. It adds no runtime
-rename rule, alternate toolchain, downgrade or installed-only trust fallback.
+The November 1, 2026 review authenticated the official
+[Git-2.56.0.4-64-bit.tar.bz2 release asset](https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/Git-2.56.0.4-64-bit.tar.bz2):
+118,642,037 bytes with SHA-256
+`0dae059764ba7c447c9604eb6cb0f4afaf2d90b003ecf1c8cf2dbe5a13e4442c`.
+GitHub reported the annotated release tag
+`e878704e2f40adc59f4b0d4e15424511456163db` as verified with reason `valid`,
+pointing to full build commit
+[`581291682ad5a238c08c93d1f5bd4518382a3230`](https://github.com/git-for-windows/git/commit/581291682ad5a238c08c93d1f5bd4518382a3230).
+
+The reviewed literal closure contains 308 same-name official archive records,
+four individually reviewed preexisting alias paths and two unchanged prior
+pins. The four explicit byte mappings are `cmd/git-lfs.exe` from archive
+`cmd/git.exe`, and `ucrt64/bin/git-receive-pack.exe`,
+`ucrt64/bin/git-upload-archive.exe` and `ucrt64/bin/git-upload-pack.exe` from
+archive `ucrt64/bin/git.exe`. Each alias relationship was checked against the
+previous reviewed profile. The two inherited records, `cmd/aslr-manager.ps1`
+and `ucrt64/bin/wintoast.exe`, retain their exact prior reviewed sizes and
+SHA-256 values. Installed files matched all 314 proposed records; those
+observations supplied no new byte authority. Twelve archive-only DLL paths
+remain outside this literal closure; any unprofiled source-tree addition still
+holds publication.
+
+The selected official archive payloads `cmd/git.exe` and
+`ucrt64/bin/git.exe` each returned Windows Authenticode status `Valid` for
+Johannes Schindelin, with exact hashes unchanged before and after verification.
+The November 1 evidence covers archive payloads, explicit literal mappings and
+inherited pins; it makes no new installer-layout attestation. The published
+profile contains only literal paths and hashes. It adds no runtime rename rule,
+alternate toolchain, downgrade or installed-only trust fallback.
 Source/staged handle sealing, credential isolation, canonical origin,
 fast-forward-only publication, clean-worktree and public README asset proofs
 retain their existing checks.
+
+Historical review, October 25, 2026: the previous `2.56.0.windows.3` UCRT pin
+covered 314 exact files, eight directories and 193,726,694 bytes. That review
+checked official release archive bytes and selected payloads from the validly
+signed official installer. Its four preexisting packaging aliases were
+individually derived from exact official Git executable bytes and checked
+against the preceding reviewed alias relationships. This historical installer
+evidence applies to that earlier pin.
 
 The guarded publisher may report `private publication runtime copy failed` with
 a numeric `errno` and/or `winerror`. These bounded codes distinguish OS failures

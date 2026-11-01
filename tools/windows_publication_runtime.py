@@ -35,14 +35,14 @@ PROFILE_PLATFORM = "win32-x86_64"
 # These values are reviewed code authority, deliberately independent of the
 # mutable JSON document.  The profile is accepted only when its exact bytes and
 # the security-relevant aggregate fields agree with this already-loaded module.
-REVIEWED_PROFILE_SHA256 = "24197c661d04fcae0585fe02b74d0e079eb46ddb109a833fad3432f2ac7b0b8c"
+REVIEWED_PROFILE_SHA256 = "be88922f0f84af7c4f999d8a6de9eff37cd5d1614afb8846027f3fcae84672ad"
 REVIEWED_PROFILE_SIZE = 54026
-REVIEWED_GIT_VERSION = "2.56.0.windows.3"
-REVIEWED_GIT_BUILD_COMMIT = "0e9926caea36270e3e9067b5ac512ac0335a004a"
+REVIEWED_GIT_VERSION = "2.56.0.windows.4"
+REVIEWED_GIT_BUILD_COMMIT = "581291682ad5a238c08c93d1f5bd4518382a3230"
 REVIEWED_FILE_COUNT = 314
 REVIEWED_DIRECTORY_COUNT = 8
-REVIEWED_TREE_BYTES = 193726694
-REVIEWED_TREE_SHA256 = "de2401ecbf6b350c14356734f45dc5781f54935beba53db56286a59e3c22d88b"
+REVIEWED_TREE_BYTES = 193787749
+REVIEWED_TREE_SHA256 = "a732ddc473e02b78a07aac66bf0fe5063d397b54e73076046bba1020506dfd99"
 TREE_ROOTS = (
     "cmd",
     "ucrt64/bin",

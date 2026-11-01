@@ -12,8 +12,8 @@ from tools import windows_publication_runtime as runtime
 
 def test_reviewed_profile_requires_authenticated_security_release_ucrt_closure():
     profile = runtime.load_runtime_profile()
-    assert profile.git_version == "2.56.0.windows.3"
-    assert profile.git_build_commit == "0e9926caea36270e3e9067b5ac512ac0335a004a"
+    assert profile.git_version == "2.56.0.windows.4"
+    assert profile.git_build_commit == "581291682ad5a238c08c93d1f5bd4518382a3230"
     assert runtime.TREE_ROOTS == ("cmd", "ucrt64/bin", "ucrt64/libexec/git-core")
     assert all("mingw64" not in item.relative for item in profile.files)
     assert {"ucrt64/bin/git-credential-manager.exe", "ucrt64/libexec/git-core/git-remote-https.exe"}.issubset({item.relative for item in profile.files})
