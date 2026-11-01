@@ -77,6 +77,8 @@ review remain available.
 - **Recorder responsiveness:** exhausted recorder queues report rejected
   deliveries without publisher disk waits; STOP and restart preserve owned
   queues and expose process-lifetime admission gaps.
+- **Remediation custody:** finding closure requires authenticated committed
+  evidence; durable receipt writers follow the existing audit retention policy.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does
@@ -87,7 +89,8 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [Follow-up fixes and observation](analysis/hardening-v1.15-2026-10-30-followup.md) ·
 [Runtime and shutdown review](analysis/hardening-v1.15-2026-11-01.md) ·
 [Advisory and setup review](analysis/hardening-v1.15-2026-11-01-advisory-bursts.md) ·
-[Latest recorder and storage review](analysis/hardening-v1.15-2026-11-01-recorder-admission.md) ·
+[Recorder and storage review](analysis/hardening-v1.15-2026-11-01-recorder-admission.md) ·
+[Latest remediation custody review](analysis/hardening-v1.15-2026-11-01-remediation-custody.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

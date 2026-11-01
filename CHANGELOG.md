@@ -2,6 +2,12 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- Require authenticated committed application receipts before Posture marks a
+  finding PATCHED or emits verification proof. Preserve native observations
+  when journal closure fails; reject uncommitted or inconsistent evidence.
+- Count all three receipt writers toward existing prefix retention, with
+  capability retirement after commit and separate best-effort maintenance.
+  This is row retention, not a physical-byte or cross-restart quota.
 - Remove synchronous disk spill from full recorder admission lanes. Count
   rejected recorder deliveries without blocking publishers; preserve admitted
   originals and distinguish nondurable gap counters from worker availability.

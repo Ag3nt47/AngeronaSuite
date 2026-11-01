@@ -26,6 +26,13 @@ does not certify complete persistence. See the
 [recorder/storage review](../analysis/hardening-v1.15-2026-11-01-recorder-admission.md)
 for offline saturation checks and the separate ordinary Full-mode observation.
 
+Posture's PATCHED/proof transition now checks authenticated committed receipt
+custody separately from the native postcondition observation. Uncommitted,
+unsigned, missing or mismatched local records remain held. This is retained
+local evidence, not a fresh host recheck or independent witness. The
+[custody review](../analysis/hardening-v1.15-2026-11-01-remediation-custody.md)
+separates inert failure-path tests from ordinary live operation and shutdown.
+
 Black Box historical health includes separately dated run reports and supervisor
 event rows, not one fictitious current run. Retain missing/malformed/truncated
 counts and original bytes; historical errors do not become a live exception

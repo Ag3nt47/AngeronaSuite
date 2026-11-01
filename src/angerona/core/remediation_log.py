@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -42,7 +43,9 @@ from typing import List
 
 from angerona.core.remediation_receipts import (
     GENESIS_HASH,
+    RECEIPT_VERSION,
     create_receipt,
+    record_digest,
     verify_receipt,
 )
 
@@ -50,6 +53,12 @@ MAX_ROWS = 10_000
 PRUNE_EVERY = 500
 MAX_TRANSACTION_RECORD_BYTES = 64 * 1024
 MAX_TRANSACTION_FIELD_CHARS = 256
+# A proof stores bounded metadata and a record digest, rather than the record.
+# Leave room for the largest supported record plus escaped metadata and seal
+# overhead when admitting its serialized representation to the closure reader.
+MAX_APPLICATION_RECEIPT_BYTES = (
+    MAX_TRANSACTION_RECORD_BYTES + 6 * MAX_TRANSACTION_FIELD_CHARS * 8 + 4096
+)
 TRANSACTION_STATES = frozenset(
     {"PREPARED", "MUTATING", "APPLIED", "ROLLED_BACK", "RECOVERY_REQUIRED"}
 )
@@ -906,7 +915,8 @@ class RemediationLog:
             except Exception:
                 self._db.rollback()
                 raise
-        owner._retire()
+            owner._retire()
+            self._note_receipt_committed_locked()
         return {
             "receipt_id": receipt.get("receipt_id"),
             "receipt_hash": chain_hash,
@@ -978,6 +988,171 @@ class RemediationLog:
             result["state"] = "RECONCILING"
             result["recovery_active"] = True
         return result
+
+    def verify_committed_application(
+        self,
+        transaction_id: int,
+        receipt_hash: str,
+        receipt_id: str,
+        *,
+        expected_mitre: str,
+        expected_action: str,
+    ) -> bool:
+        """Read exact retained local application evidence before closing a finding.
+
+        A native postcondition or a signature-field presence flag alone is not
+        committed closure. Missing/pruned, unavailable or inconsistent evidence
+        remains unverified. This read grants no mutation or independent-witness
+        authority and does not resample the host postcondition. Metadata must
+        match in full; a truncated legacy receipt field cannot authorize closure.
+        """
+        if type(transaction_id) is not int or not 1 <= transaction_id < 2**63:
+            return False
+        if (
+            type(receipt_hash) is not str
+            or len(receipt_hash) != 64
+            or any(char not in "0123456789abcdef" for char in receipt_hash)
+            or type(receipt_id) is not str
+            or len(receipt_id) != 36
+            or not receipt_id.startswith("RCP-")
+            or any(char not in "0123456789abcdef" for char in receipt_id[4:])
+        ):
+            return False
+        if any(
+            type(value) is not str or not value or len(value) > MAX_TRANSACTION_FIELD_CHARS
+            for value in (expected_mitre, expected_action)
+        ):
+            return False
+        try:
+            with self._lock:
+                if self._db.in_transaction:
+                    # This connection could otherwise observe its own authentic
+                    # but uncommitted terminal rows. Their owner must resolve
+                    # that transaction; this reader never commits or repairs it.
+                    return False
+                self._assert_db_custody_locked()
+                # The unique receipt-hash index and transaction PK select one
+                # consistent snapshot. Bound legacy JSON/metadata projections
+                # in SQLite before materializing them in Python.
+                row = self._db.execute(
+                    """
+                    SELECT r.ts, r.trigger, r.mitre, r.action_key, r.action_title,
+                           r.outcome, r.verified, r.host_level, r.record_json,
+                           r.receipt_json, r.receipt_hash,
+                           t.id, t.trigger, t.mitre, t.action_key, t.action_title,
+                           t.host_level, t.updated_ts, t.record_json
+                    FROM remediation_log AS r
+                    JOIN remediation_transactions AS t ON t.id = :transaction_id
+                    WHERE r.receipt_hash = :receipt_hash
+                      AND t.state = 'APPLIED'
+                      AND t.owner_capability_sha256 IS NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM remediation_reconciliation_claims AS c
+                        WHERE c.transaction_id = t.id
+                      )
+                      AND typeof(r.record_json) = 'text'
+                      AND length(r.record_json) <= :record_chars
+                      AND length(CAST(r.record_json AS BLOB)) <= :record_storage_bytes
+                      AND typeof(t.record_json) = 'text'
+                      AND length(t.record_json) <= :record_chars
+                      AND length(CAST(t.record_json AS BLOB)) <= :record_storage_bytes
+                      AND typeof(r.receipt_json) = 'text'
+                      AND length(r.receipt_json) <= :receipt_chars
+                      AND length(CAST(r.receipt_json AS BLOB)) <= :receipt_storage_bytes
+                      AND typeof(r.trigger) = 'text'
+                      AND length(CAST(r.trigger AS BLOB)) <= :field_bytes
+                      AND typeof(r.mitre) = 'text'
+                      AND length(CAST(r.mitre AS BLOB)) <= :field_bytes
+                      AND typeof(r.action_key) = 'text'
+                      AND length(CAST(r.action_key AS BLOB)) <= :field_bytes
+                      AND typeof(r.action_title) = 'text'
+                      AND length(CAST(r.action_title AS BLOB)) <= :field_bytes
+                      AND typeof(t.trigger) = 'text'
+                      AND length(CAST(t.trigger AS BLOB)) <= :field_bytes
+                      AND typeof(t.mitre) = 'text'
+                      AND length(CAST(t.mitre AS BLOB)) <= :field_bytes
+                      AND typeof(t.action_key) = 'text'
+                      AND length(CAST(t.action_key AS BLOB)) <= :field_bytes
+                      AND typeof(t.action_title) = 'text'
+                      AND length(CAST(t.action_title AS BLOB)) <= :field_bytes
+                    LIMIT 1
+                    """,
+                    {"transaction_id": transaction_id, "receipt_hash": receipt_hash,
+                     "record_chars": MAX_TRANSACTION_RECORD_BYTES,
+                     "record_storage_bytes": 2 * MAX_TRANSACTION_RECORD_BYTES,
+                     "receipt_chars": MAX_APPLICATION_RECEIPT_BYTES,
+                     "receipt_storage_bytes": 2 * MAX_APPLICATION_RECEIPT_BYTES,
+                     "field_bytes": 4 * MAX_TRANSACTION_FIELD_CHARS},
+                ).fetchone()
+                if row is None:
+                    return False
+                # SQLite may store these ASCII-escaped JSON documents in UTF-16.
+                # The SQL projection therefore admits at most twice their UTF-8
+                # allowance; enforce the actual format limit before JSON parsing.
+                if (
+                    len(row[8].encode("utf-8")) > MAX_TRANSACTION_RECORD_BYTES
+                    or len(row[18].encode("utf-8")) > MAX_TRANSACTION_RECORD_BYTES
+                    or len(row[9].encode("utf-8")) > MAX_APPLICATION_RECEIPT_BYTES
+                ):
+                    return False
+                stored = _row_to_dict(row[:11])
+                receipt = json.loads(row[9])
+                (
+                    stored_id, trigger, mitre, action, title, host_level,
+                    updated_ts, encoded_record,
+                ) = row[11:]
+                record = _decode_transaction_record(encoded_record)
+                if (
+                    stored["receipt_authenticity"] is not True
+                    or stored["receipt_id"] != receipt_id
+                    or stored["receipt_hash"] != receipt_hash
+                    or type(stored_id) is not int
+                    or stored_id != transaction_id
+                    or mitre != expected_mitre
+                    or action != expected_action
+                    or stored["mitre"] != mitre
+                    or stored["action_key"] != action
+                    or stored["action_title"] != title
+                    or type(row[6]) is not int or row[6] != 1
+                    or type(row[7]) is not int or row[7] not in (0, 1)
+                    or type(host_level) is not int or host_level != row[7]
+                    or stored["outcome"] not in ("applied", "reconciled_applied")
+                    or type(receipt.get("receipt_version")) is not int
+                    or receipt["receipt_version"] != RECEIPT_VERSION
+                    or receipt.get("mitre") != mitre
+                    or receipt.get("action_key") != action
+                    or receipt.get("outcome") != stored["outcome"]
+                    or receipt.get("verification") != "passed"
+                    or type(receipt.get("host_level")) is not bool
+                    or receipt["host_level"] is not bool(host_level)
+                    or receipt.get("trigger") != stored["trigger"]
+                    or type(receipt.get("ts")) not in (int, float)
+                    or type(row[0]) not in (int, float)
+                    or type(updated_ts) not in (int, float)
+                    or not math.isfinite(receipt["ts"])
+                    or receipt["ts"] != row[0] or receipt["ts"] != updated_ts
+                    or receipt.get("action_record_sha256") != record_digest(record)
+                    or type(record.get("transaction_id")) is not int
+                    or record["transaction_id"] != transaction_id
+                    or record.get("action") != action
+                    or record.get("mitre") != mitre
+                    or record.get("verified") is not True
+                    or record.get("ok") is not True
+                    or record.get("transaction_state") != "applied"
+                    or record.get("recovery_required") is not False
+                ):
+                    return False
+                expected_trigger = (
+                    trigger if stored["outcome"] == "applied"
+                    else "explicit_reconciliation"
+                )
+                if stored["trigger"] != expected_trigger:
+                    return False
+                self._assert_db_custody_locked()
+                return True
+        except Exception:
+            # A read/signature/custody failure cannot authorize finding closure.
+            return False
 
     def _bind_recovery_coordinator(
         self, action_registry: tuple[object, ...]
@@ -1312,9 +1487,10 @@ class RemediationLog:
             except Exception:
                 self._db.rollback()
                 raise
-        self._recovery_proofs.pop(transaction_id, None)
-        proof._retire()
-        capability._retire()
+            self._recovery_proofs.pop(transaction_id, None)
+            proof._retire()
+            capability._retire()
+            self._note_receipt_committed_locked()
         return {
             "receipt_id": receipt.get("receipt_id"),
             "receipt_hash": chain_hash,
@@ -1415,29 +1591,41 @@ class RemediationLog:
                 ),
             )
             self._db.commit()
-            self._writes += 1
-            if self._writes >= PRUNE_EVERY:
-                self._writes = 0
-                self._prune_locked()
+            self._note_receipt_committed_locked()
             return {
                 "receipt_id": receipt.get("receipt_id"),
                 "receipt_hash": chain_hash,
                 "receipt_authenticated": "_angerona_hmac" in receipt,
             }
 
-    def _prune_locked(self) -> None:
+    def _note_receipt_committed_locked(self) -> None:
+        """Count every committed receipt; maintenance cannot undo its result.
+
+        The caller still owns the connection lock, but its durable transaction
+        has already committed. Retention is a separate, best-effort transaction.
+        It never changes ownership/recovery tables or rewrites retained bytes.
+        """
+        self._writes += 1
+        if self._writes < PRUNE_EVERY:
+            return
+        self._writes = 0
         try:
-            row = self._db.execute(
-                "SELECT MAX(id) FROM remediation_log"
-            ).fetchone()
-            if row and row[0] and row[0] > MAX_ROWS:
-                self._db.execute(
-                    "DELETE FROM remediation_log WHERE id <= ?",
-                    (row[0] - MAX_ROWS,),
-                )
-                self._db.commit()
+            self._prune_locked()
         except Exception:
-            pass
+            try:
+                self._db.rollback()
+            except Exception:
+                pass
+
+    def _prune_locked(self) -> None:
+        self._assert_db_custody_locked()
+        row = self._db.execute("SELECT MAX(id) FROM remediation_log").fetchone()
+        if row and row[0] and row[0] > MAX_ROWS:
+            self._db.execute(
+                "DELETE FROM remediation_log WHERE id <= ?",
+                (row[0] - MAX_ROWS,),
+            )
+            self._db.commit()
 
     # ── read ──────────────────────────────────────────────────────────────────
     def recent(self, limit: int = 50) -> List[dict]:

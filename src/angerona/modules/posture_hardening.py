@@ -924,9 +924,11 @@ class PostureHardening(BaseModule):
         weaknesses — REAL active patching (quarantine files, disable a BYOVD
         driver service, …). Safe by default: apply=False is a dry-run PLAN;
         apply=True applies non-host actions; host-level (registry/service) changes
-        also require ANGERONA_AUTO_REMEDIATE=1. Applied+verified weaknesses are
-        marked PATCHED; a failed verify auto-rolls-back. See remediation_actions.py."""
+        also require ANGERONA_AUTO_REMEDIATE=1. Finding closure additionally needs
+        committed, authenticated application evidence; a native postcondition
+        alone is insufficient. A failed verify auto-rolls-back. See remediation_actions.py."""
         from angerona.modules import remediation_actions as ra
+        from angerona.core.remediation_log import get_log
         weaknesses = [w for w in self.weaknesses(status="VULNERABLE")
                       if w.get("source") != "redteam"]
         if not apply:
@@ -942,21 +944,48 @@ class PostureHardening(BaseModule):
                                    apply=True, log=_log,
                                    trigger="PostureHardening",
                                    db_path=self.data_dir / "flight-recorder.db")
+        try:
+            ledger = get_log()
+        except Exception:
+            ledger = None
+        requested_mitres = {w["mitre_id"] for w in weaknesses}
         for rec in res.get("records", []):
-            if rec.get("verified") and rec.get("mitre"):
-                self.mark_patched(rec["mitre"])   # it's actually fixed now
-                proof = rec.get("proof_receipt") or {}
-                if proof.get("receipt_id"):
-                    self.emit(
-                        f"Verified remediation proof issued for {rec['mitre']}.",
-                        Severity.INFO,
-                        mitre=rec["mitre"],
-                        verified=True,
-                        relation="verification-proof",
-                        receipt_id=proof.get("receipt_id"),
-                        receipt_hash=proof.get("receipt_hash"),
-                        correlation_id=proof.get("receipt_id"),
-                    )
+            if type(rec) is not dict:
+                continue
+            mitre, action = rec.get("mitre"), rec.get("action")
+            proof = rec.get("proof_receipt")
+            if (
+                rec.get("verified") is not True
+                or rec.get("transaction_state") != "applied"
+                or rec.get("recovery_required") is not False
+                or rec.get("journal_error")
+                or type(mitre) is not str or mitre not in requested_mitres
+                or type(action) is not str or not action or len(action) > 256
+                or type(proof) is not dict
+                or ledger is None
+            ):
+                continue
+            try:
+                committed = ledger.verify_committed_application(
+                    rec.get("transaction_id"), proof.get("receipt_hash"),
+                    proof.get("receipt_id"), expected_mitre=mitre,
+                    expected_action=action,
+                ) is True
+            except Exception:
+                committed = False
+            if not committed:
+                continue
+            self.mark_patched(mitre)
+            self.emit(
+                f"Verified remediation proof issued for {mitre}.",
+                Severity.INFO,
+                mitre=mitre,
+                verified=True,
+                relation="verification-proof",
+                receipt_id=proof["receipt_id"],
+                receipt_hash=proof["receipt_hash"],
+                correlation_id=proof["receipt_id"],
+            )
         return res
 
     # ── 4. SECURITY AUTHORIZATION GATE & SANDBOX INTERFACE ───────────────────

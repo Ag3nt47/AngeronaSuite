@@ -81,6 +81,12 @@ That completes follow-up of earlier setup-schema failures; it does not validate
 this later recorder revision. Changed-commit publication and checks retain
 their separate scope.
 
+Subsequent recorder acceptance: published 9e2ccb9 completed all fifteen hosted
+jobs successfully, verified 1 November at 20:05:46 UTC. The later
+[remediation custody review](hardening-v1.15-2026-11-01-remediation-custody.md)
+keeps its own changed-source validation and publication scope. Neither result
+rewrites the earlier setup-schema failures or proves native deployment.
+
 ## Fresh ordinary Full-mode observation
 
 A new 60-second Full/normal-STOP capture used the frozen 501-file source

@@ -7,6 +7,18 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Remediation custody: Posture PATCHED/proof requires nativeverifiedisTrue,
+  applied/no-error state + actual authenticated COMMITTED receipt bound to
+  currenttx/action/MITRE/canonicalrecord/signedbody↔SQL metadata. ExistingSQLite
+  transaction held without repair; signature presence insufficient. UTF8/UTF16
+  bounded projections/format checks; strict signedMITRE32/action128 metadata.
+  All3successfulreceiptwriters now count existing10k/500prefixretention;
+  capabilities retireafterCOMMITbeforebest-effortmaintenance. No bytequota/
+  crossrestartceiling/newstartupgate/externalwitness/freshhostcheck claim.
+  Gate93PASS139.43s/no skips; inertfixtures/nohostregistry/networkmutation.
+  OrdinaryFull60/native0/48observedunique52waitall0/source501+selectedprefs
+  unchanged, NOTlivevettedremediation efficacy. NativeP0/storagegaps remain.
+  Current record: analysis/hardening-v1.15-2026-11-01-remediation-custody.md.
 - Recorder handoff: bounded memory-only submit, fixed rejection reasons and
   separate process-lifetime/nondurable counts+gap. No publisher disk spill or
   capacity sleep; other subscribers may still receive rejected delivery.
