@@ -81,6 +81,8 @@ review remain available.
   evidence; durable receipt writers follow the existing audit retention policy.
 - **Recorder storage accuracy:** housekeeping errors after a successful save
   cannot retry or spill those committed events as another copy.
+- **Optional audit limits:** oversized new entries are rejected with visible
+  omission counts; durable action and recovery journals retain separate rules.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does
@@ -93,7 +95,8 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [Advisory and setup review](analysis/hardening-v1.15-2026-11-01-advisory-bursts.md) ·
 [Recorder and storage review](analysis/hardening-v1.15-2026-11-01-recorder-admission.md) ·
 [Remediation custody review](analysis/hardening-v1.15-2026-11-01-remediation-custody.md) ·
-[Latest recorder commit review](analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md) ·
+[Recorder commit review](analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md) ·
+[Latest optional audit review](analysis/hardening-v1.15-2026-11-01-optional-audit-admission.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

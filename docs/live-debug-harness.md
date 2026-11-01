@@ -41,6 +41,14 @@ separates 64 offline passes from ordinary Full60/STOP and records an additional
 named fault-log read after native retirement. Neither proves exactly-once
 delivery for an ambiguously raised commit or closes the native P0 cause.
 
+Optional legacy remediation-audit admission now exposes current-instance,
+nondurable counters separately from native journal/closure results. Missing
+status means unavailable with unknown counts; zero gaps do not attest complete
+history. The getter and projection query no SQL, paths, clocks or native state.
+The [optional audit review](../analysis/hardening-v1.15-2026-11-01-optional-audit-admission.md)
+separates offline size/binding/visibility tests from ordinary Full60/STOP.
+Existing reporter/console work is outside that getter's no-I/O scope.
+
 Black Box historical health includes separately dated run reports and supervisor
 event rows, not one fictitious current run. Retain missing/malformed/truncated
 counts and original bytes; historical errors do not become a live exception

@@ -2,6 +2,12 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- Bound optional legacy remediation-audit entries to 64 KiB of complete logical
+  UTF-8 fields and fixed scalar accounting before INSERT. Reject custom binding
+  paths that can change measured values; preserve accepted signatures and
+  separate durable terminal/recovery writers. Expose rejected and uncertain
+  optional writes in instance counters, console/status and remediation summaries
+  without granting response authority or adding a startup capacity gate.
 - Separate known-success recorder commits from insertion retry and dead-letter
   fallback. Capture revision identifiers before commit, publish committed
   high-water before pruning, and contain separate maintenance rollback without

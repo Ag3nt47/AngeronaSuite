@@ -7,6 +7,19 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Optional legacy audit admission: log() only, 64KiB complete logical UTF8
+  stored text/actual receipt +32B scalar accounting, typed refusal beforeINSERT.
+  Exact plain str and known custom builtin-adapter guards; no normalization,
+  truncation/spill/history cleanup or native terminal/recovery writer cap.
+  Copied instance-lifetime counters(reset replacement/restart), per-call writer
+  acknowledgments and strict status/CLI/GUI projection confer no proof/authority.
+  Missing/malformed unavailable/unknown; zero NOT continuity. No getterSQL/path/
+  clock/native/DBlock/constructor, no startupgate/Healerrestart/scorechange.
+  Gate301PASS1skip222.11s(directory symlinks unavailable),95new admissioncases;
+  Ruff/reviews pass. Fresh Full60/normalSTOP native0/55unique59waitall0/source501+
+  selectedprefs match9c854manifest. No live entry/adaptor injection. Physical
+  quotas/serializer peak/concurrent adapter race/commit uncertainty/P0 remain.
+  Record: analysis/hardening-v1.15-2026-11-01-optional-audit-admission.md.
 - Recorder commit boundary: single/batch/replay retry and fallback scope ends
   when SQLite commit returns successfully. Revision candidates read before
   commit, committed high-water published before optional pruning, separate
@@ -14,7 +27,9 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   commit ambiguity, failed rollback, cache lag and physical quota remain gaps.
   Gate64PASS26.89s/no skips,32new fault cases/inert key/tempSQLite; Ruff/review
   pass. Fresh ordinary Full60/normalSTOP native0/45observedunique49waitall0/
-  source501+selectedprefs unchanged, not livefullstorage efficacy. Named fault
+  source501+selectedprefs unchanged, not livefullstorage efficacy.
+  Published40124 hosted15/15 terminalsuccess21:17:44UTC; later optional-audit
+  admission revision requires separate exact-commit hosted checks. Named fault
   logs read AFTER retirement byte-identical topreSTOP, notcontinuous/writer/
   hookhealth/P0causeproof. Current record:
   analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md.

@@ -3407,12 +3407,14 @@ class MainWindow(QMainWindow):
         def _apply() -> str:
             if pm is None:
                 return "Posture Hardening module not available."
+            from angerona.core.status_report import optional_audit_result_text
             result = pm.apply_vetted_remediation(apply=True)
             return (
                 "Vetted typed remediation results: "
                 f"applied={result.get('applied', 0)}, "
                 f"skipped={result.get('skipped', 0)}, "
-                f"failed={result.get('failed', 0)}."
+                f"failed={result.get('failed', 0)}.\n"
+                + optional_audit_result_text(result.get("optional_audit"))
             )
 
         def _clean_markers() -> int:

@@ -1816,16 +1816,22 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
       * trigger — caller label written to the remediation_log (e.g. "PostureHardening")
       * db_path — durable transaction/audit custody; executable actions fail
         closed when no initialized remediation database is available
-    Returns {'applied','skipped','records'} — records support later rollback."""
+    Returns applied/skipped/records plus optional_audit admission counts.
+    Records support later rollback; audit counts confer no response authority
+    or independent receipt/commit proof."""
     if allow_host is None:
         allow_host = _auto_apply_enabled()
     qdir = Path(quarantine_dir)
     records, applied, skipped = [], 0, 0
     mutation_circuit_open = False
+    optional_audit = {
+        "schema": 1, "attempted": 0, "recorded": 0, "rejected": 0,
+        "unavailable": 0, "persistence_unknown": 0, "response_authorized": False,
+    }
 
     # ── audit log (init on first call if db_path supplied) ───────────────────
     try:
-        from angerona.core.remediation_log import get_log, init_log
+        from angerona.core.remediation_log import OptionalAuditRejected, get_log, init_log
         if db_path is not None:
             _rlog = init_log(db_path)
         else:
@@ -1866,21 +1872,45 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                 pass
 
     def _audit(mitre, action, outcome, verified=-1, rec=None):
-        if _rlog is not None:
-            try:
-                return _rlog.log(
-                    trigger=trigger or "remediation_actions",
-                    mitre=mitre or "-",
-                    action_key=action.key if action else "none",
-                    action_title=action.title if action else "no vetted action",
-                    outcome=outcome,
-                    verified=verified,
-                    host_level=action.host_level if action else False,
-                    record=rec,
-                )
-            except Exception:
-                pass
-        return None
+        optional_audit["attempted"] += 1
+        try:
+            writer = getattr(_rlog, "log", None)
+            if not callable(writer):
+                optional_audit["unavailable"] += 1
+                return None
+            receipt = writer(
+                trigger=trigger or "remediation_actions",
+                mitre=mitre or "-",
+                action_key=action.key if action else "none",
+                action_title=action.title if action else "no vetted action",
+                outcome=outcome,
+                verified=verified,
+                host_level=action.host_level if action else False,
+                record=rec,
+            )
+        except OptionalAuditRejected:
+            optional_audit["rejected"] += 1
+            return None
+        except Exception:
+            optional_audit["persistence_unknown"] += 1
+            return None
+        # The current writer returns these three metadata fields after its
+        # successful commit. This is a syntactic acknowledgement, not an
+        # independent verification or authority to close a finding. Legacy
+        # None/partial mock returns cannot invent that acknowledgement.
+        if (type(receipt) is dict and len(receipt) == 3
+                and type(receipt.get("receipt_id")) is str
+                and len(receipt["receipt_id"]) == 36
+                and receipt["receipt_id"].startswith("RCP-")
+                and all(char in "0123456789abcdef" for char in receipt["receipt_id"][4:])
+                and type(receipt.get("receipt_hash")) is str
+                and len(receipt["receipt_hash"]) == 64
+                and all(char in "0123456789abcdef" for char in receipt["receipt_hash"])
+                and type(receipt.get("receipt_authenticated")) is bool):
+            optional_audit["recorded"] += 1
+        else:
+            optional_audit["persistence_unknown"] += 1
+        return receipt
 
     def _finish_owned(owner, result: str, rec: dict) -> dict:
         completion = _rlog.finish_transaction(owner, result=result, record=rec)
@@ -2163,7 +2193,8 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
             continue
         _log("CRITICAL", f"{action.key} rollback failed; recovery required: {rec}")
         rec["proof_receipt"] = proof
-    return {"applied": applied, "skipped": skipped, "records": records}
+    return {"applied": applied, "skipped": skipped, "records": records,
+            "optional_audit": optional_audit}
 
 
 def reconcile_remediation_transaction(

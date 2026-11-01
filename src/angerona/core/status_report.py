@@ -32,6 +32,110 @@ from angerona.core.privilege import is_admin
 _THREAT = {Severity.INFO: "SECURE", Severity.LOW: "LOW", Severity.MEDIUM: "ELEVATED",
            Severity.HIGH: "HIGH", Severity.CRITICAL: "CRITICAL"}
 
+_OPTIONAL_AUDIT_UNSET = object()
+_OPTIONAL_AUDIT_COUNTERS = (
+    "attempted", "recorded", "rejected", "rejected_oversize", "rejected_invalid",
+    "unavailable", "persistence_unknown", "pending",
+)
+_OPTIONAL_AUDIT_RESULT_COUNTERS = (
+    "attempted", "recorded", "rejected", "unavailable", "persistence_unknown",
+)
+_OPTIONAL_AUDIT_SCOPE = (
+    "Instance-lifetime memory counters reset on instance replacement or restart; not durable "
+    "across restart. Zero gaps do not prove history continuity. Native security journals and "
+    "closure authority are separate."
+)
+
+
+def _optional_audit_view(source) -> dict:
+    """Copy only bounded admission counters, without inferring writer health."""
+    result = {"schema": 1, "state": "unavailable", "reason_code": "invalid_observation",
+              "scope": "instance-lifetime", "durable": False, "response_authorized": False}
+    try:
+        if type(source) is not dict or len(source) > 32:
+            raise ValueError
+        source = dict(source)
+        if (type(source.get("schema")) is not int or source["schema"] != 1
+                or type(source.get("state")) is not str or source["state"] != "observed"
+                or type(source.get("scope")) is not str or source["scope"] != "instance-lifetime"
+                or source.get("durable") is not False
+                or source.get("response_authorized") is not False
+                or type(source.get("entry_limit_bytes")) is not int or source["entry_limit_bytes"] != 65536
+                or type(source.get("scalar_allowance_bytes")) is not int or source["scalar_allowance_bytes"] != 32
+                or type(source.get("coverage_gap")) is not bool):
+            raise ValueError
+        counters = {}
+        for key in _OPTIONAL_AUDIT_COUNTERS:
+            value = source.get(key)
+            if type(value) is not int or not 0 <= value <= (1 << 63) - 1:
+                raise ValueError
+            counters[key] = value
+        if (counters["attempted"] != sum(counters[key] for key in (
+                "recorded", "rejected", "unavailable", "persistence_unknown", "pending"))
+                or counters["rejected"] != counters["rejected_oversize"] + counters["rejected_invalid"]
+                or not source["coverage_gap"] and any(counters[key] for key in (
+                    "rejected", "unavailable", "persistence_unknown"))):
+            raise ValueError
+        result.update(counters, state="observed", reason_code="", entry_limit_bytes=65536,
+                      scalar_allowance_bytes=32, coverage_gap=source["coverage_gap"])
+    except Exception:
+        pass
+    return result
+
+
+def _optional_audit_snapshot(ledger=_OPTIONAL_AUDIT_UNSET) -> dict:
+    """Read the current instance's memory only; never initialize or query its DB."""
+    unavailable = {"schema": 1, "state": "unavailable", "scope": "instance-lifetime",
+                   "durable": False, "response_authorized": False}
+    try:
+        if ledger is _OPTIONAL_AUDIT_UNSET:
+            from angerona.core.remediation_log import get_log
+            ledger = get_log()
+        if ledger is None:
+            return dict(unavailable, reason_code="not_initialized")
+        reader = getattr(ledger, "optional_audit_snapshot", None)
+        if not callable(reader):
+            return dict(unavailable, reason_code="reader_unavailable")
+        return _optional_audit_view(reader())
+    except Exception:
+        return dict(unavailable, reason_code="reader_failed")
+
+
+def optional_audit_status_text(source) -> str:
+    """Render validated cached counters without refreshing their source."""
+    view = _optional_audit_view(source)
+    if view["state"] != "observed":
+        return "Optional audit: unavailable; counts unknown.\n" + _OPTIONAL_AUDIT_SCOPE
+    counts = ", ".join(f"{key}={view[key]}" for key in _OPTIONAL_AUDIT_COUNTERS)
+    return (f"Optional audit: observed; {counts}, coverage_gap={view['coverage_gap']}; "
+            f"entry_limit={view['entry_limit_bytes']} UTF-8 bytes.\n" + _OPTIONAL_AUDIT_SCOPE)
+
+
+def optional_audit_result_text(source) -> str:
+    """Render only per-invocation optional-audit results, never native authority."""
+    unavailable = ("Optional audit (this invocation): unavailable; counts unknown. "
+                   "Native results and closure authority are separate.")
+    try:
+        if type(source) is not dict or len(source) > 16:
+            return unavailable
+        source = dict(source)
+        if (type(source.get("schema")) is not int or source["schema"] != 1
+                or source.get("response_authorized") is not False):
+            return unavailable
+        counts = {}
+        for key in _OPTIONAL_AUDIT_RESULT_COUNTERS:
+            value = source.get(key)
+            if type(value) is not int or not 0 <= value <= (1 << 63) - 1:
+                return unavailable
+            counts[key] = value
+        if counts["attempted"] != sum(counts[key] for key in _OPTIONAL_AUDIT_RESULT_COUNTERS[1:]):
+            return unavailable
+        text = ", ".join(f"{key}={counts[key]}" for key in _OPTIONAL_AUDIT_RESULT_COUNTERS)
+        return (f"Optional audit (this invocation): {text}. "
+                "Native results and closure authority are separate.")
+    except Exception:
+        return unavailable
+
 
 def _worker_identity(module) -> dict:
     """Advisory current-worker correlation, without host queries or module locks."""
@@ -591,6 +695,7 @@ class StatusReporter:
             "wer_observation": _wer_observation_snapshot(self.manager),
             "ai_request": _ai_request_snapshot(self.manager),
             "normal_crashlog": normal_log_status(),
+            "optional_audit": _optional_audit_snapshot(),
             "runtime_healer": recovery,
             "automatic_response": response,
             "app_version": __version__,
@@ -656,6 +761,7 @@ class StatusReporter:
             f" Log budget: {normal_logs.get('state', 'unavailable')} — "
             f"limit={normal_logs.get('limit_bytes')} bytes/target/process; paused={normal_logs.get('paused')}",
             "             Cached normal Python/Qt writes only; native/external writers are outside this budget.",
+            optional_audit_status_text(s.get("optional_audit")),
             f" Response  : {s.get('automatic_response', {}).get('state', 'UNAVAILABLE')} "
             f"— {s.get('automatic_response', {}).get('reason', '')}",
             f" Inventory : {inventory.get('state', 'unavailable')} — {inventory_error}",

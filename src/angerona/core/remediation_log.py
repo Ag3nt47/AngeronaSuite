@@ -53,6 +53,11 @@ MAX_ROWS = 10_000
 PRUNE_EVERY = 500
 MAX_TRANSACTION_RECORD_BYTES = 64 * 1024
 MAX_TRANSACTION_FIELD_CHARS = 256
+# Logical admission for optional legacy audit rows only. Count all stored UTF-8
+# text plus eight bytes each for id, ts, verified and host_level. This is not a
+# SQLite page/WAL quota or a bound on serialization's temporary allocations.
+OPTIONAL_AUDIT_ENTRY_LIMIT_BYTES = 64 * 1024
+OPTIONAL_AUDIT_SCALAR_ALLOWANCE_BYTES = 32
 # A proof stores bounded metadata and a record digest, rather than the record.
 # Leave room for the largest supported record plus escaped metadata and seal
 # overhead when admitting its serialized representation to the closure reader.
@@ -107,6 +112,25 @@ class RemediationCircuitOpen(RuntimeError):
 
 class RemediationCustodyError(RuntimeError):
     """The SQLite pathname no longer proves one local, single-link object."""
+
+
+class OptionalAuditRejected(RuntimeError):
+    """An optional audit entry was refused before its INSERT, without raw data."""
+
+    def __init__(self, reason: str, *, entry_bytes: int | None = None) -> None:
+        if reason not in {"entry_too_large", "invalid_entry"}:
+            raise ValueError("invalid optional audit rejection reason")
+        if entry_bytes is not None and (
+            type(entry_bytes) is not int or not 0 <= entry_bytes < 2**63
+        ):
+            raise ValueError("invalid optional audit entry size")
+        self.reason = reason
+        self.entry_bytes = entry_bytes
+        self.limit_bytes = OPTIONAL_AUDIT_ENTRY_LIMIT_BYTES
+        super().__init__(
+            f"Optional audit rejected: {reason}; "
+            f"entry_bytes={entry_bytes}; limit_bytes={self.limit_bytes}"
+        )
 
 
 class TransactionOwnerCapability:
@@ -453,11 +477,47 @@ class RemediationLog:
             self._db.close()
             raise
         self._lock = threading.Lock()
+        self._optional_audit_lock = threading.Lock()
+        self._optional_audit_counts = dict(
+            attempted=0, recorded=0, rejected=0, rejected_oversize=0,
+            rejected_invalid=0, unavailable=0, persistence_unknown=0,
+        )
+        self._optional_audit_gap = False
         self._writes = 0
         self._recovery_coordinator: _RecoveryCoordinatorCapability | None = None
         self._recovery_coordinator_digest = ""
         self._recovery_proofs: dict[int, _VerifiedRecoveryProof] = {}
         self._init_schema()
+
+    def _note_optional_audit(self, result: str, reason: str = "") -> None:
+        with self._optional_audit_lock:
+            self._optional_audit_counts[result] += 1
+            if result == "rejected":
+                key = "rejected_oversize" if reason == "entry_too_large" else "rejected_invalid"
+                self._optional_audit_counts[key] += 1
+            if result in {"rejected", "persistence_unknown", "unavailable"}:
+                self._optional_audit_gap = True
+
+    def optional_audit_snapshot(self) -> dict:
+        """Copy instance-lifetime, nondurable admission counts without I/O.
+
+        This never takes the SQLite writer lock, samples a clock, initializes
+        a singleton or verifies a receipt. A new RemediationLog instance resets
+        these counters. Zero observations do not certify complete history.
+        """
+        with self._optional_audit_lock:
+            counts = dict(self._optional_audit_counts)
+            gap = self._optional_audit_gap
+        pending = counts["attempted"] - sum(
+            counts[key] for key in ("recorded", "rejected", "unavailable", "persistence_unknown")
+        )
+        return {
+            "schema": 1, "state": "observed", "scope": "instance-lifetime",
+            "entry_limit_bytes": OPTIONAL_AUDIT_ENTRY_LIMIT_BYTES,
+            "scalar_allowance_bytes": OPTIONAL_AUDIT_SCALAR_ALLOWANCE_BYTES,
+            **counts, "pending": pending, "coverage_gap": gap,
+            "durable": False, "response_authorized": False,
+        }
 
     def _assert_db_custody_locked(self) -> None:
         if _canonical_db_path(self._path) != self._path:
@@ -1541,7 +1601,18 @@ class RemediationLog:
         host_level: bool = False,
         record: dict | None = None,
     ) -> dict:
-        """Append one remediation-action entry.
+        """Append a bounded optional remediation-action entry.
+
+        The limit covers the complete stored UTF-8 text and the documented
+        fixed scalar allowance. Oversized/invalid entries raise
+        OptionalAuditRejected before INSERT; accepted bytes and receipt
+        metadata keep their existing format. SQL TEXT metadata must be plain
+        strings; the existing None/empty MITRE default remains supported.
+        Durable transaction completion
+        and reconciliation use separate writers, outside this optional limit.
+        Accounting assumes normal trusted SQLite binding. The check for known
+        builtin adapters is not an atomic registry fence or protection against
+        a compromised process changing Python/SQLite behavior.
 
         outcome values:
           ``applied``     — action ran and verify passed
@@ -1550,53 +1621,100 @@ class RemediationLog:
           ``dry_run``     — plan-only call; no action attempted
           ``error``       — action raised an exception
         """
-        with self._lock:
-            self._assert_db_custody_locked()
-            ts = time.time()
-            prior = self._db.execute(
-                """
-                SELECT receipt_hash
-                FROM remediation_log
-                WHERE receipt_hash IS NOT NULL AND receipt_hash != ''
-                ORDER BY id DESC
-                LIMIT 1
-                """
-            ).fetchone()
-            previous_hash = str(prior[0]) if prior and prior[0] else GENESIS_HASH
-            receipt, chain_hash = create_receipt(
-                ts=ts,
-                trigger=trigger,
-                mitre=mitre or "-",
-                action_key=action_key,
-                outcome=outcome,
-                verified=verified,
-                host_level=host_level,
-                record=record,
-                previous_hash=previous_hash,
-            )
-            self._db.execute(
-                """
-                INSERT INTO remediation_log
-                  (ts, trigger, mitre, action_key, action_title,
-                   outcome, verified, host_level, record_json,
-                   receipt_json, receipt_hash)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?)
-                """,
-                (
-                    ts, trigger, mitre or "-", action_key,
-                    action_title, outcome, int(verified), int(bool(host_level)),
-                    json.dumps(record, default=str) if record is not None else None,
-                    json.dumps(receipt, sort_keys=True, default=str),
-                    chain_hash,
-                ),
-            )
-            self._db.commit()
-            self._note_receipt_committed_locked()
-            return {
-                "receipt_id": receipt.get("receipt_id"),
-                "receipt_hash": chain_hash,
-                "receipt_authenticated": "_angerona_hmac" in receipt,
-            }
+        self._note_optional_audit("attempted")
+        committed = False
+        try:
+            if mitre is not None and type(mitre) is not str:
+                raise OptionalAuditRejected("invalid_entry")
+            stored_mitre = mitre or "-"
+            if (any(type(value) is not str for value in (
+                    trigger, stored_mitre, action_key, action_title, outcome))
+                    or not isinstance(verified, int) or not -(2**63) <= verified < 2**63
+                    or record is not None and not isinstance(record, dict)):
+                raise OptionalAuditRejected("invalid_entry")
+            with self._lock:
+                self._assert_db_custody_locked()
+                ts = time.time()
+                prior = self._db.execute(
+                    """
+                    SELECT receipt_hash
+                    FROM remediation_log
+                    WHERE receipt_hash IS NOT NULL AND receipt_hash != ''
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                previous_hash = str(prior[0]) if prior and prior[0] else GENESIS_HASH
+                try:
+                    receipt, chain_hash = create_receipt(
+                        ts=ts,
+                        trigger=trigger,
+                        mitre=stored_mitre,
+                        action_key=action_key,
+                        outcome=outcome,
+                        verified=verified,
+                        host_level=host_level,
+                        record=record,
+                        previous_hash=previous_hash,
+                    )
+                    record_json = json.dumps(record, default=str) if record is not None else None
+                    receipt_json = json.dumps(receipt, sort_keys=True, default=str)
+                    stored_verified = int(verified)
+                    stored_host_level = int(bool(host_level))
+                    if not -(2**63) <= stored_verified < 2**63:
+                        raise OptionalAuditRejected("invalid_entry")
+                    entry_bytes = OPTIONAL_AUDIT_SCALAR_ALLOWANCE_BYTES + sum(
+                        len(str.encode(value, "utf-8"))
+                        for value in (trigger, stored_mitre, action_key, action_title,
+                                      outcome, record_json, receipt_json, chain_hash)
+                        if value is not None
+                    )
+                except (TypeError, ValueError, OverflowError, RecursionError):
+                    raise OptionalAuditRejected("invalid_entry") from None
+                if entry_bytes > OPTIONAL_AUDIT_ENTRY_LIMIT_BYTES:
+                    raise OptionalAuditRejected("entry_too_large", entry_bytes=entry_bytes)
+                # Known global adapters could bind bytes different from those
+                # measured above, including scalar/NULL values. Inspect only;
+                # never invoke or rewrite the registry. Unrelated date/time
+                # adapters remain allowed. Concurrent registration is outside
+                # this trusted-runtime snapshot, not a claimed security lease.
+                if (type(sqlite3.adapters) is not dict or any(
+                        (kind, sqlite3.PrepareProtocol) in sqlite3.adapters
+                        for kind in (str, int, float, type(None)))):
+                    raise OptionalAuditRejected("invalid_entry")
+                self._db.execute(
+                    """
+                    INSERT INTO remediation_log
+                      (ts, trigger, mitre, action_key, action_title,
+                       outcome, verified, host_level, record_json,
+                       receipt_json, receipt_hash)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        ts, trigger, stored_mitre, action_key,
+                        action_title, outcome, stored_verified, stored_host_level,
+                        record_json, receipt_json, chain_hash,
+                    ),
+                )
+                self._db.commit()
+                committed = True
+                self._note_optional_audit("recorded")
+                self._note_receipt_committed_locked()
+                return {
+                    "receipt_id": receipt.get("receipt_id"),
+                    "receipt_hash": chain_hash,
+                    "receipt_authenticated": "_angerona_hmac" in receipt,
+                }
+        except OptionalAuditRejected as exc:
+            if not committed:
+                self._note_optional_audit("rejected", exc.reason)
+            raise
+        except BaseException:
+            if not committed:
+                # Even an exception raised by commit can follow a real commit.
+                # Preserve that uncertainty; do not retry, spill or claim loss.
+                self._note_optional_audit("persistence_unknown")
+            raise
 
     def _note_receipt_committed_locked(self) -> None:
         """Count every committed receipt; maintenance cannot undo its result.

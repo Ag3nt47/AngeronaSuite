@@ -132,6 +132,18 @@ to their pre-STOP copies, with zero net append. This adds an after-STOP
 observation to the earlier Core-live copies. It is not continuous logging,
 writer attribution, hook-health verification or native P0 cause proof.
 
+## Subsequent hosted validation
+
+The published commit-boundary revision
+**40124c7c6d3a32ada576c3fe66080daea4425c6d** subsequently passed all fifteen
+hosted jobs, verified at 21:17:44 UTC on 1 November: twelve
+[CI jobs](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/41348493869)
+and three [security jobs](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/41348493832).
+Both runs match that exact commit, main and the push event. These results
+remain separate from the later
+[optional-audit admission update](hardening-v1.15-2026-11-01-optional-audit-admission.md),
+which requires its own publication and exact-commit hosted checks.
+
 ## Remaining limits
 
 An exception raised by `commit()` can have an ambiguous outcome. This change

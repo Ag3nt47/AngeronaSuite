@@ -35,7 +35,7 @@ AI_SYSTEM = (
     "run: help, ps, find <name>, kill <pid>, suspend <pid>, resume <pid>, "
     "prio <pid> <low|normal|high>, conns [pid], tree <pid>, modules, "
     "module <name> <on|off|restart>, threat, incidents, incident <id>, coverage, "
-    "enterprise, remlog [n|<T####>], aar, schtasks, services [filter], asn <ip>, lateral, "
+    "enterprise, remlog [status|n|<T####>], aar, schtasks, services [filter], asn <ip>, lateral, "
     "reg <key>, dump <pid>, autoruns, portmap, "
     "academy (explain/stages/style/coach/"
     "achievements/profile/tune), ask <question>, clear. When a user "
@@ -275,6 +275,7 @@ class CommandConsole:
             "      academy tune <KEY> <VALUE>   change one (e.g. ANGERONA_NETMON_NOVELTY_WINDOW_MIN 15)\n"
             "  remlog [n]                remediation action audit log, newest first (alias: actions)\n"
             "  remlog <T####>            filter remediation log by MITRE technique\n"
+            "  remlog status             cached optional-audit admission counters (no DB query)\n"
             "  schtasks                  list Windows scheduled tasks (alias: tasks)\n"
             "  services [filter]         enumerate services + start type (alias: svc)\n"
             "  asn <ip>                  IP/ASN info — hostname, PTR record (alias: ipinfo, whois)\n"
@@ -822,12 +823,16 @@ class CommandConsole:
         )
 
     def _remlog(self, args: List[str]) -> str:
-        """remlog [n|<T####>]  — show remediation action audit log."""
+        """remlog [status|n|<T####>] — optional-audit counters or retained entries."""
         from angerona.core.remediation_log import get_log
+        from angerona.core.status_report import _optional_audit_snapshot, optional_audit_status_text
         import datetime
+        if args and args[0].lower() == "status":
+            return optional_audit_status_text(_optional_audit_snapshot())
         rlog = get_log()
+        admission = optional_audit_status_text(_optional_audit_snapshot(rlog))
         if rlog is None:
-            return "Remediation log not initialised (app not fully started)."
+            return "Remediation log not initialised (app not fully started).\n" + admission
 
         mitre_filter = None
         n = 20
@@ -839,7 +844,8 @@ class CommandConsole:
 
         entries = rlog.by_mitre(mitre_filter, n) if mitre_filter else rlog.recent(n)
         if not entries:
-            return "No remediation log entries" + (f" for {mitre_filter}" if mitre_filter else "") + "."
+            return ("No remediation log entries" + (f" for {mitre_filter}" if mitre_filter else "")
+                    + ".\n" + admission)
 
         _OUTCOME_ICON = {
             "applied":      "✔",
@@ -855,7 +861,7 @@ class CommandConsole:
                   f"rolled_back:{stats.get('rolled_back', 0)}  "
                   f"errors:{stats.get('error', 0)}")
         sep = "─" * 72
-        lines = [header, sep]
+        lines = [header, admission, sep]
         for e in entries:
             ts = datetime.datetime.fromtimestamp(e["ts"]).strftime("%Y-%m-%d %H:%M:%S")
             icon = _OUTCOME_ICON.get(e["outcome"], "?")

@@ -2807,11 +2807,13 @@ class ThreatWindow(QDialog):
         posture = self._posture()
 
         def do():
+            from angerona.core.status_report import optional_audit_result_text
             res = posture.apply_vetted_remediation(apply=True)
             return (
                 "[+] Vetted typed remediation run completed: "
                 f"applied={res.get('applied', 0)}, skipped={res.get('skipped', 0)}, "
-                f"failed={res.get('failed', 0)}."
+                f"failed={res.get('failed', 0)}.\n"
+                + optional_audit_result_text(res.get("optional_audit"))
             )
 
         self._run_async(do)
