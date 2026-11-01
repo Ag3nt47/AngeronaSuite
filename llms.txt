@@ -7,6 +7,17 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Recorder commit boundary: single/batch/replay retry and fallback scope ends
+  when SQLite commit returns successfully. Revision candidates read before
+  commit, committed high-water published before optional pruning, separate
+  maintenance rollback preserves known committed counts/originals. Raised
+  commit ambiguity, failed rollback, cache lag and physical quota remain gaps.
+  Gate64PASS26.89s/no skips,32new fault cases/inert key/tempSQLite; Ruff/review
+  pass. Fresh ordinary Full60/normalSTOP native0/45observedunique49waitall0/
+  source501+selectedprefs unchanged, not livefullstorage efficacy. Named fault
+  logs read AFTER retirement byte-identical topreSTOP, notcontinuous/writer/
+  hookhealth/P0causeproof. Current record:
+  analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md.
 - Remediation custody: Posture PATCHED/proof requires nativeverifiedisTrue,
   applied/no-error state + actual authenticated COMMITTED receipt bound to
   currenttx/action/MITRE/canonicalrecord/signedbody↔SQL metadata. ExistingSQLite
@@ -18,6 +29,8 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   Gate93PASS139.43s/no skips; inertfixtures/nohostregistry/networkmutation.
   OrdinaryFull60/native0/48observedunique52waitall0/source501+selectedprefs
   unchanged, NOTlivevettedremediation efficacy. NativeP0/storagegaps remain.
+  Published3489 hosted15/15 terminalsuccess20:44:06UTC; later recorder
+  commit-boundary revision requires its own exact-commit hosted checks.
   Current record: analysis/hardening-v1.15-2026-11-01-remediation-custody.md.
 - Recorder handoff: bounded memory-only submit, fixed rejection reasons and
   separate process-lifetime/nondurable counts+gap. No publisher disk spill or
@@ -28,8 +41,8 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   (Windows directory symlinks unavailable),57.86s/completeJUnit/native cleanup.
   Fresh Full60/native0,48unique observed/52waitall0/source501+selectedprefs
   unchanged; ordinary run NOT live saturation/complete process history.
-  Prior published7ebb hosted15/15 terminalsuccess19:15:53UTC; later recorder
-  revision needs separate publication/CI. DB row retention NOT bytequota,
+  Published9e2 hosted15/15 terminalsuccess20:05:46UTC; later custody and
+  commit-boundary updates have separate publication/CI scope. DB row retention NOT bytequota,
   shared remediation writer/raw output/direct-startup scratch remain gaps.
   Current record: analysis/hardening-v1.15-2026-11-01-recorder-admission.md.
 - Advisory/setup follow-up: port-only CAGT records explicitly observation;

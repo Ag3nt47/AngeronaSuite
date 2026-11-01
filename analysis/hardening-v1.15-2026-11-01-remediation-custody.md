@@ -171,6 +171,18 @@ Both runs match that commit, main and the push event. These successes do not
 validate this later custody revision, which requires its own publication and
 checks.
 
+### Subsequent custody publication checks
+
+Published custody commit **3489e05802b5db07970dee70c01e0a6987a7e99c**
+subsequently completed all fifteen hosted jobs successfully, verified at
+20:44:06 UTC on 1 November: twelve
+[CI jobs](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/41345552746)
+and three [security jobs](https://github.com/Ag3nt47/AngeronaSuite/actions/runs/41345552768).
+Both runs match that exact commit, main and the push event. These results
+remain separate from the later
+[recorder commit-boundary update](hardening-v1.15-2026-11-01-recorder-commit-boundary.md),
+which requires its own publication and exact-commit hosted checks.
+
 ## Remaining storage and startup limits
 
 Runtime database byte/free-space admission remains design work. The telemetry

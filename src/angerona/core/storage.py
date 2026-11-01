@@ -125,8 +125,9 @@ class FlightRecorder:
         self._authority = BusAuthority.load()
         self._lock     = threading.Lock()
         # GUI refreshes must never queue behind a busy SQLite writer. This
-        # separately locked revision advances only after a committed insert
-        # and any scheduled retention work have finished.
+        # separately locked revision advances after a committed insert, before
+        # optional retention work. It remains a committed-id high-water mark
+        # even if retention immediately removes that event.
         self._revision_lock = threading.Lock()
         self._revision = 0
         self._dlq_lock = threading.Lock()   # separate lock — DLQ must never deadlock primary
@@ -249,8 +250,8 @@ class FlightRecorder:
             event = dataclasses.replace(event, hmac_sig=self._authority.sign(event))
         details_json = self._details_json(event.details)
         for attempt in range(self._DLQ_RETRIES):
-            try:
-                with self._lock:
+            with self._lock:
+                try:
                     cursor = self._db.execute(
                         "INSERT INTO events "
                         "(ts, module, severity, message, details, hmac_sig) "
@@ -258,24 +259,24 @@ class FlightRecorder:
                         (event.ts, event.module, int(event.severity), event.message,
                          details_json, event.hmac_sig),
                     )
+                    last_id = int(cursor.lastrowid or 0)
                     self._db.commit()
-                    self._writes += 1
-                    if self._writes >= self.PRUNE_EVERY:
-                        self._writes = 0
-                        self._prune_locked()
-                    with self._revision_lock:
-                        self._revision = max(
-                            self._revision, int(cursor.lastrowid or self._revision)
-                        )
-                return   # success
-            except sqlite3.OperationalError:
-                if attempt < self._DLQ_RETRIES - 1:
-                    time.sleep(self._DLQ_RETRY_DELAY)
+                except sqlite3.OperationalError:
+                    self._rollback_locked()
+                    retry = True
+                except Exception:
+                    self._rollback_locked()
+                    retry = False
                 else:
-                    self._route_to_dlq(event)
-            except Exception:
-                self._route_to_dlq(event)
-                return
+                    # A returned successful commit is irreversible by a later
+                    # maintenance rollback. Never retry or spill these rows.
+                    self._after_insert_commit_locked(1, last_id)
+                    return
+            if retry and attempt < self._DLQ_RETRIES - 1:
+                time.sleep(self._DLQ_RETRY_DELAY)
+            else:
+                break
+        self._route_to_dlq(event)
 
     def record_batch_bus(self, events: Iterable[Event]) -> "BatchRecordResult":
         """Persist bus-delivered events in one transaction.
@@ -299,45 +300,65 @@ class FlightRecorder:
             for event in prepared
         ]
         for attempt in range(self._DLQ_RETRIES):
-            try:
-                with self._lock:
+            with self._lock:
+                try:
                     self._db.executemany(
                         "INSERT INTO events "
                         "(ts, module, severity, message, details, hmac_sig) "
                         "VALUES (?,?,?,?,?,?)",
                         rows,
                     )
-                    self._db.commit()
-                    self._writes += len(rows)
-                    if self._writes >= self.PRUNE_EVERY:
-                        self._writes %= self.PRUNE_EVERY
-                        self._prune_locked()
                     row = self._db.execute(
                         "SELECT COALESCE(MAX(id), 0) FROM events"
                     ).fetchone()
                     last_id = int(row[0] if row else 0)
-                    with self._revision_lock:
-                        self._revision = max(self._revision, last_id)
-                return BatchRecordResult(len(prepared), 0)
-            except sqlite3.OperationalError:
-                try:
-                    with self._lock:
-                        self._db.rollback()
+                    self._db.commit()
+                except sqlite3.OperationalError:
+                    self._rollback_locked()
+                    retry = True
                 except Exception:
-                    pass
-                if attempt < self._DLQ_RETRIES - 1:
-                    time.sleep(self._DLQ_RETRY_DELAY)
-                    continue
-                break
-            except Exception:
-                try:
-                    with self._lock:
-                        self._db.rollback()
-                except Exception:
-                    pass
+                    self._rollback_locked()
+                    retry = False
+                else:
+                    self._after_insert_commit_locked(len(rows), last_id)
+                    return BatchRecordResult(len(prepared), 0)
+            if retry and attempt < self._DLQ_RETRIES - 1:
+                time.sleep(self._DLQ_RETRY_DELAY)
+            else:
                 break
         dlq = self._route_batch_to_dlq(prepared)
         return BatchRecordResult(0, dlq)
+
+    def _rollback_locked(self) -> None:
+        """Best-effort rollback of the current transaction under ``_lock``."""
+        try:
+            self._db.rollback()
+        except Exception:
+            pass
+
+    def _after_insert_commit_locked(self, inserted: int, last_id: int) -> None:
+        """Publish known committed progress; maintenance cannot retry its input.
+
+        Only call after ``commit()`` returned successfully, while holding
+        ``_lock``. A raised/ambiguous commit retains the existing retry policy;
+        this boundary does not claim exactly-once delivery for that case.
+        """
+        try:
+            with self._revision_lock:
+                self._revision = max(self._revision, last_id)
+        except Exception:
+            # A failed cache publication may lag until the next write. It does
+            # not turn a known committed event back into unpersisted input.
+            pass
+        try:
+            self._writes += inserted
+            if self._writes >= self.PRUNE_EVERY:
+                self._writes %= self.PRUNE_EVERY
+                self._prune_locked()
+        except Exception:
+            # Retention is a separate transaction. Its rollback cannot undo
+            # the earlier successful event/receipt commit.
+            self._rollback_locked()
 
     def _route_to_dlq(self, event: Event) -> bool:
         """Append-only JSON fallback when the primary SQLite ledger is locked.
@@ -567,8 +588,8 @@ class FlightRecorder:
         if not events:
             return (0, 0)
         for attempt in range(self._DLQ_RETRIES):
-            try:
-                with self._lock:
+            with self._lock:
+                try:
                     # Deduplicate signatures inside this batch, then use one
                     # indexed membership query instead of two SELECTs per row.
                     # This keeps replay O(batch) in Python and a fixed number of
@@ -623,34 +644,24 @@ class FlightRecorder:
                     )
                     inserted = len(missing)
                     duplicates = len(events) - inserted
-                    self._db.commit()
-                    self._writes += inserted
-                    if self._writes >= self.PRUNE_EVERY:
-                        self._writes %= self.PRUNE_EVERY
-                        self._prune_locked()
                     row = self._db.execute(
                         "SELECT COALESCE(MAX(id), 0) FROM events"
                     ).fetchone()
-                    with self._revision_lock:
-                        self._revision = max(
-                            self._revision, int(row[0] if row else 0)
-                        )
-                return inserted, duplicates
-            except sqlite3.OperationalError:
-                try:
-                    with self._lock:
-                        self._db.rollback()
+                    last_id = int(row[0] if row else 0)
+                    self._db.commit()
+                except sqlite3.OperationalError:
+                    self._rollback_locked()
+                    retry = True
                 except Exception:
-                    pass
-                if attempt < self._DLQ_RETRIES - 1:
-                    time.sleep(self._DLQ_RETRY_DELAY)
-            except Exception:
-                try:
-                    with self._lock:
-                        self._db.rollback()
-                except Exception:
-                    pass
-                return None
+                    self._rollback_locked()
+                    retry = False
+                else:
+                    self._after_insert_commit_locked(inserted, last_id)
+                    return inserted, duplicates
+            if retry and attempt < self._DLQ_RETRIES - 1:
+                time.sleep(self._DLQ_RETRY_DELAY)
+            else:
+                break
         return None
 
     def _remove_replay_receipts(self, segment: str) -> None:
@@ -807,7 +818,7 @@ class FlightRecorder:
                 self._db.execute("PRAGMA incremental_vacuum(2000)")
                 self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
         except Exception:
-            pass
+            self._rollback_locked()
 
     def recent(self, limit: int = 200) -> List[Event]:
         with self._lock:

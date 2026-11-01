@@ -33,6 +33,14 @@ local evidence, not a fresh host recheck or independent witness. The
 [custody review](../analysis/hardening-v1.15-2026-11-01-remediation-custody.md)
 separates inert failure-path tests from ordinary live operation and shutdown.
 
+Recorder inserts now leave retry/fallback handling after a returned-success
+commit. Revision lookup failures before commit retain rollback/retry semantics;
+later housekeeping cannot re-spill committed originals or change replay counts.
+The [commit-boundary review](../analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md)
+separates 64 offline passes from ordinary Full60/STOP and records an additional
+named fault-log read after native retirement. Neither proves exactly-once
+delivery for an ambiguously raised commit or closes the native P0 cause.
+
 Black Box historical health includes separately dated run reports and supervisor
 event rows, not one fictitious current run. Retain missing/malformed/truncated
 counts and original bytes; historical errors do not become a live exception

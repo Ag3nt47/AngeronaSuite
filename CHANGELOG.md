@@ -2,6 +2,11 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- Separate known-success recorder commits from insertion retry and dead-letter
+  fallback. Capture revision identifiers before commit, publish committed
+  high-water before pruning, and contain separate maintenance rollback without
+  duplicating saved events or changing replay counts. Ambiguous commit errors,
+  failed rollback and physical storage quotas remain separate limits.
 - Require authenticated committed application receipts before Posture marks a
   finding PATCHED or emits verification proof. Preserve native observations
   when journal closure fails; reject uncommitted or inconsistent evidence.
