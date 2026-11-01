@@ -30,6 +30,10 @@ def measure(source: str, idle_seconds: float) -> dict:
     from angerona.core.background_pacing import get_pacing_controller
     from angerona.core.eventbus import BusAuthority, Event, Severity
     from angerona.core.storage import AsyncRecorderMetrics, BatchRecordResult
+    from angerona.core.telemetry_storage_policy import (
+        RecorderStorageHeld, StorageWriteProgress, STORAGE_UNIT_BYTES,
+    )
+    import secrets
 
     controller = get_pacing_controller()
     controller.set_chill_active(True)
@@ -50,7 +54,9 @@ def measure(source: str, idle_seconds: float) -> dict:
     namespace = {"__name__": "angerona_recorder_benchmark", "threading": threading,
                  "time": time, "queue": queue, "dataclasses": dataclasses,
                  "Event": Event, "AsyncRecorderMetrics": AsyncRecorderMetrics,
-                 "BatchRecordResult": BatchRecordResult}
+                 "BatchRecordResult": BatchRecordResult, "RecorderStorageHeld": RecorderStorageHeld,
+                 "StorageWriteProgress": StorageWriteProgress, "STORAGE_UNIT_BYTES": STORAGE_UNIT_BYTES,
+                 "secrets": secrets}
     exec(compile(extracted, SOURCE_PATH, "exec"), namespace)
 
     class Sink:

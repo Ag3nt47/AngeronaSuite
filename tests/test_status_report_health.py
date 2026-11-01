@@ -57,7 +57,7 @@ def test_status_keeps_available_recorder_and_nondurable_admission_gap_separate(t
     value = reporter._snapshot()
     text = reporter._render_text(value)
     assert "flight_recorder: healthy" in text
-    assert "Recorder delivery rejections: 3 / admission coverage gap=True" in text
+    assert "Recorder delivery rejections: 3 / delivery/write coverage gap=True" in text
     assert "process-lifetime counters; not a durable loss journal" in text
     assert value["runtime_healer"]["components"]["flight_recorder"]["evidence"]["coverage_gap"] is True
 

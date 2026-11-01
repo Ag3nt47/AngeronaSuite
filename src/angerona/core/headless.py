@@ -73,6 +73,33 @@ class _HeadlessResources:
             except BaseException as exc:
                 self.pending.append(name + ":" + type(exc).__name__)
 
+    def _stop_recorder(self):
+        """Separate retired threads from an undrained volatile telemetry tail."""
+        generation = None
+        try:
+            before = self.recorder.retirement_snapshot()
+            if (type(before) is dict and type(before.get("schema")) is int and before["schema"] == 1
+                    and type(before.get("worker_generation")) is int and before["worker_generation"] >= 0):
+                generation = before["worker_generation"]
+        except Exception:
+            pass
+        drained = self.recorder.stop(timeout=3.0)
+        self.recorder_drained = drained is True
+        if self.recorder_drained:
+            return True
+        if generation is not None:
+            try:
+                after = self.recorder.retirement_snapshot()
+                if (type(after) is dict and type(after.get("schema")) is int and after["schema"] == 1
+                        and type(after.get("worker_generation")) is int and after["worker_generation"] == generation
+                        and after.get("workers_retired") is True and after.get("stopping") is True
+                        and type(after.get("pending_events")) is int and after["pending_events"] >= 0):
+                    self.recorder_pending_at_shutdown = after["pending_events"]
+                    return True
+            except Exception:
+                pass
+        return False
+
     def hold(self, reason):
         global _HEADLESS_RETIREMENT_HOLD
 
@@ -114,7 +141,7 @@ class _HeadlessResources:
             threads.extend((("module:" + str(name), getattr(module, "_thread", None)),
                             ("module-restart:" + str(name), getattr(module, "_restart_waiter", None))))
         self._join_owned_threads(threads)
-        self._retire("recorder", self.recorder, lambda: self.recorder.stop(timeout=3.0), boolean=True)
+        self._retire("recorder", self.recorder, self._stop_recorder, boolean=True)
         self._retire("recorder-integrity", self.recorder_integrity,
                      lambda: self.recorder_integrity.stop(timeout=3.0), boolean=True)
         # Both producers and writer must retire before closing SQLite. A failed
@@ -178,6 +205,8 @@ def _run_headless_graph(*, resources, high_water_provider, runtime_control, forc
         from angerona.core.chill_mode import set_chill_ai_blocked
         set_chill_ai_blocked(config, True)
     storage = resources.storage = FlightRecorder(config.db_path)
+    from angerona.core.config import apply_telemetry_storage_policy
+    resources.telemetry_storage_policy_result = apply_telemetry_storage_policy(config, storage)
     bus = EventBus()
     bus.arm(storage.authority)
 

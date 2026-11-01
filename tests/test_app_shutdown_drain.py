@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from angerona.app import AngeronaApp
 
 
@@ -75,3 +77,48 @@ def test_shutdown_keeps_stores_open_when_optional_native_retirement_is_unproven(
     assert app.evidence_ingestion.called
     assert not app.storage.closed
     assert not app.evidence_store.closed
+
+
+class _ParkedRecorder(_Stopper):
+    def __init__(self, changes=None):
+        super().__init__(False)
+        self.changes = changes or {}
+
+    def retirement_snapshot(self):
+        if not self.called:
+            return dict(schema=1, worker_generation=7, workers_retired=False,
+                        stopping=False, drained=False, pending_events=2)
+        return {**dict(schema=1, worker_generation=7, workers_retired=True,
+                       stopping=True, drained=False, pending_events=2), **self.changes}
+
+
+@pytest.mark.parametrize("changes,closed", [
+    ({}, True), ({"workers_retired": False}, False), ({"stopping": False}, False),
+    ({"worker_generation": 8}, False), ({"worker_generation": True}, False),
+    ({"pending_events": True}, False), ({"schema": True}, False),
+])
+def test_retired_recorder_can_close_without_claiming_volatile_tail_drained(monkeypatch, changes, closed):
+    from angerona.core import ollama_lifecycle
+    monkeypatch.setattr(ollama_lifecycle, "shutdown_ollama", lambda *_a, **_k: None)
+    monkeypatch.setattr(ollama_lifecycle, "unload_angerona_models", lambda *_a, **_k: None)
+    app = _app(False, True)
+    app.flight_recorder_worker = _ParkedRecorder(changes)
+    app.shutdown()
+    assert app.storage.closed is closed
+    assert app._recorder_drained_at_shutdown is False
+    if closed:
+        assert app._recorder_pending_at_shutdown == 2
+
+
+@pytest.mark.parametrize("changes,retired", [
+    ({}, True), ({"workers_retired": False}, False), ({"stopping": False}, False),
+    ({"worker_generation": 8}, False), ({"pending_events": -1}, False),
+    ({"pending_events": True}, False),
+])
+def test_headless_retirement_distinguishes_worker_exit_from_memory_drain(changes, retired):
+    from angerona.core.headless import _HeadlessResources
+    resources = SimpleNamespace(recorder=_ParkedRecorder(changes))
+    assert _HeadlessResources._stop_recorder(resources) is retired
+    assert resources.recorder_drained is False
+    if retired:
+        assert resources.recorder_pending_at_shutdown == 2

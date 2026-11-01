@@ -40,6 +40,7 @@ performed to create this demonstration.
 | [![Priority Spyware Scan controls with synthetic resource and privilege state](assets/screenshots/spyware-scan-demo.png)](docs/zero-breach-toolkit.md#priority-spyware-scan) | [![Synthetic verified-breach and network-lockdown review demonstration](assets/screenshots/breach-lockdown-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) |
 | [![After-action investigation and response choices using a synthetic case](assets/screenshots/after-action-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) | All views are labeled DEMO. Shown lockdown and response states are synthetic; these images do not demonstrate a host network action. |
 | [![Independent recorder integrity controls with synthetic signed-history and bounded-storage status](assets/screenshots/recorder-integrity-demo.png)](docs/releases/v1.15.0.md) | [![Read-only installed protection service console with synthetic lifecycle status and explicitly unverified detector coverage](assets/screenshots/protection-service-console-demo.png)](docs/releases/v1.15.0.md) |
+| [![Telemetry storage controls with synthetic DEMO sizes, pending work and explicit gaps](assets/screenshots/telemetry-storage-demo.png)](docs/releases/v1.15.0.md#telemetry-storage-and-dialog-recovery) | DEMO only: synthetic data; no recorded history or host policy changed. |
 
 ## What's new in 1.15
 
@@ -83,10 +84,17 @@ review remain available.
   cannot retry or spill those committed events as another copy.
 - **Optional audit limits:** oversized new entries are rejected with visible
   omission counts; durable action and recovery journals retain separate rules.
+- **Telemetry storage controls:** worker-observed database, WAL and free-space
+  targets hold new event writes while preserving history and exposing pending
+  work, rejections and gaps. Apply now and Save have separate effects.
+- **Window recovery:** interrupted reveal transitions restore queued windows
+  and release their temporary masks.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does
 not establish a crash fix; signed deployment and hardware acceptance are separate.
+
+[Telemetry storage, dialog recovery and validation limits](analysis/hardening-v1.15-2026-11-01-telemetry-storage-dialogs.md).
 
 [What changed, validation and current limits](docs/releases/v1.15.0.md) ·
 [Reviewed observation](analysis/hardening-v1.15-2026-10-30.md) ·

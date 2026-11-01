@@ -643,6 +643,19 @@ STEPS: tuple[Step, ...] = (
             Field("spin", "normal_log_message_kib", "Complete normal crash-log message limit (KiB)",
                   minimum=4, maximum=256,
                   note="Default: 64 KiB including the header. Larger Python / Qt messages are suppressed in full."),
+            Field("check", "telemetry_storage_blocked", "Block new telemetry event storage",
+                  note="Off by default. Existing history is preserved; the dashboard and sensors continue. "
+                       "Review pending volatile events in Settings > System > Telemetry event storage."),
+            Field("spin", "telemetry_db_target_mib", "Telemetry database target (MiB)",
+                  minimum=16, maximum=16384,
+                  note="Default: 256 MiB. This database is shared with the separate remediation journal; "
+                       "this target is not an aggregate quota or a response reserve."),
+            Field("spin", "telemetry_wal_target_mib", "Telemetry WAL target (MiB)",
+                  minimum=4, maximum=1024,
+                  note="Default: 64 MiB. Existing database and WAL files are not automatically deleted or replaced."),
+            Field("spin", "telemetry_min_free_mib", "Minimum free space for telemetry writes (MiB)",
+                  minimum=512, maximum=65536,
+                  note="Default: 2048 MiB. Runtime workers check capacity; these targets add no startup capacity gate."),
             Field("check", "alert_retention_enabled", "Automatically clean archived alert copies",
                   note="Keeps signed evidence, recovery records and pinned archives. Defaults: 30 days / 256 MiB."),
             Field("spin", "alert_retention_days", "Keep alert archives for this many days", minimum=1, maximum=3650),
@@ -731,6 +744,15 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     """Validate the complete staged setup without touching disk or the network."""
     values = normalize_setup_values(values)
     errors: list[str] = []
+    from types import SimpleNamespace
+    from angerona.core.config import TELEMETRY_STORAGE_DEFAULTS, telemetry_storage_policy_values
+    try:
+        telemetry_storage_policy_values(SimpleNamespace(**{
+            key: values.get(key, default) for key, default in TELEMETRY_STORAGE_DEFAULTS.items()
+        }))
+    except (TypeError, ValueError):
+        errors.append("Telemetry storage targets are invalid. Review the boolean Block choice and integer "
+                      "database, WAL and free-space targets in Settings > System > Telemetry event storage.")
     accent = str(values.get("accent", ""))
     if accent and not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
         errors.append("Accent colour must be a six-digit value such as #1f9cff.")

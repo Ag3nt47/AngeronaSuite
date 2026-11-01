@@ -6,9 +6,11 @@ and it survives restarts so you can review what happened while you were away.
 from __future__ import annotations
 
 import dataclasses
+from contextlib import contextmanager
 import json
 import os
 import queue
+import secrets
 import sqlite3
 import threading
 import time
@@ -16,6 +18,9 @@ from pathlib import Path
 from typing import Iterable, List, NamedTuple
 
 from angerona.core.eventbus import BusAuthority, Event, Severity
+from angerona.core.telemetry_storage_policy import (
+    RecorderStorageHeld, StorageWriteProgress, STORAGE_UNIT_BYTES, TelemetryStorageBudget,
+)
 
 
 def _dlq_write_exclusive(path: Path, entry: str) -> None:
@@ -97,6 +102,9 @@ class FlightRecorder:
 
     def __init__(self, db_path: Path) -> None:
         self._path = Path(db_path)
+        self._storage_budget = TelemetryStorageBudget(self._path)
+        self._storage_runtime_lock = threading.Lock()
+        self._storage_runtime = None
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._db = self._ui_db = None
         self._failed_initialization_connections = ()
@@ -218,6 +226,57 @@ class FlightRecorder:
         """Signing authority shared with the live EventBus."""
         return self._authority
 
+    def configure_storage_policy(self, *, blocked: bool, db_target_bytes: int,
+                                 wal_target_bytes: int, min_free_bytes: int) -> dict:
+        result = self._storage_budget.configure(blocked=blocked, db_target_bytes=db_target_bytes,
+            wal_target_bytes=wal_target_bytes, min_free_bytes=min_free_bytes)
+        runtime = self._storage_runtime
+        if result["accepted"] and runtime is not None:
+            runtime._storage_policy_changed()
+        return result
+
+    def storage_budget_snapshot(self) -> dict:
+        return self._storage_budget.snapshot()
+
+    def held_unit_review(self, lane: str) -> dict:
+        runtime = self._storage_runtime
+        if runtime is None:
+            return {"schema": 1, "available": False, "reason_code": "worker_unavailable"}
+        return runtime.held_unit_review(lane)
+
+    def discard_held_unit(self, **request) -> dict:
+        runtime = self._storage_runtime
+        if runtime is None:
+            return {"schema": 1, "accepted": False, "reason_code": "worker_unavailable", "discarded_events": 0}
+        return runtime.discard_held_unit(**request)
+
+    def _storage_unit_bytes(self, events) -> int:
+        if not self._storage_budget.configured:
+            return 0
+        stamp = time.time()
+        sql_bytes = 0
+        dlq_bytes = 0
+        for event in events:
+            sql_bytes += 32 + sum(len(value.encode("utf-8")) for value in (
+                event.module, event.message, self._details_json(event.details), event.hmac_sig))
+            dlq_bytes += len(self._dlq_entry(event, stamp).encode("utf-8"))
+        return max(sql_bytes, dlq_bytes)
+
+    def _storage_refresh_on_worker(self):
+        self._storage_budget.refresh_on_worker()
+        runtime = self._storage_runtime
+        if runtime is not None:
+            runtime._storage_probe_published()
+
+    @contextmanager
+    def _storage_admission(self, unit_bytes: int, shared=None):
+        lease = self._storage_budget.admit(unit_bytes) if shared is None else shared
+        try:
+            yield lease
+        finally:
+            if shared is None:
+                self._storage_budget.release(lease, wrote=True)
+
     @staticmethod
     def _details_json(details: dict) -> str:
         return json.dumps(
@@ -249,34 +308,57 @@ class FlightRecorder:
         if not reuse_bus_signature or not event.hmac_sig:
             event = dataclasses.replace(event, hmac_sig=self._authority.sign(event))
         details_json = self._details_json(event.details)
-        for attempt in range(self._DLQ_RETRIES):
-            with self._lock:
-                try:
-                    cursor = self._db.execute(
-                        "INSERT INTO events "
-                        "(ts, module, severity, message, details, hmac_sig) "
-                        "VALUES (?,?,?,?,?,?)",
-                        (event.ts, event.module, int(event.severity), event.message,
-                         details_json, event.hmac_sig),
-                    )
-                    last_id = int(cursor.lastrowid or 0)
-                    self._db.commit()
-                except sqlite3.OperationalError:
-                    self._rollback_locked()
-                    retry = True
-                except Exception:
-                    self._rollback_locked()
-                    retry = False
+        lease = None
+        admitted = False
+        persistence_unknown = False
+        try:
+            for attempt in range(self._DLQ_RETRIES):
+                with self._lock:
+                    if not admitted:
+                        lease = self._storage_budget.admit(self._storage_unit_bytes((event,)))
+                        admitted = True
+                    try:
+                        committing = False
+                        cursor = self._db.execute(
+                            "INSERT INTO events "
+                            "(ts, module, severity, message, details, hmac_sig) "
+                            "VALUES (?,?,?,?,?,?)",
+                            (event.ts, event.module, int(event.severity), event.message,
+                             details_json, event.hmac_sig),
+                        )
+                        last_id = int(cursor.lastrowid or 0)
+                        committing = True
+                        self._db.commit()
+                    except sqlite3.OperationalError:
+                        persistence_unknown = persistence_unknown or committing
+                        self._rollback_locked()
+                        retry = True
+                    except RecorderStorageHeld:
+                        self._rollback_locked()
+                        raise
+                    except Exception:
+                        persistence_unknown = persistence_unknown or committing
+                        self._rollback_locked()
+                        retry = False
+                    else:
+                        self._after_insert_commit_locked(1, last_id)
+                        return
+                if retry and attempt < self._DLQ_RETRIES - 1:
+                    time.sleep(self._DLQ_RETRY_DELAY)
                 else:
-                    # A returned successful commit is irreversible by a later
-                    # maintenance rollback. Never retry or spill these rows.
-                    self._after_insert_commit_locked(1, last_id)
-                    return
-            if retry and attempt < self._DLQ_RETRIES - 1:
-                time.sleep(self._DLQ_RETRY_DELAY)
+                    break
+            if lease is None:
+                self._route_to_dlq(event)
             else:
-                break
-        self._route_to_dlq(event)
+                self._route_to_dlq(event, _storage_lease=lease)
+        except RecorderStorageHeld as held:
+            if persistence_unknown:
+                raise RecorderStorageHeld(held.reason, held.policy_generation,
+                    progress=dataclasses.replace(held.progress, persistence_unknown=True),
+                    replay_progress=held.replay_progress, unit_bytes=held.unit_bytes) from None
+            raise
+        finally:
+            self._storage_budget.release(lease, wrote=admitted)
 
     def record_batch_bus(self, events: Iterable[Event]) -> "BatchRecordResult":
         """Persist bus-delivered events in one transaction.
@@ -299,35 +381,58 @@ class FlightRecorder:
             )
             for event in prepared
         ]
-        for attempt in range(self._DLQ_RETRIES):
-            with self._lock:
-                try:
-                    self._db.executemany(
-                        "INSERT INTO events "
-                        "(ts, module, severity, message, details, hmac_sig) "
-                        "VALUES (?,?,?,?,?,?)",
-                        rows,
-                    )
-                    row = self._db.execute(
-                        "SELECT COALESCE(MAX(id), 0) FROM events"
-                    ).fetchone()
-                    last_id = int(row[0] if row else 0)
-                    self._db.commit()
-                except sqlite3.OperationalError:
-                    self._rollback_locked()
-                    retry = True
-                except Exception:
-                    self._rollback_locked()
-                    retry = False
+        lease = None
+        admitted = False
+        persistence_unknown = False
+        try:
+            for attempt in range(self._DLQ_RETRIES):
+                with self._lock:
+                    if not admitted:
+                        lease = self._storage_budget.admit(self._storage_unit_bytes(prepared))
+                        admitted = True
+                    try:
+                        committing = False
+                        self._db.executemany(
+                            "INSERT INTO events "
+                            "(ts, module, severity, message, details, hmac_sig) "
+                            "VALUES (?,?,?,?,?,?)",
+                            rows,
+                        )
+                        row = self._db.execute(
+                            "SELECT COALESCE(MAX(id), 0) FROM events"
+                        ).fetchone()
+                        last_id = int(row[0] if row else 0)
+                        committing = True
+                        self._db.commit()
+                    except sqlite3.OperationalError:
+                        persistence_unknown = persistence_unknown or committing
+                        self._rollback_locked()
+                        retry = True
+                    except RecorderStorageHeld:
+                        self._rollback_locked()
+                        raise
+                    except Exception:
+                        persistence_unknown = persistence_unknown or committing
+                        self._rollback_locked()
+                        retry = False
+                    else:
+                        self._after_insert_commit_locked(len(rows), last_id)
+                        return BatchRecordResult(len(prepared), 0)
+                if retry and attempt < self._DLQ_RETRIES - 1:
+                    time.sleep(self._DLQ_RETRY_DELAY)
                 else:
-                    self._after_insert_commit_locked(len(rows), last_id)
-                    return BatchRecordResult(len(prepared), 0)
-            if retry and attempt < self._DLQ_RETRIES - 1:
-                time.sleep(self._DLQ_RETRY_DELAY)
-            else:
-                break
-        dlq = self._route_batch_to_dlq(prepared)
-        return BatchRecordResult(0, dlq)
+                    break
+            dlq = (self._route_batch_to_dlq(prepared) if lease is None else
+                   self._route_batch_to_dlq(prepared, _storage_lease=lease))
+            return BatchRecordResult(0, dlq)
+        except RecorderStorageHeld as held:
+            if persistence_unknown:
+                raise RecorderStorageHeld(held.reason, held.policy_generation,
+                    progress=dataclasses.replace(held.progress, persistence_unknown=True),
+                    replay_progress=held.replay_progress, unit_bytes=held.unit_bytes) from None
+            raise
+        finally:
+            self._storage_budget.release(lease, wrote=admitted)
 
     def _rollback_locked(self) -> None:
         """Best-effort rollback of the current transaction under ``_lock``."""
@@ -355,12 +460,14 @@ class FlightRecorder:
             if self._writes >= self.PRUNE_EVERY:
                 self._writes %= self.PRUNE_EVERY
                 self._prune_locked()
+        except RecorderStorageHeld:
+            self._storage_budget.note_deferred(maintenance=True)
         except Exception:
             # Retention is a separate transaction. Its rollback cannot undo
             # the earlier successful event/receipt commit.
             self._rollback_locked()
 
-    def _route_to_dlq(self, event: Event) -> bool:
+    def _route_to_dlq(self, event: Event, *, _storage_lease=None) -> bool:
         """Append-only JSON fallback when the primary SQLite ledger is locked.
 
         Each line in dlq_events.json is a complete, self-contained JSON object
@@ -371,7 +478,8 @@ class FlightRecorder:
         the NDJSON structure.  The in-process self._dlq_lock is still held first to
         guard concurrent threads within the same process.
         """
-        return self._route_batch_to_dlq((event,)) == 1
+        return (self._route_batch_to_dlq((event,)) if _storage_lease is None else
+                self._route_batch_to_dlq((event,), _storage_lease=_storage_lease)) == 1
 
     @staticmethod
     def _dlq_entry(event: Event, dlq_ts: float) -> str:
@@ -386,7 +494,7 @@ class FlightRecorder:
             "dlq_ts":        dlq_ts,
         }, default=str) + "\n"
 
-    def _route_batch_to_dlq(self, events: Iterable[Event]) -> int:
+    def _route_batch_to_dlq(self, events: Iterable[Event], *, _storage_lease=None) -> int:
         """Append a batch under one file lock and one open/write cycle.
 
         The DLQ remains line-oriented and independently authenticated per event;
@@ -399,20 +507,31 @@ class FlightRecorder:
             return 0
         dlq_ts = time.time()
         entries = [self._dlq_entry(event, dlq_ts) for event in prepared]
+        if self._storage_budget.configured and sum(len(entry.encode("utf-8")) for entry in entries) > STORAGE_UNIT_BYTES:
+            raise RecorderStorageHeld("unit_too_large", self._storage_budget.snapshot()["policy_generation"])
         written = 0
         chunk: list[str] = []
         chunk_bytes = 0
+        def append_chunk(text, size):
+            try:
+                if _storage_lease is None:
+                    return self._append_dlq_chunk(text, size)
+                return self._append_dlq_chunk(text, size, _storage_lease=_storage_lease)
+            except RecorderStorageHeld as held:
+                raise RecorderStorageHeld(held.reason, held.policy_generation,
+                    progress=StorageWriteProgress(written, 0, written),
+                    replay_progress=held.replay_progress, unit_bytes=held.unit_bytes) from None
         for entry in entries:
             entry_bytes = len(entry.encode("utf-8"))
             if chunk and chunk_bytes + entry_bytes > self.DLQ_SEGMENT_BYTES:
-                if not self._append_dlq_chunk("".join(chunk), chunk_bytes):
+                if not append_chunk("".join(chunk), chunk_bytes):
                     return written
                 written += len(chunk)
                 chunk = []
                 chunk_bytes = 0
             chunk.append(entry)
             chunk_bytes += entry_bytes
-        if chunk and self._append_dlq_chunk("".join(chunk), chunk_bytes):
+        if chunk and append_chunk("".join(chunk), chunk_bytes):
             written += len(chunk)
         return written
 
@@ -463,7 +582,7 @@ class FlightRecorder:
         except OSError:
             return None
 
-    def _append_dlq_chunk(self, entry: str, entry_bytes: int) -> bool:
+    def _append_dlq_chunk(self, entry: str, entry_bytes: int, *, _storage_lease=None) -> bool:
         """Append one bounded chunk, waiting only at the catastrophic disk cap.
 
         Under normal floods callers enter this method only on the dedicated DLQ
@@ -472,64 +591,85 @@ class FlightRecorder:
         committed segment. This is the unavoidable fail-closed boundary: no
         evidence is discarded and disk use cannot grow without limit.
         """
-        if entry_bytes <= 0 or entry_bytes > self.DLQ_MAX_BYTES:
-            return False
-        waited_at: float | None = None
-        while True:
-            needs_capacity = False
-            try:
-                with self._dlq_capacity:
-                    active = self._active_dlq_path()
-                    paths = self._segment_paths_locked()
-                    total_bytes = self._paths_bytes(paths)
-                    active_size = (
-                        int(active.stat().st_size) if active.exists() else 0
-                    )
-                    rotate = bool(
-                        active_size
-                        and active_size + entry_bytes > self.DLQ_SEGMENT_BYTES
-                    )
-                    active_exists = active in paths
-                    projected_count = len(paths)
-                    if rotate:
-                        projected_count += 1
-                    elif not active_exists:
-                        projected_count += 1
-                    fits = (
-                        projected_count <= self.DLQ_MAX_SEGMENTS
-                        and total_bytes + entry_bytes <= self.DLQ_MAX_BYTES
-                    )
-                    if fits:
-                        if waited_at is not None:
-                            self._dlq_capacity_wait_seconds += (
-                                time.monotonic() - waited_at
-                            )
-                        if rotate and self._rotate_active_dlq_locked() is None:
-                            return False
-                        _dlq_write_exclusive(active, entry)
-                        if active.stat().st_size >= self.DLQ_SEGMENT_BYTES:
-                            self._rotate_active_dlq_locked()
-                        return True
-                    if waited_at is None:
-                        waited_at = time.monotonic()
-                        self._dlq_capacity_waits += 1
-                    needs_capacity = True
-            except Exception:
+        with self._storage_admission(entry_bytes, shared=_storage_lease):
+            if entry_bytes <= 0 or entry_bytes > self.DLQ_MAX_BYTES:
                 return False
-
-            # Do not wait for the primary recorder to become idle: during a
-            # sustained flood its idle-only maintenance path may never run, and
-            # the overflow worker itself is marked busy.  Replaying one segment
-            # here releases durable capacity without discarding signed evidence.
-            if needs_capacity:
+            waited_at: float | None = None
+            while True:
+                needs_capacity = False
+                if self._storage_budget.configured:
+                    policy = self._storage_budget.snapshot()
+                    if policy["blocked"]:
+                        raise RecorderStorageHeld("operator_blocked", policy["policy_generation"])
                 try:
-                    relieved = self.replay_dlq(max_segments=1)
+                    with self._dlq_capacity:
+                        active = self._active_dlq_path()
+                        paths = self._segment_paths_locked()
+                        total_bytes = self._paths_bytes(paths)
+                        active_size = (
+                            int(active.stat().st_size) if active.exists() else 0
+                        )
+                        rotate = bool(
+                            active_size
+                            and active_size + entry_bytes > self.DLQ_SEGMENT_BYTES
+                        )
+                        active_exists = active in paths
+                        projected_count = len(paths)
+                        if rotate:
+                            projected_count += 1
+                        elif not active_exists:
+                            projected_count += 1
+                        fits = (
+                            projected_count <= self.DLQ_MAX_SEGMENTS
+                            and total_bytes + entry_bytes <= self.DLQ_MAX_BYTES
+                        )
+                        if fits:
+                            if waited_at is not None:
+                                self._dlq_capacity_wait_seconds += (
+                                    time.monotonic() - waited_at
+                                )
+                            if rotate and self._rotate_active_dlq_locked() is None:
+                                return False
+                            _dlq_write_exclusive(active, entry)
+                            # Custody is accepted once append returned. Later
+                            # rotation/stat failure cannot reclassify its bytes.
+                            try:
+                                if active.stat().st_size >= self.DLQ_SEGMENT_BYTES:
+                                    self._rotate_active_dlq_locked()
+                            except Exception:
+                                pass
+                            return True
+                        if waited_at is None:
+                            waited_at = time.monotonic()
+                            self._dlq_capacity_waits += 1
+                        needs_capacity = True
+                except RecorderStorageHeld:
+                    raise
                 except Exception:
-                    relieved = None
-                if relieved is not None and relieved.segments_completed:
-                    continue
-                with self._dlq_capacity:
-                    self._dlq_capacity.wait(timeout=0.25)
+                    return False
+
+                # Do not wait for the primary recorder to become idle: during a
+                # sustained flood its idle-only maintenance path may never run, and
+                # the overflow worker itself is marked busy.  Replaying one segment
+                # here releases durable capacity without discarding signed evidence.
+                if needs_capacity:
+                    if self._storage_runtime is not None and self._storage_runtime._stop.is_set():
+                        raise RecorderStorageHeld("worker_stopped", self._storage_budget.snapshot()["policy_generation"])
+                    if self._storage_budget.configured:
+                        # A configured worker parks this input, releases its
+                        # lease, and requests separately-accounted replay.
+                        # Never retain a lease in the legacy capacity loop.
+                        raise RecorderStorageHeld("spool_capacity", self._storage_budget.snapshot()["policy_generation"])
+                    try:
+                        relieved = self.replay_dlq(max_segments=1)
+                    except RecorderStorageHeld:
+                        raise
+                    except Exception:
+                        relieved = None
+                    if relieved is not None and relieved.segments_completed:
+                        continue
+                    with self._dlq_capacity:
+                        self._dlq_capacity.wait(timeout=0.25)
 
     def replay_dlq(self, *, max_segments: int = 1) -> "DLQReplayResult":
         """Serialize authenticated replay requested by maintenance or capacity."""
@@ -587,90 +727,96 @@ class FlightRecorder:
         """
         if not events:
             return (0, 0)
-        for attempt in range(self._DLQ_RETRIES):
-            with self._lock:
-                try:
-                    # Deduplicate signatures inside this batch, then use one
-                    # indexed membership query instead of two SELECTs per row.
-                    # This keeps replay O(batch) in Python and a fixed number of
-                    # SQLite statements per batch rather than an N+1 query loop.
-                    unique = {event.hmac_sig: event for event in events}
-                    signatures = list(unique)
-                    placeholders = ",".join("?" for _ in signatures)
-                    prior_receipts = {
-                        str(row[0]) for row in self._db.execute(
-                            f"SELECT hmac_sig FROM dlq_replay_receipts "
-                            f"WHERE segment=? AND hmac_sig IN ({placeholders})",  # nosec B608
-                            [segment, *signatures],
-                        ).fetchall()
-                    }
-                    candidates = [
-                        signature for signature in signatures
-                        if signature not in prior_receipts
-                    ]
-                    stamp = time.time()
-                    self._db.executemany(
-                        "INSERT OR IGNORE INTO dlq_replay_receipts "
-                        "(hmac_sig, segment, replayed_at) VALUES (?,?,?)",
-                        ((signature, segment, stamp) for signature in signatures),
-                    )
-                    existing: set[str] = set()
-                    if candidates:
-                        candidate_placeholders = ",".join("?" for _ in candidates)
-                        existing = {
+        if (self._storage_budget.configured and self._storage_runtime is not None
+                and self._storage_runtime._stop.is_set()):
+            raise RecorderStorageHeld("worker_stopped", self._storage_budget.snapshot()["policy_generation"])
+        with self._storage_admission(self._storage_unit_bytes(events)):
+            for attempt in range(self._DLQ_RETRIES):
+                with self._lock:
+                    try:
+                        # Deduplicate signatures inside this batch, then use one
+                        # indexed membership query instead of two SELECTs per row.
+                        # This keeps replay O(batch) in Python and a fixed number of
+                        # SQLite statements per batch rather than an N+1 query loop.
+                        unique = {event.hmac_sig: event for event in events}
+                        signatures = list(unique)
+                        placeholders = ",".join("?" for _ in signatures)
+                        prior_receipts = {
                             str(row[0]) for row in self._db.execute(
-                                f"SELECT hmac_sig FROM events WHERE hmac_sig IN "
-                                f"({candidate_placeholders})",  # nosec B608
-                                candidates,
+                                f"SELECT hmac_sig FROM dlq_replay_receipts "
+                                f"WHERE segment=? AND hmac_sig IN ({placeholders})",  # nosec B608
+                                [segment, *signatures],
                             ).fetchall()
                         }
-                    missing = [
-                        unique[signature]
-                        for signature in candidates
-                        if signature not in existing
-                    ]
-                    self._db.executemany(
-                        "INSERT INTO events "
-                        "(ts, module, severity, message, details, hmac_sig) "
-                        "VALUES (?,?,?,?,?,?)",
-                        (
+                        candidates = [
+                            signature for signature in signatures
+                            if signature not in prior_receipts
+                        ]
+                        stamp = time.time()
+                        self._db.executemany(
+                            "INSERT OR IGNORE INTO dlq_replay_receipts "
+                            "(hmac_sig, segment, replayed_at) VALUES (?,?,?)",
+                            ((signature, segment, stamp) for signature in signatures),
+                        )
+                        existing: set[str] = set()
+                        if candidates:
+                            candidate_placeholders = ",".join("?" for _ in candidates)
+                            existing = {
+                                str(row[0]) for row in self._db.execute(
+                                    f"SELECT hmac_sig FROM events WHERE hmac_sig IN "
+                                    f"({candidate_placeholders})",  # nosec B608
+                                    candidates,
+                                ).fetchall()
+                            }
+                        missing = [
+                            unique[signature]
+                            for signature in candidates
+                            if signature not in existing
+                        ]
+                        self._db.executemany(
+                            "INSERT INTO events "
+                            "(ts, module, severity, message, details, hmac_sig) "
+                            "VALUES (?,?,?,?,?,?)",
                             (
-                                event.ts, event.module, int(event.severity),
-                                event.message, self._details_json(event.details),
-                                event.hmac_sig,
-                            )
-                            for event in missing
-                        ),
-                    )
-                    inserted = len(missing)
-                    duplicates = len(events) - inserted
-                    row = self._db.execute(
-                        "SELECT COALESCE(MAX(id), 0) FROM events"
-                    ).fetchone()
-                    last_id = int(row[0] if row else 0)
-                    self._db.commit()
-                except sqlite3.OperationalError:
-                    self._rollback_locked()
-                    retry = True
-                except Exception:
-                    self._rollback_locked()
-                    retry = False
+                                (
+                                    event.ts, event.module, int(event.severity),
+                                    event.message, self._details_json(event.details),
+                                    event.hmac_sig,
+                                )
+                                for event in missing
+                            ),
+                        )
+                        inserted = len(missing)
+                        duplicates = len(events) - inserted
+                        row = self._db.execute(
+                            "SELECT COALESCE(MAX(id), 0) FROM events"
+                        ).fetchone()
+                        last_id = int(row[0] if row else 0)
+                        self._db.commit()
+                    except sqlite3.OperationalError:
+                        self._rollback_locked()
+                        retry = True
+                    except Exception:
+                        self._rollback_locked()
+                        retry = False
+                    else:
+                        self._after_insert_commit_locked(inserted, last_id)
+                        return inserted, duplicates
+                if retry and attempt < self._DLQ_RETRIES - 1:
+                    time.sleep(self._DLQ_RETRY_DELAY)
                 else:
-                    self._after_insert_commit_locked(inserted, last_id)
-                    return inserted, duplicates
-            if retry and attempt < self._DLQ_RETRIES - 1:
-                time.sleep(self._DLQ_RETRY_DELAY)
-            else:
-                break
-        return None
+                    break
+            return None
 
     def _remove_replay_receipts(self, segment: str) -> None:
         try:
-            with self._lock:
+            with self._storage_admission(0), self._lock:
                 self._db.execute(
                     "DELETE FROM dlq_replay_receipts WHERE segment=?", (segment,)
                 )
                 self._db.commit()
+        except RecorderStorageHeld:
+            self._storage_budget.note_deferred(maintenance=True)
         except Exception:
             pass
 
@@ -689,6 +835,25 @@ class FlightRecorder:
         finally:
             os.close(fd)
 
+    def _storage_replay_lines(self, stream):
+        if not self._storage_budget.configured:
+            yield from stream
+            return
+        while True:
+            raw = stream.readline(STORAGE_UNIT_BYTES + 1)
+            if not raw:
+                return
+            if len(raw) > STORAGE_UNIT_BYTES:
+                # Drain only this physical line in finite chunks. It remains
+                # untouched in the source; never parse/quarantine fragments.
+                while raw and not raw.endswith(b"\n"):
+                    if self._storage_runtime is not None and self._storage_runtime._stop.is_set():
+                        raise RecorderStorageHeld("worker_stopped", self._storage_budget.snapshot()["policy_generation"])
+                    raw = stream.readline(64 * 1024)
+                yield None
+            else:
+                yield raw.decode("utf-8", errors="replace")
+
     def _replay_dlq_unlocked(self, *, max_segments: int = 1) -> "DLQReplayResult":
         """Authenticate and idempotently re-ingest bounded spill segments.
 
@@ -699,6 +864,8 @@ class FlightRecorder:
         every invalid line has been durably quarantined.
         """
         max_segments = max(1, min(int(max_segments), self.DLQ_MAX_SEGMENTS))
+        lease = self._storage_budget.admit(0)
+        self._storage_budget.release(lease)
         with self._dlq_capacity:
             self._rotate_active_dlq_locked()
             segments = [
@@ -717,18 +884,42 @@ class FlightRecorder:
             invalid_lines: list[str] = []
             batch: list[Event] = []
             segment_ok = True
+            segment_deferred = False
+            batch_bytes = 0
             try:
-                with segment.open("r", encoding="utf-8", errors="replace") as stream:
-                    for raw in stream:
+                opened = (segment.open("rb") if self._storage_budget.configured else
+                          segment.open("r", encoding="utf-8", errors="replace"))
+                with opened as stream:
+                    for raw in self._storage_replay_lines(stream):
                         processed += 1
+                        if raw is None:
+                            segment_deferred = True
+                            self._storage_budget.note_deferred(replay=True)
+                            continue
                         event = self._decode_dlq_event(raw)
                         if event is None:
                             invalid_lines.append(
                                 raw if raw.endswith("\n") else raw + "\n"
                             )
-                            quarantined += 1
                             continue
+                        size = self._storage_unit_bytes((event,))
+                        if self._storage_budget.configured and size > STORAGE_UNIT_BYTES:
+                            segment_deferred = True
+                            self._storage_budget.note_deferred(replay=True)
+                            continue
+                        if batch and self._storage_budget.configured and batch_bytes + size + 64 > STORAGE_UNIT_BYTES:
+                            result = self._insert_replay_batch(batch, segment.name)
+                            if result is None:
+                                segment_ok = False
+                                break
+                            inserted += result[0]
+                            duplicates += result[1]
+                            batch.clear()
+                            batch_bytes = 0
+                            # New units refresh facts only on this worker path.
+                            self._storage_refresh_on_worker()
                         batch.append(event)
+                        batch_bytes += size + 64
                         if len(batch) >= self.DLQ_REPLAY_BATCH:
                             result = self._insert_replay_batch(batch, segment.name)
                             if result is None:
@@ -737,6 +928,9 @@ class FlightRecorder:
                             inserted += result[0]
                             duplicates += result[1]
                             batch.clear()
+                            batch_bytes = 0
+                            if self._storage_budget.configured:
+                                self._storage_refresh_on_worker()
                 if segment_ok and batch:
                     result = self._insert_replay_batch(batch, segment.name)
                     if result is None:
@@ -744,11 +938,19 @@ class FlightRecorder:
                     else:
                         inserted += result[0]
                         duplicates += result[1]
+                        if self._storage_budget.configured:
+                            self._storage_refresh_on_worker()
+            except RecorderStorageHeld as held:
+                raise RecorderStorageHeld(held.reason, held.policy_generation,
+                    replay_progress=DLQReplayResult(processed, inserted, duplicates, quarantined, completed, failures)) from None
             except (OSError, UnicodeError):
                 segment_ok = False
 
             if not segment_ok:
                 failures += 1
+                continue
+
+            if segment_deferred:
                 continue
 
             quarantine_path: Path | None = None
@@ -765,8 +967,14 @@ class FlightRecorder:
                         temp.unlink()
                     except FileNotFoundError:
                         pass
-                    self._write_private_text(temp, "".join(invalid_lines))
+                    text = "".join(invalid_lines)
+                    with self._storage_admission(len(text.encode("utf-8"))):
+                        self._write_private_text(temp, text)
                     os.replace(temp, quarantine_path)
+                    quarantined += len(invalid_lines)
+                except RecorderStorageHeld as held:
+                    raise RecorderStorageHeld(held.reason, held.policy_generation,
+                        replay_progress=DLQReplayResult(processed, inserted, duplicates, quarantined, completed, failures)) from None
                 except OSError:
                     failures += 1
                     try:
@@ -781,6 +989,8 @@ class FlightRecorder:
                 continue
             self._remove_replay_receipts(segment.name)
             completed += 1
+            if self._storage_budget.configured:
+                self._storage_refresh_on_worker()
             with self._dlq_capacity:
                 self._dlq_capacity.notify_all()
 
@@ -796,29 +1006,30 @@ class FlightRecorder:
     def _prune_locked(self) -> None:
         """Bound the table to ~MAX_ROWS newest rows (id-ordered). O(deleted rows)
         — cheap and keeps count_since / events_in_window / recent fast forever."""
-        try:
-            row = self._db.execute("SELECT COUNT(*) FROM events").fetchone()
-            excess = max(0, int(row[0] if row else 0) - int(self.MAX_ROWS))
-            if excess:
-                # Retire lower-severity chatter first so an INFO flood cannot
-                # erase the entire HIGH/CRITICAL evidence window. If protected
-                # evidence alone exceeds MAX_ROWS its oldest rows are retired,
-                # preserving the hard disk bound.
-                self._db.execute(
-                    "DELETE FROM events WHERE id IN ("
-                    "SELECT id FROM events ORDER BY "
-                    "CASE WHEN severity >= ? THEN 1 ELSE 0 END ASC, id ASC LIMIT ?)",
-                    (int(Severity.HIGH), excess),
-                )
-                self._db.commit()
-                # DELETE alone leaves freed pages inside SQLite/WAL files, so
-                # the old database kept occupying C: even though row retention
-                # was active. Incremental vacuum plus a passive checkpoint
-                # returns unused pages gradually without freezing writers.
-                self._db.execute("PRAGMA incremental_vacuum(2000)")
-                self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        except Exception:
-            self._rollback_locked()
+        with self._storage_admission(0):
+            try:
+                row = self._db.execute("SELECT COUNT(*) FROM events").fetchone()
+                excess = max(0, int(row[0] if row else 0) - int(self.MAX_ROWS))
+                if excess:
+                    # Retire lower-severity chatter first so an INFO flood cannot
+                    # erase the entire HIGH/CRITICAL evidence window. If protected
+                    # evidence alone exceeds MAX_ROWS its oldest rows are retired,
+                    # preserving the hard disk bound.
+                    self._db.execute(
+                        "DELETE FROM events WHERE id IN ("
+                        "SELECT id FROM events ORDER BY "
+                        "CASE WHEN severity >= ? THEN 1 ELSE 0 END ASC, id ASC LIMIT ?)",
+                        (int(Severity.HIGH), excess),
+                    )
+                    self._db.commit()
+                    # DELETE alone leaves freed pages inside SQLite/WAL files, so
+                    # the old database kept occupying C: even though row retention
+                    # was active. Incremental vacuum plus a passive checkpoint
+                    # returns unused pages gradually without freezing writers.
+                    self._db.execute("PRAGMA incremental_vacuum(2000)")
+                    self._db.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception:
+                self._rollback_locked()
 
     def recent(self, limit: int = 200) -> List[Event]:
         with self._lock:
@@ -1147,6 +1358,13 @@ class AsyncRecorderMetrics:
     rejection_stopping: int = 0
     rejection_unavailable: int = 0
     coverage_gap: bool = False
+    rejection_storage_hold: int = 0
+    storage_pending_events: int = 0
+    storage_user_discarded: int = 0
+    storage_held: bool = False
+    storage_policy_generation: int = 0
+    storage_reason: str = ""
+    storage_write_failures: int = 0
 
 
 class RecorderAdmissionRejected(RuntimeError):
@@ -1288,9 +1506,327 @@ class AsyncFlightRecorder:
         self._rejection_saturated = 0
         self._rejection_stopping = 0
         self._rejection_unavailable = 0
+        self._rejection_storage_hold = 0
+        self._storage_user_discarded = 0
+        self._storage_pending_events = 0
+        self._storage_held = False
+        self._storage_reason = ""
+        self._storage_policy_generation = 0
+        self._storage_tracking = False
+        self._storage_slots = {"primary": None, "overflow": None}
+        self._storage_pending_generation = 0
+        self._storage_publication = 0
+        self._storage_wake = threading.Event()
+        budget = getattr(recorder, "_storage_budget", None)
+        if budget is not None:
+            with recorder._storage_runtime_lock:
+                # One owner for this connection's lifetime. Restart this same
+                # adapter; constructing another cannot erase retained input or
+                # reset its publication/loss counters, even after a clean stop.
+                if recorder._storage_runtime is not None:
+                    raise RuntimeError("recorder already has a runtime owner; restart that owner")
+                recorder._storage_runtime = self
+            self._storage_policy_changed()
+
+    def _storage_policy_changed(self):
+        budget = getattr(self._recorder, "_storage_budget", None)
+        if budget is None:
+            return
+        view = budget.snapshot()
+        with self._metrics_lock:
+            if view["configured"] and not self._storage_tracking:
+                self._storage_pending_events = max(0, self._accepted + self._overflow_queued
+                    - self._persisted - self._storage_dlq - self._overflow_dlq - self._dlq_failures)
+                self._storage_tracking = True
+            self._storage_policy_generation = max(self._storage_policy_generation, view["policy_generation"])
+            oversized = any(slot and slot["oversized"] for slot in self._storage_slots.values())
+            self._storage_held = view["state"] in {"held", "unavailable"} or oversized
+            self._storage_reason = ("operator_blocked" if view["blocked"] else
+                                    "unit_too_large" if oversized else
+                                    view["reason_code"] if self._storage_held else "")
+        self._storage_wake.set()
+        if view["configured"]:
+            if self._thread is not None and self._thread.is_alive():
+                self._wake_idle(self._queue)
+            if self._dlq_thread is not None and self._dlq_thread.is_alive():
+                self._wake_idle(self._overflow_queue)
+        self._publish_storage_runtime()
+
+    def _publish_storage_runtime(self):
+        budget = getattr(self._recorder, "_storage_budget", None)
+        if budget is None:
+            return
+        with self._metrics_lock:
+            self._storage_publication += 1
+            revision = self._storage_publication
+            values = {"storage_pending_events": self._storage_pending_events,
+                "parked_primary_events": len(self._storage_slots["primary"]["events"])
+                    if self._storage_slots["primary"] and not self._storage_slots["primary"]["in_flight"] else 0,
+                "parked_overflow_events": len(self._storage_slots["overflow"]["events"])
+                    if self._storage_slots["overflow"] and not self._storage_slots["overflow"]["in_flight"] else 0,
+                "rejection_storage_hold": self._rejection_storage_hold,
+                "storage_user_discarded": self._storage_user_discarded,
+                "coverage_gap": bool(self._admission_rejected or self._storage_user_discarded or self._dlq_failures),
+                "storage_write_failures": self._dlq_failures,
+                "storage_held": self._storage_held,
+                "storage_policy_generation": self._storage_policy_generation,
+                "storage_reason": self._storage_reason}
+        budget.publish_runtime(revision, values)
+
+    def _storage_probe_published(self):
+        view = self._recorder._storage_budget.snapshot()
+        with self._metrics_lock:
+            oversized = any(slot and slot["oversized"] for slot in self._storage_slots.values())
+            self._storage_policy_generation = max(self._storage_policy_generation, view["policy_generation"])
+            self._storage_held = oversized or view["state"] in {"held", "unavailable"}
+            self._storage_reason = "unit_too_large" if oversized else view["reason_code"]
+        self._publish_storage_runtime()
+
+    def retirement_snapshot(self) -> dict:
+        with self._state_lock:
+            retired = not any(worker is not None and worker.is_alive()
+                              for worker in (self._thread, self._dlq_thread))
+            generation = self._worker_generation
+            stopping = self._stop.is_set()
+            with self._metrics_lock:
+                pending = (self._storage_pending_events if self._storage_tracking else
+                           max(0, self._accepted + self._overflow_queued - self._persisted
+                               - self._storage_dlq - self._overflow_dlq - self._dlq_failures))
+                parked = any(slot and slot["events"] for slot in self._storage_slots.values())
+        return {"schema": 1, "worker_generation": generation, "workers_retired": retired,
+                "drained": retired and pending == 0 and not parked,
+                "pending_events": pending, "stopping": stopping}
+
+    def held_unit_review(self, lane: str) -> dict:
+        base = {"schema": 1, "available": False, "reason_code": "worker_unavailable"}
+        if type(lane) is not str or lane not in {"primary", "overflow"}:
+            return base
+        generation = self._recorder._storage_budget.snapshot()["policy_generation"]
+        with self._metrics_lock:
+            slot = self._storage_slots[lane]
+            if not slot or not slot["events"]:
+                return base
+            allowed = slot["reason"] == "unit_too_large" and slot["oversized"] and not slot["in_flight"]
+            return {"schema": 1, "available": True, "reason_code": slot["reason"], "lane": lane,
+                "token": slot["token"], "policy_generation": generation,
+                "worker_generation": self._worker_generation,
+                "pending_generation": slot["generation"], "event_count": 1,
+                "serialized_bytes": slot["bytes"], "volatile": True,
+                "in_flight": slot["in_flight"], "discard_allowed": allowed}
+
+    def discard_held_unit(self, *, lane: str, token: str, policy_generation: int,
+                          worker_generation: int, pending_generation: int) -> dict:
+        def reply(accepted, reason):
+            return {"schema": 1, "accepted": accepted, "reason_code": reason,
+                    "discarded_events": int(accepted)}
+        if (type(lane) is not str or lane not in {"primary", "overflow"}
+                or type(token) is not str or len(token) != 32
+                or any(type(value) is not int or value < 0 for value in (
+                    policy_generation, worker_generation, pending_generation))):
+            return reply(False, "invalid_request")
+        budget = self._recorder._storage_budget
+        with self._state_lock:
+            if worker_generation != self._worker_generation:
+                return reply(False, "stale_generation")
+            with self._metrics_lock:
+                # The policy lock remains short and memory-only through this
+                # exact ownership decision. Neither worker holds it over I/O.
+                with budget._lock:
+                    if policy_generation != budget._generation:
+                        return reply(False, "stale_generation")
+                    slot = self._storage_slots[lane]
+                    if (not slot or not slot["events"] or slot["token"] != token
+                            or slot["generation"] != pending_generation):
+                        return reply(False, "stale_generation")
+                    if slot["in_flight"]:
+                        return reply(False, "in_flight")
+                    if slot["reason"] != "unit_too_large" or not slot["oversized"]:
+                        return reply(False, "not_discardable")
+                    # Only the first, oversized volatile event is discarded.
+                    # The rest of its admitted suffix and every durable source
+                    # remain owned. A repeated token cannot acknowledge twice.
+                    slot["events"].pop(0)
+                    self._storage_pending_events -= 1
+                    self._storage_user_discarded += 1
+                    self._storage_pending_generation += 1
+                    slot.update(reason="", oversized=False, token="", bytes=None,
+                                generation=self._storage_pending_generation)
+                    if not slot["events"]:
+                        self._storage_slots[lane] = None
+                    self._storage_held = any(item and item["reason"] for item in self._storage_slots.values())
+                    self._storage_reason = next((item["reason"] for item in self._storage_slots.values()
+                                                 if item and item["reason"]), "")
+                    pending_queue = self._queue if lane == "primary" else self._overflow_queue
+                    pending_queue.task_done()
+        budget.clear_local_unit_hold()
+        self._storage_wake.set()
+        self._publish_storage_runtime()
+        return reply(True, "discarded")
+
+    def _storage_slot(self, lane, events):
+        with self._metrics_lock:
+            if not self._storage_tracking:
+                # Capacity STOP can park legacy input too. Ownership tracking
+                # is independent of whether a byte policy was configured; it
+                # must survive retirement and select the resuming lane loop.
+                self._storage_pending_events = max(0, self._accepted + self._overflow_queued
+                    - self._persisted - self._storage_dlq - self._overflow_dlq - self._dlq_failures)
+                self._storage_tracking = True
+            self._storage_pending_generation += 1
+            self._storage_slots[lane] = {"events": list(events), "reason": "", "token": "",
+                "generation": self._storage_pending_generation, "in_flight": False,
+                "oversized": False, "bytes": None}
+
+    def _storage_park(self, lane, held, *, oversized=False, size=None):
+        token = secrets.token_hex(16)
+        with self._metrics_lock:
+            slot = self._storage_slots[lane]
+            if slot and slot["events"]:
+                self._storage_pending_generation += 1
+                slot.update(reason=held.reason, in_flight=False, oversized=oversized,
+                            bytes=size, token=token, generation=self._storage_pending_generation)
+            self._storage_held = True
+            self._storage_reason = held.reason
+            self._storage_policy_generation = max(self._storage_policy_generation, held.policy_generation)
+        self._publish_storage_runtime()
+
+    def _storage_ack(self, lane, count):
+        if not count:
+            return
+        pending_queue = self._queue if lane == "primary" else self._overflow_queue
+        with self._metrics_lock:
+            slot = self._storage_slots[lane]
+            if slot is None or not 0 <= count <= len(slot["events"]):
+                raise RuntimeError("invalid recorder prefix acknowledgement")
+            del slot["events"][:count]
+            self._storage_pending_events -= count
+            slot.update(reason="", token="", in_flight=False, oversized=False, bytes=None)
+            if not slot["events"]:
+                self._storage_slots[lane] = None
+            self._storage_held = any(item and item["reason"] for item in self._storage_slots.values())
+            self._storage_reason = next((item["reason"] for item in self._storage_slots.values()
+                                         if item and item["reason"]), "")
+        for _ in range(count):
+            pending_queue.task_done()
+        self._publish_storage_runtime()
+
+    def _run_storage_lane(self, lane):
+        pending_queue = self._queue if lane == "primary" else self._overflow_queue
+        capacity = self._batch_size if lane == "primary" else self._dlq_batch_size
+        while True:
+            with self._metrics_lock:
+                slot = self._storage_slots[lane]
+                oversized = any(item and item["oversized"] for item in self._storage_slots.values())
+            if oversized:
+                if self._stop.is_set():
+                    break
+                self._storage_wake.wait(1.0)
+                self._storage_wake.clear()
+                continue
+            if not slot:
+                if self._stop.is_set() and pending_queue.empty():
+                    break
+                try:
+                    event = pending_queue.get(timeout=min(1.0, self._idle_wait_seconds()))
+                except queue.Empty:
+                    if lane == "primary":
+                        self._recorder._storage_refresh_on_worker()
+                        self._maybe_replay()
+                    continue
+                if lane == "primary":
+                    with self._metrics_lock:
+                        self._primary_saturated.clear()
+                if event is _RECORDER_WAKE:
+                    pending_queue.task_done()
+                    if not self._stop.is_set():
+                        self._recorder._storage_refresh_on_worker()
+                    continue
+                events = [event]
+                while len(events) < capacity:
+                    try:
+                        event = pending_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if event is _RECORDER_WAKE:
+                        pending_queue.task_done()
+                    else:
+                        events.append(event)
+                self._storage_slot(lane, events)
+            self._recorder._storage_refresh_on_worker()
+            with self._metrics_lock:
+                slot = self._storage_slots[lane]
+                if not slot or not slot["events"]:
+                    continue
+                events = list(slot["events"])
+            unit = []
+            unit_bytes = 0
+            first_size = self._recorder._storage_unit_bytes(events[:1])
+            if first_size > STORAGE_UNIT_BYTES:
+                try:
+                    self._recorder._storage_budget.admit(first_size)
+                except RecorderStorageHeld as held:
+                    self._storage_park(lane, held, oversized=True, size=first_size)
+                if self._stop.is_set():
+                    break
+                continue
+            for event in events:
+                size = self._recorder._storage_unit_bytes((event,))
+                if unit and unit_bytes + size + 64 > STORAGE_UNIT_BYTES:
+                    break
+                unit.append(event)
+                unit_bytes += size + 64
+            with self._metrics_lock:
+                slot = self._storage_slots[lane]
+                if not slot:
+                    continue
+                slot["in_flight"] = True
+            try:
+                if lane == "primary":
+                    result = self._recorder.record_batch_bus(unit)
+                    persisted, spooled = result.persisted, result.dlq
+                else:
+                    persisted, spooled = 0, self._recorder._route_batch_to_dlq(unit)
+            except RecorderStorageHeld as held:
+                progress = held.progress
+                with self._metrics_lock:
+                    self._persisted += progress.persisted
+                    if lane == "primary":
+                        self._storage_dlq += progress.spooled
+                    else:
+                        self._overflow_dlq += progress.spooled
+                    if held.replay_progress is not None:
+                        self._replayed += held.replay_progress.inserted
+                        self._replay_duplicates += held.replay_progress.duplicates
+                        self._replay_quarantined += held.replay_progress.quarantined
+                        self._replay_failures += held.replay_progress.failures
+                self._storage_ack(lane, progress.completed)
+                self._storage_park(lane, held, oversized=held.reason == "unit_too_large" and len(unit) == 1,
+                                   size=held.unit_bytes if len(unit) == 1 else None)
+                if self._stop.is_set():
+                    break
+                if held.reason == "spool_capacity":
+                    self._recorder._storage_refresh_on_worker()
+                    self._maybe_replay(force=True)
+                self._storage_wake.wait(1.0)
+                self._storage_wake.clear()
+                continue
+            with self._metrics_lock:
+                self._persisted += persisted
+                if lane == "primary":
+                    self._storage_dlq += spooled
+                    self._batches += 1
+                else:
+                    self._overflow_dlq += spooled
+                self._dlq_failures += len(unit) - persisted - spooled
+            self._storage_ack(lane, len(unit))
+            if lane == "primary" and pending_queue.empty():
+                self._maybe_replay()
+        self._publish_storage_runtime()
 
     def start(self) -> bool:
         """Start missing workers, or explicitly restart after a completed stop."""
+        if self._storage_tracking and self._recorder._storage_runtime is not self:
+            return False
         with self._state_lock:
             if self._stop_callers:
                 return False
@@ -1383,7 +1919,14 @@ class AsyncFlightRecorder:
                     "rejection_saturated": self._rejection_saturated,
                     "rejection_stopping": self._rejection_stopping,
                     "rejection_unavailable": self._rejection_unavailable,
-                    "coverage_gap": self._admission_rejected > 0,
+                    "rejection_storage_hold": self._rejection_storage_hold,
+                    "storage_pending_events": self._storage_pending_events,
+                    "storage_user_discarded": self._storage_user_discarded,
+                    "storage_held": self._storage_held,
+                    "storage_policy_generation": self._storage_policy_generation,
+                    "storage_reason": self._storage_reason,
+                    "storage_write_failures": self._dlq_failures,
+                    "coverage_gap": bool(self._admission_rejected or self._storage_user_discarded or self._dlq_failures),
                 }
 
     def submit(self, event: Event) -> None:
@@ -1401,10 +1944,21 @@ class AsyncFlightRecorder:
         # Signing, lifecycle thread starts/joins and every storage operation
         # happen outside it, so a blocked disk cannot hold publishers here.
         with self._metrics_lock:
+            accepted = False
+            storage_hold = False
+            if self._storage_tracking:
+                view = self._recorder._storage_budget.snapshot()
+                self._storage_policy_generation = view["policy_generation"]
+                storage_hold = (view["blocked"] or view["reason_code"] in {
+                    "db_target", "wal_target", "free_floor", "probe_failed", "identity_changed",
+                    "spool_capacity",
+                } or any(slot and slot["oversized"] for slot in self._storage_slots.values()))
             if self._stop.is_set():
                 reason = "stopping"
             elif self._starting:
                 reason = "unavailable"
+            elif storage_hold:
+                reason = "storage_hold"
             else:
                 thread = self._thread
                 dlq_thread = self._dlq_thread
@@ -1417,23 +1971,32 @@ class AsyncFlightRecorder:
                         self._primary_saturated.set()
                     else:
                         self._accepted += 1
-                        return
-                if dlq_running:
+                        self._storage_pending_events += int(self._storage_tracking)
+                        accepted = True
+                if not accepted and dlq_running:
                     try:
                         self._overflow_queue.put_nowait(event)
                     except queue.Full:
                         pass
                     else:
                         self._overflow_queued += 1
-                        return
+                        self._storage_pending_events += int(self._storage_tracking)
+                        accepted = True
                 reason = "saturated" if running or dlq_running else "unavailable"
-            self._admission_rejected += 1
-            if reason == "saturated":
-                self._rejection_saturated += 1
-            elif reason == "stopping":
-                self._rejection_stopping += 1
-            else:
-                self._rejection_unavailable += 1
+            if not accepted:
+                self._admission_rejected += 1
+                if reason == "saturated":
+                    self._rejection_saturated += 1
+                elif reason == "stopping":
+                    self._rejection_stopping += 1
+                elif reason == "storage_hold":
+                    self._rejection_storage_hold += 1
+                else:
+                    self._rejection_unavailable += 1
+        if self._storage_tracking:
+            self._publish_storage_runtime()
+        if accepted:
+            return
         raise RecorderAdmissionRejected(reason)
 
     def stop(self, timeout: float = 5.0) -> bool:
@@ -1447,6 +2010,7 @@ class AsyncFlightRecorder:
             with self._metrics_lock:
                 self._stop.set()
         try:
+            self._storage_wake.set()
             # Wake only existing owners. A repeated stop after retirement must
             # not leave wake tokens in the preserved queues for a later start.
             if thread is not None and thread.is_alive():
@@ -1485,7 +2049,13 @@ class AsyncFlightRecorder:
                         self._thread = None
                     if self._dlq_thread is dlq_thread:
                         self._dlq_thread = None
-                    return primary_empty and overflow_empty
+                    with self._metrics_lock:
+                        pending = (self._storage_pending_events if self._storage_tracking else
+                                   max(0, self._accepted + self._overflow_queued - self._persisted
+                                       - self._storage_dlq - self._overflow_dlq - self._dlq_failures))
+                        retained = pending > 0 or any(
+                            slot and slot["events"] for slot in self._storage_slots.values())
+                    return primary_empty and overflow_empty and not retained
                 return False
         finally:
             # Keep replacement fenced until every caller has completed its
@@ -1561,7 +2131,14 @@ class AsyncFlightRecorder:
                 rejection_saturated=self._rejection_saturated,
                 rejection_stopping=self._rejection_stopping,
                 rejection_unavailable=self._rejection_unavailable,
-                coverage_gap=self._admission_rejected > 0,
+                coverage_gap=bool(self._admission_rejected or self._storage_user_discarded or self._dlq_failures),
+                rejection_storage_hold=self._rejection_storage_hold,
+                storage_pending_events=self._storage_pending_events,
+                storage_user_discarded=self._storage_user_discarded,
+                storage_held=self._storage_held,
+                storage_policy_generation=self._storage_policy_generation,
+                storage_reason=self._storage_reason,
+                storage_write_failures=self._dlq_failures,
             )
 
     @staticmethod
@@ -1582,11 +2159,17 @@ class AsyncFlightRecorder:
         return 5.0 if self._quiet_idle_policy() else 1.0
 
     def _run(self) -> None:
+        if self._storage_tracking:
+            self._run_storage_lane("primary")
+            return
         while (
             not self._stop.is_set()
             or not self._queue.empty()
             or not self._dlq_done.is_set()
         ):
+            if self._storage_tracking:
+                self._run_storage_lane("primary")
+                return
             batch: list[Event] = []
             try:
                 event = self._queue.get(timeout=self._idle_wait_seconds())
@@ -1618,20 +2201,39 @@ class AsyncFlightRecorder:
                     batch.append(event)
                 except queue.Empty:
                     break
-            result = self._recorder.record_batch_bus(batch)
+            try:
+                result = self._recorder.record_batch_bus(batch)
+            except RecorderStorageHeld as held:
+                self._storage_policy_changed()
+                self._storage_slot("primary", batch)
+                with self._metrics_lock:
+                    self._persisted += held.progress.persisted
+                    self._storage_dlq += held.progress.spooled
+                self._storage_ack("primary", held.progress.completed)
+                self._storage_park("primary", held)
+                if not self._stop.is_set():
+                    self._run_storage_lane("primary")
+                return
             with self._metrics_lock:
                 self._persisted += result.persisted
                 self._storage_dlq += result.dlq
                 self._dlq_failures += len(batch) - result.persisted - result.dlq
                 self._batches += 1
+                if self._storage_tracking:
+                    self._storage_pending_events -= len(batch)
             for _ in batch:
                 self._queue.task_done()
             if self._queue.empty():
                 self._maybe_replay()
+            if self._storage_tracking:
+                self._run_storage_lane("primary")
+                return
         # One bounded final maintenance pass after the overflow writer drained.
         self._maybe_replay(force=True)
 
     def _maybe_replay(self, *, force: bool = False) -> None:
+        if self._storage_tracking and self._stop.is_set():
+            return
         replay = getattr(self._recorder, "replay_dlq", None)
         if not callable(replay):
             return
@@ -1648,6 +2250,12 @@ class AsyncFlightRecorder:
         self._last_replay_at = now
         try:
             result = replay(max_segments=1)
+        except RecorderStorageHeld as held:
+            self._recorder._storage_budget.note_deferred(replay=True)
+            self._recorder._storage_budget.clear_local_unit_hold()
+            result = held.replay_progress
+            if result is None:
+                return
         except Exception:
             with self._metrics_lock:
                 self._replay_failures += 1
@@ -1661,7 +2269,13 @@ class AsyncFlightRecorder:
     def _run_dlq(self) -> None:
         """Drain overflow evidence in batches without blocking publishers."""
         try:
+            if self._storage_tracking:
+                self._run_storage_lane("overflow")
+                return
             while not self._stop.is_set() or not self._overflow_queue.empty():
+                if self._storage_tracking:
+                    self._run_storage_lane("overflow")
+                    return
                 batch: list[Event] = []
                 try:
                     event = self._overflow_queue.get(timeout=self._idle_wait_seconds())
@@ -1679,18 +2293,34 @@ class AsyncFlightRecorder:
                     except queue.Empty:
                         break
                 batch_writer = getattr(self._recorder, "_route_batch_to_dlq", None)
-                if callable(batch_writer):
-                    written = int(batch_writer(batch))
-                else:
-                    written = sum(
-                        1 for event in batch if self._recorder._route_to_dlq(event)
-                    )
+                try:
+                    if callable(batch_writer):
+                        written = int(batch_writer(batch))
+                    else:
+                        written = sum(
+                            1 for event in batch if self._recorder._route_to_dlq(event)
+                        )
+                except RecorderStorageHeld as held:
+                    self._storage_policy_changed()
+                    self._storage_slot("overflow", batch)
+                    with self._metrics_lock:
+                        self._overflow_dlq += held.progress.spooled
+                    self._storage_ack("overflow", held.progress.completed)
+                    self._storage_park("overflow", held)
+                    if not self._stop.is_set():
+                        self._run_storage_lane("overflow")
+                    return
                 with self._metrics_lock:
                     self._overflow_dlq += written
                     self._dlq_failures += len(batch) - written
+                    if self._storage_tracking:
+                        self._storage_pending_events -= len(batch)
                 for _ in batch:
                     self._overflow_queue.task_done()
                 self._dlq_busy.clear()
+                if self._storage_tracking:
+                    self._run_storage_lane("overflow")
+                    return
         finally:
             self._dlq_busy.clear()
             # The primary may be waiting for this lane's final drain rather

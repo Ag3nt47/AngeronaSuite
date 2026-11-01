@@ -29,7 +29,9 @@ AREAS = (
         "system", "System",
         "Startup, local services, performance, alert archive cleanup and platform sensors.",
         ("startup", "autostart", "eco", "performance", "black box", "mcp",
-         "ebpf", "sgx", "service", "retention", "cleanup", "alert archive", "disk space"),
+         "ebpf", "sgx", "service", "retention", "cleanup", "alert archive", "disk space",
+         "telemetry storage", "event storage", "event database", "database target", "wal target",
+         "telemetry budget", "recording blocked"),
         "Local configuration", True,
     ),
     SettingsArea(

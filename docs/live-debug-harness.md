@@ -41,6 +41,17 @@ separates 64 offline passes from ordinary Full60/STOP and records an additional
 named fault-log read after native retirement. Neither proves exactly-once
 delivery for an ambiguously raised commit or closes the native P0 cause.
 
+Telemetry storage status now copies the existing worker's sampled database,
+WAL, SHM and free-space facts, policy/facts generations and fixed reason. Its
+getter performs no probe, SQL, clock or native work. Missing/malformed views
+remain unavailable with unknown counts. Pending work is volatile; a stopped
+thread or ready snapshot does not establish durable continuity or an OS quota.
+Rejection, user-discard and write-failure values reset with this instance;
+replay/maintenance deferrals count attempts, not a present backlog. Accepted
+Allow still waits for worker facts. The dashboard and sensors may continue while
+this writer is held. Existing Live Debug schema and response authority remain
+separate. See the [telemetry storage and dialog review](../analysis/hardening-v1.15-2026-11-01-telemetry-storage-dialogs.md).
+
 Optional legacy remediation-audit admission now exposes current-instance,
 nondurable counters separately from native journal/closure results. Missing
 status means unavailable with unknown counts; zero gaps do not attest complete

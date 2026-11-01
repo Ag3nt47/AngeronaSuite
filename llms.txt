@@ -7,6 +7,27 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Telemetry event storage now has worker-sampled database/WAL/free-space
+  admission targets (defaults 256 MiB / 64 MiB / 2048 MiB) and a 1 MiB complete
+  logical unit. Settings > System and Full Setup expose current-run Block,
+  Allow and Apply; Save separately persists four fields. Cached getters do no
+  SQL/path/clock/native I/O. Held pending data is volatile, new held deliveries
+  reject visibly, and exact oversized-event discard is nonmodal with No default.
+  Counters/gap are nondurable; replay/maintenance deferrals count attempts,
+  not backlog. Shared journals, constructor/native writes, serializer peak,
+  physical quotas and guaranteed response reserve remain outside this policy.
+- Interrupted reveal target loss restores queued-window masks. This repairs a
+  source counterexample without attributing the historical outline incident,
+  Optimus interference or native P0. Fixture-only gate 447 PASS / 89.48s;
+  later disclosure-label source edit 447 PASS / 70.12s, both zero skips.
+  Ruff/preflight PASS; final-label Full60/normal STOP native Core0,51 unique
+  observed generations/55 waits all signaled,503-source+selectedprefs unchanged.
+  Earlier44-identity/48-wait epoch remains separately scoped historical evidence.
+  Child exit codes/history completeness/live exhaustion efficacy unproved.
+  Named post-STOP fault logs unchanged; no continuous writer/hook/P0 proof.
+  Historical e0 hosted11PASS/4PythonFAIL(same six stale DTO assertions) is
+  separate from focused fixes and new exact-commit hosted acceptance. Record:
+  analysis/hardening-v1.15-2026-11-01-telemetry-storage-dialogs.md.
 - Optional legacy audit admission: log() only, 64KiB complete logical UTF8
   stored text/actual receipt +32B scalar accounting, typed refusal beforeINSERT.
   Exact plain str and known custom builtin-adapter guards; no normalization,

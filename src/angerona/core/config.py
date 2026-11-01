@@ -21,6 +21,78 @@ from typing import Dict
 _ARIA_PUSH_URL_KEY = "ANGERONA_ARIA_PUSH_URL"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _SIGNAL_IDENTITY = re.compile(r"\+[1-9][0-9]{7,14}\Z")
+TELEMETRY_STORAGE_DEFAULTS = {
+    "telemetry_storage_blocked": False,
+    "telemetry_db_target_mib": 256,
+    "telemetry_wal_target_mib": 64,
+    "telemetry_min_free_mib": 2048,
+}
+TELEMETRY_STORAGE_RANGES = (
+    ("telemetry_db_target_mib", 16, 16384),
+    ("telemetry_wal_target_mib", 4, 1024),
+    ("telemetry_min_free_mib", 512, 65536),
+)
+
+
+def telemetry_storage_policy_values(config) -> dict:
+    """Validate four scalar preferences without constructing Config or doing I/O."""
+    blocked = getattr(config, "telemetry_storage_blocked", False)
+    if type(blocked) is not bool:
+        raise ValueError("telemetry_storage_blocked must be a boolean")
+    values = {}
+    for name, low, high in TELEMETRY_STORAGE_RANGES:
+        value = getattr(config, name, TELEMETRY_STORAGE_DEFAULTS[name])
+        if type(value) is not int or not low <= value <= high:
+            raise ValueError(f"{name} must be an integer from {low} to {high} MiB")
+        values[name] = value * 1024 * 1024
+    return {"blocked": blocked, "db_target_bytes": values["telemetry_db_target_mib"],
+            "wal_target_bytes": values["telemetry_wal_target_mib"],
+            "min_free_bytes": values["telemetry_min_free_mib"]}
+
+
+def apply_telemetry_storage_values(recorder, policy, *, note_target) -> dict:
+    """Apply four byte-valued policy scalars; no probe, key or database access."""
+    result = {"schema": 1, "accepted": False, "policy_generation": 0,
+              "reason_code": "configuration_unavailable", "probe_pending": False}
+    expected = {"blocked", "db_target_bytes", "wal_target_bytes", "min_free_bytes"}
+    valid = (type(policy) is dict and set(policy) == expected
+             and type(policy["blocked"]) is bool
+             and all(type(policy[key]) is int and low * 1024**2 <= policy[key] <= high * 1024**2
+                     for key, low, high in (("db_target_bytes", 16, 16384),
+                                           ("wal_target_bytes", 4, 1024),
+                                           ("min_free_bytes", 512, 65536))))
+    if not valid:
+        result["reason_code"] = "invalid_policy"
+    else:
+        try:
+            setter = getattr(recorder, "configure_storage_policy", None)
+            raw = setter(**policy) if callable(setter) else None
+            from angerona.core.telemetry_storage_policy import STORAGE_REASONS
+            if (type(raw) is dict and type(raw.get("schema")) is int and raw["schema"] == 1
+                    and type(raw.get("accepted")) is bool
+                    and type(raw.get("policy_generation")) is int and raw["policy_generation"] >= 0
+                    and (raw["accepted"] is False or raw["policy_generation"] > 0)
+                    and type(raw.get("probe_pending")) is bool
+                    and raw.get("reason_code") in STORAGE_REASONS | {"invalid_policy"}):
+                result = {key: raw[key] for key in result}
+        except Exception:
+            pass  # Never export a private exception or add a startup failure.
+    note_target._telemetry_storage_policy_pending = result["accepted"] is not True
+    note_target._telemetry_storage_apply_note = (
+        "Live telemetry storage policy application is unverified. Active policy may differ; "
+        "review Settings > System > Telemetry event storage and retry Apply."
+        if note_target._telemetry_storage_policy_pending else "")
+    return result
+
+
+def apply_telemetry_storage_policy(config, recorder, *, note_target=None) -> dict:
+    """Install a memory policy only; acceptance does not establish resumed writes."""
+    try:
+        policy = telemetry_storage_policy_values(config)
+    except (ValueError, TypeError):
+        policy = None
+    return apply_telemetry_storage_values(
+        recorder, policy, note_target=config if note_target is None else note_target)
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -167,6 +239,10 @@ class Config:
     normal_log_max_mib: int = 8               # per crash-log target and per-process append allowance
     normal_log_message_kib: int = 64          # complete Python/Qt message, including header
     normal_log_paused: bool = False           # preserves logs; native fault output remains separate
+    telemetry_storage_blocked: bool = False   # telemetry only; remediation shares the database
+    telemetry_db_target_mib: int = 256
+    telemetry_wal_target_mib: int = 64
+    telemetry_min_free_mib: int = 2048
     shadow_cache_enabled: bool = True          # bounded ransomware recovery copies
     shadow_cache_max_mib: int = 2048
     shadow_min_free_mib: int = 2048
@@ -610,6 +686,12 @@ class Config:
                     value = data.get(name, getattr(cfg, name))
                     if type(value) is int and low <= value <= high:
                         setattr(cfg, name, value)
+                cfg.telemetry_storage_blocked = _bool_setting(
+                    data, "telemetry_storage_blocked", cfg.telemetry_storage_blocked)
+                for name, low, high in TELEMETRY_STORAGE_RANGES:
+                    value = data.get(name, getattr(cfg, name))
+                    if type(value) is int and low <= value <= high:
+                        setattr(cfg, name, value)
                 cfg.shadow_cache_enabled = _bool_setting(
                     data, "shadow_cache_enabled", cfg.shadow_cache_enabled)
                 cfg.shadow_vss_enabled = _bool_setting(
@@ -1046,6 +1128,9 @@ class Config:
             if type(value) is not int or not low <= value <= high:
                 raise ValueError(f"{name} must be an integer from {low} to {high}")
 
+    def validate_telemetry_storage_settings(self) -> None:
+        telemetry_storage_policy_values(self)
+
     def validate_shadow_storage_settings(self) -> None:
         for name in ("shadow_cache_enabled", "shadow_vss_enabled"):
             if type(getattr(self, name)) is not bool:
@@ -1091,6 +1176,7 @@ class Config:
                 raise ValueError(f"{name} must be a boolean")
         self.validate_shadow_storage_settings()
         self.validate_normal_log_settings()
+        self.validate_telemetry_storage_settings()
         self.validate_integration_settings()
         self.validate_curated_tool_settings()
         from angerona.core.recorder_integrity import settings_from_config, validate_settings as validate_recorder_settings
@@ -1133,6 +1219,10 @@ class Config:
                     "normal_log_max_mib": self.normal_log_max_mib,
                     "normal_log_message_kib": self.normal_log_message_kib,
                     "normal_log_paused": self.normal_log_paused,
+                    "telemetry_storage_blocked": self.telemetry_storage_blocked,
+                    "telemetry_db_target_mib": self.telemetry_db_target_mib,
+                    "telemetry_wal_target_mib": self.telemetry_wal_target_mib,
+                    "telemetry_min_free_mib": self.telemetry_min_free_mib,
                     "shadow_cache_enabled": self.shadow_cache_enabled,
                     "shadow_cache_max_mib": self.shadow_cache_max_mib,
                     "shadow_min_free_mib": self.shadow_min_free_mib,

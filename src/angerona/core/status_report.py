@@ -28,6 +28,7 @@ from angerona.core.atomic_io import replace_with_retry
 from angerona.core.crashlog_status import normal_log_status
 from angerona.core.eventbus import Severity
 from angerona.core.privilege import is_admin
+from angerona.core.telemetry_storage_policy import STORAGE_REASONS, STORAGE_STATES
 
 _THREAT = {Severity.INFO: "SECURE", Severity.LOW: "LOW", Severity.MEDIUM: "ELEVATED",
            Severity.HIGH: "HIGH", Severity.CRITICAL: "CRITICAL"}
@@ -135,6 +136,127 @@ def optional_audit_result_text(source) -> str:
                 "Native results and closure authority are separate.")
     except Exception:
         return unavailable
+
+
+_TELEMETRY_STORAGE_COUNTERS = (
+    "storage_pending_events", "parked_primary_events", "parked_overflow_events",
+    "rejection_storage_hold", "storage_user_discarded", "storage_write_failures", "storage_hold_attempts",
+    "replay_deferred", "maintenance_deferred",
+)
+_TELEMETRY_STORAGE_SCOPE = (
+    "Cached telemetry-writer observations, not a drive quota or guaranteed response reserve. "
+    "Other writers share the database. Pending events are volatile and may be lost on exit; "
+    "counters reset with this instance. Write failures include unconfirmed outcomes. "
+    "Zero gaps do not prove complete history."
+)
+
+
+def _telemetry_storage_view(source) -> dict:
+    """Whitelist the cached budget DTO; absent facts and counts remain unknown."""
+    unavailable = dict(schema=1, state="unavailable", reason_code="invalid_observation",
+        scope="telemetry-writer-only", shared_database=True, no_os_quota=True,
+        no_response_reserve=True, durable=False)
+    try:
+        if type(source) is not dict or len(source) > 48:
+            return unavailable
+        source = dict(source)
+        required = (
+            "schema", "state", "reason_code", "scope", "shared_database", "no_os_quota",
+            "no_response_reserve", "durable", "configured", "blocked", "facts_stale",
+            "probe_pending", "coverage_gap", "policy_generation", "facts_generation",
+            "unit_limit_bytes", "db_target_bytes", "wal_target_bytes", "min_free_bytes",
+            "db_bytes", "wal_bytes", "shm_bytes", "free_bytes", "facts_observed_monotonic",
+            "facts_age_seconds", *_TELEMETRY_STORAGE_COUNTERS,
+        )
+        if any(key not in source for key in required):
+            return unavailable
+        if (type(source.get("schema")) is not int or source["schema"] != 1
+                or type(source.get("state")) is not str or source["state"] not in STORAGE_STATES
+                or type(source.get("reason_code")) is not str or source["reason_code"] not in STORAGE_REASONS
+                or type(source.get("scope")) is not str or source["scope"] != "telemetry-writer-only"
+                or source.get("shared_database") is not True
+                or source.get("no_os_quota") is not True
+                or source.get("no_response_reserve") is not True
+                or source.get("durable") is not False):
+            return unavailable
+        result = dict(unavailable, state=source["state"], reason_code=source["reason_code"])
+        for key in ("configured", "blocked", "facts_stale", "probe_pending", "coverage_gap"):
+            if type(source.get(key)) is not bool:
+                return unavailable
+            result[key] = source[key]
+        for key in ("policy_generation", "facts_generation", "unit_limit_bytes", *_TELEMETRY_STORAGE_COUNTERS):
+            value = source.get(key)
+            if type(value) is not int or not 0 <= value <= (1 << 63) - 1:
+                return unavailable
+            result[key] = value
+        for key in ("db_target_bytes", "wal_target_bytes", "min_free_bytes",
+                    "db_bytes", "wal_bytes", "shm_bytes", "free_bytes"):
+            value = source.get(key)
+            if value is not None and (type(value) is not int or not 0 <= value <= (1 << 63) - 1):
+                return unavailable
+            result[key] = value
+        for key in ("facts_observed_monotonic", "facts_age_seconds"):
+            value = source.get(key)
+            if value is not None and (type(value) not in (int, float)
+                    or not math.isfinite(value) or not 0 <= value <= (1 << 63) - 1):
+                return unavailable
+            result[key] = value
+        if (result["unit_limit_bytes"] != 1048576
+                or result["configured"] and result["state"] == "unconfigured"
+                or not result["configured"] and result["state"] != "unconfigured"
+                or result["facts_generation"] > result["policy_generation"]
+                or result["parked_primary_events"] + result["parked_overflow_events"] > result["storage_pending_events"]
+                or not result["coverage_gap"] and (
+                    result["rejection_storage_hold"] or result["storage_user_discarded"]
+                    or result["storage_write_failures"])):
+            return unavailable
+        target_ranges = (("db_target_bytes", 16, 16384),
+                         ("wal_target_bytes", 4, 1024),
+                         ("min_free_bytes", 512, 65536))
+        if result["configured"]:
+            if result["policy_generation"] < 1:
+                return unavailable
+            for key, lower, upper in target_ranges:
+                value = result[key]
+                if value is None or not lower * 1024**2 <= value <= upper * 1024**2:
+                    return unavailable
+        elif result["policy_generation"] != 0 or any(result[key] is not None for key, _, _ in target_ranges):
+            return unavailable
+        if result["state"] == "ready" and (
+                result["reason_code"] != "" or result["blocked"]
+                or result["facts_stale"] or result["probe_pending"]
+                or result["facts_generation"] != result["policy_generation"]
+                or any(result[key] is None for key in (
+                    "db_bytes", "wal_bytes", "shm_bytes", "free_bytes",
+                    "db_target_bytes", "wal_target_bytes", "min_free_bytes",
+                    "facts_observed_monotonic", "facts_age_seconds"))):
+            return unavailable
+        return result
+    except Exception:
+        return unavailable
+
+
+def _telemetry_storage_snapshot(storage) -> dict:
+    """Use the existing recorder's memory getter; never construct or probe it."""
+    try:
+        reader = getattr(storage, "storage_budget_snapshot", None)
+        return _telemetry_storage_view(reader() if callable(reader) else None)
+    except Exception:
+        return _telemetry_storage_view(None)
+
+
+def telemetry_storage_status_text(source) -> str:
+    view = _telemetry_storage_view(source)
+    if "storage_pending_events" not in view:
+        return "Telemetry storage: unavailable; sizes and counts unknown.\n" + _TELEMETRY_STORAGE_SCOPE
+    return (f"Telemetry storage: {view['state']}; reason={view['reason_code'] or 'none'}; "
+        f"pending={view['storage_pending_events']}, rejected={view['rejection_storage_hold']}, "
+        f"write_failures={view['storage_write_failures']}, "
+        f"user_discarded={view['storage_user_discarded']}, coverage_gap={view['coverage_gap']}.\n"
+        f"Replay deferral attempts={view['replay_deferred']}; "
+        f"maintenance deferral attempts={view['maintenance_deferred']} "
+        "(cumulative in this instance, not current backlog counts).\n"
+        + _TELEMETRY_STORAGE_SCOPE)
 
 
 def _worker_identity(module) -> dict:
@@ -696,6 +818,7 @@ class StatusReporter:
             "ai_request": _ai_request_snapshot(self.manager),
             "normal_crashlog": normal_log_status(),
             "optional_audit": _optional_audit_snapshot(),
+            "telemetry_storage": _telemetry_storage_snapshot(self.storage),
             "runtime_healer": recovery,
             "automatic_response": response,
             "app_version": __version__,
@@ -762,6 +885,7 @@ class StatusReporter:
             f"limit={normal_logs.get('limit_bytes')} bytes/target/process; paused={normal_logs.get('paused')}",
             "             Cached normal Python/Qt writes only; native/external writers are outside this budget.",
             optional_audit_status_text(s.get("optional_audit")),
+            telemetry_storage_status_text(s.get("telemetry_storage")),
             f" Response  : {s.get('automatic_response', {}).get('state', 'UNAVAILABLE')} "
             f"— {s.get('automatic_response', {}).get('reason', '')}",
             f" Inventory : {inventory.get('state', 'unavailable')} — {inventory_error}",
@@ -829,7 +953,7 @@ class StatusReporter:
                     lines.append(
                         "    Recorder delivery rejections: "
                         f"{evidence['admission_rejected']}"
-                        f" / admission coverage gap={evidence.get('coverage_gap', False)}"
+                        f" / delivery/write coverage gap={evidence.get('coverage_gap', False)}"
                         " (process-lifetime counters; not a durable loss journal)"
                     )
         lines += [

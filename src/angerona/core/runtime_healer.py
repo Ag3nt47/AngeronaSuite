@@ -124,7 +124,9 @@ class RuntimeHealer:
                 "worker_alive", "dlq_worker_alive", "write_failures",
                 "dlq_failures", "replay_failures", "replay_quarantined",
                 "admission_rejected", "rejection_saturated", "rejection_stopping",
-                "rejection_unavailable", "coverage_gap",
+                "rejection_unavailable", "rejection_storage_hold", "coverage_gap",
+                "storage_held", "storage_policy_generation", "storage_pending_events",
+                "storage_user_discarded", "storage_write_failures",
             )
             if type(value := health.get(key)) in (bool, int)
             and (isinstance(value, bool) or value >= 0)

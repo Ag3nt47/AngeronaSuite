@@ -129,6 +129,8 @@ class AngeronaApp:
         # startup. That caused repeated Defender/UAC access prompts. Settings
         # changes registration only after an explicit operator toggle.
         self.storage = FlightRecorder(self.config.db_path)
+        from angerona.core.config import apply_telemetry_storage_policy
+        self._telemetry_storage_policy_result = apply_telemetry_storage_policy(self.config, self.storage)
         self.bus = EventBus()
         self.bus.arm(self.storage.authority)
 
@@ -1511,10 +1513,33 @@ class AngeronaApp:
         except Exception:
             pass
         recorder_drained = False
+        recorder_generation = None
+        try:
+            before_stop = self.flight_recorder_worker.retirement_snapshot()
+            if (type(before_stop) is dict and type(before_stop.get("schema")) is int
+                    and before_stop["schema"] == 1
+                    and type(before_stop.get("worker_generation")) is int and before_stop["worker_generation"] >= 0):
+                recorder_generation = before_stop["worker_generation"]
+        except Exception:
+            pass
         try:
             recorder_drained = self.flight_recorder_worker.stop(timeout=3.0)
         except Exception:
             pass
+        self._recorder_drained_at_shutdown = recorder_drained is True
+        recorder_retired = recorder_drained is True
+        if not recorder_retired and recorder_generation is not None:
+            try:
+                retired = self.flight_recorder_worker.retirement_snapshot()
+                if (type(retired) is dict and type(retired.get("schema")) is int and retired["schema"] == 1
+                        and retired.get("worker_generation") == recorder_generation
+                        and type(retired.get("worker_generation")) is int
+                        and retired.get("workers_retired") is True and retired.get("stopping") is True
+                        and type(retired.get("pending_events")) is int and retired["pending_events"] >= 0):
+                    recorder_retired = True
+                    self._recorder_pending_at_shutdown = retired["pending_events"]
+            except Exception:
+                pass
         # Producers are stopped before the normalized evidence worker drains.
         # The timeout prevents shutdown from hanging on damaged/locked storage.
         evidence_drained = self.evidence_ingestion is None
@@ -1535,7 +1560,7 @@ class AngeronaApp:
                 optional_drained = integrity.stop(timeout=3.0) and optional_drained
             except Exception:
                 optional_drained = False
-        if recorder_drained and optional_drained:
+        if recorder_retired and optional_drained:
             self.storage.close()
         try:
             if self.evidence_store is not None and evidence_drained and optional_drained:

@@ -117,6 +117,10 @@ def test_restart_preserves_live_peer_and_queued_signed_delivery(
 
 def test_snapshot_avoids_storage_reads_and_preserves_cumulative_failures():
     class UnreadableRecorder:
+        # Explicitly absent optional memory-only policy capability; every
+        # unexpected read and all spool polling remain trapped below.
+        _storage_budget = None
+
         def dlq_status(self):
             raise AssertionError("recovery polling must not read the spool")
 
@@ -139,7 +143,14 @@ def test_snapshot_avoids_storage_reads_and_preserves_cumulative_failures():
         "rejection_saturated": 0,
         "rejection_stopping": 0,
         "rejection_unavailable": 0,
-        "coverage_gap": False,
+        "rejection_storage_hold": 0,
+        "storage_pending_events": 0,
+        "storage_user_discarded": 0,
+        "storage_held": False,
+        "storage_policy_generation": 0,
+        "storage_reason": "",
+        "storage_write_failures": 7,
+        "coverage_gap": True,
     }
     assert worker.recovery_snapshot() == expected
     assert worker.recovery_snapshot() == expected

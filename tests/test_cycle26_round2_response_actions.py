@@ -93,13 +93,18 @@ def test_defender_deny_classification_dominates_every_generic_target(
     result = actions.apply_remediation(
         [weakness], tmp_path / "q", apply=True, allow_host=True
     )
-    assert result == {"applied": 0, "skipped": 1, "records": []}
+    assert result == {"applied": 0, "skipped": 1, "records": [], "optional_audit": {
+        "schema": 1, "attempted": 1, "recorded": 0, "rejected": 0,
+        "unavailable": 0, "persistence_unknown": 1, "response_authorized": False,
+    }}
     assert mutation_calls == []
     assert artifact.read_bytes() == b"must-remain"
     assert audit.entries[-1]["outcome"] == "proposal_only"
 
 
 def test_ambiguous_executable_matches_are_rejected(monkeypatch, tmp_path: Path) -> None:
+    audit = _AuditLog()
+    monkeypatch.setattr(remediation_log, "get_log", lambda: audit)
     calls: list[str] = []
 
     class Ambiguous(actions.RemediationAction):
@@ -123,8 +128,12 @@ def test_ambiguous_executable_matches_are_rejected(monkeypatch, tmp_path: Path) 
     result = actions.apply_remediation(
         [{"kind": "ambiguous"}], tmp_path, apply=True, allow_host=True
     )
-    assert result == {"applied": 0, "skipped": 1, "records": []}
+    assert result == {"applied": 0, "skipped": 1, "records": [], "optional_audit": {
+        "schema": 1, "attempted": 1, "recorded": 0, "rejected": 0,
+        "unavailable": 0, "persistence_unknown": 1, "response_authorized": False,
+    }}
     assert calls == []
+    assert audit.entries[-1]["outcome"] == "skipped"
 
 
 def test_proven_no_change_is_apply_failed_without_rollback(
@@ -151,7 +160,10 @@ def test_proven_no_change_is_apply_failed_without_rollback(
         [{"kind": "no-change"}], tmp_path, apply=True, allow_host=True
     )
 
-    assert result == {"applied": 0, "skipped": 1, "records": []}
+    assert result == {"applied": 0, "skipped": 1, "records": [], "optional_audit": {
+        "schema": 1, "attempted": 1, "recorded": 1, "rejected": 0,
+        "unavailable": 0, "persistence_unknown": 0, "response_authorized": False,
+    }}
     entry = audit.recent(1)[0]
     assert entry["outcome"] == "apply_failed"
     assert entry["verified"] is False

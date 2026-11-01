@@ -636,7 +636,7 @@ class MainWindow(QMainWindow):
             "stop",
             "Stop Angerona",
             "Stops every module and helper, closes local AI owned by Angerona, "
-            "and shuts the suite down cleanly.",
+            "and exits. Pending unpersisted telemetry can be lost on exit; recorded history is preserved.",
         )
         # Styled via QSS object name (#Critical) so it scales with the UI.
         stop_btn.setObjectName("Critical")
@@ -1016,6 +1016,9 @@ class MainWindow(QMainWindow):
         from angerona.gui.normal_log_controls import NormalLogWarningController
         self._normal_log_warning_controller = NormalLogWarningController(
             self.config, self, self._show_settings)
+        from angerona.gui.telemetry_storage_controls import TelemetryStorageWarningController
+        self._telemetry_storage_warning_controller = TelemetryStorageWarningController(
+            self.config, self.manager, self, self._show_settings)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.
@@ -6389,6 +6392,10 @@ class MainWindow(QMainWindow):
     def _full_shutdown(self) -> None:
         """Red STOP: persist operator intent and retire owned suite resources."""
         from PySide6.QtWidgets import QMessageBox
+        from angerona.gui.telemetry_storage_controls import telemetry_pending_text, telemetry_storage_snapshot
+        pending = telemetry_storage_snapshot(getattr(self, "storage", None))
+        pending_note = (telemetry_pending_text(pending) + "\n\n"
+                        if pending is None or pending["storage_pending_events"] else "")
         reply = QMessageBox.question(
             self, "Stop Angerona",
             "Stop protection, unload Angerona's local AI models, stop its owned "
@@ -6396,7 +6403,7 @@ class MainWindow(QMainWindow):
             "stopped until you launch Angerona again.\n\n"
             "A shared Ollama server remains running. Unloading a shared model "
             "also releases its residency for other apps. Downloaded model files "
-            "are kept.\n\nContinue?",
+            "are kept.\n\n" + pending_note + "Continue?",
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply != QMessageBox.Yes:
             return

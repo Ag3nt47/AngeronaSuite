@@ -607,9 +607,7 @@ class PanelRevealOverlay(QWidget):
         self._shut_down = True
         self._global_windows = False
         self._armed = False
-        self._animation.stop()
-        self._reveal_start_timer.stop()
-        self._pending_start_timer.stop()
+        self._stop_motion_drivers()
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
@@ -639,6 +637,62 @@ class PanelRevealOverlay(QWidget):
         self._previous_mask = QRegion()
         self._progress = 0.0
         self._mode = "idle"
+
+    def _stop_motion_drivers(self) -> bool:
+        """Stop only our Qt drivers; deleted native children cannot trap masks."""
+        available = True
+        for driver in (self._animation, self._reveal_start_timer, self._pending_start_timer):
+            try:
+                driver.stop()
+            except RuntimeError:
+                available = False
+        return available
+
+    def _recover_failed_transition(self, target: QWidget) -> None:
+        """Release a failed reveal without leaving later windows as narrow slices.
+
+        A destination or its frame can disappear after the opening timer has
+        fired. Stopping the animation alone does not finish that transition or
+        schedule its queued successors. Restore readable windows before another
+        event-loop turn; destroyed Qt wrappers never become new destinations.
+        """
+        if self._target is not target:
+            return  # A stale callback cannot retire a newer transition owner.
+        if not self._stop_motion_drivers():
+            self.shutdown()  # Motion is optional when its native drivers are gone.
+            return
+        previous_mask, frame = QRegion(self._previous_mask), self._frame
+        self._target = None
+        self._frame = None
+        self._previous_mask = QRegion()
+        self._progress = 0.0
+        self._mode = "idle"
+        self._armed = False
+        try:
+            target.removeEventFilter(self)
+            if previous_mask.isEmpty():
+                target.clearMask()
+            else:
+                target.setMask(previous_mask)
+            setattr(target, "_angerona_reverse_reveal_close", False)
+            setattr(target, "_angerona_close_bypass", True)
+        except RuntimeError:
+            pass
+        self._captured_windows.discard(target)
+        for reference in tuple(self._pending_windows):
+            pending = reference()
+            if pending is not None:
+                self._restore_pending_mask(pending)
+        if frame is not None:
+            try:
+                frame.hide()
+                frame.deleteLater()
+            except RuntimeError:
+                pass
+        if self._shut_down:
+            self._clear_pending_windows()
+        elif self._target is None and not self._armed:
+            self._pending_start_timer.start(0)
 
     def _animation_busy(self) -> bool:
         """Treat a torn-down Qt animation as unavailable during app shutdown."""
@@ -831,6 +885,7 @@ class PanelRevealOverlay(QWidget):
         try:
             target.removeEventFilter(self)
         except RuntimeError:
+            self._recover_failed_transition(target)
             return
         target.installEventFilter(self)
         # Apply the first narrow slice during QEvent.Show itself. Waiting for
@@ -969,17 +1024,7 @@ class PanelRevealOverlay(QWidget):
             visible = False
         if not visible:
             if target is not None:
-                try:
-                    if self._previous_mask.isEmpty():
-                        target.clearMask()
-                    else:
-                        target.setMask(self._previous_mask)
-                except RuntimeError:
-                    pass
-            self._target = None
-            self._previous_mask = QRegion()
-            self._mode = "idle"
-            self._pending_start_timer.start(0)
+                self._recover_failed_transition(target)
             return
         bounds = target.rect()
         local = target.mapFromGlobal(self._source_global)
@@ -1089,8 +1134,7 @@ class PanelRevealOverlay(QWidget):
                     self._frame.setGeometry(bounds)
                 self._frame.set_reveal(rect, self._progress)
         except RuntimeError:
-            self._animation.stop()
-            self._target = None
+            self._recover_failed_transition(target)
 
     revealProgress = Property(
         float,

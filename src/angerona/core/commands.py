@@ -752,7 +752,7 @@ class CommandConsole:
                 f"(saturated={durable.rejection_saturated}, "
                 f"stopping={durable.rejection_stopping}, "
                 f"unavailable={durable.rejection_unavailable})\n"
-                f"  recorder admission coverage gap: {durable.coverage_gap}; "
+                f"  recorder delivery/write coverage gap: {durable.coverage_gap}; "
                 "process-lifetime counters, not a durable loss journal\n"
                 f"  replayed/duplicates/quarantined/failures: "
                 f"{durable.replayed}/{durable.replay_duplicates}/"

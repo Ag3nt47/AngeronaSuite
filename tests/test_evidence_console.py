@@ -65,6 +65,6 @@ def test_recorder_delivery_rejection_is_visible_and_not_presented_as_durable_his
     console = CommandConsole(_Manager(), bus, SimpleNamespace(), flight_recorder_worker=recorder)
     text = console.run("ingest-status")
     assert "recorder delivery rejections: 1 (saturated=0, stopping=0, unavailable=1)" in text
-    assert "recorder admission coverage gap: True" in text
+    assert "recorder delivery/write coverage gap: True" in text
     assert "process-lifetime counters, not a durable loss journal" in text
     assert "overflow-DLQ/storage-DLQ/failures: 0/0/0" in text

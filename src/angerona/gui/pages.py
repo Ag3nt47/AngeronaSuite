@@ -8933,6 +8933,9 @@ class SettingsDialog(QDialog):
         normal_log_controls = getattr(self, "_normal_log_controls", None)
         if normal_log_controls is not None:
             normal_log_controls.close()
+        telemetry_controls = getattr(self, "_telemetry_storage_controls", None)
+        if telemetry_controls is not None:
+            telemetry_controls.close()
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
@@ -8951,6 +8954,9 @@ class SettingsDialog(QDialog):
         normal_log_controls = getattr(self, "_normal_log_controls", None)
         if normal_log_controls is not None:
             normal_log_controls.close()
+        telemetry_controls = getattr(self, "_telemetry_storage_controls", None)
+        if telemetry_controls is not None:
+            telemetry_controls.close()
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
@@ -10037,6 +10043,10 @@ class SettingsDialog(QDialog):
         from angerona.gui.normal_log_controls import NormalLogControls
         self._normal_log_controls = NormalLogControls(self._cfg, self)
         lay.addWidget(self._normal_log_controls)
+        from angerona.gui.telemetry_storage_controls import TelemetryStorageControls
+        self._telemetry_storage_controls = TelemetryStorageControls(
+            self._cfg, getattr(self.parent(), "manager", None), self)
+        lay.addWidget(self._telemetry_storage_controls)
         from angerona.gui.recorder_integrity_controls import RecorderIntegrityControls
         self._recorder_integrity_controls = RecorderIntegrityControls(
             self._cfg, getattr(self.parent(), "manager", None), self)
@@ -12026,6 +12036,9 @@ class SettingsDialog(QDialog):
         normal_log_controls = getattr(self, "_normal_log_controls", None)
         if normal_log_controls is not None:
             normal_log_controls.write_candidate(candidate)
+        telemetry_controls = getattr(self, "_telemetry_storage_controls", None)
+        if telemetry_controls is not None:
+            telemetry_controls.write_candidate(candidate)
         integrity_controls = getattr(self, "_recorder_integrity_controls", None)
         if integrity_controls is not None:
             integrity_controls.write_candidate(candidate)
@@ -12454,6 +12467,9 @@ class SettingsDialog(QDialog):
         apply_storage_policy(shadow_module(getattr(self.parent(), "manager", None)), self._cfg)
         from angerona.gui.normal_log_controls import apply_normal_log_policy
         normal_log_result = apply_normal_log_policy(self._cfg)
+        from angerona.core.config import apply_telemetry_storage_policy
+        manager = getattr(self.parent(), "manager", None)
+        apply_telemetry_storage_policy(self._cfg, getattr(manager, "recorder", None))
         if normal_log_result.get("accepted") is not True:
             QMessageBox.warning(
                 self, "Settings saved; normal log policy not applied",

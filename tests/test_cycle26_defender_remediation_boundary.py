@@ -59,7 +59,10 @@ def test_defender_response_is_explanatory_and_never_executable(
     result = actions.apply_remediation(
         [weakness], tmp_path, apply=True, allow_host=True,
     )
-    assert result == {"applied": 0, "skipped": 1, "records": []}
+    assert result == {"applied": 0, "skipped": 1, "records": [], "optional_audit": {
+        "schema": 1, "attempted": 1, "recorded": 0, "rejected": 0,
+        "unavailable": 0, "persistence_unknown": 1, "response_authorized": False,
+    }}
     assert audit.entries
     assert all(entry["outcome"] != "applied" for entry in audit.entries)
     assert all(entry["verified"] != 1 for entry in audit.entries)
@@ -116,7 +119,10 @@ def test_failed_apply_cannot_be_promoted_by_an_already_true_postcondition(
         [{"mitre_id": "T0000"}], tmp_path, apply=True, allow_host=True,
     )
 
-    assert result == {"applied": 0, "skipped": 1, "records": []}
+    assert result == {"applied": 0, "skipped": 1, "records": [], "optional_audit": {
+        "schema": 1, "attempted": 0, "recorded": 0, "rejected": 0,
+        "unavailable": 0, "persistence_unknown": 0, "response_authorized": False,
+    }}
     assert failed.verified is False
     assert failed.rolled_back is True
     entry = audit.recent(1)[0]
@@ -152,7 +158,10 @@ def test_defender_proposal_never_invokes_a_process_under_any_apply_gate(
             apply=apply,
             allow_host=allow_host,
         )
-        assert result == {"applied": 0, "skipped": 1, "records": []}
+        assert result == {"applied": 0, "skipped": 1, "records": [], "optional_audit": {
+            "schema": 1, "attempted": 1, "recorded": 0, "rejected": 0,
+            "unavailable": 0, "persistence_unknown": 1, "response_authorized": False,
+        }}
 
     assert process_calls == []
     assert len(audit.entries) == 6
