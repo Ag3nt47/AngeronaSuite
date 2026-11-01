@@ -7,6 +7,60 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- 1 November follow-up: new normal Python/Qt admission uses complete UTF-8
+  blocks (default 64 KiB, configurable 4–256 KiB) and default 8 MiB per opened-file/
+  process-role reservation. Existing
+  bytes/uncertain reservations preserved; settings Block/Allow/change and busy
+  pending retry do not block startup. NOT an OS/shared-process quota, native/
+  external/upstream-format-allocation cap or reparse/file-identity lease. Exact
+  install PID/raw birth headers identify a generation, not writer/hook health.
+- Early read-only AI service refusal precedes full model hashes; captured
+  host/model/generation and expected-model fence/final transport/hash TTL stay
+  strict. Cached request stages include inline callbacks, not isolated cost.
+  Owned startup 180s fixed window only for exact successfully retained launch;
+  no healthy claim/extension/duplicate/expiry kill. Real exit retained; waiter
+  errors not exit and same owner rechecked under lifecycle lock. Cross-peer 5s/
+  adopted-PID startup outside window, expired-live held. UGCAP refresh contained.
+- Mixed Black Box 49 containers/old embedded run with two failures becomes
+  50 dated observations, not 49 current failed tests or one invented run.
+  Historical errors do not create a live overlay; raw bytes/current classification
+  preserved. Nonmodal recovery confirmation leaves STOP usable; No/default/Esc
+  preserved, only Yes queues delete. Final Windows self-exit after durable STOP/
+  bounded cleanup/Qt quit uses FIXED self pseudo handle, no other PID/new rights/
+  I/O; CRT fallback/non-Windows unchanged.
+  MITIGATION ONLY, not native cause/P0 closure or I/O/child-retirement guarantee.
+- Source 501 final Full 60s/STOP lifecycle accepted:true/native Core exit 0,
+  39 observed unique generations/43 waits all signaled, one admission gap/no
+  topology bound/force/harness termination. Source+selected saved/authority
+  preferences unchanged. Earlier source-500 Full120 modal-held accepted:false
+  remains separate from its later No+normal STOP/native0 addendum. Earlier manual
+  Quit has no native exit-code proof. Initial loss 4335; 256 new events include
+  SOAR severity-aggregation critical, 22 HIGH socket leads/one persistence-health
+  record; zero supported active attack in 66 non-INFO is NOT a clean-host verdict.
+  All 1468 diagnostics/198 coverage retained; 590 exports REPORTED HMAC-only
+  verified, no analyst independent bytes/keys/native-producer verification.
+- All 27 Full samples: four fresh authenticated role heartbeats. End status
+  generated inside/copied just after window: 75 running, 17 critical/33 degraded/
+  1 failed/24 OK/69 unknown; earlier strict-inside copy 23 OK/34 degraded. WER 27
+  copies: 12 admitted/15 stale; 19 unique, 8+11; retained last admission admitted,
+  copied queue/loss/skips zero/upstream unverified/max age 3.161s, no continuous
+  claim. AI 15 unmeasured/12 circuit-open, attempts0→35:service1/model0/request0,
+  no hash-speedup. Both logs held/resume-check-required, stale sizes/one409Bblock/
+  no suppression, normal-only budget. CPU Core116.951618%/inventory8.487535% of
+  one CPU over56.700798s, no controlled comparison. WM_NULL27/27 max156ms;
+  settling53.36s not click latency. Native9Full7observed2partial; thread labels
+  not isolated cost. Fault copies Core-live only; preSTOP delta77324B COM label,
+  no AV marker; historical AV before newest STARTUP. No teardown coverage or
+  finalizer-path proof from native0. P0 remains unresolved.
+- Local overlapping cohorts: AI327PASS/3skip, logUI291PASS/1skip, models53PASS,
+  runtime275PASS/1skip, exit/storage252PASS(no failures/errors/skips). Completed
+  JUnit252 independently checked, not early-process-exit proof. Earlier timeout
+  remains unexplained history. Final preflight PASS; old87c hosted15/15 not new CI.
+  APPDATA old call site already fixed/strict guard preserved; SAFE_MODE timing and
+  qt.exec frames do not locate a stall. NO Optimus deletion/interference evidence.
+  New dump observed/hash then ABSENT before copy/parse, NO verified dump PID/PC/
+  unwind; Python frames mapped to old CRT final exit are not native cause proof.
+  Current sanitized evidence: analysis/hardening-v1.15-2026-11-01.md.
 - Latest WER/status/CI follow-up: immutable cached admission summaries retain minimum expiry,
   lifecycle generation, fixed reason/count/roles and independent loss. Pure
   getter plus JSON/TXT `wer_observation` whitelist performs no native/file/

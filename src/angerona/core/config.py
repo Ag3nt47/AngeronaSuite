@@ -164,6 +164,9 @@ class Config:
     alert_retention_enabled: bool = True         # disposable runtime-alert archives only
     alert_retention_days: int = 30
     alert_retention_max_mib: int = 256
+    normal_log_max_mib: int = 8               # per crash-log target and per-process append allowance
+    normal_log_message_kib: int = 64          # complete Python/Qt message, including header
+    normal_log_paused: bool = False           # preserves logs; native fault output remains separate
     shadow_cache_enabled: bool = True          # bounded ransomware recovery copies
     shadow_cache_max_mib: int = 2048
     shadow_min_free_mib: int = 2048
@@ -598,6 +601,15 @@ class Config:
                 cfg.alert_retention_enabled = retention.enabled
                 cfg.alert_retention_days = retention.days
                 cfg.alert_retention_max_mib = retention.max_mib
+                cfg.normal_log_paused = _bool_setting(
+                    data, "normal_log_paused", cfg.normal_log_paused)
+                for name, low, high in (
+                    ("normal_log_max_mib", 1, 64),
+                    ("normal_log_message_kib", 4, 256),
+                ):
+                    value = data.get(name, getattr(cfg, name))
+                    if type(value) is int and low <= value <= high:
+                        setattr(cfg, name, value)
                 cfg.shadow_cache_enabled = _bool_setting(
                     data, "shadow_cache_enabled", cfg.shadow_cache_enabled)
                 cfg.shadow_vss_enabled = _bool_setting(
@@ -1023,6 +1035,17 @@ class Config:
             cfg.publish_integration_environment()
         return cfg
 
+    def validate_normal_log_settings(self) -> None:
+        if type(self.normal_log_paused) is not bool:
+            raise ValueError("normal_log_paused must be a boolean")
+        for name, low, high in (
+            ("normal_log_max_mib", 1, 64),
+            ("normal_log_message_kib", 4, 256),
+        ):
+            value = getattr(self, name)
+            if type(value) is not int or not low <= value <= high:
+                raise ValueError(f"{name} must be an integer from {low} to {high}")
+
     def validate_shadow_storage_settings(self) -> None:
         for name in ("shadow_cache_enabled", "shadow_vss_enabled"):
             if type(getattr(self, name)) is not bool:
@@ -1067,6 +1090,7 @@ class Config:
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
         self.validate_shadow_storage_settings()
+        self.validate_normal_log_settings()
         self.validate_integration_settings()
         self.validate_curated_tool_settings()
         from angerona.core.recorder_integrity import settings_from_config, validate_settings as validate_recorder_settings
@@ -1106,6 +1130,9 @@ class Config:
                     "alert_retention_enabled": self.alert_retention_enabled,
                     "alert_retention_days": self.alert_retention_days,
                     "alert_retention_max_mib": self.alert_retention_max_mib,
+                    "normal_log_max_mib": self.normal_log_max_mib,
+                    "normal_log_message_kib": self.normal_log_message_kib,
+                    "normal_log_paused": self.normal_log_paused,
                     "shadow_cache_enabled": self.shadow_cache_enabled,
                     "shadow_cache_max_mib": self.shadow_cache_max_mib,
                     "shadow_min_free_mib": self.shadow_min_free_mib,

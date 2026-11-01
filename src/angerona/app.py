@@ -20,6 +20,25 @@ from angerona.core.evidence_ingestion import EvidenceIngestionWorker
 from angerona.gui.main_window import MainWindow
 
 
+def _apply_startup_normal_log_policy(config) -> dict:
+    """Attempt once; retain a UI-visible saved-versus-live gap without waiting."""
+    try:
+        from angerona.core.crashlog import configure_normal_log_budget
+        result = configure_normal_log_budget(
+            limit_mib=getattr(config, "normal_log_max_mib", 8),
+            message_kib=getattr(config, "normal_log_message_kib", 64),
+            paused=getattr(config, "normal_log_paused", False),
+        )
+    except Exception:
+        result = {"accepted": False, "reason": "configuration-unavailable"}
+    pending = result.get("accepted") is not True
+    config._normal_log_policy_pending = pending
+    config._normal_log_apply_note = (
+        "Saved normal log preferences were not applied at startup. Active limits are shown below. "
+        "Choose Apply now / retry to try once without restarting." if pending else "")
+    return result
+
+
 def _mark_dashboard_ready(config) -> bool:
     """Publish the source-launcher handshake only to the canonical log path."""
     import json
@@ -80,6 +99,10 @@ class AngeronaApp:
         self._shutdown_gate = threading.Lock()
         self._startup_lifecycle_lock = threading.Lock()
         self.config = Config.load()
+        # Hooks arm before Config is available. Apply saved normal-write limits
+        # without waiting for any concurrent crash writer or probing files here.
+        # A logging-policy failure must not hold dashboard startup.
+        self._normal_log_budget_apply_result = _apply_startup_normal_log_policy(self.config)
         if high_water_provider is None:
             from angerona.core.recorder_integrity import provider_from_config
             high_water_provider = provider_from_config(self.config)

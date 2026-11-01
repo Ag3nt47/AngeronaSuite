@@ -1,6 +1,6 @@
 # Live debug harness for local AI review
 
-Updated 29 October 2026. Angerona v1.14.2 development feature; the review protocol
+Updated 1 November 2026. Angerona v1.15.0 development feature; the review protocol
 was introduced in v1.14.0.
 
 Angerona can expose a bounded, read-only stream of its running alerts and
@@ -9,6 +9,20 @@ assistant can follow the stream, investigate a reproducible failure, propose a
 source fix, test it, restart the application and inspect a fresh session. The
 reader receives evidence; it cannot issue response commands, approve an alert,
 change settings or export signing keys through this interface.
+
+Normal Python/Qt logging and AI request stages now have bounded cached status
+projections. Stage durations include inline callbacks and are not isolated
+module cost; getter/file-write/reader times remain distinct. Logging admits
+complete messages within per-file/process-role limits, preserving existing
+bytes and held writes. Native/external writers and upstream allocations are
+outside that application budget. Exact generation headers do not attest hooks.
+
+Black Box historical health includes separately dated run reports and supervisor
+event rows, not one fictitious current run. Retain missing/malformed/truncated
+counts and original bytes; historical errors do not become a live exception
+overlay. The [November review](../analysis/hardening-v1.15-2026-11-01.md) separates
+the modal-held observation, later normal STOP and final changed-source capture.
+No endpoint bypass or saved-preference change is implied by a per-run review.
 
 The full dashboard's rich process inventory has its own owned child process,
 selected by the internal `--process-snapshot-worker` entry point. The retained

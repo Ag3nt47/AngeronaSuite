@@ -12,6 +12,8 @@ import pytest
 from angerona.core import crashlog, data_paths, startup_diagnostics
 
 _REAL_DIAGNOSTICS = startup_diagnostics.StartupDiagnostics
+_PID = 81001
+_BIRTH = "134378104580365256"
 
 
 @pytest.fixture
@@ -35,6 +37,23 @@ def arming(tmp_path, monkeypatch):
     monkeypatch.setattr(crashlog, "_TARGETS", [])
     monkeypatch.setattr(crashlog, "_FH_FILES", [])
     monkeypatch.setattr(crashlog, "_LAST_REPORT", None)
+    monkeypatch.setattr(crashlog, "_NORMAL_PATHS", {})
+    monkeypatch.setattr(crashlog, "_NORMAL_ROWS",
+                        {role: crashlog._NormalTarget(role) for role in crashlog._NORMAL_ROLES})
+    monkeypatch.setattr(crashlog, "_NORMAL_SUPPRESSIONS",
+                        {role: (0, 0, 0, "") for role in crashlog._NORMAL_ROLES})
+    monkeypatch.setattr(crashlog, "_NORMAL_COUNT_GAP", False)
+    monkeypatch.setattr(crashlog, "_NORMAL_LOCK", crashlog.threading.Lock())
+    monkeypatch.setattr(crashlog, "_NORMAL_STATS_LOCK", crashlog.threading.Lock())
+    monkeypatch.setattr(crashlog, "_NORMAL_LIMIT_BYTES", 8 * 1024 * 1024)
+    monkeypatch.setattr(crashlog, "_NORMAL_MESSAGE_BYTES", 64 * 1024)
+    monkeypatch.setattr(crashlog, "_NORMAL_PAUSED", False)
+    monkeypatch.setattr(crashlog, "_NORMAL_CONFIGURED_AT", None)
+    monkeypatch.setattr(crashlog, "_NORMAL_CACHE", crashlog._NORMAL_CACHE)
+    crashlog._cache_normal_budget()
+    monkeypatch.setattr(crashlog, "os", SimpleNamespace(getpid=lambda: _PID))
+    monkeypatch.setattr(startup_diagnostics, "process_identity",
+                        lambda: {"pid": _PID, "birth_filetime": _BIRTH})
     monkeypatch.setattr(crashlog.faulthandler, "enable", lambda **kw: native_calls.append(kw["file"].name))
     # Keep the test runner's exception hooks intact after each modeled attempt.
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)
@@ -238,7 +257,8 @@ def test_cold_import_does_not_load_qt_config_or_application():
 import builtins, sys
 original = builtins.__import__
 def guarded(name, *args, **kwargs):
-    if name.startswith(('PySide6', 'angerona.app', 'angerona.core.config', 'angerona.modules')):
+    if name.startswith(('PySide6', 'angerona.app', 'angerona.core.config', 'angerona.modules',
+                        'angerona.core.startup_diagnostics')):
         raise AssertionError('cold crashlog import attempted: ' + name)
     return original(name, *args, **kwargs)
 builtins.__import__ = guarded
@@ -267,3 +287,194 @@ def test_real_private_startup_receipt_uses_existing_bounded_writer(arming, monke
     assert row["phase"] == "crash-log-arming" and row["status"] == "armed"
     assert len(row["actual"]) == 2 and all(len(value) <= 256 for value in row["actual"])
     assert "one native output only" in row["coverage"]
+    assert row["pid"] == _PID and row["birth_filetime"] == _BIRTH
+    assert "identity=pid-birth-observed" in row["coverage"]
+
+
+def test_one_generation_capture_is_reused_in_header_report_and_private_row(arming, monkeypatch):
+    calls = []
+
+    def identity():
+        calls.append(True)
+        return {"pid": _PID, "birth_filetime": _BIRTH}
+
+    monkeypatch.setattr(startup_diagnostics, "process_identity", identity)
+    report = crashlog.install().report
+    assert calls == [True]
+    assert report.pid == _PID and report.birth_filetime == _BIRTH
+    assert report.identity_state == "pid-birth-observed" and report.identity_error == ""
+    assert int(report.birth_filetime) > 2**53 and type(report.birth_filetime) is str
+    row = arming.records[-1][2]
+    assert row["pid"] == report.pid and row["birth_filetime"] == report.birth_filetime
+    for path in (target.path for target in report.targets):
+        text = path.read_text(encoding="utf-8")
+        assert f"pid={_PID};birth_filetime={_BIRTH};identity=pid-birth-observed" in text
+        assert "generation_scope=installation-observation" in text
+    # Neither a cached read nor publishing the same frozen observation queries
+    # a live generation again or silently assigns a later process to this row.
+    monkeypatch.setattr(crashlog, "os", SimpleNamespace(getpid=lambda: pytest.fail("cached read queried PID")))
+    monkeypatch.setattr(startup_diagnostics, "process_identity",
+                        lambda: pytest.fail("cached read queried native generation"))
+    assert crashlog.latest_report() is report
+    published = crashlog._publish_report(report)
+    assert published.pid == _PID and published.birth_filetime == _BIRTH
+    assert arming.records[-1][2]["birth_filetime"] == _BIRTH and calls == [True]
+
+
+@pytest.mark.parametrize("identity,reason", [
+    (None, "identity-malformed"),
+    ([], "identity-malformed"),
+    ({}, "identity-malformed"),
+    ({"pid": _PID, "birth_filetime": _BIRTH, "private": "credential=not-exported"}, "identity-malformed"),
+    ({"pid": _PID, "private": "credential=not-exported"}, "identity-malformed"),
+    ({"pid": _PID, "x" * 4096: _BIRTH}, "identity-malformed"),
+    ({"pid": True, "birth_filetime": _BIRTH}, "identity-malformed"),
+    ({"pid": "81001", "birth_filetime": _BIRTH}, "identity-malformed"),
+    ({"pid": 0, "birth_filetime": _BIRTH}, "identity-malformed"),
+    ({"pid": 0x100000000, "birth_filetime": _BIRTH}, "identity-malformed"),
+    ({"pid": _PID + 1, "birth_filetime": _BIRTH}, "pid-mismatch"),
+    ({"pid": _PID}, "birth-unavailable"),
+    ({"pid": _PID, "birth_filetime": None}, "birth-unavailable"),
+    ({"pid": _PID, "birth_filetime": True}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": int(_BIRTH)}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "0"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "01"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "-1"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "+1"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "١"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "1.0"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "18446744073709551616"}, "birth-malformed"),
+    ({"pid": _PID, "birth_filetime": "9" * 4096}, "birth-malformed"),
+], ids=["none", "list", "empty", "unknown-field", "two-unknown-fields", "oversized-key", "bool-pid", "text-pid", "zero-pid",
+        "large-pid", "foreign-pid", "missing-birth", "no-birth", "bool-birth", "numeric-birth",
+        "zero-birth", "leading-zero", "negative", "plus", "unicode", "fraction", "u64-overflow", "oversized"])
+def test_malformed_or_unavailable_identity_never_borrows_a_birth_or_blocks_hooks(
+    arming, monkeypatch, capsys, identity, reason,
+):
+    calls = []
+
+    def supplier():
+        calls.append(True)
+        return identity
+
+    monkeypatch.setattr(startup_diagnostics, "process_identity", supplier)
+    report = crashlog.install().report
+    assert calls == [True]
+    assert report.state == "armed" and report.main_hook and report.thread_hook and report.qt_hook
+    assert report.pid == _PID and report.birth_filetime is None
+    assert report.identity_state == "pid-only" and report.identity_error == reason
+    row = arming.records[-1][2]
+    assert row["pid"] == _PID and row["birth_filetime"] is None
+    assert "identity:" + reason in row["log_error"]
+    assert "credential=not-exported" not in json.dumps(row) + capsys.readouterr().err
+    for target in report.targets:
+        text = target.path.read_text(encoding="utf-8")
+        assert f"pid={_PID};birth_filetime=unavailable;identity=pid-only" in text
+        assert "credential=not-exported" not in text
+
+
+@pytest.mark.parametrize("birth", ["1", _BIRTH, "18446744073709551615"])
+def test_positive_canonical_u64_birth_has_no_arbitrary_float_precision_floor(arming, monkeypatch, birth):
+    monkeypatch.setattr(startup_diagnostics, "process_identity", lambda: {"pid": _PID, "birth_filetime": birth})
+    report = crashlog.install().report
+    assert report.birth_filetime == birth and report.identity_state == "pid-birth-observed"
+    assert arming.records[-1][2]["birth_filetime"] == birth
+
+
+def test_generation_supplier_exception_exports_only_a_fixed_reason_and_keeps_hooks(arming, monkeypatch, capsys):
+    def failed():
+        raise RuntimeError("password=private-generation-fixture")
+
+    monkeypatch.setattr(startup_diagnostics, "process_identity", failed)
+    report = crashlog.install().report
+    assert report.state == "armed" and report.identity_state == "pid-only"
+    assert report.identity_error == "identity-query-failed" and report.birth_filetime is None
+    assert "private-generation-fixture" not in json.dumps(arming.records) + capsys.readouterr().err
+    assert all("private-generation-fixture" not in target.path.read_text("utf-8") for target in report.targets)
+
+
+@pytest.mark.parametrize("pid", [None, True, 0, -1, "81001", 0x100000000])
+def test_unavailable_current_pid_is_not_replaced_by_supplier_identity(arming, monkeypatch, pid):
+    monkeypatch.setattr(crashlog, "os", SimpleNamespace(getpid=lambda: pid))
+    monkeypatch.setattr(startup_diagnostics, "process_identity",
+                        lambda: pytest.fail("native birth cannot be bound to a valid current PID"))
+    report = crashlog.install().report
+    assert report.state == "armed" and report.pid is None and report.birth_filetime is None
+    assert report.identity_state == "unavailable" and report.identity_error == "pid-unavailable"
+    assert arming.records[-1][2]["pid"] is None
+
+
+def test_current_pid_query_failure_does_not_leak_or_borrow_identity(arming, monkeypatch, capsys):
+    def failed():
+        raise OSError("private-pid-query-secret")
+    monkeypatch.setattr(crashlog, "os", SimpleNamespace(getpid=failed))
+    monkeypatch.setattr(startup_diagnostics, "process_identity",
+                        lambda: pytest.fail("invalid current PID cannot borrow a generation"))
+    report = crashlog.install().report
+    assert report.state == "armed" and report.identity_error == "pid-unavailable"
+    assert report.pid is None and report.birth_filetime is None
+    assert "private-pid-query-secret" not in json.dumps(arming.records) + capsys.readouterr().err
+
+
+@pytest.mark.parametrize("same_pid", [False, True], ids=["changed-pid", "reused-pid"])
+def test_explicit_reinstallation_observes_new_generation_without_rewriting_old_report(arming, monkeypatch, same_pid):
+    current = [_PID, _BIRTH]
+    calls = []
+    monkeypatch.setattr(crashlog, "os", SimpleNamespace(getpid=lambda: current[0]))
+
+    def supplier():
+        calls.append(tuple(current))
+        return {"pid": current[0], "birth_filetime": current[1]}
+
+    monkeypatch.setattr(startup_diagnostics, "process_identity", supplier)
+    first = crashlog.install().report
+    current[:] = [_PID if same_pid else _PID + 1, str(int(_BIRTH) + 1)]
+    second = crashlog.install().report
+    assert calls == [(_PID, _BIRTH), tuple(current)]
+    assert first.pid == _PID and first.birth_filetime == _BIRTH
+    assert second.pid == current[0] and second.birth_filetime == current[1]
+    assert first is not second and crashlog.latest_report() is second
+    assert arming.records[0][2]["birth_filetime"] == _BIRTH
+    assert arming.records[1][2]["birth_filetime"] == current[1]
+
+
+def test_normal_budget_hold_preserves_native_arming_hooks_and_explicit_startup_gap(arming, monkeypatch):
+    existing = arming.root / "logs/crash.log"
+    existing.parent.mkdir()
+    original = b"preserved oversized evidence\n" * 8
+    existing.write_bytes(original)
+    monkeypatch.setattr(crashlog, "_NORMAL_LIMIT_BYTES", len(original) - 1)
+
+    report = crashlog.install().report
+
+    assert report.main_hook and report.thread_hook and report.qt_hook
+    assert report.native_fault_target is not None and arming.native_calls
+    assert all(row.opened for row in report.targets)
+    assert all(not row.startup_written for row in report.targets)
+    assert report.state == "unavailable"
+    assert report.targets[0].errors == ("startup-write:normal-write:file-limit",)
+    assert all("startup=False" in row for row in arming.records[-1][2]["actual"])
+    assert existing.read_bytes() == original
+    reserved = tuple(row["reserved_bytes"] for row in crashlog.normal_write_snapshot()["targets"])
+    streams, native_calls = tuple(crashlog._FH_FILES), tuple(arming.native_calls)
+    crashlog.configure_normal_log_budget(limit_mib=1, message_kib=4, paused=True)
+    assert tuple(crashlog._FH_FILES) == streams and tuple(arming.native_calls) == native_calls
+    assert all(not stream.closed for stream in streams)
+    crashlog.install()
+    assert tuple(row["reserved_bytes"] for row in crashlog.normal_write_snapshot()["targets"]) == reserved
+
+
+def test_reinstallation_preserves_nonzero_normal_allowance_and_suppression(arming, monkeypatch):
+    crashlog.install()
+    before = crashlog.normal_write_snapshot()
+    used = before["targets"][0]["reserved_bytes"]
+    assert used > 0 and all(row["reserved_bytes"] == used for row in before["targets"])
+    monkeypatch.setattr(crashlog, "_NORMAL_LIMIT_BYTES", used)
+    crashlog._write("UNIT", "capacity rejection")
+    held = crashlog.normal_write_snapshot()
+    assert all(row["suppressed_blocks"] == 1 for row in held["targets"])
+    report = crashlog.install().report
+    assert report.main_hook and report.thread_hook and report.qt_hook and report.native_fault_target
+    after = crashlog.normal_write_snapshot()
+    assert all(row["reserved_bytes"] == used and row["appended_blocks"] == 1
+               and row["suppressed_blocks"] == 2 for row in after["targets"])

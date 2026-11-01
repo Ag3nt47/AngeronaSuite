@@ -144,7 +144,9 @@ def test_exact_model_receipt_binds_approved_tag_and_blocks_changed_blob(
 
 def test_triage_never_contacts_model_when_attestation_fails(monkeypatch) -> None:
     module = AITriageModule()
-    module._attest_model = lambda: False
+    module._host = "http://127.0.0.1:14184"
+    monkeypatch.setattr("angerona.modules.ai_triage.attest_ollama_service", lambda *_args: None)
+    module._attest_model = lambda **_kwargs: False
     monkeypatch.setattr(
         "angerona.modules.ai_triage.safe_urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(

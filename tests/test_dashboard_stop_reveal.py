@@ -16,7 +16,7 @@ from PySide6.QtGui import QRegion
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QWidget
 from shiboken6 import delete, isValid
 
-from angerona.core import ollama_lifecycle
+from angerona.core import ollama_lifecycle, process_exit
 from angerona.gui import header_controls, main_window
 from angerona.gui.header_controls import PanelRevealOverlay
 from angerona.gui.main_window import MainWindow
@@ -59,7 +59,8 @@ def scene(app, monkeypatch):
     for name in ("request_operator_stop", "request_standdown", "signal_external_watchdog_stop"):
         monkeypatch.setattr(shutdown_token, name, forbidden)
     monkeypatch.setattr(QtWidgets.QApplication, "quit", lambda *_args: calls.append("qt-quit"))
-    monkeypatch.setattr(os, "_exit", lambda code: calls.append(("inert-exit", code)))
+    monkeypatch.setattr(process_exit, "exit_after_operator_shutdown",
+                        lambda: calls.append(("inert-exit", 0)))
 
     owner = QWidget()
     owner.resize(640, 400)

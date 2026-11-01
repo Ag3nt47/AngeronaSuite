@@ -23,6 +23,7 @@ def module(monkeypatch):
     instance = ai_triage.AITriageModule()
     instance._host = "http://127.0.0.1:14184"
     instance._model = "llama3"
+    monkeypatch.setattr(ai_triage, "attest_ollama_service", lambda *_args: None)
     # These tests isolate the existing inventory/attestation diagnosis. Startup
     # integration has separate tests and must never launch the host daemon here.
     monkeypatch.setattr(instance, "_ensure_ollama", lambda **_kwargs: False)
@@ -120,7 +121,7 @@ def test_inventory_matches_the_tag_inference_will_request(module, configured, in
 def test_failed_telemetry_protection_never_sends_raw_evidence(module, monkeypatch):
     from angerona.engines import ai_guardrail
 
-    monkeypatch.setattr(module, "_attest_model", lambda: True)
+    monkeypatch.setattr(module, "_attest_model", lambda **_kwargs: True)
     def broken_sanitizer(_text):
         raise RuntimeError("attacker-controlled error must remain private")
 

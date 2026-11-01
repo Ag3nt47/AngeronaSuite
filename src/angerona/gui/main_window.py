@@ -1013,6 +1013,9 @@ class MainWindow(QMainWindow):
         from angerona.gui.storage_controls import StorageWarningController
         self._storage_warning_controller = StorageWarningController(
             self.config, self.manager, self, self._show_settings)
+        from angerona.gui.normal_log_controls import NormalLogWarningController
+        self._normal_log_warning_controller = NormalLogWarningController(
+            self.config, self, self._show_settings)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.
@@ -1485,9 +1488,6 @@ class MainWindow(QMainWindow):
 
     # ── Refresh ──────────────────────────────────────────────────────────────
     def _refresh(self) -> None:
-        synchronizer = getattr(self, "_sync_ugcap_gate", None)
-        if callable(synchronizer):
-            synchronizer()
         metrics = getattr(self, "runtime_metrics", None)
         started = time.perf_counter() if metrics is not None else 0.0
         self._tick_count += 1
@@ -1495,10 +1495,13 @@ class MainWindow(QMainWindow):
         # flood or a transient DB lock) must never propagate out of the QTimer
         # callback and take the app down. Worst case we skip one repaint tick.
         try:
+            synchronizer = getattr(self, "_sync_ugcap_gate", None)
+            if callable(synchronizer):
+                synchronizer()
             self._refresh_body()
         except Exception as exc:
             try:
-                self._blackbox_feed(f"UI refresh error (non-fatal): {exc}")
+                self._blackbox_feed(f"UI refresh error (non-fatal): {str(exc)[:512]}")
             except Exception:
                 pass
 
@@ -6261,7 +6264,7 @@ class MainWindow(QMainWindow):
         whatever) keeps the interpreter from winding down afterward, the
         process lingers, the lock socket stays bound, and the NEXT launch
         shows 'Angerona already running' even though the user already quit.
-        Always finish with a hard os._exit() so that can't happen."""
+        Always finish with an immediate self-exit so that can't happen."""
         self._terminate()
 
     def _terminate(self) -> None:
@@ -6378,8 +6381,8 @@ class MainWindow(QMainWindow):
             QApplication.instance().quit()
         except Exception:
             pass
-        import os
-        os._exit(0)  # guarantee this instance dies and releases the lock socket
+        from angerona.core.process_exit import exit_after_operator_shutdown
+        exit_after_operator_shutdown()  # final self-exit; no other process is selected
 
     def _full_shutdown(self) -> None:
         """Red STOP: persist operator intent and retire owned suite resources."""

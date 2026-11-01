@@ -269,6 +269,8 @@ def test_waiting_for_another_attestation_is_cancellable_before_authority_reads(m
 
 def test_triage_passes_immutable_stop_token_and_cancellation_never_calls_model(monkeypatch):
     module = AITriageModule()
+    module._host = "http://127.0.0.1:14184"
+    monkeypatch.setattr("angerona.modules.ai_triage.attest_ollama_service", lambda *_args: None)
     old_stop = module.generation_stop_event()
     events = []
     monkeypatch.setattr(module, "emit", lambda *args, **kwargs: events.append((args, kwargs)))
@@ -367,7 +369,8 @@ def test_triage_discards_transport_result_or_error_after_generation_stop(monkeyp
     old_stop = module.generation_stop_event()
     emitted = []
     transport_entered = []
-    monkeypatch.setattr(module, "_attest_model", lambda: True)
+    monkeypatch.setattr("angerona.modules.ai_triage.attest_ollama_service", lambda *_args: None)
+    monkeypatch.setattr(module, "_attest_model", lambda **_kwargs: True)
     monkeypatch.setattr(module, "emit", lambda *args, **_kwargs: emitted.append(args))
 
     class Response:

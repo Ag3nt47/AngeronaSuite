@@ -26,6 +26,7 @@ supervisor is the core-side counterpart.
 from __future__ import annotations
 
 import os
+import math
 import subprocess
 import sys
 import threading
@@ -48,6 +49,9 @@ from angerona.resilience.recovery_state import (
 # After a component hits SAFE_MODE (crash-loop), wait this long, then retry once —
 # so supervision recovers automatically instead of giving up permanently.
 _SAFE_MODE_COOLDOWN = 120.0
+# Initial readiness is separate from liveness after a verified heartbeat. A
+# slow constructor must not become three purported crashes in a few seconds.
+_STARTUP_HEARTBEAT_SECONDS = 180.0
 _VALID_RESTART_TARGETS = {
     "core", "scanner", "blackbox", "watchdog", "watchdog_ui", "scanner_ui", "*",
 }
@@ -369,6 +373,44 @@ def request_restart(*names: str) -> list[Path]:
     return written
 
 
+def _retained_startup_identity(proc) -> Optional[tuple]:
+    """Pin only a child owner returned by this supervisor's own launch.
+
+    A Windows venv redirector has a different PID from its Python child. The
+    retained process handle and private Job, rather than a PID/table lookup,
+    identify that initial launch. This grants no heartbeat or response trust.
+    """
+    if os.name == "nt":
+        from angerona.core.windows_child_job import OwnedWindowsChild
+
+        if type(proc) is not OwnedWindowsChild or not proc._handle_lock.acquire(blocking=False):
+            return None
+        try:
+            job = proc._job
+            if proc._process is None or job is None or job._handle is None:
+                return None
+            return proc._process, job, job._handle
+        finally:
+            proc._handle_lock.release()
+    # waitpid/Popen retains an unreaped, directly created child generation.
+    # An adopted psutil process or an arbitrary PID never enters this path.
+    if type(proc) is subprocess.Popen and proc._child_created:
+        return (proc,)
+    return None
+
+
+@dataclass
+class _StartupAttempt:
+    proc: object = field(repr=False)
+    identity: Optional[tuple] = field(repr=False)
+    started: Optional[float]
+    deadline: Optional[float]
+    last_checked: Optional[float]
+    heartbeat_rejected: bool = False
+    clock_rejected: bool = False
+    held_notified: bool = False
+
+
 @dataclass
 class Component:
     name: str                      # heartbeat name + identity
@@ -393,6 +435,8 @@ class Component:
     adopted: bool = False
     adopted_identity: Optional[dict] = None
     auth_notice: str = ""
+    # In-memory only: never restore native owners or monotonic leases from disk.
+    _startup: Optional[_StartupAttempt] = field(default=None, repr=False)
 
 
 class ProcessSupervisor:
@@ -402,6 +446,7 @@ class ProcessSupervisor:
                  state_namespace: Optional[str] = None,
                  state_store: Optional[RecoveryStateStore] = None,
                  clock: Callable[[], float] = time.time,
+                 monotonic_clock: Callable[[], float] = time.monotonic,
                  initial_backoff_s: float = 1.0,
                  max_backoff_s: float = 60.0):
         if initial_backoff_s <= 0 or max_backoff_s < initial_backoff_s:
@@ -410,6 +455,7 @@ class ProcessSupervisor:
         self.poll_interval = poll_interval
         self.on_event = on_event
         self._clock = clock
+        self._monotonic_clock = monotonic_clock
         self.initial_backoff_s = float(initial_backoff_s)
         self.max_backoff_s = float(max_backoff_s)
         self.state_namespace = safe_name(state_namespace or "ephemeral")
@@ -532,6 +578,9 @@ class ProcessSupervisor:
             return False
         # Already up (perhaps started by the other supervisor)? Adopt it.
         if self._is_running(c):
+            if c._startup is not None and self._assess(c) != "alive":
+                return False
+            c._startup = None
             captured = getattr(c.running_probe, "retained_identity", None)
             if callable(captured):
                 c.adopted_identity = captured()
@@ -543,6 +592,17 @@ class ProcessSupervisor:
             return True
         # Only one supervisor may spawn a given component at a time.
         rec, auth = self._authenticated_record(c)
+        if c._startup is not None:
+            if auth not in ("authenticated", "missing"):
+                c._startup.heartbeat_rejected = True
+                self._report_auth_state(c, auth)
+                return False
+            pending = self._startup_state(c, record_missing=auth == "missing")
+            if pending == "starting":
+                return True  # Same retained launch; not a second spawn or health claim.
+            if pending != "dead":
+                return False  # Keep uncertain/expired custody; do not duplicate it.
+            c._startup = None
         if rec and auth != "authenticated":
             if hb.pid_alive(int(rec.get("pid", 0))):
                 self._report_auth_state(c, auth)
@@ -572,6 +632,7 @@ class ProcessSupervisor:
             if self._respawn_blocked():
                 self._terminate(c)
                 return False
+            self._arm_startup(c)
             c._dead = False
             c.adopted = False
             c.adopted_identity = None
@@ -598,12 +659,108 @@ class ProcessSupervisor:
         release_spawn(c.name)
 
     def _waiter(self, c: Component, proc: subprocess.Popen) -> None:
+        wait_gap = ""
         try:
-            proc.wait()
+            code = proc.wait()
+        except Exception:
+            code, wait_gap = None, "unavailable"
+        if type(code) is not int:
+            # A failed native wait/duplicate, or an invalid adapter result, is
+            # not an exit receipt. Leave heartbeat/owned-poll evidence intact.
+            with self._lifecycle_lock:
+                current = c.proc is proc
+            if current:
+                self._emit("HIGH", f"{c.name}: retained child exit wait could not establish an exit; "
+                           "no death was inferred. Review heartbeat and owned-process observations.",
+                           component=c.name, wait_observation=wait_gap or "invalid-result")
+            return
+        # Never hold this lock across the blocking wait. Replacement/spawn and
+        # this comparison+publication share one critical section, so a retired
+        # generation cannot mark its replacement dead after checking ownership.
+        with self._lifecycle_lock:
+            if c.proc is proc:
+                c._dead = True
+
+    def _startup_clock(self) -> Optional[float]:
+        try:
+            value = self._monotonic_clock()
+            if type(value) in (int, float) and 0 <= value <= 253402300799 and math.isfinite(value):
+                return float(value)
         except Exception:
             pass
-        if c.proc is proc:
-            c._dead = True
+        return None
+
+    def _arm_startup(self, c: Component) -> None:
+        if c.running_probe is not None:
+            c._startup = None
+            return
+        now = self._startup_clock()
+        try:
+            identity = _retained_startup_identity(c.proc)
+        except Exception:
+            identity = None
+        c._startup = _StartupAttempt(c.proc, identity, now,
+            now + _STARTUP_HEARTBEAT_SECONDS if now is not None else None, now)
+
+    @staticmethod
+    def _heartbeat_file_absent(c: Component) -> bool:
+        # HeartbeatReader.read() also maps malformed/unreadable bytes to None.
+        # Only a missing named file permits the initial "starting" label.
+        try:
+            c.reader.path.lstat()
+        except FileNotFoundError:
+            return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _startup_process_state(c: Component) -> str:
+        """Query retained launch custody, never infer heartbeat health from it."""
+        attempt = c._startup
+        if attempt is None:
+            return "unknown"
+        try:
+            identity = _retained_startup_identity(c.proc) if c.proc is attempt.proc else None
+            if (identity is None or attempt.identity is None
+                    or len(identity) != len(attempt.identity)
+                    or any(current is not original for current, original in zip(identity, attempt.identity))):
+                return "unknown"
+            code = attempt.proc.poll()
+        except Exception:
+            return "unknown"
+        return "live" if code is None else "dead" if type(code) is int else "unknown"
+
+    def _startup_state(self, c: Component, *, record_missing: bool) -> str:
+        attempt = c._startup
+        state = "startup-unavailable"
+        if attempt is None or c._dead:
+            return "dead"
+        process_state = self._startup_process_state(c)
+        if process_state == "dead":
+            return "dead"
+        if process_state == "live":
+            now = self._startup_clock()
+            if (not attempt.clock_rejected and now is not None
+                    and attempt.started is not None and attempt.deadline is not None
+                    and attempt.last_checked is not None and now >= attempt.last_checked):
+                attempt.last_checked = now
+                if now >= attempt.deadline:
+                    state = "startup-timeout"
+                elif record_missing and not attempt.heartbeat_rejected:
+                    if self._heartbeat_file_absent(c):
+                        return "starting"
+                    attempt.heartbeat_rejected = True
+            else:
+                attempt.clock_rejected = True
+        if not attempt.held_notified:
+            attempt.held_notified = True
+            self._emit("HIGH", f"{c.name}: initial authenticated heartbeat is unavailable; "
+                       "the retained launch is held without a healthy claim or duplicate respawn. "
+                       "Review startup diagnostics or use the normal STOP/manual restart controls.",
+                       component=c.name, startup_state=state,
+                       startup_budget_s=_STARTUP_HEARTBEAT_SECONDS)
+        return state
 
     def start(self) -> None:
         with self._lifecycle_lock:
@@ -901,17 +1058,30 @@ class ProcessSupervisor:
         # A returned proc.wait() (real process exit) is authoritative for death.
         if c._dead:
             return "dead"
+        if c._startup is not None and self._startup_process_state(c) == "dead":
+            return "dead"
         rec, auth = self._authenticated_record(c)
         if auth != "authenticated":
             if auth == "missing":
-                return "dead"
+                return self._startup_state(c, record_missing=True) if c._startup is not None else "dead"
+            if c._startup is not None:
+                c._startup.heartbeat_rejected = True
             self._report_auth_state(c, auth)
             return "legacy_unverified" if auth == "legacy" else f"unauthenticated_{auth}"
         self._report_auth_state(c, auth)
         hb_state = c.reader.classify(stale_after_s=c.stale_after_s) if c.reader else "unknown"
         if hb_state == "alive":
+            c._startup = None
             self._decay(c)
             return "alive"
+        if c._startup is not None:
+            # A prior signed stale/stopped record is not this new launch's
+            # readiness receipt. Once an existing authenticated alive record is
+            # accepted, ordinary suspension/death recovery resumes unchanged.
+            if hb_state in ("legacy_unverified", "unauthenticated_invalid", "unauthenticated_replay",
+                            "unauthenticated_clock", "unauthenticated_missing"):
+                c._startup.heartbeat_rejected = True
+            return self._startup_state(c, record_missing=False)
         if hb_state == "suspended":
             return "suspended"
         if hb_state == "dead":
@@ -942,6 +1112,7 @@ class ProcessSupervisor:
                 c.proc.close()
                 c.proc = None
                 c._dead = True
+                c._startup = None
                 return True
             except Exception:
                 # Keep custody for retry; do not discover shared siblings.
@@ -955,6 +1126,7 @@ class ProcessSupervisor:
                     c.proc.kill()
                     c.proc.wait(timeout=3)
                 c._dead = True
+                c._startup = None
                 return True
             except Exception:
                 return False
@@ -974,6 +1146,7 @@ class ProcessSupervisor:
                     return False
                 pid = int((rec or {}).get("pid") or 0)
             if not pid or not hb.pid_alive(pid):
+                c._startup = None
                 return True
             import psutil
             proc = psutil.Process(pid)
@@ -1020,6 +1193,7 @@ class ProcessSupervisor:
                     proc.kill()
                     proc.wait(timeout=3)
             c._dead = True
+            c._startup = None
             return True
         except Exception as exc:
             self._emit(

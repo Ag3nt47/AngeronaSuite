@@ -161,7 +161,10 @@ def confirm_cache_cleanup(parent, module, completed=None, before_request=None):
             completed(accepted)
         dialog.deleteLater()
     dialog.finished.connect(finished)
-    dialog.open()
+    # QDialog.open() is asynchronous but still makes its parent window modal.
+    # A pending deletion choice must leave dashboard and shutdown controls usable.
+    dialog.setWindowModality(Qt.NonModal)
+    dialog.show()
     return dialog
 
 

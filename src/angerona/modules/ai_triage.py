@@ -13,9 +13,11 @@ from __future__ import annotations
 SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
 
 import json
+import math
 import os
 import threading
 import time
+from dataclasses import dataclass, replace
 from typing import Optional
 
 import urllib.request
@@ -23,6 +25,7 @@ import urllib.request
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.url_policy import (
     OLLAMA_SERVICE_POLICY,
+    UrlPolicyError,
     local_service_url,
     read_bounded,
     safe_urlopen,
@@ -32,6 +35,7 @@ from angerona.core.ollama_lifecycle import (
     chill_active,
     ollama_blocked,
     effective_keep_alive,
+    attest_ollama_service,
 )
 
 SYSTEM_PROMPT = (
@@ -39,6 +43,64 @@ SYSTEM_PROMPT = (
     "short sentence: a plain-language explanation and whether it looks benign or "
     "malicious. Be concise."
 )
+
+_REQUEST_PHASES = ("service-check", "model-check", "request")
+_REQUEST_STAGES = frozenset((*_REQUEST_PHASES, "idle", "refused", "cancelled"))
+_REQUEST_OUTCOMES = frozenset({
+    "unmeasured", "in-progress", "completed", "service-refused", "model-refused",
+    "transport-refused", "prompt-refused", "configuration-refused", "circuit-open",
+    "chill", "stopped", "generation-changed", "configuration-changed",
+})
+_REQUEST_COUNTER_MAX = (1 << 63) - 1
+
+
+def _request_number(value) -> bool:
+    return (type(value) in (int, float) and 0 <= value <= 253402300799
+            and math.isfinite(value))
+
+
+def _request_clock(name):
+    try:
+        value = getattr(time, name)()
+        return float(value) if _request_number(value) else None
+    except Exception:
+        return None
+
+
+@dataclass(frozen=True)
+class _RequestStage:
+    generation: int
+    attempt: int
+    stage: str = "idle"
+    outcome: str = "unmeasured"
+    started: float | None = None
+    updated: float | None = None
+    phase_started: float | None = None
+    phase_cpu_started: float | None = None
+    entries: tuple[int, int, int] = (0, 0, 0)
+    timings: tuple[tuple[str, float | None, float | None], ...] = ()
+
+    def valid(self) -> bool:
+        try:
+            return (
+                all(type(value) is int and 0 <= value <= _REQUEST_COUNTER_MAX
+                    for value in (self.generation, self.attempt))
+                and type(self.stage) is str and len(self.stage) <= 32 and self.stage in _REQUEST_STAGES
+                and type(self.outcome) is str and len(self.outcome) <= 32 and self.outcome in _REQUEST_OUTCOMES
+                and all(value is None or _request_number(value)
+                        for value in (self.started, self.updated, self.phase_started, self.phase_cpu_started))
+                and (self.started is None or self.updated is None or self.started <= self.updated)
+                and type(self.entries) is tuple and len(self.entries) == 3
+                and all(type(value) is int and 0 <= value <= _REQUEST_COUNTER_MAX for value in self.entries)
+                and type(self.timings) is tuple and len(self.timings) <= 3
+                and all(type(row) is tuple and len(row) == 3
+                        and type(row[0]) is str and len(row[0]) <= 32 and row[0] in _REQUEST_PHASES
+                        and all(value is None or _request_number(value) for value in row[1:])
+                        for row in self.timings)
+                and len({row[0] for row in self.timings}) == len(self.timings)
+            )
+        except Exception:
+            return False
 
 
 class AITriageModule(BaseModule):
@@ -85,6 +147,110 @@ class AITriageModule(BaseModule):
         self._attestation_receipt = None
         self._ollama_readiness_error = ""
         self._model_readiness_error = ""
+        self._request_stage_lock = threading.Lock()
+        self._request_observation = _RequestStage(self._lifecycle_generation, 0)
+
+    def _begin_request_observation(self, generation):
+        now = _request_clock("monotonic")
+        with self._request_stage_lock:
+            previous = self._request_observation
+            if type(previous) is not _RequestStage or not _RequestStage.valid(previous):
+                return None
+            entries = previous.entries if previous.generation == generation else (0, 0, 0)
+            attempt = previous.attempt + 1
+            if attempt > _REQUEST_COUNTER_MAX:
+                return None
+            self._request_observation = _RequestStage(generation, attempt, started=now, updated=now,
+                                                       entries=entries)
+            return generation, attempt
+
+    def _record_request_stage(self, token, stage, outcome="in-progress"):
+        """Publish bounded call-path timing; never hold this lock across work."""
+        now, cpu = _request_clock("monotonic"), _request_clock("thread_time")
+        with self._request_stage_lock:
+            previous = self._request_observation
+            if (token is None or type(previous) is not _RequestStage
+                    or not _RequestStage.valid(previous)
+                    or (previous.generation, previous.attempt) != token):
+                return
+            timings = dict((name, (wall, used_cpu)) for name, wall, used_cpu in previous.timings)
+            if previous.stage in _REQUEST_PHASES:
+                wall = (now - previous.phase_started if now is not None and previous.phase_started is not None
+                        and now >= previous.phase_started else None)
+                used_cpu = (cpu - previous.phase_cpu_started if cpu is not None and previous.phase_cpu_started is not None
+                            and cpu >= previous.phase_cpu_started else None)
+                timings[previous.stage] = wall, used_cpu
+            entries = list(previous.entries)
+            if stage in _REQUEST_PHASES:
+                index = _REQUEST_PHASES.index(stage)
+                entries[index] = min(_REQUEST_COUNTER_MAX, entries[index] + 1)
+            self._request_observation = replace(previous, stage=stage, outcome=outcome, updated=now,
+                phase_started=now if stage in _REQUEST_PHASES else None,
+                phase_cpu_started=cpu if stage in _REQUEST_PHASES else None, entries=tuple(entries),
+                timings=tuple((name, *timings[name]) for name in _REQUEST_PHASES if name in timings))
+
+    def request_stage_snapshot(self) -> dict:
+        """Cached observations of _ask only; no clock, service or model query."""
+        with self._request_stage_lock:
+            observed = self._request_observation
+        result = {"schema": 1, "state": "unavailable", "reason_code": "invalid_observation",
+                  "advisory_only": True, "response_authorized": False,
+                  "scope": "Cached request-path stages; timings include inline callbacks and grant no inference authority"}
+        if type(observed) is not _RequestStage or not _RequestStage.valid(observed):
+            return result
+        generation = self._lifecycle_generation
+        if type(generation) is not int or not 0 <= generation <= _REQUEST_COUNTER_MAX:
+            return result
+        current = observed.generation == generation
+        result.update(state="observed" if current and observed.attempt else "unmeasured",
+            reason_code="" if current else "generation_changed", lifecycle_generation=generation,
+            observation_generation=observed.generation, attempt_count=observed.attempt,
+            stage=observed.stage if current else "idle", outcome=observed.outcome if current else "unmeasured",
+            started_monotonic=observed.started, updated_monotonic=observed.updated,
+            stage_entries=dict(zip(_REQUEST_PHASES, observed.entries)),
+            completed_stage_timings=[{"stage": name, "wall_seconds": wall, "thread_cpu_seconds": cpu}
+                                     for name, wall, cpu in observed.timings])
+        if self.generation_stop_event().is_set():
+            result.update(stage="cancelled", outcome="stopped")
+        if generation != self._lifecycle_generation:
+            result.update(state="unmeasured", reason_code="generation_changed", stage="idle", outcome="unmeasured")
+        return result
+
+    def _request_cancel_reason(self, stop_event, generation, host, model):
+        if stop_event.is_set():
+            return "stopped"
+        if generation != self._lifecycle_generation:
+            return "generation-changed"
+        if ollama_blocked() or bool(getattr(self, "_chill_paused", False)):
+            return "chill"
+        self._sync_config()
+        if self._host != host or self._model != model:
+            return "configuration-changed"
+        return ""
+
+    def _request_failure(self, exc, *, service=False):
+        """Keep the existing one-notice circuit transition outside callbacks."""
+        self.last_error = str(exc)[:500]
+        if service:
+            detail = (f"Ollama listener attestation failed: {self.last_error}"
+                      if isinstance(exc, OllamaAttestationError)
+                      else "Configured Ollama service endpoint is unavailable or invalid")
+            self._ollama_readiness_error = detail
+            self.last_error = detail
+            self.set_health(30, detail)
+        with self._cb_lock:
+            opened = self._cb_state == "closed"
+            if opened:
+                self._cb_state = "open"
+        if opened:
+            # Availability only; deterministic detector evidence remains intact.
+            failure = ("local Ollama service admission refused"
+                       if service else f"Ollama request failed (timeout budget {self._CB_TIMEOUT_S}s)")
+            self.emit(
+                f"AI triage degraded — {failure}: {exc}. Falling back to deterministic "
+                "rules (auto-recovers when Ollama responds).",
+                Severity.MEDIUM, cb_state="open",
+            )
 
     def bind_manager(self, manager) -> None:
         """Use the operator's current local-AI settings for readiness checks."""
@@ -153,14 +319,60 @@ class AITriageModule(BaseModule):
         fails. A transport failure opens the circuit and emits a health notice.
         """
         stop_event = self.generation_stop_event()
-        if stop_event.is_set():
-            return None
+        generation = self._lifecycle_generation
+        token = self._begin_request_observation(generation)
         self._sync_config()
+        host, model = self._host, self._model
+        model_attested = False
+
+        def cancelled():
+            reason = self._request_cancel_reason(stop_event, generation, host, model)
+            if reason:
+                self._record_request_stage(token, "cancelled", reason)
+                if model_attested:
+                    self._attestation_receipt = None
+                    self.set_health(
+                        min(self.health, 70),
+                        "AI triage request cancelled; fresh service and model "
+                        "verification required before inference",
+                    )
+            return bool(reason)
+
+        if cancelled():
+            return None
         # Fast-fail — never block on a known-bad Ollama
         with self._cb_lock:
-            if self._cb_state == "open":
+            circuit_open = self._cb_state == "open"
+        if circuit_open:
+            self._record_request_stage(token, "refused", "circuit-open")
+            return None
+
+        # A refused local listener cannot use any model. Check it before a cold
+        # multi-gigabyte byte pass. This is not connection authority: transport
+        # repeats its listener, Chill and redirect checks at request time.
+        self._record_request_stage(token, "service-check")
+        try:
+            origin = local_service_url(host)
+            request_url = local_service_url(origin, "/api/chat")
+            attest_ollama_service(origin)
+        except Exception as exc:
+            if cancelled():
                 return None
-        if not self._attest_model() or stop_event.is_set():
+            self._record_request_stage(token, "refused",
+                "configuration-refused" if isinstance(exc, UrlPolicyError) else "service-refused")
+            self._request_failure(exc, service=True)
+            return None
+        if cancelled():
+            return None
+        self._record_request_stage(token, "model-check")
+        if not self._attest_model(expected_model=model):
+            if not cancelled():
+                self._record_request_stage(token, "refused", "model-refused")
+            return None
+        model_attested = True
+        # Settings and generation may change while full-byte verification runs.
+        # Never apply its proof to a different host/model or retired generation.
+        if cancelled():
             return None
 
         # BL-03: neutralize attacker-influenced telemetry so embedded instructions
@@ -174,10 +386,11 @@ class AITriageModule(BaseModule):
             # deterministic response; do not include hostile input in the error.
             self.last_error = "AI telemetry protection unavailable; request skipped"
             self.set_health(20, self.last_error)
+            self._record_request_stage(token, "refused", "prompt-refused")
             return None
 
         payload = json.dumps({
-            "model": self._model,
+            "model": model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -191,42 +404,38 @@ class AITriageModule(BaseModule):
             "options": {"num_predict": 256, "temperature": 0.2},
         }).encode("utf-8")
         req = urllib.request.Request(
-            local_service_url(self._host, "/api/chat"), data=payload,
+            request_url, data=payload,
             headers={"Content-Type": "application/json"},
         )
         try:
-            if stop_event.is_set():
+            self._record_request_stage(token, "request")
+            if cancelled():
                 return None
             with safe_urlopen(
                 req, policy=OLLAMA_SERVICE_POLICY, timeout=self._CB_TIMEOUT_S,
             ) as resp:
                 data = json.loads(read_bounded(resp).decode("utf-8"))
-            if stop_event.is_set():
+            if cancelled():
                 return None
-            return (data.get("message", {}) or {}).get("content", "").strip()
+            result = (data.get("message", {}) or {}).get("content", "").strip()
+            self._record_request_stage(token, "idle", "completed")
+            return result
         except Exception as exc:
-            if stop_event.is_set():
+            if cancelled():
                 return None
-            self.last_error = str(exc)
-            with self._cb_lock:
-                if self._cb_state == "closed":
-                    self._cb_state = "open"
-                    # MEDIUM, not HIGH: a slow/unavailable local LLM is an infra
-                    # condition, not a security threat — raising it HIGH inflated
-                    # the threat level and cluttered Live Alerts. Triage simply
-                    # falls back to deterministic rules until the pinger recovers it.
-                    self.emit(
-                        f"AI triage degraded — Ollama timeout/error after "
-                        f"{self._CB_TIMEOUT_S}s: {exc}. Falling back to deterministic rules "
-                        "(auto-recovers when Ollama responds).",
-                        Severity.MEDIUM,
-                        cb_state="open",
-                    )
+            service_failure = isinstance(exc, OllamaAttestationError)
+            self._record_request_stage(token, "refused",
+                "service-refused" if service_failure else "transport-refused")
+            self._request_failure(exc, service=service_failure)
             return None
 
-    def _attest_model(self) -> bool:
+    def _attest_model(self, *, expected_model: str | None = None) -> bool:
         """Require a fresh receipt for the exact configured tag before use."""
         self._sync_config()
+        model = self._model if expected_model is None else expected_model
+        if self._model != model:
+            self._attestation_receipt = None
+            return False
         stop_event = self.generation_stop_event()
         if stop_event.is_set():
             self._attestation_receipt = None
@@ -240,7 +449,7 @@ class AITriageModule(BaseModule):
                 require_fresh_model_attestation,
             )
 
-            receipt = require_fresh_model_attestation(self._model, stop_event=stop_event)
+            receipt = require_fresh_model_attestation(model, stop_event=stop_event)
         except Exception as exc:
             if stop_event.is_set():
                 self._attestation_receipt = None
@@ -258,7 +467,7 @@ class AITriageModule(BaseModule):
                     "AI triage model attestation failed; deterministic defenses "
                     "remain active and LLM inference is blocked.",
                     Severity.MEDIUM,
-                    model=self._model,
+                    model=model,
                     attestation_error=rendered,
                 )
             self._attestation_receipt = None

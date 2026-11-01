@@ -8,7 +8,9 @@ import time
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QWidget
 from shiboken6 import delete, isValid
 
 from angerona.core.config import Config
@@ -146,6 +148,115 @@ def test_delete_requires_second_explicit_confirmation_and_never_runs_on_warning(
     controller._confirmation.button(QMessageBox.Yes).click()
     QApplication.processEvents()
     assert module.deletions == 1
+
+
+def test_pending_cleanup_confirmation_leaves_parent_controls_usable(setup):
+    _, module, _, _, _, parent = setup
+    activations = []
+    stop = QPushButton("Stop test dashboard", parent)
+    stop.clicked.connect(lambda: activations.append("stop"))
+    parent.show()
+    dialog = gui.confirm_cache_cleanup(parent, module)
+    QApplication.processEvents()
+    try:
+        assert dialog.isVisible() and not dialog.isModal()
+        assert dialog.windowModality() == Qt.NonModal
+        assert QApplication.activeModalWidget() is not dialog
+        assert parent.isEnabled() and stop.isEnabled()
+        QTest.mouseClick(stop, Qt.LeftButton)
+        QApplication.processEvents()
+        assert activations == ["stop"] and module.deletions == 0
+        assert dialog.isVisible()
+    finally:
+        if isValid(dialog):
+            dialog.reject()
+        QApplication.processEvents()
+
+
+@pytest.mark.parametrize("choice", ["no", "escape", "close"])
+def test_declining_cleanup_preserves_copies_and_never_applies_before_request(setup, choice):
+    _, module, _, _, _, parent = setup
+    completed, policy_changes = [], []
+    parent.show()
+    dialog = gui.confirm_cache_cleanup(
+        parent, module, completed.append,
+        before_request=lambda: policy_changes.append("block"),
+    )
+    QApplication.processEvents()
+    assert dialog.defaultButton() is dialog.button(QMessageBox.No)
+    assert dialog.escapeButton() is dialog.button(QMessageBox.No)
+    if choice == "no":
+        dialog.button(QMessageBox.No).click()
+    elif choice == "escape":
+        QTest.keyClick(dialog, Qt.Key_Escape)
+    else:
+        assert dialog.close()
+    QApplication.processEvents()
+    assert completed == [False] and not policy_changes and module.deletions == 0
+    assert not isValid(dialog) or not dialog.isVisible()
+    assert parent.isEnabled()
+
+
+def test_nonmodal_confirmation_yes_requests_worker_once_after_explicit_choice(setup):
+    _, module, _, _, _, parent = setup
+    calls, completed = [], []
+
+    def request():
+        calls.append("request")
+        module.deletions += 1
+        return True
+
+    module.request_cache_cleanup = request
+    parent.show()
+    dialog = gui.confirm_cache_cleanup(
+        parent, module, completed.append,
+        before_request=lambda: calls.append("block"),
+    )
+    QApplication.processEvents()
+    assert not calls and module.deletions == 0 and dialog.isVisible()
+    dialog.button(QMessageBox.Yes).click()
+    QApplication.processEvents()
+    assert calls == ["block", "request"]
+    assert module.deletions == 1 and completed == [True]
+    assert not isValid(dialog) or not dialog.isVisible()
+
+
+def test_repeat_settings_delete_reuses_pending_confirmation_and_close_preserves_copies(setup):
+    config, module, manager, _, _, parent = setup
+    parent.show()
+    controls = gui.StorageControls(config, manager, parent)
+    controls.show()
+    controls._delete()
+    first = controls._confirmation
+    controls._delete()
+    QApplication.processEvents()
+    assert controls._confirmation is first and not first.isModal()
+    assert module.deletions == 0
+    controls.close()
+    QApplication.processEvents()
+    assert controls._confirmation is None and module.deletions == 0
+    assert not controls._timer.isActive()
+    assert not isValid(first) or not first.isVisible()
+    assert parent.isEnabled()
+
+
+def test_warning_controller_keeps_confirmation_nonmodal_and_shutdown_cancels_it(setup):
+    _, module, _, controller, _, parent = setup
+    parent.show()
+    result = (module.storage_status(), 1, 2)
+    controller._apply(result)
+    _click(controller._warning, "Delete")
+    first = controller._confirmation
+    QApplication.processEvents()
+    assert first.isVisible() and not first.isModal()
+    assert first.windowModality() == Qt.NonModal and parent.isEnabled()
+    controller._apply(result)
+    assert controller._confirmation is first and controller._warning is None
+    controller.close()
+    QApplication.processEvents()
+    assert controller._confirmation is None and module.deletions == 0
+    assert not isValid(first) or not first.isVisible()
+    assert parent.isEnabled()
 
 
 def test_change_opens_settings_and_never_bypasses_disk_reserve(setup):

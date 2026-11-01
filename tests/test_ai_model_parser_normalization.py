@@ -413,6 +413,8 @@ def test_actual_bad_baseline_blocks_triage_transport_and_clears_receipt(
 
     monkeypatch.setattr(triage, "safe_urlopen", forbidden_transport)
     instance = triage.AITriageModule()
+    instance._host = "http://127.0.0.1:14184"
+    monkeypatch.setattr(triage, "attest_ollama_service", lambda *_args: None)
     instance._attestation_receipt = prior
     monkeypatch.setattr(instance, "emit", lambda *_args, **_kwargs: None)
     assert instance._ask("inert fixture event") is None

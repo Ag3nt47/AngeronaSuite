@@ -407,3 +407,145 @@ def test_readers_never_modify_original_diagnostic_bytes_or_mtime(monkeypatch, tm
     assert path.read_bytes() == original
     assert path.stat().st_mtime_ns == prior.st_mtime_ns
     assert sorted(item.name for item in tmp_path.iterdir()) == ["diagnostic.json"]
+
+
+def mixed_history():
+    return [
+        {"schema": 2, "generated": "2026-10-24T15:47:21", "passed": 74, "failed": 2,
+         "failures": [
+             {"module": "Earlier AI", "detail": "UrlPolicyError: historical endpoint mismatch"},
+             {"module": "Earlier ETW", "detail": "historical collector gap"},
+         ]},
+        {"name": "supervisor/watchdog", "detail": "refusing child entry: APPDATA",
+         "ts_iso": "2026-10-28T23:26:46Z"},
+        {"name": "supervisor/core", "detail": "core entered SAFE_MODE",
+         "ts_iso": "2026-11-01T16:16:44Z"},
+    ]
+
+
+def test_mixed_history_expands_embedded_run_and_preserves_recorded_time_scope(monkeypatch):
+    stream = TracedStream(json.dumps(mixed_history()).encode(), piece=13)
+    path = ReadOnlyPath(stream)
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", path)
+    rows, meta, note = blackbox._read_selftest_report()
+    assert [row["name"] for row in rows] == [
+        "Earlier AI", "Earlier ETW", "supervisor/watchdog", "supervisor/core"]
+    assert rows[0]["detail"] == "UrlPolicyError: historical endpoint mismatch"
+    assert rows[0]["recorded_at"] == rows[1]["recorded_at"] == "2026-10-24T15:47:21"
+    assert rows[0]["recorded_scope"] == rows[1]["recorded_scope"] == "run"
+    assert rows[2]["recorded_at"] == "2026-10-28T23:26:46Z"
+    assert rows[3]["recorded_at"] == "2026-11-01T16:16:44Z"
+    assert rows[2]["recorded_scope"] == rows[3]["recorded_scope"] == "event"
+    assert all(row["src"] == "selftest (historical)" for row in rows)
+    assert meta == {} and "4 failure record(s)" in note
+    assert "malformed" not in note and "does not establish current module health" in note
+    assert stream.closed and path.modes == ["rb"]
+
+
+def test_mixed_history_is_not_a_fictitious_single_run_or_current_exception(monkeypatch):
+    history = mixed_history()
+    history[1:1] = [{"name": "supervisor/scanner", "detail": "old retry failure"}] * 46
+    assert len(history) == 49
+    stream = TracedStream(json.dumps(history).encode(), piece=65_536)
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    worker = blackbox.LogTailWorker()
+    blocks, overlays = [], []
+    worker.block.connect(lambda text, severity, hints: blocks.append((text, severity, hints)))
+    worker.exception_at.connect(overlays.append)
+    worker._emit_selftest()
+    assert len(blocks) == 1
+    text, severity, hints = blocks[0]
+    assert "Historical selftest: retained failure records; not a single test run" in text
+    assert "50 failure record(s)" in text
+    assert "49 failed" not in text and "? passed" not in text and "✗ ?:" not in text
+    assert "Earlier AI [recorded run: 2026-10-24T15:47:21]" in text
+    assert "supervisor/watchdog [recorded event: 2026-10-28T23:26:46Z]" in text
+    assert "2026-11-01T16:16:44Z" in text and "UrlPolicyError" in text
+    assert severity == "info" and hints == [] and overlays == []
+    worker._emit_text("crash.log", "ValueError: fresh live diagnostic error")
+    assert len(blocks) == 2 and blocks[-1][1] == "critical" and len(overlays) == 1
+
+
+def test_dictionary_history_still_reports_its_single_recorded_run(monkeypatch):
+    stream = TracedStream(json.dumps(mixed_history()[0]).encode())
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    rows, meta, _note = blackbox._read_selftest_report()
+    assert len(rows) == 2 and meta["passed"] == 74 and meta["failed"] == 2
+    # Rewind by selecting a new read-only source, as another independent poll does.
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(
+        TracedStream(json.dumps(mixed_history()[0]).encode())))
+    blocks = []
+    worker = blackbox.LogTailWorker()
+    worker.block.connect(lambda text, *_args: blocks.append(text))
+    worker._emit_selftest()
+    assert "one recorded run — 2 failed / 74 passed (gen 2026-10-24T15:47:21)" in blocks[0]
+    assert "not a single test run" not in blocks[0]
+
+
+def test_malformed_and_deeper_history_stay_explicit_without_blank_failure(monkeypatch):
+    history = [None, {}, {"module": "   "}, {"failures": "wrong"},
+               {"failures": [{"failures": [{"module": "Too deep", "detail": "held"}]},
+                             {"module": "Nested valid", "detail": "observed"}]}]
+    stream = TracedStream(json.dumps(history).encode())
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    rows, _meta, note = blackbox._read_selftest_report()
+    assert [row["name"] for row in rows] == ["Nested valid"]
+    assert "3 malformed row(s) omitted (incomplete evidence)" in note
+    assert "2 deeper/unsupported history container(s) held (incomplete evidence)" in note
+    assert "1 failure record(s)" in note and "Too deep" not in str(rows)
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_history_traversal_limit_reports_unreviewed_remainder(monkeypatch, embedded):
+    monkeypatch.setattr(blackbox, "MAX_SELFTEST_NODES", 3)
+    failures = [{"module": f"Row-{index}", "detail": "observed"} for index in range(5)]
+    history = [{"failures": failures}, {"module": "Later", "detail": "unreviewed"}] if embedded else failures
+    stream = TracedStream(json.dumps(history).encode())
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    rows, _meta, note = blackbox._read_selftest_report()
+    expected = 2 if embedded else 3
+    assert len(rows) == expected and f"at least {expected} failure record(s)" in note
+    assert "3-node review limit reached" in note and "additional history not reviewed" in note
+    assert "incomplete evidence" in note and "Later" not in str(rows)
+
+
+def test_exact_history_node_boundary_does_not_invent_omitted_evidence(monkeypatch):
+    monkeypatch.setattr(blackbox, "MAX_SELFTEST_NODES", 3)
+    history = [{"module": f"Row-{index}", "detail": "observed"} for index in range(3)]
+    stream = TracedStream(json.dumps(history).encode())
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    rows, _meta, note = blackbox._read_selftest_report()
+    assert len(rows) == 3 and "3 failure record(s)" in note
+    assert "at least" not in note and "review limit" not in note
+
+
+def test_invalid_recorded_time_is_a_gap_and_never_an_injected_date_label(monkeypatch):
+    history = [{"module": "Earlier", "detail": "observed", "ts_iso": "\nCRITICAL forged date"},
+               {"module": "Missing detail", "ts_iso": "2026-11-01T16:16:44Z"}]
+    stream = TracedStream(json.dumps(history).encode())
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    rows, _meta, note = blackbox._read_selftest_report()
+    assert "recorded_at" not in rows[0] and "forged" not in str(rows)
+    assert "1 invalid source timestamp(s) omitted" in note
+    assert rows[1]["detail"] == "Detail not recorded"
+
+
+def test_history_dates_remain_visible_in_health_table_and_export_without_changing_live_rows(monkeypatch):
+    worker, _snapshot = configure_live_health(monkeypatch)
+    stream = TracedStream(json.dumps(mixed_history()).encode())
+    monkeypatch.setattr(blackbox, "SELFTEST_FAILURES", ReadOnlyPath(stream))
+    health = worker._collect()
+    tab = blackbox.HealthTab()
+    try:
+        tab.on_health(health)
+        assert tab.fail_table.rowCount() == 5
+        sources = [tab.fail_table.item(row, 2).text() for row in range(tab.fail_table.rowCount())]
+        assert "selftest (historical); recorded run: 2026-10-24T15:47:21" in sources
+        assert "selftest (historical); recorded event: 2026-11-01T16:16:44Z" in sources
+        assert "status" in sources
+        assert "2026-10-28T23:26:46Z" in tab.snapshot_text()
+        assert health["failed"][-1] == {"name": "Live", "detail": "fresh literal <b>failure</b>", "src": "status"}
+        assert health["state"] == "RUNNING" and health["bus_fresh"] is True
+    finally:
+        tab.close()
+        tab.deleteLater()

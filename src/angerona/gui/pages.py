@@ -8928,6 +8928,9 @@ class SettingsDialog(QDialog):
         storage_controls = getattr(self, "_storage_controls", None)
         if storage_controls is not None:
             storage_controls.close()
+        normal_log_controls = getattr(self, "_normal_log_controls", None)
+        if normal_log_controls is not None:
+            normal_log_controls.close()
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
@@ -8943,6 +8946,9 @@ class SettingsDialog(QDialog):
         storage_controls = getattr(self, "_storage_controls", None)
         if storage_controls is not None:
             storage_controls.close()
+        normal_log_controls = getattr(self, "_normal_log_controls", None)
+        if normal_log_controls is not None:
+            normal_log_controls.close()
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
@@ -10026,6 +10032,9 @@ class SettingsDialog(QDialog):
         self._storage_controls = StorageControls(
             self._cfg, getattr(self.parent(), "manager", None), self)
         lay.addWidget(self._storage_controls)
+        from angerona.gui.normal_log_controls import NormalLogControls
+        self._normal_log_controls = NormalLogControls(self._cfg, self)
+        lay.addWidget(self._normal_log_controls)
         from angerona.gui.recorder_integrity_controls import RecorderIntegrityControls
         self._recorder_integrity_controls = RecorderIntegrityControls(
             self._cfg, getattr(self.parent(), "manager", None), self)
@@ -12012,6 +12021,9 @@ class SettingsDialog(QDialog):
         storage_controls = getattr(self, "_storage_controls", None)
         if storage_controls is not None:
             storage_controls.write_candidate(candidate)
+        normal_log_controls = getattr(self, "_normal_log_controls", None)
+        if normal_log_controls is not None:
+            normal_log_controls.write_candidate(candidate)
         integrity_controls = getattr(self, "_recorder_integrity_controls", None)
         if integrity_controls is not None:
             integrity_controls.write_candidate(candidate)
@@ -12438,6 +12450,14 @@ class SettingsDialog(QDialog):
             retention_worker.update_policy(RetentionPolicy.from_config(self._cfg))
         from angerona.gui.storage_controls import apply_storage_policy, shadow_module
         apply_storage_policy(shadow_module(getattr(self.parent(), "manager", None)), self._cfg)
+        from angerona.gui.normal_log_controls import apply_normal_log_policy
+        normal_log_result = apply_normal_log_policy(self._cfg)
+        if normal_log_result.get("accepted") is not True:
+            QMessageBox.warning(
+                self, "Settings saved; normal log policy not applied",
+                "Your preferences were saved, but the live log writer did not accept "
+                "this policy. Existing active limits remain in force. Reopen General "
+                "settings and choose Apply now / retry to apply it without restarting.")
         if combat_to_start is not None:
             self._request_combat_activation(*combat_to_start)
         self.accept()

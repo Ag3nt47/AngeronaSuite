@@ -25,6 +25,7 @@ from typing import List
 
 from angerona import __version__
 from angerona.core.atomic_io import replace_with_retry
+from angerona.core.crashlog_status import normal_log_status
 from angerona.core.eventbus import Severity
 from angerona.core.privilege import is_admin
 
@@ -158,6 +159,102 @@ def _wer_observation_snapshot(manager) -> dict:
             "schema", "advisory_only", "response_authorized", "upstream_delivery_verified", "scope", "upstream_scope")}
         result.update(state="unavailable", reason_code="invalid_observation", ownership_cache_current=False)
     return result
+
+
+def _ai_request_snapshot(manager) -> dict:
+    """Whitelist cached request timings; never verify a service/model or sample a clock."""
+    base = {"schema": 1, "state": "not-configured", "reason_code": "module_absent",
+            "advisory_only": True, "response_authorized": False,
+            "scope": "Cached request-path stages; inclusive timings are not isolated model cost or inference authority"}
+    name = "AI Triage (Ollama)"
+    phases = ("service-check", "model-check", "request")
+    outcomes = {"unmeasured", "in-progress", "completed", "service-refused", "model-refused",
+                "transport-refused", "prompt-refused", "configuration-refused", "circuit-open",
+                "chill", "stopped", "generation-changed", "configuration-changed"}
+
+    def counter(value):
+        return type(value) is int and 0 <= value <= (1 << 63) - 1
+
+    def number(value):
+        return value is None or (type(value) in (int, float)
+                                 and 0 <= value <= 253402300799 and math.isfinite(value))
+
+    try:
+        module = manager.modules.get(name)
+        if module is None:
+            return base
+        enabled = manager.is_enabled(name)
+        if type(enabled) is not bool:
+            raise ValueError
+        if not enabled:
+            return dict(base, state="disabled", reason_code="module_disabled")
+        reader = getattr(module, "request_stage_snapshot", None)
+        if not callable(reader):
+            return dict(base, state="unavailable", reason_code="reader_unavailable")
+        source = reader()
+        if (type(source) is not dict or len(source) > 24
+                or type(source.get("schema")) is not int or source["schema"] != 1
+                or source.get("advisory_only") is not True or source.get("response_authorized") is not False
+                or type(source.get("state")) is not str or len(source["state"]) > 32
+                or source["state"] not in {"unavailable", "unmeasured", "observed"}
+                or type(source.get("reason_code")) is not str
+                or len(source["reason_code"]) > 32
+                or source["reason_code"] not in {"", "invalid_observation", "generation_changed"}):
+            raise ValueError
+        if source["state"] == "unavailable":
+            return dict(base, state="unavailable", reason_code="invalid_observation")
+        result = dict(base, state=source["state"], reason_code=source["reason_code"])
+        for key in ("lifecycle_generation", "observation_generation", "attempt_count"):
+            if not counter(source.get(key)):
+                raise ValueError
+            result[key] = source[key]
+        for key, choices in (("stage", {*phases, "idle", "refused", "cancelled"}), ("outcome", outcomes)):
+            value = source.get(key)
+            if type(value) is not str or len(value) > 32 or value not in choices:
+                raise ValueError
+            result[key] = value
+        for key in ("started_monotonic", "updated_monotonic"):
+            if not number(source.get(key)):
+                raise ValueError
+            result[key] = source[key]
+        if (result["started_monotonic"] is not None and result["updated_monotonic"] is not None
+                and result["started_monotonic"] > result["updated_monotonic"]):
+            raise ValueError
+        entries = source.get("stage_entries")
+        timings = source.get("completed_stage_timings")
+        if (type(entries) is not dict or len(entries) != 3 or set(entries) != set(phases)
+                or any(not counter(entries[key]) for key in phases)
+                or type(timings) is not list or len(timings) > 3):
+            raise ValueError
+        result["stage_entries"] = {key: entries[key] for key in phases}
+        rows = []
+        for row in timings:
+            if (type(row) is not dict or len(row) != 3
+                    or set(row) != {"stage", "wall_seconds", "thread_cpu_seconds"}
+                    or type(row.get("stage")) is not str or row["stage"] not in phases
+                    or any(not number(row.get(key)) for key in ("wall_seconds", "thread_cpu_seconds"))
+                    or any(old["stage"] == row["stage"] for old in rows)):
+                raise ValueError
+            rows.append({key: row[key] for key in ("stage", "wall_seconds", "thread_cpu_seconds")})
+        result["completed_stage_timings"] = rows
+        if (result["state"] == "observed" and (result["reason_code"] or not result["attempt_count"]
+                or result["lifecycle_generation"] != result["observation_generation"])):
+            raise ValueError
+        if result["reason_code"] == "generation_changed" and (
+                result["state"] != "unmeasured" or result["outcome"] != "unmeasured" or result["stage"] != "idle"):
+            raise ValueError
+        # Reader may have triggered a concurrent replacement/disable. Old timings
+        # are historical evidence only; no observation becomes admission authority.
+        enabled = manager.is_enabled(name)
+        if type(enabled) is not bool:
+            raise ValueError
+        if manager.modules.get(name) is not module:
+            return dict(base, state="unmeasured", reason_code="generation_changed")
+        if not enabled:
+            return dict(base, state="disabled", reason_code="module_disabled")
+        return result
+    except Exception:
+        return dict(base, state="unavailable", reason_code="invalid_observation")
 
 
 def _process_inventory_snapshot(owner) -> dict:
@@ -492,6 +589,8 @@ class StatusReporter:
             "event_bus": self._bus_snapshot(),
             "process_inventory": _process_inventory_snapshot(self.process_snapshot_lifecycle),
             "wer_observation": _wer_observation_snapshot(self.manager),
+            "ai_request": _ai_request_snapshot(self.manager),
+            "normal_crashlog": normal_log_status(),
             "runtime_healer": recovery,
             "automatic_response": response,
             "app_version": __version__,
@@ -536,6 +635,8 @@ class StatusReporter:
                            or inventory.get("error_type")
                            or "cached lifecycle only; collection coverage is separate")
         wer = s.get("wer_observation", {})
+        ai_request = s.get("ai_request", {})
+        normal_logs = s.get("normal_crashlog", {})
         lines = [
             "=" * 78,
             " ANGERONA — LIVE STATUS SNAPSHOT",
@@ -549,6 +650,12 @@ class StatusReporter:
             f" Ollama    : {s['ollama']['host']}  (model: {s['ollama']['model']})",
             f" AI startup: {s['ollama'].get('startup', {}).get('percent', 0)}% "
             f"{s['ollama'].get('startup', {}).get('stage', 'Not requested')}",
+            f" AI request: {ai_request.get('state', 'unavailable')} / {ai_request.get('stage', 'unmeasured')} "
+            f"— {ai_request.get('outcome', ai_request.get('reason_code', 'unmeasured'))}",
+            "             Cached inclusive stage timings; no service/model refresh or inference authority.",
+            f" Log budget: {normal_logs.get('state', 'unavailable')} — "
+            f"limit={normal_logs.get('limit_bytes')} bytes/target/process; paused={normal_logs.get('paused')}",
+            "             Cached normal Python/Qt writes only; native/external writers are outside this budget.",
             f" Response  : {s.get('automatic_response', {}).get('state', 'UNAVAILABLE')} "
             f"— {s.get('automatic_response', {}).get('reason', '')}",
             f" Inventory : {inventory.get('state', 'unavailable')} — {inventory_error}",

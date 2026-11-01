@@ -36,7 +36,9 @@ def approved_model(tmp_path, monkeypatch):
 
 def _triage(monkeypatch):
     module = AITriageModule()
+    module._host = "http://127.0.0.1:14184"
     module._model = "fixture"
+    monkeypatch.setattr("angerona.modules.ai_triage.attest_ollama_service", lambda *_args: None)
     monkeypatch.setattr(module, "_ping_ollama", lambda: True)
     monkeypatch.setattr(module, "emit", lambda *_args, **_kwargs: None)
     return module

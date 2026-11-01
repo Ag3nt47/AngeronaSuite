@@ -20,7 +20,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs/releases/Angerona_1.15_Security_Patch_Summary.docx"
-STAMP = datetime(2026, 10, 30, tzinfo=timezone.utc)
+STAMP = datetime(2026, 11, 1, tzinfo=timezone.utc)
 
 
 def paragraph(doc, text, *, lead=None):
@@ -64,7 +64,7 @@ def residual_matrix(doc):
     doc.add_heading("Cross cutting exposure and priorities", 1)
     paragraph(doc, "Priority reflects the next engineering or deployment dependency, not a prediction that a compromise occurred. Configuration and lifecycle receipts stay separate from detector efficacy and independently administered trust.")
     rows = [
-        ("Native availability", "Logging arming and retained evidence", "A native PySide shutdown access violation remains unresolved. One later exit zero does not identify or repair its cause.", "P0"),
+        ("Native availability", "Final self-exit mitigation; scoped logs", "Only the final exit path changed after cleanup. Native fault cause, complete capture and I/O/teardown guarantees remain unproved.", "P0"),
         ("Same-user source", "Preserved edits; scoped keys and IPC", "A same-SID attacker can modify writable source, settings and unsealed evidence. Source anchors are not independent trust.", "P1"),
         ("Kernel trust", "Provider-specific canaries; explicit gaps", "A hostile kernel can suppress or forge observations. A green userspace heartbeat cannot attest kernel truth.", "P1"),
         ("Peer suspension", "WER precursor correlation; EKG deadlines", "Simultaneous user-mode peer freeze can stop both detection and recovery. No certified PPL boundary is deployed.", "P1"),
@@ -118,7 +118,7 @@ def residual_matrix(doc):
                 for run in p.runs:
                     run.font.size = Pt(9.5)
                     run.bold = index == 0
-    paragraph(doc, "P0: diagnose the native shutdown callback/ownership fault. A saved dump includes QObject/widget destruction and event dispatch but no exact root cause. A later normal native exit and an inert negative reproduction do not prove it fixed. The COM exception logged while events continued was not the exit failure. Separately review unattributed diagnostic-log disappearance and durable capture.")
+    paragraph(doc, "P0: diagnose the native shutdown fault. The earlier dump implicated QObject/widget destruction without an exact cause. Newer preserved Python frames map to the old final CRT exit; that dump disappeared before parsing, so no new native PC or unwind is verified. Self-targeted final exit after durable STOP and bounded cleanup is a mitigation, not cause proof or guaranteed I/O/child retirement. Missing-file actor/cause remains unknown.")
     paragraph(doc, "P1: finish independent/signed deployment and disposable-host acceptance before claiming active protection for these boundaries. P2: profile Core/inventory CPU, improve bounded WER-cache diagnostics and validate longer realistic workloads without relaxing identity or policy.")
     paragraph(doc, "Coverage includes gaps, not just positive detections. The reviewed host had native ETW/Sysmon unavailable, HVCI exposure and held listener attestation; none proves an attack. RWX/JIT, timing and tool matches need corroboration. Model text, imported reports and AI review annotations never grant response authority.")
     link(doc, "Sanitized validation, capture gaps and remaining work",
@@ -182,16 +182,15 @@ def residual_appendix(doc):
 def native_metadata_followup(doc):
     """Prepared source only; final observation and render review stay separate."""
     doc.add_page_break()
-    doc.add_heading("Windows metadata and validation follow up", 1)
-    paragraph(doc, "New recorder pending, scratch and writer-lock files receive explicit current-token-user ownership and a protected private DACL before data. Opened-object security, file identity and single-link checks gate admission. Existing inherited private files are accepted; unsuitable existing objects remain preserved and held.", lead="Implemented:")
-    paragraph(doc, "Native-to-CRT transfer has one owner. Uncertain creation, transfer or close retains custody and fences optional recorder replacement while the SQLite protection writer remains usable. Default lease callers and POSIX mode 0600 remain unchanged. Parent-directory checks are path checks, not retained directory leases; same-user, administrator and kernel limitations remain.", lead="Boundary:")
-    paragraph(doc, "Full Setup exposes optional public witness enrollment/storage values and points to running-dashboard protected identity controls. It stores TLS file paths, not private key contents. Witnessing stays off by default; its unavailability does not block local protection. Release fixtures use explicit installed versions while product equal-version and downgrade rejection remain intact.", lead="Setup and updates:")
-    paragraph(doc, "Recorder checks covered 82 distinct cases across two runs: 79 passes and three fixture failures, then three corrected-fixture passes on unchanged product bytes. This is not a single 82-pass run. Setup/updater checks reported 167 passes. Overlapping local cohorts are not summed, and local repairs are separate from fresh hosted CI. The ordinary probe did not reproduce the proposed elevated-CI token-owner cause.", lead="Validation:")
-    paragraph(doc, "Latest Full/STOP met bounded lifecycle acceptance: native exit zero, all 53 observed generations retired and unchanged source/preferences. Yet 17 workers were critical, 34 degraded, one failed and 69 sensor states unknown. Of 56 copied WER views, 23 were admitted-at-last-check and 33 had expired leases; neither retained admission nor zero counters proves continuous coverage. Status settled after 58.45 seconds, not click latency. P0 remains unresolved; fresh fault-log capture was unavailable.", lead="Latest observation:")
-    paragraph(doc, "Cached WER status performs no native/file/supplier query or lease extension; separately sampled fields are as of the getter, not one atomic receipt or current at file write. The source gate passed 244 cases with one skip. Partial thread sampling and worker labels do not isolate module cost or prove a speedup. A separate CI/retirement fixture cohort passed 121 cases; earlier gates and new hosted checks remain separate.", lead="Current diagnostic review:")
-    paragraph(doc, "Messages now distinguish assurance gaps, KEV review candidates and configured startup references from proven regressions, applicability and execution. Severity, evidence and approval decisions remain. The reviewed redacted alerts did not establish either compromise or a clean host.", lead="Alert precision:")
-    link(doc, "Sanitized current WER status and CI evidence",
-        "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-10-30-wer-status-ci.md")
+    doc.add_heading("Current runtime and shutdown follow up", 1)
+    paragraph(doc, "Earlier recorder private-DACL, file-identity and single-owner transfer controls remain. Uncertain cleanup retains custody; parent path checks are not directory leases. Witnessing stays optional with protected private keys, and failed witnessing does not stop local protection.", lead="Retained custody:")
+    paragraph(doc, "Normal Python/Qt messages use a configurable whole-block limit (default 64 KiB, range 4–256 KiB) and default 8 MiB per-file/process-role budgets. Block/Allow/change and pending retry preserve existing bytes without blocking startup. Native/external writes, upstream allocations, OS quotas and file-identity leases remain outside this budget; exact generation headers do not attest hooks.", lead="Logging:")
+    paragraph(doc, "Early read-only AI refusal precedes full hashes while final trust/transport/hash TTL remain strict. Cached stages include inline callbacks, not isolated cost. Exact owned launches receive one 180-second readiness window, not healthy status, duplicate spawn or expiry kill. Waiter errors are not exit proof; adopted PIDs and cross-peer startup remain separate.", lead="Admission:")
+    paragraph(doc, "Mixed history retains recorded runs/events and gaps; old errors do not create a live overlay. UGCAP refresh exceptions are contained. Recovery confirmation is explicitly nonmodal and only Yes queues cleanup. Windows final self-exit follows durable STOP, existing bounded cleanup and Qt quit; it mitigates one path, not native root cause, I/O completion or child retirement.", lead="Review and STOP:")
+    paragraph(doc, "Final source-501 Full60/STOP met bounded lifecycle acceptance: native exit zero, all 39 observed generations retired and unchanged source/selected preferences. End status still had 17 critical, 33 degraded, one failed and 69 unknown sensor states. The earlier modal-held capture remains not accepted, separately from its later declined dialog and normal STOP. Live fault copies exclude final teardown; exit zero does not prove the finalizer path, P0 closure or an Optimus cause.", lead="Latest observation:")
+    paragraph(doc, "Overlapping cohorts remain separate: AI 327 passes/three skips; logging 291/one; observer models 53; runtime 275/one; exit/storage 252. Completed JUnit independently proved the exit/storage cases ran. Source tests and prior hosted CI do not accept new deployment or all exploit paths.", lead="Validation:")
+    link(doc, "Sanitized November fixes, evidence and residual limits",
+        "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-11-01.md")
 
 
 def build(*, service_reviewed=False):
@@ -233,7 +232,7 @@ def build(*, service_reviewed=False):
 
     doc.add_paragraph("Angerona 1.15 Security Patch Summary", "Title")
     doc.add_paragraph("Fixes and residual exposure with deployment requirements", "Subtitle")
-    paragraph(doc, "Version 1.15.0 | 30 October 2026")
+    paragraph(doc, "Version 1.15.0 | 1 November 2026")
     paragraph(doc, "This major update strengthens five user-mode security boundaries. These are implemented source controls, not a claim that every exploit is blocked or that Windows vulnerabilities have been patched. Source Observe, installed authority and independent services remain distinct.")
     paragraph(doc, "A native shutdown access violation remains an unresolved P0 availability finding. The later logging patch improves observability; one subsequent normal exit does not establish a crash fix.", lead="Development status:")
 
@@ -285,7 +284,7 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(data) as source, ZipFile(args.output, "w", compression=ZIP_DEFLATED, compresslevel=9) as target:
         for name in sorted(source.namelist()):
-            info = ZipInfo(name, date_time=(2026, 10, 30, 0, 0, 0))
+            info = ZipInfo(name, date_time=(2026, 11, 1, 0, 0, 0))
             info.compress_type, info.create_system = ZIP_DEFLATED, 0
             target.writestr(info, source.read(name))
     print(f"{args.output} (render every page before delivery)")

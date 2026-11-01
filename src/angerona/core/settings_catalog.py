@@ -21,7 +21,8 @@ AREAS = (
         ("ollama", "model", "theme", "appearance", "dashboard", "flow",
          "local soc", "animation", "motion",
          "orb", "update", "github", "daily", "source update", "preserve edits", "integrity",
-         "recovery storage", "recovery copies", "shadow cache", "drive space", "storage limit"),
+         "recovery storage", "recovery copies", "shadow cache", "drive space", "storage limit",
+         "crash log", "normal log", "log limit", "log budget", "qt messages"),
         "Local configuration; optional daily GitHub metadata checks", False,
     ),
     SettingsArea(

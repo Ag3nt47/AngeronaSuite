@@ -16,6 +16,7 @@ import pytest
 
 from angerona.app import AngeronaApp
 from angerona.core import ollama_lifecycle as ai
+from angerona.core import process_exit
 from angerona.resilience import shutdown_token as token
 from angerona.resilience import supervisor
 
@@ -305,7 +306,7 @@ def test_dashboard_stop_runs_app_owned_callback_before_own_exit(monkeypatch):
     monkeypatch.setattr(QtWidgets, "QApplication", SimpleNamespace(
         instance=lambda: SimpleNamespace(quit=lambda: calls.append("qt-quit")),
     ))
-    monkeypatch.setattr(os, "_exit", lambda code: calls.append(("exit", code)))
+    monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: calls.append(("exit", 0)))
     window.method(window)
     assert calls == ["persist", "owned-cleanup", "qt-quit", ("exit", 0)]
 
@@ -317,7 +318,7 @@ def test_dashboard_does_not_exit_if_authenticated_stop_cannot_be_saved(monkeypat
     window = _inert_stop_window(calls)
     window._shutdown_prepare = lambda: (_ for _ in ()).throw(OSError("fixture"))
     monkeypatch.setattr(QMessageBox, "critical", lambda *_a: calls.append("stop-error"))
-    monkeypatch.setattr(os, "_exit", lambda _code: pytest.fail("unrecorded exit"))
+    monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: pytest.fail("unrecorded exit"))
     window.method(window)
     assert calls == ["stop-error"] and not window._termination_started
 
@@ -331,7 +332,7 @@ def test_callback_free_dashboard_also_persists_before_ai_fence(monkeypatch):
     monkeypatch.setattr(ai, "begin_ollama_shutdown", lambda: pytest.fail("unrecorded AI fence"))
     monkeypatch.setattr(token, "request_operator_stop", lambda: (_ for _ in ()).throw(OSError("full")))
     monkeypatch.setattr(QMessageBox, "critical", lambda *_a: calls.append("stop-error"))
-    monkeypatch.setattr(os, "_exit", lambda _code: pytest.fail("unrecorded exit"))
+    monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: pytest.fail("unrecorded exit"))
     window.method(window)
     assert calls == ["stop-error"]
 

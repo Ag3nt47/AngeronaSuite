@@ -69,6 +69,9 @@ review remain available.
 - **Operational accuracy:** lifecycle-scoped watchdog wording, retained native
   cleanup ownership and bounded recorder verification; optional failures and
   actual coverage gaps stay visible.
+- **November reliability fixes:** bounded normal logging, early AI refusal,
+  accurate historical reports, owned-startup readiness and nonmodal recovery
+  confirmation improve review and keep that decision from blocking STOP.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does
@@ -77,7 +80,7 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [What changed, validation and current limits](docs/releases/v1.15.0.md) ·
 [Reviewed observation](analysis/hardening-v1.15-2026-10-30.md) ·
 [Follow-up fixes and observation](analysis/hardening-v1.15-2026-10-30-followup.md) ·
-[Latest WER status and CI review](analysis/hardening-v1.15-2026-10-30-wer-status-ci.md) ·
+[Latest runtime and shutdown review](analysis/hardening-v1.15-2026-11-01.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

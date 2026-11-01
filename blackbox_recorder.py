@@ -199,19 +199,9 @@ MAX_LOG_PREVIEW_BYTES = 64 * 1024
 
 
 def _selftest_failures(data) -> List[Dict]:
-    """Accept both historical self-test report schemas.
-
-    Older reports are dictionaries containing ``failures``; newer runs may write
-    the failure records as the top-level list. Black Box is a reader and must
-    tolerate either shape rather than killing its worker threads.
-    """
-    if isinstance(data, dict):
-        rows = data.get("failures", [])
-    elif isinstance(data, list):
-        rows = data
-    else:
-        rows = []
-    return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+    """Return bounded historical failures, including one embedded run level."""
+    rows, _malformed, _unsupported, _invalid_dates, _limited = _historical_failure_rows(data)
+    return [row for row, _recorded in rows]
 
 
 def _acquire_single_instance():
@@ -234,6 +224,7 @@ CHART_WINDOW = 120          # rolling samples kept on the telemetry graphs
 STATUS_POLL_GRACE_S = 2 * HEALTH_POLL_S
 MAX_STATUS_BYTES = 4 * 1024 * 1024
 MAX_SELFTEST_BYTES = 4 * 1024 * 1024
+MAX_SELFTEST_NODES = 4096
 MAX_DIAGNOSTIC_READ_BYTES = 64 * 1024
 
 
@@ -258,6 +249,80 @@ def _read_diagnostic_bytes(path: Path, max_bytes: int) -> bytearray:
                 raise _DiagnosticTooLarge("Diagnostic exceeds its byte review limit")
 
 
+def _history_stamp(row: Dict, inherited=None):
+    """Retain bounded source-recorded time, without treating it as current proof."""
+    value = row.get("ts_iso", row.get("generated"))
+    if value is None:
+        return inherited, 0
+    if (type(value) is str and len(value) <= 80 and value.isascii()
+            and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+(?:Z|[+-][0-9:]+)?", value)):
+        try:
+            _dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return (value, "event"), 0
+        except ValueError:
+            pass
+    return inherited, 1
+
+
+def _historical_failure_rows(data):
+    """Read at most one report-in-list level and a fixed total node budget.
+
+    The diagnostics writer can append supervisor records after wrapping an older
+    complete run in a list. That embedded run is a container, never a blank
+    failure. Deeper/unsupported containers remain explicit coverage gaps.
+    """
+    root = data.get("failures") if type(data) is dict else data
+    if type(root) is not list:
+        return [], 0, 0, 0, False
+    inherited, invalid_dates = _history_stamp(data) if type(data) is dict else (None, 0)
+    if inherited is not None:
+        inherited = inherited[0], "run"
+    frames = [(root, 0, inherited)]
+    failures = []
+    malformed = unsupported = visited = 0
+    limited = False
+    while frames:
+        rows, index, recorded = frames[-1]
+        if index >= len(rows):
+            frames.pop()
+            continue
+        if visited >= MAX_SELFTEST_NODES:
+            limited = True
+            break
+        row = rows[index]
+        frames[-1] = rows, index + 1, recorded
+        visited += 1
+        if type(row) is not dict:
+            malformed += 1
+            continue
+        if "failures" in row:
+            children = row["failures"]
+            if len(frames) != 1 or type(data) is not list or type(children) is not list:
+                unsupported += 1
+                continue
+            stamp, invalid = _history_stamp(row)
+            invalid_dates += invalid
+            if stamp is not None:
+                stamp = stamp[0], "run"
+            frames.append((children, 0, stamp))
+            continue
+        name = row.get("module") or row.get("name")
+        if type(name) is not str or not name.strip() or type(row.get("detail", "")) is not str:
+            malformed += 1
+            continue
+        stamp, invalid = _history_stamp(row, recorded)
+        invalid_dates += invalid
+        failures.append((row, stamp))
+    return failures, malformed, unsupported, invalid_dates, limited
+
+
+def _history_source_label(row: Dict) -> str:
+    source = row["src"]
+    if row.get("recorded_at") and row.get("recorded_scope") in ("event", "run"):
+        source += f"; recorded {row['recorded_scope']}: {row['recorded_at']}"
+    return source
+
+
 def _read_selftest_report() -> Tuple[List[Dict], Dict, str]:
     """Read advisory history separately from current process health evidence."""
     try:
@@ -279,17 +344,28 @@ def _read_selftest_report() -> Tuple[List[Dict], Dict, str]:
         rows = data.get("failures") if isinstance(data, dict) else data
         if not isinstance(rows, list):
             return [], {}, "Unavailable: historical report schema is unsupported; current module health is separate."
-        failures = _selftest_failures(data)
-        out = [{"name": str(row.get("module") or row.get("name") or "?")[:200],
-                "detail": str(row.get("detail", ""))[:2000],
-                "src": "selftest (historical)"} for row in failures[:500]]
+        failures, malformed, unsupported, invalid_dates, limited = _historical_failure_rows(data)
+        out = []
+        for row, recorded in failures[:500]:
+            rendered = {"name": (row.get("module") or row.get("name"))[:200],
+                        "detail": (row.get("detail") or "Detail not recorded")[:2000],
+                        "src": "selftest (historical)"}
+            if recorded is not None:
+                rendered.update(recorded_at=recorded[0], recorded_scope=recorded[1])
+            out.append(rendered)
     except (ValueError, RecursionError):
         return [], {}, "Unavailable: historical rows could not be rendered; current module health is separate."
-    note = f"Loaded historical report: {len(failures)} failure record(s)"
+    note = f"Loaded historical report: {'at least ' if limited else ''}{len(failures)} failure record(s)"
     if len(failures) > 500:
         note += "; showing the first 500"
-    if len(rows) != len(failures):
-        note += f"; {len(rows) - len(failures)} malformed row(s) omitted (incomplete evidence)"
+    if malformed:
+        note += f"; {malformed} malformed row(s) omitted (incomplete evidence)"
+    if unsupported:
+        note += f"; {unsupported} deeper/unsupported history container(s) held (incomplete evidence)"
+    if invalid_dates:
+        note += f"; {invalid_dates} invalid source timestamp(s) omitted"
+    if limited:
+        note += f"; {MAX_SELFTEST_NODES}-node review limit reached; additional history not reviewed (incomplete evidence)"
     note += ". Advisory history does not establish current module health."
     return out, data if isinstance(data, dict) else {}, note
 
@@ -556,7 +632,7 @@ class LogTailWorker(QThread):
     def _severity_for(text: str) -> str:
         return "critical" if CRITICAL_MARKERS.search(text) else "info"
 
-    def _emit_text(self, source: str, text: str, *, context: str = "") -> None:
+    def _emit_text(self, source: str, text: str, *, context: str = "", diagnostic_only: bool = False) -> None:
         text = text.strip("\n")
         if not text:
             return
@@ -564,8 +640,8 @@ class LogTailWorker(QThread):
         # Only bounded context is classified; displayed/source bytes are not
         # duplicated, and each file has an independent incremental decoder.
         classified = context + text
-        sev = self._severity_for(classified)
-        hints = self._hints_for(classified)
+        sev = "info" if diagnostic_only else self._severity_for(classified)
+        hints = [] if diagnostic_only else self._hints_for(classified)
         header = f"──[ {source} @ {_dt.datetime.now():%H:%M:%S} ]" + "─" * 24
         self.block.emit(header + "\n" + text, sev, hints)
         if sev == "critical":
@@ -669,15 +745,26 @@ class LogTailWorker(QThread):
             self._emit_text(
                 "selftest_failures.json",
                 "Historical self-test evidence (diagnostic only): " + note,
+                diagnostic_only=True,
             )
             return
-        failed = str(meta.get("failed", len(fails)))[:200]
-        passed = str(meta.get("passed", "?"))[:200]
-        generated = str(meta.get("generated", "?"))[:200]
-        lines = [f"Historical selftest: {failed} failed / {passed} passed (gen {generated})", note]
+        if meta:
+            def total(key):
+                value = meta.get(key)
+                return str(value) if type(value) is int and 0 <= value <= (1 << 63) - 1 else "not recorded"
+            generated = meta.get("generated")
+            generated = ("".join(char if char.isprintable() else " " for char in generated[:200])
+                         if type(generated) is str else "not recorded")
+            heading = (f"Historical selftest: one recorded run — {total('failed')} failed / "
+                       f"{total('passed')} passed (gen {generated})")
+        else:
+            heading = "Historical selftest: retained failure records; not a single test run"
+        lines = [heading, note]
         for row in fails:
-            lines.append(f"  ✗ {row['name']}: {row['detail']}")
-        self._emit_text("selftest_failures.json", "\n".join(lines))
+            recorded = (f" [recorded {row['recorded_scope']}: {row['recorded_at']}]"
+                        if row.get("recorded_at") else "")
+            lines.append(f"  ✗ {row['name']}{recorded}: {row['detail']}")
+        self._emit_text("selftest_failures.json", "\n".join(lines), diagnostic_only=True)
 
 
 class HostTelemetryWorker(QThread):
@@ -1696,7 +1783,7 @@ class HealthTab(QWidget):
         for r, f in enumerate(fails):
             self.fail_table.setItem(r, 0, QTableWidgetItem(f["name"]))
             self.fail_table.setItem(r, 1, QTableWidgetItem(f["detail"]))
-            self.fail_table.setItem(r, 2, QTableWidgetItem(f["src"]))
+            self.fail_table.setItem(r, 2, QTableWidgetItem(_history_source_label(f)))
         self.fail_table.setSortingEnabled(True)
 
     def snapshot_text(self) -> str:
@@ -1708,7 +1795,7 @@ class HealthTab(QWidget):
         lines.append(self.history_lbl.text())
         lines.append(self.recovery_lbl.text())
         for f in h.get("failed", []):
-            lines.append(f"  ✗ {f['name']}: {f['detail']}  [{f['src']}]")
+            lines.append(f"  ✗ {f['name']}: {f['detail']}  [{_history_source_label(f)}]")
         return "\n".join(lines)
 
 

@@ -2,6 +2,22 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- 1 November: bound normal Python/Qt messages and per-file/process-role logging
+  admission; expose Block/Allow/change and pending live-apply states while
+  preserving existing bytes and startup availability. Native/external writes
+  and upstream allocations are outside these application limits.
+- Refuse ineligible AI service requests before full model hashing while keeping
+  final trust, hash TTL and transport admission unchanged; report cached stages
+  without treating inline callbacks as isolated module cost.
+- Distinguish mixed historical test runs from supervisor event rows, retain
+  dates/losses and prevent old errors from creating a current exception overlay.
+- Add one bounded readiness window for an exact owned launch; waiter errors
+  remain unavailable evidence, not process exit or permission for duplicate spawn.
+- Keep recovery deletion confirmation explicitly nonmodal and contain UGCAP
+  refresh exceptions inside its timing boundary. Deletion still needs Yes.
+- Mitigate the final Windows self-exit path after unchanged durable STOP and
+  bounded cleanup. This neither replaces cleanup nor closes the native P0 cause.
+
 - Separate kernel-provider canary observations from generic polling coverage;
   retain lifecycle, native probe custody and explicit missing-receipt outcomes.
 - Correlate WER dump/suspend precursors using bounded source metadata and cached
@@ -95,6 +111,11 @@ normal retirement of 53 observed generations and missed fresh fault-log capture.
 Its preceding hosted revision had eleven passes/four failures; new test-only
 fixes and their recheck do not become fresh hosted results. Cached admission
 does not prove current upstream telemetry or continuous coverage.
+The [November runtime review](analysis/hardening-v1.15-2026-11-01.md) keeps the
+earlier modal-held capture separate from its later normal STOP and the final
+501-file Full/STOP lifecycle acceptance. No Optimus deletion/interference cause
+or repaired native-crash root cause is established; new-commit hosted checks
+remain separate from the prior published revision's 15 passes.
 
 ## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
 
