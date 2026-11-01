@@ -72,6 +72,8 @@ review remain available.
 - **November reliability fixes:** bounded normal logging, early AI refusal,
   accurate historical reports, owned-startup readiness and nonmodal recovery
   confirmation improve review and keep that decision from blocking STOP.
+- **Advisory accuracy:** port-only leads and SOAR burst counts retain their
+  advisory scope; Full Setup exposes the existing normal-log controls.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does
@@ -80,7 +82,8 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [What changed, validation and current limits](docs/releases/v1.15.0.md) ·
 [Reviewed observation](analysis/hardening-v1.15-2026-10-30.md) ·
 [Follow-up fixes and observation](analysis/hardening-v1.15-2026-10-30-followup.md) ·
-[Latest runtime and shutdown review](analysis/hardening-v1.15-2026-11-01.md) ·
+[Runtime and shutdown review](analysis/hardening-v1.15-2026-11-01.md) ·
+[Latest advisory and setup review](analysis/hardening-v1.15-2026-11-01-advisory-bursts.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

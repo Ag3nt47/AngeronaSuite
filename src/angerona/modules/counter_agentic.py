@@ -329,6 +329,7 @@ class CounterAgenticModule(BaseModule):
                     matched_endpoint=matched_endpoint,
                     socket_role=socket_role,
                     socket_metadata_advisory=True,
+                    disposition="observation",
                     process_create_time=created,
                     process_path=executable,
                     process_identity_complete=created is not None and bool(executable),

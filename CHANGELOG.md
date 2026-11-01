@@ -2,6 +2,11 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- Qualify port-only Counter-Agentic leads as observations and SOAR burst counts
+  as advisory aggregation. Preserve severity, thresholds, genuine active-event
+  contracts, evidence and response-authorization boundaries.
+- Map all three existing normal-log controls into Full Setup with their types,
+  bounds, defaults and help; preserve logging behavior and validation.
 - 1 November: bound normal Python/Qt messages and per-file/process-role logging
   admission; expose Block/Allow/change and pending live-apply states while
   preserving existing bytes and startup availability. Native/external writes
@@ -116,6 +121,10 @@ earlier modal-held capture separate from its later normal STOP and the final
 501-file Full/STOP lifecycle acceptance. No Optimus deletion/interference cause
 or repaired native-crash root cause is established; new-commit hosted checks
 remain separate from the prior published revision's 15 passes.
+The [advisory/setup review](analysis/hardening-v1.15-2026-11-01-advisory-bursts.md)
+separates advisory-rule runtime evidence from the combined post-setup capture.
+The published revision's four Python failures were setup-schema assertions;
+focused local remediation is separate from the next commit's hosted checks.
 
 ## 1.14.2 — curated tools, priority scans and breach review (2026-10-29)
 

@@ -283,10 +283,31 @@ def test_disabled_legacy_automation_never_claims_engagement(monkeypatch):
         module._track_attack(Event("Detector", "burst", Severity.CRITICAL, details={"pid": pid}))
 
     text = " ".join(item.message for item in _output(module, bus))
-    assert "UNDER ATTACK" in text
+    assert "High-severity event burst: review required" in text
+    assert "event counts do not confirm an active attack or breach" in text
     assert "Legacy automatic requests and active defense are disabled" in text
     assert "Active defense engaged" not in text
     assert "contained automatically" not in text
+
+
+def test_genuine_burst_preserves_legacy_latch_and_exact_contract_guard(monkeypatch):
+    module, bus, _combat = _module(monkeypatch, policy=CombatPolicy(enabled=False))
+    module._active_defense = True
+    preflights = []
+    monkeypatch.setattr(module, "_exact_process_contract_ok", lambda event: preflights.append(event) or False)
+    monkeypatch.setattr(module, "_contain", lambda *_args: pytest.fail("response execution"))
+    for pid in (4242, 4243, 4242, 4243):
+        event = _event(bus, (), severity=Severity.HIGH, details={"pid": pid, "active_attack": True})
+        assert module._process_one_event(event, ()) is True
+
+    assert module._under_attack() and len(module._high_events) == 4
+    assert preflights == []
+    critical = _event(bus, details={"active_attack": True})
+    assert module._process_one_event(critical, ()) is True
+    assert preflights == [critical]
+    assert module._attempts == module._contained == 0
+    assert module._pending == {}
+    assert any("automatic response requires an exact" in event.message for event in _output(module, bus))
 
 
 @pytest.mark.parametrize("auto,active,phrase", [

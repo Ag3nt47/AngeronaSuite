@@ -632,6 +632,17 @@ STEPS: tuple[Step, ...] = (
             Field("check", "shadow_vss_enabled", "Allow automatic Windows shadow-copy requests",
                   note="Off by default. Windows shadow-storage allocation is separate; no shadow copies are deleted here."),
             Field("info", "data_dir", "Evidence and settings location"),
+            Field("check", "normal_log_paused", "Block normal Python / Qt crash-log writes",
+                  note="Off by default. Saves the preference for startup; existing logs are preserved. "
+                       "Settings > General can also apply it to the current run."),
+            Field("spin", "normal_log_max_mib", "Normal crash-log file and process allowance (MiB)",
+                  minimum=1, maximum=64,
+                  note="Default: 8 MiB per target, for both its file ceiling and this process's cumulative append allowance. "
+                       "No log is deleted or truncated. Native fault output and other writers are outside this budget; "
+                       "this is not a drive quota."),
+            Field("spin", "normal_log_message_kib", "Complete normal crash-log message limit (KiB)",
+                  minimum=4, maximum=256,
+                  note="Default: 64 KiB including the header. Larger Python / Qt messages are suppressed in full."),
             Field("check", "alert_retention_enabled", "Automatically clean archived alert copies",
                   note="Keeps signed evidence, recovery records and pinned archives. Defaults: 30 days / 256 MiB."),
             Field("spin", "alert_retention_days", "Keep alert archives for this many days", minimum=1, maximum=3650),

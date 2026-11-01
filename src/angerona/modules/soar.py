@@ -44,11 +44,11 @@ _CORROBORATION_WINDOW_S = 30.0
 _CORROBORATION_MIN      = 2   # signals from ≥2 distinct modules
 
 # ── Under-attack detection ────────────────────────────────────────────────────
-# A burst of HIGH+ events across multiple processes in a short window means the
-# host is being actively attacked. When explicitly enabled, ACTIVE DEFENSE:
-# corroborated CRITICAL threats are contained automatically even if single-event
-# auto-contain is off — the protected-process allowlist and 2-signal corroboration
-# still apply, so we never freeze Windows itself.
+# A burst of classified-active HIGH+ events across multiple processes is a
+# review signal; event counts do not independently confirm an attack or breach.
+# When explicitly enabled, ACTIVE DEFENSE makes later CRITICAL threats eligible
+# for legacy delegation even if single-event auto-contain is off. Exact contracts,
+# the protected-process allowlist, corroboration and Combat safety checks apply.
 _ATTACK_WINDOW_S       = 20.0
 _ATTACK_MIN_EVENTS     = 4      # HIGH+ events in the window
 _ATTACK_MIN_PIDS       = 2      # across at least this many distinct processes
@@ -720,10 +720,13 @@ class SOARModule(BaseModule):
         if len(self._high_events) >= _ATTACK_MIN_EVENTS and len(pids) >= _ATTACK_MIN_PIDS:
             if now >= self._under_attack_until:      # newly entering attack state
                 self.emit(
-                    f"⚠ UNDER ATTACK — {len(self._high_events)} high-severity events across "
+                    "High-severity event burst: review required; event counts do not "
+                    "confirm an active attack or breach. "
+                    f"{len(self._high_events)} high-severity events across "
                     f"{len(pids)} process(es) in {int(_ATTACK_WINDOW_S)}s. "
                     f"{self._delegation_description()}",
-                    Severity.CRITICAL, under_attack=True, pids=sorted(pids))
+                    Severity.CRITICAL, under_attack=True, pids=sorted(pids),
+                    disposition="health", response_authorized=False)
             self._under_attack_until = now + _ACTIVE_DEFENSE_HOLD_S
 
     def _under_attack(self) -> bool:

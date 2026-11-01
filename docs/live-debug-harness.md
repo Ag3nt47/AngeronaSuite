@@ -24,6 +24,13 @@ overlay. The [November review](../analysis/hardening-v1.15-2026-11-01.md) separa
 the modal-held observation, later normal STOP and final changed-source capture.
 No endpoint bypass or saved-preference change is implied by a per-run review.
 
+Port-only Counter-Agentic leads and SOAR advisory-count bursts retain false
+response authorization; severity and record counts alone do not supply missing
+active-detection evidence. Check disposition, source evidence, collection health
+and the exact capture window. The [advisory/setup follow-up](../analysis/hardening-v1.15-2026-11-01-advisory-bursts.md)
+separates live CAGT disposition evidence from SOAR wording checked offline only,
+and keeps published CI failures separate from focused local remediation.
+
 The full dashboard's rich process inventory has its own owned child process,
 selected by the internal `--process-snapshot-worker` entry point. The retained
 runtime owner starts and retires it outside Qt. A private inherited-stdio

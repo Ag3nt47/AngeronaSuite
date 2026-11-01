@@ -6,8 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from angerona.core import breach_state, module_base, threat
+from angerona.core.eventbus import BusAuthority, Event, EventBus
 from angerona.core.module_base import Severity
-from angerona.modules import counter_agentic
+from angerona.modules import counter_agentic, soar
 
 
 @pytest.fixture
@@ -52,6 +54,33 @@ def _row(*, status="ESTABLISHED", local="127.0.0.1:50000",
     return {"status": status, "laddr": local, "raddr": remote, "pid": pid}
 
 
+@pytest.fixture
+def review(watch, monkeypatch):
+    """Use the actual producer/bus/classifier/SOAR with no workers or host probes."""
+    bus = EventBus()
+    bus.arm(BusAuthority(b"s" * 32))
+    monkeypatch.delattr(watch.module, "emit")  # Restore BaseModule's real publisher.
+    watch.module.bind(bus)
+    responder = soar.SOARModule()
+    responder._auto = responder._active_defense = False
+    responder.bind(bus)
+    clock = SimpleNamespace(time=lambda: watch.clock[0])
+    monkeypatch.setattr(module_base, "time", clock)
+    monkeypatch.setattr(soar, "time", clock)
+    monkeypatch.setattr(threat, "time", clock)
+    monkeypatch.setattr(soar, "_process_policy_snapshot", lambda: ())
+    monkeypatch.setattr(responder, "_is_protected_process", lambda _pid: pytest.fail("host PID probe"))
+    monkeypatch.setattr(responder, "_exact_process_contract_ok", lambda _ev: pytest.fail("host identity probe"))
+    monkeypatch.setattr(responder, "_contain", lambda *_args: pytest.fail("response execution"))
+    monkeypatch.setattr(breach_state, "protect_authority", lambda: pytest.fail("native authority probe"))
+    manager = SimpleNamespace(bus=bus, modules={watch.module.name: watch.module, responder.name: responder})
+    controller = breach_state.BreachStateController(manager, start=False, clock=clock.time)
+    try:
+        yield SimpleNamespace(watch=watch, bus=bus, soar=responder, breach=controller)
+    finally:
+        assert controller.close()
+
+
 @pytest.mark.parametrize("row,matched,role", [
     (_row(status="LISTEN", local="127.0.0.1:11434", remote=""), "local", "listener"),
     (_row(status="LISTEN", local="0.0.0.0:11434", remote=""), "local", "listener"),
@@ -82,6 +111,7 @@ def test_socket_evidence_describes_roles_without_claiming_a_connection(
     assert details["matched_endpoint"] == matched
     assert details["socket_role"] == role
     assert details["socket_metadata_advisory"] is True
+    assert details["disposition"] == "observation"
     assert details["response_authorized"] is False
     assert details["process_create_time"] == 1234.5
     assert details["process_path"] == str(watch.executable)
@@ -215,3 +245,81 @@ def test_nonmatching_ports_and_invalid_pids_remain_excluded(watch):
     assert coverage.complete and coverage.observed == 6
     assert coverage.port_connections == coverage.unexpected == 0
     assert watch.events == [] and watch.module._port_alerted == {}
+
+
+@pytest.mark.parametrize("identity_available", [True, False])
+def test_socket_burst_keeps_high_evidence_without_active_or_breach_state(
+    review, monkeypatch, identity_available,
+):
+    watch = review.watch
+    if not identity_available:
+        class Uninspectable(watch.process_type):
+            def create_time(self):
+                raise PermissionError("fixture identity unavailable")
+
+        monkeypatch.setattr(counter_agentic.psutil, "Process", Uninspectable)
+    watch.rows.extend(
+        _row(pid=pid, local=f"127.0.0.1:{50000 + index}")
+        for index, pid in enumerate((4242, 4343, 4242, 4343))
+    )
+
+    coverage = watch.module._watch_ollama_port()
+    leads = review.bus.recent(10)
+
+    assert coverage.observed == coverage.port_connections == coverage.unexpected == 4
+    assert coverage.complete is identity_available
+    assert coverage.identity_failures == (0 if identity_available else 4)
+    assert len(leads) == watch.module._detections == 4
+    assert all(event.severity == Severity.HIGH for event in leads)
+    assert all(event.details["response_authorized"] is False for event in leads)
+    assert all(threat.event_disposition(event) == "observation" for event in leads)
+    assert threat.active_threat_events(leads) == []
+    assert review.soar.process_pending_once() == 0
+    assert review.soar._high_events == [] and not review.soar._under_attack()
+    assert review.soar._under_attack_until == 0.0
+    assert review.soar._attempts == review.soar._contained == 0
+    assert review.bus.recent(10) == leads  # Original HIGH leads remain visible.
+    assert all(review.bus.verify(event) for event in leads)
+    assert review.breach._events.empty()
+    review.breach.process_once()
+    assert review.breach.snapshot() == breach_state.BreachDisplaySnapshot()
+
+
+def test_cadence_and_active_signals_keep_burst_latch_without_aggregate_authority(review):
+    producer = review.watch.module
+    for stamp, command in ((100.0, "whoami"), (102.0, "echo fixture"),
+                           (104.0, "schtasks /query")):
+        producer._record(4242, command, stamp)
+    [cadence] = review.bus.recent(10)
+    assert cadence.module == producer.name and cadence.severity == Severity.HIGH
+    assert "Agentic loop fingerprint" in cadence.message
+    assert threat.is_active_threat(cadence)
+    assert review.soar.process_pending_once() == 1
+
+    originals = [cadence]
+    for pid in (4242, 4343, 4242):
+        review.bus.publish(Event(
+            "Exact Detector", "inert explicit active evidence", Severity.HIGH,
+            review.watch.clock[0],
+            {"pid": pid, "active_attack": True, "response_authorized": False},
+        ))
+        originals.append(review.bus.recent(1)[0])
+    assert review.soar.process_pending_once() == 3
+    [aggregate] = [event for event in review.bus.recent(30)
+                   if event.module == review.soar.name and event.severity == Severity.CRITICAL]
+    assert len(review.soar._high_events) == 4
+    assert review.soar._under_attack_until == review.watch.clock[0] + 60.0
+    assert review.soar._under_attack()
+    assert "event counts do not confirm an active attack or breach" in aggregate.message
+    assert aggregate.details["under_attack"] is True
+    assert aggregate.details["pids"] == [4242, 4343]
+    assert aggregate.details["disposition"] == "health"
+    assert aggregate.details["response_authorized"] is False
+    assert threat.event_disposition(aggregate) == "health"
+    assert threat.active_threat_events([aggregate]) == []
+    assert all(threat.is_active_threat(event) and review.bus.verify(event) for event in originals)
+    assert review.bus.verify(aggregate)
+    assert review.soar._attempts == review.soar._contained == 0
+    assert review.breach._events.empty()
+    review.breach.process_once()
+    assert review.breach.snapshot() == breach_state.BreachDisplaySnapshot()

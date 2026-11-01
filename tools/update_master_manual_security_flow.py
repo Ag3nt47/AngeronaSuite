@@ -28,7 +28,7 @@ END = b"<!-- ANGERONA_SECURITY_FLOW_END -->"
 TITLE = "Security flow integrations and recovery"
 REVISION_DATE = "1 November 2026"
 REVISION_UTC = b"2026-11-01T00:00:00Z"
-CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-11-01.md"
+CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-11-01-advisory-bursts.md"
 LIST_RESTART_START = b"<!-- ANGERONA_LIST_RESTARTS_START -->"
 LIST_RESTART_END = b"<!-- ANGERONA_LIST_RESTARTS_END -->"
 LIST_ABSTRACT_START = b"<!-- ANGERONA_LIST_ABSTRACTS_START -->"
@@ -386,7 +386,7 @@ def chapter():
     result += paragraph("1 November runtime and shutdown follow up", "Heading2")
     result += paragraph("Normal Python/Qt messages use a configurable whole-block limit (default 64 KiB, range 4–256 KiB) and default 8 MiB per-file/process-role budgets, with Block/Allow/change and pending retry. Existing bytes remain; native/external writes, upstream allocations, OS quotas and file-identity leases are outside this budget. Early AI refusal keeps final trust/hash TTL strict; stage timings include callbacks.")
     result += paragraph("A fixed 180-second readiness window applies only to an exact retained owned launch, not adopted PIDs or the cross-peer claim. Expiry is held, not healthy or permission to kill/duplicate. Recovery-copy confirmation is nonmodal; only Yes queues cleanup. Final Windows self-exit follows durable STOP and bounded cleanup but does not prove the native fault repaired or all I/O/children retired.")
-    result += paragraph("Mixed historical reports retain their recorded dates and gaps. The earlier modal-held observation remains separate from its later normal STOP and the final 501-file Full/STOP lifecycle acceptance. No Optimus actor is established. Current evidence and remaining limits: analysis/hardening-v1.15-2026-11-01.md. All five exploit classes, unsealed-history gaps and independent deployment requirements remain in the security patch report.")
+    result += paragraph("Mixed historical reports retain dates and gaps; earlier modal-held and lifecycle results stay separate. Port-only CAGT leads and SOAR burst counts are advisory without response authority; severity/thresholds remain. Full Setup maps existing normal-log controls. Combined Full60/STOP retired 40 observed generations with source/preferences unchanged, not all-detector acceptance. SOAR aggregate wording has offline coverage only. Evidence: " + CURRENT_EVIDENCE + ". Five exploit classes, native P0, unknown coverage and independent deployment requirements remain; no Optimus actor is established.")
     result += paragraph("Primary platform and toolkit references", "Heading2", first=True)
     for url in (
         "https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/user-mode-and-kernel-mode",

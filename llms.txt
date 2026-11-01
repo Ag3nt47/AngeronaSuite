@@ -7,6 +7,34 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Advisory/setup follow-up: port-only CAGT records explicitly observation;
+  HIGH/messages/evidence/response_auth:false unchanged. SOAR count aggregation
+  advisory/health/response_auth:false; 20s/4events/2pids/60s latch and genuine
+  active contracts unchanged. Earlier Full120 contained 19 new Full HIGH CAGT
+  observations but NO SOAR aggregate anywhere: aggregate copy is offline-only
+  validation. Three existing normal-log controls now mapped in Full Setup;
+  types/ranges/defaults/validation and logging behavior unchanged.
+- Advisory cohort317PASS206.10s; setup/log94PASS43.03s, separate not additive.
+  Prior published967 hosted15 terminal:11PASS/4PythonFAIL, each same2setup
+  schema assertions/12040PASS37skip, normal pytest1/orderly teardown. Local
+  mappings fix does not establish future exact-commit hosted green.
+  Current sanitized evidence: analysis/hardening-v1.15-2026-11-01-advisory-bursts.md.
+- Combined post-setup Full60 lifecycle accepted:true/native Core0;40 unique
+  observed generations/44 wait rows all0, exact set; outer0/Job0/noForce/cleanup,
+  source501+selectedprefs independently match afterSTOP. Inventory count NOT a
+  unique revision; manifest5715f56...55ae differs from priorf33 only setup_wizard.
+  177 new events124INFO34MED17HIGH2LOW0CRIT after loss4624;16 fresh CAGT HIGH
+  observation/AuthFalse plus5retained. SOAR13retainedINFO/fresh0/no nonINFO
+  aggregate anywhere, wording OFFLINE-only. New53nonINFO=16exposure5unavailable
+  32unresolved/0supported active, NOTclean-host.803exports REPORTED verified
+  HMAC-only, no analyst recomputation/native attestation;1210diag164coverage
+  ALLretained.75running17critical33degraded1failed24OK69unknown;4HBfresh28/28,
+  status27copies/1unavailable, nativeETW unavailable/pollingpartial.
+  WER27copies10admitted17stale/19unique7+12/maxage3.486s/upstreamfalse; no
+  continuous claim. AI13unmeasured14circuitopen/12attempt/service1model0request0.
+  CPUCore108.994%/inventory8.537%oneCPU over58.203s, no controlled comparison.
+  WM_NULL28/28 max94ms;settling60.745s NOTclicklatency. Faultdelta77088B COM/noAV
+  predatesFullinvoke; Core-live copies EXCLUDEfinalSTOPteardown/P0cause proof.
 - 1 November follow-up: new normal Python/Qt admission uses complete UTF-8
   blocks (default 64 KiB, configurable 4–256 KiB) and default 8 MiB per opened-file/
   process-role reservation. Existing
@@ -29,7 +57,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   bounded cleanup/Qt quit uses FIXED self pseudo handle, no other PID/new rights/
   I/O; CRT fallback/non-Windows unchanged.
   MITIGATION ONLY, not native cause/P0 closure or I/O/child-retirement guarantee.
-- Source 501 final Full 60s/STOP lifecycle accepted:true/native Core exit 0,
+- Earlier November runtime-fix 501-file Full60/STOP lifecycle accepted:true/native Core exit 0,
   39 observed unique generations/43 waits all signaled, one admission gap/no
   topology bound/force/harness termination. Source+selected saved/authority
   preferences unchanged. Earlier source-500 Full120 modal-held accepted:false
@@ -60,7 +88,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   qt.exec frames do not locate a stall. NO Optimus deletion/interference evidence.
   New dump observed/hash then ABSENT before copy/parse, NO verified dump PID/PC/
   unwind; Python frames mapped to old CRT final exit are not native cause proof.
-  Current sanitized evidence: analysis/hardening-v1.15-2026-11-01.md.
+  Earlier runtime/shutdown record: analysis/hardening-v1.15-2026-11-01.md.
 - Latest WER/status/CI follow-up: immutable cached admission summaries retain minimum expiry,
   lifecycle generation, fixed reason/count/roles and independent loss. Pure
   getter plus JSON/TXT `wer_observation` whitelist performs no native/file/
