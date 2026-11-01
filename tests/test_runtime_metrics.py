@@ -15,7 +15,8 @@ from tools import run_soak
 
 def recorder():
     return SimpleNamespace(_metrics_lock=threading.Lock(), _queue=queue.Queue(maxsize=20),
-                           _overflow_queue=queue.Queue(maxsize=5), _dlq_failures=2)
+                           _overflow_queue=queue.Queue(maxsize=5), _dlq_failures=2,
+                           _admission_rejected=0)
 
 
 def collect(*, gui=False, clock=lambda: 0.0, wall_clock=lambda: 100.0):
@@ -35,6 +36,26 @@ def test_real_queue_depth_worst_capacity_and_delivery_failures_are_measured():
     assert value["queue_depth"] == 4 and value["queue_capacity"] == 5
     assert value["dropped_events"] == 2
     assert value["gui_applicable"] is False and value["tick_ms"] is None
+
+
+def test_rejected_recorder_delivery_counts_without_claiming_other_subscribers_lost_it():
+    from angerona.core.eventbus import BusAuthority, Event, EventBus
+    from angerona.core.storage import AsyncFlightRecorder
+
+    worker = AsyncFlightRecorder(SimpleNamespace(authority=BusAuthority(b"q" * 32)))
+    bus, observed = EventBus(), []
+    bus.subscribe(worker.submit)
+    bus.subscribe(observed.append)
+    bus.publish(Event("fixture", "before recorder workers start"))
+
+    metrics = RuntimeMetrics(gui=False, recorder=worker, wall_clock=lambda: 100.0)
+    value = validate(metrics, metrics.snapshot())
+    assert value["dropped_events"] == 1
+    assert value["queues"][0]["dropped"] == 1
+    assert value["queues"][1]["dropped"] == 0
+    assert sum(row.failures for row in bus.subscriber_metrics()) == 1
+    assert len(observed) == 1
+    assert worker.recovery_snapshot()["coverage_gap"] is True
 
 
 def test_actual_gui_heartbeat_stall_and_callback_duration_are_not_probe_latency():

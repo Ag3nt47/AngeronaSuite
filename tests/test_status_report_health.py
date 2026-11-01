@@ -45,6 +45,23 @@ def test_snapshot_identifies_process_and_reports_actual_callback_failures(tmp_pa
     assert received[0].message == "still delivered"
 
 
+def test_status_keeps_available_recorder_and_nondurable_admission_gap_separate(tmp_path):
+    reporter = _reporter(tmp_path)
+    reporter.runtime_healer = SimpleNamespace(snapshot=lambda: {
+        "enabled": True, "worker_alive": True,
+        "components": {"flight_recorder": {
+            "state": "healthy", "attempts": 0, "last_result": "",
+            "evidence": {"admission_rejected": 3, "coverage_gap": True},
+        }},
+    })
+    value = reporter._snapshot()
+    text = reporter._render_text(value)
+    assert "flight_recorder: healthy" in text
+    assert "Recorder delivery rejections: 3 / admission coverage gap=True" in text
+    assert "process-lifetime counters; not a durable loss journal" in text
+    assert value["runtime_healer"]["components"]["flight_recorder"]["evidence"]["coverage_gap"] is True
+
+
 @pytest.mark.parametrize("chill,heartbeat", [(False, 30), (True, 60)])
 def test_quiet_snapshot_keeps_bounded_heartbeat_and_refreshes_timestamp(
     tmp_path, monkeypatch, chill, heartbeat,

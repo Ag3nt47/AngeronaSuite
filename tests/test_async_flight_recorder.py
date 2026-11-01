@@ -10,6 +10,7 @@ from angerona.core.storage import (
     AsyncFlightRecorder,
     BatchRecordResult,
     FlightRecorder,
+    RecorderAdmissionRejected,
 )
 
 
@@ -83,10 +84,7 @@ def test_queue_overflow_is_signed_and_routed_to_dlq_without_sqlite() -> None:
     async_recorder.submit(Event("test", "worker"))
     assert worker_entered.wait(1.0)
     async_recorder.submit(Event("test", "queued"))
-    started = time.perf_counter()
     async_recorder.submit(Event("test", "overflow"))
-    elapsed = time.perf_counter() - started
-    assert elapsed < 0.05
     assert dlq_written.wait(1.0)
     assert [event.message for event in dlq] == ["overflow"]
     assert authority.verify(dlq[0])
@@ -95,10 +93,12 @@ def test_queue_overflow_is_signed_and_routed_to_dlq_without_sqlite() -> None:
     assert async_recorder.stop(2.0)
 
 
-def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
+def test_parallel_overflow_flood_accounts_for_every_delivery_without_publisher_io() -> None:
     authority = BusAuthority(b"c" * 32)
     worker_entered = threading.Event()
     release_worker = threading.Event()
+    dlq_entered = threading.Event()
+    release_dlq = threading.Event()
     primary: list[Event] = []
     dlq: list[Event] = []
     dlq_batch_sizes: list[int] = []
@@ -111,69 +111,89 @@ def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
         def record_batch_bus(self, events):
             batch = list(events)
             worker_entered.set()
-            assert release_worker.wait(10.0)
+            assert release_worker.wait(60.0)
             primary.extend(batch)
             return BatchRecordResult(len(batch), 0)
 
         def _route_batch_to_dlq(self, events):
             batch = list(events)
+            dlq_entered.set()
+            assert release_dlq.wait(60.0)
             dlq_batch_sizes.append(len(batch))
             dlq.extend(batch)
             return len(batch)
 
         def _route_to_dlq(self, event):
-            # Model the per-event lock/open/write cost that caused the original
-            # publisher stall. The batched lane must carry almost all traffic.
             synchronous_calls.append(event.message)
-            time.sleep(0.0005)
-            dlq.append(event)
-            return True
+            raise AssertionError("publishers must not perform DLQ writes")
 
     async_recorder = AsyncFlightRecorder(
         FloodRecorder(), queue_capacity=1, batch_size=1,
         overflow_queue_capacity=4096, dlq_batch_size=512,
         flush_interval=0.005,
     )
-    assert async_recorder.start()
-    async_recorder.submit(Event("test", "worker"))
-    assert worker_entered.wait(1.0)
-    async_recorder.submit(Event("test", "queued"))
-
     publisher_count = 8
-    per_publisher = 5000
+    per_publisher = 1000
+    admitted = [[] for _ in range(publisher_count)]
+    rejected = [[] for _ in range(publisher_count)]
 
     def publish(publisher: int) -> None:
         for sequence in range(per_publisher):
-            async_recorder.submit(
-                Event("flood", f"{publisher}:{sequence}", Severity.HIGH)
-            )
+            message = f"{publisher}:{sequence}"
+            try:
+                async_recorder.submit(Event("flood", message, Severity.HIGH))
+            except RecorderAdmissionRejected as error:
+                assert error.reason == "saturated"
+                rejected[publisher].append(message)
+            else:
+                admitted[publisher].append(message)
 
     threads = [
         threading.Thread(target=publish, args=(publisher,))
         for publisher in range(publisher_count)
     ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(30.0)
-    assert not any(thread.is_alive() for thread in threads)
-    release_worker.set()
-    assert async_recorder.stop(10.0)
+    try:
+        assert async_recorder.start()
+        async_recorder.submit(Event("test", "worker"))
+        assert worker_entered.wait(5.0)
+        async_recorder.submit(Event("test", "queued"))
+        for thread in threads:
+            thread.start()
+        assert dlq_entered.wait(5.0)
+        publisher_deadline = time.monotonic() + 20.0
+        for thread in threads:
+            thread.join(max(0.0, publisher_deadline - time.monotonic()))
+        assert not any(thread.is_alive() for thread in threads)
+        saturated = async_recorder.metrics()
+        assert saturated.queue_depth == 1
+        assert saturated.overflow_queue_depth == saturated.overflow_queue_capacity == 4096
+        assert saturated.admission_rejected > 0
+    finally:
+        release_worker.set()
+        release_dlq.set()
+        cleanup_deadline = time.monotonic() + 10.0
+        for thread in threads:
+            if thread.ident is not None:
+                thread.join(max(0.0, cleanup_deadline - time.monotonic()))
+        assert async_recorder.stop(10.0)
 
     metrics = async_recorder.metrics()
     overflow_count = publisher_count * per_publisher
+    admitted_messages = {message for rows in admitted for message in rows}
+    rejected_messages = {message for rows in rejected for message in rows}
     assert len(primary) == 2
-    assert len(dlq) == overflow_count
+    assert len(dlq) == len(admitted_messages)
+    assert {event.message for event in dlq} == admitted_messages
+    assert admitted_messages.isdisjoint(rejected_messages)
+    assert len(admitted_messages) + len(rejected_messages) == overflow_count
     assert metrics.overflow_queue_depth == 0
     assert metrics.overflow_queue_capacity == 4096
-    assert metrics.overflow_queued + metrics.overflow_synchronous == len(dlq)
-    assert metrics.overflow_queued > metrics.overflow_synchronous
-    # Prove the performance property directly instead of comparing wall-clock
-    # time across idle and loaded Windows hosts. At least 95% of publishers must
-    # avoid per-event durable I/O, and the overflow worker must aggregate many
-    # events per write rather than merely moving the same N+1 pattern off-thread.
-    assert metrics.overflow_synchronous == len(synchronous_calls)
-    assert metrics.overflow_synchronous <= overflow_count // 20
+    assert metrics.overflow_queued == len(dlq)
+    assert metrics.admission_rejected == len(rejected_messages)
+    assert metrics.rejection_saturated == len(rejected_messages)
+    assert metrics.coverage_gap is bool(rejected_messages)
+    assert metrics.overflow_synchronous == 0
+    assert not synchronous_calls
     assert sum(dlq_batch_sizes) == metrics.overflow_queued
     assert len(dlq_batch_sizes) < max(2, metrics.overflow_queued // 8)
     assert max(dlq_batch_sizes, default=0) > 1
@@ -181,13 +201,17 @@ def test_parallel_overflow_flood_is_batched_nonblocking_and_lossless() -> None:
     assert all(authority.verify(event) for event in dlq)
 
 
-def test_exhausted_overflow_lane_uses_synchronous_evidence_fallback() -> None:
+def test_exhausted_overflow_lane_rejects_without_waiting_for_storage() -> None:
     authority = BusAuthority(b"d" * 32)
     worker_entered = threading.Event()
     release_worker = threading.Event()
     dlq_entered = threading.Event()
     release_dlq = threading.Event()
+    publisher_done = threading.Event()
+    rejections = []
+    primary: list[Event] = []
     dlq: list[Event] = []
+    write_threads = []
 
     class SaturatedRecorder:
         def __init__(self) -> None:
@@ -195,45 +219,66 @@ def test_exhausted_overflow_lane_uses_synchronous_evidence_fallback() -> None:
 
         def record_batch_bus(self, events):
             batch = list(events)
+            write_threads.append(threading.current_thread().name)
             worker_entered.set()
             assert release_worker.wait(5.0)
+            primary.extend(batch)
             return BatchRecordResult(len(batch), 0)
 
         def _route_batch_to_dlq(self, events):
             batch = list(events)
+            write_threads.append(threading.current_thread().name)
             dlq_entered.set()
             assert release_dlq.wait(5.0)
             dlq.extend(batch)
             return len(batch)
 
         def _route_to_dlq(self, event):
-            dlq.append(event)
-            return True
+            raise AssertionError("publisher attempted synchronous disk I/O")
 
     async_recorder = AsyncFlightRecorder(
         SaturatedRecorder(), queue_capacity=1, batch_size=1,
         overflow_queue_capacity=1, dlq_batch_size=1, flush_interval=0.005,
     )
-    assert async_recorder.start()
-    async_recorder.submit(Event("test", "worker"))
-    assert worker_entered.wait(1.0)
-    async_recorder.submit(Event("test", "queued"))
-    async_recorder.submit(Event("test", "overflow-worker"))
-    assert dlq_entered.wait(1.0)
-    async_recorder.submit(Event("test", "overflow-queued"))
-    async_recorder.submit(Event("test", "synchronous-fallback"))
+    def publish_rejected():
+        try:
+            async_recorder.submit(Event("test", "unadmitted"))
+        except RecorderAdmissionRejected as error:
+            rejections.append(error.reason)
+        finally:
+            publisher_done.set()
 
-    metrics = async_recorder.metrics()
-    assert metrics.overflow_queue_depth == 1
-    assert metrics.overflow_synchronous == 1
-    assert [event.message for event in dlq] == ["synchronous-fallback"]
+    publisher = threading.Thread(target=publish_rejected, name="recorder-publisher")
+    try:
+        assert async_recorder.start()
+        async_recorder.submit(Event("test", "worker"))
+        assert worker_entered.wait(2.0)
+        async_recorder.submit(Event("test", "queued"))
+        async_recorder.submit(Event("test", "overflow-worker"))
+        assert dlq_entered.wait(2.0)
+        async_recorder.submit(Event("test", "overflow-queued"))
+        publisher.start()
+        assert publisher_done.wait(2.0)
+        assert not release_worker.is_set() and not release_dlq.is_set()
+        assert rejections == ["saturated"]
 
-    release_worker.set()
-    release_dlq.set()
-    assert async_recorder.stop(5.0)
-    assert sorted(event.message for event in dlq) == [
-        "overflow-queued", "overflow-worker", "synchronous-fallback",
-    ]
+        metrics = async_recorder.metrics()
+        assert metrics.queue_depth == metrics.overflow_queue_depth == 1
+        assert metrics.admission_rejected == metrics.rejection_saturated == 1
+        assert metrics.rejection_stopping == metrics.rejection_unavailable == 0
+        assert metrics.coverage_gap
+        assert metrics.overflow_synchronous == metrics.dlq_failures == 0
+        assert not primary and not dlq
+    finally:
+        release_worker.set()
+        release_dlq.set()
+        if publisher.ident is not None:
+            publisher.join(3.0)
+        assert async_recorder.stop(5.0)
+    assert [event.message for event in primary] == ["worker", "queued"]
+    assert [event.message for event in dlq] == ["overflow-worker", "overflow-queued"]
+    assert all(authority.verify(event) for event in primary + dlq)
+    assert set(write_threads) == {"angerona-flight-recorder", "angerona-flight-dlq"}
 
 
 def test_batch_storage_failure_preserves_every_event_in_dlq(

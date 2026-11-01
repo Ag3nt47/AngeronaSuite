@@ -1131,6 +1131,24 @@ class AsyncRecorderMetrics:
     spool_capacity_wait_seconds: float
     batches: int
     running: bool
+    admission_rejected: int = 0
+    rejection_saturated: int = 0
+    rejection_stopping: int = 0
+    rejection_unavailable: int = 0
+    coverage_gap: bool = False
+
+
+class RecorderAdmissionRejected(RuntimeError):
+    """This delivery was not admitted to the recorder's bounded memory lanes.
+
+    Other EventBus subscribers may still receive the event. The reason and the
+    recorder's cumulative rejection counters are process-local diagnostics, not
+    durable evidence that a rejected delivery was recorded.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"Recorder delivery rejected: {reason}")
 
 
 _RECORDER_WAKE = object()
@@ -1187,11 +1205,11 @@ class _BoundedSimpleQueue:
 class AsyncFlightRecorder:
     """Bounded worker-owned persistence adapter for EventBus subscribers.
 
-    ``submit`` never touches SQLite. The normal path is a non-blocking queue
-    operation. Primary-queue overflow enters a second bounded lane whose worker
-    preserves signed events in append-only DLQ batches. Only exhaustion of both
-    bounded lanes uses a synchronous DLQ append, preserving evidence without
-    allowing an unbounded memory backlog. SQLite calls remain single-writer.
+    ``submit`` performs only signing and bounded in-memory admission. Primary
+    overflow enters a second bounded lane whose worker preserves signed events
+    in append-only DLQ batches. Exhausted or unavailable lanes reject delivery
+    explicitly, with process-lifetime, nondurable rejection accounting. Disk
+    writes and capacity waits belong exclusively to the persistence workers.
     """
 
     def __init__(
@@ -1231,6 +1249,9 @@ class AsyncFlightRecorder:
         self._state_lock = threading.Lock()
         self._metrics_lock = threading.Lock()
         self._stop = threading.Event()
+        self._starting = False
+        self._stop_callers = 0
+        self._worker_generation = 0
         # Avoid raising ``queue.Full`` for every publisher while the primary
         # writer is known to be saturated. The recorder worker clears this as
         # soon as it consumes an item; overflow remains bounded and durable.
@@ -1252,10 +1273,16 @@ class AsyncFlightRecorder:
         self._replay_failures = 0
         self._last_replay_at = 0.0
         self._batches = 0
+        self._admission_rejected = 0
+        self._rejection_saturated = 0
+        self._rejection_stopping = 0
+        self._rejection_unavailable = 0
 
     def start(self) -> bool:
         """Start missing workers, or explicitly restart after a completed stop."""
         with self._state_lock:
+            if self._stop_callers:
+                return False
             if self._stop.is_set():
                 # A timed-out stop still owns both draining workers. Clearing
                 # its signal would revive a live peer and invalidate the drain.
@@ -1264,40 +1291,54 @@ class AsyncFlightRecorder:
                     for worker in (self._thread, self._dlq_thread)
                 ):
                     return False
-                self._stop.clear()
+                with self._metrics_lock:
+                    self._stop.clear()
             return self._start_missing_workers_locked()
 
     def _start_missing_workers_locked(self) -> bool:
         """Preserve queues and live peers; caller holds ``_state_lock``."""
-        started = False
-        if self._dlq_thread is None or not self._dlq_thread.is_alive():
-            self._dlq_done.clear()
-            self._dlq_busy.clear()
-            worker = threading.Thread(
-                target=self._run_dlq,
-                name="angerona-flight-dlq",
-                daemon=True,
-            )
-            try:
+        if self._stop_callers:
+            return False
+        missing_dlq = self._dlq_thread is None or not self._dlq_thread.is_alive()
+        missing_primary = self._thread is None or not self._thread.is_alive()
+        if not missing_dlq and not missing_primary:
+            return False
+        # Publish the admission gate before starting either thread. Thread
+        # creation can block; it must never hold the publishers' memory lock.
+        with self._metrics_lock:
+            self._starting = True
+        try:
+            if missing_dlq:
+                self._dlq_done.clear()
+                self._dlq_busy.clear()
+                worker = threading.Thread(
+                    target=self._run_dlq,
+                    name="angerona-flight-dlq",
+                    daemon=True,
+                )
+                try:
+                    worker.start()
+                except Exception:
+                    # A live primary must not wait for a peer that never
+                    # started. Do not publish an unstarted thread for join().
+                    self._dlq_done.set()
+                    raise
+                self._dlq_thread = worker
+                self._worker_generation += 1
+            if missing_primary:
+                self._primary_saturated.clear()
+                worker = threading.Thread(
+                    target=self._run,
+                    name="angerona-flight-recorder",
+                    daemon=True,
+                )
                 worker.start()
-            except Exception:
-                # Do not leave a live primary waiting on a DLQ worker that
-                # never started, or publish an unstarted thread for stop.join.
-                self._dlq_done.set()
-                raise
-            self._dlq_thread = worker
-            started = True
-        if self._thread is None or not self._thread.is_alive():
-            self._primary_saturated.clear()
-            worker = threading.Thread(
-                target=self._run,
-                name="angerona-flight-recorder",
-                daemon=True,
-            )
-            worker.start()
-            self._thread = worker
-            started = True
-        return started
+                self._thread = worker
+                self._worker_generation += 1
+            return True
+        finally:
+            with self._metrics_lock:
+                self._starting = False
 
     def recover(self) -> bool:
         """Restore dead worker availability without overriding shutdown.
@@ -1306,7 +1347,7 @@ class AsyncFlightRecorder:
         continuity for a batch it may have held when it failed.
         """
         with self._state_lock:
-            if self._stop.is_set():
+            if self._stop.is_set() or self._stop_callers:
                 return False
             return self._start_missing_workers_locked()
 
@@ -1327,60 +1368,62 @@ class AsyncFlightRecorder:
                     "dlq_failures": self._dlq_failures,
                     "replay_failures": self._replay_failures,
                     "replay_quarantined": self._replay_quarantined,
+                    "admission_rejected": self._admission_rejected,
+                    "rejection_saturated": self._rejection_saturated,
+                    "rejection_stopping": self._rejection_stopping,
+                    "rejection_unavailable": self._rejection_unavailable,
+                    "coverage_gap": self._admission_rejected > 0,
                 }
 
     def submit(self, event: Event) -> None:
-        """Non-blocking subscriber callback. No SQLite operation occurs here."""
+        """Admit a delivery without disk I/O or waiting for queue capacity.
+
+        Raise ``RecorderAdmissionRejected`` if no lane can accept this delivery.
+        EventBus counts this subscriber failure and continues other callbacks.
+        Counters remain cumulative across worker restarts, in memory only.
+        """
         if not event.hmac_sig:
             event = dataclasses.replace(
                 event, hmac_sig=self._recorder.authority.sign(event)
             )
-        # Lifecycle publishes these references while holding ``_state_lock``
-        # and sets ``_stop`` before joining either worker. A snapshot avoids a
-        # global lifecycle-lock convoy across independent EventBus publishers;
-        # any concurrent stop falls through to the durable synchronous lane.
-        thread = self._thread
-        dlq_thread = self._dlq_thread
-        running = thread is not None and thread.is_alive()
-        dlq_running = dlq_thread is not None and dlq_thread.is_alive()
-        if (
-            running
-            and not self._stop.is_set()
-            and not self._primary_saturated.is_set()
-        ):
-            try:
-                self._queue.put_nowait(event)
-                with self._metrics_lock:
-                    self._accepted += 1
-                return
-            except queue.Full:
-                self._primary_saturated.set()
-        if dlq_running and not self._stop.is_set():
-            try:
-                self._overflow_queue.put_nowait(event)
-                with self._metrics_lock:
-                    self._overflow_queued += 1
-                return
-            except queue.Full:
-                # A full observation can race the C-backed consumer releasing
-                # a slot. Yield once and make one bounded retry before taking
-                # the much slower synchronous evidence path. A genuinely
-                # exhausted lane still falls through without an unbounded wait.
-                time.sleep(0)
-                try:
-                    self._overflow_queue.put_nowait(event)
-                    with self._metrics_lock:
-                        self._overflow_queued += 1
-                    return
-                except queue.Full:
-                    pass
-        written = self._recorder._route_to_dlq(event)
+        # Admission and stop's closure share only this short memory lock.
+        # Signing, lifecycle thread starts/joins and every storage operation
+        # happen outside it, so a blocked disk cannot hold publishers here.
         with self._metrics_lock:
-            if written:
-                self._overflow_dlq += 1
-                self._overflow_synchronous += 1
+            if self._stop.is_set():
+                reason = "stopping"
+            elif self._starting:
+                reason = "unavailable"
             else:
-                self._dlq_failures += 1
+                thread = self._thread
+                dlq_thread = self._dlq_thread
+                running = thread is not None and thread.is_alive()
+                dlq_running = dlq_thread is not None and dlq_thread.is_alive()
+                if running and not self._primary_saturated.is_set():
+                    try:
+                        self._queue.put_nowait(event)
+                    except queue.Full:
+                        self._primary_saturated.set()
+                    else:
+                        self._accepted += 1
+                        return
+                if dlq_running:
+                    try:
+                        self._overflow_queue.put_nowait(event)
+                    except queue.Full:
+                        pass
+                    else:
+                        self._overflow_queued += 1
+                        return
+                reason = "saturated" if running or dlq_running else "unavailable"
+            self._admission_rejected += 1
+            if reason == "saturated":
+                self._rejection_saturated += 1
+            elif reason == "stopping":
+                self._rejection_stopping += 1
+            else:
+                self._rejection_unavailable += 1
+        raise RecorderAdmissionRejected(reason)
 
     def stop(self, timeout: float = 5.0) -> bool:
         """Request a drain and wait a bounded time; safe to call repeatedly."""
@@ -1388,31 +1431,76 @@ class AsyncFlightRecorder:
         with self._state_lock:
             thread = self._thread
             dlq_thread = self._dlq_thread
-            self._stop.set()
-            if thread is None and dlq_thread is None:
-                return True
-        # An idle wait can be long in Chill, but teardown must not wait for
-        # that timeout. Sentinels use existing queue wakeups and capacity;
-        # a full lane already has real work to wake and drain its consumer.
-        self._wake_idle(self._queue)
-        self._wake_idle(self._overflow_queue)
-        deadline = time.monotonic() + timeout
-        current = threading.current_thread()
-        for candidate in (thread, dlq_thread):
-            if candidate is None or candidate is current:
-                continue
-            candidate.join(max(0.0, deadline - time.monotonic()))
-        stopped = all(
-            candidate is None or not candidate.is_alive()
-            for candidate in (thread, dlq_thread)
-        )
-        if stopped:
+            generation = self._worker_generation
+            self._stop_callers += 1
+            with self._metrics_lock:
+                self._stop.set()
+        try:
+            # Wake only existing owners. A repeated stop after retirement must
+            # not leave wake tokens in the preserved queues for a later start.
+            if thread is not None and thread.is_alive():
+                self._wake_idle(self._queue)
+            if dlq_thread is not None and dlq_thread.is_alive():
+                self._wake_idle(self._overflow_queue)
+            deadline = time.monotonic() + timeout
+            current = threading.current_thread()
+            for candidate in (thread, dlq_thread):
+                if candidate is None or candidate is current:
+                    continue
+                candidate.join(max(0.0, deadline - time.monotonic()))
+            stopped = all(
+                candidate is None or not candidate.is_alive()
+                for candidate in (thread, dlq_thread)
+            )
             with self._state_lock:
-                if self._thread is thread:
-                    self._thread = None
-                if self._dlq_thread is dlq_thread:
-                    self._dlq_thread = None
-        return stopped
+                # Concurrent stop callers may already have cleared these same
+                # retired references. No caller may certify a new generation.
+                same_generation = self._worker_generation == generation
+                same_owners = (
+                    (self._thread is thread or self._thread is None)
+                    and (self._dlq_thread is dlq_thread or self._dlq_thread is None)
+                )
+                if (
+                    stopped and same_generation and same_owners
+                    and self._stop_callers == 1
+                ):
+                    # Earlier stop callers may have inserted a wake after its
+                    # consumer retired. Only the last caller can now clean
+                    # these tokens: all wake insertions finished, admission is
+                    # closed, and lifecycle replacement remains fenced here.
+                    primary_empty = self._discard_retired_wakes(self._queue)
+                    overflow_empty = self._discard_retired_wakes(self._overflow_queue)
+                    if self._thread is thread:
+                        self._thread = None
+                    if self._dlq_thread is dlq_thread:
+                        self._dlq_thread = None
+                    return primary_empty and overflow_empty
+                return False
+        finally:
+            # Keep replacement fenced until every caller has completed its
+            # final generation check. Never hold lifecycle locks across joins.
+            with self._state_lock:
+                self._stop_callers -= 1
+
+    @staticmethod
+    def _discard_retired_wakes(pending) -> bool:
+        """Discard only wake identities after all consumers/producers retire.
+
+        The caller owns the lifecycle fence with admission closed. Preserve
+        every original Event reference and its order within this bounded lane.
+        A dead worker's pending originals prevent a successful drain receipt.
+        """
+        retained = []
+        for _ in range(pending.maxsize):
+            try:
+                event = pending.get_nowait()
+            except queue.Empty:
+                break
+            if event is not _RECORDER_WAKE:
+                retained.append(event)
+        for event in retained:
+            pending.put_nowait(event)
+        return not retained
 
     def metrics(self) -> AsyncRecorderMetrics:
         with self._state_lock:
@@ -1458,6 +1546,11 @@ class AsyncFlightRecorder:
                 ),
                 batches=self._batches,
                 running=running,
+                admission_rejected=self._admission_rejected,
+                rejection_saturated=self._rejection_saturated,
+                rejection_stopping=self._rejection_stopping,
+                rejection_unavailable=self._rejection_unavailable,
+                coverage_gap=self._admission_rejected > 0,
             )
 
     @staticmethod
@@ -1486,7 +1579,11 @@ class AsyncFlightRecorder:
             batch: list[Event] = []
             try:
                 event = self._queue.get(timeout=self._idle_wait_seconds())
-                self._primary_saturated.clear()
+                # Pair relief with submit's full observation. Otherwise a
+                # publisher could set a stale saturation flag after this clear
+                # and bypass an available primary lane indefinitely.
+                with self._metrics_lock:
+                    self._primary_saturated.clear()
                 if event is _RECORDER_WAKE:
                     if self._stop.is_set():
                         # stop() owns the bounded join. Retain this worker's

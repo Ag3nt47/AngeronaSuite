@@ -155,6 +155,27 @@ def test_quiet_bus_and_callback_history_are_advisory_only():
     assert state(healer)["state"] == "healthy"
 
 
+def test_recorder_admission_gap_stays_visible_without_restarting_available_workers():
+    healer, _, recorder, _, bus = setup(healthy=True)
+    recorder.recovery_snapshot = lambda: {
+        "healthy": True, "stopping": False,
+        "admission_rejected": 7, "rejection_saturated": 4,
+        "rejection_stopping": 2, "rejection_unavailable": 1, "coverage_gap": True,
+        "private_path": "never exported", "replay_failures": -1,
+    }
+    for _ in range(5):
+        healer.run_once()
+    item = healer.snapshot()["components"]["flight_recorder"]
+    assert item["state"] == "healthy"
+    assert item["evidence"] == {
+        "admission_rejected": 7, "rejection_saturated": 4,
+        "rejection_stopping": 2, "rejection_unavailable": 1, "coverage_gap": True,
+    }
+    assert recorder.repairs == 0 and bus.revision() == 0
+    item["evidence"]["coverage_gap"] = False
+    assert healer.snapshot()["components"]["flight_recorder"]["evidence"]["coverage_gap"] is True
+
+
 def test_concurrent_sweep_and_shutdown_cannot_admit_an_action_after_stop():
     healer, reporter, _, _, _ = setup()
     entered, release = threading.Event(), threading.Event()

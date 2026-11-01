@@ -47,6 +47,12 @@ now covered by the focused setup check. That local result does not rewrite
 the published failures or establish new-commit hosted success; publication
 and checks for the changed revision remain required.
 
+Subsequent acceptance: published 7ebb387 completed all fifteen hosted jobs
+successfully on 1 November, verified at 19:15:53 UTC. This covers the advisory
+and setup correction; the later [recorder admission follow-up](hardening-v1.15-2026-11-01-recorder-admission.md)
+retains its own validation and changed-commit publication scope. The preceding
+9675347 failures remain historical results, not failures of 7ebb387.
+
 ## Earlier advisory-rule Full120 observation
 
 The earlier 120-second Full/STOP observation included the advisory changes

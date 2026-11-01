@@ -17,6 +17,15 @@ complete messages within per-file/process-role limits, preserving existing
 bytes and held writes. Native/external writers and upstream allocations are
 outside that application budget. Exact generation headers do not attest hooks.
 
+Full recorder queues reject delivery without publisher disk waits. Cached
+recovery status and `ingest-status` retain saturated/stopping/unavailable
+counts and a process-lifetime admission-gap latch, independently of worker
+availability. These counters are not durable across process exit; other
+subscribers may still receive a rejected recorder delivery. A false gap flag
+does not certify complete persistence. See the
+[recorder/storage review](../analysis/hardening-v1.15-2026-11-01-recorder-admission.md)
+for offline saturation checks and the separate ordinary Full-mode observation.
+
 Black Box historical health includes separately dated run reports and supervisor
 event rows, not one fictitious current run. Retain missing/malformed/truncated
 counts and original bytes; historical errors do not become a live exception

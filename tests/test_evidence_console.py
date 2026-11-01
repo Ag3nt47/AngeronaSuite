@@ -1,9 +1,10 @@
 from types import SimpleNamespace
 
 from angerona.core.commands import CommandConsole
-from angerona.core.eventbus import Event, EventBus, Severity
+from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.core.evidence_ingestion import EvidenceIngestionWorker
 from angerona.core.evidence_store import EvidenceStore
+from angerona.core.storage import AsyncFlightRecorder
 
 
 class _Manager:
@@ -54,3 +55,16 @@ def test_ingestion_status_is_operator_visible(tmp_path):
     finally:
         worker.stop(drain_timeout=2)
         store.close()
+
+
+def test_recorder_delivery_rejection_is_visible_and_not_presented_as_durable_history():
+    bus = EventBus()
+    recorder = AsyncFlightRecorder(SimpleNamespace(authority=BusAuthority(b"c" * 32)))
+    bus.subscribe(recorder.submit)
+    bus.publish(Event("fixture", "recorder not started"))
+    console = CommandConsole(_Manager(), bus, SimpleNamespace(), flight_recorder_worker=recorder)
+    text = console.run("ingest-status")
+    assert "recorder delivery rejections: 1 (saturated=0, stopping=0, unavailable=1)" in text
+    assert "recorder admission coverage gap: True" in text
+    assert "process-lifetime counters, not a durable loss journal" in text
+    assert "overflow-DLQ/storage-DLQ/failures: 0/0/0" in text

@@ -2,6 +2,11 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- Remove synchronous disk spill from full recorder admission lanes. Count
+  rejected recorder deliveries without blocking publishers; preserve admitted
+  originals and distinguish nondurable gap counters from worker availability.
+  Fence stop/restart generations and remove only retired wake tokens before
+  reporting a completed queue drain.
 - Qualify port-only Counter-Agentic leads as observations and SOAR burst counts
   as advisory aggregation. Preserve severity, thresholds, genuine active-event
   contracts, evidence and response-authorization boundaries.

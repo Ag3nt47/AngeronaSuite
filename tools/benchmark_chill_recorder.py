@@ -35,12 +35,16 @@ def measure(source: str, idle_seconds: float) -> dict:
     controller.set_chill_active(True)
     tree = ast.parse(source, filename=SOURCE_PATH)
     selected = [node for node in tree.body if (
-        isinstance(node, ast.ClassDef) and node.name in {"_BoundedSimpleQueue", "AsyncFlightRecorder"}
+        isinstance(node, ast.ClassDef) and node.name in {
+            "_BoundedSimpleQueue", "AsyncFlightRecorder", "RecorderAdmissionRejected",
+        }
     ) or (
         isinstance(node, ast.Assign) and any(isinstance(target, ast.Name)
                                             and target.id == "_RECORDER_WAKE" for target in node.targets)
     )]
-    assert sum(isinstance(node, ast.ClassDef) for node in selected) == 2
+    classes = {node.name for node in selected if isinstance(node, ast.ClassDef)}
+    assert {"_BoundedSimpleQueue", "AsyncFlightRecorder"} <= classes
+    assert classes <= {"_BoundedSimpleQueue", "AsyncFlightRecorder", "RecorderAdmissionRejected"}
     future = ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)
     extracted = ast.fix_missing_locations(ast.Module(body=[future, *selected], type_ignores=[]))
     namespace = {"__name__": "angerona_recorder_benchmark", "threading": threading,

@@ -84,7 +84,8 @@ class RuntimeMetrics:
             recorder = self.recorder
             with recorder._metrics_lock:
                 queues.append(self._queue("flight_recorder", recorder._queue.qsize(),
-                                          recorder._queue.maxsize, recorder._dlq_failures))
+                                          recorder._queue.maxsize,
+                                          recorder._dlq_failures + recorder._admission_rejected))
                 queues.append(self._queue("flight_recorder_overflow", recorder._overflow_queue.qsize(),
                                           recorder._overflow_queue.maxsize, 0))
         if self.evidence is not None:
@@ -116,7 +117,10 @@ class RuntimeMetrics:
                   "queue_depth": worst["depth"], "queue_capacity": worst["capacity"],
                   "queue_scope": "worst observed queue", "queues": queues,
                   "dropped_events": sum(item["dropped"] for item in queues),
-                  "drop_scope": "observed recorder, read-model and diagnostic delivery failures",
+                  "drop_scope": (
+                      "observed recorder admission/write failures, read-model and diagnostic "
+                      "delivery failures; process-lifetime counters, not global event loss"
+                  ),
                   "gui_applicable": self.gui, "tick_ms": tick_ms,
                   "gui_heartbeat_age_seconds": age if self.gui else None,
                   "gui_heartbeat_lag_ms": lag if self.gui else None,

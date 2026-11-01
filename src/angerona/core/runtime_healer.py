@@ -123,6 +123,8 @@ class RuntimeHealer:
             key: value for key in (
                 "worker_alive", "dlq_worker_alive", "write_failures",
                 "dlq_failures", "replay_failures", "replay_quarantined",
+                "admission_rejected", "rejection_saturated", "rejection_stopping",
+                "rejection_unavailable", "coverage_gap",
             )
             if type(value := health.get(key)) in (bool, int)
             and (isinstance(value, bool) or value >= 0)
@@ -217,5 +219,8 @@ class RuntimeHealer:
                 },
                 "recent_actions": [dict(row) for row in self._view["recent_actions"]],
                 "bus_advisory": dict(self._view["bus_advisory"]),
-                "scope": "worker availability; evidence continuity is not certified",
+                "scope": (
+                    "worker availability; evidence continuity is not certified; recorder "
+                    "admission rejection counters are process-lifetime and not durable across exit"
+                ),
             }

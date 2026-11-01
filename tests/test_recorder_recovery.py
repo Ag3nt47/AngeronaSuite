@@ -135,6 +135,11 @@ def test_snapshot_avoids_storage_reads_and_preserves_cumulative_failures():
         "dlq_failures": 7,
         "replay_failures": 3,
         "replay_quarantined": 2,
+        "admission_rejected": 0,
+        "rejection_saturated": 0,
+        "rejection_stopping": 0,
+        "rejection_unavailable": 0,
+        "coverage_gap": False,
     }
     assert worker.recovery_snapshot() == expected
     assert worker.recovery_snapshot() == expected

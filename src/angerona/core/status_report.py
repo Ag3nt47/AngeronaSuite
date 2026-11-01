@@ -718,6 +718,14 @@ class StatusReporter:
                     f" / attempts={item.get('attempts', 0)}"
                     f" / last result={item.get('last_result', '')}"
                 )
+                evidence = item.get("evidence", {})
+                if "admission_rejected" in evidence:
+                    lines.append(
+                        "    Recorder delivery rejections: "
+                        f"{evidence['admission_rejected']}"
+                        f" / admission coverage gap={evidence.get('coverage_gap', False)}"
+                        " (process-lifetime counters; not a durable loss journal)"
+                    )
         lines += [
             "",
             "-" * 78,
