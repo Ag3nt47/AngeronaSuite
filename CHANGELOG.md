@@ -9,6 +9,12 @@
   coalesced reader. Refresh Activity updates transactions too; failed reads keep
   prior rows with visible errors. Preserve selections and operator edits, reject
   stale reopened results, and fix the Exceptions refresh button's false error.
+- Stream CI test IDs and bounded wrapper stages; update stale modeless-window
+  and response-custody fixtures. Add query-only inventory ownership observations
+  with complete native Job membership and strict cleanup holds.
+- Remove duplicate ordinary canary scope work while keeping mandatory current
+  validation and exclusive handoff checks. Reject inapplicable process requests
+  before authority work; preserve evidence freshness and explicit contracts.
 - Support concurrent investigation workspaces with native window controls and
   F11 fullscreen; retain actual workers through close and reject stale callbacks.
 - Show measured Spyware Scan task, file, reader and workflow progress. Separate

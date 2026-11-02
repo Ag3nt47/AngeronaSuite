@@ -3,6 +3,7 @@
 The optional independent journal survives a broken stdout pipe. Its atexit
 markers bracket callbacks registered during pytest; callbacks registered before
 this wrapper and subsequent native finalization are outside that boundary.
+An explicit console opt-in mirrors bounded stage markers while CI is running.
 """
 from __future__ import annotations
 
@@ -13,6 +14,52 @@ from pathlib import Path
 import runpy
 import sys
 import time
+
+
+def _console_diagnostics():
+    if os.environ.get("ANGERONA_PYTEST_CONSOLE_DIAGNOSTICS") != "1":
+        return lambda *_args, **_fields: None
+    try:
+        write, flush = sys.stdout.write, sys.stdout.flush
+    except Exception:
+        return lambda *_args, **_fields: None
+    encode, clock = json.dumps, time.monotonic
+    kinds = frozenset({
+        "process-start", "pytest-system-exit", "pytest-exception", "pytest-returned",
+        "pytest-entrypoint-finished", "python-atexit-begin", "python-atexit-end",
+    })
+    allowed_fields = ("python", "argument_count", "exit_code", "exit_code_type", "exception_type")
+    prefix, limit = "CI_PYTEST_STAGE ", 1024
+    remaining = 7
+
+    def record(kind, **fields):
+        nonlocal remaining
+        if kind not in kinds or remaining <= 0:
+            return
+        remaining -= 1
+        try:
+            row = {"kind": kind, "monotonic": clock()}
+            for name in allowed_fields:
+                if name not in fields:
+                    continue
+                value = fields[name]
+                if type(value) is str:
+                    row[name] = value[:128]
+                elif value is None or type(value) is bool:
+                    row[name] = value
+                elif type(value) is int and value.bit_length() <= 64:
+                    row[name] = value
+            line = prefix + encode(row, ensure_ascii=True, separators=(",", ":")) + "\n"
+            if len(line) > limit:
+                line = prefix + encode({"kind": kind, "monotonic": row["monotonic"]}) + "\n"
+            write(line)
+            flush()
+        except Exception:
+            # Output diagnostics cannot replace pytest's verdict. Deliberately
+            # leave cancellation and other BaseException subclasses untouched.
+            pass
+
+    return record
 
 
 def _journal():
@@ -65,9 +112,21 @@ def main() -> None:
         repository = str(Path(__file__).resolve().parents[1])
         if repository not in sys.path:
             sys.path.insert(0, repository)
-    record, finish_journal = _journal()
+    journal_record, finish_journal = _journal()
+    console_record = _console_diagnostics()
+
+    def record(kind, **fields):
+        journal_record(kind, **fields)
+        console_record(kind, **fields)
+
+    def finish():
+        try:
+            finish_journal()
+        finally:
+            console_record("python-atexit-end")
+
     register_exit = atexit.register
-    register_exit(finish_journal)
+    register_exit(finish)
     record("process-start", python=sys.version.split()[0], argument_count=len(sys.argv) - 1)
     try:
         # Launch the actual pytest __main__, including its console stdout-flush

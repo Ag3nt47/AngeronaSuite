@@ -73,6 +73,7 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [Recorder commit review](analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md) ·
 [Latest optional audit review](analysis/hardening-v1.15-2026-11-01-optional-audit-admission.md) ·
 [Workspace, Auto Adapt and scan review](analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md) ·
+[CI diagnostics and response verification](analysis/hardening-v1.15-2026-11-02-ci-response-verification.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance

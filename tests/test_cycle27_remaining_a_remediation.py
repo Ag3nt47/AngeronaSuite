@@ -144,7 +144,8 @@ def test_quarantine_retains_object_custody_through_commit(
     monkeypatch.setattr(combat_module, "_PinnedFileMove", SpyPinned)
     journal_entered = []
 
-    def journal(_action, *, canary=None, pinned=None):
+    def journal(_action, *, canary=None, pinned=None, event=None):
+        assert event is response_event
         assert canary is None  # This fixture models ordinary installed authority.
         assert instances and pinned is instances[0] and pinned._closed is False
         journal_entered.append(True)
@@ -163,20 +164,21 @@ def test_quarantine_retains_object_custody_through_commit(
         return action
 
     monkeypatch.setattr(module, "_commit_after_mutation", commit)
-    event = Event(
+    response_event = Event(
         "inert detector",
         "inert quarantine request",
         Severity.HIGH,
         details={"response_authorized": True},
     )
 
-    result = module._quarantine_file(str(source), event, "combat-000000000001")
+    result = module._quarantine_file(str(source), response_event, "combat-000000000001")
 
     assert result is not None
     assert journal_entered == [True]
     assert commit_entered == [True]
     assert result.details["source_link_count"] == 1
     assert result.details["destination_link_count"] == 1
+    assert instances[0]._closed is True
 
 
 def test_quarantine_post_move_alias_signal_rolls_back_without_success(

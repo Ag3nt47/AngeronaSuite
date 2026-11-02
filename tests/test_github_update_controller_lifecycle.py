@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QElapsedTimer, QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QMessageBox, QPushButton, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QDialog, QLabel, QMessageBox, QPushButton, QWidget
 from shiboken6 import delete, isValid
 
 from angerona.core.config import Config
@@ -305,15 +305,21 @@ def test_accepted_setup_enabling_daily_checks_starts_the_owned_due_path(owned, t
     entered, release, calls, _ = _producer(owned, monkeypatch)
     owner, controller = _owner(owned, tmp_path)
 
-    class AcceptedSetup:
+    class AcceptedSetup(QDialog):
         def __init__(self, config, **kwargs):
+            super().__init__(kwargs.get("parent"))
             self.config = config
-        def exec(self):
+        def accept(self):
             self.config.github_daily_check_enabled = True
-            return 1
+            super().accept()
 
     monkeypatch.setattr(setup_wizard, "SetupWizard", AcceptedSetup)
-    owner._open_setup()
+    dialog = owner._open_setup()
+    assert isinstance(dialog, QDialog) and not dialog.isModal()
+    assert owner._setup_dialog is dialog
+    assert not owner.config.github_daily_check_enabled and not entered.is_set()
+    dialog.accept()
+    assert owner._setup_dialog is None
     _until(entered.is_set)
     assert calls[0][1] is False
     release.set()

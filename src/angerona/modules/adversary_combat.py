@@ -4753,6 +4753,12 @@ class AdversaryCombat(BaseModule):
         allowed_actions: frozenset[str] | None = None,
         expected_policy: CombatPolicy | None = None,
     ) -> list[CombatAction] | None:
+        if type(pid) is not int or pid <= 0 or psutil is None:
+            return None
+        allowed = _CONTRACT_ACTIONS if allowed_actions is None else allowed_actions
+        if ("terminate_process" not in allowed and "suspend_process" not in allowed
+                and "isolate_program" not in allowed):
+            return None
         canary = self._practice_mutation(event, "terminate_process")
         if canary is not None and pid != canary.target:
             return None
@@ -4760,8 +4766,6 @@ class AdversaryCombat(BaseModule):
             return None
         baseline_policy = self.policy() if expected_policy is None else expected_policy
         if self.policy() != baseline_policy:
-            return None
-        if type(pid) is not int or pid <= 0 or psutil is None:
             return None
         # Killing the response engine itself ends autonomous defense.  Parent
         # exclusion prevents a child detector from terminating its launcher.
@@ -4804,7 +4808,6 @@ class AdversaryCombat(BaseModule):
                 return None
         except Exception:
             return None
-        allowed = allowed_actions or _CONTRACT_ACTIONS
         exact_suspend_only = (
             "suspend_process" in allowed and "terminate_process" not in allowed
         )
@@ -5002,8 +5005,7 @@ class AdversaryCombat(BaseModule):
                         or details.get("lease_id") != state.lease_id
                         or details.get("receipt_id") != state.receipt_id
                         or details.get("run_id") != state.bound_run_id
-                        or details.get("target") != str(state.target)
-                        or not RedTeamValidationLease._state_matches(proof.lease)):
+                        or details.get("target") != str(state.target)):
                     return False
                 if action is not None:
                     if action.action != proof.operation:
@@ -5038,11 +5040,16 @@ class AdversaryCombat(BaseModule):
                 if record is None or record[1] != proof.identity:
                     return False
                 if key not in (state.artifact_handoffs or set()):
+                    # The mandatory verifier rechecks the whole live scope.
                     return bool(verify_validation_purple_event(proof.lease, proof.event,
                                                               {"attack_ids": [details.get("technique")]}))
                 # During the existing exclusive handoff the issuer deliberately
                 # releases its read descriptor. Only Combat's actual pin may
                 # bridge that interval; a path, label or registry entry cannot.
+                # This branch cannot use that verifier, so retain its full
+                # live-scope check before inspecting the exclusive native pin.
+                if not RedTeamValidationLease._state_matches(proof.lease):
+                    return False
                 expected_pin = action.details.get("quarantine") if restoring and action is not None else proof.target
                 if (restoring and (action is None or Path(str(expected_pin)).parent.parent != self.quarantine_root
                                    or Path(str(expected_pin)).parent.name != action.combat_id)):

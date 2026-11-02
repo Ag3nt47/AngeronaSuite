@@ -18,10 +18,13 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import BinaryIO, Sequence
+from typing import TYPE_CHECKING, BinaryIO, Sequence
 
 from angerona.core.engine_transport import decode
 from angerona.telemetry.sensors import ProcessSnapshot
+
+if TYPE_CHECKING:
+    from angerona.core.werfault_guard import OwnedProcessIdentity
 
 PROTOCOL = "angerona-process-inventory-v1"
 MAX_FRAME = 8 * 1024 * 1024
@@ -346,15 +349,21 @@ class _Job:
         ids = Ids()
         if not self.api.QueryInformationJobObject(self.handle, 3, c.byref(ids), c.sizeof(ids), None):
             raise InventoryWorkerError("inventory job members unavailable")
-        if ids.assigned > 3 or ids.count > 3:
+        if ids.assigned > 3 or ids.count > 3 or ids.assigned != ids.count:
             raise InventoryWorkerError("inventory job member bound")
-        return [int(value) for value in ids.ids[:ids.count]]
+        members = [int(value) for value in ids.ids[:ids.count]]
+        if any(pid <= 0 for pid in members) or len(set(members)) != len(members):
+            raise InventoryWorkerError("inventory job member identity ambiguity")
+        return members
 
     def contains(self, pin: _Pin) -> bool:
+        return self.contains_handle(pin.handle)
+
+    def contains_handle(self, handle: int) -> bool:
         if self.handle is None:
             return False
         member = self.w.BOOL()
-        if not self.api.IsProcessInJob(pin.handle, self.handle, self.c.byref(member)):
+        if not self.api.IsProcessInJob(handle, self.handle, self.c.byref(member)):
             raise InventoryWorkerError("inventory job membership unavailable")
         return bool(member.value)
 
@@ -510,6 +519,9 @@ class ProcessSnapshotProvider:
         self._popen_close_failed = False
         self._starting_thread = False
         self._auxiliary_close_unproven = False
+        # A failed CloseHandle is never retried against a potentially reused
+        # number. Keep its observer owner reachable and retirement held.
+        self._owned_observation_close_holds = []
 
     def lifecycle_snapshot(self) -> dict:
         with self._lock:
@@ -521,6 +533,128 @@ class ProcessSnapshotProvider:
                     "error": self._failure,
                     "auxiliary_close_unproven": self._auxiliary_close_unproven,
                     "retirement_proofs": [dict(p) for p in self._proofs]}
+
+    def observe_owned_process_identities(self, *, timeout: float = 1.0) -> tuple[OwnedProcessIdentity, ...]:
+        """Observe every native member of this retained inventory lifetime.
+
+        This background-only operation does native I/O. A composition owner
+        may cache the immutable, two-second observations for memory-only
+        consumers; these rows grant no detection or response authority.
+        ``timeout`` bounds lock admission and result acceptance, not a Windows
+        API call already in progress. Any ambiguity rejects the whole sample.
+        """
+        if on_gui_thread() or os.name != "nt":
+            raise InventoryWorkerError("inventory ownership requires a Windows background owner")
+        if not _number(timeout, positive=True) or timeout > 1.0:
+            raise InventoryWorkerError("invalid inventory ownership deadline")
+        from angerona.core.werfault_guard import OwnedProcessIdentity
+        from angerona.core.windows_process_lease import _Native
+
+        started = time.monotonic()
+        if not _number(started) or started < 0:
+            raise InventoryWorkerError("inventory ownership clock unavailable")
+        deadline = started + timeout
+
+        def remaining() -> float:
+            now = time.monotonic()
+            if not _number(now) or not started <= now < deadline:
+                raise InventoryWorkerError("inventory ownership observation deadline")
+            return deadline - now
+
+        def current_owner():
+            if not self._lock.acquire(timeout=remaining()):
+                raise InventoryWorkerError("inventory ownership state admission deadline")
+            try:
+                if (not self._ready or self._stopping or self._retired or self._failure
+                        or self._launching or self._starting_thread or self._retirement_error
+                        or self._popen_close_failed or self._auxiliary_close_unproven):
+                    raise InventoryWorkerError("inventory ownership lifetime unavailable")
+                job, wrapper, child = self._job, self._wrapper, self._child
+                if (type(job) is not _Job or job.handle is None or job.close_failed
+                        or type(wrapper) is not _Pin or type(child) is not _Pin
+                        or any(pin.closed or pin.close_failed or pin.handle is None
+                               for pin in (wrapper, child))):
+                    raise InventoryWorkerError("inventory ownership custody unavailable")
+                return job, wrapper, child
+            finally:
+                self._lock.release()
+
+        if not self._retirement.acquire(timeout=remaining()):
+            raise InventoryWorkerError("inventory ownership retirement admission deadline")
+        try:
+            native = None
+            handles = []
+            rows = None
+            error = None
+            close_error = None
+            try:
+                job, wrapper, child = current_owner()
+                retained = {pin.pid: pin for pin in (wrapper, child)}
+                if wrapper is not child and wrapper.pid == child.pid:
+                    raise InventoryWorkerError("inventory retained PID ambiguity")
+                members = job.members()
+                if (not 1 <= len(members) <= 3 or len(set(members)) != len(members)
+                        or any(type(pid) is not int or pid <= 0 for pid in members)
+                        or not set(retained).issubset(members)):
+                    raise InventoryWorkerError("inventory ownership member closure unavailable")
+                native = _Native()
+                observed = []
+                for pid in sorted(members):
+                    remaining()
+                    handle = native.open(pid, 0x101000, False)
+                    handles.append(handle)
+                    identity = native.identity(handle)
+                    pin = retained.get(pid)
+                    if (identity.pid != pid or native.wait(handle, 0)
+                            or not job.contains_handle(handle)
+                            or pin is not None and (
+                                (identity.pid, identity.birth_ticks) != pin.identity or not pin.alive())):
+                        raise InventoryWorkerError("inventory native member identity unavailable")
+                    role = ("inventory-worker" if pid == child.pid else
+                            "inventory-wrapper" if pid == wrapper.pid else "inventory-member")
+                    observed.append((handle, identity, role))
+                if set(job.members()) != set(members):
+                    raise InventoryWorkerError("inventory ownership membership changed")
+                for handle, identity, _role in observed:
+                    remaining()
+                    if (native.identity(handle) != identity or native.wait(handle, 0)
+                            or not job.contains_handle(handle)):
+                        raise InventoryWorkerError("inventory native member changed")
+                if set(job.members()) != set(members):
+                    raise InventoryWorkerError("inventory ownership membership changed")
+                if current_owner() != (job, wrapper, child):
+                    raise InventoryWorkerError("inventory ownership lifetime changed")
+                sampled = time.monotonic()
+                remaining()
+                rows = tuple(OwnedProcessIdentity(identity.pid, str(identity.birth_ticks),
+                             identity.create_time, identity.image, role, sampled, sampled + 2.0)
+                             for _handle, identity, role in observed)
+            except BaseException as exc:
+                error = exc
+            finally:
+                # Pop before closing: even an uncertain close is attempted once.
+                while handles:
+                    handle = handles.pop()
+                    try:
+                        native.close(handle)
+                    except BaseException as exc:
+                        self._auxiliary_close_unproven = True
+                        self._owned_observation_close_holds.append((native, handle))
+                        close_error = close_error or exc
+            if close_error is not None:
+                raise InventoryCustodyCloseError("inventory ownership query custody close unproven")
+            if error is not None:
+                if isinstance(error, InventoryWorkerError) or not isinstance(error, Exception):
+                    raise error
+                raise InventoryWorkerError("inventory ownership observation held") from error
+            # stop() fences publication before waiting for _retirement.
+            # Recheck after every query-handle close has succeeded.
+            if current_owner() != (job, wrapper, child):
+                raise InventoryWorkerError("inventory ownership lifetime changed")
+            remaining()
+            return rows
+        finally:
+            self._retirement.release()
 
     def _fail(self, reason: str) -> None:
         with self._lock:

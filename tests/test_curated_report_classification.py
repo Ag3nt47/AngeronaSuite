@@ -140,11 +140,15 @@ def test_actual_controller_and_report_views_separate_matches_without_response_au
     service = ready(controller)
     service.scan = lambda *_args, **_kwargs: copy.deepcopy(result)
     widget = gui.CuratedScannerWidget(controller.manager)
+    widget.show()
     try:
         admitted = (controller.priority_scan(native_enabled=False, zero_breach_enabled=True) if priority
                     else controller.scan(mode="full"))
         assert admitted
-        wait_until(lambda: controller._completion_dialog is not None and not controller.snapshot()["busy"])
+        wait_until(lambda: controller._completion_dialog is not None
+                   and not controller.snapshot()["busy"]
+                   and "2 contextual references" in widget.status.text()
+                   and "2 contextual references" in widget.priority_controls.outcome.text())
         state = controller.snapshot()
         assert state["match_counts"] == result["match_counts"] and state["coverage_incomplete"] is True
         dialog = controller._completion_dialog

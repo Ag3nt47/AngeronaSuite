@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import threading
@@ -10,8 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from test_breach_state import emit as emit_native, native_graph
 
-from angerona.core.eventbus import BusAuthority, Event, EventBus
+from angerona.core.eventbus import Event, EventBus
+from angerona.core.response_contract import authorize_response
 from angerona.modules.adversary_combat import (
     AdversaryCombat,
     CombatAction,
@@ -177,21 +180,36 @@ def test_a02_equal_cache_index_object_swap_is_rejected(tmp_path: Path) -> None:
                     module._trusted_action(action.action_id)
 
 
+@pytest.fixture
+def terminal_quarantine_graph(tmp_path: Path, inert_installed_authority):
+    with native_graph(
+        tmp_path, adversary_combat_quarantine_files=True,
+        adversary_combat_isolate_host=False,
+        adversary_combat_process_action="none", breach_auto_isolate_enabled=False,
+    ) as graph:
+        yield graph
+
+
+def _terminal_quarantine_event(graph, source: Path, *, stale: bool = False) -> Event:
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    return emit_native(
+        graph, ts=1.0 if stale else None, path=str(source),
+        observed_content_sha256=digest, matched_sha256=digest,
+        **authorize_response(("quarantine_file",), path=source),
+    )
+
+
 def test_a03_terminal_proof_is_returned_from_retained_writer(
-    tmp_path: Path, inert_installed_authority,
+    tmp_path: Path, terminal_quarantine_graph,
 ) -> None:
     source = tmp_path / "inert-terminal-proof.bin"
-    source.write_bytes(b"third remediation exact-object proof")
-    module = AdversaryCombat(tmp_path, rollback_anchor={})
-    event = Event(
-        module="inert-third-remediation",
-        message="Inert terminal proof fixture",
-        ts=1.0,
-        details={"response_authorized": True},
-    )
-    authority = BusAuthority(_CONTINUITY_KEY)
-    event = replace(event, hmac_sig=authority.sign(event))
-    assert authority.verify(event)
+    content = b"third remediation exact-object proof"
+    source.write_bytes(content)
+    graph = terminal_quarantine_graph
+    module = graph.combat
+    event = _terminal_quarantine_event(graph, source)
+    assert graph.bus.verify(event)
+    assert module._response_actions(event) == frozenset({"quarantine_file"})
 
     result = module._quarantine_file(
         str(source), event, "combat-000000000012"
@@ -201,6 +219,44 @@ def test_a03_terminal_proof_is_returned_from_retained_writer(
     assert result.details["postcondition_verified"] is True
     assert result.details["destination_link_count"] == 1
     assert result.details["terminal_object_identity"] == result.details["file_identity"]
+    assert result.details["terminal_object_sha256"] == hashlib.sha256(content).hexdigest()
+    assert not source.exists()
+    assert Path(result.details["quarantine"]).read_bytes() == content
+    records, legacy = module._read_journal(strict=True)
+    assert not legacy
+    assert [record["record_type"] for record in records] == ["intent", "commit"]
+    assert records[-1]["details"]["terminal_object_identity"] == (
+        result.details["terminal_object_identity"]
+    )
+
+
+@pytest.mark.parametrize("evidence", ["stale", "tampered", "revoked"])
+def test_a03_invalid_live_evidence_cannot_reach_terminal_proof(
+    tmp_path: Path, terminal_quarantine_graph, evidence: str,
+) -> None:
+    source = tmp_path / "inert-terminal-negative.bin"
+    content = b"unmodified exact-object evidence refusal"
+    source.write_bytes(content)
+    graph = terminal_quarantine_graph
+    event = _terminal_quarantine_event(graph, source, stale=evidence == "stale")
+    assert graph.bus.verify(event)
+    if evidence == "tampered":
+        event = replace(event, message="forged after producer publication")
+        assert graph.bus.verify(event) is False
+    elif evidence == "revoked":
+        graph.bus.freeze_mesh()
+        assert graph.bus.verify_archived(event)
+        assert graph.bus.verify(event) is False
+
+    assert graph.combat._quarantine_file(
+        str(source), event, "combat-000000000013",
+    ) is None
+
+    assert source.read_bytes() == content
+    assert not any(
+        row.get("status") == "applied"
+        for row in graph.combat.list_actions(limit=None)
+    )
 
 
 def test_a07_claim_witness_failure_prevents_publish(

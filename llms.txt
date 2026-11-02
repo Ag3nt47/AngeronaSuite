@@ -7,6 +7,45 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- CI/response follow-up: published 380dc7b ended with 10 successes and five
+  cancellations, including four one-hour Python expirations after five failures
+  and an opaque 39% stall; macOS
+  ARM could not acquire a runner. Do not call that revision CI green. Legacy
+  modeless setup/Settings and custody fixtures were reproduced and corrected.
+  Windows CI now emits unbuffered verbose test IDs and explicitly opted-in,
+  wrapper stages (seven attempts, 1,024 ASCII bytes each) without changing pytest exit,
+  cancellation, journal, atexit or the one-hour job policy.
+- Inventory provider exposes actual native Job ownership observations with
+  complete membership, raw identities, immutable two-second leases, query-only handles
+  and strict all-or-nothing cleanup. GUI/native I/O is held. The fixture composes
+  cached real Core/inventory ownership; unavailable cannot become Core-only.
+  No production App binding, trust, permissions or service enrollment is added.
+- Combat ordinary canaries retain mandatory full-scope verification once per
+  recheck; exclusive handoff keeps explicit scope/native-pin/HMAC barriers.
+  No cross-boundary cache or 30-second evidence-window change. Invalid/file-only process
+  work rejects before authority preparation; explicit empty contracts stay empty.
+  Native five-case suite passed in 138.48 seconds with two signed 37/37 simulation runs,
+  real marker/hash/process witnesses and clean owned retirement. Independent
+  authentication of two reports, 156 journal records and 205 events passed;
+  originals unchanged. Two
+  later practice-proof holds remain, and success diagnostic counters were not
+  exported, so do not claim complete hold capture or real detector efficacy.
+  Separate cohorts: CI/fixtures 143 passes in 107.20 seconds;
+  ownership/diagnostics 180 passes in 20.08 seconds; response/issuer 124 passes
+  in 131.33 seconds, all zero failures/errors/skips and unchanged
+  scoped source/preferences. Do not add overlapping totals. Final Ruff PASS;
+  compile 1,384 files/zero failures; real dependency preflight PASS. Ordinary
+  Full60 reached 75 running/Chill off. Retained critical recovery exposure and
+  spyware heuristics grant no response authority; 721 events omit 5,330 details,
+  initial retention gap 4,596. Transport heartbeats advance; component counters
+  and independent raw-event authentication are not established by this capture.
+  Inventory bounds (two) keep strict observation acceptance false. Normal STOP
+  Core exit zero; all 18 retained waits across 13 observed generations signaled;
+  no replacement observed for five seconds; source/selected preferences unchanged.
+  One inventory bound and unavailable short-phase role samples retain false
+  strict STOP acceptance; not complete history or historical crash closure.
+  Publication and hosted checks remain separate. Sanitized record:
+  analysis/hardening-v1.15-2026-11-02-ci-response-verification.md.
 - Auto Adapt follow-up: initial/manual signed state, exceptions, snapshot and
   activity reads use the existing coalesced status reader. Snapshot captures
   become compact display rows before publication; Activity refresh includes

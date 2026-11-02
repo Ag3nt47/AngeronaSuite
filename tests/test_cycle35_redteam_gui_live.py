@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 
 _OS_WITNESS = r"""
@@ -110,7 +110,7 @@ def _app() -> QApplication:
 
 
 @pytest.fixture
-def live_process_inventory(isolate_process_inventory_provider):
+def live_process_inventory(isolate_process_inventory_provider, request):
     """Use the runtime's owned rich collector instead of a GUI-local fallback.
 
     This fixture tests collection/response, not the separate application-entry
@@ -119,7 +119,9 @@ def live_process_inventory(isolate_process_inventory_provider):
     without changing the production source-entry refusal or supplying fake rows.
     """
     from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
-    from angerona.telemetry.process_snapshot_worker import ProcessSnapshotProvider
+    from angerona.core.werfault_guard import read_owned_process_snapshot
+    from angerona.resilience.component_status import ComponentHeartbeatCache, ROLES
+    from angerona.telemetry.process_snapshot_worker import InventoryWorkerError, ProcessSnapshotProvider
 
     provider = ProcessSnapshotProvider(command=[
         sys.executable, "-c",
@@ -127,10 +129,75 @@ def live_process_inventory(isolate_process_inventory_provider):
         "raise SystemExit(worker_main())",
     ])
     owner = ProcessSnapshotLifecycle(provider)
+    core = ComponentHeartbeatCache(
+        {role: None for role in ROLES},
+        enabled={role: role == "core" for role in ROLES}, owned_core_pid=os.getpid(),
+    )
+    stopped, ready = threading.Event(), threading.Event()
+    publication = ((), "not-ready")
+    close_errors = []
+
+    def owned_process_identities():
+        # This supplier is deliberately memory-only, as in normal App startup.
+        rows, error = publication
+        if stopped.is_set() or error is not None:
+            raise InventoryWorkerError("Cached GUI fixture companion ownership is unavailable")
+        return rows
+
+    def refresh_context():
+        nonlocal publication
+        try:
+            while not stopped.is_set():
+                sampled = time.monotonic()
+                try:
+                    core.refresh_owned_processes()
+                    core_rows = core.owned_process_identities()
+                    if (len(core_rows) != 1 or core_rows[0].role != "core"
+                            or core_rows[0].pid != os.getpid()):
+                        raise InventoryWorkerError("Native fixture Core ownership is unavailable")
+                    rows = core_rows + provider.observe_owned_process_identities()
+                    # Validate the combined sample without renewing either
+                    # producer's leases or dropping an unavailable companion.
+                    rows = read_owned_process_snapshot(
+                        lambda: rows, not_before=sampled, clock=time.monotonic,
+                    ).rows
+                    if not stopped.is_set():
+                        publication = (rows, None)
+                        ready.set()
+                except Exception as exc:
+                    publication = ((), type(exc).__name__)
+                stopped.wait(max(0.0, 1.0 - (time.monotonic() - sampled)))
+        finally:
+            publication = ((), "stopped")
+            try:
+                core.close()
+            except Exception as exc:
+                close_errors.append(type(exc).__name__)
+
+    context_worker = threading.Thread(target=refresh_context, name="GuiLiveNativeCompanionContext", daemon=False)
+    context_start_proven = False
     assert owner.start()
     try:
-        yield owner
+        context_worker.start()
+        context_start_proven = True
+        deadline = time.monotonic() + 10.0
+        while not ready.is_set() and context_worker.is_alive() and time.monotonic() < deadline:
+            _app().processEvents()
+            time.sleep(0.01)
+        assert ready.is_set(), "Native Core/inventory companion context was not established"
+        yield owned_process_identities
     finally:
+        # The test's producer/combat cleanup runs before fixture teardown. Keep
+        # exact native context available through that retirement, then revoke.
+        stopped.set()
+        publication = ((), "stopped")
+        if context_worker.ident is not None:
+            context_worker.join(timeout=3.0)
+        context_retired = context_start_proven and not context_worker.is_alive() and not close_errors
+        if not context_retired:
+            # Preserve uncertain observer owners; never close its handles from
+            # a competing thread or claim that missing references prove exit.
+            request.node._inventory_context_retirement_hold = (context_worker, core, owner, close_errors)
         owner.request_stop()
         retired = []
         waiter = threading.Thread(
@@ -139,6 +206,9 @@ def live_process_inventory(isolate_process_inventory_provider):
         )
         waiter.start()
         waiter.join(timeout=31.0)
+        if waiter.is_alive() or retired != [True]:
+            request.node._inventory_retirement_hold = (waiter, owner, provider, retired)
+        assert context_retired, "Native companion context retirement or handle closure is unproven"
         assert not waiter.is_alive(), "Inventory retirement waiter did not finish"
         assert retired == [True], "The exact owned inventory process did not retire"
 
@@ -583,19 +653,20 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.core import report_attest
     from angerona.core.config import Config
     from angerona.core.drill_readiness import assess_drill_response
-    from angerona.core.eventbus import BusAuthority, EventBus
+    from angerona.core.eventbus import BusAuthority, Event, EventBus
     from angerona.core.module_contract import build_capability_contract
     from angerona.core.module_manager import ModuleManager
     from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
     from angerona.gui.main_window import MainWindow
     from angerona.gui.pages import AARDialog, SettingsDialog
-    from angerona.modules.adversary_combat import AdversaryCombat
+    from angerona.modules.adversary_combat import AdversaryCombat, HostMutationHeld
     from angerona.modules.process_monitor import ProcessMonitorModule
     from angerona.modules import purple_guard as purple_module
     from angerona.modules.purple_guard import PurpleGuard
     from angerona.modules.purple_guard import RedTeamValidationError, RedTeamValidationLease
     from angerona.shark.aar_report import AARReportResult, verified_aar_handoff_text
     from angerona.shark.red_team import INTENSITY_LEVELS, RedTeamEngine
+    from gui_response_hold_diagnostic import ResponseHoldDiagnostic
 
     # Each pytest case already owns a unique retained root. Keep every
     # trace, AAR alias and independent witness below that root as well.
@@ -616,12 +687,12 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     # bypassed. Thread-local capture confines diagnostics to the engine thread.
     diagnostic_local = threading.local()
     process_trace_lock = threading.Lock()
-    process_trace_rows = process_trace_bytes = 0
     process_attempts: dict[str, int] = {}
     try:
         process_trace = (case_evidence / "bug_audit_gui_process_challenges.jsonl").open("xb", buffering=0)
     except OSError:
         process_trace = None
+    response_holds = ResponseHoldDiagnostic(process_trace, lock=process_trace_lock)
 
     def close_process_trace() -> None:
         try:
@@ -644,12 +715,11 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     def process_phase(phase, *, token=None, run_id=None, lease=None, pid=None,
                       birth=None, exception=None) -> None:
         """Bounded test-only observations; never refresh or mint native evidence."""
-        nonlocal process_trace_rows, process_trace_bytes
         try:
             if process_trace is None or not process_trace_lock.acquire(blocking=False):
                 return
             try:
-                if process_trace_rows >= 64:
+                if response_holds.nonhold_full_locked():
                     return
                 plain_token = token if type(token) is str and len(token) <= 128 else None
                 if phase == "enroll-entry" and plain_token is not None:
@@ -710,13 +780,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     except Exception as capture_exc:
                         row["cache_error_type"] = type(capture_exc).__name__[:96]
                 raw = (json.dumps(row, sort_keys=True) + "\n").encode("utf-8")
-                if process_trace_bytes + len(raw) > 64 * 1024:
-                    return
-                # Reserve the complete write first; even a failed/partial write
-                # cannot grant more row or byte budget to a later observation.
-                process_trace_rows += 1
-                process_trace_bytes += len(raw)
-                process_trace.write(raw)
+                response_holds.write_nonhold_locked(raw)
             finally:
                 process_trace_lock.release()
         except Exception:
@@ -1078,6 +1142,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     bus.subscribe(recorder_submit)
     manager_construction_started = True
     manager = ModuleManager(bus, config, recorder=recorder)
+    manager.owned_process_identities = live_process_inventory
     guard = PurpleGuard(isolated_root)
     process = ProcessMonitorModule()
     combat = AdversaryCombat(data_root=isolated_root)
@@ -1091,6 +1156,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         )
         manager.modules[module.name] = module
     combat.bind_manager(manager)
+    monkeypatch.setattr(combat, "_require_current_response_event", response_holds.wrap_guard(
+        combat._require_current_response_event, hold_type=HostMutationHeld, event_type=Event,
+        dispatch_context=lambda: getattr(combat._response_dispatch_local, "context", None),
+    ))
     native_dispatches: list[str] = []
 
     def observe_native_dispatch(name: str) -> None:
@@ -1098,7 +1167,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
         def observed(*args: object, **kwargs: object):
             native_dispatches.append(name)
-            return original(*args, **kwargs)
+            with response_holds.action_scope(name):
+                return original(*args, **kwargs)
 
         monkeypatch.setattr(combat, name, observed)
 
@@ -1199,6 +1269,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     shown_aar: list[str] = []
     modal_errors: list[str] = []
     activation_states: list[str] = []
+    settings_finished: list[int] = []
     witness_paths: dict[str, tuple[Path, Path]] = {}
     settlement_evidence: dict[str, tuple[dict, dict]] = {}
     settlement_runtime: dict[str, dict] = {}
@@ -1207,11 +1278,12 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         lambda state, _message: activation_states.append(state)
     )
 
-    def arm_from_modal() -> None:
+    def arm_from_owned_settings(dialog: SettingsDialog) -> None:
         if fixture_closing:
             return
-        dialog = app.activeModalWidget()
-        assert isinstance(dialog, SettingsDialog)
+        assert window._settings_dialog is dialog
+        assert dialog.isVisible()
+        assert dialog.isModal() is False
         visited.append("settings")
         dialog._combat_enabled_chk.setChecked(True)
         dialog._combat_mode_combo.setCurrentIndex(
@@ -1231,12 +1303,16 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         QTest.mouseClick(dialog._btn_save, Qt.MouseButton.LeftButton)
 
     try:
-        QTimer.singleShot(0, arm_from_modal)
-        window._show_settings("Adversary Combat")
+        settings_dialog = window._show_settings("Adversary Combat")
+        assert isinstance(settings_dialog, SettingsDialog)
+        assert window._settings_dialog is settings_dialog
+        settings_dialog.finished.connect(settings_finished.append)
+        QTimer.singleShot(0, lambda: arm_from_owned_settings(settings_dialog))
         deadline = time.monotonic() + 60.0
         while (
             (
-                not combat.response_snapshot()["canary_ready"]
+                not settings_finished
+                or not combat.response_snapshot()["canary_ready"]
                 or bool(getattr(manager, "_settings_combat_activation_pending", False))
                 or "held" not in activation_states
             )
@@ -1245,6 +1321,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             app.processEvents()
             time.sleep(0.05)
         assert visited == ["settings"]
+        assert settings_finished == [int(QDialog.DialogCode.Accepted)]
         assert "pending" in activation_states
         assert "held" in activation_states, activation_states
         assert "ready" not in activation_states, "Source Observe must not announce installed host authority"
@@ -1750,6 +1827,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                         detail = json.loads(diagnostic)
                         detail["runtime_at_settlement"] = settlement_runtime.get(handoff.run_id, {})
                         detail["runtime_at_assertion"] = _witness_runtime_snapshot(combat, bus)
+                        detail["response_proof_hold_coverage"] = response_holds.coverage()
                         try:
                             detail["response_failure_diagnostic"] = _response_failure_diagnostic(combat, bus)
                         except Exception:

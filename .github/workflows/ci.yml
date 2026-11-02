@@ -63,6 +63,8 @@ jobs:
           & "$env:GITHUB_WORKSPACE\tools\protect-key-custody.ps1" -DataRoot $dataRoot
       - name: Check native recovery startup contracts
         shell: pwsh
+        env:
+          ANGERONA_PYTEST_CONSOLE_DIAGNOSTICS: "1"
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
           $recoveryTests = @(
@@ -73,16 +75,17 @@ jobs:
             'tests/test_source_startup_strategies.py::test_supervisor_waits_for_exact_native_first_paint_and_ready_retires_shell'
             'tests/test_shadow_shield_storage.py::test_primary_policy_and_limited_observation_advance_between_cleanup_passes'
           )
-          python -X faulthandler -m tools.ci_pytest -q @recoveryTests
+          python -u -X faulthandler -m tools.ci_pytest -v @recoveryTests
           exit $LASTEXITCODE
       - name: Test
         shell: pwsh
         env:
+          ANGERONA_PYTEST_CONSOLE_DIAGNOSTICS: "1"
           ANGERONA_PYTEST_TRACE_PATH: ${{ runner.temp }}/angerona-pytest-trace.jsonl
           ANGERONA_PYTEST_EXIT_PATH: ${{ runner.temp }}/angerona-pytest-exit.jsonl
         run: |
           $PSNativeCommandUseErrorActionPreference = $false
-          python -X faulthandler -m tools.ci_pytest -q -p tools.pytest_execution_trace --durations=25 --durations-min=1.0
+          python -u -X faulthandler -m tools.ci_pytest -v -p tools.pytest_execution_trace --durations=25 --durations-min=1.0
           $pytestExit = $LASTEXITCODE
           Write-Host "Pytest native process exit code: $pytestExit"
           try {
