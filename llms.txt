@@ -7,6 +7,28 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Hosted base a71c613 is terminal: 11 jobs passed; four Python suites each
+  passed 12,450 tests/37 skips and failed one synchronous GUI recorder fixture.
+  The fixture now matches production Async submit and proves producer/UI/report
+  retirement plus same-generation recorder drain before closing SQLite.
+  Focused four-file validation passed 79 cases/one filesystem skip, including
+  both signed AAR launches and native OS witnesses. Test-only diagnostics
+  recorded a CreateProcess quota refusal during a private run; a bounded
+  32-process/512 MiB GUI owner observed 15 concurrent members and passed without relaxing marker,
+  signature, deadline or coverage rules. New hosted results remain separate.
+
+- Persistence baseline inventory now explicitly remains observation with
+  HIGH/CRITICAL priority and unreviewed trust. Exact legacy seven-field
+  plain-dict/plain-str/literal-False projection follows explicit branches;
+  extra/active/contract fields and real changes retain prior paths. Old
+  signed bytes are unchanged; no trust, response, baseline or alert clear.
+  Focused 14-file cohort: 390 passes, 2 filesystem-availability skips in
+  45.44 s, including 48 new cases; Ruff/preflight passed. Ordinary Full60
+  and normal STOP: 45 observed native identities, 49 signaled waits;
+  503 source files and selected preferences unchanged. Child
+  exit codes/history completeness unverified. Original approximate host
+  candidate/five omitted details and nativeP0 remain unresolved. Record:
+  analysis/hardening-v1.15-2026-11-01-persistence-disposition.md.
 - Telemetry event storage now has worker-sampled database/WAL/free-space
   admission targets (defaults 256 MiB / 64 MiB / 2048 MiB) and a 1 MiB complete
   logical unit. Settings > System and Full Setup expose current-run Block,

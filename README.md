@@ -89,6 +89,8 @@ review remain available.
   work, rejections and gaps. Apply now and Save have separate effects.
 - **Window recovery:** interrupted reveal transitions restore queued windows
   and release their temporary masks.
+- **Persistence evidence:** pre-existing startup entries retain urgent review
+  priority as observations; enrollment alone grants no trust or attack verdict.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does

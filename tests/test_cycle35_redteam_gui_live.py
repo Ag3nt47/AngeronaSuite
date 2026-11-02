@@ -569,6 +569,7 @@ def test_response_failure_diagnostic_bounds_cache_and_never_waits_for_receipt_lo
 @pytest.mark.skipif(os.name != "nt", reason="Windows response clickthrough")
 def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     isolated_root: Path, monkeypatch: pytest.MonkeyPatch, live_process_inventory,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Two accepted UI launches reach signed AAR and native response evidence.
 
@@ -585,7 +586,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.core.eventbus import BusAuthority, EventBus
     from angerona.core.module_contract import build_capability_contract
     from angerona.core.module_manager import ModuleManager
-    from angerona.core.storage import FlightRecorder
+    from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
     from angerona.gui.main_window import MainWindow
     from angerona.gui.pages import AARDialog, SettingsDialog
     from angerona.modules.adversary_combat import AdversaryCombat
@@ -614,6 +615,132 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     # functions call their originals and return/raise unchanged; no gate is
     # bypassed. Thread-local capture confines diagnostics to the engine thread.
     diagnostic_local = threading.local()
+    process_trace_lock = threading.Lock()
+    process_trace_rows = process_trace_bytes = 0
+    process_attempts: dict[str, int] = {}
+    try:
+        process_trace = (case_evidence / "bug_audit_gui_process_challenges.jsonl").open("xb", buffering=0)
+    except OSError:
+        process_trace = None
+
+    def close_process_trace() -> None:
+        try:
+            if process_trace is not None:
+                process_trace.close()
+        except Exception:
+            pass  # Diagnostic failure must not change the original operation.
+
+    request.addfinalizer(close_process_trace)
+
+    def cached_scalar(value):
+        if type(value) is str:
+            return value[:192]
+        if type(value) is bool or value is None:
+            return value
+        if type(value) in (int, float) and -1e20 <= value <= 1e20:
+            return value
+        return None
+
+    def process_phase(phase, *, token=None, run_id=None, lease=None, pid=None,
+                      birth=None, exception=None) -> None:
+        """Bounded test-only observations; never refresh or mint native evidence."""
+        nonlocal process_trace_rows, process_trace_bytes
+        try:
+            if process_trace is None or not process_trace_lock.acquire(blocking=False):
+                return
+            try:
+                if process_trace_rows >= 64:
+                    return
+                plain_token = token if type(token) is str and len(token) <= 128 else None
+                if phase == "enroll-entry" and plain_token is not None:
+                    if plain_token not in process_attempts and len(process_attempts) < 64:
+                        process_attempts[plain_token] = len(process_attempts) + 1
+                row = {
+                    "schema": "angerona.gui-live-process-diagnostic.v1",
+                    "diagnostic_only": True, "cached_only": True,
+                    "phase": phase, "attempt_index": process_attempts.get(plain_token),
+                    "token": plain_token, "run_id": cached_scalar(run_id),
+                    "pid": cached_scalar(pid), "spawn_birth": cached_scalar(birth),
+                }
+                chain = []
+                current = exception
+                for _ in range(2):
+                    if current is None:
+                        break
+                    chain.append({"type": type(current).__name__[:96],
+                                  "message": str(current)[:384]})
+                    current = current.__cause__ or (
+                        None if current.__suppress_context__ else current.__context__
+                    )
+                row["exceptions"] = chain
+                if lease is not None:
+                    # This accessor only looks up the existing lease registry.
+                    # Native observers and their canonical code sites stay intact.
+                    try:
+                        state = purple_module._lease_authority(lease)
+                        cache_lock = state.lock
+                        if cache_lock is not None and cache_lock.acquire(blocking=False):
+                            try:
+                                challenge = (state.process_challenges or {}).get(plain_token)
+                                row["challenge_cache"] = "available" if type(challenge) is dict else "absent"
+                                if type(challenge) is dict:
+                                    row["challenge"] = {
+                                        name: cached_scalar(challenge.get(name))
+                                        for name in ("state", "observation_failure", "pid",
+                                                     "process_create_time", "run_id")
+                                    }
+                                row["lease"] = {
+                                    name: cached_scalar(getattr(state, name, None))
+                                    for name in ("consumed", "released", "bound_run_id",
+                                                 "artifact_custody_failed")
+                                }
+                            finally:
+                                cache_lock.release()
+                        else:
+                            row["challenge_cache"] = "busy"
+                        for label, producer in (("purple", state.module),
+                                                ("process", state.process_module)):
+                            cached = getattr(producer, "__dict__", {})
+                            if type(cached) is dict:
+                                row[label] = {
+                                    name: cached_scalar(cached.get(name))
+                                    for name in ("_lifecycle_generation", "health", "_status",
+                                                 "_cycle_count", "_bus_overflow_count")
+                                }
+                    except Exception as capture_exc:
+                        row["cache_error_type"] = type(capture_exc).__name__[:96]
+                raw = (json.dumps(row, sort_keys=True) + "\n").encode("utf-8")
+                if process_trace_bytes + len(raw) > 64 * 1024:
+                    return
+                # Reserve the complete write first; even a failed/partial write
+                # cannot grant more row or byte budget to a later observation.
+                process_trace_rows += 1
+                process_trace_bytes += len(raw)
+                process_trace.write(raw)
+            finally:
+                process_trace_lock.release()
+        except Exception:
+            pass  # Preserve the original return value and exception object.
+
+    def observe_process_lease_method(name: str, phase: str) -> None:
+        original = getattr(RedTeamValidationLease, name)
+
+        def observed(lease, *args, **kwargs):
+            context = {"token": kwargs.get("token"), "run_id": kwargs.get("run_id"),
+                       "pid": kwargs.get("pid"), "lease": lease}
+            process_phase(f"{phase}-entry", **context)
+            try:
+                result = original(lease, *args, **kwargs)
+            except Exception as exc:
+                process_phase(f"{phase}-error", exception=exc, **context)
+                raise
+            process_phase(f"{phase}-return", **context)
+            return result
+
+        monkeypatch.setattr(RedTeamValidationLease, name, observed)
+
+    observe_process_lease_method("enroll_process_challenge", "enroll")
+    observe_process_lease_method("bind_process_challenge", "bind")
     original_stat = Path.stat
 
     def diagnostic_stat(path: Path, *args: object, **kwargs: object):
@@ -766,7 +893,190 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     recorder = FlightRecorder(config.db_path)
     bus = EventBus(ring_size=4096)
     bus.arm(recorder.authority)
-    bus.subscribe(recorder.record_bus, delivery_budget_ms=60_000)
+    # Match production: Settings applies the real storage policy to the raw
+    # recorder, whose owned worker supplies fresh facts and persists deliveries.
+    # Keep that exact raw recorder for GUI queries and signed marker validation.
+    recorder_worker = AsyncFlightRecorder(recorder)
+    recorder_submit = recorder_worker.submit
+    manager = window = pulse_worker = modal_timer = None
+    manager_construction_started = window_construction_started = False
+    cleanup_started = cleanup_complete = fixture_closing = False
+    cleanup_errors: list[str] = []
+    aar_threads: list[threading.Thread] = []
+    aar_lock = threading.Lock()
+
+    def perform_cleanup() -> None:
+        nonlocal cleanup_complete, fixture_closing
+        deadline = time.monotonic() + 30.0
+
+        def attempt(label, action) -> bool:
+            try:
+                action()
+                return True
+            except Exception as exc:
+                cleanup_errors.append(f"{label}: {type(exc).__name__}")
+                return False
+
+        # Only exact object references admitted by this fixture are joined.
+        # An unreturned constructor may have started unknown owners: retain
+        # SQLite rather than treating a missing window/manager as retirement.
+        owners_known = not (
+            (manager_construction_started and manager is None)
+            or (window_construction_started and window is None)
+        )
+        threads: list[threading.Thread] = []
+        bindings: list[tuple[object, str, object]] = []
+
+        def capture(owner, attribute) -> None:
+            worker = getattr(owner, attribute, None)
+            bindings.append((owner, attribute, worker))
+            if worker is not None and worker not in threads:
+                threads.append(worker)
+
+        with aar_lock:
+            fixture_closing = True
+            threads.extend(aar_threads)
+        if modal_timer is not None:
+            owners_known = attempt("AAR modal timer stop", modal_timer.stop) and owners_known
+        modules = tuple(manager.modules.values()) if manager is not None else ()
+        for module in modules:
+            capture(module, "_thread")
+            capture(module, "_restart_waiter")
+        if manager is not None:
+            capture(manager, "_settings_combat_activation_worker")
+        preparing = None
+        engines = ()
+        if window is not None:
+            window._simulation_closing = True
+            window._pending_simulation_cfg = None
+            # Fence Qt admissions before any join; do not pump queued callbacks
+            # that could start a new recorder-dependent job during teardown.
+            qt_timers: list[QTimer] = []
+            owners_known = attempt("Qt timer inventory", lambda: qt_timers.extend(
+                window.findChildren(QTimer),
+            )) and owners_known
+            for timer in qt_timers:
+                owners_known = attempt("Qt timer stop", timer.stop) and owners_known
+            for name in ("_posture_reader", "_usage_reconciler", "_security_reader",
+                         "_flow_writer", "_aria_history_reader"):
+                reader = getattr(window, name, None)
+                if reader is not None:
+                    capture(reader, "thread")
+                    owners_known = attempt(name, reader.close) and owners_known
+            capture(window, "_fi_worker")
+            owners_known = attempt("Flight Instructor close", window._close_flight_instructor) and owners_known
+            watchdog = getattr(window, "_ui_watchdog", None)
+            if watchdog is not None:
+                capture(watchdog, "_thread")
+                owners_known = attempt("UI watchdog stop", watchdog.stop) and owners_known
+            capture(window.system_pulse, "_sample_worker")
+            owners_known = attempt("System Pulse shutdown", window.system_pulse.shutdown) and owners_known
+            preparing = getattr(window, "_sim_launch_job", None)
+            if preparing is not None:
+                capture(preparing, "thread")
+                owners_known = attempt("Simulation preparation cancel", preparing.cancel) and owners_known
+            capture(window, "_sim_stop_thread")
+            engines = (window.red_team_engine, window.shark_engine)
+            for engine in engines:
+                capture(engine, "_thread")
+                capture(engine, "_cleanup_timer")
+            owners_known = attempt("Panel reveal shutdown", window._panel_reveal.shutdown) and owners_known
+            owners_known = attempt("Tray hide", window.tray.hide) and owners_known
+            owners_known = attempt("Window hide", window.hide) and owners_known
+
+        def stop_producers() -> None:
+            # One failure must not skip the other admitted producers. Run
+            # potentially blocking stop APIs in this exact retained owner so
+            # they cannot extend the shared caller-side cleanup deadline.
+            for module in modules:
+                attempt(f"{module.name} stop", module.stop)
+            if manager is not None:
+                attempt("Module manager stop", manager.stop_all)
+            # A live preparation worker owns its lease and engine cleanup.
+            # Do not race a second cleanup against that generation.
+            if preparing is None or not preparing.thread.is_alive():
+                for engine in engines:
+                    attempt("Simulation engine stop", engine.stop_and_clean)
+                if window is not None and not any(worker.is_alive() for worker in aar_threads):
+                    attempt("Validation lease release", window._release_redteam_validation_lease)
+
+        control = threading.Thread(target=stop_producers, name="GuiLiveProducerCleanup", daemon=True)
+        attempt("Producer cleanup start", control.start)
+        threads.insert(0, control)
+        for worker in threads:
+            if worker.ident is not None:
+                attempt("Owned user join", lambda worker=worker: worker.join(
+                    timeout=max(0.0, deadline - time.monotonic()),
+                ))
+        for owner, attribute, worker in bindings:
+            current = getattr(owner, attribute, None)
+            # A stop API may clear an exact retired reference, but must not
+            # replace it with a new unobserved generation.
+            if current is not None and current is not worker:
+                owners_known = False
+        users_retired = (
+            owners_known
+            and all(not worker.is_alive() for worker in threads)
+            and (manager is None or (
+                manager._shutdown is True
+                and not getattr(manager, "_settings_combat_activation_pending", False)
+            ))
+            and (preparing is None or preparing.finished.is_set())
+            and (window is None or (
+                getattr(window, "_redteam_validation_lease", None) is None
+                and int(getattr(window, "_sim_aar_pending", 0)) == 0
+                and (getattr(window, "_sim_stop_complete", None) is None
+                     or window._sim_stop_complete.is_set())
+                and not getattr(window, "_sim_stop_errors", [])
+            ))
+        )
+        if not users_retired:
+            cleanup_errors.append("Recorder producer/window-user retirement is unknown; raw recorder retained")
+        attempt("Recorder unsubscribe", lambda: bus.unsubscribe(recorder_submit))
+        recorder_before_stop = recorder_worker.retirement_snapshot()
+        recorder_drained = recorder_worker.stop(timeout=max(0.0, deadline - time.monotonic()))
+        recorder_retired = recorder_worker.retirement_snapshot()
+        writer_retired = (
+            recorder_drained is True and recorder_retired["schema"] == 1
+            and recorder_retired["worker_generation"] == recorder_before_stop["worker_generation"]
+            and recorder_retired["workers_retired"] is True and recorder_retired["drained"] is True
+            and recorder_retired["pending_events"] == 0 and recorder_retired["stopping"] is True
+        )
+        if not writer_retired:
+            cleanup_errors.append("Owned recorder writer retirement or drain is unproven; raw recorder retained")
+        if users_retired and writer_retired:
+            metrics = recorder_worker.metrics()
+            if metrics.dlq_failures == 0 and metrics.storage_write_failures == 0:
+                cleanup_complete = attempt("Raw recorder close", recorder.close)
+            else:
+                cleanup_errors.append("Recorder has failed/unconfirmed writes; raw recorder retained")
+        # Diagnostics must not bypass safe cleanup or mask the original body
+        # failure. The registered teardown assertion reports cleanup separately.
+        attempt("Cleanup trace", lambda: trace("cleanup_done", users_retired=users_retired,
+            recorder_before=recorder_before_stop, recorder_after=recorder_retired,
+            recorder_drained=recorder_drained, raw_closed=cleanup_complete,
+            errors=list(cleanup_errors)))
+
+    def cleanup_fixture() -> None:
+        nonlocal cleanup_started
+        if cleanup_started:
+            return
+        cleanup_started = True
+        try:
+            perform_cleanup()
+        except Exception as exc:
+            # Keep the original test/setup exception in its own phase. Unknown
+            # cleanup never authorizes DB close or a successful teardown.
+            cleanup_errors.append(f"Cleanup incomplete: {type(exc).__name__}")
+
+    def finalize_fixture() -> None:
+        cleanup_fixture()
+        assert cleanup_complete and not cleanup_errors, "; ".join(cleanup_errors) or "Fixture cleanup incomplete"
+
+    request.addfinalizer(finalize_fixture)
+    assert recorder_worker.start(), "GUI fixture recorder workers did not start"
+    bus.subscribe(recorder_submit)
+    manager_construction_started = True
     manager = ModuleManager(bus, config, recorder=recorder)
     guard = PurpleGuard(isolated_root)
     process = ProcessMonitorModule()
@@ -805,7 +1115,24 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     original_popen = subprocess.Popen
 
     def record_tagged_spawn(*args: object, **kwargs: object) -> subprocess.Popen:
-        proc = original_popen(*args, **kwargs)
+        try:
+            proc = original_popen(*args, **kwargs)
+        except Exception as exc:
+            # Parse only the same fixed inert command shape as the existing
+            # successful-spawn observer. Never query a failed spawn's identity.
+            try:
+                command = args[0] if args else kwargs.get("args")
+                if (
+                    isinstance(command, (list, tuple)) and len(command) == 4
+                    and command[0] == sys.executable
+                    and tuple(command[1:3]) == ("-c", "import time; time.sleep(30)")
+                    and isinstance(command[3], str)
+                    and command[3].startswith("ANGERONA_REDTEAM_")
+                ):
+                    process_phase("popen-error", token=command[3], exception=exc)
+            except Exception:
+                pass
+            raise
         command = args[0] if args else kwargs.get("args")
         if (
             isinstance(command, (list, tuple))
@@ -821,6 +1148,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 birth = None
             with marker_lock:
                 spawn_births[(int(proc.pid), command[3])] = birth
+            process_phase("popen-return", token=command[3], pid=int(proc.pid), birth=birth)
         return proc
 
     monkeypatch.setattr(subprocess, "Popen", record_tagged_spawn)
@@ -841,7 +1169,23 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.gui import system_pulse
     monkeypatch.setattr(system_pulse, "_wifi_signal_windows", lambda: None)
     app = _app()
+    window_construction_started = True
     window = MainWindow(bus, recorder, manager, config)
+
+    def retain_aar_user(name: str) -> None:
+        original = getattr(window, name)
+
+        def tracked(*args, **kwargs):
+            with aar_lock:
+                if fixture_closing:
+                    return  # Teardown fences new work; admitted calls are joined.
+                aar_threads.append(threading.current_thread())
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(window, name, tracked)
+
+    for aar_method in ("_red_team_build_aar", "_shark_build_aar"):
+        retain_aar_user(aar_method)
     pulse_worker = window.system_pulse._sample_worker
     trace("mainwindow_constructed")
     window.show()
@@ -864,6 +1208,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     )
 
     def arm_from_modal() -> None:
+        if fixture_closing:
+            return
         dialog = app.activeModalWidget()
         assert isinstance(dialog, SettingsDialog)
         visited.append("settings")
@@ -1035,6 +1381,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         )
 
         def close_report_dialogs() -> None:
+            if fixture_closing:
+                return
             for widget in app.topLevelWidgets():
                 if isinstance(widget, AARDialog) and widget.isVisible():
                     shown_aar.append(widget.body.toPlainText())
@@ -1430,37 +1778,4 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         finally:
             modal_timer.stop()
     finally:
-        trace("cleanup_start")
-        cleanup_deadline = time.monotonic() + 30.0
-        try:
-            window.system_pulse.shutdown()
-            # A failed assertion can leave preparation holding the manager and
-            # recorder. Cancel and let that worker release its exact lease/watches
-            # before their fixtures are stopped or closed.
-            preparing = getattr(window, "_sim_launch_job", None)
-            if preparing is not None:
-                window._cancel_simulation_launch()
-                while preparing.thread.is_alive() and time.monotonic() < cleanup_deadline:
-                    app.processEvents()
-                    preparing.thread.join(timeout=0.05)
-                assert not preparing.thread.is_alive(), "Simulation preparation did not retire"
-                window._poll_simulation_launch()
-            if window.red_team_engine.is_running:
-                window.red_team_engine.stop_and_clean()
-            manager.stop_all()
-        finally:
-            # Retain and join the exact sampler created by this window. Reuse the
-            # existing shared cleanup budget; shutdown itself must not block Qt.
-            pulse_worker.join(timeout=max(0.0, cleanup_deadline - time.monotonic()))
-            assert not pulse_worker.is_alive(), "GUI-owned System Pulse sampler did not retire"
-        for name in ("timer", "_chill_maintenance_timer", "_adaptation_timer", "_beat_timer"):
-            timer = getattr(window, name, None)
-            if timer is not None:
-                timer.stop()
-        window._flow_writer.close()
-        window._posture_reader.close()
-        window._panel_reveal.shutdown()
-        window.tray.hide()
-        window.hide()
-        recorder.close()
-        trace("cleanup_done")
+        cleanup_fixture()

@@ -667,6 +667,10 @@ class PersistenceSweepModule(BaseModule):
                     value=value[:8192],
                     mitre=self._mitre(surface, entry),
                     baseline_trust="unreviewed",
+                    disposition="observation",
+                    finding_kind="observation",
+                    active_attack=False,
+                    response_authority="observe-only",
                     response_authorized=False,
                 )
         if incomplete:

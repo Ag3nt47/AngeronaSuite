@@ -41,6 +41,13 @@ separates 64 offline passes from ordinary Full60/STOP and records an additional
 named fault-log read after native retirement. Neither proves exactly-once
 delivery for an ambiguously raised commit or closes the native P0 cause.
 
+Persistence baseline inventory remains HIGH/CRITICAL review evidence with
+observation disposition and unreviewed trust. Its strict legacy projection
+requires the exact seven-field envelope and plain text/literal False types;
+unknown or active metadata refuses that projection. Preserve signed originals
+and missing details. An approximate cached-row link is not conclusive identity,
+execution proof or a response grant. See the [persistence classification review](../analysis/hardening-v1.15-2026-11-01-persistence-disposition.md).
+
 Telemetry storage status now copies the existing worker's sampled database,
 WAL, SHM and free-space facts, policy/facts generations and fixed reason. Its
 getter performs no probe, SQL, clock or native work. Missing/malformed views

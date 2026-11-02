@@ -432,6 +432,34 @@ def _coverage_health(details: dict, module: str) -> bool:
     return False
 
 
+def _legacy_persistence_baseline(event, details: dict, module: str) -> bool:
+    """Recognize only the old pre-existing, unreviewed configuration envelope.
+
+    These seven fields described startup inventory, not observed execution.
+    A closed field set refuses every explicit classification, active signal,
+    response contract, corroboration and unknown future field. The original
+    signed event and its HIGH/CRITICAL review priority remain unchanged.
+    """
+    if (
+        module != "persistence sweep"
+        or getattr(event, "severity", Severity.INFO) not in (Severity.HIGH, Severity.CRITICAL)
+        or type(details) is not dict
+        or details.keys() != {
+            "change", "surface", "entry", "value", "mitre", "baseline_trust",
+            "response_authorized",
+        }
+    ):
+        return False
+    return (
+        all(type(details[key]) is str for key in (
+            "change", "surface", "entry", "value", "mitre", "baseline_trust",
+        ))
+        and details["change"] == "baseline_enrollment"
+        and details["baseline_trust"] == "unreviewed"
+        and details["response_authorized"] is False
+    )
+
+
 def event_disposition(event) -> str:
     """Classify an event without rewriting its evidentiary severity.
 
@@ -522,6 +550,8 @@ def event_disposition(event) -> str:
         or source in {"cisa_kev", "cisa-kev", "vulnerability_assessment"}
     ):
         return "exposure"
+    if _legacy_persistence_baseline(event, details, module):
+        return "observation"
     if getattr(event, "severity", Severity.INFO) >= Severity.HIGH:
         return "active"
     return "informational"
