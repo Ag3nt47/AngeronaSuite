@@ -7,6 +7,28 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Auto Adapt follow-up: initial/manual signed state, exceptions, snapshot and
+  activity reads use the existing coalesced status reader. Snapshot captures
+  become compact display rows before publication; Activity refresh includes
+  transactions. Retain the selected transaction ID across updated/sorted rows.
+  Preserve successful rows with visible errors, selection, scroll
+  and operator edits; reject old reopened publications and require fresh recovery
+  verification. Fix clicked(False) being treated as exception state. Six-file
+  inert Qt/core/lifecycle/demo cohort: 105 PASS, 0 FAIL/ERROR/SKIP in 30.98s;
+  507 source files, scoped inputs and selected preferences unchanged. Earlier
+  103-case run retained one fixture race with a legitimate checkbox-triggered
+  core refresh; settled-fixture and early-edit coverage fix that test, not product
+  behavior. Do not add this overlapping cohort to the prior 450-case total or
+  infer host speed, native enforcement or historical P0 closure from it.
+  Final follow-up Ruff src/tests/tools PASS; compilation 1379 files/0 failures;
+  real preflight PASS. Fresh ordinary Full60 reached 75 running/Chill off with
+  four advancing authenticated native-bound heartbeats and no confirmed breach;
+  retention gap 4617 and one inventory bound preserved. Normal STOP Core exit0,
+  all9 retained waits across8 observed generations signaled, no replacement5s.
+  Strict STOP acceptance stays false for two inventory bounds and unavailable
+  short-phase companion samples; not complete child history. All507 source files
+  and selected preferences unchanged; no live AutoAdapt
+  or host-policy operation occurred. Real-Qt interaction fixtures are separate.
 - Final 22-file workspace/scan/Settings/setup/adaptation cohort: 450 PASS,
   0 FAIL/ERROR/SKIP in 114.68s, all 507 source files and selected preferences
   unchanged. Administrator-startup reflow now counts group frame margins.

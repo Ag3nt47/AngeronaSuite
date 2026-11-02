@@ -5,6 +5,10 @@
 - 2 November: rework Auto Adapt with responsive before/after review, adjustable
   presets, transaction history and authenticated firewall rollback. Keep approval
   bound to the exact current plan and expose incomplete audits.
+- Move Auto Adapt's signed history reads off the GUI thread into its existing
+  coalesced reader. Refresh Activity updates transactions too; failed reads keep
+  prior rows with visible errors. Preserve selections and operator edits, reject
+  stale reopened results, and fix the Exceptions refresh button's false error.
 - Support concurrent investigation workspaces with native window controls and
   F11 fullscreen; retain actual workers through close and reject stale callbacks.
 - Show measured Spyware Scan task, file, reader and workflow progress. Separate

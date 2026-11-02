@@ -65,6 +65,61 @@ or enabled enrollment control. See the
 [response and deployment boundaries](../docs/security-flow.md#5-response-authority-and-execution)
 and [capacity policy](../docs/security-flow.md#6-persistence-and-capacity).
 
+## Auto Adapt history-refresh follow-up
+
+A review of published `380dc7b` found that initial and manual persisted-view
+refresh still read and authenticated signed files on the GUI thread. Recovery
+snapshot manifests can contain full firewall captures. Those reads now use the
+existing status reader and its bounded pending scope union; no new worker type
+or response authority is introduced. Snapshot bodies become compact ID/label
+rows before delivery. Activity refresh includes transactions, and the Exceptions
+button uses a zero-argument request so its click value cannot become state.
+
+Failed reads retain successful rows with visible unavailable status. Unchanged
+items, selection, scroll, open details and operator edits are preserved. Partial
+history results cannot reset recovery status or promote apply readiness. Updated
+transactions retain selection by their stable ID across data and sorted-row
+changes, preserving the current column, scroll and immutable open details. Closing
+invalidates the review; reopening requires fresh recovery verification and
+discards old-generation publications. Broker authentication and approval remain
+independent of displayed rows.
+
+The separate six-file cohort passed **105 tests, 0 failures, errors or skips,
+in 30.98 seconds**. Its 507-file source, scoped inputs and selected preferences
+were unchanged; the native child retired naturally with exit zero and an empty
+job. Inert event gates exercised delayed reads, 96 coalesced requests, actual
+buttons, early checkbox edits, error retention and close/reopen retirement. The
+first 103-case run retained one fixture failure: a supported checkbox action had
+started its own core-status refresh before history-only expectations were
+captured. Settling that action and adding early-edit coverage repaired the test;
+no product behavior was changed to suppress the result. The added transaction
+selection case initially assumed pixel-based horizontal scrolling; its fixture
+now uses available scrollbar units and keeps the exact restoration assertions.
+That failure occurred before selection checks; its original result is retained.
+These overlapping cohorts are not additive. Qt row construction and signature comparisons still
+run on the GUI thread; this is not a host speed benchmark or P0 closure.
+
+Final follow-up Ruff passed source, tests and tools; all 1,379 Python files
+compiled, and the real check-only startup preflight passed. A fresh ordinary
+Full60 observation reached 75 running modules with Chill off. Its 227 fresh
+events included 21 HIGH leads but no critical event or confirmed breach: port-only
+leads retained observation disposition and false response authorization; exposures,
+collection health and unresolved AI notices remained separate. All four roles
+advanced authenticated native-bound heartbeats. The original 4,617-record initial
+retention gap and one process-inventory bound remain preserved, with strict live
+acceptance false. No Auto Adapt window or host-policy operation was invoked;
+real-Qt interaction fixtures establish a separate scope.
+
+The following normal STOP exited Core zero naturally and signalled all nine
+retained wait rows across eight unique observed generations, followed by five
+seconds without a canonical replacement. Both diagnostic owners retired with
+native cleanup proven; all 507 source files, selected preferences and proof inputs
+were unchanged. Original strict shutdown acceptance remains false for two
+inventory bounds. Short-phase watchdog/scanner/Black Box samples were unavailable,
+so the retained waits do not establish complete companion or short-lived-child
+history. Shared services were not independently killed; no later launch occurred.
+These facts do not close the historical native P0.
+
 ## Focused validation
 
 The final 22-file cohort passed **450 tests with no failures, errors or skips

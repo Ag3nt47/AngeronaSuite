@@ -469,9 +469,18 @@ def _adaptation_fixture(forbidden):
         def _refresh_status(self):
             # Synchronous copied publications: no status thread is started.
             service = self.service
-            self._on_status_finished({name: {"value": operation()} for name, operation in (
+            values = {name: {"value": operation()} for name, operation in (
                 ("baseline", service.load_baseline), ("recovery", service.security_baseline_status),
-                ("breaker", service.breaker_status), ("transactions", service.transactions))})
+                ("breaker", service.breaker_status), ("transactions", service.transactions),
+                ("state", service.state), ("exceptions", service.list_exceptions),
+                ("activity", service.activity))}
+            values["snapshots"] = {"value": tuple((
+                str(snapshot.get("snapshot_id") or ""),
+                f"{snapshot.get('captured_at', '')} · "
+                f"{snapshot.get('plan', {}).get('profile_id', 'unknown')} · "
+                f"{snapshot.get('status', 'ready')}",
+            ) for snapshot in service.list_snapshots())}
+            self._on_status_finished(values)
 
         def _run_task(self, *_args, **_kwargs):
             return forbidden()

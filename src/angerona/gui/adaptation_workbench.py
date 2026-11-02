@@ -64,6 +64,18 @@ _SEVERITY_SORT_RANK = {
     "critical": 4,
 }
 
+_STATUS_READS = (
+    ("baseline", "load_baseline"),
+    ("recovery", "security_baseline_status"),
+    ("breaker", "breaker_status"),
+    ("transactions", "transactions"),
+    ("state", "state"),
+    ("exceptions", "list_exceptions"),
+    ("snapshots", "list_snapshots"),
+    ("activity", "activity"),
+)
+_CORE_STATUS_VIEWS = ("baseline", "recovery", "breaker", "transactions")
+
 
 def _wrap_label(label: QLabel) -> QLabel:
     """Keep literal content available when a page is narrower than its text."""
@@ -321,6 +333,13 @@ class AdaptationWorkbench(QDialog):
         self._busy_task = ""
         self._status_active = False
         self._status_dirty = False
+        self._pending_status_views: set[str] = set()
+        self._requested_status_views: tuple[str, ...] | None = None
+        self._reopen_refresh = False
+        self._automation_initialized = False
+        self._automation_edited = False
+        self._persisted_errors: dict[str, str] = {}
+        self._weights_text = "Adaptive scoring: default 1.0× in every category"
         self._recovery_view: dict[str, Any] = {"available": False, "checking": True}
         # Persisted views can be refreshed by both operator actions and the
         # dashboard context monitor.  Retain small, bounded row signatures so
@@ -413,6 +432,8 @@ class AdaptationWorkbench(QDialog):
 
         self._task_finished.connect(self._on_task_finished)
         self._status_finished.connect(self._on_status_finished)
+        self._profile_changed()
+        self._trigger_kind_changed()
         self._load_persisted_views()
 
     # ── Menus and overview ────────────────────────────────────────────────
@@ -893,6 +914,8 @@ class AdaptationWorkbench(QDialog):
         restore_baseline = QPushButton("Restore host baseline…")
         restore_baseline.clicked.connect(self._restore_security_baseline)
         rb_layout.addWidget(self.snapshot_combo)
+        self.snapshot_status = _wrap_label(QLabel("Recovery snapshots: checking…"))
+        rb_layout.addWidget(self.snapshot_status)
         rb_layout.addWidget(_AdaptiveRow(
             "adaptation_recovery_actions", (refresh, rollback_button, capture_baseline, restore_baseline), columns=4,
         ))
@@ -938,10 +961,8 @@ class AdaptationWorkbench(QDialog):
             "authenticated liveness proof and cannot safely authorize unattended firewall "
             "changes. Use Guided Auto Adapt for the one-flow audited preview and exact approval.",
         ))
-        state = self.service.state()
         controls = QVBoxLayout()
         self.automation_enabled = QCheckBox("Monitor configured contexts")
-        self.automation_enabled.setChecked(bool(state.get("automation_enabled")))
         self.auto_apply = QCheckBox("Unattended apply (unavailable)")
         self.auto_apply.setAccessibleName("Unattended apply disabled — exact review required")
         self.auto_apply.setChecked(False)
@@ -982,6 +1003,8 @@ class AdaptationWorkbench(QDialog):
 
         self.trigger_table = self._table(["When", "Value", "Profile", "Created", "Rule ID"])
         layout.addWidget(self.trigger_table, 1)
+        self.trigger_status = _wrap_label(QLabel("Context rules: checking…"))
+        layout.addWidget(self.trigger_status)
         remove = QPushButton("Remove selected rule")
         remove.clicked.connect(self._remove_trigger)
         reset = QPushButton("Reset circuit breaker…")
@@ -1007,9 +1030,13 @@ class AdaptationWorkbench(QDialog):
         ))
         self.activity_table = self._table(["Time (UTC)", "Action", "Result", "Detail"])
         layout.addWidget(self.activity_table, 1)
+        self.activity_status = _wrap_label(QLabel("Activity: checking…"))
+        layout.addWidget(self.activity_status)
         layout.addWidget(QLabel("Authenticated change and recovery transactions — double-click for full details"))
         self.transaction_table = self._table(["Time", "Operation", "Status", "Profile", "Rollback snapshot"])
         layout.addWidget(self.transaction_table, 1)
+        self.transaction_status = _wrap_label(QLabel("Transaction history: checking…"))
+        layout.addWidget(self.transaction_status)
         refresh = QPushButton("Refresh activity")
         refresh.clicked.connect(self._refresh_activity)
         layout.addWidget(refresh, 0, Qt.AlignLeft)
@@ -1055,12 +1082,13 @@ class AdaptationWorkbench(QDialog):
             self._status_thread = None
             if self._view_retired.is_set() or self._status_generation != self._lifecycle_generation:
                 self._status_active = False
-                self._status_dirty = not self._view_retired.is_set()
+                self._status_dirty = bool(self._pending_status_views) and not self._view_retired.is_set()
+            elif self._pending_status_views:
+                self._status_active = False
         if not task_alive and not status_alive and self._results.empty():
             self._result_timer.stop()
-        if not status_alive and self._status_dirty and not self._view_retired.is_set():
-            self._status_dirty = False
-            self._refresh_status()
+        if not status_alive and self._pending_status_views and not self._view_retired.is_set():
+            self._request_persisted_views(*tuple(self._pending_status_views))
 
     @staticmethod
     def _concise_error(detail: str) -> str:
@@ -1529,6 +1557,7 @@ class AdaptationWorkbench(QDialog):
             and not review.get("holds") and not report.get("incomplete_collectors")
             and not report.get("baseline_error") and not report.get("comparison_error")
             and self._recovery_view.get("available")
+            and not self._recovery_view.get("checking")
         )
 
     def _display_selected_change(self) -> None:
@@ -1822,6 +1851,10 @@ class AdaptationWorkbench(QDialog):
         if self._view_retired.is_set():
             return
         status = dict(self._recovery_view)
+        if status.get("checking"):
+            self._refresh_status()
+            self.footer_detail.setText("Recovery integrity check is running; retry after it completes.")
+            return
         if not status.get("available"):
             self._show_notice("Host security baseline", "No restorable host baseline exists yet.")
             return
@@ -1866,43 +1899,75 @@ class AdaptationWorkbench(QDialog):
         )
 
     # ── Exception, automation, and persisted views ─────────────────────────
-    def _refresh_exceptions(self, state: dict[str, Any] | None = None) -> None:
+    def _render_persisted_table(
+        self, name: str, table: QTableWidget, rows: tuple[tuple[str, ...], ...],
+        records: tuple[Any, ...] = (),
+    ) -> None:
+        """Keep unchanged Qt items, selection, scroll, and open details intact."""
+        signature = (rows, tuple(json.dumps(record, sort_keys=True, default=str) for record in records))
+        if signature == self._view_signatures.get(name):
+            return
+        selected_row, selected_column = table.currentRow(), table.currentColumn()
+        selected_item = table.item(selected_row, 0) if selected_row >= 0 else None
+        selected_record = selected_item.data(Qt.UserRole) if selected_item is not None else None
+        selected_transaction_id = (selected_record.get("transaction_id")
+                                   if name == "transactions" and isinstance(selected_record, dict) else None)
+        selected_text = tuple(
+            table.item(selected_row, column).text() if table.item(selected_row, column) else ""
+            for column in range(table.columnCount())
+        ) if selected_row >= 0 else None
+        vertical, horizontal = table.verticalScrollBar().value(), table.horizontalScrollBar().value()
+        header = table.horizontalHeader()
+        sort_column, sort_order = header.sortIndicatorSection(), header.sortIndicatorOrder()
+        sorting = table.isSortingEnabled()
+        blocked = table.blockSignals(True)
+        table.setUpdatesEnabled(False)
+        table.setSortingEnabled(False)
         try:
-            entries = self.service.list_exceptions()
-            rows = tuple(
-                tuple(str(value) for value in (
-                    item.get("category", ""), item.get("key", ""),
-                    item.get("reason", ""), item.get("created_at", ""), item.get("id", ""),
-                ))
-                for item in entries
-            )
-            if rows != self._view_signatures.get("exceptions"):
-                self.exceptions_table.setUpdatesEnabled(False)
-                header = self.exceptions_table.horizontalHeader()
-                sort_column = header.sortIndicatorSection()
-                sort_order = header.sortIndicatorOrder()
-                self.exceptions_table.setSortingEnabled(False)
-                try:
-                    self.exceptions_table.setRowCount(len(rows))
-                    for row, values in enumerate(rows):
-                        exception_id = values[4]
-                        for column, value in enumerate(values):
-                            cell = QTableWidgetItem(value)
-                            cell.setData(Qt.UserRole, exception_id)
-                            self.exceptions_table.setItem(row, column, cell)
-                    self._view_signatures["exceptions"] = rows
-                finally:
-                    self.exceptions_table.setSortingEnabled(True)
-                    self.exceptions_table.sortItems(sort_column, sort_order)
-                    self.exceptions_table.setUpdatesEnabled(True)
-            current_state = state if state is not None else self.service.state()
-            weights = current_state.get("adaptive_weights", {})
-            detail = ", ".join(
-                f"{key} {float(value):.2f}×" for key, value in sorted(weights.items())
-            ) or "default 1.0× in every category"
-            self.weights_label.setText(f"Adaptive scoring: {detail}")
-        except Exception as exc:
-            self.weights_label.setText(f"Exceptions unavailable: {exc}")
+            table.setRowCount(len(rows))
+            for row, values in enumerate(rows):
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(value)
+                    if records:
+                        item.setData(Qt.UserRole, records[row])
+                    table.setItem(row, column, item)
+            self._view_signatures[name] = signature
+        finally:
+            table.setSortingEnabled(sorting)
+            if sorting:
+                table.sortItems(sort_column, sort_order)
+            table.clearSelection()
+            table.setCurrentCell(-1, -1)
+            for row in range(table.rowCount()):
+                item = table.item(row, 0)
+                matched = (item.data(Qt.UserRole) == selected_record if selected_record is not None else
+                           tuple(table.item(row, column).text() for column in range(table.columnCount())) == selected_text)
+                if selected_transaction_id:
+                    record = item.data(Qt.UserRole)
+                    matched = isinstance(record, dict) and record.get("transaction_id") == selected_transaction_id
+                if matched:
+                    table.setCurrentCell(row, max(0, selected_column))
+                    table.selectRow(row)
+                    if selected_transaction_id:
+                        table.setCurrentCell(row, max(0, selected_column))
+                    break
+            table.verticalScrollBar().setValue(vertical)
+            table.horizontalScrollBar().setValue(horizontal)
+            table.blockSignals(blocked)
+            table.setUpdatesEnabled(True)
+
+    def _refresh_exceptions(self) -> None:
+        self._request_persisted_views("exceptions", "state")
+
+    def _render_exceptions(self, entries: list[dict[str, Any]]) -> None:
+        rows = tuple(
+            tuple(str(value) for value in (
+                item.get("category", ""), item.get("key", ""),
+                item.get("reason", ""), item.get("created_at", ""), item.get("id", ""),
+            ))
+            for item in entries
+        )
+        self._render_persisted_table("exceptions", self.exceptions_table, rows, tuple(row[4] for row in rows))
 
     def _remove_exception(self) -> None:
         row = self.exceptions_table.currentRow()
@@ -1920,37 +1985,27 @@ class AdaptationWorkbench(QDialog):
         self._refresh_exceptions()
 
     def _refresh_snapshots(self) -> None:
+        self._request_persisted_views("snapshots")
+
+    def _render_snapshots(self, rows: tuple[tuple[str, str], ...]) -> None:
+        if rows == self._view_signatures.get("snapshots"):
+            return
+        selected = self.snapshot_combo.currentData()
+        self.snapshot_combo.setUpdatesEnabled(False)
         try:
-            rows = tuple(
-                (
-                    str(snapshot.get("snapshot_id") or ""),
-                    f"{snapshot.get('captured_at', '')} · "
-                    f"{snapshot.get('plan', {}).get('profile_id', 'unknown')} · "
-                    f"{snapshot.get('status', 'ready')}",
-                )
-                for snapshot in self.service.list_snapshots()
-            )
-            if rows == self._view_signatures.get("snapshots"):
-                return
-            selected = self.snapshot_combo.currentData()
-            self.snapshot_combo.setUpdatesEnabled(False)
-            try:
-                self.snapshot_combo.clear()
-                for snapshot_id, label in rows:
-                    self.snapshot_combo.addItem(label, snapshot_id)
-                if selected:
-                    index = self.snapshot_combo.findData(selected)
-                    if index >= 0:
-                        self.snapshot_combo.setCurrentIndex(index)
-                self._view_signatures["snapshots"] = rows
-            finally:
-                self.snapshot_combo.setUpdatesEnabled(True)
-        except Exception as exc:
             self.snapshot_combo.clear()
-            self.snapshot_combo.addItem(f"Snapshots unavailable: {exc}", None)
-            self._view_signatures.pop("snapshots", None)
+            for snapshot_id, label in rows:
+                self.snapshot_combo.addItem(label, snapshot_id)
+            if selected:
+                index = self.snapshot_combo.findData(selected)
+                if index >= 0:
+                    self.snapshot_combo.setCurrentIndex(index)
+            self._view_signatures["snapshots"] = rows
+        finally:
+            self.snapshot_combo.setUpdatesEnabled(True)
 
     def _automation_changed(self, checked: bool) -> None:
+        self._automation_edited = True
         if not checked and self.auto_apply.isChecked():
             self.auto_apply.blockSignals(True)
             self.auto_apply.setChecked(False)
@@ -1988,9 +2043,24 @@ class AdaptationWorkbench(QDialog):
         except Exception as exc:
             QMessageBox.warning(self, "Context trigger", str(exc))
 
-    def _refresh_triggers(self, state: dict[str, Any] | None = None) -> None:
-        current_state = state if state is not None else self.service.state()
-        rules = current_state.get("triggers", [])
+    def _refresh_triggers(self) -> None:
+        self._request_persisted_views("state")
+
+    def _render_state(self, state: dict[str, Any]) -> None:
+        weights = state.get("adaptive_weights") or {}
+        detail = ", ".join(
+            f"{key} {float(value):.2f}×" for key, value in sorted(weights.items())
+        ) or "default 1.0× in every category"
+        self._weights_text = f"Adaptive scoring: {detail}"
+        if not self._automation_initialized:
+            if not self._automation_edited:
+                blocked = self.automation_enabled.blockSignals(True)
+                try:
+                    self.automation_enabled.setChecked(bool(state.get("automation_enabled")))
+                finally:
+                    self.automation_enabled.blockSignals(blocked)
+            self._automation_initialized = True
+        rules = state.get("triggers") or []
         labels = {
             "public_network": "Windows Public network",
             "vpn_active": "VPN adapter active",
@@ -2005,26 +2075,7 @@ class AdaptationWorkbench(QDialog):
             ))
             for rule in rules
         )
-        if rows == self._view_signatures.get("triggers"):
-            return
-        self.trigger_table.setUpdatesEnabled(False)
-        header = self.trigger_table.horizontalHeader()
-        sort_column = header.sortIndicatorSection()
-        sort_order = header.sortIndicatorOrder()
-        self.trigger_table.setSortingEnabled(False)
-        try:
-            self.trigger_table.setRowCount(len(rows))
-            for row, values in enumerate(rows):
-                rule_id = values[4]
-                for column, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    item.setData(Qt.UserRole, rule_id)
-                    self.trigger_table.setItem(row, column, item)
-            self._view_signatures["triggers"] = rows
-        finally:
-            self.trigger_table.setSortingEnabled(True)
-            self.trigger_table.sortItems(sort_column, sort_order)
-            self.trigger_table.setUpdatesEnabled(True)
+        self._render_persisted_table("triggers", self.trigger_table, rows, tuple(row[4] for row in rows))
 
     def _remove_trigger(self) -> None:
         row = self.trigger_table.currentRow()
@@ -2072,36 +2123,76 @@ class AdaptationWorkbench(QDialog):
         self._refresh_activity()
 
     def _refresh_activity(self) -> None:
-        try:
-            entries = self.service.activity()
-            rows = tuple(
-                tuple(str(value) for value in (
-                    entry.get("at", ""), entry.get("action", ""),
-                    entry.get("result", ""), entry.get("detail", ""),
-                ))
-                for entry in entries
-            )
-            if rows == self._view_signatures.get("activity"):
-                return
-            self.activity_table.setUpdatesEnabled(False)
-            header = self.activity_table.horizontalHeader()
-            sort_column = header.sortIndicatorSection()
-            sort_order = header.sortIndicatorOrder()
-            self.activity_table.setSortingEnabled(False)
+        self._request_persisted_views("activity", "transactions")
+
+    def _render_activity(self, entries: list[dict[str, Any]]) -> None:
+        rows = tuple(
+            tuple(str(value) for value in (
+                entry.get("at", ""), entry.get("action", ""),
+                entry.get("result", ""), entry.get("detail", ""),
+            ))
+            for entry in entries
+        )
+        self._render_persisted_table("activity", self.activity_table, rows)
+
+    def _render_transactions(self, entries: list[dict[str, Any]]) -> None:
+        records = tuple(reversed(entries))
+        rows = tuple(
+            tuple(str(value or "") for value in (
+                row.get("updated_at"), row.get("kind"), row.get("status"),
+                row.get("profile_id"), row.get("snapshot_id"),
+            ))
+            for row in records
+        )
+        self._render_persisted_table("transactions", self.transaction_table, rows, records)
+
+    def _render_persisted_results(self, values: dict[str, Any]) -> None:
+        for name, renderer, empty in (
+            ("state", self._render_state, {}),
+            ("exceptions", self._render_exceptions, []),
+            ("snapshots", self._render_snapshots, ()),
+            ("activity", self._render_activity, []),
+            ("transactions", self._render_transactions, []),
+        ):
+            if name not in values:
+                continue
+            result = values[name]
             try:
-                self.activity_table.setRowCount(len(rows))
-                for row, values in enumerate(rows):
-                    for column, value in enumerate(values):
-                        self.activity_table.setItem(row, column, QTableWidgetItem(value))
-                self._view_signatures["activity"] = rows
-            finally:
-                self.activity_table.setSortingEnabled(True)
-                self.activity_table.sortItems(sort_column, sort_order)
-                self.activity_table.setUpdatesEnabled(True)
-        except Exception as exc:
-            self.activity_table.setRowCount(1)
-            self.activity_table.setItem(0, 3, QTableWidgetItem(str(exc)))
-            self._view_signatures.pop("activity", None)
+                if "error" in result:
+                    raise ValueError(str(result["error"]))
+                renderer(result.get("value") or empty)
+            except Exception as exc:
+                self._persisted_errors[name] = str(exc)[:8192]
+            else:
+                self._persisted_errors.pop(name, None)
+        for name, label, title, count in (
+            ("state", self.trigger_status, "Context rules", self.trigger_table.rowCount()),
+            ("snapshots", self.snapshot_status, "Recovery snapshots", self.snapshot_combo.count()),
+            ("activity", self.activity_status, "Activity", self.activity_table.rowCount()),
+            ("transactions", self.transaction_status, "Transaction history", self.transaction_table.rowCount()),
+        ):
+            if name not in values:
+                continue
+            error = self._persisted_errors.get(name)
+            retained = " · previous rows retained" if self._view_signatures.get("triggers" if name == "state" else name) else ""
+            label.setText(f"{title}: unavailable{retained}" if error is not None else f"{title}: {count} listed")
+            label.setToolTip(error or "")
+        if "state" in values or "exceptions" in values:
+            errors = [self._persisted_errors[name] for name in ("exceptions", "state") if name in self._persisted_errors]
+            self.weights_label.setText("Exceptions / scoring: unavailable · previous rows retained" if errors else self._weights_text)
+            self.weights_label.setToolTip("\n\n".join(errors))
+            self.exceptions_table.setToolTip(self._persisted_errors.get("exceptions", ""))
+            self.automation_enabled.setToolTip(self._persisted_errors.get("state", ""))
+
+    def _request_persisted_views(self, *names: str) -> None:
+        # Keep the zero-argument refresh hook used by the inert public demo
+        # and read-only GUI fixtures. The temporary scope is GUI-thread only.
+        previous = self._requested_status_views
+        self._requested_status_views = names
+        try:
+            self._refresh_status()
+        finally:
+            self._requested_status_views = previous
 
     def _refresh_status(self) -> None:
         """Render local risk and coalesce expensive integrity reads off-thread."""
@@ -2124,24 +2215,48 @@ class AdaptationWorkbench(QDialog):
                 )
         if self._view_retired.is_set():
             return
+        self._pending_status_views.update(self._requested_status_views or _CORE_STATUS_VIEWS)
+        self._start_status_refresh()
+
+    def _start_status_refresh(self) -> None:
+        """Admit one reader and one bounded union of follow-up view requests."""
+        if self._view_retired.is_set() or not self._pending_status_views:
+            return
         if self._status_active or (self._status_thread is not None and self._status_thread.is_alive()):
             self._status_dirty = True
             return
+        requested = tuple(name for name, _method in _STATUS_READS if name in self._pending_status_views)
+        self._pending_status_views.clear()
         self._status_active = True
         self._status_dirty = False
+        if "recovery" in requested:
+            self._recovery_view = {**self._recovery_view, "checking": True}
+            self.recovery_status.setText("Recovery: checking…")
+            self.apply_button.setEnabled(False)
         service = self.service
         publish = self._result_publisher("status")
 
         def worker() -> None:
             values = {}
-            for name, operation in (
-                ("baseline", service.load_baseline),
-                ("recovery", service.security_baseline_status),
-                ("breaker", service.breaker_status),
-                ("transactions", service.transactions),
-            ):
+            for name, method in _STATUS_READS:
+                if name not in requested:
+                    continue
                 try:
-                    values[name] = {"value": operation()}
+                    value = getattr(service, method)()
+                    if name == "snapshots":
+                        # Authenticated manifests include full firewall captures.
+                        # Drop those bodies here; Qt only needs these small rows.
+                        value = tuple((
+                            str(snapshot.get("snapshot_id") or ""),
+                            f"{snapshot.get('captured_at', '')} · "
+                            f"{snapshot.get('plan', {}).get('profile_id', 'unknown')} · "
+                            f"{snapshot.get('status', 'ready')}",
+                        ) for snapshot in value)
+                    elif name == "state":
+                        value = {key: value.get(key) for key in (
+                            "automation_enabled", "adaptive_weights", "triggers",
+                        )}
+                    values[name] = {"value": value}
                 except Exception as exc:
                     values[name] = {"error": str(exc)}
             publish(values)
@@ -2154,73 +2269,54 @@ class AdaptationWorkbench(QDialog):
         except Exception as exc:
             self._status_thread = None
             self._status_active = False
-            self._on_status_finished({name: {"error": str(exc)} for name in ("baseline", "recovery", "breaker")})
+            self._on_status_finished({name: {"error": str(exc)} for name in requested})
 
     def _on_status_finished(self, values: dict[str, Any]) -> None:
         self._status_active = False
-        baseline_result = values.get("baseline") or {}
-        baseline = baseline_result.get("value")
-        if "error" in baseline_result:
-            self.baseline_status.setText("Baseline: integrity held")
-            self.baseline_status.setToolTip(str(baseline_result["error"])[:8192])
-        else:
-            self.baseline_status.setText(
-                f"Baseline: {baseline.get('captured_at', 'saved')}" if baseline else "Baseline: not set"
-            )
-        recovery_result = values.get("recovery") or {}
-        self._recovery_view = dict(recovery_result.get("value") or {})
-        if "error" in recovery_result:
-            self.recovery_status.setText("Recovery: integrity held")
-            self.recovery_status.setToolTip(str(recovery_result["error"]))
-        elif self._recovery_view.get("available"):
-            self.recovery_status.setText(
-                "Recovery: Firewall · " + str(self._recovery_view.get("captured_at") or "captured")
-            )
-            self.recovery_status.setToolTip(
-                "Restorable: Windows Firewall policy. Observational only: hardware, "
-                "services, listening ports, and network context. Integrity verified in the background."
-            )
-        else:
-            self.recovery_status.setText(
-                "Recovery: Windows Firewall unsupported"
-                if self._recovery_view.get("supported") is False else
-                "Recovery: Firewall baseline not captured"
-            )
-            self.recovery_status.setToolTip(str(self._recovery_view.get("detail") or ""))
+        if "baseline" in values:
+            baseline_result = values["baseline"]
+            baseline = baseline_result.get("value")
+            if "error" in baseline_result:
+                self.baseline_status.setText("Baseline: integrity held")
+                self.baseline_status.setToolTip(str(baseline_result["error"])[:8192])
+            else:
+                self.baseline_status.setText(
+                    f"Baseline: {baseline.get('captured_at', 'saved')}" if baseline else "Baseline: not set"
+                )
+                self.baseline_status.setToolTip("")
+        if "recovery" in values:
+            recovery_result = values["recovery"]
+            self._recovery_view = dict(recovery_result.get("value") or {})
+            if "error" in recovery_result:
+                self.recovery_status.setText("Recovery: integrity held")
+                self.recovery_status.setToolTip(str(recovery_result["error"])[:8192])
+            elif self._recovery_view.get("available"):
+                self.recovery_status.setText(
+                    "Recovery: Firewall · " + str(self._recovery_view.get("captured_at") or "captured")
+                )
+                self.recovery_status.setToolTip(
+                    "Restorable: Windows Firewall policy. Observational only: hardware, "
+                    "services, listening ports, and network context. Integrity verified in the background."
+                )
+            else:
+                self.recovery_status.setText(
+                    "Recovery: Windows Firewall unsupported"
+                    if self._recovery_view.get("supported") is False else
+                    "Recovery: Firewall baseline not captured"
+                )
+                self.recovery_status.setToolTip(str(self._recovery_view.get("detail") or ""))
         # This is a presentation hint only. Apply/restore always re-authenticate
         # the artifact in the broker immediately before the host change.
-        if self._latest_plan is not None and not self._busy_task:
+        if "recovery" in values and self._latest_plan is not None and not self._busy_task:
             self.apply_button.setEnabled(self._can_apply_review())
-        transaction_result = values.get("transactions") or {}
-        if "value" in transaction_result:
-            self.transaction_table.setToolTip("")
-            rows = list(transaction_result["value"] or [])
-            signature = tuple((row.get("transaction_id"), row.get("status"), row.get("updated_at"),
-                               row.get("receipt_digest")) for row in rows)
-            if signature != self._view_signatures.get("transactions"):
-                self.transaction_table.setSortingEnabled(False)
-                try:
-                    self.transaction_table.setRowCount(len(rows))
-                    for index, row in enumerate(reversed(rows)):
-                        for column, value in enumerate((row.get("updated_at"), row.get("kind"),
-                                                       row.get("status"), row.get("profile_id"),
-                                                       row.get("snapshot_id"))):
-                            item = QTableWidgetItem(str(value or ""))
-                            item.setData(Qt.UserRole, row)
-                            self.transaction_table.setItem(index, column, item)
-                    self._view_signatures["transactions"] = signature
-                finally:
-                    self.transaction_table.setSortingEnabled(True)
-        elif "error" in transaction_result:
-            self.transaction_table.setRowCount(0)
-            self._view_signatures.pop("transactions", None)
-            self.transaction_table.setToolTip("Transaction history is held: " + str(transaction_result["error"])[:8192])
-        breaker_result = values.get("breaker") or {}
-        if "error" in breaker_result:
+        self._render_persisted_results(values)
+        breaker_result = values.get("breaker")
+        if breaker_result is not None and "error" in breaker_result:
             self.breaker_status_label.setText("Circuit breaker: unavailable")
             self.breaker_status_label.setToolTip(str(breaker_result["error"])[:8192])
-        else:
+        elif breaker_result is not None:
             breaker = breaker_result.get("value") or {}
+            self.breaker_status_label.setToolTip("")
             if breaker.get("locked"):
                 self.breaker_status_label.setText("Circuit breaker: LOCKED")
                 self.breaker_status_label.setStyleSheet(
@@ -2235,34 +2331,27 @@ class AdaptationWorkbench(QDialog):
                 self.breaker_status_label.setText(
                     f"Circuit breaker: ready · {len(breaker.get('events', []))} recent"
                 )
-        if self._status_dirty:
-            self._status_dirty = False
-            self._refresh_status()
+        # Delivery may precede the reader's natural exit. Keep the queued
+        # refresh busy until _poll_results observes that exact thread retire.
+        self._status_active = bool(self._pending_status_views)
 
     def _load_persisted_views(self) -> None:
-        self._profile_changed()
-        self._trigger_kind_changed()
-        # Exceptions/weights and triggers live in the same signed state store;
-        # share one verified read instead of parsing it once per table.
-        state = self.service.state()
-        self._refresh_exceptions(state)
-        self._refresh_snapshots()
-        self._refresh_triggers(state)
-        self._refresh_activity()
-        self._refresh_status()
+        # One verified state read supplies weights, rules, and initial settings.
+        self._request_persisted_views(*(name for name, _method in _STATUS_READS))
 
     def refresh_after_automatic_cycle(self, status: str) -> None:
         """Refresh only views an automatic cycle could have changed."""
         if status == "applied":
-            self._refresh_snapshots()
-            self._refresh_activity()
-            self._refresh_status()
+            self._request_persisted_views(*_CORE_STATUS_VIEWS, "snapshots", "activity")
         elif status in {"proposed", "context-changed"}:
             self._refresh_activity()
 
     # ── Help and lifecycle ─────────────────────────────────────────────────
     def showEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._view_retired.clear()
+        if self._reopen_refresh:
+            self._reopen_refresh = False
+            self._load_persisted_views()
         self._poll_results()
         super().showEvent(event)
 
@@ -2301,6 +2390,11 @@ class AdaptationWorkbench(QDialog):
             event.ignore()
             return
         self._view_retired.set()
+        self._reopen_refresh = True
+        self._pending_status_views.clear()
+        self._status_dirty = False
+        self._recovery_view = {"available": False, "checking": True}
+        self.recovery_status.setText("Recovery: recheck required")
         self._lifecycle_generation += 1
         self._review_generation += 1
         self._latest_plan = None
