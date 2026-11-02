@@ -1,10 +1,7 @@
 # Angerona Security Suite
 
-Angerona is a desktop security suite for endpoint monitoring,
-evidence-led investigation, and policy-controlled incident response.
-Angerona combines Endpoint Detection and Response
-(EDR), Network Detection and Response (NDR), Security Orchestration, Automation,
-and Response (SOAR), forensics and defensive practice in one desktop application.
+Angerona is a desktop security suite for endpoint and network monitoring,
+threat investigation, and incident response governed by policy.
 
 **For home labs, defenders, researchers and security-engineering portfolios.**
 Deterministic defense works without an AI model; optional local AI helps explain
@@ -27,8 +24,9 @@ evidence and propose next steps.
 
 [![Angerona dashboard demonstration with fixed synthetic data and no host actions](assets/screenshots/dashboard-demo.png)](assets/demo/angerona-demo.gif)
 
-[Play the application demonstration](assets/demo/angerona-demo.gif): dashboard,
-scrolling alerts, SpywareGuard, curated tools, breach review, Settings and scans.
+[Play the 70-second application demonstration](assets/demo/angerona-demo.gif):
+dashboard, scrolling alerts, SpywareGuard, MITRE ATT&CK, curated tools, breach
+review, Settings, scan progress and Auto Adapt.
 
 **DEMO:** actual Qt interface with fixed examples; all displayed telemetry,
 identifiers, timestamps and counts are synthetic. No host scan or response is
@@ -38,59 +36,26 @@ performed to create this demonstration.
 | --- | --- |
 | [![GitHub Tools hub with synthetic demonstration state](assets/screenshots/github-tools-demo.png)](docs/zero-breach-toolkit.md) | [![Native Zero Breach Toolkit tab with synthetic demonstration state](assets/screenshots/zero-breach-demo.png)](docs/zero-breach-toolkit.md) |
 | [![Priority Spyware Scan controls with synthetic resource and privilege state](assets/screenshots/spyware-scan-demo.png)](docs/zero-breach-toolkit.md#priority-spyware-scan) | [![Synthetic verified-breach and network-lockdown review demonstration](assets/screenshots/breach-lockdown-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) |
-| [![After-action investigation and response choices using a synthetic case](assets/screenshots/after-action-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) | All views are labeled DEMO. Shown lockdown and response states are synthetic; these images do not demonstrate a host network action. |
+| [![After-action investigation and response choices using a synthetic case](assets/screenshots/after-action-demo.png)](docs/security-flow.md#verified-breach-review-and-lockdown) | [![Auto Adapt change review, history and rollback with synthetic data](assets/screenshots/auto-adapt-demo.png)](docs/security-flow.md) |
 | [![Independent recorder integrity controls with synthetic signed-history and bounded-storage status](assets/screenshots/recorder-integrity-demo.png)](docs/releases/v1.15.0.md) | [![Read-only installed protection service console with synthetic lifecycle status and explicitly unverified detector coverage](assets/screenshots/protection-service-console-demo.png)](docs/releases/v1.15.0.md) |
 | [![Telemetry storage controls with synthetic DEMO sizes, pending work and explicit gaps](assets/screenshots/telemetry-storage-demo.png)](docs/releases/v1.15.0.md#telemetry-storage-and-dialog-recovery) | DEMO only: synthetic data; no recorded history or host policy changed. |
 
 ## What's new in 1.15
 
-v1.15.0 strengthens telemetry assurance, tampering review and containment
-identity custody. Existing **GitHub Tools**, **Spyware Scan** and after-action
-review remain available.
-
-- **Telemetry assurance:** separate kernel-provider canary observations,
-  polling coverage and process liveness.
-- **Tampering review:** bounded WER precursor correlation with current owned
-  process context, consistent cache timing and read-only cached availability.
-- **Advisory identity reads:** bounded, compatibility-gated Windows birth maps
-  retain fresh observations and explicit partial coverage.
-- **Containment custody:** retained process and executable identities across
-  program-firewall operations and managed rollback.
-- **Independent freshness:** configured authorities reach integrity consumers
-  before their persisted state is admitted.
-- **Recorder history:** optional independent signatures, bounded receipt storage,
-  explicit missing-history gaps and protected public-key enrollment controls.
-- **Service separation:** an installed virtual-account engine boundary and a
-  status-only desktop console, subject to signed deployment and enrollment.
-- **Managed driver policy:** a separately enrolled installed profile with
-  reviewed materials, two independent approvals and verified configuration
-  readback; default source and diagnostic profiles cannot activate it.
-- **Rollback review:** bounded servicing-queue version checks and a policy-bound
-  TPM certification verifier; physical enrollment and hardware writes are separate.
-- **Operational accuracy:** lifecycle-scoped watchdog wording, retained native
-  cleanup ownership and bounded recorder verification; optional failures and
-  actual coverage gaps stay visible.
-- **November reliability fixes:** bounded normal logging, early AI refusal,
-  accurate historical reports, owned-startup readiness and nonmodal recovery
-  confirmation improve review and keep that decision from blocking STOP.
-- **Advisory accuracy:** port-only leads and SOAR burst counts retain their
-  advisory scope; Full Setup exposes the existing normal-log controls.
-- **Recorder responsiveness:** exhausted recorder queues report rejected
-  deliveries without publisher disk waits; STOP and restart preserve owned
-  queues and expose process-lifetime admission gaps.
-- **Remediation custody:** finding closure requires authenticated committed
-  evidence; durable receipt writers follow the existing audit retention policy.
-- **Recorder storage accuracy:** housekeeping errors after a successful save
-  cannot retry or spill those committed events as another copy.
-- **Optional audit limits:** oversized new entries are rejected with visible
-  omission counts; durable action and recovery journals retain separate rules.
-- **Telemetry storage controls:** worker-observed database, WAL and free-space
-  targets hold new event writes while preserving history and exposing pending
-  work, rejections and gaps. Apply now and Save have separate effects.
-- **Window recovery:** interrupted reveal transitions restore queued windows
-  and release their temporary masks.
-- **Persistence evidence:** pre-existing startup entries retain urgent review
-  priority as observations; enrollment alone grants no trust or attack verdict.
+- **Reviewable Auto Adapt:** responsive before/after details, recent history,
+  transaction inspection, rollback access and profile adjustments. Changes require
+  a fresh preview; incomplete audits remain visible and hold Apply.
+- **Concurrent workspaces:** supported content windows have native window
+  controls and F11 fullscreen; reports and Settings retain their workers safely.
+- **Readable Spyware Scan:** a red scan button, scope choices, current task/file
+  details, a separate one-hour default budget and workflow, reader and item
+  progress, with honest gaps.
+- **Current proof for response:** native observed hashes, current producer
+  evidence and retained target identities constrain automatic actions.
+- **Installed administrator startup:** explicit sign-in enrollment controls
+  require accepted installed authority and initial administrator approval.
+- **Bounded evidence storage:** crash-snapshot admission and visible storage
+  holds preserve existing history; held writes do not establish complete coverage.
 
 **Development status:** source preview. An unresolved native shutdown crash,
 coverage gaps and CPU/UI pressure remain documented. A later normal exit does
@@ -107,6 +72,7 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
 [Remediation custody review](analysis/hardening-v1.15-2026-11-01-remediation-custody.md) ·
 [Recorder commit review](analysis/hardening-v1.15-2026-11-01-recorder-commit-boundary.md) ·
 [Latest optional audit review](analysis/hardening-v1.15-2026-11-01-optional-audit-admission.md) ·
+[Workspace, Auto Adapt and scan review](analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md) ·
 [Toolkit modes, credits and downloads](docs/zero-breach-toolkit.md).
 
 ## Suite at a glance
@@ -119,7 +85,8 @@ not establish a crash fix; signed deployment and hardware acceptance are separat
   behavioral rules and correlated exposure or tradecraft evidence.
 - **Investigation and forensics:** SentinelLens graphs, MITRE ATT&CK technique
   and evidence views, cases, timelines and supported captures connect observations.
-- **Governed response:** SOAR queues supported exact-target quarantine,
+- **Governed response:** Security Orchestration, Automation, and Response (SOAR)
+  queues supported exact-target quarantine,
   process and network operations under policy, with recorded outcomes and Undo.
 - **SpywareGuard:** surveillanceware evidence review and governed response,
   subject to its published preview and platform prerequisites.
@@ -293,6 +260,60 @@ Native process-bound egress, signed privileged-service deployment and independen
 witness/backup authorities retain separate acceptance gates. Passing source
 tests cannot deploy those authorities or prove field detection rates.
 Broader v1.15 remains incomplete.
+
+## Detailed v1.15 hardening notes
+
+Angerona combines Endpoint Detection and Response
+(EDR), Network Detection and Response (NDR), Security Orchestration, Automation,
+and Response (SOAR), forensics and defensive practice in one desktop application.
+
+v1.15.0 strengthens telemetry assurance, tampering review and containment
+identity custody. Existing **GitHub Tools**, **Spyware Scan** and after-action
+review remain available.
+
+- **Telemetry assurance:** separate kernel-provider canary observations,
+  polling coverage and process liveness.
+- **Tampering review:** bounded WER precursor correlation with current owned
+  process context, consistent cache timing and read-only cached availability.
+- **Advisory identity reads:** bounded, compatibility-gated Windows birth maps
+  retain fresh observations and explicit partial coverage.
+- **Containment custody:** retained process and executable identities across
+  program-firewall operations and managed rollback.
+- **Independent freshness:** configured authorities reach integrity consumers
+  before their persisted state is admitted.
+- **Recorder history:** optional independent signatures, bounded receipt storage,
+  explicit missing-history gaps and protected public-key enrollment controls.
+- **Service separation:** an installed virtual-account engine boundary and a
+  status-only desktop console, subject to signed deployment and enrollment.
+- **Managed driver policy:** a separately enrolled installed profile with
+  reviewed materials, two independent approvals and verified configuration
+  readback; default source and diagnostic profiles cannot activate it.
+- **Rollback review:** bounded servicing-queue version checks and a policy-bound
+  TPM certification verifier; physical enrollment and hardware writes are separate.
+- **Operational accuracy:** lifecycle-scoped watchdog wording, retained native
+  cleanup ownership and bounded recorder verification; optional failures and
+  actual coverage gaps stay visible.
+- **November reliability fixes:** bounded normal logging, early AI refusal,
+  accurate historical reports, owned-startup readiness and nonmodal recovery
+  confirmation improve review and keep that decision from blocking STOP.
+- **Advisory accuracy:** port-only leads and SOAR burst counts retain their
+  advisory scope; Full Setup exposes the existing normal-log controls.
+- **Recorder responsiveness:** exhausted recorder queues report rejected
+  deliveries without publisher disk waits; STOP and restart preserve owned
+  queues and expose process-lifetime admission gaps.
+- **Remediation custody:** finding closure requires authenticated committed
+  evidence; durable receipt writers follow the existing audit retention policy.
+- **Recorder storage accuracy:** housekeeping errors after a successful save
+  cannot retry or spill those committed events as another copy.
+- **Optional audit limits:** oversized new entries are rejected with visible
+  omission counts; durable action and recovery journals retain separate rules.
+- **Telemetry storage controls:** worker-observed database, WAL and free-space
+  targets hold new event writes while preserving history and exposing pending
+  work, rejections and gaps. Apply now and Save have separate effects.
+- **Window recovery:** interrupted reveal transitions restore queued windows
+  and release their temporary masks.
+- **Persistence evidence:** pre-existing startup entries retain urgent review
+  priority as observations; enrollment alone grants no trust or attack verdict.
 
 ## Validation and contributing
 

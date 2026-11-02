@@ -9,9 +9,9 @@ Three phases
 1. The Catch (Try)
    ``BaseModule._wrapped_run`` already writes a JSON crash bundle to
    ``diagnostics/crash_snapshots/`` when a module quarantines after 3 crashes.
-   HEAL tails that directory — so it hooks the existing crash path with zero
-   changes to module_base.py. Each bundle carries the module name, the exact
-   exception, and the full traceback.
+   HEAL tails that directory through the producer's authenticated snapshot
+   contract. Capture metadata identifies bounded diagnostic text; an incomplete
+   traceback remains held for manual review.
 
 2. The Diagnosis (Heal)
    HEAL resolves the failing source file from the traceback, reads it, and packs
@@ -103,6 +103,11 @@ _MAX_SOURCE_CHARS = 24000   # guard against pathologically large files in the pr
 _MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
 _MAX_PATCH_CHARS = 128_000
 _MAX_SNAPSHOT_BYTES = 512 * 1024
+_CAPTURE_BYTE_LIMIT = 480 * 1024
+_CAPTURE_POLICY = "angerona-crash-capture-v1"
+_SNAPSHOT_READ_REASONS = (
+    "empty", "oversized", "type_reparse", "unstable", "read_failed", "unmeasured",
+)
 _MAX_SNAPSHOT_FILES = 512
 _MAX_STATE_BYTES = 256 * 1024
 _MAX_RETRIES = 3
@@ -124,6 +129,150 @@ def _retry_delay(attempts: int) -> float:
     )
 
 
+def _capture_counts_valid(value: object, retained: int) -> bool:
+    """Validate authenticated character accounting without reading other data."""
+    if (
+        type(value) is not dict
+        or set(value) != {
+            "original_chars", "retained_chars", "omitted_chars", "unavailable",
+        }
+        or type(value["retained_chars"]) is not int
+        or value["retained_chars"] != retained
+        or type(value["unavailable"]) is not bool
+    ):
+        return False
+    original, omitted = value["original_chars"], value["omitted_chars"]
+    if value["unavailable"]:
+        return original is None and omitted is None and retained == 0
+    return (
+        type(original) is int
+        and type(omitted) is int
+        and original >= 0
+        and omitted >= 0
+        and original == retained + omitted
+    )
+
+
+def _capture_refusal(bundle: dict, body_length: int) -> str | None:
+    """Hold unfamiliar, contradictory or incomplete authenticated captures.
+
+    Legacy v1 records without capture metadata retain their existing behavior.
+    No excerpt is ever promoted to a complete traceback or source selector.
+    """
+    memory = bundle.get("memory")
+    if type(memory) is not dict or "capture" not in memory:
+        return None
+    invalid = "snapshot capture metadata is malformed or unsupported"
+    capture = memory["capture"]
+    if (
+        type(capture) is not dict
+        or set(capture) != {
+            "schema", "policy", "traceback_complete", "traceback_excerpt",
+            "text", "events", "memory_available", "byte_limit",
+        }
+        or type(capture["schema"]) is not int
+        or capture["schema"] != 1
+        or capture["policy"] != _CAPTURE_POLICY
+        or type(capture["traceback_complete"]) is not bool
+        or type(capture["memory_available"]) is not bool
+        or type(capture["byte_limit"]) is not int
+        or capture["byte_limit"] != _CAPTURE_BYTE_LIMIT
+        or body_length > _CAPTURE_BYTE_LIMIT
+    ):
+        return invalid
+    text, excerpt, events = (
+        capture["text"], capture["traceback_excerpt"], capture["events"]
+    )
+    if (
+        type(text) is not dict
+        or set(text) != {"module", "error", "traceback"}
+        or type(excerpt) is not dict
+        or set(excerpt) != {"head", "tail"}
+        or any(type(excerpt[key]) is not str for key in ("head", "tail"))
+        or any(
+            type(bundle.get(key)) is not str for key in ("module", "error", "traceback")
+        )
+        or not _capture_counts_valid(text["module"], len(bundle["module"]))
+        or not _capture_counts_valid(text["error"], len(bundle["error"]))
+    ):
+        return invalid
+    tb = bundle["traceback"]
+    if capture["traceback_complete"]:
+        if (
+            not tb
+            or len(tb) > 256_000
+            or excerpt != {"head": "", "tail": ""}
+            or not _capture_counts_valid(text["traceback"], len(tb))
+            or text["traceback"]["unavailable"]
+            or text["traceback"]["omitted_chars"] != 0
+        ):
+            return invalid
+    elif (
+        tb != ""
+        or not _capture_counts_valid(
+            text["traceback"], len(excerpt["head"]) + len(excerpt["tail"])
+        )
+    ):
+        return invalid
+    recent = bundle.get("last_50_events")
+    if (
+        type(events) is not dict
+        or set(events) != {
+            "requested", "returned", "retained", "omitted", "unavailable", "text",
+        }
+        or type(events["requested"]) is not int
+        or events["requested"] != 50
+        or type(events["retained"]) is not int
+        or type(events["unavailable"]) is not bool
+        or type(events["text"]) is not list
+        or type(recent) is not list
+        or not 0 <= events["retained"] <= 50
+        or events["retained"] != len(recent)
+        or len(events["text"]) != len(recent)
+    ):
+        return invalid
+    if events["unavailable"]:
+        if events["returned"] is not None or events["omitted"] is not None or recent:
+            return invalid
+    elif (
+        type(events["returned"]) is not int
+        or type(events["omitted"]) is not int
+        or not events["retained"] <= events["returned"] <= 50
+        or events["omitted"] != events["returned"] - events["retained"]
+    ):
+        return invalid
+    for index, (event, loss) in enumerate(zip(recent, events["text"])):
+        if (
+            type(event) is not dict
+            or set(event) != {"ts", "module", "severity", "message"}
+            or any(
+                type(event[key]) is not str for key in ("module", "severity", "message")
+            )
+            or type(loss) is not dict
+            or set(loss) != {
+                "index", "module", "severity", "message", "timestamp_available",
+            }
+            or type(loss["index"]) is not int
+            or loss["index"] != index
+            or type(loss["timestamp_available"]) is not bool
+            or loss["timestamp_available"] is not (event["ts"] is not None)
+            or any(
+                not _capture_counts_valid(loss[key], len(event[key]))
+                for key in ("module", "severity", "message")
+            )
+        ):
+            return invalid
+        timestamp = event["ts"]
+        if timestamp is not None and not (
+            (type(timestamp) is int and -(2**63) <= timestamp < 2**63)
+            or (type(timestamp) is float and math.isfinite(timestamp))
+        ):
+            return invalid
+    if not capture["traceback_complete"]:
+        return "snapshot capture traceback is incomplete; manual review required"
+    return None
+
+
 class SelfHealer(BaseModule):
     name = "HEAL"
     CODE = "HEAL"
@@ -134,6 +283,7 @@ class SelfHealer(BaseModule):
     POLL_S = 10.0
     _source_selection = threading.local()
     _snapshot_coverage = threading.local()
+    _snapshot_read = threading.local()
 
     def __init__(self) -> None:
         super().__init__()
@@ -545,6 +695,7 @@ class SelfHealer(BaseModule):
     @staticmethod
     def _read_snapshot(path: Path) -> tuple[str, bytes] | None:
         """Read one exact bounded regular file without following a link."""
+        SelfHealer._snapshot_read.reason = "unmeasured"
         descriptor: int | None = None
         try:
             flags = (
@@ -558,9 +709,14 @@ class SelfHealer(BaseModule):
             if (
                 not stat.S_ISREG(before.st_mode)
                 or attributes & _REPARSE_POINT
-                or before.st_size <= 0
-                or before.st_size > _MAX_SNAPSHOT_BYTES
             ):
+                SelfHealer._snapshot_read.reason = "type_reparse"
+                return None
+            if before.st_size <= 0:
+                SelfHealer._snapshot_read.reason = "empty"
+                return None
+            if before.st_size > _MAX_SNAPSHOT_BYTES:
+                SelfHealer._snapshot_read.reason = "oversized"
                 return None
             chunks: list[bytes] = []
             remaining = _MAX_SNAPSHOT_BYTES + 1
@@ -578,9 +734,11 @@ class SelfHealer(BaseModule):
                 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
                 != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
             ):
+                SelfHealer._snapshot_read.reason = "unstable"
                 return None
             return hashlib.sha256(body).hexdigest(), body
         except (OSError, OverflowError):
+            SelfHealer._snapshot_read.reason = "read_failed"
             return None
         finally:
             if descriptor is not None:
@@ -642,12 +800,20 @@ class SelfHealer(BaseModule):
             )
         processed = 0
         unreadable = 0
+        read_refusals = dict.fromkeys(_SNAPSHOT_READ_REASONS, 0)
         wall_now = time.time()
         monotonic_now = time.monotonic()
         for snap in candidates:
+            # Adapters may replace the reader. Reset for every candidate so an
+            # uninstrumented reader cannot reuse an earlier file's reason.
+            self._snapshot_read.reason = "unmeasured"
             item = self._read_snapshot(snap)
             if item is None:
                 unreadable += 1
+                reason = getattr(self._snapshot_read, "reason", "unmeasured")
+                if type(reason) is not str or reason not in read_refusals:
+                    reason = "unmeasured"
+                read_refusals[reason] += 1
                 continue
             snapshot_id, body = item
             if snapshot_id in self._completed or snapshot_id in self._dead_letters:
@@ -717,9 +883,14 @@ class SelfHealer(BaseModule):
         if self._state_persist_failed:
             self.set_health(25, "crash snapshot state persistence failed")
         elif unreadable:
+            details = ", ".join(
+                f"{reason}={count}"
+                for reason, count in read_refusals.items() if count
+            )
             self.set_health(
                 40,
-                f"{unreadable} crash snapshot(s) could not be read safely; retry pending",
+                f"{unreadable} snapshot candidate file(s) could not be read safely; "
+                f"coverage incomplete ({details}); retry pending",
             )
         elif self._dead_letters:
             self.set_health(
@@ -756,6 +927,10 @@ class SelfHealer(BaseModule):
                 response_authorized=False,
             )
             return False, "crash snapshot authentication failed"
+
+        capture_refusal = _capture_refusal(bundle, len(body))
+        if capture_refusal is not None:
+            return False, capture_refusal
 
         module_name = str(bundle.get("module", "unknown"))[:128]
         tb = bundle.get("traceback", "")

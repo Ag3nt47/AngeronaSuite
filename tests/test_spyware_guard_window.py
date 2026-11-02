@@ -67,9 +67,15 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
             opaque = [pixels.pixelColor(x, y) for x in range(pixels.width())
                       for y in range(pixels.height()) if pixels.pixelColor(x, y).alpha()]
             assert opaque and all(c.red() == c.green() == c.blue() == 0 for c in opaque)
+            # Simultaneous startup and self-test publications remain
+            # active through every width/font allocation; no host work runs.
+            activity_text = 'Starting local protection and reading diagnostics ' * 18
+            window.run_spinner.start(activity_text)
+            window.loading_indicator._on_started('header-fixture', activity_text, 1, 4)
+            window.loading_indicator._reveal_if_active()
             for scale in (1.0, 1.35):
                 config.ui_scale_fixed = scale
-                for width in (480, 640, 850, 1100, 1280, 1920, 2560, 3840):
+                for width in (480, 640, 850, 1100, 1280, 1599, 1920, 2560, 3840):
                     window.resize(width, 900)
                     window._apply_dashboard_layout()
                     # Width constraints propagate through the nested header
@@ -95,6 +101,17 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
                         left = group.mapTo(viewport, QPoint()).x()
                         edge = left + group.width()
                         assert viewport.contentsRect().left() <= left < edge <= viewport.contentsRect().right() + 1, (width, scale, left, edge)
+                    lane = window._header_activity_box
+                    assert lane.isVisible()
+                    assert lane.parentWidget() is not window._header_groups[1]
+                    indicators = (window.run_spinner, window.loading_indicator)
+                    assert all(lane.rect().contains(activity.geometry()) for activity in indicators)
+                    assert not indicators[0].geometry().intersects(indicators[1].geometry())
+                    for activity in indicators:
+                        assert activity_text in activity.current_text
+                        assert activity.accessibleDescription() == activity.current_text
+                        assert activity.toolTip() == activity.current_text
+                        assert activity._label.fontMetrics().horizontalAdvance(activity._label.text()) <= activity._label.contentsRect().width()
                     assert spy.width() > window.threat_intel_btn.width(), (width, scale)
                     widths.append((scale, width, window._selftest_btn.width(),
                                    window.threat_intel_btn.width(), spy.width()))
@@ -119,7 +136,11 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
                     assert not any(button.geometry().intersects(other.geometry())
                                    for other in buttons[index + 1:])
                 font_widths.append((pixels, spy.width(), window.threat_intel_btn.width()))
-            small, large = widths[0], widths[7]
+            window.loading_indicator._on_finished('header-fixture')
+            window.run_spinner.stop()
+            app.processEvents()
+            assert window._header_activity_box.isHidden()
+            small, large = widths[0], widths[8]
             assert large[2] > small[2] and large[3] > small[3] and large[4] > small[4]
             spy.click()
             app.processEvents()
@@ -173,6 +194,6 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
     )
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")[-10000:]
     evidence = json.loads(result.stdout.decode().splitlines()[-1])
-    assert len(evidence["widths"]) == 16
+    assert len(evidence["widths"]) == 18
     assert len(evidence["font_widths"]) == 3
     assert evidence["reopen"] and evidence["lockdown"] and evidence["host_operations"] == []

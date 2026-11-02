@@ -652,25 +652,64 @@ def test_classifier_rejection_cannot_select_legacy_host_mutation_in_source(tmp_p
         assert provider.calls == []
 
 
+def _local_retained_termination_fixture(graph, monkeypatch):
+    """Real lease/guards for these local fault tests; all native calls inert."""
+    from angerona.core import windows_process_lease as lease_module
+    from angerona.core.werfault_guard import OwnedProcessIdentity
+    from angerona.core.windows_process_lease import ProcessObjectIdentity
+    from angerona.modules import adversary_combat as combat_module
+    from test_windows_process_lease import FakeNative
+
+    native = FakeNative()
+    native.target = ProcessObjectIdentity(
+        41000, 116444859455000000, r"c:\fixture\inert.exe",
+    )
+    factories, roster_reads = [], []
+
+    def native_factory():
+        factories.append(True)
+        assert len(factories) == 1, "Retained target was reopened by another native observer"
+        return native
+
+    def owned_processes():
+        now = time.monotonic()
+        roster_reads.append(now)
+        return (OwnedProcessIdentity(
+            65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+            "core", now, now + 5.0,
+        ),)
+
+    monkeypatch.setattr(graph.manager, "owned_process_identities", owned_processes, raising=False)
+    monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
+    monkeypatch.setattr(lease_module, "_Native", native_factory)
+    assert graph.combat._reconcile_state() is True
+    return SimpleNamespace(native=native, factories=factories, roster_reads=roster_reads)
+
+
 @pytest.mark.parametrize("change", ["stop", "source-authority", "disabled-policy"])
 def test_blocking_intent_persistence_cannot_outlive_stop_or_authority(tmp_path, provider, monkeypatch, change):
-    import angerona.modules.adversary_combat as combat_module
     # This fixture changes saved policy. An inherited CLI/environment override
     # legitimately takes precedence, so remove it to exercise that exact source.
     monkeypatch.delenv("ANGERONA_ADVERSARY_COMBAT_ENABLED", raising=False)
     with native_graph(tmp_path) as graph:
+        control = _local_retained_termination_fixture(graph, monkeypatch)
         assert graph.combat.policy().enabled is True
         event = emit(graph)
+        assert graph.bus.verify(event)
         action = graph.combat._action("terminate_process", "inert generation", event, "inert",
-            reversible=False, details={"pid": 41000, "create_time": 12345.5, "name": "inert.exe", "exe": "C:/inert.exe"})
+            reversible=False, details={"pid": 41000, "create_time": 12345.5, "name": "inert.exe", "exe": "C:/fixture/inert.exe"})
         calls = []
         process = SimpleNamespace(kill=lambda: calls.append("kill"))
-        monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", False)
         original_intent = graph.combat._journal_intent
         intent_entered = False
+
         def blocked_intent(record):
             nonlocal intent_entered
             original_intent(record)
+            records, legacy = graph.combat._read_journal(strict=True)
+            assert not legacy
+            assert [row["record_type"] for row in records] == ["intent"]
+            assert records[0]["action_id"] == action.action_id
             intent_entered = True
             if change == "stop":
                 graph.combat._stop.set()
@@ -679,63 +718,104 @@ def test_blocking_intent_persistence_cannot_outlive_stop_or_authority(tmp_path, 
             else:
                 graph.config.adversary_combat_enabled = False
                 assert graph.combat.policy().enabled is False
+
         monkeypatch.setattr(graph.combat, "_journal_intent", blocked_intent)
-        assert graph.combat._terminate_process_transaction(process, action) is None
+        assert graph.combat._terminate_process_transaction(process, action, event=event) is None
         assert intent_entered is True
         assert calls == []
+        assert control.factories == [True] and len(control.roster_reads) >= 2
+        assert not control.native.exited
+        assert not any(call[0] == "terminate" for call in control.native.calls)
+        assert control.native.calls[-1] == ("close", 101)
+        assert control.native.calls.count(("close", 101)) == 1
+        records, legacy = graph.combat._read_journal(strict=True)
+        assert not legacy and records[0]["record_type"] == "intent"
+        assert not any(row["record_type"] in {"commit", "orphan"} for row in records)
         assert not any(row.get("status") == "applied" for row in graph.combat.list_actions())
 
 
 def test_stop_after_native_validation_is_rechecked_before_irreversible_dispatch(tmp_path, provider, monkeypatch):
-    import angerona.modules.adversary_combat as combat_module
     with native_graph(tmp_path) as graph:
+        control = _local_retained_termination_fixture(graph, monkeypatch)
+        native = control.native
         event = emit(graph)
+        assert graph.bus.verify(event)
         action = graph.combat._action("terminate_process", "inert generation", event, "inert",
-            reversible=False, details={"pid": 41000, "create_time": 12345.5, "name": "inert.exe", "exe": "C:/inert.exe"})
-        calls = []
-        class Lease:
-            identity = SimpleNamespace(pid=41000, birth_ticks=1, image="C:/inert.exe")
-            dispatch_started = False
-            def validate(self, *, alive):
+            reversible=False, details={"pid": 41000, "create_time": 12345.5, "name": "inert.exe", "exe": "C:/fixture/inert.exe"})
+        calls, reads = [], []
+        identity, close = native.identity, native.close
+
+        def validated_then_stop(handle):
+            reads.append(handle)
+            result = identity(handle)
+            # Acquisition reads twice. The third read is the real retained
+            # lease's first validation after durable intent, before dispatch.
+            if len(reads) == 3:
+                records, legacy = graph.combat._read_journal(strict=True)
+                assert not legacy
+                assert [row["record_type"] for row in records] == ["intent"]
                 calls.append("validate")
                 graph.combat._stop.set()
-            def terminate(self):
-                calls.append("terminate")
-            def close(self):
-                calls.append("close")
-        monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
-        monkeypatch.setattr(graph.combat, "_acquire_termination_lease", lambda *_: Lease())
-        assert graph.combat._terminate_process_transaction(SimpleNamespace(), action) is None
+            return result
+
+        def observed_close(handle):
+            calls.append("close")
+            return close(handle)
+
+        monkeypatch.setattr(native, "identity", validated_then_stop)
+        monkeypatch.setattr(native, "close", observed_close)
+        process = SimpleNamespace(kill=lambda: pytest.fail("PID-based termination fallback was used"))
+        assert graph.combat._terminate_process_transaction(process, action, event=event) is None
         assert calls == ["validate", "close"]
+        assert len(reads) == 3 and not native.exited
+        assert control.factories == [True] and len(control.roster_reads) >= 2
+        assert not any(call[0] == "terminate" for call in native.calls)
+        assert native.calls[-1] == ("close", 101)
+        assert native.calls.count(("close", 101)) == 1
+        records, legacy = graph.combat._read_journal(strict=True)
+        assert not legacy and records[0]["record_type"] == "intent"
+        assert not any(row["record_type"] in {"commit", "orphan"} for row in records)
 
 
 @pytest.mark.parametrize("revoked", ["producer", "policy"])
 def test_dispatch_rechecks_original_producer_contract_and_admitted_policy(tmp_path, provider, monkeypatch, revoked):
-    import angerona.modules.adversary_combat as combat_module
-    from angerona.core.windows_process_lease import WindowsProcessLease, ProcessObjectIdentity
-    from test_windows_process_lease import FakeNative
+    monkeypatch.delenv("ANGERONA_ADVERSARY_COMBAT_PROCESS_ACTION", raising=False)
     with native_graph(tmp_path) as graph:
+        control = _local_retained_termination_fixture(graph, monkeypatch)
+        native = control.native
         event = emit(graph)
+        assert graph.bus.verify(event)
         action = graph.combat._action("terminate_process", "inert generation", event, "inert",
-            reversible=False, details={"pid": 41000, "create_time": 12345.5, "name": "inert.exe", "exe": "C:/fixture/target.exe"})
-        native = FakeNative()
-        native.target = ProcessObjectIdentity(41000, 116444859455000000, "c:/fixture/target.exe")
+            reversible=False, details={"pid": 41000, "create_time": 12345.5, "name": "inert.exe", "exe": "C:/fixture/inert.exe"})
+        baseline = graph.combat.policy()
         identity = native.identity
-        reads = []
+        reads, revoked_at_dispatch = [], []
+
         def final_read(handle):
             reads.append(handle)
             result = identity(handle)
             if len(reads) == 4:
+                records, legacy = graph.combat._read_journal(strict=True)
+                assert not legacy
+                assert [row["record_type"] for row in records] == ["intent"]
                 if revoked == "producer":
                     graph.bus.freeze_mesh()
+                    assert not graph.bus.verify(event)
                 else:
                     graph.config.adversary_combat_process_action = "terminate"
+                    assert graph.combat.policy() != baseline
+                revoked_at_dispatch.append(revoked)
             return result
+
         monkeypatch.setattr(native, "identity", final_read)
-        monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
-        monkeypatch.setattr(graph.combat, "_acquire_termination_lease",
-            lambda *_: WindowsProcessLease(41000, 12345.5, "C:/fixture/target.exe", _native=native))
-        baseline = graph.combat.policy()
-        assert graph.combat._terminate_process_transaction(SimpleNamespace(), action, event=event, expected_policy=baseline) is None
+        process = SimpleNamespace(kill=lambda: pytest.fail("PID-based termination fallback was used"))
+        assert graph.combat._terminate_process_transaction(process, action, event=event, expected_policy=baseline) is None
         assert len(reads) == 4 and not native.exited
+        assert revoked_at_dispatch == [revoked]
+        assert control.factories == [True] and len(control.roster_reads) >= 2
         assert not any(call[0] == "terminate" for call in native.calls)
+        assert native.calls[-1] == ("close", 101)
+        assert native.calls.count(("close", 101)) == 1
+        records, legacy = graph.combat._read_journal(strict=True)
+        assert not legacy and records[0]["record_type"] == "intent"
+        assert not any(row["record_type"] in {"commit", "orphan"} for row in records)

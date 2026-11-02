@@ -36,8 +36,10 @@ def test_strict_full_trust_manifest_is_rendered_with_exact_external_identity(tmp
         version="1.11.0.0",
     )
     root = ET.fromstring(raw)
-    capability = root.find(f".//{{{RESCAP}}}Capability")
-    assert capability is not None and capability.attrib == {"Name": "runFullTrust"}
+    capabilities = root.findall(f".//{{{RESCAP}}}Capability")
+    assert {capability.get("Name") for capability in capabilities} == {
+        "runFullTrust", "allowElevation",
+    }
     assert b"Windows.FullTrustApplication" in raw
     assert b'Executable="AngeronaSafeStart.exe"' in raw
     assert b"ForceUpdateFromAnyVersion" not in raw
@@ -61,6 +63,32 @@ def test_manifest_rejects_identity_injection_or_non_four_part_version(tmp_path):
         )
     with pytest.raises(ValueError, match="unsigned 16-bit"):
         four_part_version("1.11.70000")
+
+
+@pytest.mark.parametrize("replacement", [
+    b"",  # An elevation request must not depend on an undeclared capability.
+    b'<rescap:Capability Name="runFullTrust" />',
+    b'<rescap:Capability Name="localSystemServices" />',
+    b'<Capability Name="internetClient" />',
+    b'<rescap:Capability Name="allowElevation" Extra="true" />',
+    b'<rescap:Capability Name="allowElevation"><Unexpected /></rescap:Capability>',
+    b'<rescap:Capability Name="allowElevation" />'
+    b'<rescap:Capability Name="allowElevation" />',
+])
+def test_manifest_requires_exact_elevation_capabilities(tmp_path, replacement):
+    output = tmp_path / "AppxManifest.xml"
+    render_manifest(
+        template=TEMPLATE, output=output, package_name="Angerona.SecuritySuite",
+        publisher_dn="CN=Angerona Release", version="1.15.0",
+    )
+    raw = output.read_bytes().replace(
+        b'<rescap:Capability Name="allowElevation" />', replacement,
+    )
+    with pytest.raises(ValueError, match="capabilities"):
+        validate_manifest(
+            raw, package_name="Angerona.SecuritySuite",
+            publisher_dn="CN=Angerona Release", version="1.15.0.0",
+        )
 
 
 def test_install_contract_declares_only_msix_as_public_first_install():

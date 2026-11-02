@@ -6,12 +6,15 @@ review before delivery; source tests do not attest signed/hardware deployment.
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
+import hashlib
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from docx import Document
+from lxml import etree
 from docx.enum.table import WD_ALIGN_VERTICAL
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
@@ -20,7 +23,125 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs/releases/Angerona_1.15_Security_Patch_Summary.docx"
-STAMP = datetime(2026, 11, 1, tzinfo=timezone.utc)
+STAMP = datetime(2026, 11, 2, tzinfo=timezone.utc)
+
+
+HISTORY_HEADINGS = (
+    "1 November recorder admission and shutdown follow up",
+    "1 November remediation custody follow up",
+    "1 November recorder commit boundary follow up",
+    "1 November optional audit admission follow up",
+    "1 November telemetry storage and dialog recovery",
+    "1 November persistence baseline classification",
+)
+HISTORY_MAX_BYTES = 256 * 1024
+HYPERLINK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+
+
+def _history_text(node):
+    return "".join(item.text or "" for item in node.iter(qn("w:t")))
+
+
+def _maintenance_history(document):
+    """Collect the maintained sections; missing/ambiguous history must hold."""
+    blocks = list(document.element.body)
+    headings = []
+    for index, block in enumerate(blocks):
+        style = block.find("./" + qn("w:pPr") + "/" + qn("w:pStyle"))
+        if style is not None and style.get(qn("w:val")) == "Heading1":
+            headings.append((_history_text(block), index))
+
+    def unique(title):
+        rows = [index for text, index in headings if text == title]
+        if len(rows) != 1:
+            raise ValueError("retained report heading missing or ambiguous: " + title)
+        return rows[0]
+
+    positions = [unique(title) for title in HISTORY_HEADINGS]
+    runtime = [index for text, index in headings if text in {
+        "Current runtime and shutdown follow up", "1 November runtime and shutdown follow up"}]
+    residual = [index for text, index in headings if text == "Residual exposure and next steps"]
+    if (len(runtime) != 1 or not residual or positions != sorted(positions)
+            or not runtime[0] < positions[0] or not positions[-1] < residual[0]
+            or [text for text, index in headings if positions[0] <= index < residual[0]] != list(HISTORY_HEADINGS)):
+        raise ValueError("retained report section order or boundary held")
+    selected = blocks[positions[0]:residual[0]]
+    prior = blocks[runtime[0] + 1:positions[0]]
+    observation = [node for node in prior if _history_text(node).startswith("Earlier post-setup observation:")]
+    validation = [node for node in prior if _history_text(node).startswith("Validation: Overlapping cohorts stay separate:")]
+    if len(observation) != 1 or len(validation) != 1:
+        raise ValueError("corrected historical observation/validation missing or ambiguous")
+    if sum(len(etree.tostring(node)) for node in selected + observation + validation) > HISTORY_MAX_BYTES:
+        raise ValueError("retained report history exceeds 256 KiB")
+    return {"part": document.part, "blocks": selected,
+            "observation": observation[0], "validation": validation[0]}
+
+
+def _read_maintenance_history(path, expected_sha256=None):
+    path = Path(path)
+    if not path.exists():
+        if path == OUTPUT and expected_sha256 is None:
+            return None  # First generation only; an existing report must validate.
+        raise ValueError("maintained report source is missing")
+    with path.open("rb") as handle:
+        raw = handle.read(8 * 1024 * 1024 + 1)
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError("maintained report package exceeds 8 MiB")
+    if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("maintained report source hash differs")
+    with ZipFile(BytesIO(raw)) as package:
+        entries = package.infolist()
+        if (len(entries) > 1024 or len({item.filename for item in entries}) != len(entries)
+                or sum(item.file_size for item in entries) > 16 * 1024 * 1024
+                or any(item.file_size > 4 * 1024 * 1024 for item in entries)):
+            raise ValueError("maintained report ZIP bounds held")
+    return _maintenance_history(Document(BytesIO(raw)))
+
+
+def _history_fingerprint(node, part):
+    """Compare copied XML using hyperlink targets instead of package-local IDs."""
+    if node.tag not in {qn("w:p"), qn("w:tbl")}:
+        raise ValueError("unsupported retained report block")
+    unsupported = {qn("w:" + name) for name in (
+        "sectPr", "drawing", "pict", "object", "altChunk", "footnoteReference",
+        "endnoteReference", "commentRangeStart", "commentRangeEnd", "commentReference")}
+
+    def project(item):
+        if item.tag in unsupported:
+            raise ValueError("unsupported related history content requires review")
+        attributes = []
+        for key, value in item.attrib.items():
+            if key.startswith("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"):
+                if key != qn("r:id") or item.tag != qn("w:hyperlink"):
+                    raise ValueError("unsupported retained report relationship")
+                relationship = part.rels[value]
+                if relationship.reltype != HYPERLINK_REL or not relationship.is_external:
+                    raise ValueError("retained report link must be an external hyperlink")
+                value = relationship.target_ref
+            attributes.append((key, value))
+        return (item.tag, tuple(sorted(attributes)), item.text, item.tail,
+                tuple(project(child) for child in item))
+    return project(node)
+
+
+def _append_history_block(document, node, source_part):
+    before = _history_fingerprint(node, source_part)
+    copied = deepcopy(node)
+    for item in copied.iter():
+        relationship_id = item.get(qn("r:id"))
+        if relationship_id is not None:
+            relationship = source_part.rels[relationship_id]
+            item.set(qn("r:id"), document.part.relate_to(
+                relationship.target_ref, HYPERLINK_REL, is_external=True))
+    document.element.body.insert(len(document.element.body) - 1, copied)
+    if _history_fingerprint(copied, document.part) != before:
+        raise ValueError("retained report block changed during relationship transfer")
+
+
+def _only_page_break(node):
+    return (node.tag == qn("w:p") and not _history_text(node)
+            and len(list(node.iter(qn("w:br")))) == 1
+            and next(node.iter(qn("w:br"))).get(qn("w:type")) == "page")
 
 
 def paragraph(doc, text, *, lead=None):
@@ -179,23 +300,48 @@ def residual_appendix(doc):
     residual_matrix(doc)
 
 
-def native_metadata_followup(doc):
+def native_metadata_followup(doc, history=None):
     """Prepared source only; final observation and render review stay separate."""
     doc.add_page_break()
-    doc.add_heading("Current runtime and shutdown follow up", 1)
+    doc.add_heading("1 November runtime and shutdown follow up", 1)
     paragraph(doc, "Earlier recorder private-DACL, file-identity and single-owner transfer controls remain. Uncertain cleanup retains custody; parent path checks are not directory leases. Witnessing stays optional with protected private keys, and failed witnessing does not stop local protection.", lead="Retained custody:")
     paragraph(doc, "Normal Python/Qt messages default to 64 KiB (configurable 4–256 KiB), with default 8 MiB per-file/process-role budgets. Full Setup maps the existing controls; Block/Allow/change and pending retry preserve bytes without blocking startup. Native/external writes, upstream allocations, OS quotas and file-identity leases remain outside this budget; generation headers do not attest hooks.", lead="Logging:")
     paragraph(doc, "Early read-only AI refusal precedes full hashes while final trust/transport/hash TTL remain strict. Cached stages include inline callbacks, not isolated cost. Exact owned launches receive one 180-second readiness window, not healthy status, duplicate spawn or expiry kill. Waiter errors are not exit proof; adopted PIDs and cross-peer startup remain separate.", lead="Admission:")
     paragraph(doc, "Mixed history retains dates/gaps without a live overlay; UGCAP exceptions are contained. Nonmodal recovery confirmation requires Yes for cleanup. Final self-exit follows durable STOP, bounded cleanup and Qt quit, not proved fault repair. Port-only CAGT leads and SOAR burst counts remain advisory without response authority; severity, thresholds and genuine active-event contracts stay unchanged.", lead="Review and STOP:")
-    paragraph(doc, "Combined post-setup Full60/STOP met bounded lifecycle acceptance: native exit zero, 40 observed generations retired and source/preferences unchanged; 69 sensor states remain unknown. Sixteen new HIGH CAGT leads were observations without response authority. Neither this nor the preceding Full120 contained a SOAR aggregate: its wording is offline-tested only. Earlier modal-held and 39-generation observations remain separate. Fault copies exclude final teardown; P0 cause and Optimus attribution remain unproved.", lead="Latest observation:")
-    paragraph(doc, "Overlapping cohorts stay separate: AI 327 passes/three skips; logging 291/one; models 53; runtime 275/one; exit/storage 252 (completed JUnit checked). New advisory 317 and setup/logging 94 passed. Published CI had eleven passes/four setup-schema failures; local fixes are not new hosted acceptance or exploit prevention.", lead="Validation:")
+    if history is not None:
+        _append_history_block(doc, history["observation"], history["part"])
+    else:
+        paragraph(doc, 'Combined post-setup Full60/STOP met bounded lifecycle acceptance: native exit zero, 40 observed generations retired and source/preferences unchanged; 69 sensor states remain unknown. Sixteen new HIGH CAGT leads were observations without response authority. Neither this nor the preceding Full120 contained a SOAR aggregate: its wording is offline-tested only. Earlier modal-held and 39-generation observations remain separate. Fault copies exclude final teardown; P0 cause and Optimus attribution remain unproved.', lead="Earlier post-setup observation:")
+    if history is not None:
+        _append_history_block(doc, history["validation"], history["part"])
+    else:
+        paragraph(doc, 'Overlapping cohorts stay separate: AI 327 passes/three skips; logging 291/one; models 53; runtime 275/one; exit/storage 252 (completed JUnit checked). New advisory 317 and setup/logging 94 passed. The earlier published revision 9675347 had eleven passes/four setup-schema failures; those local fixes alone did not establish new hosted acceptance or exploit prevention.', lead="Validation:")
     link(doc, "Sanitized advisory and setup evidence with residual limits",
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-11-01-advisory-bursts.md")
 
 
-def build(*, service_reviewed=False):
+def workspace_scan_followup(doc):
+    doc.add_page_break()
+    doc.add_heading("2 November workspaces and scan review", 1)
+    paragraph(doc, "Supported content windows can remain open together with native Minimize and Maximize controls and active-window F11 fullscreen. Owners retain actual workers through close, reject stale callbacks and reopen Settings from fresh configuration. Security confirmations keep their own approval rules.", lead="Concurrent review:")
+    paragraph(doc, "Spyware Scan starts from the Entire PC preset of supported checks. Current task, file, check progress and overall workflow progress describe distinct work. Unknown totals stay indeterminate; a remaining deadline is not an estimated completion time. Native checks may finish while toolkit aggregation remains pending.", lead="Scan progress:")
+    paragraph(doc, "Dedicated Spyware Scan has a saved 3,600-second default budget with a 30–14,400-second range. Its next-run override neither saves preferences nor extends an active run. Standalone Run scan retains its existing 300-second default and 30–900-second saved range. Older settings lacking the dedicated field use its default without an automatic file rewrite. Expiry retains partial evidence and coverage gaps.", lead="Separate scan budgets:")
+    paragraph(doc, "Large after-action previews now remain valid JSON with explicit omissions. Copy complete JSON is bounded at 2 MiB; atomic Export complete JSON is bounded at 64 MiB with depth and node limits. Failed operations preserve prior clipboard or file contents. Neither a preview nor a toolkit finding grants response authority.", lead="Complete evidence access:")
+    paragraph(doc, "Auto Adapt presents the proposed before and after state, reasons and adjustable preset choices before approval. Editing invalidates the approved plan. Activity history and transaction details show results; Undo restores the managed firewall baseline only after identity and postcondition checks. It is not whole-system rollback.", lead="Adaptation and rollback:")
+    paragraph(doc, "Settings failure recovery restores only 21 owned nonsecret environment keys. It preserves unrelated concurrent changes and credentials removed by the secret store. It no longer clears or restores a stale snapshot of the whole process environment. This is scoped failure recovery, not a global atomic environment transaction.", lead="Credential and settings boundary:")
+    paragraph(doc, "Original native-hash producer proof expires after 30 monotonic seconds and is bound to the producer generation; retaining it again cannot renew it. Generic synthetic SOAR wrappers stay held without original proof. Exact companion identity and actual native custody remain required. The registry shares the process failure domain.", lead="Response admission:")
+    paragraph(doc, "Crash admission is bounded to 480 KiB per signed record, 256 records, 64 MiB sampled retained bytes and a 1,024-entry enumeration ceiling, with a sampled 2 GiB reserve. Publication does not overwrite existing records. Incomplete traceback holds automatic HEAL. These bounds do not reserve capacity across writers or add a normal dashboard-startup gate.", lead="Recovery storage:")
+    paragraph(doc, "Administrator sign-in enrollment is explicit and installed-only, with exact package, SID, task definition and security readback. It stores no password and supplies no restart or on-demand policy. Source Observe remains held. Production pins, independent signing and actual installed task acceptance are unprovisioned; this is not PPL or kernel protection.", lead="Privileged deployment:")
+    paragraph(doc, "Final focused validation passed 450 tests in 114.68 seconds with no failures, errors or skips, covering scan reporting, workspaces, Settings, setup, adaptation and installed-startup controls. A narrow-view regression now accounts for group-box frame margins. Hidden-window tests restore the normal visible cadence and separately check that short headlines correctly stop scrolling. Earlier 280, 10 and 53-test cohorts retain their own scope and are not added together. Lint, compilation, live observation and hosted checks have separate acceptance records.", lead="Validation scope:")
+    paragraph(doc, "A preceding combined scan finished in approximately 45 minutes and retained one finding, two references and 24 coverage gaps. It predates the latest display corrections and is neither confirmed-breach nor clean-host evidence. Historical failed and passing observations below keep their own scope; the baseline's 15 green hosted checks attest that earlier commit only.", lead="Observed scan:")
+    link(doc, "Current maintenance evidence and remaining acceptance",
+         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md")
+
+
+def build(*, service_reviewed=False, history_source=OUTPUT, history_sha256=None):
     if not service_reviewed:
         raise ValueError("final service/custody review must complete before producing the summary")
+    history = _read_maintenance_history(history_source, history_sha256)
     doc = Document()
     section = doc.sections[0]
     section.page_width, section.page_height = Inches(8.5), Inches(11)
@@ -232,7 +378,7 @@ def build(*, service_reviewed=False):
 
     doc.add_paragraph("Angerona 1.15 Security Patch Summary", "Title")
     doc.add_paragraph("Fixes and residual exposure with deployment requirements", "Subtitle")
-    paragraph(doc, "Version 1.15.0 | 1 November 2026")
+    paragraph(doc, "Version 1.15.0 | 2 November 2026")
     paragraph(doc, "This major update strengthens five user-mode security boundaries. These are implemented source controls, not a claim that every exploit is blocked or that Windows vulnerabilities have been patched. Source Observe, installed authority and independent services remain distinct.")
     paragraph(doc, "A native shutdown access violation remains an unresolved P0 availability finding. The later logging patch improves observability; one subsequent normal exit does not establish a crash fix.", lead="Development status:")
 
@@ -268,23 +414,54 @@ def build(*, service_reviewed=False):
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/releases/v1.15.0.md")
     link(doc, "Master Manual security flow",
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/security-flow.md")
-    native_metadata_followup(doc)
+    workspace_scan_followup(doc)
+    native_metadata_followup(doc, history)
+    if history is not None:
+        for block in history["blocks"]:
+            _append_history_block(doc, block, history["part"])
+    first_residual_block = len(doc.element.body) - 1
     residual_appendix(doc)
+    if history is not None:
+        # Preserve an original trailing break; otherwise keep our new layout
+        # break but exclude only that exact owned node from the history check.
+        added_break = doc.element.body[first_residual_block]
+        if not _only_page_break(added_break):
+            raise ValueError("new residual boundary is ambiguous")
+        if history["blocks"] and _only_page_break(history["blocks"][-1]):
+            added_break.getparent().remove(added_break)
+            added_break = None
+        retained = _maintenance_history(doc)
+        retained_blocks = retained["blocks"]
+        if added_break is not None:
+            if not retained_blocks or retained_blocks[-1] is not added_break:
+                raise ValueError("new residual boundary moved into maintained history")
+            retained_blocks = retained_blocks[:-1]
+        for name in ("observation", "validation"):
+            if _history_fingerprint(retained[name], doc.part) != _history_fingerprint(history[name], history["part"]):
+                raise ValueError("historical report paragraph lost or changed")
+        if (len(retained_blocks) != len(history["blocks"])
+                or any(_history_fingerprint(actual, doc.part) != _history_fingerprint(original, history["part"])
+                       for actual, original in zip(retained_blocks, history["blocks"]))):
+            raise ValueError("maintained report history lost or changed")
     return doc
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, default=OUTPUT)
+    parser.add_argument("--history-source", type=Path, default=OUTPUT,
+                        help="Maintained report supplying retained historical sections; defaults to the canonical report")
+    parser.add_argument("--history-sha256", help="Optional exact SHA256 for an explicit reviewed history source")
     parser.add_argument("--service-reviewed", action="store_true",
                         help="Required after final service/custody review; render QA is still separate")
     args = parser.parse_args()
     data = BytesIO()
-    build(service_reviewed=args.service_reviewed).save(data)
+    build(service_reviewed=args.service_reviewed, history_source=args.history_source,
+          history_sha256=args.history_sha256).save(data)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(data) as source, ZipFile(args.output, "w", compression=ZIP_DEFLATED, compresslevel=9) as target:
         for name in sorted(source.namelist()):
-            info = ZipInfo(name, date_time=(2026, 11, 1, 0, 0, 0))
+            info = ZipInfo(name, date_time=(2026, 11, 2, 0, 0, 0))
             info.compress_type, info.create_system = ZIP_DEFLATED, 0
             target.writestr(info, source.read(name))
     print(f"{args.output} (render every page before delivery)")

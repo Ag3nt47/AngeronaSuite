@@ -267,44 +267,38 @@ def test_threat_window_summary_keeps_optional_audit_separate(qapp, monkeypatch, 
         _retire_widget(dialog)
 
 
-@pytest.mark.parametrize("optional", [_result(), None, _result(recorded=-1)])
-def test_main_window_summary_keeps_optional_audit_separate(qapp, monkeypatch, tmp_path, optional):
+def test_main_window_keeps_unbound_shark_apply_held_and_modeless(qapp, monkeypatch, tmp_path):
     from PySide6.QtWidgets import QDialog
     from angerona.gui.main_window import MainWindow
 
     result = {"applied": 4, "skipped": 2, "failed": 1, "records": [{"private": "private"}]}
-    if optional is not None:
-        result["optional_audit"] = optional
-    calls, messages, owned = [], [], []
+    calls, owned = [], []
     posture = SimpleNamespace(apply_vetted_remediation=lambda **kwargs: calls.append(kwargs) or result)
 
     class ReviewDialog(QDialog):
         def __init__(self, *_args, on_apply, **_kwargs):
             super().__init__()
             self.apply_callback = on_apply
+            self.apply_hold_reason = _kwargs.get("apply_hold_reason")
             owned.append(self)
 
         def set_text(self, _text):
             pass
 
         def exec(self):
-            messages.append(self.apply_callback())
-            return QDialog.Accepted
+            pytest.fail("A report must not start a nested modal event loop")
 
     monkeypatch.setattr("angerona.gui.main_window.AARDialog", ReviewDialog)
     window = SimpleNamespace(manager=SimpleNamespace(modules={"Posture Hardening": posture}),
                              config=SimpleNamespace(data_dir=tmp_path), _qss=lambda: "")
     try:
-        # The failed handoff avoids disk reads; only the inert apply callback
-        # above runs. No MainWindow constructor, model or native action starts.
-        MainWindow._show_aar_dialog(window, {"report_kind": "shark", "text": "fixture", "error": "fixture"})
-        assert calls == [{"apply": True}]
-        text = messages[0]
-        assert "applied=4, skipped=2, failed=1" in text and "private" not in text
-        if optional is not None and optional["recorded"] >= 0:
-            assert "Optional audit (this invocation): attempted=5" in text and "rejected=2" in text
-        else:
-            assert "Optional audit (this invocation): unavailable; counts unknown" in text
+        # The failed handoff avoids disk reads. A current-weakness recomputation
+        # is not the exact plan a user reviewed in this independently open AAR.
+        dialog = MainWindow._show_aar_dialog(
+            window, {"report_kind": "shark", "text": "fixture", "error": "fixture"})
+        assert dialog is owned[0] and dialog.isVisible() and not dialog.isModal()
+        assert dialog.apply_callback is None and calls == []
+        assert "Exact reviewed remediation plan is unavailable" in dialog.apply_hold_reason
     finally:
         for dialog in owned:
             _retire_widget(dialog)

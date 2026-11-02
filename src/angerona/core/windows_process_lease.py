@@ -13,7 +13,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 
-_RIGHTS = 0x1000 | 0x00100000 | 0x0001  # limited query, synchronize, terminate
+_QUERY_RIGHTS = 0x1000 | 0x00100000  # limited query, synchronize
+_RIGHTS = _QUERY_RIGHTS | 0x0001  # additionally terminate, only for real termination
 _WINDOWS_EPOCH_TICKS = 116444736000000000
 _MAX_LIFETIME = 60.0
 
@@ -135,8 +136,11 @@ class WindowsProcessLease:
 
     def __init__(
         self, pid: int, create_time: float, image: str, *, lifetime: float = 60.0,
+        query_only: bool = False,
         _native: Any = None, _monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
+        if type(query_only) is not bool:
+            raise ProcessLeaseError("invalid process observation mode")
         if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
             raise ProcessLeaseError("invalid process identifier")
         if (type(create_time) not in (int, float) or not math.isfinite(create_time)
@@ -152,11 +156,12 @@ class WindowsProcessLease:
             raise ProcessLeaseError("invalid monotonic clock")
         self._deadline = self._last_now + lifetime
         self._native = _Native() if _native is None else _native
+        self._query_only = query_only
         self._handle: int | None = None
         self._dispatched = False
         self.identity: ProcessObjectIdentity
         try:
-            self._handle = self._native.open(pid, _RIGHTS, False)
+            self._handle = self._native.open(pid, _QUERY_RIGHTS if query_only else _RIGHTS, False)
             observed = self._native.identity(self._handle)
             if (type(observed) is not ProcessObjectIdentity or observed.pid != pid
                     or type(observed.birth_ticks) is not int
@@ -197,6 +202,8 @@ class WindowsProcessLease:
         self._remaining()
 
     def terminate(self, *, before_dispatch: Callable[[], None] | None = None) -> None:
+        if self._query_only:
+            raise ProcessLeaseError("query-only process custody cannot terminate")
         if self._dispatched:
             raise ProcessLeaseError("process termination was already dispatched")
         if before_dispatch is not None and not callable(before_dispatch):
@@ -210,6 +217,15 @@ class WindowsProcessLease:
         self._remaining()
         self._dispatched = True
         self._native.terminate(self._handle, 1)
+
+    @property
+    def query_only(self) -> bool:
+        """Observation mode never grants termination authority."""
+        return self._query_only
+
+    def check_deadline(self) -> None:
+        """Check cached custody lifetime without another native process read."""
+        self._remaining()
 
     @property
     def dispatch_started(self) -> bool:

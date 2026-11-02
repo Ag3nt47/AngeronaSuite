@@ -18,6 +18,7 @@ def test_long_run_reaches_real_operation_constructor_and_keeps_preferences_byte_
     service = ready(controller)
     config = Config(data_dir=tmp_path)
     config.github_tools_timeout_seconds = 300
+    config.spyware_scan_timeout_seconds = 7200
     config.save()
     before = config.settings_path.read_bytes()
     controller.manager.cfg = config
@@ -32,10 +33,14 @@ def test_long_run_reaches_real_operation_constructor_and_keeps_preferences_byte_
 
     service.scan = scan
     monkeypatch.setattr(config, "save", lambda: pytest.fail("A per-run allowance must not save preferences"))
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert observed and observed[-1][0] == 7200 and observed[-1][1] > 7190
     assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, timeout_seconds=14400)
     wait_until(lambda: not controller.snapshot()["busy"])
-    assert observed and observed[0][0] == 14400 and observed[0][1] > 14390
+    assert observed[-1][0] == 14400 and observed[-1][1] > 14390
     assert config.github_tools_timeout_seconds == 300
+    assert config.spyware_scan_timeout_seconds == 7200
     assert config.settings_path.read_bytes() == before
 
 

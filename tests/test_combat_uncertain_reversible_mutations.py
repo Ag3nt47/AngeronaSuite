@@ -1,36 +1,47 @@
 """Model host effects in memory; never issue firewall or process operations."""
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import replace
 from types import SimpleNamespace
+import time
 
 import pytest
 from test_breach_lockdown import installed_protect_for_inert_combat
+from test_program_firewall_lease import FakeNative as FakeProgramNative
+from test_windows_process_lease import FakeNative as FakeProcessNative
+from angerona.core import program_firewall_lease as program_custody
+from angerona.core import windows_process_lease as process_custody
 from angerona.core.response_contract import authorize_response
+from angerona.core.werfault_guard import OwnedProcessIdentity
 
-from angerona.core.eventbus import Event, Severity
+from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.modules import adversary_combat as combat
 
 
 def _fixture(monkeypatch, tmp_path):
     module = combat.AdversaryCombat(tmp_path, rollback_anchor={})
+    module.bind(EventBus())
+
+    def owned_processes():
+        now = time.monotonic()
+        return (OwnedProcessIdentity(65001, "116444737000000000", 100.0,
+            r"C:\fixture\angerona-core.exe", "core", now, now + 5),)
+
+    module.bind_manager(SimpleNamespace(modules={module.name: module},
+        owned_process_identities=owned_processes))
+    assert module._reconcile_state() is True
+    # Query-only native ownership reads stay inert. Program tests separately
+    # inject the actual ProgramFirewallLease class with its inert native seam.
+    monkeypatch.setattr(process_custody, "_Native", FakeProcessNative)
     records = []
+    original_append = module._append_journal
 
     def append(payload):
-        record = {**payload, "sequence": len(records) + 1, "record_hmac": "a" * 64}
+        record = original_append(payload)
         records.append(record)
         return record
 
-    @contextmanager
-    def transaction(action):
-        append({**asdict(action), "record_type": "intent", "status": "pending"})
-        yield
-
     monkeypatch.setattr(module, "_append_journal", append)
-    monkeypatch.setattr(module, "_journaled_mutation", transaction)
-    monkeypatch.setattr(module, "set_health", lambda *_args: None)
-    monkeypatch.setattr(module, "emit", lambda *_args, **_kwargs: None)
     return module, records
 
 
@@ -42,13 +53,25 @@ def test_uncertain_firewall_effects_close_only_after_verified_rollback(
     module, records = _fixture(monkeypatch, tmp_path)
     rules = set()
     add_count = 0
+    program_native = FakeProgramNative() if kind == "isolate_program" else None
+    program_leases = []
 
     def firewall(arguments):
         nonlocal add_count
         name = next(value[5:] for value in arguments if value.startswith("name="))
+        if program_native is not None:
+            assert len(program_leases) == 1 and not program_leases[0]._closed
+            assert program_leases[0]._process not in program_native.closed
+            assert all(handle not in program_native.closed
+                for _path, handle, _identity, _directory in program_leases[0]._files)
         if arguments[0] == "add":
             add_count += 1
             rules.add(name)
+            if program_native is not None:
+                # Preserve the real retained lease and change its inert native
+                # process identity only after the rule's possible-effect point.
+                program_native.process = replace(program_native.process,
+                    image=r"C:\fixture\replaced.exe")
             # A failed command/postcondition can still have created its rule.
             return kind == "isolate_program" or add_count == 1
         if rollback_fails:
@@ -62,44 +85,41 @@ def test_uncertain_firewall_effects_close_only_after_verified_rollback(
     monkeypatch.setattr(module, "_lockdown_rule_present", lambda name: name in rules)
     monkeypatch.setattr(module, "_lockdown_profiles_enabled", lambda **_: True)
     monkeypatch.setattr(module, "_lockdown_effective_policy", lambda **_: True)
-    monkeypatch.setattr(combat, "psutil", SimpleNamespace(Process=lambda _pid: SimpleNamespace(
-        exe=lambda: "C:/fixture/inert.exe", create_time=lambda: 22.0)))
+    monkeypatch.setattr(combat, "psutil", SimpleNamespace(Process=lambda _pid:
+        pytest.fail("Firewall transaction must retain its native custody")))
     event = Event("Inert Detector", "fixture", Severity.HIGH,
                   details={"active_attack": True, **authorize_response(["isolate_host"], local_host=True)})
     if kind == "block_remote_ip":
+        event = Event("Inert Detector", "fixture", Severity.HIGH,
+            details=authorize_response(["block_remote_ip"], remote_ips=("203.0.113.8",)))
         result = module._block_remote_ip("203.0.113.8", event, "combat-aaaaaaaaaaaa")
     elif kind == "isolate_host":
         result = module._isolate_host(event, "combat-aaaaaaaaaaaa")
     else:
-        from angerona.core import program_firewall_lease
+        def acquire(pid, born, image):
+            lease = program_custody.ProgramFirewallLease(pid, born, image,
+                _native=program_native)
+            program_leases.append(lease)
+            return lease
 
-        class InertLease:
-            path = "C:/fixture/inert.exe"
-
-            def validate(self):
-                if add_count:
-                    raise OSError("inert retained identity changed after dispatch")
-
-            def proof(self):
-                self.validate()
-                return {"program_custody": "inert-unit-test"}
-
-            def check_deadline(self):
-                pass
-
-            def close(self):
-                pass
-
-        monkeypatch.setattr(program_firewall_lease, "ProgramFirewallLease", lambda *_args: InertLease())
+        monkeypatch.setattr(module, "_acquire_program_lease", acquire)
         monkeypatch.setattr(combat, "_WINDOWS_PROCESS_CUSTODY", True)
         event = Event("Inert Detector", "fixture", Severity.HIGH,
-            details={"pid": 999999, "process_create_time": 11.0,
-                     **authorize_response(["isolate_program"], pid=999999, process_create_time=11.0)})
-        result = module._block_program("C:/fixture/inert.exe", 999999, 11.0,
+            details={"pid": 4242, "process_create_time": 50.0,
+                     **authorize_response(["isolate_program"], pid=4242, process_create_time=50.0)})
+        result = module._block_program(r"C:\fixture\target.exe", 4242, 50.0,
                                        event, "combat-aaaaaaaaaaaa")
     assert result is None
     phases = [record["record_type"] for record in records]
     assert "orphan" in phases and "undo_intent" in phases
+    assert phases[:3] == ["intent", "orphan", "undo_intent"]
+    assert "commit" not in phases
+    assert add_count == (1 if kind == "isolate_program" else 2)
+    if program_native is not None:
+        assert len(program_leases) == 1
+        assert type(program_leases[0]) is program_custody.ProgramFirewallLease
+        assert records[0]["details"]["program_file_id"] == "3" * 32
+        assert set(program_native.closed) == set(program_native.handles)
     if rollback_fails:
         assert rules
         assert "failure" not in phases
@@ -118,18 +138,21 @@ def test_suspend_unknown_postcondition_keeps_pending_recovery(monkeypatch, tmp_p
     def status():
         raise RuntimeError("inert postcondition read failure")
 
-    process = SimpleNamespace(create_time=lambda: 10.0, name=lambda: "inert-worker.exe",
-                              exe=lambda: "C:/fixture/inert.exe", status=status,
+    process = SimpleNamespace(create_time=lambda: 50.0, name=lambda: "inert-worker.exe",
+                              exe=lambda: r"C:\fixture\target.exe", status=status,
                               suspend=lambda: calls.append("suspend"),
                               resume=lambda: calls.append("resume"))
     monkeypatch.setattr(combat, "psutil", SimpleNamespace(Process=lambda _pid: process,
                                                         STATUS_STOPPED="stopped"))
     monkeypatch.setattr(combat.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
+    policy = replace(module.policy(), mode="contain", block_network=False)
+    monkeypatch.setattr(module, "policy", lambda: policy)
     event = Event("Inert Detector", "fixture", Severity.HIGH,
-                  details={"pid": 999999, "process_create_time": 10.0})
+        details={"pid": 4242, "process_create_time": 50.0,
+            **authorize_response(["suspend_process"], pid=4242, process_create_time=50.0)})
     result = module._act_on_process(
-        999999, combat.CombatPolicy(mode="contain", block_network=False), event,
+        4242, policy, event,
         "combat-aaaaaaaaaaaa", allowed_actions=frozenset({"suspend_process"}),
     )
     assert not result
@@ -141,9 +164,13 @@ def test_suspend_unknown_postcondition_keeps_pending_recovery(monkeypatch, tmp_p
 
 def test_rollback_undo_receipt_failure_disarms_even_when_host_restored(monkeypatch, tmp_path):
     module, records = _fixture(monkeypatch, tmp_path)
-    action = module._action("suspend_process", "inert", Event("Fixture", "x", Severity.HIGH),
+    event = Event("Fixture", "x", Severity.HIGH,
+        details={"pid": 4242, "process_create_time": 50.0,
+            **authorize_response(["suspend_process"], pid=4242, process_create_time=50.0)})
+    action = module._action("suspend_process", "inert", event,
                             "combat-aaaaaaaaaaaa", reversible=True,
-                            details={"pid": 999999, "create_time": 10.0})
+                            details={"pid": 4242, "create_time": 50.0,
+                                     "exe": r"C:\fixture\target.exe"})
     monkeypatch.setattr(module, "_undo_record", lambda _record: (True, ""))
     original_append = module._append_journal
 
@@ -153,8 +180,9 @@ def test_rollback_undo_receipt_failure_disarms_even_when_host_restored(monkeypat
         return original_append(payload)
 
     monkeypatch.setattr(module, "_append_journal", append)
-    module._rollback_uncertain_reversible_mutation(action, "uncertain fixture",
-                                                  release_custody=lambda: None)
+    with module._journaled_mutation(action, event=event):
+        module._rollback_uncertain_reversible_mutation(action, "uncertain fixture",
+                                                      release_custody=lambda: None)
     assert module._mutation_blocked
     assert "failure" not in [record["record_type"] for record in records]
 
@@ -164,7 +192,9 @@ def test_firewall_rollback_requires_proven_absence(monkeypatch, tmp_path, state)
     module, records = _fixture(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_run_firewall", lambda _args: False)
     monkeypatch.setattr(module, "_firewall_rule_exists", lambda _name: state)
-    module._block_remote_ip("203.0.113.8", Event("Fixture", "x", Severity.HIGH),
+    event = Event("Fixture", "x", Severity.HIGH,
+        details=authorize_response(["block_remote_ip"], remote_ips=("203.0.113.8",)))
+    module._block_remote_ip("203.0.113.8", event,
                             "combat-aaaaaaaaaaaa")
     phases = [record["record_type"] for record in records]
     assert module._mutation_blocked is (state is None)
@@ -198,10 +228,11 @@ def test_pending_firewall_recovery_waits_for_query_evidence(monkeypatch, tmp_pat
     module, records = _fixture(monkeypatch, tmp_path)
     monkeypatch.setattr(module, "_run_firewall", lambda _args: False)
     monkeypatch.setattr(module, "_firewall_rule_exists", lambda _name: None)
-    module._block_remote_ip("203.0.113.8", Event("Fixture", "x", Severity.HIGH),
+    event = Event("Fixture", "x", Severity.HIGH,
+        details=authorize_response(["block_remote_ip"], remote_ips=("203.0.113.8",)))
+    module._block_remote_ip("203.0.113.8", event,
                             "combat-aaaaaaaaaaaa")
     original = list(records)
-    monkeypatch.setattr(module, "_read_journal", lambda **_kwargs: (list(records), []))
     with pytest.raises(combat.JournalIntegrityError, match="postcondition is unavailable"):
         module._recover_orphaned_journal()
     assert records == original

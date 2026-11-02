@@ -4,14 +4,16 @@ from __future__ import annotations
 from contextlib import contextmanager
 import subprocess
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 from test_breach_lockdown import installed_protect_for_inert_combat
 from angerona.core.response_contract import authorize_response
 
-from angerona.core import module_base, win
+from angerona.core import module_base, win, windows_process_lease as lease_module
 from angerona.core.eventbus import Event, Severity
+from angerona.core.werfault_guard import OwnedProcessIdentity
 from angerona.modules import adversary_combat as combat
 
 
@@ -35,8 +37,11 @@ def _fixture(monkeypatch, tmp_path):
                               reversible=True, details={"pid": pid, "create_time": birth})
 
     @contextmanager
-    def journal(action, *, canary=None):
+    def journal(action, *, event, canary=None):
         assert canary is None  # This fixture models ordinary installed authority.
+        assert event is response_event  # Preserve the original producer event.
+        assert action.details["pid"] == event.details["pid"]
+        assert action.details["create_time"] == event.details["process_create_time"]
         calls.append("intent:" + action.action)
         yield
 
@@ -44,54 +49,140 @@ def _fixture(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "_journaled_mutation", journal)
     monkeypatch.setattr(module, "_commit_after_mutation", lambda action: action)
     monkeypatch.setattr(module, "_journal_failure", lambda *_args: calls.append("failure"))
-    event = Event("Inert Detector", "fixture", Severity.CRITICAL,
+    response_event = Event("Inert Detector", "fixture", Severity.CRITICAL,
                   details={"pid": 999999, "process_create_time": 10.0,
                       **authorize_response(["terminate_process", "suspend_process", "isolate_program"],
                                            pid=999999, process_create_time=10.0)})
-    return module, process, state, calls, event
+    return module, process, state, calls, response_event
 
 
 def test_maximum_terminate_uses_existing_native_transaction_before_firewall(
     monkeypatch, tmp_path,
 ):
-    module, _process, state, calls, event = _fixture(monkeypatch, tmp_path)
+    module, process, state, calls, event = _fixture(monkeypatch, tmp_path)
+    roster_reads = []
 
-    class Lease:
-        identity = SimpleNamespace(pid=999999, birth_ticks=116444736100000000,
-                                   image="C:/fixture/inert.exe")
-        dispatch_started = False
+    def owned_processes():
+        now = time.monotonic()
+        roster_reads.append(now)
+        return (OwnedProcessIdentity(
+            65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+            "core", now, now + 5.0,
+        ),)
 
-        def validate(self, *, alive):
-            assert alive and state["alive"]
-            calls.append("validate")
+    module.bind_manager(SimpleNamespace(
+        modules={module.name: module}, owned_process_identities=owned_processes,
+    ))
 
-        def terminate(self, *, before_dispatch=None):
-            if before_dispatch is not None:
-                before_dispatch()
+    class InertNative:
+        """Drive the real lease without opening, waiting on or killing a host PID."""
+        identity_value = lease_module.ProcessObjectIdentity(
+            999999, 116444736100000000, r"c:\fixture\inert.exe",
+        )
+
+        def __init__(self):
+            self.closed = False
+            self.completion_waits = []
+
+        def open(self, pid, rights, inherit):
+            assert (pid, rights, inherit) == (999999, lease_module._RIGHTS, False)
+            assert not self.closed
+            calls.append("open")
+            return 101
+
+        def identity(self, handle):
+            assert handle == 101 and not self.closed and state["alive"]
+            calls.append("identity")
+            return self.identity_value
+
+        def object_identity(self, handle):
+            assert handle == 101 and not self.closed and not state["alive"]
+            calls.append("object-identity")
+            return self.identity_value.pid, self.identity_value.birth_ticks
+
+        def wait(self, handle, milliseconds):
+            assert handle == 101 and not self.closed
+            assert type(milliseconds) is int and 0 <= milliseconds <= 3000
+            if milliseconds:
+                assert not state["alive"]
+                self.completion_waits.append(milliseconds)
+                calls.append("wait")
+            else:
+                calls.append("poll-live" if state["alive"] else "poll-dead")
+            return not state["alive"]
+
+        def terminate(self, handle, code):
+            assert (handle, code) == (101, 1)
+            assert not self.closed and state["alive"]
+            custody = module._response_dispatch_local.process_custody
+            assert type(custody.lease) is lease_module.WindowsProcessLease
+            assert custody.lease.identity is self.identity_value
+            assert custody.lease.dispatch_started is True
+            assert calls[-2:] == ["identity", "poll-live"]
             calls.append("terminate")
-            self.dispatch_started = True
             state["alive"] = False
 
-        def wait_terminated(self, *, timeout):
-            assert timeout == 3.0 and not state["alive"]
-            calls.append("wait")
+        def exit_code(self, handle):
+            assert handle == 101 and not self.closed and not state["alive"]
+            calls.append("exit-code")
+            return 1
 
-        def terminal_proof(self):
-            return {"native_wait_signaled": True}
-
-        def close(self):
+        def close(self, handle):
+            assert handle == 101 and not self.closed
             calls.append("close")
+            self.closed = True
 
+    native = InertNative()
+    factories = []
+    terminal_proofs = []
+
+    def native_factory():
+        factories.append(True)
+        assert len(factories) == 1, "retained target was reopened by another native observer"
+        return native
+
+    def commit(action):
+        assert not native.closed and not state["alive"]
+        validator = module._terminal_commit_local.validator
+        assert callable(validator)
+        proof = validator()
+        assert proof == {
+            "process_custody": "windows-retained-handle-v1",
+            "native_pid": 999999,
+            "native_birth_ticks": 116444736100000000,
+            "native_image": r"c:\fixture\inert.exe",
+            "native_image_observation": "before-termination",
+            "native_exit_code": 1,
+            "native_wait_signaled": True,
+        }
+        terminal_proofs.append(proof)
+        calls.append("commit")
+        return action
+
+    # Exercise actual acquisition, exact-type custody and native barriers on
+    # every platform. Native operations stay in memory; the shared fixture
+    # models journal ordering rather than exercising durable persistence.
     monkeypatch.setattr(combat, "_WINDOWS_PROCESS_CUSTODY", True)
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: Lease())
+    monkeypatch.setattr(lease_module, "_Native", native_factory)
+    monkeypatch.setattr(module, "_commit_after_mutation", commit)
+    process.kill = lambda: pytest.fail("PID-based termination fallback was used")
     result = module._act_on_process(
         999999, combat.CombatPolicy(mode="maximum", process_action="terminate"),
         event, "combat-aaaaaaaaaaaa",
         allowed_actions=frozenset({"terminate_process", "isolate_program"}),
     )
     assert [action.action for action in result] == ["terminate_process"]
-    assert calls == ["intent:terminate_process", "validate", "terminate", "wait", "close"]
+    assert calls == [
+        "open", "identity", "identity", "poll-live",
+        "intent:terminate_process", "identity", "poll-live",
+        "identity", "poll-live", "terminate", "wait",
+        "object-identity", "poll-dead", "object-identity", "poll-dead",
+        "exit-code", "commit", "close",
+    ]
     assert result[0].details["process_custody"] == "windows-retained-handle-v1"
+    assert len(terminal_proofs) == 1
+    assert native.closed and native.completion_waits == [3000]
+    assert factories == [True] and len(roster_reads) >= 2
     assert "fence" not in calls
 
 

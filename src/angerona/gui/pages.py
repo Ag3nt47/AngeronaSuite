@@ -17,6 +17,7 @@ import html
 import json
 import os
 import platform
+import queue
 import re
 import stat
 import subprocess
@@ -500,6 +501,8 @@ def _show_nonmodal(dlg):
     """Show a dialog NON-modally (user can click out and return later)."""
     try:
         dlg.setModal(False)
+        from angerona.gui.window_controls import configure_work_window
+        configure_work_window(dlg)
         # These windows are produced by factories and are never reused after
         # close. Deleting them prevents hidden timers, tables, and parent-owned
         # widget trees from accumulating over a long dashboard session.
@@ -515,6 +518,12 @@ def _show_nonmodal(dlg):
             pass
     try:
         dlg.finished.connect(_drop)
+    except Exception:
+        pass
+    try:
+        # Deferred close hides QDialogs while their workers retire. Native
+        # deletion can then occur without finished(); drop that wrapper too.
+        dlg.destroyed.connect(_drop)
     except Exception:
         pass
     dlg.show()
@@ -2869,10 +2878,10 @@ class ThreatWindow(QDialog):
         if prov is None:
             self.status_lbl.setText("[!] Provenance Graph module is not available.")
             return
-        BlastRadiusDialog(prov, pid, self).exec()
+        _show_nonmodal(BlastRadiusDialog(prov, pid, self))
 
     def _open_collision(self) -> None:
-        CollisionView(self).exec()
+        _show_nonmodal(CollisionView(self))
 
 
 # ── Blast-radius provenance tree ─────────────────────────────────────────────
@@ -3197,7 +3206,7 @@ class CollisionView(QDialog):
         b_close = QPushButton("Close"); b_close.clicked.connect(dlg.close)
         rowb.addWidget(b_close)
         lay.addLayout(rowb)
-        dlg.exec()
+        _show_nonmodal(dlg)
 
 
 # ── Red Team Simulation config (unified Shark + APT, difficulty/target/custom) ─
@@ -4663,7 +4672,7 @@ class ModuleInspector(QDialog):
         body.setFont(QFont("Consolas", 10)); l.addWidget(body)
         close = QPushButton("Close"); close.setObjectName("Primary")
         close.clicked.connect(dlg.close); l.addWidget(close)
-        dlg.exec()
+        _show_nonmodal(dlg)
 
     def _enabled(self) -> bool:
         return self.manager.is_enabled(self.module.name)
@@ -8379,6 +8388,143 @@ def _load_verified_aar_text(
         raise ValueError("persisted report text is not valid UTF-8") from exc
 
 
+def _read_aar_review(data_dir, redteam, binding, expected, services):
+    """Read and authenticate detached report inputs; never touch Qt widgets."""
+    from types import SimpleNamespace
+    owner = SimpleNamespace(storage=services[0], bus=services[1], manager=services[2])
+    state = SimpleNamespace(data_dir=data_dir, _redteam=redteam,
+                            _report_binding=copy.deepcopy(binding), parent=lambda: owner)
+    fields = ("_expected_report_run_id", "_expected_report_sha256",
+              "_expected_head_sha256", "_expected_report_sequence")
+    for name, value in zip(fields, expected):
+        setattr(state, name, value)
+    saved_verified = False
+    try:
+        if state._redteam:
+            # The one-use Red Team validation lease is deliberately revoked
+            # after the original AAR. Post-lease refresh must never rescore
+            # ledger rows without those live authorities; reload the text
+            # whose digest is covered by the attested JSON instead.
+            binding = (
+                state._report_binding
+                if isinstance(state._report_binding, dict)
+                else {}
+            )
+            expected_run_id = str(
+                getattr(state, "_expected_report_run_id", "")
+                or binding.get("run_id")
+                or ""
+            )
+            expected_report_sha256 = str(
+                getattr(state, "_expected_report_sha256", "")
+                or binding.get("sha256")
+                or ""
+            )
+            expected_head_sha256 = str(
+                getattr(state, "_expected_head_sha256", "")
+                or binding.get("head_sha256")
+                or ""
+            )
+            expected_sequence = int(
+                getattr(state, "_expected_report_sequence", 0)
+                or binding.get("sequence")
+                or 0
+            )
+            text = _load_verified_aar_text(
+                state.data_dir,
+                basename="redteam_aar",
+                expected_kind="red_team",
+                expected_run_id=expected_run_id,
+                expected_report_sha256=expected_report_sha256,
+                expected_head_sha256=expected_head_sha256,
+                expected_sequence=expected_sequence,
+            )
+            saved_verified = True
+        else:
+            from angerona.shark.aar_report import generate_aar
+
+            owner = state.parent()
+            text = generate_aar(
+                state.data_dir, settle_seconds=0,
+                recorder=getattr(owner, "storage", None),
+                bus=getattr(owner, "bus", None),
+                manager=getattr(owner, "manager", None),
+            )
+    except Exception as exc:
+        if state._redteam and isinstance(state._report_binding, dict):
+            state._report_binding["error"] = str(exc)
+        text = (
+            f"Could not load authenticated report: {exc}"
+            if state._redteam
+            else f"Could not generate report: {exc}"
+        )
+    if state._report_binding is not None and not text.startswith("Could not"):
+        path = Path(state.data_dir) / (
+            "redteam_aar.json" if state._redteam else "shark_aar.json"
+        )
+        try:
+            raw = path.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+            current_run_id = str(payload.get("run_id") or "")
+            current_sha256 = hashlib.sha256(raw).hexdigest()
+            head_path = Path(state.data_dir) / "redteam_aar.head.json"
+            current_head_sha256 = ""
+            current_sequence = 0
+            if head_path.is_file() and not head_path.is_symlink():
+                raw_head = head_path.read_bytes()
+                head_payload = json.loads(raw_head.decode("utf-8"))
+                current_head_sha256 = hashlib.sha256(raw_head).hexdigest()
+                current_sequence = int(head_payload.get("sequence", 0))
+            pinned_run_id = str(
+                getattr(state, "_expected_report_run_id", "") or ""
+            )
+            pinned_sha256 = str(
+                getattr(state, "_expected_report_sha256", "") or ""
+            )
+            pinned_head_sha256 = str(
+                getattr(state, "_expected_head_sha256", "") or ""
+            )
+            pinned_sequence = int(
+                getattr(state, "_expected_report_sequence", 0) or 0
+            )
+            if not pinned_run_id and not pinned_sha256:
+                # A compatibility-created dialog without an opening
+                # binding may establish it exactly once. It is immutable
+                # after this successful authenticated load.
+                state._expected_report_run_id = current_run_id
+                state._expected_report_sha256 = current_sha256
+                state._expected_head_sha256 = current_head_sha256
+                state._expected_report_sequence = current_sequence
+                state._report_binding.update({
+                    "run_id": current_run_id,
+                    "sha256": current_sha256,
+                    "error": "",
+                    "head_sha256": current_head_sha256,
+                    "sequence": current_sequence,
+                })
+            elif (
+                current_run_id != pinned_run_id
+                or not hmac.compare_digest(current_sha256, pinned_sha256)
+                or (
+                    pinned_head_sha256
+                    and not hmac.compare_digest(
+                        current_head_sha256, pinned_head_sha256
+                    )
+                )
+                or (pinned_sequence and current_sequence != pinned_sequence)
+            ):
+                raise ValueError(
+                    "persisted report changed after the review binding was established"
+                )
+            else:
+                state._report_binding["error"] = ""
+        except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
+            state._report_binding["error"] = str(exc)
+            saved_verified = False
+    return (text, state._report_binding,
+            tuple(getattr(state, name) for name in fields), saved_verified)
+
+
 class AARDialog(QDialog):
     """Read-only review window for a completed Shark Attack drill. Shows the
     same formatted report that's printed to the terminal (see
@@ -8391,9 +8537,22 @@ class AARDialog(QDialog):
     _fix_progress = Signal(int, str)
 
     def __init__(self, data_dir, parent=None, on_attempt_fix=None, on_apply=None,
-                 on_clean=None, redteam=False, report_binding=None) -> None:
+                 on_clean=None, redteam=False, report_binding=None, apply_hold_reason="") -> None:
         super().__init__(parent)
         self.data_dir = data_dir
+        self._angerona_preserve_on_close = True
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._work_results = queue.Queue(maxsize=1)
+        self._work_progress = queue.Queue(maxsize=1)
+        self._work_thread = None
+        self._work_kind = ""
+        self._close_requested = False
+        self._clean_after_work = False
+        self._apply_hold_reason = str(apply_hold_reason)
+        self._report_appendix = ""
+        self._work_timer = QTimer(self)
+        self._work_timer.setInterval(100)
+        self._work_timer.timeout.connect(self._poll_work)
         self._on_attempt_fix = on_attempt_fix
         self._on_apply = on_apply
         self._on_clean = on_clean
@@ -8439,6 +8598,7 @@ class AARDialog(QDialog):
         refresh = QPushButton(
             "Reload verified report" if self._redteam else "Re-run report"
         )
+        self._reload_btn = refresh
         refresh.setObjectName("Primary")
         refresh.clicked.connect(self.refresh)
         row.addWidget(refresh)
@@ -8450,7 +8610,7 @@ class AARDialog(QDialog):
             "Install reviewed detector candidates and clean inert markers. Findings stay open "
             "until a fresh drill proves the fixes end to end." if self._redteam else
             "Ask the local AI to generate a remediation for each open weakness, then "
-            "optionally apply it (with your confirmation).")
+            + (self._apply_hold_reason or "optionally apply it (with your confirmation)."))
         self._fix_btn.clicked.connect(self._attempt_fix)
         row.addWidget(self._fix_btn)
         from angerona.gui.animations import RunSpinner
@@ -8480,10 +8640,14 @@ class AARDialog(QDialog):
         row.addWidget(close)
         lay.addLayout(row)
         self._update_report_status()
+        from angerona.gui.window_controls import configure_work_window
+        configure_work_window(self)
 
     def _update_report_status(self, *, saved_verified: bool = False) -> None:
         """Separate delivered report text from saved-copy authentication."""
         if not self._redteam:
+            self._fix_btn.setEnabled(not self.has_active_work())
+            self._test_fix_btn.setEnabled(not self.has_active_work())
             self._report_status.hide()
             return
         binding = self._report_binding if isinstance(self._report_binding, dict) else {}
@@ -8505,19 +8669,19 @@ class AARDialog(QDialog):
             color = "#9fb3c8"
         self._report_status.setText(message)
         self._report_status.setStyleSheet(f"color:{color}; font-weight:600;")
-        self._fix_btn.setEnabled(not error)
+        self._fix_btn.setEnabled(not error and not self.has_active_work())
+        self._test_fix_btn.setEnabled(not error and not self.has_active_work())
 
     def _clean_and_close(self) -> None:
         """Sweep the drill's marker files, then close the report."""
+        if self.has_active_work():
+            self._clean_after_work = True
+            self.done(QDialog.DialogCode.Accepted)
+            return
         if self._on_clean:
-            try:
-                n = self._on_clean()
-                if isinstance(n, int):
-                    self.body.appendPlainText(
-                        f"\n\U0001F9F9  Cleaned {n} drill marker/file(s). Closing.")
-            except Exception:
-                pass
-        self.accept()
+            self._start_work("clean", self._on_clean)
+        else:
+            self.accept()
 
     @staticmethod
     def _safe(fn):
@@ -8527,6 +8691,8 @@ class AARDialog(QDialog):
             return f"[error] {exc}"
 
     def _attempt_fix(self) -> None:
+        if self.has_active_work() or self._close_requested:
+            return
         if not self._on_attempt_fix:
             self.body.appendPlainText("\n[Attempt Fix] Posture Hardening module not available.")
             return
@@ -8543,17 +8709,13 @@ class AARDialog(QDialog):
         else:
             self.body.appendPlainText("\n[Attempt Fix] Asking the local AI for a remediation "
                                       "(temperature 0) — this may take a few seconds…")
-        import threading
-        def work():
-            if self._redteam:
-                result = self._safe(
-                    lambda: self._on_attempt_fix(self._fix_progress.emit)
-                )
-            else:
-                result = self._safe(self._on_attempt_fix)
-            self._fix_done.emit(result)
-
-        threading.Thread(target=work, daemon=True).start()
+        callback = self._on_attempt_fix
+        if self._redteam:
+            progress = self._queue_fix_progress
+            work = lambda: callback(progress)
+        else:
+            work = callback
+        self._start_work("fix", work)
 
     def _on_fix_progress(self, percent: int, text: str) -> None:
         self._fix_spinner.set_text(text)
@@ -8570,7 +8732,9 @@ class AARDialog(QDialog):
                 # immediately instead of leaving the operator staring at the
                 # pre-fix 0% score.  Append the proof summary after the refreshed
                 # report so neither result is lost.
-                self.refresh()
+                self._report_appendix = "\n\n" + text
+                if not self._close_requested:
+                    self.refresh()
                 self.body.appendPlainText("\n\n" + text)
                 self._fix_spinner.succeed("Practice fix verified")
                 # Only reveal retest/source inspection after signed green proof.
@@ -8585,7 +8749,10 @@ class AARDialog(QDialog):
             self.body.appendPlainText("\n" + text)
         # Only offer to apply when a remediation was actually generated. If the
         # posture is clean (no open weaknesses), there is nothing to run.
-        if not self._on_apply or "[vetted plan ready]" not in text.lower():
+        if self._apply_hold_reason:
+            self.body.appendPlainText("\n[Apply held] " + self._apply_hold_reason)
+            return
+        if self._close_requested or not self._on_apply or "[vetted plan ready]" not in text.lower():
             return
         from PySide6.QtWidgets import QMessageBox
         if QMessageBox.question(
@@ -8594,9 +8761,7 @@ class AARDialog(QDialog):
                 "will remain inert and will not execute.",
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
             self.body.appendPlainText("\n[Apply] Running remediation…")
-            import threading
-            threading.Thread(target=lambda: self._apply_done.emit(self._safe(self._on_apply)),
-                             daemon=True).start()
+            self._start_work("apply", self._on_apply)
 
     def _open_fix_source(self) -> None:
         """Open the exact detector source, not a copied report or generated script."""
@@ -8616,138 +8781,163 @@ class AARDialog(QDialog):
     def set_text(self, text: str) -> None:
         self.body.setPlainText(text)
 
-    def refresh(self) -> None:
-        self.body.setPlainText(
-            "Loading the authenticated persisted report…"
-            if self._redteam
-            else "Re-evaluating against the flight-recorder ledger…"
-        )
-        saved_verified = False
-        try:
-            if self._redteam:
-                # The one-use Red Team validation lease is deliberately revoked
-                # after the original AAR. Post-lease refresh must never rescore
-                # ledger rows without those live authorities; reload the text
-                # whose digest is covered by the attested JSON instead.
-                binding = (
-                    self._report_binding
-                    if isinstance(self._report_binding, dict)
-                    else {}
-                )
-                expected_run_id = str(
-                    getattr(self, "_expected_report_run_id", "")
-                    or binding.get("run_id")
-                    or ""
-                )
-                expected_report_sha256 = str(
-                    getattr(self, "_expected_report_sha256", "")
-                    or binding.get("sha256")
-                    or ""
-                )
-                expected_head_sha256 = str(
-                    getattr(self, "_expected_head_sha256", "")
-                    or binding.get("head_sha256")
-                    or ""
-                )
-                expected_sequence = int(
-                    getattr(self, "_expected_report_sequence", 0)
-                    or binding.get("sequence")
-                    or 0
-                )
-                text = _load_verified_aar_text(
-                    self.data_dir,
-                    basename="redteam_aar",
-                    expected_kind="red_team",
-                    expected_run_id=expected_run_id,
-                    expected_report_sha256=expected_report_sha256,
-                    expected_head_sha256=expected_head_sha256,
-                    expected_sequence=expected_sequence,
-                )
-                saved_verified = True
-            else:
-                from angerona.shark.aar_report import generate_aar
+    def _report_inputs(self):
+        owner = self.parent() if hasattr(self, "parent") else None
+        expected = tuple(getattr(self, name, default) for name, default in (
+            ("_expected_report_run_id", ""), ("_expected_report_sha256", ""),
+            ("_expected_head_sha256", ""), ("_expected_report_sequence", 0)))
+        services = tuple(getattr(owner, name, None) for name in ("storage", "bus", "manager"))
+        return self.data_dir, self._redteam, copy.deepcopy(self._report_binding), expected, services
 
-                owner = self.parent()
-                text = generate_aar(
-                    self.data_dir, settle_seconds=0,
-                    recorder=getattr(owner, "storage", None),
-                    bus=getattr(owner, "bus", None),
-                    manager=getattr(owner, "manager", None),
-                )
-        except Exception as exc:
-            if self._redteam and isinstance(self._report_binding, dict):
-                self._report_binding["error"] = str(exc)
-            text = (
-                f"Could not load authenticated report: {exc}"
-                if self._redteam
-                else f"Could not generate report: {exc}"
-            )
-        self.body.setPlainText(text)
-        if self._report_binding is not None and not text.startswith("Could not"):
-            path = Path(self.data_dir) / (
-                "redteam_aar.json" if self._redteam else "shark_aar.json"
-            )
-            try:
-                raw = path.read_bytes()
-                payload = json.loads(raw.decode("utf-8"))
-                current_run_id = str(payload.get("run_id") or "")
-                current_sha256 = hashlib.sha256(raw).hexdigest()
-                head_path = Path(self.data_dir) / "redteam_aar.head.json"
-                current_head_sha256 = ""
-                current_sequence = 0
-                if head_path.is_file() and not head_path.is_symlink():
-                    raw_head = head_path.read_bytes()
-                    head_payload = json.loads(raw_head.decode("utf-8"))
-                    current_head_sha256 = hashlib.sha256(raw_head).hexdigest()
-                    current_sequence = int(head_payload.get("sequence", 0))
-                pinned_run_id = str(
-                    getattr(self, "_expected_report_run_id", "") or ""
-                )
-                pinned_sha256 = str(
-                    getattr(self, "_expected_report_sha256", "") or ""
-                )
-                pinned_head_sha256 = str(
-                    getattr(self, "_expected_head_sha256", "") or ""
-                )
-                pinned_sequence = int(
-                    getattr(self, "_expected_report_sequence", 0) or 0
-                )
-                if not pinned_run_id and not pinned_sha256:
-                    # A compatibility-created dialog without an opening
-                    # binding may establish it exactly once. It is immutable
-                    # after this successful authenticated load.
-                    self._expected_report_run_id = current_run_id
-                    self._expected_report_sha256 = current_sha256
-                    self._expected_head_sha256 = current_head_sha256
-                    self._expected_report_sequence = current_sequence
-                    self._report_binding.update({
-                        "run_id": current_run_id,
-                        "sha256": current_sha256,
-                        "error": "",
-                        "head_sha256": current_head_sha256,
-                        "sequence": current_sequence,
-                    })
-                elif (
-                    current_run_id != pinned_run_id
-                    or not hmac.compare_digest(current_sha256, pinned_sha256)
-                    or (
-                        pinned_head_sha256
-                        and not hmac.compare_digest(
-                            current_head_sha256, pinned_head_sha256
-                        )
-                    )
-                    or (pinned_sequence and current_sequence != pinned_sequence)
-                ):
-                    raise ValueError(
-                        "persisted report changed after the review binding was established"
-                    )
-                else:
-                    self._report_binding["error"] = ""
-            except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
-                self._report_binding["error"] = str(exc)
-                saved_verified = False
+    def _apply_report_snapshot(self, result):
+        text, binding, expected, saved_verified = result
+        if isinstance(self._report_binding, dict) and isinstance(binding, dict):
+            self._report_binding.update(binding)
+        for name, value in zip(("_expected_report_run_id", "_expected_report_sha256",
+                                "_expected_head_sha256", "_expected_report_sequence"), expected):
+            setattr(self, name, value)
+        self.body.setPlainText(text + getattr(self, "_report_appendix", ""))
         if isinstance(self, AARDialog):
             self._update_report_status(saved_verified=saved_verified)
+
+    def refresh(self) -> None:
+        # Preserve the pure unbound compatibility seam used by report readers.
+        # A real Qt dialog always reads on its one retained worker.
+        inputs = AARDialog._report_inputs(self)
+        if not isinstance(self, AARDialog):
+            AARDialog._apply_report_snapshot(self, _read_aar_review(*inputs))
+            return
+        if self.has_active_work():
+            return
+        if self._start_work("refresh", lambda: _read_aar_review(*inputs)):
+            self.body.setPlainText("Loading the authenticated persisted report…" if self._redteam
+                                   else "Re-evaluating against the flight-recorder ledger…")
+
+    def has_active_work(self) -> bool:
+        # A completed native thread stays retained until Qt consumes its result.
+        return self._work_thread is not None
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._close_requested:
+            if self._clean_after_work:
+                self.body.appendPlainText("\nPending Clean & Close canceled because this report was reopened.")
+            self._close_requested = self._clean_after_work = False
+
+    def _start_work(self, kind, work) -> bool:
+        if self.has_active_work() or self._close_requested:
+            return False
+        owner = self.parent()
+        admit = getattr(owner, "_admit_aar_work", None)
+        if (kind != "refresh" or not self._redteam) and callable(admit) and not admit(self, kind):
+            self.body.appendPlainText("\nReport action held while another drill or report action is running.")
+            self._fix_spinner.stop()
+            self._update_report_status()
+            return False
+        results = self._work_results
+
+        def run():
+            try:
+                result = work()
+            except Exception as exc:
+                result = f"[error] {exc}"
+            results.put_nowait(result)
+
+        worker = threading.Thread(target=run, name=f"AAR-{kind}", daemon=True)
+        self._work_kind, self._work_thread = kind, worker
+        self._fix_btn.setEnabled(False)
+        self._test_fix_btn.setEnabled(False)
+        self._reload_btn.setEnabled(False)
+        self._angerona_work_window_retained = True
+        try:
+            worker.start()
+        except Exception as exc:
+            self._work_thread = None
+            release = getattr(owner, "_release_aar_work", None)
+            if callable(release):
+                release(self)
+            self._angerona_work_window_retained = False
+            self._reload_btn.setEnabled(True)
+            self._fix_spinner.stop()
+            self._update_report_status()
+            self.body.appendPlainText(f"\nCould not start report work: {exc}")
+            return False
+        self._work_timer.start()
+        return True
+
+    def _queue_fix_progress(self, percent, message):
+        # Replace one cosmetic progress observation; never discard completion.
+        try:
+            self._work_progress.get_nowait()
+        except queue.Empty:
+            pass
+        self._work_progress.put_nowait((percent, message))
+
+    def _poll_work(self):
+        try:
+            percent, message = self._work_progress.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            self._on_fix_progress(percent, message)
+        worker = self._work_thread
+        if worker is None or worker.is_alive():
+            return
+        # is_alive False proves this exact Python worker returned before any
+        # completion handler may close/release its QObject owner.
+        try:
+            result = self._work_results.get_nowait()
+        except queue.Empty:
+            result = "[error] Report worker exited without a result."
+        kind, self._work_kind = self._work_kind, ""
+        self._work_thread = None
+        self._work_timer.stop()
+        self._angerona_work_window_retained = False
+        release = getattr(self.parent(), "_release_aar_work", None)
+        if callable(release):
+            release(self)
+        self._reload_btn.setEnabled(True)
+        if kind == "refresh" and isinstance(result, tuple):
+            self._apply_report_snapshot(result)
+        elif kind == "fix":
+            self._show_fix_result(str(result))
+        elif kind == "clean":
+            if type(result) is int:
+                self.body.appendPlainText(f"\nCleaned {result} drill marker/file(s). Closing.")
+                self._close_requested = False
+                self.accept()
+                return
+            self.body.appendPlainText("\nCleanup held or failed: " + str(result))
+            self._close_requested = False
+            self.show()
+            self._update_report_status()
+        else:
+            self.body.appendPlainText("\n" + str(result))
+            self._update_report_status()
+        if self._close_requested and not self.has_active_work():
+            self._close_requested = False
+            if self._clean_after_work:
+                self._clean_after_work = False
+                self._clean_and_close()
+            else:
+                self.reject()
+
+    def done(self, result: int) -> None:
+        if self.has_active_work():
+            self._close_requested = True
+            self._angerona_work_window_retained = True
+            self.hide()
+            return
+        super().done(result)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        if self.has_active_work():
+            self._close_requested = True
+            self._angerona_work_window_retained = True
+            self.hide()
+            event.ignore()
+            return
+        super().closeEvent(event)
 
 
 
@@ -8798,6 +8988,12 @@ class SettingsDialog(QDialog):
         self._apply_theme    = apply_theme_fn
         self._process_baseline = process_baseline
         self._accept_async_results = True
+        self._settings_owned_workers = {}
+        self._settings_retirement_callback = None
+        self._settings_retirement_timer = QTimer(self)
+        self._settings_retirement_timer.setSingleShot(True)
+        self._settings_retirement_timer.setInterval(40)
+        self._settings_retirement_timer.timeout.connect(self._poll_settings_retirement)
         self._combat_history_loading = False
         self._combat_history_refresh_pending = False
         self._combat_history_reversible = False
@@ -8815,7 +9011,9 @@ class SettingsDialog(QDialog):
 
         self.setWindowTitle("Angerona — Settings")
         self.setMinimumWidth(720)
-        self.setModal(True)
+        self.setModal(False)
+        self._angerona_preserve_on_close = True
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
 
         root = QVBoxLayout(self)
         root.setSpacing(10)
@@ -8924,6 +9122,7 @@ class SettingsDialog(QDialog):
 
     def done(self, result: int) -> None:
         self._accept_async_results = False
+        self._finish_settings_loading()
         integrity_controls = getattr(self, "_recorder_integrity_controls", None)
         if integrity_controls is not None:
             integrity_controls.shutdown_reader()
@@ -8945,6 +9144,7 @@ class SettingsDialog(QDialog):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
+        self._finish_settings_loading()
         integrity_controls = getattr(self, "_recorder_integrity_controls", None)
         if integrity_controls is not None:
             integrity_controls.shutdown_reader()
@@ -8963,6 +9163,80 @@ class SettingsDialog(QDialog):
         self._detach_update_controller()
         self._detach_combat_parent_signal()
         super().closeEvent(event)
+
+    def _settings_worker_available(self, name):
+        if not self._accept_async_results:
+            return False
+        self._settings_owned_workers = {
+            key: worker for key, worker in self._settings_owned_workers.items() if worker.is_alive()
+        }
+        return name not in self._settings_owned_workers
+
+    def _start_settings_worker(self, name, target):
+        if not self._settings_worker_available(name):
+            return False
+        worker = threading.Thread(target=target, name=name, daemon=True)
+        self._settings_owned_workers[name] = worker
+        try:
+            worker.start()
+        except Exception:
+            self._settings_owned_workers.pop(name, None)
+            if name == "VoiceModelInstall":
+                token, self._voice_model_loading_token = self._voice_model_loading_token, None
+                if token is not None:
+                    finish_loading(token)
+            elif name in {"SettingsVoiceTest", "SettingsEmailTest", "SettingsPushTest", "SettingsTeamsTest"}:
+                if self._aria_test_loading_tokens:
+                    finish_loading(self._aria_test_loading_tokens.pop())
+            status = getattr(self, "_aria_test_status", None)
+            if status is not None:
+                status.setText("Settings background work could not start; retry the explicit action.")
+            if name == "VoiceModelInstall":
+                button = getattr(self, "_aria_model_btn", None)
+                if button is not None:
+                    button.setEnabled(True)
+            if name == "ProcessBaselineAction":
+                for button in getattr(self, "_baseline_action_buttons", ()):
+                    button.setEnabled(True)
+            return False
+        return True
+
+    def _finish_settings_loading(self):
+        token, self._voice_model_loading_token = self._voice_model_loading_token, None
+        if token is not None:
+            finish_loading(token)
+        tokens, self._aria_test_loading_tokens = self._aria_test_loading_tokens, []
+        for token in tokens:
+            finish_loading(token)
+
+    def retire_after_workers(self, callback):
+        """Retain one closed generation until its exact Python workers return."""
+        self._accept_async_results = False
+        self._finish_settings_loading()
+        self._settings_retirement_callback = callback
+        self._poll_settings_retirement()
+
+    def _poll_settings_retirement(self):
+        # AsyncSnapshot.close() wakes its worker but cannot cancel an in-flight
+        # read. Retain that exact Settings-owned reader generation too.
+        workers = list(self._settings_owned_workers.values())
+        reader = getattr(self, "_update_check_reader", None)
+        thread = getattr(reader, "thread", None)
+        if thread is not None:
+            workers.append(thread)
+        startup_controls = getattr(self, "_installed_startup_controls", None)
+        startup_thread = getattr(getattr(startup_controls, "_reader", None), "thread", None)
+        if startup_thread is not None:
+            workers.append(startup_thread)
+        if any(worker.is_alive() for worker in workers):
+            timer = self._settings_retirement_timer
+            timer.start(min(1000, max(40, timer.interval() * 2)))
+            return
+        self._settings_retirement_timer.stop()
+        self._settings_owned_workers.clear()
+        callback, self._settings_retirement_callback = self._settings_retirement_callback, None
+        if callback is not None:
+            callback(self)
 
     def _detach_combat_parent_signal(self) -> None:
         signal = self._combat_parent_signal
@@ -9469,7 +9743,8 @@ class SettingsDialog(QDialog):
         for row, (name, title, default, low, high) in enumerate((
             ("github_tools_job_limit_mib", "Working data per job (MiB)", 256, 64, 1024),
             ("github_tools_report_limit_mib", "Retained reports (MiB)", 64, 8, 256),
-            ("github_tools_timeout_seconds", "Scan deadline (seconds)", 300, 30, 900),
+            ("github_tools_timeout_seconds", "Standalone toolkit deadline (seconds)", 300, 30, 900),
+            ("spyware_scan_timeout_seconds", "Spyware Scan default budget (seconds)", 3600, 30, 14400),
         )):
             spin = QSpinBox()
             spin.setRange(low, high)
@@ -9846,9 +10121,7 @@ class SettingsDialog(QDialog):
                     owner, "combat_history_result", module, actions, error[:300],
                 )
 
-        threading.Thread(
-            target=load, name="CombatHistoryLoad", daemon=True,
-        ).start()
+        self._start_settings_worker("CombatHistoryLoad", load)
 
     def _apply_combat_history_result(self, module, actions: list, error: str) -> None:
         if not self._accept_async_results:
@@ -10005,6 +10278,10 @@ class SettingsDialog(QDialog):
         boot_lay.addWidget(self._autostart_status)
 
         lay.addWidget(boot_box)
+
+        from angerona.gui.installed_startup_controls import InstalledStartupControls
+        self._installed_startup_controls = InstalledStartupControls(retirement_owner=self, parent=w)
+        lay.addWidget(self._installed_startup_controls)
 
         lay.addWidget(self._section("MCP Server (Claude Desktop integration)"))
         self._mcp_chk = QCheckBox("Enable local MCP server on port")
@@ -11022,6 +11299,8 @@ class SettingsDialog(QDialog):
 
     # ── ARIA setup: live verification (each runs off-thread; result via signal) ─
     def _install_voice_model(self) -> None:
+        if not self._settings_worker_available("VoiceModelInstall"):
+            return
         """The only in-app path that may download a Vosk model: explicit click."""
         self._aria_model_btn.setEnabled(False)
         self._aria_model_status.setText("Downloading and verifying 39 MB to Angerona data…")
@@ -11038,9 +11317,11 @@ class SettingsDialog(QDialog):
                 message = f"Speech model setup failed: {exc}"
                 ready = False
             self.voice_model_result.emit(message, ready)
-        threading.Thread(target=_run, name="VoiceModelInstall", daemon=True).start()
+        self._start_settings_worker("VoiceModelInstall", _run)
 
     def _voice_model_finished(self, message: str, ready: bool) -> None:
+        if not self._accept_async_results:
+            return
         finish_loading(self._voice_model_loading_token)
         self._voice_model_loading_token = None
         self._aria_model_status.setText(message)
@@ -11048,22 +11329,28 @@ class SettingsDialog(QDialog):
         self._aria_test_status.setText(message)
 
     def _aria_test_voice(self) -> None:
+        if not self._settings_worker_available("SettingsVoiceTest"):
+            return
         self._aria_test_status.setText("Speaking a test line…")
         self._aria_test_loading_tokens.append(begin_loading("Testing local voice…"))
+
+        allow_cloud_tts = self._aria_voice_cloud_chk.isChecked()
 
         def _run() -> None:
             try:
                 from angerona.connectors.voice import Voice
-                v = Voice(enabled=True, allow_cloud_tts=self._aria_voice_cloud_chk.isChecked())
+                v = Voice(enabled=True, allow_cloud_tts=allow_cloud_tts)
                 ok = v.speak("ARIA voice test. Angerona narration is online.")
                 msg = (f"Voice OK — you should have heard ARIA.  ({v.status()})" if ok
                        else f"No audio produced. {v.last_error or 'no TTS backend found'}")
             except Exception as exc:
                 msg = f"Voice test error: {exc}"
             self.aria_test_result.emit(msg)
-        threading.Thread(target=_run, daemon=True).start()
+        self._start_settings_worker("SettingsVoiceTest", _run)
 
     def _aria_test_email(self) -> None:
+        if not self._settings_worker_available("SettingsEmailTest"):
+            return
         host = self._aria_imap_host.text().strip()
         user = self._aria_imap_user.text().strip()
         pw   = self._aria_imap_pass.text()
@@ -11083,9 +11370,11 @@ class SettingsDialog(QDialog):
             except Exception as exc:
                 msg = f"Email test error: {exc}"
             self.aria_test_result.emit(msg)
-        threading.Thread(target=_run, daemon=True).start()
+        self._start_settings_worker("SettingsEmailTest", _run)
 
     def _aria_test_push(self) -> None:
+        if not self._settings_worker_available("SettingsPushTest"):
+            return
         url = self._aria_push_url.text().strip()
         if not url:
             self._aria_test_status.setText("Enter a webhook URL first.")
@@ -11106,9 +11395,11 @@ class SettingsDialog(QDialog):
             except Exception as exc:
                 msg = f"Push test error: {exc}"
             self.aria_test_result.emit(msg)
-        threading.Thread(target=_run, daemon=True).start()
+        self._start_settings_worker("SettingsPushTest", _run)
 
     def _aria_test_teams(self) -> None:
+        if not self._settings_worker_available("SettingsTeamsTest"):
+            return
         app_id = self._teams_app_id.text().strip()
         pw = self._teams_pw.text().strip()
         if not (app_id and pw):
@@ -11131,9 +11422,11 @@ class SettingsDialog(QDialog):
             except Exception as exc:
                 msg = f"Teams test error: {exc}"
             self.aria_test_result.emit(msg)
-        threading.Thread(target=_run, daemon=True).start()
+        self._start_settings_worker("SettingsTeamsTest", _run)
 
     def _aria_test_finished(self, message: str) -> None:
+        if not self._accept_async_results:
+            return
         self._aria_test_status.setText(message)
         if self._aria_test_loading_tokens:
             finish_loading(self._aria_test_loading_tokens.pop(0))
@@ -11361,6 +11654,8 @@ class SettingsDialog(QDialog):
         )
 
     def _run_process_baseline_action(self, label: str, action) -> None:
+        if not self._settings_worker_available("ProcessBaselineAction"):
+            return
         for button in self._baseline_action_buttons:
             button.setEnabled(False)
         self._baseline_status.setText(f"{label}…")
@@ -11372,11 +11667,7 @@ class SettingsDialog(QDialog):
             except Exception as exc:
                 self.process_baseline_result.emit(f"{label}: {exc}", False)
 
-        threading.Thread(
-            target=_run,
-            daemon=True,
-            name="ProcessBaselineAction",
-        ).start()
+        self._start_settings_worker("ProcessBaselineAction", _run)
 
     def _approve_process_baseline(self) -> None:
         candidate_id, eligible = self._selected_process_baseline()
@@ -11420,6 +11711,8 @@ class SettingsDialog(QDialog):
         )
 
     def _process_baseline_action_finished(self, message: str, ok: bool) -> None:
+        if not self._accept_async_results:
+            return
         self._refresh_trusted_processes()
         self._refresh_process_baseline()
         self._baseline_status.setStyleSheet(
@@ -12287,7 +12580,23 @@ class SettingsDialog(QDialog):
             )
             return
         config_before = copy.deepcopy(vars(self._cfg))
-        environment_before = dict(os.environ)
+        # Only these non-secret settings are published by this save path and
+        # Config.save(). A process-wide rollback would undo background updates
+        # and resurrect credentials deliberately scrubbed by the secure store.
+        environment_before = {
+            name: os.environ.get(name)
+            for name in (
+                "ANGERONA_SIEM_HOST", "ANGERONA_SIEM_PORT", "ANGERONA_SIEM_PROTO",
+                "ANGERONA_SIEM_MINSEV", "ANGERONA_SIEM_CA_FILE", "ANGERONA_BRIDGE_MODE",
+                "ANGERONA_BRIDGE_PEER", "ANGERONA_BRIDGE_BIND", "ANGERONA_BRIDGE_PORT",
+                "ANGERONA_BRIDGE_NODE_ID", "ANGERONA_IOC_FEED", "ANGERONA_IOC_FEED_SHA256",
+                "ANGERONA_SIEM_ALLOW_PLAINTEXT", "ANGERONA_SIEM_INCLUDE_RAW",
+                "ANGERONA_BRIDGE_ALLOW_NONLOOPBACK", "ANGERONA_REQUIRE_SIGNED_AAR",
+                "ANGERONA_ENTROPY_POOL", "ANGERONA_ADVERSARY_COMBAT_ENABLED",
+                "ANGERONA_USER_FOLDER_DECEPTION", "ANGERONA_ADVERSARY_COMBAT_MODE",
+                "ANGERONA_AI_ORDER",
+            )
+        }
         previous_autostart = bool(config_before["autostart_enabled"])
         autostart_requested = (
             candidate.autostart_enabled != previous_autostart
@@ -12398,8 +12707,14 @@ class SettingsDialog(QDialog):
                     rollback_errors.append(f"autostart: {rollback_exc}")
             self._cfg.__dict__.clear()
             self._cfg.__dict__.update(config_before)
-            os.environ.clear()
-            os.environ.update(environment_before)
+            for name, value in environment_before.items():
+                try:
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+                except Exception as rollback_exc:
+                    rollback_errors.append(f"runtime setting {name}: {rollback_exc}")
             if rollback_errors:
                 QMessageBox.critical(
                     self, "Settings rollback incomplete",
@@ -12412,7 +12727,7 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(
                     self, "Settings not saved",
                     "The save failed. The prior config object, settings bytes, "
-                    "protected credentials, environment, and autostart state were "
+                    "protected credentials, runtime setting values, and autostart state were "
                     f"restored.\n\n{exc}",
                 )
             return

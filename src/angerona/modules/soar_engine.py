@@ -35,7 +35,6 @@ import json
 import math
 import os
 import re
-import secrets
 import sys
 import time
 import zipfile
@@ -454,134 +453,17 @@ class ActiveResponseSOAR(BaseModule):
             self._delegate_issuer_original(ev, t0=t0, path=path)
             return
 
-        if not self._exact_process_binding_ok(ev):
-            self.emit(
-                "Refusing kill/rollback: process contract is not bound to the "
-                "live PID/create-time/executable instance.",
-                Severity.HIGH,
-                pid=pid if isinstance(pid, int) else None,
-            )
-            return
-
-        combat, synchronous = self._combat_consumer(ev)
-        if combat is None:
-            self.emit(
-                "Refusing kill/rollback: hardened Adversary Combat consumer is unavailable.",
-                Severity.HIGH,
-                pid=pid if isinstance(pid, int) else None,
-                path=path,
-            )
-            return
-
-        bus = self._bus
-        if bus is None or not getattr(bus, "integrity_enabled", False):
-            self.emit(
-                "Refusing Combat delegation without an authenticated EventBus receipt path.",
-                Severity.HIGH,
-                pid=pid if isinstance(pid, int) else None,
-                path=path,
-            )
-            return
-        request_id = secrets.token_hex(16)
-        origin_signature = str(getattr(ev, "hmac_sig", "") or "")
-        origin_digest = origin_signature or hashlib.sha256(
-            json.dumps(
-                {
-                    "module": ev.module,
-                    "message": ev.message,
-                    "severity": int(ev.severity),
-                    "ts": float(ev.ts),
-                    "details": ev.details or {},
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-                default=str,
-            ).encode("utf-8")
-        ).hexdigest()
-        request_details = json.loads(
-            json.dumps(ev.details or {}, sort_keys=True, default=str)
-        )
-        request_details.update({
-            "queue_request_id": request_id,
-            "correlation_id": request_id,
-            "origin_event_digest": origin_digest,
-            "origin_module": ev.module,
-            "origin_ts": float(ev.ts),
-        })
-        from angerona.core.eventbus import Event
-
-        request = Event(
-            "Active Response SOAR Request",
-            f"Exact response request for {ev.module} evidence {origin_digest[:16]}.",
-            ev.severity,
-            details=request_details,
-        )
-        try:
-            self.publish_event(request)
-            signed_request = next(
-                event
-                for event in bus.recent(50)
-                if event.module == "Active Response SOAR Request"
-                and (event.details or {}).get("queue_request_id") == request_id
-                and bus.verify(event)
-            )
-            if synchronous:
-                combat._handle(signed_request)
-            else:
-                # Production Combat is already an EventBus subscriber. This
-                # explicit submission also supports injected supervisors; its
-                # request-ID dedup makes the production path one-shot.
-                combat._submit(signed_request)
-        except Exception as exc:
-            self.emit(
-                f"Combat delegation failed safely: {exc}",
-                Severity.HIGH,
-                pid=pid if isinstance(pid, int) else None,
-                path=path,
-            )
-            return
-        receipt = self._verified_request_receipt(
-            combat, request_id, request.ts
-        )
-        if not synchronous and receipt is None:
-            deadline = time.monotonic() + 3.0
-            while time.monotonic() < deadline:
-                time.sleep(0.05)
-                receipt = self._verified_request_receipt(
-                    combat, request_id, request.ts
-                )
-                if receipt is not None:
-                    break
-        receipt_details = (receipt.details or {}) if receipt is not None else {}
-        mitigated = bool(
-            receipt is not None
-            and receipt_details.get("action_succeeded") is True
-            and receipt_details.get("postcondition_verified") is True
-        )
-        action_ids = (
-            list(receipt_details.get("action_ids") or [])
-            if mitigated
-            else []
-        )
-
-        elapsed = round(time.time() - t0, 3)
+        # Only the existing issuer-original practice adapter above retains
+        # its exact event and rechecks issuer authority. Do not fabricate a new
+        # module/timestamp envelope for another producer's response contract.
+        # Direct detector -> Combat intake remains available independently.
         self.emit(
-            f"Exact response for {ev.module} {ev.severity.label} was delegated "
-            f"to Combat: {len(action_ids)} request-bound signed action receipt(s), "
-            f"{elapsed}s.",
-            Severity.HIGH if mitigated else Severity.MEDIUM,
-            pid=pid,
-            response_target_path=path,
-            mitigated=mitigated,
-            combat_action_ids=action_ids,
-            queue_request_id=request_id,
-            origin_event_digest=origin_digest,
-            receipt_status=(
-                "verified-applied"
-                if mitigated
-                else "verified-no-action" if receipt is not None else "pending-timeout"
-            ),
-            mitigation_seconds=elapsed, trigger_module=ev.module, trigger_ts=ev.ts,
+            "SOAR response delegation held: exact original producer proof adapter is unavailable.",
+            Severity.MEDIUM,
+            disposition="health", response_authorized=False, mitigated=False,
+            receipt_status="held-original-proof-adapter",
+            trigger_module=ev.module, trigger_ts=ev.ts,
+            response_withheld_reason="original-producer-proof-adapter-unavailable",
         )
 
     def _issuer_original_combat(self, event, *, pending_handoff: bool = False):

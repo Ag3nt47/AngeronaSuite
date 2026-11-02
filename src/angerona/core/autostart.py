@@ -563,3 +563,22 @@ def sync(enabled: bool) -> None:
         enable_autostart()
     else:
         disable_autostart()
+
+
+
+def installed_admin_status():
+    """Worker-only native status; separate from ordinary/source autostart."""
+    from angerona.core.installed_autostart import inspect_enrollment
+    return inspect_enrollment()
+
+
+def enroll_installed_admin_autostart():
+    """Explicit installed setup operation under an already-elevated admin token."""
+    from angerona.core.installed_autostart import enroll_current_admin
+    return enroll_current_admin()
+
+
+def revoke_installed_admin_autostart():
+    """Explicit exact enrollment revocation; never stop a running application."""
+    from angerona.core.installed_autostart import revoke_current_admin
+    return revoke_current_admin()

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import time
 from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -152,9 +153,20 @@ def test_red_team_aar_reload_failure_disables_practice_fix(
 
         monkeypatch.setattr("angerona.gui.pages._load_verified_aar_text", refuse)
         dialog.refresh()
+        worker = dialog._work_thread
+        assert worker is not None
+        deadline = time.monotonic() + 3
+        while dialog.has_active_work() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.005)
+        assert not dialog.has_active_work(), "Authenticated report refresh did not retire"
+        assert not worker.is_alive()
         assert "signed pair changed" in dialog.body.toPlainText()
         assert "Report verification failed" in dialog._report_status.text()
         assert not dialog._fix_btn.isEnabled()
     finally:
+        if dialog.has_active_work():
+            dialog._work_thread.join(3)
+            dialog._poll_work()
         dialog.close()
         app.processEvents()

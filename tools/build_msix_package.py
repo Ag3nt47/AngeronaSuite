@@ -109,10 +109,19 @@ def validate_manifest(
         "Assets\\Square150x150Logo.png"
     ):
         raise ValueError("AppxManifest.xml visual assets are invalid")
-    capabilities = root.findall(
-        f"{{{FOUNDATION}}}Capabilities/{{{RESCAP}}}Capability"
-    )
-    if len(capabilities) != 1 or capabilities[0].attrib != {"Name": "runFullTrust"}:
+    # Full trust alone still starts at medium integrity. The installed entry
+    # requests UAC before building its protection graph; that request needs the
+    # explicit elevation capability. This declaration never grants a token or
+    # replaces the process-bound publisher and post-UAC checks at runtime.
+    containers = root.findall(f"{{{FOUNDATION}}}Capabilities")
+    expected = {"runFullTrust", "allowElevation"}
+    capabilities = list(containers[0]) if len(containers) == 1 else []
+    if (len(containers) != 1 or containers[0].attrib
+            or len(capabilities) != len(expected)
+            or any(item.tag != f"{{{RESCAP}}}Capability"
+                   or set(item.attrib) != {"Name"} or list(item)
+                   for item in capabilities)
+            or {item.get("Name") for item in capabilities} != expected):
         raise ValueError("AppxManifest.xml capabilities are not fail-closed")
 
 

@@ -107,6 +107,8 @@ class _CombatReceiptStub:
     def __init__(self, bus: EventBus, *, publish_receipt: bool) -> None:
         self.bus = bus
         self.publish_receipt = publish_receipt
+        self.submitted = []
+        self.reads = 0
         self.rows = [{
             "action_id": "act-old",
             "trigger_module": "sensor",
@@ -117,6 +119,7 @@ class _CombatReceiptStub:
         }]
 
     def _submit(self, request: Event) -> None:
+        self.submitted.append(request)
         if not self.publish_receipt:
             return
         request_id = request.details["queue_request_id"]
@@ -142,6 +145,7 @@ class _CombatReceiptStub:
         ))
 
     def list_actions(self, limit: int = 500):
+        self.reads += 1
         return self.rows[-limit:]
 
 
@@ -174,44 +178,60 @@ def test_old_combat_action_can_never_credit_a_new_request(monkeypatch) -> None:
     module = ActiveResponseSOAR()
     module.bind(bus)
     monkeypatch.setattr(module, "_event_in_response_scope", lambda _event: True)
-    monkeypatch.setattr(module, "_exact_process_binding_ok", lambda _event: True)
-    monkeypatch.setattr(module, "_combat_consumer", lambda _event: (combat, False))
-    clock = [0.0]
-    monkeypatch.setattr("angerona.modules.soar_engine.time.monotonic", lambda: clock[0])
-    monkeypatch.setattr(
-        "angerona.modules.soar_engine.time.sleep",
-        lambda seconds: clock.__setitem__(0, clock[0] + seconds + 1.0),
-    )
+
+    def forbidden(*_args):
+        raise AssertionError("Held synthetic delegation reached a target or Combat backend")
+
+    monkeypatch.setattr(module, "_exact_process_binding_ok", forbidden)
+    monkeypatch.setattr(module, "_combat_consumer", forbidden)
+    # An unrelated, signed historical success cannot supply the missing exact
+    # original producer-proof adapter for this event.
+    bus.publish(Event("Adversary Combat", "unrelated old action", Severity.HIGH, ts=10.0,
+                      details={"queue_request_id": "f" * 32, "mitigated": True,
+                               "postcondition_verified": True, "action_ids": ["act-old"]}))
 
     module._kill_and_rollback(event)
 
     result = next(
         item for item in bus.recent(20)
-        if item.module == module.name and "was delegated" in item.message
+        if item.module == module.name and item.details.get("receipt_status") == "held-original-proof-adapter"
     )
     assert result.details["mitigated"] is False
-    assert result.details["combat_action_ids"] == []
-    assert result.details["receipt_status"] == "pending-timeout"
-    assert result.details["queue_request_id"]
+    assert result.details["response_authorized"] is False
+    assert result.details.get("combat_action_ids", []) == []
+    assert not result.details.get("queue_request_id")
+    assert result.details["trigger_ts"] == event.ts
+    assert result.details["response_withheld_reason"] == "original-producer-proof-adapter-unavailable"
+    assert not [item for item in bus.recent(20) if item.module == "Active Response SOAR Request"]
+    assert combat.submitted == [] and combat.reads == 0
 
 
 def test_fresh_request_bound_signed_receipt_gets_mitigation_credit(monkeypatch) -> None:
+    # Test only the retained receipt-verification seam. General SOAR envelopes
+    # are held, so no synthetic event is dispatched to obtain this fixture.
     bus = EventBus()
     bus.arm(BusAuthority(b"d" * 32))
-    event = _signed_response_event(bus)
     combat = _CombatReceiptStub(bus, publish_receipt=True)
     module = ActiveResponseSOAR()
     module.bind(bus)
-    monkeypatch.setattr(module, "_event_in_response_scope", lambda _event: True)
-    monkeypatch.setattr(module, "_exact_process_binding_ok", lambda _event: True)
-    monkeypatch.setattr(module, "_combat_consumer", lambda _event: (combat, False))
-
-    module._kill_and_rollback(event)
-
-    result = next(
-        item for item in bus.recent(20)
-        if item.module == module.name and "was delegated" in item.message
-    )
-    assert result.details["mitigated"] is True
-    assert result.details["combat_action_ids"] == ["act-fresh"]
-    assert result.details["receipt_status"] == "verified-applied"
+    request_id, request_ts = "e" * 32, 20.0
+    assert module._verified_request_receipt(combat, request_id, request_ts) is None
+    request = Event("Inert Receipt Fixture", "exact correlation", Severity.HIGH, ts=request_ts,
+                    details={"queue_request_id": request_id})
+    combat._submit(request)
+    receipt = module._verified_request_receipt(combat, request_id, request_ts)
+    assert receipt is not None and bus.verify(receipt)
+    assert receipt.details["mitigated"] is True
+    assert receipt.details["postcondition_verified"] is True
+    assert receipt.details["action_ids"] == ["act-fresh"]
+    assert receipt.details["queue_request_id"] == request_id
+    assert module._verified_request_receipt(combat, "a" * 32, request_ts) is None
+    assert module._verified_request_receipt(combat, request_id, receipt.ts + 1) is None
+    receipt.details["mitigated"] = False
+    assert not bus.verify(receipt)
+    assert module._verified_request_receipt(combat, request_id, request_ts) is None
+    receipt.details["mitigated"] = True
+    assert bus.verify(receipt)
+    combat.rows[-1]["details"]["postcondition_verified"] = False
+    assert module._verified_request_receipt(combat, request_id, request_ts) is None
+    assert not [item for item in bus.recent(20) if item.module == "Active Response SOAR Request"]

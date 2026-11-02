@@ -119,18 +119,33 @@ def test_old_startup_requests_expire_without_mutation(combat, monkeypatch, expir
             event = replace(event, ts=event.ts - 60)
         bus.publish(event)
         if expired_by == "monotonic":
+            assert module._queue.qsize() == 1
+            assert len(module._startup_admitted_at) == 1
             for key in module._startup_admitted_at:
                 module._startup_admitted_at[key] -= 60
+        else:
+            # An already-old signed event is refused inline; it never becomes
+            # a startup-buffer expiration or reserves a dedup/queue identity.
+            assert module._queue.empty() and module._queue.unfinished_tasks == 0
+            assert not module._startup_admitted_at and not module._seen
+            assert module.response_snapshot()["last_decision"] == "producer_proof_held"
+            assert module.response_snapshot()["counts"]["producer_proof_held"] == 1
         release.set()
-        wait_for(lambda: module.response_snapshot()["counts"].get("startup_expired") == 1
-                 and module._queue.unfinished_tasks == 0)
+        if expired_by == "monotonic":
+            wait_for(lambda: module.response_snapshot()["counts"].get("startup_expired") == 1
+                     and module._queue.unfinished_tasks == 0)
+        else:
+            wait_for(lambda: module._response_initialized)
+            assert module.response_snapshot()["counts"].get("startup_expired", 0) == 0
+            assert module._queue.unfinished_tasks == 0
         assert not handled
         assert not module._startup_admitted_at
         diagnostics = [event for event in bus.recent(10)
                        if "discarded startup" in event.message]
-        assert len(diagnostics) == 1
-        assert diagnostics[0].details["response_authorized"] is False
+        assert len(diagnostics) == (1 if expired_by == "monotonic" else 0)
+        assert all(event.details["response_authorized"] is False for event in diagnostics)
         assert not module._seen
+        assert not module.receipt_path.exists()
     finally:
         stop(module, worker, release)
 

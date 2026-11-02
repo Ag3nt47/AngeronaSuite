@@ -35,7 +35,7 @@ from angerona.core.eventbus import Severity
 from angerona.core.module_usage import (
     enabled_module_items, reconcile_module_usage, start_module_if_enabled,
 )
-from angerona.gui.animations import GlobalLoadingIndicator, RunSpinner
+from angerona.gui.animations import GlobalLoadingIndicator, HeaderActivityLane, RunSpinner
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.header_controls import (
     HeaderActionButton, PanelRevealOverlay, motion_allowed)
@@ -60,6 +60,7 @@ from angerona.gui.ugcap_page import UGCAPPage
 from angerona.gui.upgrade_console import launch_upgrade_console
 from angerona.gui.system_pulse import SystemPulseCard
 from angerona.gui.theme import build_qss, clamp_scale
+from angerona.gui.window_controls import configure_work_window
 from angerona.gui.threat_intel_page import ThreatIntelDashboard
 from angerona.shark.shark_attack import SharkAttackEngine
 from angerona.shark.red_team import RedTeamEngine, REDTEAM_STAGE_CATEGORY
@@ -467,9 +468,9 @@ class MainWindow(QMainWindow):
         # what is normal for this host before the operator runs deeper actions.
         bl.addWidget(adaptation_btn)
         bl.addWidget(test_btn); bl.addWidget(sim_btn); bl.addWidget(self.eco_btn)
-        # Live progress wheel: shows self-test / eco-wake activity with a colour-
-        # coded percentage (red → amber → green) right beside the buttons.
-        self.run_spinner = RunSpinner()
+        # Live progress wheel: self-test / eco-wake activity with a colour-
+        # coded percentage (red → amber → green) in the shared activity lane.
+        self.run_spinner = RunSpinner(bounded_text=True)
         # Separate, reference-counted activity ring for startup and data reads.
         # It can overlap self-tests/eco wake without either operation hiding the
         # other's progress, and short reads are filtered by a reveal delay.
@@ -492,20 +493,10 @@ class MainWindow(QMainWindow):
         _bl.setSpacing(0)
         _bl.addWidget(brand)
         _bl.addWidget(self.posture_lbl)
-        # Startup and long-running activity owns a small centered lane below
-        # the brand. Keeping it out of the button rows prevents the trailing
-        # ring from being clipped as header actions are added or compacted.
-        activity_box = QWidget()
-        activity_box.setObjectName("HeaderActivityLane")
-        self._header_activity_box = activity_box
-        activity_layout = QHBoxLayout(activity_box)
-        activity_layout.setContentsMargins(0, 0, 0, 0)
-        activity_layout.setSpacing(4)
-        activity_layout.addStretch(1)
-        activity_layout.addWidget(self.run_spinner)
-        activity_layout.addWidget(self.loading_indicator)
-        activity_layout.addStretch(1)
-        _bl.addWidget(activity_box)
+        # Activity gets the dashboard's full width, independently of the
+        # centered brand and action budgets. Hidden indicators consume no row.
+        self._header_activity_box = HeaderActivityLane(
+            self.run_spinner, self.loading_indicator)
 
         right = QWidget(); rl = QHBoxLayout(right)
         rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
@@ -690,6 +681,7 @@ class MainWindow(QMainWindow):
         header.addWidget(brand_box, 0, 1)
         header.addWidget(right, 0, 2)
         root.addLayout(header)
+        root.addWidget(self._header_activity_box)
         QTimer.singleShot(0, self._apply_dashboard_layout)
 
         # ── Stat cards ───────────────────────────────────────────────────────
@@ -934,6 +926,7 @@ class MainWindow(QMainWindow):
         self.red_team_engine = RedTeamEngine(
             self.config.data_dir, on_event=self._on_shark_narration)
         self.shark_monitor = SharkMonitorDialog(self)
+        configure_work_window(self.shark_monitor)
         self._shark_prev_armed = None
         self._aar_ready.connect(self._show_aar_dialog)
         self._shark_narration.connect(self.shark_monitor.append)
@@ -1176,7 +1169,9 @@ class MainWindow(QMainWindow):
             getattr(self, "loading_indicator", None),
         ):
             if indicator is not None:
-                indicator.set_compact(width < 700, icon_extent)
+                # A separate lane can retain useful, elided activity text even
+                # on narrow windows without taking space from any action.
+                indicator.set_compact(False, icon_extent)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         # Coalesce a drag burst. Reapplying a stylesheet to all table items on
@@ -1249,14 +1244,32 @@ class MainWindow(QMainWindow):
         self._update_header_button_modes()
         width = self.width()
         scale = self._ui_scale
+        # Refresh nested layouts before reading their minima. Font and label
+        # mode changes can otherwise leave wider children on old icon slots.
+        minima = []
+        for group in self._header_groups:
+            group.ensurePolished()
+            group_layout = group.layout()
+            if group_layout is not None:
+                group_layout.invalidate()
+                group_layout.activate()
+            group.updateGeometry()
+            minima.append(max(group.minimumWidth(), group.minimumSizeHint().width(),
+                              group_layout.minimumSize().width() if group_layout else 0))
+        available = max(1, width - 80)
+        spacing = max(0, self._header_layout.horizontalSpacing()) * 2
+        wide_needed = sum(minima) + spacing
+        two_needed = minima[0] + minima[2] + spacing
         mode = "wide" if width >= 1650 * scale else "stack" if width < 850 * scale else "two"
         if getattr(self, "_operations_disclosure", None) is not None and mode == "two":
-            # Larger-font layouts often already use concise icon buttons. Use
-            # their actual width budget before spending another header row.
-            groups = self._header_groups
-            needed = sum(max(group.minimumWidth(), group.minimumSizeHint().width()) for group in groups) + 64
-            if needed <= width:
+            if wide_needed <= available:
                 mode = "wide"
+        # Recheck every mode against fresh constraints, including nominally
+        # wide desktops. A width breakpoint alone does not prove a row fits.
+        if mode == "wide" and wide_needed > available:
+            mode = "two"
+        if mode == "two" and two_needed > available:
+            mode = "stack"
         if mode != self._header_layout_mode:
             layout = self._header_layout
             left, brand, right = self._header_groups
@@ -1440,6 +1453,7 @@ class MainWindow(QMainWindow):
             self.system_pulse.request_sample()
             dialog = SystemPulseDetailDialog(self.system_pulse, self)
             self._system_pulse_detail = dialog
+            configure_work_window(dialog)
             dialog.show()
             dialog.raise_()
             return dialog
@@ -1458,6 +1472,7 @@ class MainWindow(QMainWindow):
                 parent=self,
             )
             self._live_defense_detail = dialog
+            configure_work_window(dialog)
             dialog.show()
             dialog.raise_()
             return dialog
@@ -1469,6 +1484,7 @@ class MainWindow(QMainWindow):
         def _show():
             dialog = AlertDetailDialog(event, self)
             self._live_defense_event_detail = dialog
+            configure_work_window(dialog)
             dialog.show()
             dialog.raise_()
             return dialog
@@ -1483,6 +1499,7 @@ class MainWindow(QMainWindow):
         def _show():
             dialog = AriaDetailDialog(self, self)
             self._aria_detail = dialog
+            configure_work_window(dialog)
             dialog.show()
             dialog.raise_()
             return dialog
@@ -2077,6 +2094,7 @@ class MainWindow(QMainWindow):
             self._threat_intel_dlg = ThreatIntelDashboard(
                 parent=self, intl_module=intl_mod)
             self._threat_intel_dlg.setStyleSheet(self._qss())
+            configure_work_window(self._threat_intel_dlg)
         self._threat_intel_dlg.show()
         self._threat_intel_dlg.raise_()
         self._threat_intel_dlg.activateWindow()
@@ -2104,6 +2122,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(page)
             self.spyware_guard = self.spyware_guard_page = page
             self._spyware_guard_dialog = dialog
+            configure_work_window(dialog)
         # QDialog's normal close hides the workspace. Its child receives
         # hideEvent (pausing presentation), so reopening preserves edits and
         # never leaves SpywareGuardPage's permanent shutdown flag set.
@@ -2142,6 +2161,7 @@ class MainWindow(QMainWindow):
             dialog.setWindowIcon(self._github_tools_btn.icon())
             dialog.setStyleSheet(self._qss())
             self._github_tools_dialog = dialog
+            configure_work_window(dialog)
         if open_analysis:
             dialog.open_analysis()
         if dialog.isMinimized():
@@ -2509,7 +2529,10 @@ class MainWindow(QMainWindow):
         default_target = str(self.config.data_dir / "drill-sandbox")
         if getattr(self, "_rt_console", None) is None:
             self._rt_console = RedTeamConsole(self, default_target=default_target)
-        self._rt_console.show()
+        if self._rt_console.isMinimized():
+            self._rt_console.showNormal()
+        else:
+            self._rt_console.show()
         self._rt_console.raise_()
         self._rt_console.activateWindow()
 
@@ -2668,6 +2691,7 @@ class MainWindow(QMainWindow):
 
     def _run_simulation(self, cfg) -> dict:
         if (bool(getattr(self, "_simulation_closing", False))
+                or getattr(self, "_aar_work_owner", None) is not None
                 or getattr(self, "_sim_launch_job", None) is not None
                 or getattr(self, "_sim_stop_timer", None) is not None
                 or (getattr(self, "_sim_stop_complete", None) is not None
@@ -3403,47 +3427,114 @@ class MainWindow(QMainWindow):
             return (
                 "Local-AI advisories generated (inert; never executed):\n\n"
                 + "\n\n".join(out)
-                + f"\n\n[VETTED PLAN READY] {len(plan.get('plan', []))} reviewed "
-                "typed remediation item(s) are available."
+                + f"\n\n[VETTED PLAN FOR REVIEW] {len(plan.get('plan', []))} current "
+                "remediation item(s). Exact reviewed remediation plan is unavailable; "
+                "review current Posture actions."
             )
 
-        def _apply() -> str:
-            if pm is None:
-                return "Posture Hardening module not available."
-            from angerona.core.status_report import optional_audit_result_text
-            result = pm.apply_vetted_remediation(apply=True)
-            return (
-                "Vetted typed remediation results: "
-                f"applied={result.get('applied', 0)}, "
-                f"skipped={result.get('skipped', 0)}, "
-                f"failed={result.get('failed', 0)}.\n"
-                + optional_audit_result_text(result.get("optional_audit"))
-            )
+        cleanup_engine = getattr(self, "red_team_engine" if is_redteam else "shark_engine", None)
+        cleanup_run_id = str(report_binding.get("run_id") or "")
+        cleanup_engines = ((cleanup_engine, cleanup_run_id),) if (
+            cleanup_engine is not None and cleanup_run_id
+            and str(getattr(cleanup_engine, "run_id", "")) == cleanup_run_id
+        ) else ()
 
-        def _clean_markers() -> int:
-            """Erase every drill marker/persistence-marker file from both engines."""
+        def _clean_markers():
+            """Clean only captured, retired GUI-owned drill generations."""
+            if not cleanup_engines:
+                return "The report has no exact owned drill generation for cleanup; its evidence is retained."
             total = 0
-            for eng in (getattr(self, "red_team_engine", None),
-                        getattr(self, "shark_engine", None)):
-                if eng is None:
-                    continue
+            for eng, run_id in cleanup_engines:
+                worker = getattr(eng, "_thread", None)
+                if (not run_id or str(getattr(eng, "run_id", "")) != run_id
+                        or bool(getattr(eng, "is_running", False))
+                        or (worker is not None and worker.is_alive())):
+                    return "A captured drill generation is unavailable, changed or still running; its evidence is retained."
+            for eng, _run_id in cleanup_engines:
                 try:
                     sweep = getattr(eng, "_sweep_markers", None)
                     if callable(sweep):
                         total += int(sweep() or 0)
                     else:
                         eng.stop_and_clean()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    return f"Captured drill cleanup failed: {exc}"
             return total
 
+        # Only authenticated immutable handoffs may reuse a live report view.
+        # Failed and compatibility deliveries never borrow another run's key.
+        if immutable_result is not None and not report_binding.get("error"):
+            key = (immutable_result.report_kind, immutable_result.run_id,
+                   immutable_result.report_sha256, immutable_result.head_sha256,
+                   immutable_result.sequence)
+        else:
+            key = object()
+        reports = getattr(self, "_aar_dialogs", None)
+        if reports is None:
+            reports = self._aar_dialogs = {}
+        existing = reports.get(key)
+        if existing is not None and isValid(existing):
+            if existing.isMinimized():
+                existing.showNormal()
+            else:
+                existing.show()
+            existing.raise_()
+            existing.activateWindow()
+            return existing
         dlg = AARDialog(self.config.data_dir, self,
-                        on_attempt_fix=_attempt_fix, on_apply=_apply,
+                        on_attempt_fix=_attempt_fix, on_apply=None,
                         on_clean=_clean_markers, redteam=is_redteam,
-                        report_binding=report_binding)
+                        report_binding=report_binding,
+                        apply_hold_reason=("" if is_redteam else
+                            "Exact reviewed remediation plan is unavailable; review current Posture actions"))
         dlg.setStyleSheet(self._qss())
         dlg.set_text(text)
-        dlg.exec()
+        reports[key] = dlg
+        configure_work_window(dlg)
+
+        def _released(_result):
+            # AARDialog defers finished until its exact owned worker exits.
+            active = getattr(dlg, "has_active_work", None)
+            if reports.get(key) is dlg and not (callable(active) and active()):
+                reports.pop(key, None)
+                dlg.deleteLater()
+
+        signal = getattr(dlg, "finished", None)
+        if signal is not None:
+            signal.connect(_released)
+        show = getattr(dlg, "show", None)
+        if callable(show):
+            if dlg.isMinimized():
+                dlg.showNormal()
+            else:
+                show()
+            dlg.raise_()
+            dlg.activateWindow()
+        return dlg
+
+    def _admit_aar_work(self, dialog, _kind) -> bool:
+        # Qt dispatch sets this owner before starting the worker, so another
+        # report action or GUI drill launch cannot pass while it is retained.
+        if (getattr(self, "_aar_work_owner", None) is not None
+                or getattr(self, "_sim_launch_job", None) is not None
+                or getattr(self, "_pending_simulation_cfg", None) is not None
+                or bool(getattr(self, "_simulation_closing", False))
+                or int(getattr(self, "_sim_aar_pending", 0)) > 0
+                or bool(getattr(self, "_redteam_report_pending", False))
+                or bool(getattr(getattr(self, "red_team_engine", None), "is_running", False))
+                or bool(getattr(getattr(self, "shark_engine", None), "is_running", False))):
+            return False
+        if _kind == "refresh" and not dialog._redteam:
+            expected = str(dialog._expected_report_run_id or "")
+            current = str(getattr(getattr(self, "shark_engine", None), "run_id", ""))
+            if not expected or expected != current:
+                return False
+        self._aar_work_owner = dialog
+        return True
+
+    def _release_aar_work(self, dialog) -> None:
+        if getattr(self, "_aar_work_owner", None) is dialog:
+            self._aar_work_owner = None
 
     # ── Threat Posture indicator ─────────────────────────────────────────────
     # ── ARIA (local, defensive-only assistant layer) ──────────────────────────
@@ -4915,6 +5006,7 @@ class MainWindow(QMainWindow):
             from angerona.gui.top_talkers import TopTalkersDialog
             self._top_talkers = TopTalkersDialog(self)
             self._top_talkers.setProperty("_angerona_no_reveal", True)
+            configure_work_window(self._top_talkers)
             self._top_talkers.show()
             self._top_talkers.raise_()
             self._top_talkers.activateWindow()
@@ -5290,6 +5382,7 @@ class MainWindow(QMainWindow):
                     parent=self,
                 )
             self._operations_dialog.setStyleSheet(self._qss())
+            configure_work_window(self._operations_dialog)
             self._operations_dialog.show()
             self._operations_dialog.raise_()
             self._operations_dialog.activateWindow()
@@ -5342,7 +5435,8 @@ class MainWindow(QMainWindow):
             brow.addStretch()
             brow.addWidget(close)
             lay.addLayout(brow)
-            dlg.exec()
+            from angerona.gui.pages import _show_nonmodal
+            return _show_nonmodal(dlg)
         except Exception as exc:
             try:
                 QMessageBox.information(self, "Help", f"Help unavailable: {exc}")
@@ -5353,6 +5447,15 @@ class MainWindow(QMainWindow):
         """Open the comprehensive, platform-aware end-user setup program."""
         try:
             from angerona.gui.setup_wizard import SetupWizard
+            existing = getattr(self, "_setup_dialog", None)
+            if existing is not None and isValid(existing):
+                if existing.isMinimized():
+                    existing.showNormal()
+                else:
+                    existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
 
             def _trust():
                 try:
@@ -5362,10 +5465,24 @@ class MainWindow(QMainWindow):
             dlg = SetupWizard(self.config,
                               apply_theme_fn=getattr(self, "_apply_theme", None),
                               trust_running_fn=_trust, parent=self)
-            if dlg.exec() and isValid(self):
-                controller = getattr(self, "_update_controller", None)
-                if controller is not None:
-                    controller.preferences_changed()
+            dlg.setModal(False)
+            configure_work_window(dlg)
+            self._setup_dialog = dlg
+
+            def _finished(result):
+                if getattr(self, "_setup_dialog", None) is not dlg:
+                    return
+                self._setup_dialog = None
+                if result == QDialog.DialogCode.Accepted and isValid(self):
+                    controller = getattr(self, "_update_controller", None)
+                    if controller is not None:
+                        controller.preferences_changed()
+
+            dlg.finished.connect(_finished)
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return dlg
         except Exception as exc:
             try:
                 QMessageBox.warning(self, "Setup", f"Setup wizard unavailable: {exc}")
@@ -5492,6 +5609,7 @@ class MainWindow(QMainWindow):
         close = QPushButton("Close"); close.clicked.connect(dlg.close)
         lay.addWidget(close)
         self._forensics_hub = dlg
+        configure_work_window(dlg)
         dlg.show()
         dlg.raise_()
         dlg.activateWindow()
@@ -5502,6 +5620,7 @@ class MainWindow(QMainWindow):
         bus = getattr(self, "bus", None) or getattr(self, "_bus", None)
         self._incident_timeline = IncidentTimelineDialog(bus, self)
         self._incident_timeline.setProperty("_angerona_no_reveal", True)
+        configure_work_window(self._incident_timeline)
         self._incident_timeline.show()
         self._incident_timeline.raise_()
         self._incident_timeline.activateWindow()
@@ -5682,18 +5801,34 @@ class MainWindow(QMainWindow):
         # swallowed by Qt's slot dispatch — which looks exactly like "the Settings
         # button does nothing". The traceback also lands in the console for triage.
         try:
+            retiring = getattr(self, "_retiring_settings_dialog", None)
+            if retiring is not None and isValid(retiring):
+                self.console._append("[settings] Previous settings work is still finishing; reopen when it retires.")
+                return None
+            existing = getattr(self, "_settings_dialog", None)
+            if existing is not None and isValid(existing):
+                if initial_tab:
+                    existing._select_tab(initial_tab)
+                if existing.isMinimized():
+                    existing.showNormal()
+                else:
+                    existing.show()
+                existing.raise_()
+                existing.activateWindow()
+                return existing
             dlg = SettingsDialog(self.config,
                                  self._update_controller,
                                  self.apply_theme, self,
                                  initial_tab=initial_tab,
                                  process_baseline=self.process_baseline)
             dlg.setStyleSheet(self._qss())
-            if dlg.exec():
-                reconcile_module_usage(self.manager)
-                self._apply_voice_settings_live()
-                self._apply_aria_control_settings_live()
-                self._apply_dashboard_mode_live()
-                self._update_controller.preferences_changed()
+            configure_work_window(dlg)
+            self._settings_dialog = dlg
+            dlg.finished.connect(lambda result: self._settings_finished(dlg, result))
+            dlg.show()
+            dlg.raise_()
+            dlg.activateWindow()
+            return dlg
         except Exception as exc:
             import traceback
             tb = traceback.format_exc()
@@ -5705,6 +5840,35 @@ class MainWindow(QMainWindow):
                 self, "Settings",
                 f"The Settings window failed to open:\n\n{exc}\n\n"
                 "The full traceback was written to the console panel.")
+
+    def _settings_finished(self, dialog, result: int) -> None:
+        if getattr(self, "_settings_dialog", None) is not dialog:
+            return
+        self._settings_dialog = None
+        self._retiring_settings_dialog = dialog
+        try:
+            if isValid(self) and result == QDialog.DialogCode.Accepted:
+                reconcile_module_usage(self.manager)
+                self._apply_voice_settings_live()
+                self._apply_aria_control_settings_live()
+                self._apply_dashboard_mode_live()
+                self._update_controller.preferences_changed()
+        except Exception as exc:
+            self.console._append(f"[settings] saved preferences could not be fully applied: {exc}")
+            QMessageBox.warning(self, "Settings", f"Saved preferences could not be fully applied:\n\n{exc}")
+        finally:
+            retire = getattr(dialog, "retire_after_workers", None)
+            if callable(retire):
+                retire(self._settings_retired)
+            else:
+                self._settings_retired(dialog)
+
+    def _settings_retired(self, dialog) -> None:
+        if getattr(self, "_retiring_settings_dialog", None) is not dialog:
+            return
+        self._retiring_settings_dialog = None
+        if isValid(dialog):
+            dialog.deleteLater()
 
     def _apply_dashboard_mode_live(self) -> None:
         """Apply the Settings dashboard choice without requiring a restart."""
@@ -5934,6 +6098,7 @@ class MainWindow(QMainWindow):
         dialog.retry_requested.connect(self._retry_selftest_results)
         dialog.restart_requested.connect(lambda: self._start_selftest_repairs(repairable))
         dialog.module_requested.connect(self._open_module_window)
+        configure_work_window(dialog)
         dialog.show()
         dialog.raise_()
         dialog.activateWindow()
@@ -6058,6 +6223,7 @@ class MainWindow(QMainWindow):
         self._collision_view = CollisionView(self)
         self._collision_view.setProperty("_angerona_no_reveal", True)
         self._collision_view.setStyleSheet(self._qss())
+        configure_work_window(self._collision_view)
         self._collision_view.show()
         self._collision_view.raise_()
         self._collision_view.activateWindow()
@@ -6096,6 +6262,7 @@ class MainWindow(QMainWindow):
             self._blast_radius = BlastRadiusDialog(prov, int(pid), self)
             self._blast_radius.setProperty("_angerona_no_reveal", True)
             self._blast_radius.setStyleSheet(self._qss())
+            configure_work_window(self._blast_radius)
             self._blast_radius.show()
             self._blast_radius.raise_()
             self._blast_radius.activateWindow()
@@ -6115,12 +6282,14 @@ class MainWindow(QMainWindow):
         from angerona.gui.flow_window import FlowWindow
         dlg = FlowWindow(self.bus, self.storage, self.manager, self.config, self)
         dlg.setStyleSheet(self._qss())
+        configure_work_window(dlg)
         dlg.show()
 
     def _open_attack_heatmap(self) -> None:
         from angerona.gui.attack_heatmap import AttackHeatmapWindow
         dlg = AttackHeatmapWindow(self)
         dlg.setStyleSheet(self._qss())
+        configure_work_window(dlg)
         dlg.show()
 
     # ── Tray ─────────────────────────────────────────────────────────────────

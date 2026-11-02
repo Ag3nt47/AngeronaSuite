@@ -310,6 +310,22 @@ class ScannerProgress:
                 return code
             namespace["finalize_report"] = report
 
+        if callable(namespace.get("copy_locked")):
+            original_copy = namespace["copy_locked"]
+            def copied_database(path, *args, **kwargs):
+                snapshot = original_copy(path, *args, **kwargs)
+                if (self.current_step == "browser" and type(snapshot) is tuple
+                        and len(snapshot) == 2 and type(snapshot[0]) is str
+                        and snapshot[0] and type(snapshot[1]) is list):
+                    # Sidecar reads may have replaced the source label. The
+                    # original main path identifies this snapshot's origin;
+                    # displaying it performs no new source read or trust check.
+                    self.observe_file(path)
+                    with self.lock:
+                        self.current_task = "Preparing a copied browser evidence database"
+                return snapshot
+            namespace["copy_locked"] = copied_database
+
         if callable(namespace.get("open_evidence_db")):
             original_db = namespace["open_evidence_db"]
             def database(path, *args, **kwargs):

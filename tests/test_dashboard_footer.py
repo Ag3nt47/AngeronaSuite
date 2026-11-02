@@ -121,12 +121,26 @@ def test_footer_exposes_automatic_response_holds_without_claiming_readiness():
     try:
         footer.update_response({"state": "ARMED", "ready": False})
         assert footer._response == "Auto UNAVAILABLE"
+        # A saved policy or a stale ready flag cannot stand in for the worker's
+        # actual installed-authority sample. Literal booleans are required.
+        for fields in ({}, {"policy_armed": True},
+                       {"policy_armed": True, "host_authority_verified": False},
+                       {"policy_armed": True, "host_authority_verified": 1},
+                       {"policy_armed": False, "host_authority_verified": True}):
+            footer.update_response({"state": "ARMED", "ready": True, **fields})
+            assert footer._response == "Auto HELD"
+        footer.update_response({"state": "AUTHORITY HELD", "ready": False,
+                                "policy_armed": True, "host_authority_verified": False,
+                                "reason": "Source Observe mode cannot authorize host mutation."})
+        assert footer._response == "Auto HELD"
+        assert "Source Observe" in footer.accessibleName()
         footer.update_response({"state": "RECOVERY REQUIRED", "ready": False,
                                 "reason": "<b>checkpoint mismatch</b>"})
         assert footer._display_cells()[-1].startswith("Auto HELD")
         assert "<b>checkpoint mismatch</b>" in footer.accessibleName()
         assert "&lt;b&gt;checkpoint mismatch&lt;/b&gt;" in footer.toolTip()
         footer.update_response({"state": "ARMED", "ready": True,
+                                "policy_armed": True, "host_authority_verified": True,
                                 "reason": "Waiting for exact evidence"})
         assert footer._response == "Auto ARMED"
         footer.update_response({"state": "DISABLED", "ready": False})

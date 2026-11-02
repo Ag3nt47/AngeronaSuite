@@ -12,12 +12,14 @@ import hmac
 import json
 import math
 import os
+import shutil
 import stat
 import sys
 import threading
 import time
 import traceback
 import types
+import uuid
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
@@ -36,8 +38,16 @@ _CRASH_SNAPSHOT_FIELDS = frozenset({
 def _get_snapshot_dir() -> Path:
     """Return (and create) the crash-snapshot directory for this installation."""
     from angerona.core.data_paths import data_dir
-    snap = data_dir() / "diagnostics" / "crash_snapshots"
-    snap.mkdir(parents=True, exist_ok=True)
+    root = data_dir()
+    _snapshot_plain_directory(root)
+    snap = root
+    for component in ("diagnostics", "crash_snapshots"):
+        snap = snap / component
+        try:
+            snap.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        _snapshot_plain_directory(snap)
     return snap
 
 
@@ -105,6 +115,417 @@ def verify_crash_snapshot_bundle(
         authority, _CRASH_SNAPSHOT_DOMAIN + body, hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(str(document["snapshot_hmac"]), expected)
+
+
+_CRASH_CAPTURE_POLICY = "angerona-crash-capture-v1"
+_MAX_CRASH_RECORD_BYTES = 480 * 1024
+_MAX_CRASH_RECORDS = 256
+_MAX_CRASH_DIRECTORY_BYTES = 64 * 1024 * 1024
+_MAX_CRASH_DIRECTORY_ENTRIES = 1_024
+_MIN_CRASH_FREE_BYTES = 2 * 1024 * 1024 * 1024
+_CRASH_SNAPSHOT_LEASE = ".crash_snapshot.lock"
+_CRASH_SNAPSHOT_WRITE_LOCK = threading.Lock()
+_CRASH_SNAPSHOT_CUSTODY_UNKNOWN: tuple[str, Path, object, int | None] | None = None
+
+
+class _SnapshotCaptureError(ValueError):
+    """The diagnostic copy could not be represented within its fixed policy."""
+
+
+class _SnapshotStorageHeld(OSError):
+    """Admission refused without changing any retained crash evidence."""
+
+
+def _snapshot_hold_unknown_custody(
+    phase: str, path: Path, wrapper: object, raw_handle: int | None,
+) -> None:
+    """Retain at most one ambiguous owner; never act on its numeric value."""
+    global _CRASH_SNAPSHOT_CUSTODY_UNKNOWN
+    # Production reaches this only while the process write lock is held. Keep
+    # the wrapper alive too: its state may be unknown after interrupted Detach.
+    if _CRASH_SNAPSHOT_CUSTODY_UNKNOWN is None:
+        _CRASH_SNAPSHOT_CUSTODY_UNKNOWN = (phase, path, wrapper, raw_handle)
+
+
+def _snapshot_acl_admitted(owner: str, user: str, aces: list[tuple[str, str]]) -> bool:
+    """Accept source-user and historical admin ownership, never foreign grants."""
+    trusted = {user, "S-1-5-18", "S-1-5-32-544"}
+    return owner in trusted and bool(aces) and all(
+        kind == "deny" or (kind == "allow" and sid in trusted)
+        for kind, sid in aces
+    )
+
+
+def _snapshot_verify_windows_directory(path: Path) -> None:
+    """Check existing custody without repairing a directory's owner or DACL."""
+    try:
+        import win32security
+        from angerona.core.engine_transport import _windows_identity
+
+        descriptor = win32security.GetFileSecurity(
+            str(path),
+            win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION,
+        )
+        acl = descriptor.GetSecurityDescriptorDacl()
+        if acl is None or not 1 <= acl.GetAceCount() <= 64:
+            raise _SnapshotStorageHeld("held_directory")
+        aces = []
+        for index in range(acl.GetAceCount()):
+            ace = acl.GetAce(index)
+            kind = (
+                "allow" if ace[0][0] == win32security.ACCESS_ALLOWED_ACE_TYPE
+                else "deny" if ace[0][0] == win32security.ACCESS_DENIED_ACE_TYPE
+                else "unsupported"
+            )
+            aces.append((kind, win32security.ConvertSidToStringSid(ace[2])))
+        if not _snapshot_acl_admitted(
+            win32security.ConvertSidToStringSid(descriptor.GetSecurityDescriptorOwner()),
+            win32security.ConvertSidToStringSid(_windows_identity()), aces,
+        ):
+            raise _SnapshotStorageHeld("held_directory")
+    except _SnapshotStorageHeld:
+        raise
+    except Exception as exc:
+        raise _SnapshotStorageHeld("held_directory") from exc
+
+
+def _snapshot_plain_directory(path: Path) -> None:
+    info = path.lstat()
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or int(getattr(info, "st_file_attributes", 0) or 0) & 0x400
+        or (
+            os.name != "nt"
+            and (info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) & 0o022)
+        )
+    ):
+        raise _SnapshotStorageHeld("held_directory")
+    if os.name == "nt":
+        _snapshot_verify_windows_directory(path)
+
+
+def _snapshot_crop(
+    value: object, byte_limit: int, *, max_chars: int | None = None,
+    suffix: bool = False,
+) -> tuple[str, dict]:
+    """Bound the actual JSON string bytes without encoding an unbounded input."""
+    if type(value) is not str:
+        return "", {
+            "original_chars": None, "retained_chars": 0,
+            "omitted_chars": None, "unavailable": True,
+        }
+    original = len(value)
+    high = min(original, byte_limit, max_chars if max_chars is not None else original)
+    low = 0
+    retained = ""
+    while low <= high:
+        count = (low + high) // 2
+        candidate = value[-count:] if suffix and count else value[:count]
+        try:
+            size = len(json.dumps(candidate, ensure_ascii=False).encode("utf-8"))
+        except UnicodeError as exc:
+            raise _SnapshotCaptureError("held_capture_text") from exc
+        if size <= byte_limit:
+            retained = candidate
+            low = count + 1
+        else:
+            high = count - 1
+    return retained, {
+        "original_chars": original, "retained_chars": len(retained),
+        "omitted_chars": original - len(retained), "unavailable": False,
+    }
+
+
+def _snapshot_number(value: object) -> int | float | None:
+    if type(value) is int:
+        return value if -(2**63) <= value < 2**63 else None
+    if type(value) is float and math.isfinite(value):
+        return value
+    return None
+
+
+def _bounded_crash_snapshot_bundle(
+    *, module: object, error: object, tb: object, memory: dict,
+    memory_available: bool, events: object, crashed_at: float,
+) -> dict:
+    """Build an explicitly lossy diagnostic copy; original evidence is unchanged."""
+    if (
+        type(memory) is not dict or type(memory_available) is not bool
+        or type(crashed_at) is not float or not math.isfinite(crashed_at)
+        or crashed_at < 0
+        or (
+            memory_available and (
+                set(memory) != {"rss_mb", "vms_mb", "percent"}
+                or any(_snapshot_number(value) is None for value in memory.values())
+            )
+        )
+    ):
+        raise _SnapshotCaptureError("held_capture_type")
+    module_text, module_counts = _snapshot_crop(module, 256, max_chars=128)
+    error_text, error_counts = _snapshot_crop(error, 8 * 1024)
+    full_tb, traceback_counts = _snapshot_crop(tb, 256 * 1024, max_chars=256_000)
+    traceback_complete = bool(
+        full_tb and not traceback_counts["unavailable"]
+        and traceback_counts["omitted_chars"] == 0
+    )
+    excerpt = {"head": "", "tail": ""}
+    if not traceback_complete:
+        head, head_counts = _snapshot_crop(tb, 128 * 1024)
+        tail, _ = _snapshot_crop(
+            tb, 128 * 1024,
+            max_chars=(len(tb) - len(head)) if type(tb) is str else 0,
+            suffix=True,
+        )
+        excerpt = {"head": head, "tail": tail}
+        traceback_counts = dict(head_counts)
+        traceback_counts["retained_chars"] = len(head) + len(tail)
+        if not traceback_counts["unavailable"]:
+            traceback_counts["omitted_chars"] = len(tb) - len(head) - len(tail)
+        # An old consumer must never select a source from cropped frames.
+        full_tb = ""
+
+    recent: list[dict] = []
+    event_counts: list[dict] = []
+    event_unavailable = type(events) not in (list, tuple) or len(events) > 50
+    returned = None if event_unavailable else len(events)
+    if not event_unavailable:
+        for ev in events:
+            if type(ev) is not Event:
+                continue
+            event_module, module_loss = _snapshot_crop(ev.module, 256, max_chars=128)
+            severity, severity_loss = _snapshot_crop(
+                ev.severity.name if type(ev.severity) is Severity else None,
+                64, max_chars=32,
+            )
+            message, message_loss = _snapshot_crop(ev.message, 2 * 1024, max_chars=4096)
+            stamp = _snapshot_number(ev.ts)
+            event_counts.append({
+                "index": len(recent), "module": module_loss,
+                "severity": severity_loss, "message": message_loss,
+                "timestamp_available": stamp is not None,
+            })
+            recent.append({
+                "ts": stamp, "module": event_module,
+                "severity": severity, "message": message,
+            })
+    capture = {
+        "schema": 1, "policy": _CRASH_CAPTURE_POLICY,
+        "traceback_complete": traceback_complete, "traceback_excerpt": excerpt,
+        "text": {"module": module_counts, "error": error_counts, "traceback": traceback_counts},
+        "events": {
+            "requested": 50, "returned": returned, "retained": len(recent),
+            "omitted": None if returned is None else returned - len(recent),
+            "unavailable": event_unavailable, "text": event_counts,
+        },
+        "memory_available": memory_available, "byte_limit": _MAX_CRASH_RECORD_BYTES,
+    }
+    sampled_memory = dict(memory) if memory_available else {"note": "psutil unavailable"}
+    sampled_memory["capture"] = capture
+    return {
+        "module": module_text, "crashed_at": crashed_at, "error": error_text,
+        "traceback": full_tb, "memory": sampled_memory, "last_50_events": recent,
+    }
+
+
+def _snapshot_directory_admission(directory: Path, incoming: int) -> None:
+    """Account bounded metadata only, preserving every existing directory entry."""
+    count = 0
+    total = 0
+    with os.scandir(directory) as entries:
+        for index, entry in enumerate(entries):
+            if index >= _MAX_CRASH_DIRECTORY_ENTRIES:
+                raise _SnapshotStorageHeld("held_accounting")
+            if entry.name == _CRASH_SNAPSHOT_LEASE:
+                continue  # The existing file-lease helper validates this exact entry.
+            # Windows DirEntry metadata can leave link/identity fields unknown.
+            # Request actual no-follow path metadata rather than interpreting
+            # cached zeros as a measured broken file identity.
+            info = Path(entry.path).lstat()
+            if (
+                not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or int(getattr(info, "st_file_attributes", 0) or 0) & 0x400
+            ):
+                raise _SnapshotStorageHeld("held_accounting")
+            count += 1
+            total += info.st_size
+            if count >= _MAX_CRASH_RECORDS or total + incoming > _MAX_CRASH_DIRECTORY_BYTES:
+                raise _SnapshotStorageHeld("held_storage_budget")
+
+
+def _snapshot_create_private(path: Path) -> int:
+    """Exclusively create a private temporary; never open a historical record."""
+    if _CRASH_SNAPSHOT_CUSTODY_UNKNOWN is not None:
+        raise _SnapshotStorageHeld("held_custody_unknown")
+    flags = os.O_WRONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+    if os.name != "nt":
+        return os.open(path, flags | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    import msvcrt
+    import win32api
+    import win32con
+    import win32file
+    from angerona.core.engine_transport import _windows_private_attributes
+
+    handle = win32file.CreateFile(
+        str(path), win32con.GENERIC_WRITE, win32con.FILE_SHARE_READ,
+        _windows_private_attributes(), win32con.CREATE_NEW,
+        win32con.FILE_ATTRIBUTE_NORMAL, None,
+    )
+    try:
+        raw_handle = handle.Detach()
+    except BaseException:
+        _snapshot_hold_unknown_custody("detach", path, handle, None)
+        raise _SnapshotStorageHeld("held_custody_unknown") from None
+    # Detach before transfer. Only the documented non-adopting OSError refusal
+    # permits a raw close. An asynchronous exception can arrive after CRT
+    # adoption but before Python observes the fd; its numeric handle is unsafe.
+    try:
+        return msvcrt.open_osfhandle(raw_handle, flags)
+    except OSError:
+        try:
+            win32api.CloseHandle(raw_handle)
+        except BaseException:
+            _snapshot_hold_unknown_custody("refusal_close", path, handle, raw_handle)
+            raise _SnapshotStorageHeld("held_custody_unknown") from None
+        raise
+    except BaseException:
+        _snapshot_hold_unknown_custody("transfer", path, handle, raw_handle)
+        raise _SnapshotStorageHeld("held_custody_unknown") from None
+
+
+def _snapshot_free_space_admission(directory: Path, incoming: int) -> None:
+    """One crash-only sample; no startup gate, reservation or physical quota."""
+    try:
+        free = shutil.disk_usage(directory).free
+    except Exception as exc:
+        raise _SnapshotStorageHeld("held_space_unknown") from exc
+    if type(free) is not int or free < 0:
+        raise _SnapshotStorageHeld("held_space_unknown")
+    if free < _MIN_CRASH_FREE_BYTES + incoming:
+        raise _SnapshotStorageHeld("held_free_space")
+
+
+def _snapshot_publish_new(temporary: Path, destination: Path) -> None:
+    """Publish complete bytes without a replacement operation on any platform."""
+    if os.name == "nt":
+        # Windows rename refuses an existing destination. POSIX rename replaces it.
+        os.rename(temporary, destination)
+    else:
+        os.link(temporary, destination, follow_symlinks=False)
+
+
+def _publish_crash_snapshot_bytes(directory: Path, encoded: bytes) -> str:
+    """One crash-path-only, fail-fast admission and create-only publication."""
+    from angerona.core.file_lease import ExclusiveFileLease, ExclusiveFileLeaseError
+
+    if _CRASH_SNAPSHOT_CUSTODY_UNKNOWN is not None:
+        return "held_custody_unknown"
+    if not encoded or len(encoded) > _MAX_CRASH_RECORD_BYTES:
+        return "held_capture_bound"
+    if not _CRASH_SNAPSHOT_WRITE_LOCK.acquire(blocking=False):
+        return "held_busy"
+    temporary: Path | None = None
+    destination: Path | None = None
+    owned_identity: tuple[int, int] | None = None
+    published = False
+    outcome = "held_write"
+    try:
+        if _CRASH_SNAPSHOT_CUSTODY_UNKNOWN is not None:
+            return "held_custody_unknown"
+        _snapshot_plain_directory(directory.parent)
+        _snapshot_plain_directory(directory)
+        with ExclusiveFileLease(directory / _CRASH_SNAPSHOT_LEASE):
+            _snapshot_directory_admission(directory, len(encoded))
+            _snapshot_free_space_admission(directory, len(encoded))
+            token = uuid.uuid4().hex
+            temporary = directory / f".crash.{time.time_ns()}.{token}.tmp"
+            destination = directory / f"crash.{time.time_ns()}.{token}.json"
+            descriptor = _snapshot_create_private(temporary)
+            try:
+                before = os.fstat(descriptor)
+                candidate_identity = (before.st_dev, before.st_ino)
+                named = temporary.lstat()
+                if (
+                    not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                    or before.st_size != 0 or before.st_ino <= 0
+                    or not stat.S_ISREG(named.st_mode) or named.st_nlink != 1
+                    or named.st_ino <= 0
+                    or int(getattr(named, "st_file_attributes", 0) or 0) & 0x400
+                    or candidate_identity != (named.st_dev, named.st_ino)
+                ):
+                    raise _SnapshotStorageHeld("held_directory")
+                owned_identity = candidate_identity
+                # Unbuffered descriptor I/O avoids a second fdopen ownership
+                # handoff and its competing destructor/finally close paths.
+                if os.write(descriptor, encoded) != len(encoded):
+                    raise OSError("short crash snapshot write")
+                os.fsync(descriptor)
+                if os.fstat(descriptor).st_size != len(encoded):
+                    raise OSError("crash snapshot size changed")
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            _snapshot_plain_directory(directory.parent)
+            _snapshot_plain_directory(directory)
+            named = temporary.lstat()
+            if (
+                (named.st_dev, named.st_ino) != owned_identity
+                or not stat.S_ISREG(named.st_mode) or named.st_nlink != 1
+                or named.st_size != len(encoded)
+                or int(getattr(named, "st_file_attributes", 0) or 0) & 0x400
+            ):
+                raise _SnapshotStorageHeld("held_directory")
+            _snapshot_publish_new(temporary, destination)
+            published = True
+            outcome = "published"
+            # Content was fsynced before publication. Do not claim Windows power-loss durability.
+            if os.name != "nt":
+                directory_descriptor = os.open(
+                    directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                )
+                try:
+                    os.fsync(directory_descriptor)
+                finally:
+                    os.close(directory_descriptor)
+    except _SnapshotStorageHeld as exc:
+        outcome = "published_finalization_gap" if published else str(exc)
+    except ExclusiveFileLeaseError:
+        outcome = "published_finalization_gap" if published else "held_busy"
+    except Exception:
+        outcome = "published_durability_gap" if published else "held_write"
+    finally:
+        if not published and destination is not None and owned_identity is not None:
+            try:
+                final_info = destination.lstat()
+                if (
+                    stat.S_ISREG(final_info.st_mode)
+                    and not int(getattr(final_info, "st_file_attributes", 0) or 0) & 0x400
+                    and (final_info.st_dev, final_info.st_ino) == owned_identity
+                    and final_info.st_size == len(encoded)
+                ):
+                    # A failing publication call can have an ambiguous outcome.
+                    # Retain this exact owned final record and never retry it.
+                    published = True
+                    outcome = "published_finalization_gap"
+            except FileNotFoundError:
+                pass
+            except OSError:
+                outcome = "held_publication_unknown"
+        if temporary is not None and owned_identity is not None:
+            try:
+                named = temporary.lstat()
+                if (named.st_dev, named.st_ino) != owned_identity:
+                    outcome = "published_cleanup_gap" if published else "held_cleanup_gap"
+                else:
+                    temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                outcome = "published_cleanup_gap" if published else "held_cleanup_gap"
+        _CRASH_SNAPSHOT_WRITE_LOCK.release()
+    if not published and _CRASH_SNAPSHOT_CUSTODY_UNKNOWN is not None:
+        return "held_custody_unknown"
+    return outcome
 
 
 _MAX_RESTARTS   = 3
@@ -1176,63 +1597,73 @@ class BaseModule:
                     # All retries exhausted — quarantine and snapshot
                     self.status = "error"
                     self.set_health(0, f"Quarantined after {_MAX_RESTARTS} crashes: {exc}")
-                    self._write_crash_snapshot(exc, tb)
+                    snapshot_outcome = self._write_crash_snapshot(exc, tb)
+                    snapshot_note = (
+                        "Crash snapshot published in diagnostics/."
+                        if snapshot_outcome == "published"
+                        else "Crash snapshot published; finalization remains unconfirmed."
+                        if snapshot_outcome.startswith("published_")
+                        else "Crash snapshot publication held for this process; native file-handle custody is unknown."
+                        if snapshot_outcome == "held_custody_unknown"
+                        else f"Crash snapshot publication held or unconfirmed ({snapshot_outcome})."
+                    )
                     self.emit(
                         f"Module QUARANTINED after {_MAX_RESTARTS} crashes: {exc}. "
-                        "Sensor blind — inspect crash snapshot in diagnostics/.",
+                        f"Sensor blind — {snapshot_note}",
                         Severity.CRITICAL,
                         traceback=tb[:500],
+                        crash_snapshot_outcome=snapshot_outcome,
                     )
 
-    def _write_crash_snapshot(self, exc: Exception, tb: str) -> None:
-        """Write a diagnostic bundle to diagnostics/crash_snapshots/.
+    def _write_crash_snapshot(self, exc: Exception, tb: str) -> str:
+        """Publish one bounded authenticated diagnostic copy, preserving loss facts.
 
-        Bundle contains:
-          - exact error and full traceback
-          - module process memory footprint (via psutil)
-          - last 50 events from the EventBus ring (kill-chain context)
+        Existing records are never rewritten or deleted. This is an application
+        admission budget, not an OS quota, guaranteed reserve, or an enclave
+        against an attacker controlling this user's process. Upstream exception
+        formatting and native calls are outside the encoded-record bound.
         """
-        # Memory footprint
+        if _CRASH_SNAPSHOT_CUSTODY_UNKNOWN is not None:
+            return "held_custody_unknown"
         try:
-            import psutil
-            mi  = psutil.Process().memory_info()
-            mem = {
-                "rss_mb":  round(mi.rss / 1024 / 1024, 2),
-                "vms_mb":  round(mi.vms / 1024 / 1024, 2),
-                "percent": round(psutil.Process().memory_percent(), 2),
-            }
-        except Exception:
-            mem = {"note": "psutil unavailable"}
-
-        # Last 50 bus events — gives kill-chain context around the crash
-        recent: list = []
-        if self._bus is not None:
-            for ev in self._bus.recent(50):
-                recent.append({
-                    "ts":       ev.ts,
-                    "module":   str(ev.module)[:128],
-                    "severity": ev.severity.name,
-                    "message":  str(ev.message)[:4096],
-                })
-
-        bundle = {
-            "module":         self.name,
-            "crashed_at":     time.time(),
-            "error":          str(exc),
-            "traceback":      tb,
-            "memory":         mem,
-            "last_50_events": recent,
-        }
-
-        snap_dir = _get_snapshot_dir()
-        ts_str   = time.strftime("%Y%m%d_%H%M%S")
-        fname    = f"{self.name.replace(' ', '_')}_{ts_str}.json"
-        try:
-            document = sign_crash_snapshot_bundle(bundle)
-            (snap_dir / fname).write_text(
-                json.dumps(document, default=str, indent=2), encoding="utf-8"
+            memory_available = True
+            try:
+                import psutil
+                process = psutil.Process()
+                mi = process.memory_info()
+                mem = {
+                    "rss_mb": round(mi.rss / 1024 / 1024, 2),
+                    "vms_mb": round(mi.vms / 1024 / 1024, 2),
+                    "percent": round(process.memory_percent(), 2),
+                }
+                if any(_snapshot_number(value) is None for value in mem.values()):
+                    raise ValueError("memory sample unavailable")
+            except Exception:
+                mem = {"note": "psutil unavailable"}
+                memory_available = False
+            try:
+                recent = self._bus.recent(50) if self._bus is not None else None
+            except Exception:
+                recent = None
+            # _wrapped_run already captured the original exception text. Avoid
+            # invoking arbitrary exception __str__ again in the capture path.
+            error = self.last_error if type(self.last_error) is str else None
+            bundle = _bounded_crash_snapshot_bundle(
+                module=self.name, error=error, tb=tb, memory=mem,
+                memory_available=memory_available, events=recent, crashed_at=time.time(),
             )
-        except Exception as snapshot_error:
-            # Snapshot failure must never mask the original crash, but it must
-            # remain visible as a custody failure rather than silently vanishing.
-            self.last_error = f"{exc}; crash snapshot failed: {snapshot_error}"
+            document = sign_crash_snapshot_bundle(bundle)
+            encoded = json.dumps(
+                document, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+            ).encode("utf-8")
+            if len(encoded) > _MAX_CRASH_RECORD_BYTES:
+                return "held_capture_bound"
+            return _publish_crash_snapshot_bytes(_get_snapshot_dir(), encoded)
+        except _SnapshotCaptureError:
+            return "held_capture_text"
+        except _SnapshotStorageHeld as capture_error:
+            return str(capture_error)
+        except Exception:
+            # A small fixed result cannot hide the original exception behind a
+            # new serialization/path failure or copy exception text into status.
+            return "held_capture"

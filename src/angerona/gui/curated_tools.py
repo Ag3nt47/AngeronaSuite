@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import contextlib
 import importlib
+import html
 import json
 import math
 import queue
@@ -12,15 +13,17 @@ import time
 import uuid
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import QObject, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QActionGroup, QColor, QDesktopServices, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QRectF, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QActionGroup, QColor, QDesktopServices, QFontMetrics, QPainter, QPen, QTextCursor, QTextOption
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
     QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSpinBox, QTabWidget, QToolButton,
-    QVBoxLayout, QWidget,
+    QSizePolicy, QStyle, QStyleOptionToolButton, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
+
+from angerona.gui.presentation_timer import PresentationTimer
 
 _PROJECT = "https://github.com/interplains/Zero-Breach-Toolkit"
 _RELEASE = _PROJECT + "/releases/tag/v0.1.10"
@@ -36,7 +39,8 @@ _SETTINGS = {
 _LIMITS = {
     "github_tools_job_limit_mib": ("Working data per job (MiB)", 256, 64, 1024),
     "github_tools_report_limit_mib": ("Retained reports (MiB)", 64, 8, 256),
-    "github_tools_timeout_seconds": ("Scan deadline (seconds)", 300, 30, 900),
+    "github_tools_timeout_seconds": ("Standalone toolkit deadline (seconds)", 300, 30, 900),
+    "spyware_scan_timeout_seconds": ("Spyware Scan default budget (seconds)", 3600, 30, 14400),
     "spyware_scan_cpu_percent": ("Scanner CPU ceiling (%)", 70, 10, 90),
     "spyware_scan_memory_mib": ("Scanner memory ceiling (MiB)", 512, 128, 2048),
     "spyware_scan_background_percent": ("Routine background pace during scan (%)", 10, 5, 50),
@@ -47,12 +51,249 @@ def _backend():
     return importlib.import_module("angerona.core.curated_tools")
 
 
+class _ScanLabel(QLabel):
+    """Wrap copied text without making a path the page's minimum width."""
+
+    def setText(self, text):  # noqa: N802
+        if self.text() == text:
+            return
+        super().setText(text)
+        # Preserve exact selectable text; tooltip markup cannot interpret input.
+        self.setToolTip("<qt>" + html.escape(text).replace("\n", "<br>") + "</qt>")
+        self.setAccessibleName(text)
+
+    def setStyleSheet(self, style):  # noqa: N802
+        if self.styleSheet() != style:
+            super().setStyleSheet(style)
+
+    def setAccessibleName(self, name):  # noqa: N802
+        if self.accessibleName() != name:
+            super().setAccessibleName(name)
+
+    def setToolTip(self, text):  # noqa: N802
+        if self.toolTip() != text:
+            super().setToolTip(text)
+
+    def clear(self):
+        self.setText("")
+
+
 def _label(text=""):
-    result = QLabel(text)
+    result = _ScanLabel()
     result.setWordWrap(True)
     result.setTextFormat(Qt.TextFormat.PlainText)
     result.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    policy = result.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    policy.setHeightForWidth(True)
+    result.setSizePolicy(policy)
+    result.setMinimumWidth(0)
+    result.setText(text)
     return result
+
+
+class _ScanToolButton(QToolButton):
+    """Keep a scope/disclosure action usable when its full caption will not fit."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+
+    def setText(self, text):  # noqa: N802
+        super().setText(text)
+        self.setAccessibleName(text)
+        self.setToolTip("<qt>" + html.escape(text) + "</qt>")
+
+    def minimumSizeHint(self):  # noqa: N802
+        hint = super().minimumSizeHint()
+        chrome = max(0, super().sizeHint().width() - self.fontMetrics().horizontalAdvance(self.text()))
+        hint.setWidth(min(hint.width(), self.fontMetrics().horizontalAdvance("Details…") + chrome))
+        return hint
+
+    def paintEvent(self, event):  # noqa: N802
+        option = QStyleOptionToolButton()
+        self.initStyleOption(option)
+        chrome = max(0, super().sizeHint().width() - self.fontMetrics().horizontalAdvance(self.text()))
+        option.text = self.fontMetrics().elidedText(self.text(), Qt.TextElideMode.ElideRight,
+                                                   max(0, self.width() - chrome))
+        painter = QPainter(self)
+        self.style().drawComplexControl(QStyle.ComplexControl.CC_ToolButton, option, painter, self)
+
+
+class _ScanObservedText(QWidget):
+    """Compact live observation with exact native selection/copy on disclosure."""
+
+    def __init__(self, kind, text="", parent=None):
+        super().__init__(parent)
+        self._kind = kind
+        self._text = None
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.setAccessibleName(f"Current {kind} text")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(3)
+        self._header = QWidget()
+        self._header.setMinimumWidth(0)
+        self._header.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._header_grid = QGridLayout(self._header)
+        self._header_grid.setContentsMargins(0, 0, 0, 0)
+        self._header_grid.setSpacing(4)
+        self.summary = QLabel()
+        self.summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.summary.setWordWrap(False)
+        self.summary.setMargin(0)
+        self.summary.setIndent(0)
+        self.summary.setMinimumWidth(0)
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.summary.installEventFilter(self)
+        self.toggle = _ScanToolButton()
+        self.toggle.setText("Details…")
+        self.toggle.setAccessibleName(f"Show full current {kind} text")
+        self.toggle.setCheckable(True)
+        self.toggle.setArrowType(Qt.ArrowType.RightArrow)
+        self.toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.copy_button = QPushButton(f"Copy {kind}")
+        self.copy_button.setAccessibleName(f"Copy full current {kind} text")
+        self.copy_button.clicked.connect(self._copy_text)
+        self._header_grid.addWidget(self.summary, 0, 0)
+        self._header_grid.addWidget(self.toggle, 0, 1)
+        self._header_grid.addWidget(self.copy_button, 0, 2)
+        self._header_grid.setColumnStretch(0, 1)
+        layout.addWidget(self._header)
+        self.editor = QPlainTextEdit()
+        self.editor.setReadOnly(True)
+        self.editor.setUndoRedoEnabled(False)
+        self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        self.editor.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.editor.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.editor.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.editor.setMinimumWidth(0)
+        self.editor.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.editor.setAccessibleName(f"Full current {kind} text")
+        self.editor.hide()
+        layout.addWidget(self.editor)
+        self.toggle.toggled.connect(self._set_expanded)
+        self.setText(text)
+        self._sync_geometry()
+
+    def text(self):
+        return self._text
+
+    def textFormat(self):  # noqa: N802
+        return Qt.TextFormat.PlainText
+
+    def setSelection(self, start, length):  # noqa: N802
+        # Match Qt's UTF-16 document offsets, including non-BMP characters.
+        limit = max(0, self.editor.document().characterCount() - 1)
+        cursor = self.editor.textCursor()
+        cursor.setPosition(max(0, min(start, limit)))
+        cursor.setPosition(max(0, min(start + length, limit)), QTextCursor.MoveMode.KeepAnchor)
+        self.editor.setTextCursor(cursor)
+
+    def selectedText(self):  # noqa: N802
+        return self.editor.textCursor().selection().toPlainText()
+
+    def setText(self, text):  # noqa: N802
+        if text == self._text:
+            return
+        self._text = text
+        literal_tooltip = "<qt>" + html.escape(text).replace("\n", "<br>") + "</qt>"
+        self.setToolTip(literal_tooltip)
+        self.summary.setToolTip(literal_tooltip)
+        self.summary.setAccessibleName(text)
+        cursor = self.editor.textCursor()
+        anchor, position = cursor.anchor(), cursor.position()
+        scrollbar = self.editor.verticalScrollBar()
+        scroll_position = scrollbar.value()
+        # Mutate only the existing public document. Never replace its object or
+        # inject characters solely to influence line breaking.
+        writer = QTextCursor(self.editor.document())
+        writer.beginEditBlock()
+        writer.select(QTextCursor.SelectionType.Document)
+        writer.insertText(text.replace("\r\n", "\n").replace("\r", "\n"))
+        writer.endEditBlock()
+        limit = max(0, self.editor.document().characterCount() - 1)
+        restored = QTextCursor(self.editor.document())
+        restored.setPosition(min(anchor, limit))
+        restored.setPosition(min(position, limit), QTextCursor.MoveMode.KeepAnchor)
+        self.editor.setTextCursor(restored)
+        scrollbar.setValue(scroll_position)
+        self._fit_summary()
+
+    def _copy_text(self, _checked=False):
+        # Copy the retained original, including its original newline characters.
+        QApplication.clipboard().setText(self._text)
+
+    def _set_expanded(self, expanded):
+        self.editor.setVisible(expanded)
+        self.toggle.setArrowType(Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.toggle.setAccessibleName(f"{'Hide' if expanded else 'Show'} full current {self._kind} text")
+        self._sync_geometry()
+
+    def _fit_summary(self):
+        if self._text is None:
+            return
+        mode = Qt.TextElideMode.ElideMiddle if self._kind == "file" else Qt.TextElideMode.ElideRight
+        summary_text = self._text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " · ")
+        fitted = self.summary.fontMetrics().elidedText(summary_text, mode,
+                                                       max(0, self.summary.contentsRect().width()))
+        if self.summary.text() != fitted:
+            self.summary.setText(fitted)
+
+    def _sync_geometry(self):
+        if not hasattr(self, "editor") or getattr(self, "_syncing_geometry", False):
+            return
+        self._syncing_geometry = True
+        try:
+            for widget in (self.summary, self.toggle, self.copy_button, self.editor):
+                widget.ensurePolished()
+            scrollbar = self.editor.verticalScrollBar()
+            scroll_position = scrollbar.value()
+            height = math.ceil(self.editor.fontMetrics().lineSpacing() * 4
+                               + self.editor.document().documentMargin() * 2 + self.editor.frameWidth() * 2)
+            if self.editor.minimumHeight() != height:
+                self.editor.setFixedHeight(height)
+                scrollbar.setValue(scroll_position)
+            available = max(0, self.contentsRect().width())
+            gap = max(0, self._header_grid.horizontalSpacing())
+            caption = self.summary.fontMetrics().horizontalAdvance(f"Current {self._kind}: …")
+            details, copy = self.toggle.minimumSizeHint().width(), self.copy_button.minimumSizeHint().width()
+            mode = 0 if available >= caption + details + copy + gap * 2 else (
+                1 if available >= details + copy + gap else 2)
+            if mode != getattr(self, "_header_mode", None):
+                self._header_mode = mode
+                for widget in (self.summary, self.toggle, self.copy_button):
+                    self._header_grid.removeWidget(widget)
+                for column in range(3):
+                    self._header_grid.setColumnStretch(column, 1 if column == 0 else 0)
+                if mode == 0:
+                    self._header_grid.addWidget(self.summary, 0, 0)
+                    self._header_grid.addWidget(self.toggle, 0, 1)
+                    self._header_grid.addWidget(self.copy_button, 0, 2)
+                elif mode == 1:
+                    self._header_grid.addWidget(self.summary, 0, 0, 1, 2)
+                    self._header_grid.addWidget(self.toggle, 1, 0, alignment=Qt.AlignmentFlag.AlignLeft)
+                    self._header_grid.addWidget(self.copy_button, 1, 1, alignment=Qt.AlignmentFlag.AlignRight)
+                else:
+                    self._header_grid.addWidget(self.summary, 0, 0)
+                    self._header_grid.addWidget(self.toggle, 1, 0)
+                    self._header_grid.addWidget(self.copy_button, 2, 0)
+            self._fit_summary()
+        finally:
+            self._syncing_geometry = False
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if watched is self.summary and event.type() == QEvent.Type.Resize:
+            self._fit_summary()
+        return super().eventFilter(watched, event)
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.Type.Resize, QEvent.Type.LayoutRequest,
+                            QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._sync_geometry()
+        return result
 
 
 def _literal(value, limit=32768):
@@ -112,6 +353,105 @@ def _open_link(url):
                                        "raw.githubusercontent.com", "malpedia.caad.fkie.fraunhofer.de"}):
         return
     QDesktopServices.openUrl(QUrl(url))
+
+
+def _set_enabled(widget, enabled):
+    # isEnabled() also includes ancestor state; compare the explicit property.
+    if widget.testAttribute(Qt.WidgetAttribute.WA_ForceDisabled) == bool(enabled):
+        widget.setEnabled(enabled)
+
+
+def _set_visible(widget, visible):
+    if widget.isHidden() == bool(visible):
+        widget.setVisible(visible)
+
+
+def _set_progress(bar, value, text):
+    if bar.value() != value:
+        bar.setValue(value)
+    if bar.format() != text:
+        bar.setFormat(text)
+
+
+def _set_document_text(editor, text):
+    """Change one existing document while retaining its bounded review state."""
+    if editor.toPlainText() == text:
+        return
+    cursor = editor.textCursor()
+    anchor, position = cursor.anchor(), cursor.position()
+    vertical, horizontal = editor.verticalScrollBar(), editor.horizontalScrollBar()
+    top, left = vertical.value(), horizontal.value()
+    writer = QTextCursor(editor.document())
+    writer.beginEditBlock()
+    writer.select(QTextCursor.SelectionType.Document)
+    writer.insertText(text)
+    writer.endEditBlock()
+    limit = max(0, editor.document().characterCount() - 1)
+    cursor.setPosition(min(anchor, limit))
+    cursor.setPosition(min(position, limit), QTextCursor.MoveMode.KeepAnchor)
+    editor.setTextCursor(cursor)
+    vertical.setValue(top)
+    horizontal.setValue(left)
+
+
+class _ScanViewPresentation(QObject):
+    """Retain one latest status for a view; never gate its controller or jobs."""
+
+    def __init__(self, owner, initial):
+        super().__init__(owner)
+        self._owner = owner
+        self._window = None
+        self.latest = initial
+        self._pending = False
+        self._retired = False
+        owner.installEventFilter(self)
+        self._watch_window()
+
+    def _watch_window(self):
+        window = self._owner.window()
+        if window is not self._window:
+            if self._window is not None and self._window is not self._owner and isValid(self._window):
+                self._window.removeEventFilter(self)
+            self._window = window
+            if window is not self._owner:
+                window.installEventFilter(self)
+        return window
+
+    def visible(self):
+        if self._retired or not isValid(self._owner):
+            return False
+        window = self._watch_window()
+        return self._owner.isVisible() and window.isVisible() and not window.isMinimized()
+
+    def receive(self, snapshot):
+        if self._retired:
+            return
+        # Controller emissions are already defensive copies. Keep no history or
+        # second subscription, and do not read another backend snapshot here.
+        self.latest = snapshot
+        self._pending = True
+        self.flush()
+
+    def flush(self):
+        if self._pending and self.visible():
+            self._pending = False
+            self._owner._apply(self.latest)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if not isValid(self) or getattr(self, "_retired", True):
+            return False
+        owner = getattr(self, "_owner", None)
+        if owner is None:
+            return False
+        kind = event.type()
+        if kind == QEvent.Type.Destroy and watched is owner:
+            self._retired = True
+            self._window = None
+        elif isValid(owner) and kind in (QEvent.Type.Show, QEvent.Type.WindowStateChange,
+                                        QEvent.Type.ParentChange):
+            self._watch_window()
+            self.flush()
+        return False
 
 
 class CuratedToolsController(QObject):
@@ -186,7 +526,11 @@ class CuratedToolsController(QObject):
             return False  # A completion listener may have stopped or started work.
         cfg = _config(self.manager)
         options = dict(options or {})
-        budget = options.pop("timeout_seconds", getattr(cfg, "github_tools_timeout_seconds", 300))
+        budget_setting, default_budget = (
+            ("spyware_scan_timeout_seconds", 3600) if action == "priority_scan"
+            else ("github_tools_timeout_seconds", 300)
+        )
+        budget = options.pop("timeout_seconds", getattr(cfg, budget_setting, default_budget))
         if type(budget) is not int or not 30 <= budget <= 14400:
             self._publish(state="held", message="Choose a per-run time budget between 30 and 14400 seconds.")
             return False
@@ -945,21 +1289,39 @@ class ScanProgressRing(QWidget):
         self.percent = None
         self.busy = False
         self._angle = 0
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self, pressure_sensitive=False, chill_sensitive=False, cosmetic=True)
         self._timer.setInterval(50)
         self._timer.timeout.connect(self._rotate)
         self.set_state(None, None, False)
 
+    def _fit_font(self):
+        font = self.font()
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        side = max(68, metrics.horizontalAdvance("100%") + 24, metrics.height() + 24)
+        if self.minimumWidth() != side or self.minimumHeight() != side:
+            self.setFixedSize(side, side)
+
+    def changeEvent(self, event):  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._fit_font()
+
     def set_state(self, finished, total, busy):
         valid = (type(finished) is int and type(total) is int
                  and 0 < total <= 1_000_000 and 0 <= finished <= total)
-        self.percent = min(99 if busy else 100, finished * 100 // total) if valid else None
-        self.busy = bool(busy)
+        percent = min(99 if busy else 100, finished * 100 // total) if valid else None
+        changed = (self.percent, self.busy) != (percent, bool(busy))
+        self.percent, self.busy = percent, bool(busy)
         text = f"{self.percent}% measured overall workflow" if valid else "Progress count unavailable"
-        self.setAccessibleName(text)
-        self.setToolTip(text + ". This is not a percentage of files checked or protection coverage.")
+        if self.accessibleName() != text:
+            self.setAccessibleName(text)
+        tooltip = text + ". This is not a percentage of files checked or protection coverage."
+        if self.toolTip() != tooltip:
+            self.setToolTip(tooltip)
         self._sync_timer()
-        self.update()
+        if changed:
+            self.update()
 
     def set_fraction(self, fraction, busy):
         if type(fraction) not in (int, float) or not math.isfinite(fraction) or not 0 <= fraction <= 1:
@@ -969,7 +1331,7 @@ class ScanProgressRing(QWidget):
 
     def _sync_timer(self):
         from angerona.gui.header_controls import motion_allowed
-        if self.busy and self.isVisible() and motion_allowed(self.config):
+        if self.busy and motion_allowed(self.config):
             self._timer.start()
         else:
             self._timer.stop()
@@ -1037,7 +1399,6 @@ class ScanStepRow(QWidget):
         self.caption = _label()
         self.bar = QProgressBar()
         self.bar.setRange(0, 100)
-        self.bar.setMaximumHeight(14)
         self.count = _label()
         layout.addWidget(self.caption)
         layout.addWidget(self.bar)
@@ -1068,16 +1429,20 @@ class ScanStepRow(QWidget):
         if state in {"running", "queued", "cancelling", "pending"} and percent is not None:
             percent = min(percent, 99)
         self.caption.setText(f"{source} · {_literal(step.get('label', step.get('id', 'Check')), 120)} · {display_state}")
-        self.bar.setValue(int(percent) if percent is not None else 0)
-        self.bar.setFormat((f"{percent:.1f}%" if fractional_item else f"{percent:.0f}%")
-                           if percent is not None else "Indeterminate · no known total")
-        self.bar.setAccessibleName(self.caption.text() + ": " + self.bar.format())
+        _set_progress(self.bar, int(percent) if percent is not None else 0,
+                      (f"{percent:.1f}%" if fractional_item else f"{percent:.0f}%")
+                      if percent is not None else "Indeterminate · no known total")
+        accessible = self.caption.text() + ": " + self.bar.format()
+        if self.bar.accessibleName() != accessible:
+            self.bar.setAccessibleName(accessible)
         unit = _literal(step.get('unit', 'items'), 40)
-        count = (f"{completed:,.0f}/{total:,.0f} {unit}" if completed is not None and total is not None
+        checked, skipped = _measured(step.get("checked")), _measured(step.get("skipped"))
+        unknown_checked = total is None and completed == 0 and unit == "checks" and checked is not None
+        count = (f"checked {checked:,.0f} · total unknown" if unknown_checked
+                 else f"{completed:,.0f}/{total:,.0f} {unit}" if completed is not None and total is not None
                  else f"{completed:,.0f} {unit} processed · total unknown" if completed is not None
                  else "Total not yet known")
-        checked, skipped = _measured(step.get("checked")), _measured(step.get("skipped"))
-        if checked is not None:
+        if checked is not None and not unknown_checked:
             count += f" · checked {checked:,.0f}"
         if skipped is not None:
             count += f" · skipped {skipped:,.0f}"
@@ -1108,7 +1473,7 @@ class SpywareScanControls(QWidget):
         self._section_grid = QGridLayout()
         self.scope_group = QGroupBox("Scope")
         scope = QVBoxLayout(self.scope_group)
-        self.scope_button = QToolButton()
+        self.scope_button = _ScanToolButton()
         self.scope_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.scope_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.scope_button.setAccessibleName("Change spyware scan scope")
@@ -1150,7 +1515,7 @@ class SpywareScanControls(QWidget):
         self.zero_breach.setChecked(bool(getattr(cfg, "spyware_scan_zero_breach_enabled", True)))
         checks.addWidget(self.native)
         checks.addWidget(self.zero_breach)
-        self.toggle = QToolButton()
+        self.toggle = _ScanToolButton()
         self.toggle.setText("Priority and resource limits")
         self.toggle.setCheckable(True)
         self.toggle.setArrowType(Qt.ArrowType.RightArrow)
@@ -1174,11 +1539,11 @@ class SpywareScanControls(QWidget):
         form.addRow("Memory ceiling (MiB)", self.memory)
         self.budget = ClickNumber()
         self.budget.setRange(30, 14400)
-        self.budget.setValue(int(getattr(cfg, "github_tools_timeout_seconds", 300)))
+        self.budget.setValue(int(getattr(cfg, "spyware_scan_timeout_seconds", 3600)))
         self.budget.setSuffix(" s")
-        self.budget.setToolTip("Per-run budget only. This never overwrites your saved default or extends an active scan.")
+        self.budget.setToolTip("Per-run Spyware Scan budget only. Starts from its saved default; never saves preferences or extends an active scan. Standalone Run scan uses the separate toolkit deadline.")
         # Time budget is always visible; priority details can remain compact.
-        checks.addWidget(_label("Time budget for the next run"))
+        checks.addWidget(_label("Spyware Scan budget for the next run"))
         checks.addWidget(self.budget)
         checks.addWidget(_label("If the budget expires, partial evidence stays visible. Choose a larger budget here and press Spyware Scan again to retry."))
         self.options.hide()
@@ -1191,10 +1556,11 @@ class SpywareScanControls(QWidget):
         layout.addLayout(self._section_grid)
 
         self.progress_group = QGroupBox("Progress")
-        progress = QHBoxLayout(self.progress_group)
+        self._progress_grid = QGridLayout(self.progress_group)
         self.progress_ring = ScanProgressRing(cfg)
-        progress.addWidget(self.progress_ring)
-        captions = QVBoxLayout()
+        self._progress_captions = QWidget()
+        captions = QVBoxLayout(self._progress_captions)
+        captions.setContentsMargins(0, 0, 0, 0)
         self.progress_stage = _label("Ready for an explicit scan request.")
         self.progress_stage.setStyleSheet("font-weight:700;")
         self.progress_count = _label("No workflow is running.")
@@ -1204,17 +1570,18 @@ class SpywareScanControls(QWidget):
         self.scanner_summaries = {"native": _label(), "toolkit": _label()}
         for label in self.scanner_summaries.values():
             captions.addWidget(label)
-        progress.addLayout(captions, 1)
         self.cancel_button = QPushButton("Stop scan")
         self.cancel_button.clicked.connect(self.controller.cancel)
-        progress.addWidget(self.cancel_button)
+        self._progress_grid.addWidget(self.progress_ring, 0, 0)
+        self._progress_grid.addWidget(self._progress_captions, 0, 1)
+        self._progress_grid.addWidget(self.cancel_button, 0, 2)
+        self._progress_grid.setColumnStretch(1, 1)
         layout.addWidget(self.progress_group)
-        self.activity = _label("Current task: waiting for an explicit scan request.")
-        self.current_file = _label("Current file: not supplied.")
+        self.activity = _ScanObservedText("task", "Current task: waiting for an explicit scan request.")
+        self.current_file = _ScanObservedText("file", "Current file: not supplied.")
         self.item_caption = _label()
         self.item_progress = QProgressBar()
         self.item_progress.setRange(0, 100)
-        self.item_progress.setMaximumHeight(16)
         self.item_progress.setToolTip("Only the current observed file/query item. This is separate from reader completion and overall workflow progress.")
         self.timing = _label()
         self.outcome = _label()
@@ -1223,7 +1590,7 @@ class SpywareScanControls(QWidget):
             layout.addWidget(label)
         layout.addWidget(self.item_caption)
         layout.addWidget(self.item_progress)
-        self.step_toggle = QToolButton()
+        self.step_toggle = _ScanToolButton()
         self.step_toggle.setText("Per-check and reader progress")
         self.step_toggle.setCheckable(True)
         self.step_toggle.setChecked(True)
@@ -1249,7 +1616,7 @@ class SpywareScanControls(QWidget):
         explanation = QVBoxLayout(self.explanation_group)
         self.stage_explanation = _label()
         explanation.addWidget(self.stage_explanation)
-        timeline = QHBoxLayout()
+        self._stage_grid = QGridLayout()
         self.stage_chips = {}
         for stage, title in (("preflight", "Preflight"), ("native", "Native"),
                              ("toolkit", "Toolkit"), ("aggregation", "Report")):
@@ -1257,9 +1624,9 @@ class SpywareScanControls(QWidget):
             chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
             chip.setToolTip("A finished workflow stage is not a clean-host verdict.")
             self.stage_chips[stage] = chip
-            timeline.addWidget(chip, 1)
-        explanation.addLayout(timeline)
-        self.explanation_toggle = QToolButton()
+            self._stage_grid.addWidget(chip, 0, len(self.stage_chips) - 1)
+        explanation.addLayout(self._stage_grid)
+        self.explanation_toggle = _ScanToolButton()
         self.explanation_toggle.setText("Coverage and permission details")
         self.explanation_toggle.setCheckable(True)
         self.explanation_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -1292,16 +1659,18 @@ class SpywareScanControls(QWidget):
         resources.addWidget(self.privileges)
         self.privileges.setToolTip("Current-token observations do not grant administrator rights or response authority.")
         layout.addWidget(self.resource_group)
-        self.controller.status_changed.connect(self._apply)
-        self._apply(self.controller.snapshot())
-        self._clock = QTimer(self)
+        initial = self.controller.snapshot()
+        self._apply(initial)
+        self._presentation = _ScanViewPresentation(self, initial)
+        self.controller.status_changed.connect(self._presentation.receive)
+        self._clock = PresentationTimer(self, pressure_sensitive=False, chill_sensitive=False)
         self._clock.setInterval(1000)
         self._clock.timeout.connect(self._tick_elapsed)
         self._clock.start()
 
     def _tick_elapsed(self):
-        if self.isVisible():
-            snapshot = self.controller.snapshot()
+        if self._presentation.visible():
+            snapshot = self._presentation.latest
             if snapshot.get("busy"):
                 self._apply_timing(snapshot, getattr(self, "_timing_current", None))
 
@@ -1360,28 +1729,119 @@ class SpywareScanControls(QWidget):
                                              priority=self.priority.currentData(), max_cpu_percent=self.cpu.value(),
                                              max_memory_mib=self.memory.value(), **selected)
 
+    @staticmethod
+    def _content_width(owner, layout):
+        margins = layout.contentsMargins()
+        width = owner.contentsRect().width()
+        parent = owner.parentWidget()
+        if parent is not None:
+            # A scroll area can hold us at the old two-column minimum while
+            # its viewport has already shrunk. Fit the viewport before the
+            # layout's current minimum can keep those columns locked in place.
+            width = min(width, parent.contentsRect().width())
+        return max(0, width - margins.left() - margins.right())
+
+    def _reflow_scan(self):
+        if not hasattr(self, "stage_chips") or getattr(self, "_reflowing_scan", False):
+            return
+        self._reflowing_scan = True
+        try:
+            for widget in (self.scope_group, self.checks_group, self.cancel_button, *self.stage_chips.values()):
+                widget.ensurePolished()
+            self.progress_ring.ensurePolished()
+            self.progress_ring._fit_font()
+            spacing = max(0, self._section_grid.horizontalSpacing())
+            section_width = self._content_width(self, self.layout())
+            # Layout minima include the actual polished controls and font metrics.
+            needed = (self.scope_group.minimumSizeHint().width()
+                      + self.checks_group.minimumSizeHint().width() + spacing)
+            stacked = not self._has_scope_controls or section_width < needed
+            if stacked != getattr(self, "_sections_stacked", None):
+                self._sections_stacked = stacked
+                self._section_grid.removeWidget(self.checks_group)
+                self._section_grid.addWidget(self.checks_group, 1 if stacked else 0, 0 if stacked else 1)
+                self._section_grid.setColumnStretch(0, 1)
+                self._section_grid.setColumnStretch(1, 0 if stacked else 1)
+
+            available = self._content_width(self.progress_group, self._progress_grid)
+            gap = max(0, self._progress_grid.horizontalSpacing())
+            ring = self.progress_ring.minimumSizeHint().expandedTo(self.progress_ring.minimumSize()).width()
+            stop = self.cancel_button.minimumSizeHint().width()
+            # A caption column must have readable line lengths, not just a zero
+            # horizontal minimum for a wrapping label.
+            caption = self._progress_captions.fontMetrics().averageCharWidth() * 36
+            progress_mode = 0 if available >= ring + stop + caption + gap * 2 else (
+                1 if available >= ring + stop + gap else 2)
+            if progress_mode != getattr(self, "_progress_mode", None):
+                self._progress_mode = progress_mode
+                for widget in (self.progress_ring, self._progress_captions, self.cancel_button):
+                    self._progress_grid.removeWidget(widget)
+                for column in range(3):
+                    self._progress_grid.setColumnStretch(column, 0)
+                if progress_mode == 0:
+                    self._progress_grid.addWidget(self.progress_ring, 0, 0)
+                    self._progress_grid.addWidget(self._progress_captions, 0, 1)
+                    self._progress_grid.addWidget(self.cancel_button, 0, 2)
+                    self._progress_grid.setColumnStretch(1, 1)
+                elif progress_mode == 1:
+                    self._progress_grid.addWidget(self.progress_ring, 0, 0)
+                    self._progress_grid.addWidget(self.cancel_button, 0, 1, alignment=Qt.AlignmentFlag.AlignRight)
+                    self._progress_grid.addWidget(self._progress_captions, 1, 0, 1, 2)
+                    self._progress_grid.setColumnStretch(1, 1)
+                else:
+                    self._progress_grid.addWidget(self.progress_ring, 0, 0, alignment=Qt.AlignmentFlag.AlignHCenter)
+                    self._progress_grid.addWidget(self._progress_captions, 1, 0)
+                    self._progress_grid.addWidget(self.cancel_button, 2, 0)
+                    self._progress_grid.setColumnStretch(0, 1)
+
+            available = self._content_width(self.explanation_group, self.explanation_group.layout())
+            gap = max(0, self._stage_grid.horizontalSpacing())
+            chips = tuple(self.stage_chips.values())
+            widths = [chip.sizeHint().width() for chip in chips]
+            columns = 1
+            for count in range(len(chips), 0, -1):
+                if (sum(max(widths[column::count]) for column in range(count))
+                        + gap * (count - 1) <= available):
+                    columns = count
+                    break
+            if columns != getattr(self, "_stage_columns", None):
+                self._stage_columns = columns
+                for chip in chips:
+                    self._stage_grid.removeWidget(chip)
+                for column in range(len(chips)):
+                    self._stage_grid.setColumnStretch(column, 1 if column < columns else 0)
+                for index, chip in enumerate(chips):
+                    self._stage_grid.addWidget(chip, index // columns, index % columns)
+        finally:
+            self._reflowing_scan = False
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() in (QEvent.Type.LayoutRequest, QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._reflow_scan()
+        return result
+
     def resizeEvent(self, event):  # noqa: N802
         super().resizeEvent(event)
-        if not hasattr(self, "checks_group"):
-            return
-        stacked = self.width() < 650 or not self._has_scope_controls
-        if stacked != getattr(self, "_sections_stacked", None):
-            self._sections_stacked = stacked
-            self._section_grid.removeWidget(self.checks_group)
-            self._section_grid.addWidget(self.checks_group, 1 if stacked else 0, 0 if stacked else 1)
+        self._reflow_scan()
 
     def _apply(self, snapshot):
         busy = snapshot.get("busy") is True
         progress = snapshot.get("scan_progress")
         progress = progress if type(progress) is dict and progress.get("unit") == "workflow_stages" else {}
         finished, total = progress.get("finished"), progress.get("total")
-        self.progress_ring.set_state(finished, total, busy)
         readers = snapshot.get("scanner_progress")
         readers = readers if type(readers) is dict else {}
         planned = progress.get("planned_stages")
         planned = planned if type(planned) in (tuple, list) else (("toolkit",) if "toolkit" in readers else ())
         done = progress.get("finished_stages")
         done = done if type(done) in (tuple, list) else ()
+        native_reader = readers.get("native")
+        # Reader work may settle while the orchestrator awaits the toolkit.
+        # This changes presentation only; it does not finish a workflow stage.
+        native_checks_finished = (busy and "native" in planned and "native" not in done
+                                  and type(native_reader) is dict
+                                  and native_reader.get("state") == "completed")
         fractions = []
         for name in planned:
             if name in done:
@@ -1396,6 +1856,8 @@ class SpywareScanControls(QWidget):
             fractions.append(percent / 100)
         if fractions and readers:
             self.progress_ring.set_fraction(sum(fractions) / len(fractions), busy)
+        else:
+            self.progress_ring.set_state(finished, total, busy)
         labels = {"preflight": "Verifying available checks", "toolkit": "Running supported toolkit checks",
                   "native": "Waiting for native SpywareGuard", "aggregation": "Reviewing results and retiring owned work",
                   "cancelling": "Stopping owned scan work", "finished": "Workflow finished · review findings and coverage"}
@@ -1432,6 +1894,13 @@ class SpywareScanControls(QWidget):
             "incomplete": "Some selected checks did not complete. Next: review the report's explicit coverage gaps and findings.",
         }.get(state, "Waiting for an explicit request or structured worker status. No completion percentage is estimated from elapsed time.")
         explanation = explanations.get(progress.get("stage"), fallback) if busy or state not in {"failed", "timed-out", "cancelled"} else fallback
+        if (native_checks_finished and progress.get("stage") in {"toolkit", "native"}
+                and state not in {"failed", "timed-out", "cancelled"}
+                and snapshot.get("lifecycle") != "draining"):
+            explanation = ("Native checks finished; report aggregation is pending. "
+                           "The selected toolkit work must settle before findings and coverage gaps are assembled."
+                           if progress.get("stage") == "toolkit" else
+                           "Native checks finished; report aggregation is pending. Next: assemble findings and explicit coverage gaps.")
         if state == "timed-out":
             explanation = "The selected time budget expired. Partial results are retained; this is incomplete coverage. Choose a larger next-run budget to retry."
         if progress.get("stage") == "finished" and state == "incomplete":
@@ -1446,16 +1915,28 @@ class SpywareScanControls(QWidget):
             selected = key in planned
             done = selected and key in finished_stages
             current = selected and key == progress.get("stage") and busy
-            accent = "#4ade80" if done else "#38bdf8" if current else "#64748b"
+            checks_finished = key == "native" and native_checks_finished
+            if key == "native":
+                title = "Native · checks finished" if checks_finished else "Native"
+                if chip.text() != title:
+                    chip.setText(title)
+                tooltip = ("This request's native checks finished; report aggregation is pending. "
+                           "Completion does not establish a clean PC or grant response authority."
+                           if checks_finished else "A finished workflow stage is not a clean-host verdict.")
+                if chip.toolTip() != tooltip:
+                    chip.setToolTip(tooltip)
+            accent = "#4ade80" if done else "#38bdf8" if current or checks_finished else "#64748b"
             chip.setStyleSheet(f"color:{accent};border:1px solid {accent};border-radius:4px;padding:3px;")
-            chip.setAccessibleName(f"{chip.text()}: {'finished' if done else 'current' if current else 'pending' if selected else 'not scheduled'}")
+            chip_status = ("checks finished; report aggregation pending" if checks_finished else
+                           "finished" if done else "current" if current else "pending" if selected else "not scheduled")
+            chip.setAccessibleName(f"{chip.text()}: {chip_status}")
         if self.progress_ring.percent is None:
             self.progress_count.setText("Indeterminate · the worker has not supplied a completion count.")
         else:
             self.progress_count.setText(f"Overall {self.progress_ring.percent}% · measured workflow fraction" +
                                         (f" · {finished}/{total} stages finished" if type(finished) is int and type(total) is int else ""))
         self._apply_readers(snapshot, readers)
-        self.cancel_button.setEnabled(busy)
+        _set_enabled(self.cancel_button, busy)
         usage = snapshot.get("resource_usage")
         usage = usage if type(usage) is dict else {}
 
@@ -1532,14 +2013,14 @@ class SpywareScanControls(QWidget):
                     self.step_rows[key] = row
                     self.steps_layout.insertWidget(self.steps_layout.count() - 1, row)
                 row.apply(title, step, terminal=terminal)
-                row.show()
+                _set_visible(row, True)
         for key, row in tuple(self.step_rows.items()):
             if key not in visible:
                 self.steps_layout.removeWidget(row)
                 row.deleteLater()
                 del self.step_rows[key]
-        self.steps_scroll.setVisible(bool(visible) and self.step_toggle.isChecked())
-        self.step_toggle.setVisible(bool(visible))
+        _set_visible(self.steps_scroll, bool(visible) and self.step_toggle.isChecked())
+        _set_visible(self.step_toggle, bool(visible))
         scrollbar.setValue(position)
         self.activity.setText("Current task: " + ("\n".join(activities) if activities else
                               "waiting for structured reader activity" if snapshot.get("busy") else "no scan is running"))
@@ -1548,18 +2029,16 @@ class SpywareScanControls(QWidget):
         self._apply_timing(snapshot, current)
         item_done, item_total = _measured(current.get("item_completed")), _measured(current.get("item_total"))
         observed_item = bool(current.get("current_file")) or item_done is not None
-        self.item_progress.setVisible(observed_item)
-        self.item_caption.setVisible(observed_item)
+        _set_visible(self.item_progress, observed_item)
+        _set_visible(self.item_caption, observed_item)
         if item_done is not None and item_total and item_done <= item_total:
             percent = item_done * 100 / item_total
-            self.item_progress.setValue(int(percent))
-            self.item_progress.setFormat(f"Current item {percent:.0f}%")
+            _set_progress(self.item_progress, int(percent), f"Current item {percent:.0f}%")
             unit = _literal(current.get("item_unit", "items"), 60)
             eta = "— (item ended)" if current_terminal else _duration(current.get("item_remaining_s"))
             self.item_caption.setText(f"Current item: {item_done:,.0f}/{item_total:,.0f} {unit} · item ETA {eta}")
         else:
-            self.item_progress.setValue(0)
-            self.item_progress.setFormat("Current item indeterminate · no known total")
+            _set_progress(self.item_progress, 0, "Current item indeterminate · no known total")
             eta = "— (item ended)" if current_terminal else "Calculating"
             self.item_caption.setText("Current item: " + (f"{item_done:,.0f} observed; " if item_done is not None else "") + "total unknown · item ETA " + eta)
         reason = snapshot.get("message") if snapshot.get("state") in {"failed", "timed-out", "cancelled", "incomplete", "stopping"} else ""
@@ -1570,7 +2049,7 @@ class SpywareScanControls(QWidget):
         if summary:
             reason = str(reason or "") + ("\n" if reason else "") + summary
         self.outcome.setText(_literal(reason, 1800))
-        self.outcome.setVisible(bool(reason))
+        _set_visible(self.outcome, bool(reason))
 
 
 class CuratedScannerWidget(QWidget):
@@ -1708,9 +2187,11 @@ class CuratedScannerWidget(QWidget):
         review.addWidget(self.investigate_button)
         review.addWidget(self.trace_button)
         layout.addLayout(review)
-        self.controller.status_changed.connect(self._apply)
+        initial = self.controller.snapshot()
+        self._apply(initial)
+        self._presentation = _ScanViewPresentation(self, initial)
+        self.controller.status_changed.connect(self._presentation.receive)
         self.controller.credits_ready.connect(self._show_credits)
-        self._apply(self.controller.snapshot())
         self._action_columns = None
         self._reflow_actions()
 
@@ -1791,8 +2272,7 @@ class CuratedScannerWidget(QWidget):
         else:
             selected.update(priority=self.priority_controls.priority.currentData(),
                             max_cpu_percent=self.priority_controls.cpu.value(),
-                            max_memory_mib=self.priority_controls.memory.value(),
-                            timeout_seconds=self.priority_controls.budget.value())
+                            max_memory_mib=self.priority_controls.memory.value())
             self.controller.scan(**selected)
 
     def _apply(self, state):
@@ -1804,22 +2284,19 @@ class CuratedScannerWidget(QWidget):
         self.status.setText(f"{_literal(state.get('state', 'unknown'), 80)} · v{_literal(state.get('version', '0.1.10'), 40)}\n"
                             + _literal(state.get("message"), 1200)
                             + ("\n" + summary if summary else ""))
-        self.install_button.setEnabled(not busy and enabled)
-        self.run_button.setEnabled(not busy and verified and enabled and executable)
-        self.priority_button.setEnabled(not self.controller._closed)
-        self.advanced_button.setEnabled(not busy)
-        self.verify_button.setEnabled(not busy and verified and enabled and executable)
-        self.cancel_button.setEnabled(busy)
-        self.revert_button.setEnabled(not busy and bool(state.get("installed")))
-        self.credits_button.setEnabled(not busy)
-        self.settings_button.setEnabled(not busy)
+        _set_enabled(self.install_button, not busy and enabled)
+        _set_enabled(self.run_button, not busy and verified and enabled and executable)
+        _set_enabled(self.priority_button, not self.controller._closed)
+        _set_enabled(self.advanced_button, not busy)
+        _set_enabled(self.verify_button, not busy and verified and enabled and executable)
+        _set_enabled(self.cancel_button, busy)
+        _set_enabled(self.revert_button, not busy and bool(state.get("installed")))
+        _set_enabled(self.credits_button, not busy)
+        _set_enabled(self.settings_button, not busy)
         selected = {key: state[key] for key in ("state", "message", "coverage", "coverage_incomplete", "match_counts", "findings", "details", "report", "latest_report", "partial_result")
                     if key in state}
         content = _literal(selected)
-        if self.results.toPlainText() != content:
-            vertical = self.results.verticalScrollBar().value()
-            self.results.setPlainText(content)
-            self.results.verticalScrollBar().setValue(vertical)
+        _set_document_text(self.results, content)
 
     def _revert(self):
         if QMessageBox.question(self, "Revert Zero-Breach integration",
@@ -1947,8 +2424,8 @@ class CuratedScannerWidget(QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
-        self._apply(self.controller.snapshot())
-        if self.controller.snapshot().get("state") == "not_loaded":
+        self._presentation.flush()
+        if self._presentation.latest.get("state") == "not_loaded":
             self.controller.refresh()
 
 

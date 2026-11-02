@@ -224,6 +224,7 @@ class Config:
     github_tools_job_limit_mib: int = 256
     github_tools_report_limit_mib: int = 64
     github_tools_timeout_seconds: int = 300
+    spyware_scan_timeout_seconds: int = 3600
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
@@ -642,6 +643,7 @@ class Config:
                     ("github_tools_job_limit_mib", 64, 1024),
                     ("github_tools_report_limit_mib", 8, 256),
                     ("github_tools_timeout_seconds", 30, 900),
+                    ("spyware_scan_timeout_seconds", 30, 14400),
                     ("spyware_scan_cpu_percent", 10, 90),
                     ("spyware_scan_memory_mib", 128, 2048),
                     ("spyware_scan_background_percent", 5, 50),
@@ -1156,6 +1158,7 @@ class Config:
             ("github_tools_job_limit_mib", 64, 1024),
             ("github_tools_report_limit_mib", 8, 256),
             ("github_tools_timeout_seconds", 30, 900),
+            ("spyware_scan_timeout_seconds", 30, 14400),
             ("spyware_scan_cpu_percent", 10, 90),
             ("spyware_scan_memory_mib", 128, 2048),
             ("spyware_scan_background_percent", 5, 50),
@@ -1264,6 +1267,7 @@ class Config:
                     **{name: getattr(self, name) for name in (
                         "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
                         "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_timeout_seconds",
+                        "spyware_scan_timeout_seconds",
                         "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled", "spyware_scan_priority",
                         "spyware_scan_cpu_percent", "spyware_scan_memory_mib", "spyware_scan_background_percent",
                         "spyware_scan_verify_admin", "breach_auto_isolate_enabled",

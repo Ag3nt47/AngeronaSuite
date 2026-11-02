@@ -9,7 +9,18 @@ import angerona.modules.adversary_combat as combat_module
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.modules.adversary_combat import AdversaryCombat
 from angerona.modules.mobile_bridge import MobileResponseBridge
+from angerona.core.windows_process_lease import ProcessObjectIdentity
+from angerona.core.werfault_guard import OwnedProcessIdentity
 from test_breach_lockdown import installed_protect_for_inert_combat
+from test_program_firewall_lease import FakeNative as FakeProgramNative
+
+
+def _owned_processes():
+    now = time.monotonic()
+    return (OwnedProcessIdentity(
+        65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+        "core", now, now + 5.0,
+    ),)
 
 
 def _combat(tmp_path, **overrides) -> AdversaryCombat:
@@ -26,7 +37,7 @@ def _combat(tmp_path, **overrides) -> AdversaryCombat:
         "adversary_combat_isolation_threshold": 3,
     }
     values.update(overrides)
-    manager = SimpleNamespace(config=SimpleNamespace(**values), modules={})
+    manager = SimpleNamespace(config=SimpleNamespace(**values), modules={}, owned_process_identities=_owned_processes)
     module = AdversaryCombat(tmp_path)
     module.bind(EventBus())
     module.bind_manager(manager)
@@ -287,7 +298,7 @@ def test_invalid_supplied_process_identity_fails_closed(tmp_path, monkeypatch):
 def test_program_firewall_rule_is_removed_if_retained_identity_changes_after_netsh(
     tmp_path, monkeypatch
 ):
-    expected_exe = str(tmp_path / "malware.exe")
+    expected_exe = r"c:\fixture\target.exe"
     reused = _FakeProcess(
         name="innocent.exe",
         exe=str(tmp_path / "innocent.exe"),
@@ -302,11 +313,15 @@ def test_program_firewall_rule_is_removed_if_retained_identity_changes_after_net
     calls: list[list[str]] = []
     rules: set[str] = set()
 
+    native = FakeProgramNative()
+    native.process = ProcessObjectIdentity(500, 116444736200000000, expected_exe)
+
     def firewall(args):
         calls.append(list(args))
         name = next(value[5:] for value in args if value.startswith("name="))
         if args[0] == "add":
             rules.add(name)
+            native.exited = True
         else:
             rules.discard(name)
         return True
@@ -315,24 +330,8 @@ def test_program_firewall_rule_is_removed_if_retained_identity_changes_after_net
     monkeypatch.setattr(module, "_firewall_rule_exists", lambda name: name in rules)
     from angerona.core import program_firewall_lease
 
-    class InertLease:
-        path = expected_exe
-
-        def validate(self):
-            if rules:
-                raise OSError("inert retained identity changed after dispatch")
-
-        def proof(self):
-            self.validate()
-            return {"program_custody": "inert-unit-test"}
-
-        def check_deadline(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(program_firewall_lease, "ProgramFirewallLease", lambda *_args: InertLease())
+    monkeypatch.setattr(module, "_acquire_program_lease", lambda pid, born, image:
+        program_firewall_lease.ProgramFirewallLease(pid, born, image, _native=native))
     monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
 
     result = module._block_program(

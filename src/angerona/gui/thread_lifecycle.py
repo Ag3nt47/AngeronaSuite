@@ -58,7 +58,16 @@ def _schedule_deferred_close_retry(owner: Any) -> None:
 
 def _retry_deferred_close(owner: Any) -> None:
     """Finish a deferred close once its last worker leaves ``run()``."""
+    generation = None
     try:
+        if not isValid(owner):
+            _DEFERRED_OWNERS.pop(id(owner), None)
+            return
+        # Several worker signals or an already queued retry may arrive after
+        # one callback queued the terminal close. Each deferral owns one close.
+        if not getattr(owner, "_angerona_deferred_close", False):
+            return
+        generation = getattr(owner, "_angerona_close_deferral_generation", None)
         if _running_workers(owner):
             # finished() can be emitted before isRunning() becomes false. A
             # result-bearing shadow signal can even fire inside run(). Keep a
@@ -71,15 +80,26 @@ def _retry_deferred_close(owner: Any) -> None:
         owner._angerona_close_bypass = True
         def finish_close() -> None:
             try:
+                if (not isValid(owner)
+                        or getattr(owner, "_angerona_close_deferral_generation", None) is not generation):
+                    return  # A newer deferral owns this reused window.
                 owner.close()
             except RuntimeError:
                 pass  # Another queued completion may already have closed it.
             finally:
-                _DEFERRED_OWNERS.pop(id(owner), None)
+                # closeEvent can defer again for a newly started worker. An
+                # older finalizer must never release that newer live owner.
+                if (not isValid(owner)
+                        or (getattr(owner, "_angerona_close_deferral_generation", None) is generation
+                            and not getattr(owner, "_angerona_deferred_close", False))):
+                    _DEFERRED_OWNERS.pop(id(owner), None)
 
         QTimer.singleShot(0, finish_close)
     except RuntimeError:
-        _DEFERRED_OWNERS.pop(id(owner), None)
+        if (not isValid(owner)
+                or (getattr(owner, "_angerona_close_deferral_generation", None) is generation
+                    and not getattr(owner, "_angerona_deferred_close", False))):
+            _DEFERRED_OWNERS.pop(id(owner), None)
         return
 
 
@@ -88,10 +108,17 @@ def defer_close_until_threads(owner: Any, event: Any, workers: Iterable[Any]) ->
     running = [worker for worker in workers if _is_running(worker)]
     if not running:
         owner._angerona_deferred_close = False
+        owner._angerona_close_wait_connected = False
         owner._angerona_close_workers = ()
+        owner._angerona_close_deferral_generation = None  # Consume pending terminal callbacks.
+        # A real close can arrive after native retirement but before queued
+        # finished/retry callbacks. That close now owns final disposition.
+        _DEFERRED_OWNERS.pop(id(owner), None)
         return False
 
     event.ignore()
+    if not getattr(owner, "_angerona_deferred_close", False):
+        owner._angerona_close_deferral_generation = object()
     _DEFERRED_OWNERS[id(owner)] = owner
     owner._angerona_deferred_close = True
     owner._angerona_close_workers = tuple(running)

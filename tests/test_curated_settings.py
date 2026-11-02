@@ -35,6 +35,13 @@ def test_curated_scan_choices_and_lifted_case_survive_reload(tmp_path, monkeypat
     ("github_tools_allow_download", "false"),
     ("breach_auto_isolate_enabled", 1),
     ("github_tools_timeout_seconds", 901),
+    ("spyware_scan_timeout_seconds", 29),
+    ("spyware_scan_timeout_seconds", 14401),
+    ("spyware_scan_timeout_seconds", True),
+    ("spyware_scan_timeout_seconds", False),
+    ("spyware_scan_timeout_seconds", 3600.0),
+    ("spyware_scan_timeout_seconds", "3600"),
+    ("spyware_scan_timeout_seconds", None),
     ("github_tools_job_limit_mib", True),
     ("spyware_scan_cpu_percent", 100),
     ("spyware_scan_priority", "realtime"),
@@ -64,3 +71,66 @@ def test_malformed_network_choices_do_not_enable_actions_or_downloads(tmp_path, 
     assert config.spyware_scan_cpu_percent == 70
     assert config.breach_lifted_cases == ["b" * 32]
     assert config.ollama_model == "preserved"
+
+
+@pytest.mark.parametrize("spyware_timeout,generic_timeout", [
+    (30, 300), (3600, 300), (7200, 45), (14400, 45),
+])
+def test_spyware_timeout_round_trip_is_independent_of_generic_timeout(
+    tmp_path, monkeypatch, spyware_timeout, generic_timeout,
+):
+    config = Config(data_dir=tmp_path)
+    assert config.spyware_scan_timeout_seconds == 3600
+    assert config.github_tools_timeout_seconds == 300
+    config.spyware_scan_timeout_seconds = spyware_timeout
+    config.github_tools_timeout_seconds = generic_timeout
+    config.ollama_model = "retain-timeout-operator-model"
+    config.save()
+    before = config.settings_path.read_bytes()
+    saved = json.loads(before)
+    assert saved["spyware_scan_timeout_seconds"] == spyware_timeout
+    assert saved["github_tools_timeout_seconds"] == generic_timeout
+
+    loaded = _load_from(tmp_path, monkeypatch)
+    assert loaded.spyware_scan_timeout_seconds == spyware_timeout
+    assert loaded.github_tools_timeout_seconds == generic_timeout
+    assert loaded.ollama_model == "retain-timeout-operator-model"
+    assert config.settings_path.read_bytes() == before
+
+
+@pytest.mark.parametrize("value", [29, 14401, True, False, 3600.0, "3600", None])
+def test_malformed_spyware_timeout_retains_default_without_rewriting_preferences(
+    tmp_path, monkeypatch, value,
+):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({
+        "spyware_scan_timeout_seconds": value,
+        "github_tools_timeout_seconds": 45,
+        "ollama_model": "preserved-malformed-timeout-model",
+    }), encoding="utf-8")
+    before = path.read_bytes()
+
+    loaded = _load_from(tmp_path, monkeypatch)
+    assert loaded.spyware_scan_timeout_seconds == 3600
+    assert loaded.github_tools_timeout_seconds == 45
+    assert loaded.ollama_model == "preserved-malformed-timeout-model"
+    assert path.read_bytes() == before
+
+
+def test_legacy_preferences_default_spyware_timeout_without_rewriting_file(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({
+        "github_tools_timeout_seconds": 45,
+        "spyware_scan_priority": "high",
+        "ollama_model": "preserved-legacy-model",
+    }, indent=3) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    loaded = _load_from(tmp_path, monkeypatch)
+    assert loaded.spyware_scan_timeout_seconds == 3600
+    assert loaded.github_tools_timeout_seconds == 45
+    assert loaded.spyware_scan_priority == "high"
+    assert loaded.ollama_model == "preserved-legacy-model"
+    assert path.read_bytes() == before

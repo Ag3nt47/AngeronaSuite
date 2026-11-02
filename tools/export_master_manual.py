@@ -29,6 +29,7 @@ FIGURES = {
     'security-flow-tools.png': 'Pinned toolkit preparation, separate execution and report review',
     'security-flow-breach.png': 'Native breach qualification, governed containment and managed Lift',
     'security-flow-hardening.png': 'Version 1.15 telemetry assurance, independent history and service authority layers',
+    'security-flow-auto-adapt.png': 'Auto Adapt exact change review, approval and supported rollback',
 }
 LOCAL_PATH = re.compile(
     r'(?<![\w/])(?:(?:src|tests|tools|docs|analysis|assets)/[\w./-]+\.(?:py|ps1|md|png|json|txt|bat|toml|go)|'
@@ -188,7 +189,7 @@ class Exporter:
         if self.seen_text != expected:
             raise ValueError('manual visible text coverage differs from the Word body')
         if Counter(self.figures) != Counter(FIGURES.keys()):
-            raise ValueError('manual must contain exactly the three reviewed figures')
+            raise ValueError('manual must contain exactly the reviewed figure inventory')
         digest = hashlib.sha256(MANUAL.read_bytes()).hexdigest()
         footer = ET.fromstring(self.archive.read('word/footer2.xml'))
         footer_text = ''.join(node.text or '' for node in footer.iter(f'{{{W}}}t'))

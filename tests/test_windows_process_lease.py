@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,10 @@ from angerona.core.windows_process_lease import (
 from angerona.core import windows_process_lease as lease_module
 from angerona.modules import adversary_combat as combat_module
 from angerona.modules.adversary_combat import AdversaryCombat, CombatAction
+from angerona.modules.adversary_combat import HostMutationHeld
+from angerona.core.eventbus import Event, Severity
+from angerona.core.response_contract import authorize_response
+from angerona.core.werfault_guard import OwnedProcessIdentity
 
 
 class FakeNative:
@@ -85,6 +90,29 @@ def test_one_least_rights_non_inheritable_handle_binds_every_native_call():
     assert all(call[1] == 101 for call in native.calls[1:])
     with pytest.raises(ProcessLeaseError, match="closed"):
         lease.validate(alive=False)
+
+
+def test_query_only_custody_cannot_terminate_or_run_a_dispatch_callback():
+    native = FakeNative()
+    callbacks = []
+    with acquire(native, query_only=True) as lease:
+        assert lease.query_only is True
+        assert native.calls[0] == ("open", 4242, 0x101000, False)
+        lease.validate(alive=True)
+        with pytest.raises(ProcessLeaseError):
+            lease.terminate(before_dispatch=lambda: callbacks.append(True))
+        assert not lease.dispatch_started
+        assert callbacks == []
+        assert not any(call[0] == "terminate" for call in native.calls)
+    assert native.calls.count(("close", 101)) == 1
+
+
+@pytest.mark.parametrize("query_only", [None, 0, 1, "true", object()])
+def test_query_only_mode_requires_literal_bool_before_open(query_only):
+    native = FakeNative()
+    with pytest.raises(ProcessLeaseError):
+        acquire(native, query_only=query_only)
+    assert native.calls == []
 
 
 @pytest.mark.parametrize("refusal", ["exception", "false", "true", "invalid"])
@@ -248,21 +276,106 @@ def action():
     )
 
 
+def _owned_processes():
+    """Fresh typed non-target companion, supplied only by this inert manager."""
+    now = time.monotonic()
+    return (OwnedProcessIdentity(
+        65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+        "core", now, now + 5.0,
+    ),)
+
+
+def _response_event():
+    return Event("inert-process-custody", "Exact inert termination control", Severity.HIGH,
+        details={"pid": 4242, "process_create_time": 50.0,
+                 **authorize_response(["terminate_process"], pid=4242, process_create_time=50.0)})
+
+
 @pytest.fixture
 def transaction(tmp_path, monkeypatch):
     module = AdversaryCombat(tmp_path, rollback_anchor={})
+    module.bind_manager(SimpleNamespace(modules={module.name: module}, owned_process_identities=_owned_processes))
     assert module._reconcile_state() is True
     monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
     native = FakeNative()
     clock = [0.0]
     monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: acquire(
         native, _monotonic=lambda: clock[0]))
+    monkeypatch.setattr(lease_module, "_Native", lambda: pytest.fail(
+        "Retained termination transaction opened an independent native observer"))
     process = SimpleNamespace(kill=lambda: pytest.fail("PID-based kill was used"))
     return module, native, clock, process
 
 
 def records(module):
     return module._read_journal(strict=True)[0]
+
+
+def test_retained_termination_identity_refreshes_roster_without_reopening(transaction, monkeypatch):
+    module, native, _clock, _process = transaction
+    admitted = action()
+    with acquire(native) as lease:
+        lease.validate(alive=True)
+        before = list(native.calls)
+        with module._retained_process_custody(admitted, lease):
+            assert module._retained_process_identity(admitted) is lease.identity
+            module._require_host_mutation_authority(action=admitted)
+        assert native.calls == before
+    assert [call[0] for call in native.calls].count("open") == 1
+
+
+@pytest.mark.parametrize("change", ["action_id", "verb", "pid", "birth", "image"])
+def test_retained_scope_cannot_authorize_another_action_or_target(transaction, change):
+    module, native, _clock, _process = transaction
+    admitted = action()
+    updates = {}
+    details = dict(admitted.details)
+    if change == "action_id":
+        updates["action_id"] = "act-8888888888888888"
+    elif change == "verb":
+        updates["action"] = "suspend_process"
+    else:
+        details[{"pid": "pid", "birth": "create_time", "image": "exe"}[change]] = {
+            "pid": 4243, "birth": 51.0, "image": r"C:\fixture\other.exe",
+        }[change]
+        updates["details"] = details
+    different = dataclasses.replace(admitted, **updates)
+    with acquire(native) as lease:
+        with module._retained_process_custody(admitted, lease):
+            with pytest.raises(HostMutationHeld):
+                module._require_host_mutation_authority(action=different)
+    assert not any(call[0] == "terminate" for call in native.calls)
+
+
+def test_query_only_lease_cannot_be_a_termination_scope(transaction):
+    module, native, _clock, _process = transaction
+    with acquire(native, query_only=True) as lease:
+        with pytest.raises(HostMutationHeld):
+            with module._retained_process_custody(action(), lease):
+                pytest.fail("Query-only lease authorized a termination scope")
+
+
+def test_retained_scope_rejects_raw_birth_change_below_float_tolerance(transaction):
+    module, native, _clock, _process = transaction
+    admitted = action()
+    with acquire(native) as lease:
+        original = lease.identity
+        with module._retained_process_custody(admitted, lease):
+            lease.identity = dataclasses.replace(original, birth_ticks=original.birth_ticks + 1)
+            try:
+                with pytest.raises(HostMutationHeld):
+                    module._require_host_mutation_authority(action=admitted)
+            finally:
+                lease.identity = original
+    assert not any(call[0] == "terminate" for call in native.calls)
+
+
+def test_retained_scope_rejects_a_forged_lease_object(transaction):
+    module, native, _clock, _process = transaction
+    fake = SimpleNamespace(identity=native.target, query_only=False, check_deadline=lambda: None)
+    with pytest.raises(HostMutationHeld):
+        with module._retained_process_custody(action(), fake):
+            pytest.fail("Untyped lease object supplied native custody")
 
 
 def test_stop_during_final_internal_native_read_is_held_before_dispatch(transaction, monkeypatch):
@@ -278,7 +391,7 @@ def test_stop_during_final_internal_native_read_is_held_before_dispatch(transact
             module._stop.set()
         return result
     monkeypatch.setattr(native, "identity", final_read)
-    assert module._terminate_process_transaction(process, action()) is None
+    assert module._terminate_process_transaction(process, action(), event=_response_event()) is None
     assert len(reads) == 4
     assert not native.exited and not any(call[0] == "terminate" for call in native.calls)
     assert not any(record["record_type"] in {"commit", "orphan"} for record in records(module))
@@ -311,7 +424,7 @@ def test_transaction_handle_survives_intent_and_terminal_and_pid_lookup_change(
         Process=lambda pid: lookup[pid]))
     output = []
     worker = threading.Thread(target=lambda: output.append(
-        module._terminate_process_transaction(process, action())))
+        module._terminate_process_transaction(process, action(), event=_response_event())))
     worker.start()
     try:
         assert intent_ready.wait(10)
@@ -348,7 +461,7 @@ def test_transaction_rechecks_after_durable_intent_before_possible_effect(
             raise OSError("fixture intent write failed")
 
     monkeypatch.setattr(module, "_journal_intent", changed_after_intent)
-    assert module._terminate_process_transaction(process, action()) is None
+    assert module._terminate_process_transaction(process, action(), event=_response_event()) is None
     history = records(module)
     assert [value["record_type"] for value in history] == ["intent", "failure"]
     assert not module._mutation_blocked
@@ -360,7 +473,7 @@ def test_native_acquisition_failure_has_no_pid_kill_fallback(transaction, monkey
     module, native, _clock, process = transaction
     monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action:
                         (_ for _ in ()).throw(OSError("access denied")))
-    assert module._terminate_process_transaction(process, action()) is None
+    assert module._terminate_process_transaction(process, action(), event=_response_event()) is None
     assert native.calls == []
     assert [value["record_type"] for value in records(module)] == ["failure"]
     assert not module._mutation_blocked
@@ -402,7 +515,7 @@ def test_possible_effect_uncertainty_keeps_irreversible_recovery_circuit(
         monkeypatch.setattr(module, "_append_journal", fail_terminal)
     else:
         native.close_error = True
-    assert module._terminate_process_transaction(process, action()) is None
+    assert module._terminate_process_transaction(process, action(), event=_response_event()) is None
     assert module._mutation_blocked
     assert module.health == 0
     history = records(module)

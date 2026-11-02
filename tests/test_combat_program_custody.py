@@ -3,22 +3,35 @@ from __future__ import annotations
 
 from dataclasses import replace
 import os
+import time
 from types import SimpleNamespace
 
 import pytest
 from test_breach_lockdown import installed_protect_for_inert_combat
 from test_program_firewall_lease import FakeNative
+from test_windows_process_lease import FakeNative as FakeProcessNative
 
 from angerona.core import program_firewall_lease as custody
+from angerona.core import windows_process_lease as process_custody
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.response_contract import authorize_response
 from angerona.modules import adversary_combat as combat
+from angerona.core.werfault_guard import OwnedProcessIdentity
+
+
+def _owned_processes():
+    now = time.monotonic()
+    return (OwnedProcessIdentity(
+        65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+        "core", now, now + 5.0,
+    ),)
 
 
 @pytest.fixture
 def transaction(tmp_path, monkeypatch, installed_protect_for_inert_combat):
     module = combat.AdversaryCombat(tmp_path, rollback_anchor={})
     module.bind(EventBus())
+    module.bind_manager(SimpleNamespace(modules={module.name: module}, owned_process_identities=_owned_processes))
     assert module._reconcile_state() is True
     native, clock, leases = FakeNative(), [0.0], []
     original = custody.ProgramFirewallLease
@@ -28,7 +41,8 @@ def transaction(tmp_path, monkeypatch, installed_protect_for_inert_combat):
         leases.append(current)
         return current
 
-    monkeypatch.setattr(custody, "ProgramFirewallLease", lease)
+    monkeypatch.setattr(module, "_acquire_program_lease", lease)
+    monkeypatch.setattr(process_custody, "_Native", FakeProcessNative)
     monkeypatch.setattr(combat, "_WINDOWS_PROCESS_CUSTODY", True)
     # Any legacy PID re-query is a failure. All native file/process operations
     # are the in-memory adapter; no system firewall command is permitted.
@@ -77,6 +91,8 @@ def test_same_objects_remain_held_through_real_intent_terminal_writer_and_close(
         return original(candidate)
 
     monkeypatch.setattr(fixture.module, "_append_journal", append)
+    monkeypatch.setattr(process_custody, "_Native", lambda: pytest.fail(
+        "Program custody reopened a target instead of reusing its held native identity"))
     result = execute(fixture)
     assert result is not None and result.status == "applied"
     assert phases == ["intent", "commit"]

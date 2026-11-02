@@ -286,7 +286,7 @@ def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> Non
         "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
         "spyware_research_urls",
         "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
-        "spyware_scan_priority", "spyware_scan_cpu_percent",
+        "spyware_scan_priority", "spyware_scan_timeout_seconds", "spyware_scan_cpu_percent",
         "spyware_scan_memory_mib", "spyware_scan_background_percent",
         "spyware_scan_verify_admin",
     }
@@ -297,6 +297,13 @@ def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> Non
     } | WITNESS_DEFAULTS.keys()
     defaults = _default_values()
     assert defaults["spyware_research_urls"] == []
+    scan_budget = next(field for field in spyware.fields if field.key == "spyware_scan_timeout_seconds")
+    toolkit_budget = next(field for step in STEPS for field in step.fields if field.key == "github_tools_timeout_seconds")
+    assert (scan_budget.minimum, scan_budget.maximum) == (30, 14400)
+    assert (toolkit_budget.minimum, toolkit_budget.maximum) == (30, 900)
+    assert defaults["spyware_scan_timeout_seconds"] == 3600
+    assert defaults["github_tools_timeout_seconds"] == 300
+    assert "Spyware Scan" in scan_budget.label and "Standalone toolkit" in toolkit_budget.label
     assert defaults["spyware_auto_contain"] is defaults["ugcap_lockdown"] is True
     assert defaults["ugcap_cadence_hours"] == 168
     assert defaults["ugcap_key_name"] == "Angerona.UGCAP.v1"

@@ -105,6 +105,12 @@ def test_snapshot_is_read_only_and_reports_startup_recovery_and_capacity(tmp_pat
     assert module.response_snapshot()["state"] == "STARTING"
     assert module.self_test()[0] is False
     module._response_initialized = True
+    # This getter cannot obtain installed authority itself. Model the worker's
+    # already-completed sample explicitly, without weakening the native gate.
+    assert module.response_snapshot()["state"] == "AUTHORITY HELD"
+    assert module.response_snapshot()["host_authority_verified"] is False
+    module._host_authority_verified = True
+    module._host_authority_reason = ""
     assert module.response_snapshot()["ready"] is True
     module._journal_saturated = True
     assert module.response_snapshot()["state"] == "JOURNAL FULL"
@@ -183,6 +189,21 @@ def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_p
         })
         module._bus.publish(request)
     module._submit(module._bus.recent(1)[0])
+    if delegated:
+        synthetic = module._bus.recent(1)[0]
+        assert module._bus.verify(synthetic)
+        assert module._queue.empty() and not module._seen
+        assert not module._admitted_identities
+        assert module.response_snapshot()["last_decision"] == "producer_proof_held"
+        # Direct internal invocation must not bypass the same proof boundary.
+        module._handle(synthetic)
+        assert module.response_snapshot()["counts"]["producer_proof_held"] == 2
+        assert artifact.read_text(encoding="utf-8") == "harmless test data"
+        assert module.list_actions() == []
+        assert not module.receipt_path.exists()
+        assert not [ev for ev in module._bus.recent(20)
+                    if ev.module == module.name and ev.details.get("verified_actions")]
+        return
     module._handle(module._queue.get_nowait())
     assert not artifact.exists()
     action = module.list_actions()[0]
@@ -193,10 +214,6 @@ def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_p
     assert module._bus.verify(receipt)
     assert receipt.details["run_id"] == "inert-proof-run"
     assert receipt.details["step_id"] == "inert-proof-step"
-    if delegated:
-        assert receipt.details["origin_event_digest"] == original.hmac_sig
-        assert receipt.details["origin_module"] == original.module
-        assert receipt.details["origin_ts"] == original.ts
     proof = receipt.details["verified_actions"][0]
     assert proof == {
         "action": "quarantine_file", "action_id": action["action_id"],

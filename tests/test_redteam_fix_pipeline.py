@@ -37,6 +37,19 @@ def _offline_practice_inventory(monkeypatch):
 
 def _shared_practice_combat(root, manager, response):
     from angerona.modules.adversary_combat import AdversaryCombat, CombatPolicy
+    from angerona.core.werfault_guard import OwnedProcessIdentity
+
+    if not hasattr(manager, "owned_process_identities"):
+        def owned_processes():
+            now = time.monotonic()
+            # Inert composition metadata excludes this test process's real
+            # issuer-owned child. Native child identity/lease checks stay real.
+            return (OwnedProcessIdentity(
+                os.getpid(), "116444737000000000", 100.0,
+                r"C:\fixture\angerona-test-core.exe", "core", now, now + 5,
+            ),)
+        manager.owned_process_identities = owned_processes
+
     combat = AdversaryCombat(root, rollback_anchor={})
     combat.bind(manager.bus)
     combat.bind_manager(manager)
@@ -240,6 +253,8 @@ def test_source_ordinary_process_network_and_program_effects_stay_held(source_ca
 @pytest.mark.skipif(os.name != "nt", reason="Actual final Windows process dispatch")
 @pytest.mark.parametrize("change", ["expired", "stop", "disabled-policy"])
 def test_source_owned_child_rechecks_issuer_and_stop_at_final_native_dispatch(tmp_path, monkeypatch, change):
+    from angerona.core.windows_process_lease import WindowsProcessLease
+    from angerona.core.werfault_guard import OwnedProcessIdentity
     from angerona.modules.purple_guard import _lease_authority
     _offline_practice_inventory(monkeypatch)
     _key(tmp_path)
@@ -251,7 +266,16 @@ def test_source_owned_child_rechecks_issuer_and_stop_at_final_native_dispatch(tm
     guard, response = PurpleGuard(tmp_path), ActiveResponseSOAR()
     guard.bind(bus)
     response.bind(bus)
-    manager = SimpleNamespace(bus=bus, recorder=recorder, modules={guard.name: guard, response.name: response})
+    def owned_processes():
+        now = time.monotonic()
+        # A fresh, typed inert composition row excludes the test's issuer-owned
+        # child. The child's identity and custody still use actual native reads.
+        return (OwnedProcessIdentity(os.getpid(), "116444737000000000", 100.0,
+            r"C:\fixture\angerona-test-core.exe", "core", now, now + 5),)
+
+    manager = SimpleNamespace(bus=bus, recorder=recorder,
+        modules={guard.name: guard, response.name: response},
+        owned_process_identities=owned_processes)
     combat = _shared_practice_combat(tmp_path, manager, response)
     baseline = combat.policy()
     enabled = [True]
@@ -261,30 +285,34 @@ def test_source_owned_child_rechecks_issuer_and_stop_at_final_native_dispatch(tm
 
     def wrapped_acquire(action):
         real = acquire(action)
+        assert type(real) is WindowsProcessLease
         producers[:] = tuple(manager.modules.values())
-        class FinalDispatch:
-            def __getattr__(self, name):
-                return getattr(real, name)
+        terminate = real.terminate
 
-            def terminate(self, *, before_dispatch=None):
-                def revoke_after_native_validation():
-                    if change == "expired":
-                        _lease_authority(guard._validation_lease).run_deadline_monotonic = time.monotonic() - 1
-                    elif change == "stop":
-                        combat.stop()
-                    else:
-                        enabled[0] = False
-                    try:
-                        before_dispatch()
-                    except Exception:
-                        # This is the actual retained kernel object after the
-                        # real adapter's final native identity check, not a fake
-                        # Process.kill/terminate callback or mere PID assertion.
-                        real.validate(alive=True)
-                        held_at_refusal.append(not real.dispatch_started)
-                        raise
-                real.terminate(before_dispatch=revoke_after_native_validation)
-        return FinalDispatch()
+        def terminate_with_revocation(*, before_dispatch=None):
+            assert callable(before_dispatch)
+
+            def revoke_after_native_validation():
+                if change == "expired":
+                    _lease_authority(guard._validation_lease).run_deadline_monotonic = time.monotonic() - 1
+                elif change == "stop":
+                    combat.stop()
+                else:
+                    enabled[0] = False
+                try:
+                    before_dispatch()
+                except Exception:
+                    # The original lease's terminate method has completed its
+                    # final native identity read. Refusal must preserve that
+                    # same live process object without dispatching termination.
+                    real.validate(alive=True)
+                    held_at_refusal.append(not real.dispatch_started)
+                    raise
+
+            terminate(before_dispatch=revoke_after_native_validation)
+
+        monkeypatch.setattr(real, "terminate", terminate_with_revocation)
+        return real
 
     monkeypatch.setattr(combat, "_acquire_termination_lease", wrapped_acquire)
     try:

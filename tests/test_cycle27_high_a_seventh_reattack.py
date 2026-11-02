@@ -316,46 +316,150 @@ def test_cross_process_writer_contention_and_crash_release(
 def test_hardlink_added_at_irreversible_effect_boundary_opens_circuit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
+    import time
+
+    from angerona.core import windows_process_lease as lease_module
+    from angerona.core.eventbus import Event, Severity
+    from angerona.core.response_contract import authorize_response
+    from angerona.core.werfault_guard import OwnedProcessIdentity
+    from angerona.core.windows_process_lease import ProcessObjectIdentity
+    from angerona.modules import adversary_combat as combat_module
+
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
+    roster_reads = []
+
+    def owned_processes():
+        now = time.monotonic()
+        roster_reads.append(now)
+        return (OwnedProcessIdentity(
+            65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+            "core", now, now + 5.0,
+        ),)
+
+    module.bind_manager(SimpleNamespace(
+        modules={module.name: module}, owned_process_identities=owned_processes,
+    ))
     assert module._reconcile_state() is True
     alias = tmp_path / "inert-journal-alias"
+    action = _irreversible_action()
+    action = dataclasses.replace(action, details={
+        **action.details, "exe": r"C:\fixture\inert.exe",
+    })
+    boundary = []
+    durable_intents = []
+    circuit_observations = []
 
-    class _InertProcess:
-        @staticmethod
-        def kill() -> None:
+    class _InertNative:
+        """Actual lease protocol; no OS process handle is opened or killed."""
+        identity_value = ProcessObjectIdentity(
+            4242, 116444736500000000, r"c:\fixture\inert.exe",
+        )
+
+        def __init__(self):
+            self.calls = []
+            self.exited = False
+            self.link_added = False
+
+        def open(self, pid, rights, inherit):
+            assert (pid, rights, inherit) == (4242, lease_module._RIGHTS, False)
+            self.calls.append(("open", pid, rights, inherit))
+            return 101
+
+        def identity(self, handle):
+            assert handle == 101
+            self.calls.append(("identity", handle))
+            return self.identity_value
+
+        def object_identity(self, handle):
+            assert handle == 101
+            self.calls.append(("object_identity", handle))
+            return self.identity_value.pid, self.identity_value.birth_ticks
+
+        def wait(self, handle, milliseconds):
+            assert handle == 101 and 0 <= milliseconds <= 3000
+            self.calls.append(("wait", handle, milliseconds))
+            return self.exited
+
+        def terminate(self, handle, code):
+            assert (handle, code) == (101, 1)
+            assert module._mutation_blocked is False
+            assert not self.exited and not alias.exists()
+            # Strict read authenticates the fsynced intent while the real
+            # retained process lease and journal session are both still held.
+            records, legacy = module._read_journal(strict=True)
+            assert not legacy
+            assert [record["record_type"] for record in records] == ["intent"]
+            assert records[0]["action_id"] == action.action_id
+            assert records[0]["details"]["native_pid"] == self.identity_value.pid
+            assert records[0]["details"]["native_birth_ticks"] == self.identity_value.birth_ticks
+            assert records[0]["details"]["native_image"] == self.identity_value.image
+            durable_intents.extend(records)
+            boundary.append("durable-intent")
+            self.calls.append(("terminate", handle, code))
+            boundary.append("native-dispatch")
             os.link(module.receipt_path, alias)
+            self.link_added = True
+            self.exited = True
+            boundary.append("hardlink-added")
 
-        @staticmethod
-        def wait(*, timeout: float) -> None:
-            assert timeout == 3
+        def exit_code(self, handle):
+            assert handle == 101 and self.exited
+            self.calls.append(("exit_code", handle))
+            return 1
 
-        @staticmethod
-        def is_running() -> bool:
-            return False
+        def close(self, handle):
+            assert handle == 101
+            self.calls.append(("close", handle))
+            boundary.append("native-close")
 
-    process = _InertProcess()
-    lease = SimpleNamespace(
-        identity=SimpleNamespace(pid=4242, birth_ticks=1, image=r"C:\fixture\inert.exe"),
-        validate=lambda **_kwargs: None, wait_terminated=process.wait,
-        terminal_proof=lambda: {"inert_journal_custody": True}, close=lambda: None,
-        dispatch_started=False,
+    native = _InertNative()
+    factories = []
+
+    def native_factory():
+        factories.append(True)
+        assert len(factories) == 1, "retained target was reopened by another native observer"
+        return native
+
+    original_trip = module._trip_mutation_circuit
+
+    def observe_circuit(record, reason, **kwargs):
+        circuit_observations.append((native.link_added, native.exited))
+        boundary.append("circuit")
+        return original_trip(record, reason, **kwargs)
+
+    # Exercise the real acquisition, exact-type custody, dispatch and terminal
+    # barriers on every platform, with only the native operations made inert.
+    monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
+    monkeypatch.setattr(lease_module, "_Native", native_factory)
+    monkeypatch.setattr(module, "_trip_mutation_circuit", observe_circuit)
+    process = SimpleNamespace(kill=lambda: pytest.fail("PID-based termination fallback was used"))
+    event = Event(
+        "inert-seventh-reattack", "Exact inert termination control", Severity.HIGH,
+        details={"pid": 4242, "process_create_time": 50.0,
+                 **authorize_response(["terminate_process"], pid=4242, process_create_time=50.0)},
     )
-
-    def inert_terminate(*, before_dispatch=None):
-        if before_dispatch is not None:
-            before_dispatch()
-        lease.dispatch_started = True
-        process.kill()
-
-    lease.terminate = inert_terminate
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
-    result = module._terminate_process_transaction(process, _irreversible_action())
+    result = module._terminate_process_transaction(process, action, event=event)
 
     assert result is None
+    assert len(durable_intents) == 1
+    assert boundary[:3] == ["durable-intent", "native-dispatch", "hardlink-added"]
+    assert circuit_observations and all(observation == (True, True) for observation in circuit_observations)
+    assert boundary.index("hardlink-added") < boundary.index("circuit") < boundary.index("native-close")
+    assert factories == [True]
+    assert len(roster_reads) >= 2
+    assert native.calls.count(("open", 4242, lease_module._RIGHTS, False)) == 1
+    assert native.calls.count(("terminate", 101, 1)) == 1
+    assert any(call[0] == "wait" and call[2] > 0 for call in native.calls)
+    assert native.calls[-1] == ("close", 101)
+    assert native.calls.count(("close", 101)) == 1
     assert module._mutation_blocked is True
     assert module.health == 0
     assert alias.samefile(module.receipt_path)
+    assert module.receipt_path.stat().st_nlink == 2
+    assert module._recovery_required[action.action_id]["status"] == "orphaned"
+    with pytest.raises(JournalIntegrityError, match="combat journal object is unsafe"):
+        module._read_journal(strict=True)
 
 
 def test_operator_undo_retains_journal_custody_through_host_effect(

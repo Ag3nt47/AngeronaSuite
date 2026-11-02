@@ -76,6 +76,18 @@ show evidence and coverage. Worker-prepared bounded snapshots and paint batches
 keep slow/native work away from Qt where implemented. Human review annotations
 are advisory; they cannot clear authenticated originals or change trust.
 
+Supported content workspaces can remain open together while the dashboard stays
+usable. They expose native **Minimize / Maximize** controls; **F11** toggles
+fullscreen for the active workspace and **Esc** restores its preceding window
+state. Security confirmations, transient surfaces and explicit opt-outs retain
+their own rules. Opening another supported workspace does not approve a pending
+security prompt. The [window registry](../src/angerona/gui/window_controls.py)
+reuses registered workspaces within their owner rather than starting duplicate work.
+Closing a view is separate from stopping its operation: owners retain settings
+and report workers until they actually retire, fence late callbacks and release
+closed views only when safe. Reopened Settings reads fresh configuration after
+its predecessor retires.
+
 Dashboard panels have individual **Minimize / Restore** buttons in their own
 headings. Panels start open except **Module health & activity**, which starts
 minimized. There is no separate Operations group heading. Collapsing a panel
@@ -142,6 +154,39 @@ untrusted display data; neither progress nor resource samples grant response
 authority. Timeout, incomplete coverage and native cancellation remain visible
 until the corresponding owner has settled.
 
+The default **Entire PC** scope is a supported full-check preset, not a promise
+to read every drive, user or file. Click **change scope** to choose another
+preset or selected local evidence. Check progress, current file/query progress
+and the overall workflow fraction are separate measurements. A known denominator
+can support a percentage and measured ETA; an unknown total stays indeterminate
+with its observed checked/skipped counts and elapsed time. A time budget is a
+deadline, not an estimated duration. If native checks finish while the toolkit
+continues, **Native · checks finished** explains that report aggregation is
+pending; it does not finish another workflow stage. Missing current-file data is
+shown as unavailable rather than inferred. Repeated publications retain the
+reader's selection, scroll and existing row widgets.
+
+The dedicated Spyware Scan default budget is **3,600 seconds**, adjustable from
+**30 to 14,400 seconds** in Settings, Full Setup or GitHub Tools settings. The
+next-run budget starts from that dedicated preference; changing it in the scan
+panel does not save preferences or extend an active run. Standalone **Run scan**
+keeps its separate **300-second** default and **30–900-second** saved range.
+Existing standalone preferences are preserved. Older settings without the new
+dedicated field use its default without an automatic file rewrite. An expired
+budget retains partial evidence and coverage limits rather than a clear result.
+
+After-action reports use a valid, bounded JSON preview with explicit omissions
+and an overview of the supplied workflow/scanner outcomes. They do not cut JSON
+mid-string or silently discard its beginning. **Copy complete JSON** copies the
+complete retained report within a **2 MiB** limit; **Export complete JSON** saves
+it to a chosen file within a **64 MiB** limit and additional node/depth bounds.
+Unsupported or colliding non-string keys and size failures are reported instead
+of producing a partial "complete" report. A failed copy or atomic export leaves
+the prior clipboard or file intact. These controls review the retained payload;
+they do not validate a third-party finding, execute a report path, clear a
+coverage gap or grant response authority. See the
+[report renderer](../src/angerona/gui/breach_display.py).
+
 ## 5 Response authority and execution
 
 ![Authority checks before action and receipt verification](../assets/security-flow-response.png)
@@ -159,6 +204,47 @@ cannot replace outcome evidence. The suite must not reset a key, delete an alert
 replace a baseline or accept an unknown rollback solely to pass a self-check.
 Source Observe and a diagnostic response-service fixture cannot claim a fully
 deployed privileged service or process-bound egress adapter.
+
+### Original producer proof and target custody
+
+SpywareGuard's native-hash response path retains a bounded immutable receipt
+from its original producer and generation, with a **30-second monotonic
+freshness window**. Re-retaining the same event does not renew that deadline.
+Admission and dispatch recheck original evidence and the exact response
+contract; caller flags, a copied report or fresh transport authentication cannot
+replace that proof. Generic synthetic **Active Response SOAR Request** wrappers
+remain held until an immutable-original adapter exists. Existing detector
+verifiers retain their declared scope; migration of every legacy producer family
+to the new receipt registry is not complete. The
+[proof registry](../src/angerona/core/response_proof.py) provides same-process
+provenance, not isolation from compromised process code.
+
+Owned companions are protected by their exact process generation and canonical
+image identity. An unknown or contradictory ownership roster holds the action.
+Where a response already owns an actual native process/program lease, authority
+checks use that retained identity and the lease owner keeps its native
+validation barriers. A report field cannot manufacture custody. Retained
+executable custody does not prove the original mapped image, kernel integrity
+or packet-level enforcement.
+
+### Installed administrator startup at sign-in
+
+The explicit installed-only enrollment/removal control requires the current
+frozen Windows installation, accepted OS-verified MSIX authority and initial
+effective administrator approval. It does not silently elevate source startup.
+The SID-qualified task launches the exact modern Safe Start entry at that
+user's interactive sign-in with **HighestAvailable**. It stores no password,
+has no on-demand start or restart policy, and requires exact task/security
+readback. Removal compares the current enrolled definition before deleting it;
+unrelated and legacy entries are preserved. Settings work runs through its owned
+background operation rather than blocking the view.
+
+Source Observe remains held. Production publisher/package pins and independent
+release signing are unprovisioned; actual task enrollment, UAC, installed-release
+and clean-machine acceptance are not established. This is not a boot service,
+pre-sign-in protection, PPL or a kernel boundary, and it cannot override an
+authenticated STOP. See
+[installed enrollment](../src/angerona/core/installed_autostart.py).
 
 ### Verified breach review and lockdown
 
@@ -287,6 +373,36 @@ and never become security baselines. Diagnostics rotate; unknown interrupted
 transactions and unreviewed source edits are preserved and can hold recovery.
 An operator can block future cache creation, delete selected copies, or change
 policy. Deletion permanently removes the selected restore points.
+
+Crash diagnostic production has a separate admission policy: **480 KiB per
+signed record**, **256 retained records**, **64 MiB of sampled directory bytes**
+and a distinct **1,024-entry enumeration ceiling**. A sampled **2 GiB free-space
+reserve plus the incoming record** is required for that capture. These are
+crash-path samples, not a global quota, atomic cross-writer reservation or a new
+normal-startup blocker. A storage hold preserves existing evidence rather than
+overwriting or pruning it to admit another record.
+
+Private create-only publication retains truncation, refusal, finalization,
+durability and cleanup gaps instead of treating every published name as durable
+success. The Self Healer checks capture provenance and completeness; an empty or
+incomplete traceback keeps automatic HEAL held for review. A diagnostic record
+does not authorize overwriting running source. The
+[producer](../src/angerona/core/module_base.py) and
+[consumer](../src/angerona/modules/self_healer.py) preserve that distinction.
+
+### Settings save and rollback
+
+If Settings cannot finish saving, it attempts to restore the prior settings,
+protected credential store and any startup registration it changed. Runtime
+environment rollback covers only the 21 nonsecret integration and UI/AI values
+published by this save path, restoring each individually. It preserves unrelated
+background changes and does not reintroduce plaintext credential variables
+removed by the secure store. A failed restoration is reported explicitly while
+the remaining values are still attempted.
+
+This is compensating rollback, not an atomic transaction across background
+writers to the same runtime values. It does not isolate the process from
+same-user compromise or establish the cause of an earlier startup failure.
 
 ## 7 Independent trust and recovery
 
@@ -439,6 +555,52 @@ reason; captured diagnostic text is preserved privately. A logged COM exception
 preceded continued events and was not the process exit failure. Missing logs
 are not attributed to an attacker, source cleanup or an external cleaner.
 
+## 11 Auto Adapt changes and rollback
+
+Open **Adaptation > Adapt Host** to review a firewall profile. **AUTO ADAPT…**
+guides the audit, profile choice, preview and no-write simulation. The workbench
+reflows its controls and scrolls within each tab when the window is smaller.
+Permission failures retain the facts already collected and show the specific
+coverage gap. Missing evidence never becomes a zero-risk result or permission
+to apply a change.
+
+![Auto Adapt audit, exact change review, approval and verified rollback](../assets/security-flow-auto-adapt.png)
+
+The change table shows each affected Windows Firewall profile, its before and
+after values, the reason, recovery requirement and verification state. Select a
+row for its complete values; **Copy complete review** copies the plan and its
+simulation. A projected effect is not an applied change. Fresh postcondition
+checks must establish the result of an actual operation.
+
+Adjustments use the **Balanced**, **Public network** and **Emergency lockdown**
+presets. Changing a preset invalidates the previous preview and approval.
+Individual commands stay read-only. Preview again to build a new immutable
+plan bound to the current firewall state; it expires after ten minutes. Apply
+requires exact-plan approval, the existing authorization checks, an enrolled
+recovery baseline, a fresh rollback snapshot and durable intent before the
+first command. Opening this workspace does not grant Administrator rights.
+
+Under **Activity**, the local activity trail retains its latest 500 events.
+The separate transaction table shows operation, status, profile and rollback
+reference; double-click a transaction for its full retained details. Original
+failure and recovery records remain visible. This is bounded local history,
+not an independent witness or unlimited record of every historical operation.
+
+Under **Recovery**, choose an authenticated snapshot and press **Roll back
+selected snapshot…**. Rollback restores the complete captured Windows Firewall
+policy, then verifies restoration. It does not restore the whole operating
+system or prove that packets were blocked. Missing authority, changed state,
+invalid recovery evidence or an unverified restoration keeps the relevant
+operation held with its reason and recorded outcome.
+
+For a normal review, run the audit, choose a preset, then inspect the before and
+after rows and the no-write simulation. Adjust the preset and preview again if
+the effect is unsuitable. Apply only the exact reviewed plan when its authority
+and recovery requirements are satisfied. Inspect the recorded outcome under
+**Activity**; use **Recovery** for the authenticated firewall snapshot if that
+change needs to be undone. A failed or partial operation needs its recorded
+recovery review rather than a new approval based on an old preview.
+
 ## Attack surface review matrix
 
 The patch column describes the maintained guard or review action, not an
@@ -489,6 +651,34 @@ real-world detection rates. Historical README totals retain their dated scope.
 Final offline validation, live observation and exact GitHub publication are
 separate completion gates. Raw private captures are not public documentation.
 
+## Current operating update
+
+A preceding combined SpywareGuard/Zero-Breach scan finished after approximately
+**45 minutes** and produced an after-action report with **1 finding, 2 references
+and 24 explicit coverage gaps**. A finding remains a review lead; these counts
+establish neither a confirmed breach nor a clean host. That observation predates
+the latest progress/report corrections.
+
+The progress, reporting and workspace cohort passed **280 tests, 0 failures and 0 skips in
+98.93 seconds**, including 18 worker/thread cases and the new after-action Qt
+checks. A later Settings-save rollback cohort separately passed **10 tests,
+0 failures and 0 skips in 4.63 seconds**. The dedicated scan-budget cohort then
+passed **53 tests, 0 failures and 0 skips in 11.38 seconds**. Ruff passed over **507 source files**
+and, after that rollback change, over `src`, `tests` and `tools`. These are
+separately scoped offline results; the totals are not additive and do not
+represent a full-suite or field-efficacy result. The finite startup dependency
+check passed without starting the Core. A later changed-source Full60 capture
+reached 75 running modules with Chill off, no critical alerts and advancing
+authenticated Core, Watch, Scan and Black Box heartbeats. Its original acceptance
+remains held for two process-inventory bounds, and a 4,826-record retention gap
+is preserved. No confirmed breach or complete sensor-coverage claim follows.
+Published baseline `9820aaf` passed all **15 hosted checks**; those checks attest
+that earlier commit only. Production signing/enrollment,
+kernel/PPL protection, native socket enforcement and TPM/witness enrollment
+remain separate acceptance gates. The
+[workspace and scan review](../analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md)
+records the demonstrated defects, separate test scopes and remaining exposure.
+
 ## Built in capability source inventory
 
 The following catalog is generated by static AST inspection of built-in
@@ -497,6 +687,15 @@ are explicit in the class. An inherited compatibility contract is labelled
 accordingly; consult Capability Center for the validated live contract and
 coverage. This catalog includes every built-in source declaration in this
 revision and does not load or start the modules.
+
+The final 22-file workspace, scan, Settings, setup and adaptation cohort passed
+450 tests in 114.68 seconds with no failures, errors or skips. Its source and
+saved-preference fences stayed unchanged. Ruff passed source, tests and tools;
+all 1,378 Python files compiled, and the final finite startup dependency check
+passed without starting the Core. Narrow administrator-startup layouts
+now include group-box frame margins; short headlines correctly stop their
+scrolling timer. These focused checks remain separate from live sensor coverage,
+native deployment acceptance and hosted checks for the published commit.
 
 <!-- CAPABILITY_SOURCE_INVENTORY -->
 

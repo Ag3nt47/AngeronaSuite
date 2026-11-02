@@ -29,7 +29,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path, PureWindowsPath
 from typing import Any, Callable, Iterator
@@ -1144,6 +1144,14 @@ class CombatAction:
     status: str = "applied"
 
 
+@dataclass(frozen=True)
+class _RetainedProcessCustody:
+    action_id: str
+    operation: str
+    lease: Any
+    identity: Any
+
+
 class _ResponseEventQueue(queue.Queue[Event | _BreachCommand]):
     """Keep short-lived process requests ahead of slower file mutations.
 
@@ -1325,7 +1333,10 @@ class AdversaryCombat(BaseModule):
         self._last_response_decision = "waiting"
         self._breach_results: dict[str, dict[str, Any]] = {}
         self._breach_pending: set[tuple[str, str]] = set()
-        self._host_authority_reason = ""
+        self._host_authority_reason = "Host response authority has not been sampled."
+        self._host_authority_verified = False
+        self._owned_process_hold_reason = "not-sampled"
+        self._response_dispatch_local = threading.local()
         self._lockdown_policy_reason = ""
         self._seen_order: deque[str] = deque(maxlen=8192)
         self._seen: set[str] = set()
@@ -1475,7 +1486,7 @@ class AdversaryCombat(BaseModule):
         elif not self._response_initialized:
             state = "STARTING"
             reason = "The worker has not completed journal reconciliation."
-        elif self._host_authority_reason:
+        elif not self._host_authority_verified:
             state = "AUTHORITY HELD"
             reason = self._host_authority_reason
         elif self._queue.full():
@@ -1491,6 +1502,10 @@ class AdversaryCombat(BaseModule):
             queue_pending = int(self._queue.unfinished_tasks)
         return {
             "ready": state == "ARMED",
+            "policy_armed": policy.enabled,
+            "host_authority_verified": self._host_authority_verified,
+            "owned_process_hold_reason": self._owned_process_hold_reason,
+            "producer_proof_coverage": "native-hash-strict; existing-verifiers-rechecked; legacy-unmigrated",
             "canary_ready": (state in {"ARMED", "AUTHORITY HELD"} and not self._queue.full()
                              and not self.generation_stop_event().is_set()),
             "state": state,
@@ -1805,6 +1820,7 @@ class AdversaryCombat(BaseModule):
         except Exception:
             authorized, authority_reason = False, "Host response authority could not be verified."
         with self._admission_lock:
+            self._host_authority_verified = authorized is True
             self._host_authority_reason = "" if authorized is True else str(authority_reason)[:500]
         with admission_lock:
             self._startup_buffering = False
@@ -2005,6 +2021,12 @@ class AdversaryCombat(BaseModule):
         # practice classification belong to the response worker, not publishers.
         if not self._integrity_ok(event):
             self._response_decision("integrity_failed")
+            return
+        try:
+            # Bounded cached proof review only; no path resolution or native I/O.
+            self._require_current_response_event(event, admission=True)
+        except HostMutationHeld:
+            self._response_decision("producer_proof_held")
             return
         details = event.details if isinstance(event.details, dict) else {}
         queue_request_id = str(details.get("queue_request_id") or "").casefold()
@@ -2359,6 +2381,11 @@ class AdversaryCombat(BaseModule):
             return
         kind = (event.details or {}).get("evidence_kind")
         canary = self._practice_mutation(event, "quarantine_file" if kind == "inert_file_marker" else "terminate_process")
+        try:
+            self._require_current_response_event(event, canary=canary)
+        except HostMutationHeld:
+            self._response_decision("producer_proof_held")
+            return
         if not self._host_mutation_allowed(canary=canary):
             self._response_decision("authority_held")
             return
@@ -3972,7 +3999,8 @@ class AdversaryCombat(BaseModule):
     @contextmanager
     def _journaled_mutation(self, action: CombatAction, *,
                             canary: _CanaryMutation | None = None,
-                            pinned: _PinnedFileMove | None = None) -> Iterator[None]:
+                            pinned: _PinnedFileMove | None = None,
+                            event: Event | None = None) -> Iterator[None]:
         """Keep exact journal custody from intent through effect and terminal."""
         self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
         admitted_policy = self.policy()
@@ -3993,7 +4021,17 @@ class AdversaryCombat(BaseModule):
                     self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
                     if self.policy() != admitted_policy:
                         raise HostMutationHeld("Response policy changed while the durable intent was being persisted.")
-                    yield
+                    startup_deception = (event is None and action.action == "activate_honeypots"
+                        and action.combat_id == "startup" and action.trigger_module == self.name
+                        and action.details.get("module") == "Smart Deception")
+                    if not startup_deception:
+                        self._require_current_response_event(event, canary=canary, action=action, pinned=pinned)
+                    previous_dispatch = getattr(self._response_dispatch_local, "context", None)
+                    self._response_dispatch_local.context = None if startup_deception else (event, canary, action, pinned)
+                    try:
+                        yield
+                    finally:
+                        self._response_dispatch_local.context = previous_dispatch
                     if self._validated_active_journal_cache() is None:
                         raise JournalIntegrityError(
                             "combat journal terminal checkpoint is unavailable"
@@ -4451,7 +4489,7 @@ class AdversaryCombat(BaseModule):
                         "move_strategy": planned_strategy,
                     },
                 )
-                with self._journaled_mutation(action, canary=canary, pinned=pinned):
+                with self._journaled_mutation(action, canary=canary, pinned=pinned, event=event):
                     destination_identity = ""
                     try:
                         pinned.require_single_link()
@@ -4581,6 +4619,7 @@ class AdversaryCombat(BaseModule):
                     in _SYSTEM32_NEVER_CONTAIN
                     or self._is_system_path(image)):
                 raise ValueError("native process image is protected")
+            self._require_not_owned_identity(lease.identity)
             return lease
         except BaseException:
             lease.close()
@@ -4597,7 +4636,9 @@ class AdversaryCombat(BaseModule):
         cannot observe or terminalize the bare in-flight intent while the host
         effect and its postcondition are still unresolved.
         """
-        if not self._host_mutation_allowed(canary=canary, action=action):
+        # Installed/canary authority precedes acquisition. Exact target ownership
+        # is admitted below from the actual retained termination object.
+        if not self._host_mutation_allowed(canary=canary):
             return None
         baseline = self.policy() if expected_policy is None else expected_policy
         def authorize_dispatch():
@@ -4605,6 +4646,9 @@ class AdversaryCombat(BaseModule):
             if self.policy() != baseline:
                 raise HostMutationHeld("Response policy changed before process dispatch.")
             if event is not None:
+                self._require_current_response_event(event, canary=canary)
+                if lease is not None:
+                    self._require_not_owned_identity(lease.identity)
                 if not self._integrity_ok(event) or "terminate_process" not in (self._response_actions(event) or ()):
                     raise HostMutationHeld("Original producer proof or exact termination contract was revoked.")
                 supplied, observed_birth = self._expected_process_start(event.details)
@@ -4638,38 +4682,41 @@ class AdversaryCombat(BaseModule):
                             "native_image": lease.identity.image,
                         },
                     })
-                with self._journaled_mutation(action, canary=canary):
-                    if lease is not None:
-                        # Persistence can block. Recheck the same object and
-                        # deadline after intent and again at native dispatch.
-                        lease.validate(alive=True)
-                        authorize_dispatch()
-                        with self._canary_dispatch_guard(canary):
-                            lease.terminate(before_dispatch=authorize_dispatch)
-                        mutation_started = lease.dispatch_started
-                        lease.wait_terminated(timeout=3.0)
-                        with self._terminal_commit_validator(lease.terminal_proof):
-                            committed = self._commit_after_mutation(action)
-                    else:
-                        # Cross the uncertainty boundary before kill(): an
-                        # exception from the call cannot prove that no effect
-                        # occurred.
-                        authorize_dispatch()
-                        mutation_started = True
-                        with self._canary_dispatch_guard(canary):
+                custody = (self._retained_process_custody(action, lease)
+                           if lease is not None else nullcontext())
+                with custody:
+                    with self._journaled_mutation(action, canary=canary, event=event):
+                        if lease is not None:
+                            # Persistence can block. Recheck the same object and
+                            # deadline after intent and again at native dispatch.
+                            lease.validate(alive=True)
                             authorize_dispatch()
-                            process.kill()
-                        try:
-                            process.wait(timeout=3)
-                        except Exception:
-                            pass
-                        if process.is_running():
-                            self._mark_nonreversible_uncertain(
-                                action,
-                                "process termination postcondition was not proven",
-                            )
-                            return None
-                        committed = self._commit_after_mutation(action)
+                            with self._canary_dispatch_guard(canary):
+                                lease.terminate(before_dispatch=authorize_dispatch)
+                            mutation_started = lease.dispatch_started
+                            lease.wait_terminated(timeout=3.0)
+                            with self._terminal_commit_validator(lease.terminal_proof):
+                                committed = self._commit_after_mutation(action)
+                        else:
+                            # Cross the uncertainty boundary before kill(): an
+                            # exception from the call cannot prove that no effect
+                            # occurred.
+                            authorize_dispatch()
+                            mutation_started = True
+                            with self._canary_dispatch_guard(canary):
+                                authorize_dispatch()
+                                process.kill()
+                            try:
+                                process.wait(timeout=3)
+                            except Exception:
+                                pass
+                            if process.is_running():
+                                self._mark_nonreversible_uncertain(
+                                    action,
+                                    "process termination postcondition was not proven",
+                                )
+                                return None
+                            committed = self._commit_after_mutation(action)
             except Exception as exc:
                 mutation_started = mutation_started or bool(
                     lease is not None and lease.dispatch_started
@@ -4738,6 +4785,18 @@ class AdversaryCombat(BaseModule):
             return None
         if exe and self._is_system_path(Path(exe)):
             return None
+        try:
+            # Native companion admission belongs to the actual process/program
+            # lease below; the psutil suspension guard uses query-only custody.
+            self._require_current_response_event(event, canary=canary)
+        except HostMutationHeld:
+            self._response_decision("owned_process_held")
+            return None
+        # A sampled file hash cannot authorize a different current process image.
+        if (details.get("observed_content_sha256") and self._event_path(event)
+                and os.path.normcase(os.path.abspath(exe))
+                != os.path.normcase(os.path.abspath(self._event_path(event)))):
+            return None
         # Close the check/use window as far as psutil permits. A reused PID must
         # never inherit a response intended for the prior process instance.
         try:
@@ -4785,9 +4844,10 @@ class AdversaryCombat(BaseModule):
                         "pid": pid,
                         "create_time": created,
                         "name": name,
+                        "exe": exe,
                     },
                 )
-                with self._journaled_mutation(action):
+                with self._journaled_mutation(action, event=event):
                     self._require_host_mutation_authority()
                     suspend_started = True
                     process.suspend()
@@ -5027,6 +5087,176 @@ class AdversaryCombat(BaseModule):
         with state.lock:
             yield
 
+    def _require_current_response_event(self, event, *, canary=None, admission=False,
+                                        action=None, pinned=None):
+        """Current original proof, separate from source/installed authority.
+
+        SpywareGuard's new native-hash path MUST retain producer proof. Existing
+        immutable detector verifiers are rechecked where available. Other
+        established exact-contract families retain their current policy while
+        producer-owned monotonic receipt adoption remains an explicit gap.
+        """
+        if type(event) is not Event:
+            raise HostMutationHeld("Original response event integrity is unavailable.")
+        from angerona.core.response_proof import event_proof_digest
+        try:
+            event_proof_digest(event)  # Complete plain-tree bounds before verification.
+        except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+            raise HostMutationHeld("Original response event exceeds proof bounds.") from None
+        if not self._integrity_ok(event):
+            raise HostMutationHeld("Original response event integrity is unavailable.")
+        if (type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                or not -1 <= time.time() - event.ts <= 30):
+            raise HostMutationHeld("Original response evidence expired.")
+        # Legacy SOAR envelopes change module, timestamp and payload. A new
+        # authenticated transport receipt cannot renew an original detector's
+        # expired/revoked proof. Until an immutable-original adapter exists,
+        # reject these envelopes at admission AND every dispatch recheck.
+        if event.module == "Active Response SOAR Request":
+            raise HostMutationHeld("Synthetic SOAR response has no retained exact original producer proof.")
+        if event_disposition(event) == "practice":
+            # Admission makes no practice authority claim. The existing live
+            # issuer/child/marker checks remain mandatory after durable intent.
+            if admission:
+                return
+            if canary is None or not self._canary_mutation_valid(canary, action=action, pinned=pinned):
+                raise HostMutationHeld("Current issuer-owned practice proof is unavailable.")
+            return
+        producer = getattr(self._manager, "modules", {}).get(event.module)
+        verifier = getattr(producer, "verify_response_event", None)
+        if event.module == "SpywareGuard" and not callable(verifier):
+            raise HostMutationHeld("Current SpywareGuard native producer proof is unavailable.")
+        if admission and callable(getattr(producer, "verify_response_admission", None)):
+            verifier = producer.verify_response_admission
+        if not callable(verifier):
+            verifier = getattr(producer, "verify_detection_event", None)
+        if callable(verifier):
+            if (not isinstance(producer, BaseModule) or producer.name != event.module
+                    or not type(producer).__module__.startswith("angerona.modules.")
+                    or producer.stopping):
+                raise HostMutationHeld("Original detector generation is unavailable.")
+            try:
+                current = verifier(event) is True
+            except Exception:
+                current = False
+            if not current:
+                raise HostMutationHeld("Original immutable producer proof expired or was revoked.")
+
+    def _require_not_owned_identity(self, identity):
+        from angerona.core.werfault_guard import OwnedProcessReadError, read_owned_process_snapshot
+        import ntpath
+        try:
+            snapshot = read_owned_process_snapshot(
+                getattr(self._manager, "owned_process_identities", None),
+                not_before=time.monotonic(), clock=time.monotonic)
+        except OwnedProcessReadError as error:
+            with self._admission_lock:
+                self._owned_process_hold_reason = error.reason_code
+            raise HostMutationHeld("Current companion ownership is unknown: " + error.reason_code) from None
+        image = ntpath.normcase(ntpath.normpath(identity.image))
+        for row in snapshot.rows:
+            if row.pid != identity.pid or row.birth_ticks != str(identity.birth_ticks):
+                continue
+            # A contradictory image for one exact process generation is unknown,
+            # never an exemption or permission based only on a reused PID.
+            reason = "owned-companion" if row.image == image else "owned-image-mismatch"
+            with self._admission_lock:
+                self._owned_process_hold_reason = reason
+            raise HostMutationHeld("Exact companion process generation is protected: " + reason)
+        with self._admission_lock:
+            self._owned_process_hold_reason = ""
+
+    @contextmanager
+    def _retained_process_custody(self, action: CombatAction, lease):
+        """Bind the actual retained native object to this exact transaction.
+
+        No report field, proof dictionary or caller observation flag can create
+        custody. Native validation remains with the lease owner at its existing
+        barriers; authority callbacks use only the already acquired identity.
+        """
+        from angerona.core.program_firewall_lease import ProgramFirewallLease
+        from angerona.core.windows_process_lease import WindowsProcessLease
+
+        if type(lease) not in {WindowsProcessLease, ProgramFirewallLease}:
+            raise HostMutationHeld("Process custody requires the actual retained native lease.")
+        previous = getattr(self._response_dispatch_local, "process_custody", None)
+        self._response_dispatch_local.process_custody = _RetainedProcessCustody(
+            action.action_id, action.action, lease, getattr(lease, "identity", None))
+        try:
+            self._retained_process_identity(action)
+            self._require_not_owned_identity(lease.identity)
+            yield
+        finally:
+            self._response_dispatch_local.process_custody = previous
+
+    def _retained_process_identity(self, action: CombatAction):
+        """Return cached real custody, or None only when no scope exists."""
+        from angerona.core.program_firewall_lease import ProgramFirewallLease
+        from angerona.core.windows_process_lease import (
+            ProcessObjectIdentity, WindowsProcessLease, _image_path,
+        )
+
+        custody = getattr(self._response_dispatch_local, "process_custody", None)
+        if custody is None:
+            return None
+        try:
+            if (type(custody) is not _RetainedProcessCustody or type(action) is not CombatAction
+                    or type(action.action_id) is not str or not 1 <= len(action.action_id) <= 128
+                    or custody.action_id != action.action_id or custody.operation != action.action):
+                raise ValueError("retained process transaction differs")
+            lease = custody.lease
+            if action.action == "terminate_process":
+                if type(lease) is not WindowsProcessLease or lease.query_only is not False:
+                    raise ValueError("termination requires its actual mutating lease")
+                WindowsProcessLease.check_deadline(lease)
+            elif action.action == "isolate_program":
+                if type(lease) is not ProgramFirewallLease:
+                    raise ValueError("program isolation requires its actual program lease")
+                ProgramFirewallLease.check_deadline(lease)
+            else:
+                raise ValueError("process custody scope does not support this operation")
+            identity = lease.identity
+            details = action.details
+            if type(details) is not dict:
+                raise ValueError("exact process action details are unavailable")
+            born = details.get("create_time")
+            if (type(identity) is not ProcessObjectIdentity or identity != custody.identity
+                    or type(identity.pid) is not int or not 0 < identity.pid <= 0xFFFFFFFF
+                    or type(identity.birth_ticks) is not int
+                    or not 116444736000000000 < identity.birth_ticks <= 0xFFFFFFFFFFFFFFFF
+                    or type(identity.image) is not str or type(details.get("exe")) is not str
+                    or type(details.get("pid")) is not int or details["pid"] != identity.pid
+                    or type(born) not in (int, float) or not math.isfinite(born)
+                    or abs(identity.create_time - born) > .001
+                    or _image_path(details.get("exe")) != _image_path(identity.image)
+                    or (action.action == "isolate_program"
+                        and _image_path(action.target) != _image_path(identity.image))):
+                raise ValueError("retained native identity differs from exact action")
+            return identity
+        except Exception:
+            raise HostMutationHeld("The exact retained process custody no longer binds this action.") from None
+
+    def _require_process_not_owned(self, pid, created, exe):
+        # Native identity is observed only on the existing response worker.
+        # Failure is held; no float-to-FILETIME reconstruction or psutil fallback.
+        # Observation never asks for PROCESS_TERMINATE access.
+        from angerona.core.windows_process_lease import WindowsProcessLease
+        lease = None
+        try:
+            lease = WindowsProcessLease(pid, created, exe, query_only=True)
+            lease.validate(alive=True)
+            self._require_not_owned_identity(lease.identity)
+        except HostMutationHeld:
+            raise
+        except Exception:
+            raise HostMutationHeld("Exact native process ownership could not be checked.") from None
+        finally:
+            if lease is not None:
+                try:
+                    lease.close()
+                except Exception:
+                    raise HostMutationHeld("Native ownership observation did not retire.") from None
+
     def _require_host_mutation_authority(self, *, check_policy: bool = True,
                                          canary: _CanaryMutation | None = None,
                                          action: CombatAction | None = None,
@@ -5056,9 +5286,29 @@ class AdversaryCombat(BaseModule):
               and self.policy().quarantine_files is not True):
             allowed, reason = False, "File quarantine is disabled in the current response policy."
         with self._admission_lock:
+            self._host_authority_verified = allowed is True and not canary_only
             self._host_authority_reason = "" if allowed is True and not canary_only else str(host_reason if canary_only else reason)[:500]
         if allowed is not True:
             raise HostMutationHeld(str(reason)[:500])
+        # Exact restorative/rollback custody remains available after original
+        # evidence expires; it retains every existing authority/receipt gate.
+        dispatch = (getattr(self._response_dispatch_local, "context", None)
+                    if check_policy and not restoring else None)
+        if dispatch is not None:
+            response_event, response_canary, response_action, response_pin = dispatch
+            action = response_action if action is None else action
+        if (check_policy and not restoring and action is not None
+                and action.action in {"terminate_process", "suspend_process", "isolate_program"}):
+            identity = self._retained_process_identity(action)
+            if identity is not None:
+                self._require_not_owned_identity(identity)
+            else:
+                self._require_process_not_owned(action.details.get("pid"),
+                    action.details.get("create_time"), action.details.get("exe"))
+        if dispatch is not None:
+            # Recheck expiry after native lease/roster acquisition can block.
+            self._require_current_response_event(response_event, canary=response_canary,
+                                                action=action, pinned=response_pin)
 
     def _host_mutation_allowed(self, *, check_policy: bool = True,
                                canary: _CanaryMutation | None = None,
@@ -6081,7 +6331,7 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
             details={"remote_ip": remote_ip, "rules": expected},
         )
         try:
-            with self._journaled_mutation(action):
+            with self._journaled_mutation(action, event=event):
                 applied: list[str] = []
                 for direction in ("out", "in"):
                     if self._run_firewall([
@@ -6104,6 +6354,12 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
         except JournalIntegrityError:
             return None
 
+    def _acquire_program_lease(self, pid: int, create_time: float, exe: str):
+        """Acquire the real read-only program lease; injection stays in tests."""
+        from angerona.core.program_firewall_lease import ProgramFirewallLease
+
+        return ProgramFirewallLease(pid, create_time, exe)
+
     def _block_program(
         self,
         exe: str,
@@ -6114,9 +6370,7 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
     ) -> CombatAction | None:
         if not self._host_mutation_allowed() or not _WINDOWS_PROCESS_CUSTODY:
             return None
-        from angerona.core.program_firewall_lease import (
-            ProgramFirewallLease, ProgramFirewallLeaseError,
-        )
+        from angerona.core.program_firewall_lease import ProgramFirewallLeaseError
 
         program_key = os.path.normcase(os.path.abspath(exe))
         if program_key in self._blocked_programs:
@@ -6138,7 +6392,10 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
         baseline = self.policy()
 
         def authorize_dispatch() -> None:
-            self._require_host_mutation_authority(action=action)
+            # Before acquisition this establishes host/producer authority only.
+            # Actual target ownership is admitted from the retained lease below.
+            self._require_host_mutation_authority(action=action if lease is not None else None)
+            self._require_current_response_event(event)
             if self.policy() != baseline or baseline.block_network is not True:
                 raise HostMutationHeld("Program isolation policy changed before dispatch.")
             supplied, expected_birth = self._expected_process_start(event.details)
@@ -6158,42 +6415,43 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
                 # Failure is a refusal, never a fallback to PID/path snapshots.
                 # This is current acquired file identity, not an original mapped
                 # image or a new detector-signed file-ID contract.
-                lease = ProgramFirewallLease(pid, create_time, exe)
+                lease = self._acquire_program_lease(pid, create_time, exe)
                 action = CombatAction(**{**asdict(action), "details": {
                     **action.details, **lease.proof(),
                 }})
-                authorize_dispatch()
-                with self._journaled_mutation(action):
-                    lease.validate()  # Durable intent may have blocked.
+                with self._retained_process_custody(action, lease):
                     authorize_dispatch()
-                    lease.check_deadline()  # No native read after final authority.
-                    possible_effect = True
-                    if not self._run_firewall([
-                        "add", "rule", f"name={rule}", "dir=out", "action=block",
-                        f"program={lease.path}", "enable=yes",
-                    ]):
-                        raise ProgramFirewallLeaseError("program firewall postcondition failed")
-                    lease.validate()
-
-                    def terminal_proof() -> dict[str, Any]:
-                        proof = lease.proof()
+                    with self._journaled_mutation(action, event=event):
+                        lease.validate()  # Durable intent may have blocked.
                         authorize_dispatch()
-                        lease.check_deadline()
-                        return proof
-
-                    # The generic writer invokes this proof before encoding and
-                    # fsync. Keep custody through its return AND recheck then.
-                    with self._terminal_commit_validator(terminal_proof):
-                        committed = self._commit_after_mutation(
-                            action, release_before_rollback=lambda: None,
-                        )
-                    if committed is None:
-                        compensated = True  # Commit helper owns rollback/recovery.
-                    else:
+                        lease.check_deadline()  # No native read after final authority.
+                        possible_effect = True
+                        if not self._run_firewall([
+                            "add", "rule", f"name={rule}", "dir=out", "action=block",
+                            f"program={lease.path}", "enable=yes",
+                        ]):
+                            raise ProgramFirewallLeaseError("program firewall postcondition failed")
                         lease.validate()
-                        authorize_dispatch()
-                        lease.check_deadline()
-                        self._blocked_programs.add(program_key)
+
+                        def terminal_proof() -> dict[str, Any]:
+                            proof = lease.proof()
+                            authorize_dispatch()
+                            lease.check_deadline()
+                            return proof
+
+                        # The generic writer invokes this proof before encoding and
+                        # fsync. Keep custody through its return AND recheck then.
+                        with self._terminal_commit_validator(terminal_proof):
+                            committed = self._commit_after_mutation(
+                                action, release_before_rollback=lambda: None,
+                            )
+                        if committed is None:
+                            compensated = True  # Commit helper owns rollback/recovery.
+                        else:
+                            lease.validate()
+                            authorize_dispatch()
+                            lease.check_deadline()
+                            self._blocked_programs.add(program_key)
             except Exception as exc:
                 if possible_effect and not compensated:
                     self._rollback_uncertain_reversible_mutation(
@@ -6277,7 +6535,7 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
                 **({"breach_case_id": breach_case_id} if breach_case_id else {})},
         )
         try:
-            with self._journaled_mutation(action):
+            with self._journaled_mutation(action, event=event):
                 rules: list[str] = []
                 runner = self._run_lockdown_firewall
                 for direction in ("out", "in"):
@@ -6329,7 +6587,7 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
             details={"module": "Smart Deception"},
         )
         try:
-            with self._journaled_mutation(action):
+            with self._journaled_mutation(action, event=event):
                 module.start()
                 self._honeypot_started_by_combat = True
                 if module.status != "running":

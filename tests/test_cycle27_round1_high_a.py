@@ -270,45 +270,135 @@ class _UncertainKillProcess:
         raise RuntimeError("inert postcondition transport failure")
 
 
-def _inert_termination_lease(process):
-    """Keep these journal races inert across the native Windows boundary."""
-    lease = SimpleNamespace(
-        identity=SimpleNamespace(pid=4242, birth_ticks=1, image=str(process._executable)),
-        validate=lambda **_kwargs: None, terminal_proof=lambda: {},
-        close=lambda: None, dispatch_started=False, dispatch_guard_ran=False,
-    )
+def _install_inert_termination_native(module, process, monkeypatch):
+    """Real retained custody; only host reads/effect and postcondition are inert."""
+    from angerona.core import windows_process_lease as lease_module
+    from angerona.core.werfault_guard import OwnedProcessIdentity
+    from angerona.core.windows_process_lease import ProcessObjectIdentity, WindowsProcessLease
 
-    def terminate(*, before_dispatch=None):
-        lease.validate(alive=True)
-        if before_dispatch is not None:
-            before_dispatch()
-            lease.dispatch_guard_ran = True
-        lease.dispatch_started = True
-        process.kill()
+    roster_reads = []
 
-    def wait_terminated(*, timeout):
-        process.wait(timeout)
-        if process.is_running():
-            raise RuntimeError("inert termination did not complete")
+    def owned_processes():
+        now = time.monotonic()
+        roster_reads.append(now)
+        return (OwnedProcessIdentity(
+            65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+            "core", now, now + 5.0,
+        ),)
 
-    lease.terminate = terminate
-    lease.wait_terminated = wait_terminated
-    return lease
+    module.bind_manager(SimpleNamespace(
+        modules={module.name: module}, owned_process_identities=owned_processes,
+    ))
+
+    class _InertNative:
+        identity_value = ProcessObjectIdentity(
+            4242, 116444736500000000, str(process._executable),
+        )
+
+        def __init__(self):
+            self.calls = []
+            self.durable_intents = []
+            self.postcondition_faults = 0
+            self.live_polls = 0
+            self.authorized_poll = -1
+            self.original_event = None
+            self.dispatch_guard_ran = False
+
+        def open(self, pid, rights, inherit):
+            assert (pid, rights, inherit) == (4242, lease_module._RIGHTS, False)
+            self.calls.append(("open", pid, rights, inherit))
+            return 101
+
+        def identity(self, handle):
+            assert handle == 101
+            self.calls.append(("identity", handle))
+            return self.identity_value
+
+        def object_identity(self, handle):
+            pytest.fail("uncertain completion must not claim a terminal identity proof")
+
+        def wait(self, handle, milliseconds):
+            assert handle == 101 and 0 <= milliseconds <= 3000
+            self.calls.append(("wait", handle, milliseconds))
+            if process.killed:
+                assert milliseconds > 0, "fault must occur in the post-dispatch completion wait"
+                self.postcondition_faults += 1
+                # The old psutil postcondition transport fault now belongs to
+                # the retained native handle's completion transport.
+                process.wait(timeout=3)
+                return process.is_running()
+            assert milliseconds == 0
+            self.live_polls += 1
+            return False
+
+        def terminate(self, handle, code):
+            assert (handle, code) == (101, 1)
+            # Removing the final before_dispatch callback must fail this control:
+            # its successful real Event check follows the final native poll.
+            assert self.live_polls >= 3
+            assert self.authorized_poll == self.live_polls
+            self.dispatch_guard_ran = True
+            records, legacy = module._read_journal(strict=True)
+            assert not legacy
+            assert [record["record_type"] for record in records] == ["intent"]
+            assert records[0]["details"]["native_pid"] == self.identity_value.pid
+            assert records[0]["details"]["native_birth_ticks"] == self.identity_value.birth_ticks
+            assert records[0]["details"]["native_image"] == self.identity_value.image
+            self.durable_intents.extend(records)
+            self.calls.append(("terminate", handle, code))
+            process.kill()
+
+        def exit_code(self, handle):
+            pytest.fail("uncertain completion must not claim an exit status")
+
+        def close(self, handle):
+            assert handle == 101
+            self.calls.append(("close", handle))
+
+    native = _InertNative()
+    factories = []
+    leases = []
+    original_acquire = module._acquire_termination_lease
+    original_current_event = module._require_current_response_event
+
+    def observe_current_event(event, **kwargs):
+        result = original_current_event(event, **kwargs)
+        if native.original_event is None:
+            native.original_event = event
+        assert event is native.original_event
+        native.authorized_poll = native.live_polls
+        return result
+
+    def native_factory():
+        factories.append(True)
+        assert len(factories) == 1, "retained target was reopened"
+        return native
+
+    def observe_acquire(action):
+        lease = original_acquire(action)
+        assert type(lease) is WindowsProcessLease
+        leases.append(lease)
+        return lease
+
+    monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
+    monkeypatch.setattr(lease_module, "_Native", native_factory)
+    monkeypatch.setattr(module, "_acquire_termination_lease", observe_acquire)
+    monkeypatch.setattr(module, "_require_current_response_event", observe_current_event)
+    return native, leases, roster_reads
 
 
 def test_uncertain_kill_postcondition_durably_blocks_mutation_across_restart(
     tmp_path, monkeypatch, inert_installed_authority
 ) -> None:
     """Exact inert replay of independent A01's fake-completed kill."""
-    process = _UncertainKillProcess(tmp_path / "inert-uncertain.exe")
+    process = _UncertainKillProcess(Path(r"C:\fixture\inert-uncertain.exe"))
     monkeypatch.setattr(
         combat_module,
         "psutil",
         SimpleNamespace(Process=lambda _pid: process, STATUS_STOPPED="stopped"),
     )
     module = _new_combat(tmp_path)
-    lease = _inert_termination_lease(process)
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
+    native, leases, roster_reads = _install_inert_termination_native(module, process, monkeypatch)
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
     policy = dataclasses.replace(module.policy(), block_network=False)
 
@@ -323,7 +413,15 @@ def test_uncertain_kill_postcondition_durably_blocks_mutation_across_restart(
     )
 
     assert result == []
-    assert lease.dispatch_guard_ran is True
+    assert len(leases) == 1
+    assert leases[0].dispatch_started is True
+    assert native.dispatch_guard_ran is True
+    assert len(native.durable_intents) == 1
+    assert native.postcondition_faults == 1
+    assert len(roster_reads) >= 2
+    assert native.calls.count(("terminate", 101, 1)) == 1
+    assert native.calls[-1] == ("close", 101)
+    assert native.calls.count(("close", 101)) == 1
     assert process.killed is True
     assert module._mutation_blocked is True
     assert module.response_ready() is False
@@ -357,15 +455,14 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
     tmp_path, monkeypatch, inert_installed_authority
 ) -> None:
     """Exact inert replay of second re-audit's blocked-kill disposition race."""
-    process = _BlockedUncertainKillProcess(tmp_path / "blocked-inert.exe")
+    process = _BlockedUncertainKillProcess(Path(r"C:\fixture\blocked-inert.exe"))
     monkeypatch.setattr(
         combat_module,
         "psutil",
         SimpleNamespace(Process=lambda _pid: process, STATUS_STOPPED="stopped"),
     )
     module = _new_combat(tmp_path)
-    lease = _inert_termination_lease(process)
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
+    native, leases, roster_reads = _install_inert_termination_native(module, process, monkeypatch)
     monkeypatch.setattr(module, "_is_system_path", lambda _path: False)
     policy = dataclasses.replace(module.policy(), block_network=False)
     captured: dict[str, CombatAction] = {}
@@ -426,7 +523,11 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
 
         operator_policy = _operator_policy()
         module.bind_manager(
-            SimpleNamespace(recovery_authorization_policy=operator_policy)
+            SimpleNamespace(
+                recovery_authorization_policy=operator_policy,
+                modules={module.name: module},
+                owned_process_identities=module._manager.owned_process_identities,
+            )
         )
         # This is the formerly accepted bare-intent authorization shape.
         bare_intent_decision = _operator_decision(
@@ -469,7 +570,15 @@ def test_inflight_intent_cannot_be_disposed_before_later_orphan(
     assert not disposer.is_alive()
     assert worker_done.is_set()
     assert worker_result == {"actions": []}
-    assert lease.dispatch_guard_ran is True
+    assert len(leases) == 1
+    assert leases[0].dispatch_started is True
+    assert native.dispatch_guard_ran is True
+    assert len(native.durable_intents) == 1
+    assert native.postcondition_faults == 1
+    assert len(roster_reads) >= 2
+    assert native.calls.count(("terminate", 101, 1)) == 1
+    assert native.calls[-1] == ("close", 101)
+    assert native.calls.count(("close", 101)) == 1
     assert disposition_done.is_set()
     assert "worker_exception" not in disposition_result
     assert process.killed is True

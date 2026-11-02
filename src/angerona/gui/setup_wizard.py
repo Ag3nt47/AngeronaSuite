@@ -497,6 +497,8 @@ STEPS: tuple[Step, ...] = (
             Field("check", "spyware_scan_verify_admin", "Verify actual runtime privilege coverage before scanning",
                   note="Verification reports available permissions; it does not elevate or grant response authority."),
             Field("combo", "spyware_scan_priority", "Dedicated scan priority", options=("above-normal", "high")),
+            Field("spin", "spyware_scan_timeout_seconds", "Spyware Scan default budget (seconds)", minimum=30, maximum=14400,
+                  note="Defaults to one hour. The next-run budget can be changed without saving these preferences."),
             Field("spin", "spyware_scan_cpu_percent", "Toolkit CPU ceiling (%)", minimum=10, maximum=90),
             Field("spin", "spyware_scan_memory_mib", "Toolkit memory ceiling (MiB)", minimum=128, maximum=2048),
             Field("spin", "spyware_scan_background_percent", "Routine background pace during scan (%)", minimum=5, maximum=50),
@@ -620,7 +622,7 @@ STEPS: tuple[Step, ...] = (
                   note="Uses the maintained version and digest. Source-review imports stay non-executable."),
             Field("spin", "github_tools_job_limit_mib", "Scanner working data per job (MiB)", minimum=64, maximum=1024),
             Field("spin", "github_tools_report_limit_mib", "Retained scanner reports (MiB)", minimum=8, maximum=256),
-            Field("spin", "github_tools_timeout_seconds", "Scanner deadline (seconds)", minimum=30, maximum=900),
+            Field("spin", "github_tools_timeout_seconds", "Standalone toolkit deadline (seconds)", minimum=30, maximum=900),
             Field("check", "breach_auto_isolate_enabled", "Automatically request network lockdown for confirmed breaches",
                   note="Requires first-party confirmed evidence and installed response authority. "
                        "External scanner leads do not trigger lockdown; Lift Lockdown restores only the case's owned controls."),

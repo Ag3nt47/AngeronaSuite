@@ -2,6 +2,20 @@
 
 ## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
 
+- 2 November: rework Auto Adapt with responsive before/after review, adjustable
+  presets, transaction history and authenticated firewall rollback. Keep approval
+  bound to the exact current plan and expose incomplete audits.
+- Support concurrent investigation workspaces with native window controls and
+  F11 fullscreen; retain actual workers through close and reject stale callbacks.
+- Show measured Spyware Scan task, file, reader and workflow progress. Separate
+  its one-hour default budget from standalone runs. Preserve incomplete coverage
+  and expose bounded complete-report Copy and Export.
+- Restore only Settings' owned nonsecret environment values after a failed
+  save, preserving unrelated updates and credential scrubbing. Bound crash
+  capture and hold automatic recovery when traceback evidence is incomplete.
+- Require original producer proof and actual target custody for response;
+  expose installed-only administrator sign-in enrollment without granting source
+  Observe privileged authority. Refresh the manual, security report and demo.
 - Bound optional legacy remediation-audit entries to 64 KiB of complete logical
   UTF-8 fields and fixed scalar accounting before INSERT. Reject custom binding
   paths that can change measured values; preserve accepted signatures and

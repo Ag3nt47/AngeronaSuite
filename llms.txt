@@ -1,11 +1,59 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.15.0
-Date: 2026-10-29
+Date: 2026-11-02
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
+
+- Final 22-file workspace/scan/Settings/setup/adaptation cohort: 450 PASS,
+  0 FAIL/ERROR/SKIP in 114.68s, all 507 source files and selected preferences
+  unchanged. Administrator-startup reflow now counts group frame margins.
+  The news restore failure was a 20ms fixture rotation race; normal visible
+  cadence and separate short-headline coverage preserve product behavior.
+  Final Ruff src/tests/tools PASS; compile 1,378 files/0 failures; final finite
+  startup preflight PASS with source/preferences unchanged and no Core launch.
+  Later Full60 reached 75 running/Chill off with advancing native-bound heartbeats
+  and no confirmed breach; initial retention gap4826/topologybounds2 preserved.
+  Normal STOP Core0/all17 retained waits across13generations signaled/noReplacement5s;
+  topologybound1 keeps strict acceptance false. Word/PDF manual105pages and
+  securityreport15pages fully reviewed; historical nativeP0 remains open.
+  This is focused validation, not a complete-suite or protection claim.
+- 2 November maintenance remains a source preview. Supported content windows
+  are modeless with native Minimize/Maximize and F11/Esc; worker retirement and
+  late callbacks remain generation-bound. Auto Adapt reflows its controls and
+  shows before/after effects, reasons, preset adjustments, exact-plan review,
+  bounded Activity history and authenticated complete-firewall rollback. A
+  changed preset invalidates approval; firewall Undo is not whole-OS rollback.
+- Scan status separates current task/file/check/workflow measurements; unknown
+  totals stay indeterminate. AAR previews are valid bounded JSON with explicit
+  omissions; full retained Copy is limited to 2 MiB and atomic Export to 64 MiB
+  plus node/depth bounds. Failed copy/export preserves prior contents. The
+  preceding combined scan finished in about 45 minutes with 1 finding,
+  2 references and 24 coverage gaps; it was neither a confirmed breach nor a
+  clean-host result and predates the latest presentation corrections.
+- Dedicated Spyware Scan uses a saved 3600-second default (30–14400 range),
+  distinct from standalone Run scan's existing 300-second default (30–900 saved
+  range). Next-run overrides do not save preferences or extend an active run;
+  legacy settings missing the new field use its default without disk rewrite.
+  The separate budget cohort passed 53 cases, 0 failures/errors/skips in 11.38s;
+  this is offline behavior, not a fresh live full-scan result.
+- Settings save rollback now restores only its 21 nonsecret integration/UI/AI
+  environment values individually. It preserves unrelated background changes
+  and secure-store credential scrubbing, reports individual restoration errors
+  and continues later keys. Same-key concurrency remains shared mutable state;
+  this does not prove a historical startup, Optimus or native-crash cause.
+- Offline scopes remain separate: progress/report/workspace cohort 280 PASS,
+  0 FAIL/0 SKIP in 98.93s; later Settings/config atomicity cohort 10 PASS,
+  0 FAIL/0 SKIP in 4.63s. Ruff passed 507 source files and later src/tests/tools.
+  Final-revision preflight/live observation and Word visual QA have separate
+  records above; publication and hosted checks require their exact commit.
+  Public baseline 9820aaf passed all 15 hosted checks; that does not
+  validate unpublished changes. Do not add overlapping cohort counts or claim
+  accepted signed service/PPL/kernel/native-socket/TPM deployment from source
+  controls. Current operator map: docs/security-flow.md; sanitized findings:
+  analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md.
 
 - Hosted base a71c613 is terminal: 11 jobs passed; four Python suites each
   passed 12,450 tests/37 skips and failed one synchronous GUI recorder fixture.

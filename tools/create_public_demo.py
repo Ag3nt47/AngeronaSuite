@@ -20,7 +20,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / ".tmp" / "public-demo-scan-progress-20261029"
 MAX_GIF = 12 * 1024 * 1024
-CHAPTERS = 13
+CHAPTERS = 14
 FRAMES_PER_CHAPTER = 10
 FRAME_DURATION_MS = 500
 FRAME_COUNT = CHAPTERS * FRAMES_PER_CHAPTER
@@ -29,7 +29,7 @@ MAX_CAPTURE_BYTES = 96 * 1024 * 1024
 SCREENSHOTS = (
     "github-tools-demo", "zero-breach-demo", "spyware-scan-demo",
     "breach-lockdown-demo", "after-action-demo",
-    "github-tools-settings-demo", "github-tools-credits-demo",
+    "github-tools-settings-demo", "github-tools-credits-demo", "auto-adapt-demo",
 )
 CAPTURE_SOURCES = (
     "tools/create_public_demo.py", "tools/capture_public_dashboard.py",
@@ -40,6 +40,9 @@ CAPTURE_SOURCES = (
     "src/angerona/gui/dashboard_footer.py", "src/angerona/gui/window_fit.py",
     "src/angerona/core/curated_tools.py", "src/angerona/core/curated_tool_worker.py",
     "src/angerona/core/curated_tool_progress.py", "src/angerona/modules/spyware_guard.py",
+    "src/angerona/gui/adaptation_workbench.py", "src/angerona/core/host_adaptation.py",
+    "src/angerona/gui/window_controls.py", "src/angerona/gui/recovery_panel.py",
+    "src/angerona/gui/prevention_panel.py", "src/angerona/core/windows_prevention.py",
 )
 
 
@@ -340,6 +343,196 @@ def _breach_fixture(manager, forbidden):
     return snapshot
 
 
+def _adaptation_demo_payload():
+    """Fresh fixed publications only; no host, clock, secret or storage source."""
+    effects = []
+    for name in ("Domain", "Private", "Public"):
+        before = {"name": name, "enabled": name != "Public", "inbound": "Block", "outbound": "Allow"}
+        after = {"name": name, "enabled": True, "inbound": "Block", "outbound": "Block"}
+        effects.append({"profile": name, "before": before, "after": after, "changed": True,
+            "reason": "DEMO - illustrative emergency-containment preset; no host policy was inspected or changed.",
+            "reversibility": "DEMO reference only - real rollback requires an authenticated complete firewall snapshot.",
+            "verification": "DEMO projection only - no native postcondition or protection result exists."})
+    return {"synthetic": True, "host_actions": False, "authority": "held", "effects": effects,
+        "state": {"automation_enabled": False, "auto_apply": False, "triggers": [],
+                  "exceptions": [], "feedback_weights": {}},
+        "report": {"baseline_exists": False, "risk_score_complete": False,
+            "findings": [], "active_findings": 0, "excluded_findings": 0,
+            "incomplete_collectors": ["DEMO - no host audit"],
+            "current": {"collector_status": {}, "firewall": {"supported": False,
+                "complete": False, "reason": "DEMO - no host audit", "profiles": []}}},
+        "snapshots": [{"snapshot_id": "DEMO-NOT-A-REAL-RESTORE-POINT",
+            "captured_at": "DEMO fixed reference", "status": "not restorable",
+            "plan": {"profile_id": "lockdown"}}],
+        "transactions": [{"transaction_id": "DEMO-NO-AUTHENTICATED-TRANSACTION",
+            "updated_at": "DEMO fixed reference", "kind": "DEMO review",
+            "status": "DEMO - no host mutation", "profile_id": "lockdown",
+            "snapshot_id": "DEMO-NOT-A-REAL-RESTORE-POINT", "projected_effects": effects}],
+        "activity": [{"ts": "DEMO fixed reference", "action": "DEMO preview",
+            "result": "host untouched", "detail": "Synthetic before/after and history examples; no audit, apply or rollback ran."}]}
+
+
+def _adaptation_fixture(forbidden):
+    """Actual workbench, strictly inert service, no host manager or workers."""
+    import copy
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QAction
+    from PySide6.QtWidgets import QCheckBox, QLabel, QPushButton, QWidget
+    from angerona.core.host_adaptation import AdaptationPlan, PROFILES
+    from angerona.gui import prevention_panel, recovery_panel
+    from angerona.gui.adaptation_workbench import AdaptationWorkbench
+
+    payload = _adaptation_demo_payload()
+    real_recovery_panel, real_prevention_panel = recovery_panel.RecoveryPanel, prevention_panel.PreventionPanel
+
+    class DemoRecoveryPanel(real_recovery_panel):
+        def __init__(self, _manager=None, parent=None):
+            super().__init__(None, parent)
+
+        def _module(self):
+            return None
+
+        def refresh(self):
+            for button in self._buttons:
+                button.setEnabled(False)
+            self.status.setText("DEMO - no independent recovery provider is connected.")
+            self.latest.setText("DEMO - no archive, key, ledger or measured restore was read.")
+            self.details.setPlainText("DEMO - synthetic workbench only. Independent recovery is unavailable; no host provider runs.")
+
+        def _queue(self, *_args, **_kwargs):
+            return forbidden()
+
+        def showEvent(self, event):  # noqa: N802 - Qt signature
+            QWidget.showEvent(self, event)
+            self.refresh()
+
+    class DemoPreventionPanel(real_prevention_panel):
+        def __init__(self, _manager=None, parent=None):
+            super().__init__(None, parent, inspector=forbidden, client=None)
+            self.status.setText("DEMO - native policy has not been inspected; no installed client exists.")
+
+        def _start(self, *_args, **_kwargs):
+            return forbidden()
+
+        def _open_reference(self, *_args, **_kwargs):
+            return forbidden()
+
+        def _buttons(self):
+            for button in (self.inspect_button, self.prepare_button, self.apply_button,
+                           self.copy_button, self.restore_button):
+                button.setEnabled(False)
+
+    class MemoryAdaptationService:
+        __slots__ = ()
+
+        def profiles(self):
+            return tuple(PROFILES.values())
+
+        def state(self):
+            return copy.deepcopy(payload["state"])
+
+        def list_exceptions(self):
+            return []
+
+        def list_snapshots(self):
+            return copy.deepcopy(payload["snapshots"])
+
+        def activity(self):
+            return copy.deepcopy(payload["activity"])
+
+        def load_baseline(self):
+            return None
+
+        def security_baseline_status(self):
+            return {"available": False, "supported": True,
+                    "detail": "DEMO - no recovery artifact exists and no authority is granted."}
+
+        def breaker_status(self):
+            return {"locked": True, "reason": "DEMO - host effects are forbidden", "events": []}
+
+        def transactions(self):
+            return copy.deepcopy(payload["transactions"])
+
+        def command_stack(self, _plan):
+            return ("DEMO ONLY (not executed): Set-NetFirewallProfile -Profile Domain,Private,Public "
+                    "-Enabled True -DefaultInboundAction Block -DefaultOutboundAction Block",)
+
+        audit = capture_snapshot = build_plan = prepare_review = sandbox = simulate_plan = forbidden
+        apply_plan = rollback = capture_security_baseline = restore_security_baseline = forbidden
+        save_baseline = add_exception = remove_exception = export_report = forbidden
+        set_automation = add_trigger = remove_trigger = evaluate_context = reset_breaker = forbidden
+
+        def __getattr__(self, name):
+            raise AttributeError("DEMO service has no live provider: " + name)
+
+    class DemoAdaptationWorkbench(AdaptationWorkbench):
+        def _refresh_status(self):
+            # Synchronous copied publications: no status thread is started.
+            service = self.service
+            self._on_status_finished({name: {"value": operation()} for name, operation in (
+                ("baseline", service.load_baseline), ("recovery", service.security_baseline_status),
+                ("breaker", service.breaker_status), ("transactions", service.transactions))})
+
+        def _run_task(self, *_args, **_kwargs):
+            return forbidden()
+
+    # The workbench imports these two constructors locally. Replace them only
+    # for this synchronous construction, restoring before any event pumping.
+    # Both subclasses retain the real panel UI and explicitly remove providers.
+    try:
+        recovery_panel.RecoveryPanel, prevention_panel.PreventionPanel = DemoRecoveryPanel, DemoPreventionPanel
+        dialog = DemoAdaptationWorkbench(MemoryAdaptationService())
+    finally:
+        recovery_panel.RecoveryPanel, prevention_panel.PreventionPanel = real_recovery_panel, real_prevention_panel
+    dialog.setWindowTitle("Auto Adapt - DEMO ONLY - authority held")
+    dialog.profile_combo.setCurrentIndex(dialog.profile_combo.findData("lockdown"))
+    plan = AdaptationPlan(
+        plan_id="DEMO-NOT-AN-APPROVED-PLAN", profile_id="lockdown",
+        created_at="DEMO fixed reference", expires_at="DEMO - no execution approval",
+        host_id="DEMO-NOT-A-HOST", precondition_digest="DEMO-NO-HOST-SAMPLE",
+        actions=PROFILES["lockdown"].actions, drastic=True,
+        warnings=("DEMO - synthetic projection only; no host policy is read or changed.",),
+        digest="DEMO-INVALID-NO-AUTHORITY")
+    dialog._display_audit(copy.deepcopy(payload["report"]))
+    dialog._display_plan(plan)
+    dialog._display_effects(copy.deepcopy(payload["effects"]))
+    dialog.change_table.selectRow(0)
+    dialog.review_summary.setText("DEMO - projected changes only. Authority held; no native audit, apply, rollback or authenticated transaction exists.")
+    dialog.footer_detail.setText("DEMO - read-only navigation. Real changes require an exact approved plan, authenticated recovery and fresh native verification.")
+    dialog.baseline_status.setText("Baseline: DEMO only")
+    dialog.recovery_status.setText("Recovery: DEMO reference, not restorable")
+    dialog.risk_status.setText("Risk: not measured in DEMO")
+    authority = QLabel("DEMO - AUTHORITY HELD - NO HOST POLICY WAS READ OR CHANGED")
+    authority.setTextFormat(Qt.PlainText)
+    authority.setWordWrap(True)
+    authority.setStyleSheet("color:#fbbf24;background:#172033;font-weight:700;padding:8px;")
+    dialog._workbench_scroll.widget().layout().insertWidget(0, authority)
+    for button in dialog.findChildren(QPushButton):
+        button.setEnabled(False)
+    for checkbox in dialog.findChildren(QCheckBox):
+        checkbox.setEnabled(False)
+    for action in dialog.findChildren(QAction):
+        action.setEnabled(False)
+    if (dialog.apply_button.isEnabled() or dialog._task_thread is not None
+            or dialog._status_thread is not None or dialog._latest_review is not None
+            or dialog.prevention_panel._job is not None or dialog.prevention_panel._client is not None
+            or dialog.prevention_panel._inspect is not forbidden
+            or dialog.recovery_panel.manager is not None
+            or any(timer.isActive() for timer in (dialog._result_timer,
+                dialog.recovery_panel._timer, dialog.prevention_panel._poll_timer))):
+        raise RuntimeError("the inert Auto Adapt fixture unexpectedly admitted work or authority")
+    return dialog
+
+
+def _help_fixture(window):
+    """Retain the actual owner's modeless Help window without changing Qt APIs."""
+    from PySide6.QtWidgets import QDialog
+    dialog = window._open_help()
+    if not isinstance(dialog, QDialog) or dialog.isModal() or dialog.parent() is not window:
+        raise RuntimeError("the actual modeless Help dialog was not constructed by its owner")
+    return dialog
+
+
 def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: bool = False) -> None:
     runtime_root, frames_root = plain(runtime_root, scratch=True), plain(frames_root, scratch=True)
     if (runtime_root.exists() or runtime_root.is_relative_to(frames_root)
@@ -353,7 +546,10 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     import faulthandler
     traceback_stream = (frames_root / "capture-stacks.log").open("x", encoding="utf-8")
     faulthandler.dump_traceback_later(45, file=traceback_stream)
+    # Publication frames use physical 1600x1060 pixels. Keep the diagnostic
+    # owner's enlarged-font/DPI test settings out of this disposable renderer.
     os.environ.update(ANGERONA_PUBLIC_DEMO_ROOT=str(runtime_root), QT_QPA_PLATFORM="offscreen",
+                      QT_SCALE_FACTOR="1", QT_SCREEN_SCALE_FACTORS="", QT_FONT_DPI="96",
                       QT_OPENGL="software", QT_QUICK_BACKEND="software",
                       TEMP=str(frames_root), TMP=str(frames_root), ANGERONA_STORAGE_AUTOMIGRATE="0")
     if str(ROOT / "tools") not in sys.path:
@@ -449,12 +645,12 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                     "settings_tabs": [], "attack_tabs": [], "attack_horizontal_positions": [],
                     "heartbeats": [], "heartbeat_details_steps": [],
                     "curated_views": [], "priority_resources": [], "priority_progress": [], "breach_colors": [],
-                    "after_action_scroll": []}
+                    "after_action_scroll": [], "auto_adapt": []}
     captured_bytes = 0
     detail = None
     settings = spyware = spyware_host = attack = None
     heartbeat_details = None
-    hub = credits_dialog = after_action = None
+    hub = credits_dialog = after_action = adaptation = None
 
     def chapter(number, heading, description, widget, navigate=None, screenshot_at=None):
         nonlocal captured_bytes
@@ -662,18 +858,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         chapter(8, "Investigate findings with clear provenance",
                 "Scan Center displays sample findings only. Real collection depends on platform, permissions and available providers.", window.scan_center)
 
-        # Build the production Help dialog through its actual owner. Only its
-        # modal event-loop entry is intercepted so the capture owns presentation.
-        dialogs = []
-        original_exec = QDialog.exec
-        QDialog.exec = lambda dialog: dialogs.append(dialog) or 0
-        try:
-            window._open_help()
-        finally:
-            QDialog.exec = original_exec
-        if len(dialogs) != 1:
-            raise RuntimeError("the actual Help dialog was not constructed")
-        help_dialog = dialogs[0]
+        help_dialog = _help_fixture(window)
         help_dialog.setParent(stack)
         help_dialog.setWindowFlags(Qt.Widget)
         stack.addWidget(help_dialog)
@@ -828,6 +1013,46 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         chapter(13, "Review evidence, next steps and the explicit Lift Lockdown control",
                 "DEMO SIMULATION - investigate and trace a detailed case, review held actions and Lift Lockdown availability. No response button is activated; lifting and resolving remain separate operator decisions.",
                 after_action, browse_after_action, screenshot_at={1: "after-action-demo"})
+        adaptation = _adaptation_fixture(forbidden)
+        adaptation.setParent(stack)
+        adaptation.setWindowFlags(Qt.Widget)
+        stack.addWidget(adaptation)
+
+        def browse_adaptation(step):
+            if step in (5, 6):
+                adaptation.tabs.setCurrentIndex(6)
+                adaptation.transaction_table.selectRow(0)
+                area = adaptation.tabs.currentWidget()
+                area.ensureWidgetVisible(adaptation.transaction_table, 0, 20)
+                selected_view = "DEMO history - no authenticated transaction"
+            else:
+                adaptation.tabs.setCurrentIndex(adaptation.adapt_tab_index)
+                area = adaptation.tabs.currentWidget()
+                if step >= 7:
+                    area.ensureWidgetVisible(adaptation.snapshot_combo, 0, 35)
+                    selected_view = "DEMO recovery reference - not restorable"
+                else:
+                    adaptation.change_table.selectRow(min(step, 2))
+                    target = adaptation.change_details if step == 4 else adaptation.change_table
+                    area.ensureWidgetVisible(target, 0, 20)
+                    selected_view = "DEMO projected before/after changes"
+            interactions["auto_adapt"].append({
+                "view": selected_view, "synthetic": True, "host_actions": False,
+                "authority_held": not adaptation.apply_button.isEnabled(),
+                "changes": adaptation.change_table.rowCount(),
+                "history_rows": adaptation.transaction_table.rowCount(),
+                "snapshot_references": adaptation.snapshot_combo.count(),
+                "worker_started": adaptation._task_thread is not None or adaptation._status_thread is not None
+                                  or adaptation.prevention_panel._job is not None,
+                "timer_active": any(timer.isActive() for timer in (adaptation._result_timer,
+                    adaptation.recovery_panel._timer, adaptation.prevention_panel._poll_timer)),
+                "provider_connected": adaptation.recovery_panel.manager is not None
+                                      or adaptation.prevention_panel._client is not None
+                                      or adaptation.prevention_panel._inspect is not forbidden})
+
+        chapter(14, "Review Auto Adapt changes and rollback scope",
+                "DEMO - the real workbench shows synthetic before/after changes, history and a non-restorable snapshot reference. Preset adjustments require a new exact preview; real rollback restores complete firewall policy. Authority is held and no action is run.",
+                adaptation, browse_adaptation, screenshot_at={3: "auto-adapt-demo"})
         demo._privacy_guard()
         if (not all(row["fresh"] for row in interactions["heartbeats"][0])
                 or not any(row["role"] == "blackbox" and not row["fresh"]
@@ -851,6 +1076,12 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 or "Stopping" not in interactions["priority_progress"][6]["displayed_stage"]
                 or any(row["state"] != "timed-out" or row["busy"] for row in interactions["priority_progress"][-2:])
                 or any(row["scope"] != "full" for row in interactions["priority_progress"])
+                or len(interactions["auto_adapt"]) != FRAMES_PER_CHAPTER
+                or len({row["view"] for row in interactions["auto_adapt"]}) != 3
+                or any(not row["authority_held"] or row["worker_started"] or row["host_actions"]
+                       or row["timer_active"] or row["provider_connected"]
+                       or row["changes"] != 3 or row["history_rows"] != 1 or row["snapshot_references"] != 1
+                       for row in interactions["auto_adapt"])
                 or captured_sources != source_fingerprints()):
             raise RuntimeError("the capture plan, source revision or synthetic interaction coverage changed")
         report = {"schema": 2, "frames": frames, "frame_sha256": frame_sha256, "chapters": chapter_names,
@@ -886,7 +1117,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     finally:
         if detail is not None:
             detail.hide()
-        for widget in (settings, spyware, spyware_host, attack, heartbeat_details, hub, credits_dialog, after_action):
+        for widget in (settings, spyware, spyware_host, attack, heartbeat_details, hub, credits_dialog, after_action, adaptation):
             if widget is not None:
                 widget.close()
         wrapper.hide()

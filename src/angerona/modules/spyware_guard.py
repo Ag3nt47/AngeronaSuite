@@ -1,4 +1,4 @@
-"""SpywareGuard: bounded spyware evidence, intelligence and single-rule response.
+"""SpywareGuard: bounded evidence, intelligence and verified native-hash response.
 
 Research prose is advisory. Only a local detector finding can request an exact
 target response; Adversary Combat independently enforces its own host policy.
@@ -26,6 +26,7 @@ from urllib.parse import urlsplit
 from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import authorize_response
+from angerona.core.response_proof import ProducerResponseProofs
 from angerona.core.spyware_behavior import SpywareBehaviorEngine
 from angerona.core.spyware_definitions import DefinitionError, DefinitionStore, parse_definition_review
 from angerona.core.spyware_intel import (
@@ -171,6 +172,8 @@ class SpywareGuardModule(BaseModule):
                  beacon_factory=None, vault=None, definition_store=None) -> None:
         super().__init__()
         self._clock = clock
+        self._response_proofs = ProducerResponseProofs()
+        self._native_hash_samples = {}
         self._intel = intel_store or ThreatIntelStore()
         self._definitions = definition_store
         self._definitions_initialized = False
@@ -863,8 +866,90 @@ class SpywareGuardModule(BaseModule):
                 and not (finding.get("detector_policy") == "cadence-plus-threat-intel"
                          and finding.get("threat_intel_corroborated") is True))
 
-    def _response(self, finding: dict, local_authority: bool) -> dict:
-        if (not local_authority or not self._settings["spyware_auto_contain"]
+    def _current_hash_review(self, digest):
+        """Current private review state, never an imported finding's flags."""
+        definition = self._definitions.lookup("sha256", digest) if self._definitions is not None else None
+        if definition is not None:
+            return definition
+        with self._intel.review_candidates("sha256", digest, clock=self._clock) as candidates:
+            with self._lock:
+                review = self._approved.get(("sha256", digest))
+                approved = next((item for item, identity in candidates
+                    if review == (self._review_session, self.lifecycle_generation, identity)
+                    and item.fresh(self._clock())), None)
+        if approved is None:
+            return None
+        return {"indicator_kind": "sha256", "indicator": digest,
+                "source": approved.source, "source_sha256": approved.source_sha256,
+                "review_identity": {"session": review[0], "generation": review[1],
+                                    "candidate": asdict(review[2])}, "reviewed": True}
+
+    def _native_hash_response_allowed(self, finding, native_sample) -> bool:
+        if type(native_sample) is not object:
+            return False
+        with self._lock:
+            sample = self._native_hash_samples.get(native_sample)
+        if sample is None or self.stopping:
+            return False
+        generation, sample_stop, observed, path, digest, pid, birth = sample
+        now = time.monotonic()
+        return bool(generation == self.lifecycle_generation and sample_stop is self._stop
+                    and not sample_stop.is_set() and observed <= now < observed + 30
+                    and finding.get("path") == path and finding.get("observed_content_sha256") == digest
+                    and finding.get("pid") == pid and finding.get("process_create_time") == birth
+                    and finding.get("evidence") == self._current_hash_review(digest))
+
+    def _retain_native_hash_response(self, event, finding, native_sample):
+        # Close the earlier validation/retention restart race. Never bind an old
+        # sample to the new current generation or renew its original deadline.
+        with self._lifecycle_lock:
+            with self._lock:
+                sample = self._native_hash_samples.get(native_sample)
+                if sample is None:
+                    raise ValueError("native-sample-missing")
+                generation, sample_stop, observed, path, digest, pid, birth = sample
+                now = time.monotonic()
+                if (generation != self.lifecycle_generation or sample_stop is not self._stop
+                        or sample_stop.is_set() or not observed <= now < observed + 30
+                        or event.details.get("path") != path
+                        or event.details.get("observed_content_sha256") != digest
+                        or event.details.get("pid") != pid
+                        or event.details.get("process_create_time") != birth):
+                    raise ValueError("native-sample-retired-or-expired")
+                self._response_proofs.retain(event, generation=generation,
+                                            now=observed, review=finding["evidence"])
+
+    def verify_response_admission(self, event: Event) -> bool:
+        """Publisher-safe cached receipt check; no intel/definition lock or sort."""
+        if type(event) is not Event or event.module != self.name or self.stopping:
+            return False
+        try:
+            with self._lock:
+                return self._response_proofs.verify(event, generation=self.lifecycle_generation,
+                    now=time.monotonic(), review=event.details.get("evidence"))
+        except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+            return False
+
+    def verify_response_event(self, event: Event) -> bool:
+        """Exact current native sample + current reviewed hash, not bus flags."""
+        if type(event) is not Event or event.module != self.name or self.stopping:
+            return False
+        try:
+            digest = event.details.get("observed_content_sha256")
+            if normalize_indicator("sha256", digest) != digest:
+                return False
+            review = self._current_hash_review(digest)
+            if review is None or event.details.get("evidence") != review:
+                return False
+            with self._lock:
+                return self._response_proofs.verify(event, generation=self.lifecycle_generation,
+                                                    now=time.monotonic(), review=review)
+        except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+            return False
+
+    def _response(self, finding: dict, local_authority: bool, *, native_sample=None) -> dict:
+        if (not local_authority or not self._native_hash_response_allowed(finding, native_sample)
+                or not self._settings["spyware_auto_contain"]
                 or finding.get("response_eligible") is False
                 or self._memory_observation_only(finding)
                 or self._startup_configuration_only(finding)
@@ -896,14 +981,9 @@ class SpywareGuardModule(BaseModule):
         path, digest = finding.get("path"), finding.get("observed_content_sha256")
         if path and normalize_indicator("sha256", digest) and Path(path).is_absolute():
             actions.append("quarantine_file")
-        # The maintainer requested lockdown on the first rule. If no exact
-        # process/peer/file exists, the only independently exact target is this
-        # local endpoint. The response engine still applies host-policy gates.
-        local_host = not actions
-        if local_host:
-            actions.append("isolate_host")
+        # An absent target is a coverage gap, never whole-host authority.
         return authorize_response(actions, pid=pid, process_create_time=birth,
-                                  remote_ips=peers, path=path, local_host=local_host) if actions else {}
+                                  remote_ips=peers, path=path) if actions else {}
 
     def _publish_memory(self, finding: dict, stopped, *,
                         response_already_requested: bool = False) -> None:
@@ -922,7 +1002,7 @@ class SpywareGuardModule(BaseModule):
                           response_already_requested=response_already_requested)
 
     def _publish(self, finding: dict, *, local_authority: bool,
-                 response_already_requested: bool = False) -> None:
+                 response_already_requested: bool = False, native_sample=None) -> None:
         memory_observation = self._memory_observation_only(finding)
         cadence_observation = self._cadence_observation_only(finding)
         if memory_observation or cadence_observation or self._startup_configuration_only(finding):
@@ -948,7 +1028,8 @@ class SpywareGuardModule(BaseModule):
             self._dedup.move_to_end(token)
             while len(self._dedup) > 2048:
                 self._dedup.popitem(last=False)
-        response = {} if response_already_requested else self._response(finding, local_authority)
+        response = {} if response_already_requested else self._response(
+            finding, local_authority, native_sample=native_sample)
         severity = Severity.__members__.get(str(finding.get("severity", "MEDIUM")).upper(), Severity.MEDIUM)
         details = dict(finding)
         details.pop("summary", None)
@@ -963,13 +1044,7 @@ class SpywareGuardModule(BaseModule):
         if response:
             details.update(response)
             details.update(response_authority="typed-response", active_attack=True,
-                           disposition="active", detector_policy="single-rule-exact-target-containment")
-            if "isolate_host" in response["response_contract"]["actions"]:
-                # Response urgency reflects standing single-rule policy, while
-                # the original observation and lack of attribution stay explicit.
-                details["observed_severity"] = severity.name
-                details["single_rule_host_fallback"] = True
-                severity = Severity.CRITICAL
+                           disposition="active", detector_policy="reviewed-sha256-native-sample")
         summary = str(finding.get("summary") or finding.get("reason") or kind)[:1024]
         if (kind == "persistence_transient_payload" and finding.get("source") == "windows.run"
                 and finding.get("reason") in {
@@ -978,6 +1053,18 @@ class SpywareGuardModule(BaseModule):
                 }):
             summary = ("Startup entry points to a temporary/public/download payload; "
                        "execution and maliciousness are unconfirmed.")
+        response_event = None
+        if response:
+            # Retain BEFORE inline consumers or response-request accounting.
+            response_event = Event(self.name, summary, max(severity, Severity.LOW), now, details)
+            try:
+                self._retain_native_hash_response(response_event, finding, native_sample)
+            except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+                response = {}
+                response_event = None
+                details.pop("response_contract", None)
+                details.update(response_authorized=False, response_authority="none", active_attack=False,
+                               disposition="observation", response_withheld_reason="producer-proof-payload-bounds")
         hit = {"id": token, "ts": now, "kind": kind, "severity": severity.name,
                "rule": kind,
                "summary": summary, "pid": finding.get("pid"),
@@ -1002,7 +1089,10 @@ class SpywareGuardModule(BaseModule):
                             "severity": severity.name, "ts": now, "pid": finding.get("pid"),
                             "rule_code": kind.upper().replace("-", "_")[:64]})
             self._dispatch_beacon(beacon)
-        self.emit(summary, max(severity, Severity.LOW), **details)
+        if response:
+            self.publish_event(response_event)
+        else:
+            self.emit(summary, max(severity, Severity.LOW), **details)
 
     def _dispatch_beacon(self, beacon) -> None:
         # An early attempt must not make containment wait for a provider.
@@ -1158,7 +1248,7 @@ class SpywareGuardModule(BaseModule):
                 return {}
         return record
 
-    def _match_indicator(self, record, kind, value, *, local_authority):
+    def _match_indicator(self, record, kind, value, *, local_authority, native_sample=None):
         normalized = normalize_indicator(kind, value)
         definition = self._definitions.lookup(kind, value) if self._definitions is not None else None
         if definition is not None:
@@ -1168,7 +1258,7 @@ class SpywareGuardModule(BaseModule):
             for key in ("pid", "process_create_time", "remote_ip", "path", "observed_content_sha256"):
                 if key in record:
                     finding[key] = record[key]
-            self._publish(finding, local_authority=local_authority)
+            self._publish(finding, local_authority=local_authority, native_sample=native_sample)
             return
         with self._intel.review_candidates(kind, value, clock=self._clock) as candidates:
             with self._lock:
@@ -1188,7 +1278,7 @@ class SpywareGuardModule(BaseModule):
         for key in ("pid", "process_create_time", "remote_ip", "path", "observed_content_sha256"):
             if key in record:
                 finding[key] = record[key]
-        self._publish(finding, local_authority=local_authority)
+        self._publish(finding, local_authority=local_authority, native_sample=native_sample)
 
     def _scan_once(self, *, cancelled=None) -> bool:
         # Ordinary source collection keeps its existing per-source stop and
@@ -1365,8 +1455,11 @@ class SpywareGuardModule(BaseModule):
         return True
 
     def _scan_hashes(self, rows, *, cancelled=None) -> None:
+        sample_generation = self.lifecycle_generation
+        sample_stop = self.generation_stop_event()
         requested_cancel = cancelled if callable(cancelled) else lambda: False
-        cancelled = lambda: self.stopping or requested_cancel()
+        cancelled = lambda: (sample_stop.is_set() or sample_stop is not self._stop
+                             or sample_generation != self.lifecycle_generation or requested_cancel())
         self._scan_progress("hashes", unit="candidate records",
                             task="Checking whether enabled hash indicators require a bounded file sample")
         with self._lock:
@@ -1432,9 +1525,21 @@ class SpywareGuardModule(BaseModule):
                         digest = hashed.hexdigest()
                 if cancelled():
                     break
-                self._match_indicator({"pid": row.get("pid"),
-                    "process_create_time": row.get("create_time"), "path": str(path),
-                    "observed_content_sha256": digest}, "sha256", digest, local_authority=True)
+                # This opaque, short-lived token is created only after the
+                # bounded pinned native read. Imported dictionaries cannot mint it.
+                native_sample = object()
+                with self._lock:
+                    self._native_hash_samples[native_sample] = (
+                        sample_generation, sample_stop, time.monotonic(), str(path), digest,
+                        row.get("pid"), row.get("create_time"))
+                try:
+                    self._match_indicator({"pid": row.get("pid"),
+                        "process_create_time": row.get("create_time"), "path": str(path),
+                        "observed_content_sha256": digest}, "sha256", digest,
+                        local_authority=True, native_sample=native_sample)
+                finally:
+                    with self._lock:
+                        self._native_hash_samples.pop(native_sample, None)
             except (OSError, ValueError, RuntimeError):
                 continue
         if not cancelled():
@@ -1662,9 +1767,9 @@ class SpywareGuardModule(BaseModule):
         probe = SpywareGuardModule(clock=lambda: 1800000000.0)
         probe._settings["spyware_auto_contain"] = True
         finding = {"pid": 45001, "process_create_time": 1799999900.0}
-        assert probe._response(finding, True).get("response_authorized") is True
+        assert probe._response(finding, True) == {}  # No retained native proof.
         assert not probe._response(finding, False)
-        assert probe._response({"pid": 45001}, True)["response_contract"]["actions"] == ["isolate_host"]
+        assert probe._response({"pid": 45001}, True) == {}
         for scenario in ("dns_tunnel", "exfiltration", "renderer_escape"):
             probe._sandbox(scenario)
         assert probe.dashboard_snapshot()["stats"]["sandbox_runs"] == 3

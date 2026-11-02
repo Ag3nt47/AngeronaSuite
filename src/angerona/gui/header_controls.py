@@ -1149,13 +1149,9 @@ class PanelRevealOverlay(QWidget):
         frame = self._frame
         try:
             if target is not None and mode == "closing":
-                # Hide while the mask is still a line so restoring the original
-                # mask cannot flash one full-size frame before closeEvent runs.
-                target.hide()
-                if previous_mask.isEmpty():
-                    target.clearMask()
-                else:
-                    target.setMask(previous_mask)
+                # Keep the closing slice visible until the real close handler.
+                # Hiding a QDialog first skips reject()/finished(), while
+                # restoring its mask first could flash one full-size frame.
                 setattr(target, "_angerona_close_bypass", True)
                 target.removeEventFilter(self)
                 # Release this transition before closeEvent runs. A destination
@@ -1168,9 +1164,25 @@ class PanelRevealOverlay(QWidget):
                 self._progress = 0.0
                 self._mode = "idle"
                 if frame is not None:
-                    frame.deleteLater()
+                    try:
+                        frame.deleteLater()
+                    except RuntimeError:
+                        # Its parent may already have deleted the accent frame.
+                        # That cannot suppress the destination's real close.
+                        pass
                 closed = target.close()
-                if not closed and getattr(target, "_angerona_deferred_close", False):
+                deferred_close = not closed and getattr(
+                    target, "_angerona_deferred_close", False,
+                )
+                if deferred_close:
+                    # A deferred handler may leave the destination visible.
+                    # Hide its closing slice before restoring the original mask.
+                    target.hide()
+                if previous_mask.isEmpty():
+                    target.clearMask()
+                else:
+                    target.setMask(previous_mask)
+                if deferred_close:
                     # A tool window may be waiting for a bounded Qt worker to
                     # finish. Its reverse animation is already done; leave it
                     # hidden rather than risking QThread destruction.
@@ -1203,13 +1215,19 @@ class PanelRevealOverlay(QWidget):
             # A nested close confirmation may already own the coordinator. Do
             # not clear its state when the outer close resumes.
             if self._target is target:
-                if self._frame is not None:
-                    self._frame.deleteLater()
+                frame = self._frame
                 self._frame = None
                 self._target = None
                 self._previous_mask = QRegion()
                 self._progress = 0.0
                 self._mode = "idle"
+                if frame is not None:
+                    try:
+                        frame.deleteLater()
+                    except RuntimeError:
+                        # Qt can retire the native child before finished runs.
+                        # Ownership must still clear and pending windows advance.
+                        pass
             app = QApplication.instance()
             if (
                 app is not None

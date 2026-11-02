@@ -16,6 +16,7 @@ class _Combat:
         self._policy = policy if policy is not None else CombatPolicy()
         self._snapshot = snapshot if snapshot is not None else {
             "ready": True, "state": "ARMED", "reason": "Waiting for exact evidence.",
+            "host_authority_verified": True,
         }
 
     def policy(self):
@@ -190,6 +191,12 @@ def test_real_combat_memory_snapshot_needs_no_worker_or_journal(monkeypatch):
     combat.status = "running"
     combat._response_initialized = True
     monkeypatch.setattr(combat, "policy", lambda: CombatPolicy())
+    assert combat.response_snapshot()["host_authority_verified"] is False
+    assert combat.response_snapshot()["state"] == "AUTHORITY HELD"
+    # Supply only the worker's cached sampled result for this display test.
+    # No authority provider, native effect, journal or worker runs here.
+    combat._host_authority_verified = True
+    combat._host_authority_reason = ""
     monkeypatch.setattr(combat, "response_ready", lambda: pytest.fail("journal capacity probe"))
     monkeypatch.setattr(combat, "list_actions", lambda: pytest.fail("receipt read"))
     monkeypatch.setattr(combat, "_submit", lambda _event: pytest.fail("duplicate submission"))

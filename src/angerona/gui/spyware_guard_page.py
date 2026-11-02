@@ -14,12 +14,12 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from PySide6.QtCore import Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
+from PySide6.QtCore import QEvent, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QDialog, QFileDialog, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-    QScrollArea, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QGridLayout, QHeaderView, QLabel, QLineEdit, QPlainTextEdit, QPushButton,
+    QScrollArea, QSizePolicy, QStyle, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from angerona.core.spyware_catalog import CATALOG_SCOPE, SPYWARE_PROFILES
@@ -27,7 +27,10 @@ from angerona.core.spyware_news import (
     MAX_NEWS_AGE, MAX_CACHED_NEWS_AGE, MAX_NEWS_ITEMS, MAX_NEWS_SUMMARY,
     NEWS_SOURCE_LABELS, REFERENCE_REVIEWED, reference_news, safe_news_article_url,
 )
+from shiboken6 import isValid
+
 from angerona.gui.header_controls import motion_allowed
+from angerona.gui.presentation_timer import PresentationTimer
 
 
 _ROW_LIMIT = 200
@@ -69,11 +72,22 @@ def _details_text(value, limit=16_000) -> str:
     return _text(value, limit)
 
 
+class _EvidenceLabel(QLabel):
+    def setText(self, text):  # noqa: N802
+        if self.text() != text:
+            super().setText(text)
+
+
 def _label(text: str = "") -> QLabel:
-    label = QLabel(text)
+    label = _EvidenceLabel(text)
     label.setWordWrap(True)
     label.setTextFormat(Qt.TextFormat.PlainText)
     label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+    policy = label.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    policy.setHeightForWidth(True)
+    label.setSizePolicy(policy)
+    label.setMinimumWidth(0)
     return label
 
 
@@ -103,13 +117,33 @@ def _scroll(widget: QWidget) -> QScrollArea:
     return scroll
 
 
+def _set_document_text(editor, text):
+    if editor.toPlainText() == text:
+        return
+    cursor = editor.textCursor()
+    anchor, position = cursor.anchor(), cursor.position()
+    vertical, horizontal = editor.verticalScrollBar(), editor.horizontalScrollBar()
+    top, left = vertical.value(), horizontal.value()
+    writer = QTextCursor(editor.document())
+    writer.beginEditBlock()
+    writer.select(QTextCursor.SelectionType.Document)
+    writer.insertText(text)
+    writer.endEditBlock()
+    limit = max(0, editor.document().characterCount() - 1)
+    cursor.setPosition(min(anchor, limit))
+    cursor.setPosition(min(position, limit), QTextCursor.MoveMode.KeepAnchor)
+    editor.setTextCursor(cursor)
+    vertical.setValue(top)
+    horizontal.setValue(left)
+
+
 class _NewsSpinner(QWidget):
     """Small refresh-only indicator with an explicit reduced-motion gate."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedSize(16, 16)
         self._angle = 0
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self, pressure_sensitive=False, chill_sensitive=False, cosmetic=True)
         self._timer.setInterval(150)
         self._timer.timeout.connect(self._step)
         self.hide()
@@ -149,19 +183,24 @@ class SpywareGuardPage(QWidget):
         self._pending_settings: dict | None = None
         self._snapshot: dict = {}
         self._table_rows: dict[QTableWidget, list[dict]] = {}
+        self._table_rendered: dict[QTableWidget, tuple[tuple[str, ...], ...]] = {}
+        self._plain_text_rendered: dict[QPlainTextEdit, str] = {}
+        self._presentation_window = None
         self._lab_dialog = None
         self._news_dialog = None
         self._news_items: list[dict] = []
         self._news_index = 0
         self._news_refreshing = False
         self._news_paused = False
-        self._news_rotation_timer = QTimer(self)
+        self._tab_action_rows = []
+        self._tab_action_columns = {}
+        self._news_rotation_timer = PresentationTimer(self, pressure_sensitive=False, chill_sensitive=False, cosmetic=True)
         self._news_rotation_timer.setInterval(9_000)
         self._news_rotation_timer.timeout.connect(self._rotate_news)
-        self._news_scroll_timer = QTimer(self)
+        self._news_scroll_timer = PresentationTimer(self, pressure_sensitive=False, chill_sensitive=False, cosmetic=True)
         self._news_scroll_timer.setInterval(100)
         self._news_scroll_timer.timeout.connect(self._scroll_news)
-        self._timer = QTimer(self)
+        self._timer = PresentationTimer(self, pressure_sensitive=False, chill_sensitive=False)
         self._timer.setInterval(3_000)
         self._timer.timeout.connect(self.refresh)
         timer = self._timer
@@ -170,16 +209,17 @@ class SpywareGuardPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
-        header = QHBoxLayout()
-        title = _label("SPYWAREGUARD · Surveillanceware & Zero-Day Defense")
-        title.setObjectName("SectionTitle")
-        header.addWidget(title, 1)
+        self._header_grid = QGridLayout()
+        self._page_title = _label("SPYWAREGUARD · Surveillanceware & Zero-Day Defense")
+        self._page_title.setObjectName("SectionTitle")
+        self._header_grid.addWidget(self._page_title, 0, 0)
+        self._header_grid.setColumnStretch(0, 1)
         self.scan_button = QPushButton("Spyware Scan")
         from angerona.gui.curated_tools import style_spyware_scan_button
         style_spyware_scan_button(self.scan_button)
         self.scan_button.clicked.connect(self._request_scan)
-        header.addWidget(self.scan_button)
-        root.addLayout(header)
+        self._header_grid.addWidget(self.scan_button, 0, 1)
+        root.addLayout(self._header_grid)
         self._build_news_strip(root)
         from angerona.gui.curated_tools import SpywareScanControls
         self.priority_scan = SpywareScanControls(manager, self)
@@ -209,54 +249,63 @@ class SpywareGuardPage(QWidget):
     def _build_news_strip(self, root) -> None:
         self.news_strip = QWidget()
         self.news_strip.setObjectName("SpywareNewsStrip")
-        row = QHBoxLayout(self.news_strip)
-        row.setContentsMargins(3, 2, 3, 2)
-        row.setSpacing(7)
+        self._news_grid = QGridLayout(self.news_strip)
+        self._news_grid.setContentsMargins(3, 2, 3, 2)
+        self._news_grid.setSpacing(7)
+        self._news_identity = QWidget()
+        identity = QHBoxLayout(self._news_identity)
+        identity.setContentsMargins(0, 0, 0, 0)
         self.news_spinner = _NewsSpinner(self.news_strip)
-        row.addWidget(self.news_spinner)
+        identity.addWidget(self.news_spinner)
         self.news_badge = _label("INTEL")
         self.news_badge.setWordWrap(False)
-        self.news_badge.setStyleSheet("color:#38bdf8; font-weight:700; font-size:10px;")
-        row.addWidget(self.news_badge)
+        self.news_badge.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.news_badge.setStyleSheet("color:#38bdf8; font-weight:700;")
+        identity.addWidget(self.news_badge)
         self.news_scroll = QScrollArea()
         self.news_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.news_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.news_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.news_scroll.setMinimumWidth(0)
-        self.news_scroll.setFixedHeight(25)
         self.news_headline = QPushButton("News offline · enable research network access in Policy / Beacon.")
         self.news_headline.setStyleSheet("padding:2px; border:0; background:transparent; text-align:left;")
         self.news_headline.setCursor(Qt.CursorShape.PointingHandCursor)
         self.news_headline.clicked.connect(self._open_news_details)
         self.news_headline.setEnabled(False)
         self.news_scroll.setWidget(self.news_headline)
-        row.addWidget(self.news_scroll, 1)
+        self._news_actions = QWidget()
+        self._news_action_grid = QGridLayout(self._news_actions)
+        self._news_action_grid.setContentsMargins(0, 0, 0, 0)
+        self._news_action_grid.setSpacing(7)
         self.news_source_button = QPushButton("")
         self.news_source_button.setStyleSheet("padding:2px; border:0; color:#38bdf8;")
         self.news_source_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.news_source_button.clicked.connect(self._open_news_article)
         self.news_source_button.setVisible(False)
-        row.addWidget(self.news_source_button)
+        self._news_action_grid.addWidget(self.news_source_button, 0, 0)
         self.news_pause_button = QPushButton("Pause")
         self.news_pause_button.setCheckable(True)
         self.news_pause_button.setToolTip("Pause headline scrolling, rotation, and the refresh animation.")
         self.news_pause_button.toggled.connect(self._pause_news)
         self.news_pause_button.setEnabled(False)
         self.news_pause_button.setStyleSheet("padding:3px 7px;")
-        row.addWidget(self.news_pause_button)
+        self._news_action_grid.addWidget(self.news_pause_button, 0, 1)
         self.news_refresh_button = QPushButton("Refresh")
         self.news_refresh_button.setToolTip("Queue official RSS/Atom headline refresh; requires network ingestion.")
         self.news_refresh_button.setEnabled(False)
         self.news_refresh_button.setStyleSheet("padding:3px 7px;")
         self.news_refresh_button.clicked.connect(self._request_news_refresh)
-        row.addWidget(self.news_refresh_button)
+        self._news_action_grid.addWidget(self.news_refresh_button, 0, 2)
+        self._news_grid.addWidget(self._news_identity, 0, 0)
+        self._news_grid.addWidget(self.news_scroll, 0, 1)
+        self._news_grid.addWidget(self._news_actions, 0, 2)
+        self._news_grid.setColumnStretch(1, 1)
         root.addWidget(self.news_strip)
         self.news_state = _label()
-        self.news_state.setStyleSheet("color:#94a3b8; font-size:10px;")
+        self.news_state.setStyleSheet("color:#94a3b8;")
         root.addWidget(self.news_state)
         self.news_summary = _label()
-        self.news_summary.setMaximumHeight(44)
-        self.news_summary.setStyleSheet("color:#cbd5e1; font-size:11px;")
+        self.news_summary.setStyleSheet("color:#cbd5e1;")
         root.addWidget(self.news_summary)
 
     def _news_message(self, message: str) -> None:
@@ -269,6 +318,7 @@ class SpywareGuardPage(QWidget):
         self.news_source_button.setVisible(False)
         self.news_summary.clear()
         self.news_scroll.horizontalScrollBar().setValue(0)
+        self._reflow_page()
 
     def _update_news(self, snapshot: dict) -> None:
         settings = snapshot.get("settings") or {}
@@ -366,6 +416,7 @@ class SpywareGuardPage(QWidget):
         self.news_summary.setText(preview)
         self.news_summary.setToolTip(_tooltip_text(_text(summary, MAX_NEWS_SUMMARY)))
         self.news_scroll.horizontalScrollBar().setValue(0)
+        self._reflow_page()
 
     def _rotate_news(self) -> None:
         if not self._news_items:
@@ -385,7 +436,7 @@ class SpywareGuardPage(QWidget):
         self._sync_news_motion()
 
     def _sync_news_motion(self) -> None:
-        visible = not self._closed and self.isVisible()
+        visible = not self._closed and self._presentation_visible()
         animate = visible and not self._news_paused and motion_allowed(self.config)
         if animate and len(self._news_items) > 1:
             if not self._news_rotation_timer.isActive():
@@ -503,6 +554,7 @@ class SpywareGuardPage(QWidget):
         self.evidence_tabs.addTab(self.containments_table, "Isolations / response")
         self.coverage = QPlainTextEdit()
         self.coverage.setReadOnly(True)
+        self.coverage.setUndoRedoEnabled(False)
         self.coverage.setPlaceholderText("Module-reported coverage and limitations appear here.")
         self.evidence_tabs.addTab(self.coverage, "Coverage")
         layout.addWidget(self.evidence_tabs, 3)
@@ -532,21 +584,19 @@ class SpywareGuardPage(QWidget):
             layout.addWidget(label)
         self.definitions_preview = QPlainTextEdit()
         self.definitions_preview.setReadOnly(True)
+        self.definitions_preview.setUndoRedoEnabled(False)
         self.definitions_preview.setMaximumHeight(160)
         self.definitions_preview.setPlaceholderText("The validated pack's first 25 literal indicators appear here.")
         layout.addWidget(self.definitions_preview)
-        buttons = QHBoxLayout()
         self.import_definitions_button = QPushButton("Import definitions…")
         self.activate_definitions_button = QPushButton("Activate imported pack")
         self.rollback_definitions_button = QPushButton("Roll back to previous pack")
         self.import_definitions_button.clicked.connect(self._import_definitions)
         self.activate_definitions_button.clicked.connect(self._activate_definitions)
         self.rollback_definitions_button.clicked.connect(self._rollback_definitions)
-        for button in (self.import_definitions_button, self.activate_definitions_button,
-                       self.rollback_definitions_button):
-            buttons.addWidget(button)
-        buttons.addStretch(1)
-        layout.addLayout(buttons)
+        layout.addLayout(self._tab_actions(page, self.import_definitions_button,
+                                          self.activate_definitions_button,
+                                          self.rollback_definitions_button))
         layout.addWidget(_label(
             "Packs contain literal SHA-256, IP and domain indicators. Importing only "
             "creates a preview. Activation is a local authorization; an integrity "
@@ -590,8 +640,7 @@ class SpywareGuardPage(QWidget):
             preview_text = "\n".join(rendered)
         else:
             preview_text = ""
-        if self.definitions_preview.toPlainText() != preview_text:
-            self.definitions_preview.setPlainText(preview_text)
+        self._set_plain_text(self.definitions_preview, preview_text)
         message = "Definitions: " + _text(data.get("state", "not initialized"), 100)
         if busy:
             message += " · update queued or running"
@@ -712,14 +761,11 @@ class SpywareGuardPage(QWidget):
         self.research_tabs.addTab(self.sources_table, "Research sources")
         self.research_tabs.addTab(self.indicators_table, "Extracted indicators")
         layout.addWidget(self.research_tabs, 1)
-        review = QHBoxLayout()
         self.approve_button = QPushButton("Approve selected indicator")
         self.reject_button = QPushButton("Deactivate selected indicator")
         self.approve_button.clicked.connect(lambda: self._review_indicator(True))
         self.reject_button.clicked.connect(lambda: self._review_indicator(False))
-        review.addWidget(self.approve_button)
-        review.addWidget(self.reject_button)
-        layout.addLayout(review)
+        layout.addLayout(self._tab_actions(page, self.approve_button, self.reject_button))
         self.export_rules_button = QPushButton("Stage YARA / Sigma / NDR candidates")
         self.export_rules_button.setToolTip("Create inactive literal rule candidates for review in the private SpywareGuard data folder.")
         self.export_rules_button.clicked.connect(self._queue_rule_export)
@@ -738,12 +784,14 @@ class SpywareGuardPage(QWidget):
         self.sandbox_scenario.addItem("DNS tunneling · high-entropy query pattern", "dns_tunnel")
         self.sandbox_scenario.addItem("Exfiltration · sudden encrypted upload", "exfiltration")
         self.sandbox_scenario.addItem("Renderer escape · unexpected child process", "renderer_escape")
+        self._fit_choice(self.sandbox_scenario)
         layout.addWidget(self.sandbox_scenario)
         self.sandbox_button = QPushButton("Run offline rehearsal")
         self.sandbox_button.clicked.connect(self._run_sandbox)
         layout.addWidget(self.sandbox_button)
         self.sandbox_results = QPlainTextEdit()
         self.sandbox_results.setReadOnly(True)
+        self.sandbox_results.setUndoRedoEnabled(False)
         self.sandbox_results.setPlaceholderText("Sandbox results appear here after an explicit rehearsal.")
         layout.addWidget(self.sandbox_results, 1)
         lab = QPushButton("Open source Analysis Lab…")
@@ -762,6 +810,7 @@ class SpywareGuardPage(QWidget):
         self.guide_choice = QComboBox()
         for profile in SPYWARE_PROFILES:
             self.guide_choice.addItem(profile.title, profile.key)
+        self._fit_choice(self.guide_choice)
         self.guide_choice.currentIndexChanged.connect(self._show_guide)
         layout.addWidget(self.guide_choice)
         self.guide_detail = QPlainTextEdit()
@@ -777,6 +826,23 @@ class SpywareGuardPage(QWidget):
         index = self.guide_choice.currentIndex()
         if 0 <= index < len(SPYWARE_PROFILES):
             self.guide_detail.setPlainText(SPYWARE_PROFILES[index].plain_text())
+
+    @staticmethod
+    def _fit_choice(choice) -> None:
+        # The native popup retains every full caption; its selected caption is
+        # also available literally by tooltip without widening every tab.
+        choice.setMinimumContentsLength(12)
+        choice.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        choice.setMinimumWidth(0)
+        choice.currentTextChanged.connect(lambda text: choice.setToolTip(_tooltip_text(text)))
+        choice.setToolTip(_tooltip_text(choice.currentText()))
+
+    def _tab_actions(self, page, *buttons):
+        grid = QGridLayout()
+        for index, button in enumerate(buttons):
+            grid.addWidget(button, index, 0)
+        self._tab_action_rows.append((page, grid, buttons))
+        return grid
 
     def _open_guide_source(self) -> None:
         index = self.guide_choice.currentIndex()
@@ -885,7 +951,7 @@ class SpywareGuardPage(QWidget):
         self._lab_dialog.raise_()
 
     def refresh(self) -> None:
-        if self._closed or not self.isVisible():
+        if self._closed or not self._presentation_visible():
             return
         self._update_availability()
         module = self._module()
@@ -931,12 +997,12 @@ class SpywareGuardPage(QWidget):
         coverage = dict(snapshot.get("coverage") or {})
         if snapshot.get("encrypted_evidence"):
             coverage["encrypted_evidence"] = snapshot["encrypted_evidence"]
-        self.coverage.setPlainText(_details_text(coverage))
+        self._set_plain_text(self.coverage, _details_text(coverage))
         beacon = snapshot.get("beacon") or {}
         self.beacon_status.setText(_text(beacon, 2_000))
         sandbox = snapshot.get("sandbox", snapshot.get("sandbox_results", []))
         if sandbox:
-            self.sandbox_results.setPlainText(_details_text(sandbox))
+            self._set_plain_text(self.sandbox_results, _details_text(sandbox))
         settings = snapshot.get("settings")
         if isinstance(settings, dict):
             if self._pending_settings and all(settings.get(k) == v for k, v in self._pending_settings.items()):
@@ -956,6 +1022,11 @@ class SpywareGuardPage(QWidget):
             if isinstance(review, dict) and review.get("state") == "stale-review":
                 self.status.setText("Indicator review is stale. Refresh and select the current evidence again.")
 
+    def _set_plain_text(self, editor, text):
+        if self._plain_text_rendered.get(editor) != text:
+            _set_document_text(editor, text)
+            self._plain_text_rendered[editor] = text
+
     @staticmethod
     def _rows(value) -> list[dict]:
         if not isinstance(value, (list, tuple)):
@@ -963,8 +1034,24 @@ class SpywareGuardPage(QWidget):
         return [row for row in value[:_ROW_LIMIT] if isinstance(row, dict)]
 
     def _fill(self, table: QTableWidget, rows: list[dict], columns) -> None:
-        # Retain selection by its complete bounded evidence record, not row index.
+        # Build one bounded immutable cell projection before touching Qt. The
+        # current snapshot and complete evidence records still refresh each time;
+        # a changed non-displayed field must still invalidate exact selection.
+        rendered_rows = []
+        for row in rows:
+            cells = []
+            for keys in columns:
+                value = next((row[key] for key in keys if row.get(key) is not None), "")
+                if keys == ("approved",):
+                    value = "Approved" if value else "Inactive / review required"
+                cells.append(_time_text(value) if keys[0] == "timestamp" else _text(value))
+            rendered_rows.append(tuple(cells))
+        rendered_rows = tuple(rendered_rows)
         previous_rows = self._table_rows.get(table, [])
+        if self._table_rendered.get(table) == rendered_rows and previous_rows == rows:
+            self._table_rows[table] = rows
+            return
+        # Retain selection by its complete bounded evidence record, not row index.
         selected = table.currentRow()
         previous = previous_rows[selected] if 0 <= selected < len(previous_rows) else None
         table.blockSignals(True)
@@ -972,24 +1059,23 @@ class SpywareGuardPage(QWidget):
         try:
             table.setRowCount(len(rows))
             self._table_rows[table] = rows
-            for row_index, row in enumerate(rows):
-                for column, keys in enumerate(columns):
-                    value = next((row[key] for key in keys if row.get(key) is not None), "")
-                    if keys == ("approved",):
-                        value = "Approved" if value else "Inactive / review required"
+            for row_index, cells in enumerate(rendered_rows):
+                for column, rendered in enumerate(cells):
                     item = table.item(row_index, column)
-                    rendered = _time_text(value) if keys[0] == "timestamp" else _text(value)
                     if item is None:
                         item = QTableWidgetItem(rendered)
                         table.setItem(row_index, column, item)
                     elif item.text() != rendered:
                         item.setText(rendered)
-                    item.setToolTip(_tooltip_text(rendered))
+                    tooltip = _tooltip_text(rendered)
+                    if item.toolTip() != tooltip:
+                        item.setToolTip(tooltip)
             if previous in rows:
                 table.selectRow(rows.index(previous))
             elif previous is not None:
                 table.clearSelection()
                 table.setCurrentItem(None)
+            self._table_rendered[table] = rendered_rows
         finally:
             table.setUpdatesEnabled(True)
             table.blockSignals(False)
@@ -1000,8 +1086,32 @@ class SpywareGuardPage(QWidget):
         if 0 <= row < len(rows):
             self.evidence_detail.setPlainText(json.dumps(rows[row], indent=2, ensure_ascii=False, default=str)[:16_000])
 
+    def _presentation_visible(self):
+        window = self.window()
+        return self.isVisible() and window.isVisible() and not window.isMinimized()
+
+    def _watch_presentation_window(self):
+        window = self.window()
+        if window is not self._presentation_window:
+            previous = self._presentation_window
+            if previous is not None and previous is not self and isValid(previous):
+                previous.removeEventFilter(self)
+            self._presentation_window = window
+            if window is not self:
+                window.installEventFilter(self)
+
+    def eventFilter(self, watched, event):  # noqa: N802
+        if not isValid(self) or getattr(self, "_closed", True):
+            return False
+        if watched is self._presentation_window and event.type() == QEvent.Type.WindowStateChange:
+            if self._presentation_visible():
+                self.refresh()
+            self._sync_news_motion()
+        return False
+
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        self._watch_presentation_window()
         if not self._closed:
             self.refresh()
             self._timer.start()
@@ -1013,8 +1123,107 @@ class SpywareGuardPage(QWidget):
         self.news_spinner.set_active(self._news_refreshing, False)
         super().hideEvent(event)
 
+    def _reflow_page(self) -> None:
+        if not hasattr(self, "news_refresh_button") or getattr(self, "_reflowing_page", False):
+            return
+        self._reflowing_page = True
+        try:
+            for widget in (self.scan_button, self.news_headline, self.news_pause_button,
+                           self.news_refresh_button, self.news_source_button):
+                widget.ensurePolished()
+            margins = self.layout().contentsMargins()
+            width = self.contentsRect().width()
+            if self.parentWidget() is not None:
+                width = min(width, self.parentWidget().contentsRect().width())
+            available = max(0, width - margins.left() - margins.right())
+            if hasattr(self, "tabs"):
+                # QTabWidget includes hidden pages in its minimum. Reflow
+                # their action rows against the actual page allowance too.
+                frame = self.tabs.style().pixelMetric(QStyle.PixelMetric.PM_DefaultFrameWidth) * 2
+                for page, grid, buttons in self._tab_action_rows:
+                    row_margins = page.layout().contentsMargins()
+                    row_width = max(0, available - frame - row_margins.left() - row_margins.right())
+                    gap = max(0, grid.horizontalSpacing())
+                    for button in buttons:
+                        button.ensurePolished()
+                    widths = [button.minimumSizeHint().width() for button in buttons]
+                    columns = 1
+                    for count in range(len(buttons), 0, -1):
+                        if (sum(max(widths[column::count]) for column in range(count))
+                                + gap * (count - 1) <= row_width):
+                            columns = count
+                            break
+                    if self._tab_action_columns.get(grid) != columns:
+                        self._tab_action_columns[grid] = columns
+                        for button in buttons:
+                            grid.removeWidget(button)
+                        for column in range(grid.columnCount()):
+                            grid.setColumnStretch(column, 0)
+                        for index, button in enumerate(buttons):
+                            grid.addWidget(button, index // columns, index % columns)
+                        grid.setColumnStretch(columns, 1)
+            gap = max(0, self._header_grid.horizontalSpacing())
+            title_width = self._page_title.fontMetrics().averageCharWidth() * 28
+            stacked = available < self.scan_button.minimumSizeHint().width() + title_width + gap
+            if stacked != getattr(self, "_header_stacked", None):
+                self._header_stacked = stacked
+                self._header_grid.removeWidget(self.scan_button)
+                self._header_grid.addWidget(self.scan_button, 1 if stacked else 0, 0 if stacked else 1)
+
+            margins = self._news_grid.contentsMargins()
+            available = max(0, self.news_strip.contentsRect().width() - margins.left() - margins.right())
+            buttons = tuple(button for button in (self.news_source_button, self.news_pause_button,
+                                                   self.news_refresh_button) if not button.isHidden())
+            gap = max(0, self._news_action_grid.horizontalSpacing())
+            widths = [button.minimumSizeHint().width() for button in buttons]
+            action_width = sum(widths) + gap * max(0, len(widths) - 1)
+            headline_width = self.news_headline.fontMetrics().averageCharWidth() * 24
+            stacked = available < self._news_identity.minimumSizeHint().width() + headline_width + action_width + gap * 2
+            columns = max(1, len(buttons))
+            if stacked:
+                for count in range(len(buttons), 0, -1):
+                    if (sum(max(widths[column::count]) for column in range(count))
+                            + gap * (count - 1) <= available):
+                        columns = count
+                        break
+                else:
+                    columns = 1
+            key = (stacked, columns, buttons)
+            if key != getattr(self, "_news_layout_key", None):
+                self._news_layout_key = key
+                for widget in (self._news_identity, self.news_scroll, self._news_actions):
+                    self._news_grid.removeWidget(widget)
+                self._news_grid.addWidget(self._news_identity, 0, 0)
+                self._news_grid.addWidget(self.news_scroll, 0, 1)
+                self._news_grid.addWidget(self._news_actions, 1 if stacked else 0,
+                                          0 if stacked else 2, 1, 2 if stacked else 1)
+                for button in (self.news_source_button, self.news_pause_button, self.news_refresh_button):
+                    self._news_action_grid.removeWidget(button)
+                for column in range(self._news_action_grid.columnCount()):
+                    self._news_action_grid.setColumnStretch(column, 0)
+                for index, button in enumerate(buttons):
+                    self._news_action_grid.addWidget(button, index // columns, index % columns)
+                self._news_action_grid.setColumnStretch(columns, 1)
+            self.news_scroll.setFixedHeight(max(self.news_headline.sizeHint().height(),
+                                                 self.news_badge.sizeHint().height()))
+        finally:
+            self._reflowing_page = False
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() == QEvent.Type.ParentChange and hasattr(self, "_presentation_window"):
+            self._watch_presentation_window()
+        if event.type() == QEvent.Type.WindowStateChange and not self._closed:
+            if self._presentation_visible():
+                self.refresh()
+            self._sync_news_motion()
+        if event.type() in (QEvent.Type.LayoutRequest, QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._reflow_page()
+        return result
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._reflow_page()
         if hasattr(self, "news_spinner"):
             self._sync_news_motion()
 

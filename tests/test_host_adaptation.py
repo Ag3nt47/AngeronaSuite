@@ -12,7 +12,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QMenuBar, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QDialog, QMenuBar, QPlainTextEdit, QPushButton
 
 from angerona.core.host_adaptation import (
     AdaptationError,
@@ -410,7 +410,10 @@ def test_workbench_has_complete_navigation_and_nonwriting_sandbox(tmp_path: Path
     ]
     menus = [action.text() for action in dialog.findChild(QMenuBar).actions()]
     assert menus == ["File", "Audit", "Adapt", "Safety", "Help"]
-    buttons = {button.text() for button in dialog.findChildren(QPushButton)}
+    # Responsive rows may shorten visible captions; their full action names
+    # remain accessible at every window width.
+    buttons = {button.accessibleName() or button.text()
+               for button in dialog.findChildren(QPushButton)}
     assert {
         "AUTO ADAPT…", "Choose an adaptation profile…",
         "Run deep audit", "Save as golden baseline…", "1. Preview adaptation",
@@ -443,6 +446,189 @@ def test_workbench_surfaces_incomplete_audit_collectors(tmp_path: Path) -> None:
     assert "PARTIAL AUDIT" in dialog.audit_summary.text()
     assert "services, ports" in dialog.audit_summary.text()
     assert "unavailable · coverage incomplete (2)" in dialog.risk_status.text()
+    dialog.close()
+
+
+def test_prepare_review_retains_permission_gap_audit_without_enrollment(tmp_path: Path, monkeypatch) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    detail = "Get-NetFirewallAddressFilter: ActiveStoreAccessDenied — retained diagnostic details"
+    snapshot["firewall"].update(complete=False, reason=detail)
+    snapshot["collector_status"]["firewall"].update(complete=False, error=detail)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    monkeypatch.setattr(service, "security_baseline_status", lambda: {"available": False})
+    enrollments = []
+    monkeypatch.setattr(service, "capture_security_baseline", lambda **kwargs: enrollments.append(kwargs))
+    review = service.prepare_review("balanced", capture_recovery=True)
+    assert review["report"]["current"] is snapshot
+    assert review["report"]["risk_score_complete"] is False
+    assert review["plan"] is None
+    assert review["holds"] == [{"stage": "preview", "detail": detail}]
+    assert enrollments == []
+
+
+def test_audit_retains_capture_when_authenticated_baseline_is_held(tmp_path: Path, monkeypatch) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    monkeypatch.setattr(service, "load_baseline", lambda: (_ for _ in ()).throw(IntegrityError("baseline HMAC refused")))
+    monkeypatch.setattr(service, "security_baseline_status", lambda: {"available": False})
+    review = service.prepare_review("balanced", capture_recovery=True)
+    assert review["report"]["current"] is snapshot
+    assert review["report"]["baseline_error"] == "baseline HMAC refused"
+    assert review["report"]["risk_score_complete"] is False
+    assert review["plan"] is not None
+    assert review["simulation"]["host_mutated"] is False
+    assert review["holds"] == [{"stage": "baseline", "detail": "baseline HMAC refused"}]
+
+
+def test_prepare_review_retains_preview_when_recovery_enrollment_is_denied(tmp_path: Path, monkeypatch) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    monkeypatch.setattr(service, "security_baseline_status", lambda: {"available": False})
+    monkeypatch.setattr(service, "capture_security_baseline", lambda **kwargs: (_ for _ in ()).throw(PermissionError("Access denied during enrollment")))
+    review = service.prepare_review("balanced", capture_recovery=True)
+    assert review["report"]["current"] is snapshot
+    assert review["plan"] is not None
+    assert review["simulation"]["host_mutated"] is False
+    assert review["holds"][0]["stage"] == "recovery"
+
+
+def test_simulation_lists_unchanged_effects_and_verified_transaction_keeps_observed_changes(tmp_path: Path, monkeypatch) -> None:
+    service = HostAdaptationService(tmp_path)
+    snapshot = _snapshot(service)
+    unchanged = service.sandbox("balanced", snapshot)
+    assert unchanged["changes"] == []
+    assert len(unchanged["effects"]) == 3
+    assert all(row["changed"] is False and row["reason"] and row["verification"] for row in unchanged["effects"])
+    _enroll_recovery_baseline(service, snapshot)
+    monkeypatch.setattr(service, "capture_snapshot", lambda: snapshot)
+    plan = service.build_plan("lockdown", snapshot)
+    observed = json.loads(json.dumps(snapshot["firewall"]))
+    for profile in observed["profiles"]:
+        profile["outbound"] = "Block"
+    projected = service.simulate_plan
+    execution_started = []
+
+    def project_before_mutation(captured, current):
+        assert not execution_started, "cosmetic projection must not run after native mutation"
+        return projected(captured, current)
+
+    def execute(captured):
+        execution_started.append(True)
+        return service.command_stack(captured)
+
+    monkeypatch.setattr(service, "simulate_plan", project_before_mutation)
+    receipt = service.apply_plan(
+        plan, approved=True, approved_plan_id=plan.plan_id,
+        snapshot_provider=lambda *_: "snap-test-exact-review",
+        executor=execute, postcondition_provider=lambda: observed,
+    )
+    transaction = next(row for row in service.transactions() if row["receipt_digest"] == receipt.receipt_digest)
+    assert transaction["status"] == "COMMITTED"
+    assert len(transaction["verified_effects"]) == 3
+    assert all(row["after"]["outbound"] == "Block" and row["before"]["outbound"] == "Allow"
+               and row["snapshot_id"] == receipt.snapshot_id for row in transaction["verified_effects"])
+    assert transaction["verification"] == "fresh-postcondition"
+
+
+def _review_workbench(tmp_path: Path, monkeypatch) -> AdaptationWorkbench:
+    _app()
+    monkeypatch.setattr(AdaptationWorkbench, "_load_persisted_views", lambda self: None)
+    monkeypatch.setattr(AdaptationWorkbench, "_refresh_status", lambda self: None)
+    return AdaptationWorkbench(HostAdaptationService(tmp_path))
+
+
+def test_auto_intent_is_retained_modeless_and_captures_choices_before_work(tmp_path: Path, monkeypatch) -> None:
+    dialog = _review_workbench(tmp_path, monkeypatch)
+    monkeypatch.setattr(QDialog, "exec", lambda *_: (_ for _ in ()).throw(AssertionError("nested event loop")))
+    tasks, calls = [], []
+    monkeypatch.setattr(dialog, "_run_task", lambda name, operation: tasks.append((name, operation)))
+    monkeypatch.setattr(dialog.service, "prepare_review", lambda profile, **kwargs: calls.append((profile, kwargs)) or {})
+    dialog._show_auto_adapt()
+    intent = dialog._auto_intent_dialog
+    assert intent is not None and not intent.isModal()
+    selector = intent.findChild(QComboBox)
+    selector.setCurrentIndex(selector.findData("public"))
+    assert next(button for button in intent.findChildren(QPushButton) if button.text() == "Cancel").isDefault()
+    intent.accept()
+    assert dialog._auto_intent_dialog is None and tasks[0][0] == "auto_prepare"
+    dialog.profile_combo.setCurrentIndex(dialog.profile_combo.findData("lockdown"))
+    tasks[0][1]()
+    assert calls == [("public", {"capture_recovery": False})]
+    dialog.close()
+
+
+def test_modeless_intent_rechecks_busy_and_held_review_keeps_copyable_details(tmp_path: Path, monkeypatch) -> None:
+    dialog = _review_workbench(tmp_path, monkeypatch)
+    tasks = []
+    monkeypatch.setattr(dialog, "_run_task", lambda *args: tasks.append(args))
+    dialog._show_auto_adapt()
+    intent = dialog._auto_intent_dialog
+    dialog._busy_task = "audit"
+    intent.accept()
+    assert tasks == []
+    snapshot = _snapshot(dialog.service)
+    detail = "Get-NetFirewallAddressFilter ActiveStoreAccessDenied\nExact collector stderr retained"
+    dialog._on_task_finished("auto_prepare", {
+        "generation": dialog._review_generation,
+        "report": {"current": snapshot, "findings": [], "incomplete_collectors": ["firewall"]},
+        "plan": None, "holds": [{"stage": "preview", "detail": detail}],
+    }, None)
+    assert dialog._latest_report["current"] is snapshot
+    assert not dialog.apply_button.isEnabled()
+    assert "unavailable" in dialog.review_summary.text()
+    assert detail in dialog._notice_dialogs[-1].findChild(QPlainTextEdit).toPlainText()
+    for notice in list(dialog._notice_dialogs):
+        notice.close()
+    dialog.close()
+
+
+def test_intent_adjustment_invalidates_an_open_exact_apply_approval(tmp_path: Path, monkeypatch) -> None:
+    dialog = _review_workbench(tmp_path, monkeypatch)
+    snapshot = _snapshot(dialog.service)
+    plan = dialog.service.build_plan("balanced", snapshot)
+    dialog._display_review({
+        "generation": dialog._review_generation, "report": {"current": snapshot, "findings": []},
+        "plan": plan, "simulation": dialog.service.simulate_plan(plan, snapshot),
+        "recovery": {"available": True}, "holds": [],
+    })
+    calls = []
+    monkeypatch.setattr(dialog, "_run_task", lambda *args: calls.append(args))
+    dialog._apply_profile()
+    approval = dialog._confirmation_dialogs[-1]
+    dialog.profile_combo.setCurrentIndex(dialog.profile_combo.findData("public"))
+    approval.accept()
+    assert calls == [] and dialog._latest_plan is None and not dialog.apply_button.isEnabled()
+    for notice in list(dialog._notice_dialogs):
+        notice.close()
+    dialog.close()
+
+
+def test_closed_workbench_rejects_consent_and_discards_late_results(tmp_path: Path, monkeypatch) -> None:
+    dialog = _review_workbench(tmp_path, monkeypatch)
+    launched, delivered = [], []
+    dialog._show_auto_adapt()
+    intent = dialog._auto_intent_dialog
+    assert intent is not None
+    dialog._confirm_operation("Exact recovery", "Review", "snapshot-fixed", lambda: launched.append(True))
+    assert dialog._confirmation_dialogs
+    publisher = dialog._result_publisher("task", "audit")
+    dialog.close()
+    assert dialog._view_retired.is_set()
+    assert dialog._auto_intent_dialog is None and dialog._confirmation_dialogs == []
+    # A reference to an earlier consent screen cannot authorize a reopened
+    # content window. Old worker outcomes also belong only to its generation.
+    dialog.show()
+    monkeypatch.setattr(dialog, "_on_task_finished", lambda *args: delivered.append(args))
+    publisher({"late": True})
+    dialog._poll_results()
+    assert launched == [] and delivered == []
+    dialog._busy_task = "apply"
+    assert dialog.close() is False
+    assert not dialog._view_retired.is_set()
+    dialog._busy_task = ""
     dialog.close()
 
 

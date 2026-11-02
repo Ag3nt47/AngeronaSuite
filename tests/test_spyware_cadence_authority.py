@@ -71,7 +71,7 @@ def test_corroborated_existing_upstream_response_remains_automatic_single_owner(
     assert 'response_contract' not in event.details
     assert module.dashboard_snapshot()['hits'][0]['status']=='upstream-response-requested'
 
-def test_corroborated_legacy_peer_adapter_retains_automatic_response():
+def test_legacy_peer_adapter_cannot_reissue_a_new_producer_contract():
     module,bus=module_bus()
     bus.publish(Event('C2 Beacon Detector','corroborated timing and IOC',Severity.HIGH,NOW,{
         'pid':45001,'process_create_time':NOW-10,'remote':'8.8.8.8',
@@ -80,9 +80,14 @@ def test_corroborated_legacy_peer_adapter_retains_automatic_response():
         **process_and_remote_response(45001,NOW-10,'8.8.8.8')}))
     module._consume_events()
     event,=[e for e in bus.recent(10) if e.module==module.name]
-    assert bus.verify(event) and AdversaryCombat._response_actions(event) is not None
-    assert event.details['response_authorized'] is True
-    assert 'terminate_process' in event.details['response_contract']['actions']
+    source=next(e for e in bus.recent(10) if e.module=='C2 Beacon Detector')
+    assert bus.verify(source)
+    assert 'remote_ip' not in source.details  # This legacy envelope is incomplete.
+    assert source.details['response_contract']['targets']['remote_ips']==['8.8.8.8']
+    assert AdversaryCombat._response_actions(source) is None
+    assert event.details['remote_ip']=='8.8.8.8'  # Keep the adapted evidence visible.
+    assert bus.verify(event) and AdversaryCombat._response_actions(event) is None
+    assert event.details['response_authorized'] is False and 'response_contract' not in event.details
 
 def test_direct_cadence_finding_cannot_acquire_host_fallback_or_peer_authority():
     module,_=module_bus()

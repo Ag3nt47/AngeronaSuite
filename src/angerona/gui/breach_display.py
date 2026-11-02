@@ -6,16 +6,197 @@ import html
 import weakref
 from dataclasses import asdict
 
-from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QIODevice, QObject, QSaveFile, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QGridLayout, QLabel, QPlainTextEdit, QPushButton,
+    QDialog, QDialogButtonBox, QFileDialog, QGridLayout, QLabel, QPlainTextEdit, QPushButton,
     QApplication, QMessageBox, QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
 from angerona.core.breach_state import BreachActionAvailability, BreachDisplaySnapshot
 from angerona.gui.header_controls import motion_allowed
+
+
+_REVIEW_CHAR_LIMIT = 96000
+_REVIEW_BLOCK_LIMIT = 4000
+_REVIEW_COPY_LIMIT = 2 * 1024**2
+_REVIEW_EXPORT_LIMIT = 64 * 1024**2
+_REVIEW_PRIORITY_KEYS = (
+    "state", "message", "case_id", "request_id", "tool", "version", "commit", "sha256",
+    "native_state", "tool_state", "scan_progress", "coverage_incomplete", "match_counts",
+    "containment_state", "provenance", "report", "details", "native", "zero_breach",
+    "coverage", "findings", "references",
+)
+
+
+def _review_projection(data, *, nodes=1024, characters=60000, items=256, depth=12, string=4096):
+    """Bound traversal and output without serializing the whole retained report."""
+    remaining = [nodes, characters]
+    active, counts, locations = set(), {}, []
+
+    def omit(path, reason, count=1):
+        counts[reason] = counts.get(reason, 0) + count
+        if len(locations) < 24:
+            locations.append(dict(path=path[:200], reason=reason, omitted=count))
+
+    def visit(value, path, level):
+        if remaining[0] <= 0:
+            omit(path, "node budget")
+            return None
+        remaining[0] -= 1
+        if type(value) is str:
+            take = min(len(value), string, max(0, remaining[1] // 6 - 2))
+            result = value[:take]
+            if take < len(value):
+                omit(path, "string characters", len(value) - take)
+            remaining[1] -= len(json.dumps(result, ensure_ascii=True))
+            return result
+        if type(value) in (dict, list, tuple):
+            if level >= depth or id(value) in active:
+                omit(path, "depth or cycle")
+                return None
+            active.add(id(value))
+            try:
+                if type(value) is dict:
+                    result = {}
+                    keys = [key for key in _REVIEW_PRIORITY_KEYS if key in value]
+                    inspected = 0
+                    for key in value:
+                        inspected += 1
+                        if len(keys) >= items or inspected > items * 2:
+                            break
+                        if type(key) is str and key not in _REVIEW_PRIORITY_KEYS:
+                            keys.append(key)
+                    for key in keys[:items]:
+                        if remaining[0] <= 0 or remaining[1] < 16:
+                            break
+                        if len(key) > 160:
+                            continue
+                        encoded = json.dumps(key, ensure_ascii=True)
+                        if len(encoded) > remaining[1]:
+                            continue
+                        remaining[1] -= len(encoded)
+                        result[key] = visit(value[key], path + "." + key, level + 1)
+                    if len(result) < len(value):
+                        omit(path, "object members", len(value) - len(result))
+                    return result
+                result = []
+                for index, item in enumerate(value):
+                    if index >= items or remaining[0] <= 0 or remaining[1] < 16:
+                        break
+                    result.append(visit(item, path + f"[{index}]", level + 1))
+                if len(result) < len(value):
+                    omit(path, "array items", len(value) - len(result))
+                return result
+            finally:
+                active.remove(id(value))
+        if value is None or type(value) in (bool, int, float):
+            try:
+                encoded = json.dumps(value, allow_nan=False)
+            except (TypeError, ValueError, OverflowError):
+                omit(path, "unsupported or non-finite values")
+                return None
+            if len(encoded) <= remaining[1]:
+                remaining[1] -= len(encoded)
+                return value
+        omit(path, "unsupported values or scalar budget")
+        return None
+
+    return visit(data, "$", 0), counts, locations
+
+
+def _review_overview(report):
+    """Select real workflow/scanner statuses; do not derive a clean-host claim."""
+    if type(report) is not dict:
+        return {}
+    result = {key: report[key] for key in ("state", "message", "request_id", "case_id", "tool",
+                                          "coverage_incomplete", "match_counts", "report") if key in report}
+    workflow = report.get("scan_progress")
+    if type(workflow) is dict:
+        result["workflow"] = {key: workflow[key] for key in (
+            "stage", "finished", "total", "native_state", "tool_state") if key in workflow}
+    details = report.get("details")
+    details = details if type(details) is dict else {}
+    scanners = {}
+    for name in ("native", "zero_breach"):
+        source = report.get(name, details.get(name))
+        if type(source) is dict:
+            scanners[name] = {key: source[key] for key in (
+                "state", "error", "coverage_incomplete", "match_counts", "report") if key in source}
+    if scanners:
+        result["scanners"] = scanners
+    return result
+
+
+def _render_review_json(data):
+    preview, counts, locations = _review_projection(data)
+    if not counts:
+        rendered = json.dumps(preview, indent=2, ensure_ascii=True, allow_nan=False)
+        if len(rendered) <= _REVIEW_CHAR_LIMIT and rendered.count("\n") + 1 < _REVIEW_BLOCK_LIMIT - 10:
+            return rendered
+    overview, summary_counts, _summary_locations = _review_projection(
+        _review_overview(data), nodes=128, characters=4096, items=32, depth=6, string=512)
+    display = dict(kind="Bounded review preview", omission_counts=counts,
+                   omitted_locations=locations, overview_omissions=summary_counts,
+                   original_access="Copy complete JSON (2 MiB limit) or Export complete JSON (64 MiB limit); the retained report is unchanged.",
+                   authority="A display excerpt does not change findings, coverage, completion, trust or response authority.")
+    envelope = dict(review_display=display, overview=overview, report_preview=preview)
+    rendered = json.dumps(envelope, indent=2, ensure_ascii=True, allow_nan=False)
+    if len(rendered) > _REVIEW_CHAR_LIMIT or rendered.count("\n") + 1 >= _REVIEW_BLOCK_LIMIT - 10:
+        display["format"] = "Compact JSON preserves the display bounds; no serialized text is cut."
+        rendered = json.dumps(envelope, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
+    if len(rendered) > _REVIEW_CHAR_LIMIT:
+        # Fixed-size valid JSON fallback; never slice a serialized document.
+        rendered = json.dumps(dict(review_display=dict(
+            kind="Preview budget exceeded", omitted=True,
+            original_access=display["original_access"], authority=display["authority"]),
+            overview=overview), indent=2, ensure_ascii=True, allow_nan=False)
+    return rendered
+
+
+def _complete_report_chunks(data, limit):
+    """Bound explicit full-report export; a limit failure never yields success."""
+    active, visited = set(), [0]
+
+    def check(value, depth):
+        visited[0] += 1
+        if visited[0] > 250000 or depth > 64:
+            raise ValueError("Complete JSON exceeds the supported node/depth limit; use the preserved backend original.")
+        if type(value) is str:
+            # Bound the largest encoder chunk before encoding it. This is a
+            # conservative bound; export allows a larger limit than clipboard.
+            if len(value) > limit // 6:
+                raise ValueError("A value exceeds this complete-JSON size limit; use export or the preserved backend original.")
+            return
+        if value is None or type(value) in (bool, int, float):
+            json.dumps(value, allow_nan=False)
+            return
+        if type(value) not in (dict, list, tuple) or id(value) in active:
+            raise ValueError("Complete JSON is unavailable for unsupported or cyclic data; the retained original is unchanged.")
+        active.add(id(value))
+        try:
+            if type(value) is dict:
+                for key, item in value.items():
+                    if type(key) is not str:
+                        raise ValueError("Complete JSON requires exact string object keys; non-string keys could be coerced or collide. The retained original is unchanged.")
+                    check(key, depth + 1)
+                    check(item, depth + 1)
+            else:
+                for item in value:
+                    check(item, depth + 1)
+        finally:
+            active.remove(id(value))
+
+    check(data, 0)
+    written = 0
+    encoder = json.JSONEncoder(indent=2, ensure_ascii=True, allow_nan=False)
+    for part in encoder.iterencode(data):
+        chunk = part.encode("ascii")
+        written += len(chunk)
+        if written > limit:
+            raise ValueError("Complete JSON exceeds this size limit; no partial report is copied or committed.")
+        yield chunk
 
 
 class BreachOutline(QWidget):
@@ -73,7 +254,7 @@ class AfterActionReportDialog(QDialog):
         self.text = QPlainTextEdit()
         self.text.setReadOnly(True)
         self.text.setUndoRedoEnabled(False)
-        self.text.document().setMaximumBlockCount(4000)
+        self.text.document().setMaximumBlockCount(_REVIEW_BLOCK_LIMIT)
         layout.addWidget(self.text, 1)
         self.actions = {}
         buttons = QGridLayout()
@@ -99,6 +280,20 @@ class AfterActionReportDialog(QDialog):
                 button.clicked.connect(lambda _checked=False, selected=action: self.action_requested.emit(selected))
             buttons.addWidget(button, index // 3, index % 3)
         layout.addLayout(buttons)
+        original_buttons = QGridLayout()
+        self.copy_original_button = QPushButton("Copy complete JSON")
+        self.copy_original_button.setToolTip("Copy the complete retained report, not the preview; 2 MiB limit.")
+        self.copy_original_button.clicked.connect(self.copy_complete_report)
+        self.export_original_button = QPushButton("Export complete JSON…")
+        self.export_original_button.setToolTip("Save the complete retained report as JSON to a chosen file; 64 MiB limit.")
+        self.export_original_button.clicked.connect(self.export_complete_report)
+        original_buttons.addWidget(self.copy_original_button, 0, 0)
+        original_buttons.addWidget(self.export_original_button, 0, 1)
+        layout.addLayout(original_buttons)
+        self.review_status = QLabel("The preview is bounded; the complete retained report is available through Copy or Export.")
+        self.review_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.review_status.setWordWrap(True)
+        layout.addWidget(self.review_status)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         layout.addWidget(close)
@@ -108,11 +303,39 @@ class AfterActionReportDialog(QDialog):
             self.outline.set_color("#ef4444")
 
     def _display(self, data):
+        self.text.setPlainText(_render_review_json(data))
+
+    def copy_complete_report(self):
         try:
-            rendered = json.dumps(data, indent=2, ensure_ascii=False)
-        except (TypeError, ValueError):
-            rendered = "The report has unsupported data; use its preserved original for review."
-        self.text.setPlainText(rendered.replace("\x00", "")[:96000])
+            encoded = b"".join(_complete_report_chunks(self._report, _REVIEW_COPY_LIMIT))
+        except (TypeError, ValueError, OverflowError, RecursionError) as error:
+            self.review_status.setText("Complete report was not copied. " + str(error)[:1000])
+            return False
+        QApplication.clipboard().setText(encoded.decode("ascii"))
+        self.review_status.setText("Complete retained report copied as JSON. Display omissions were not copied.")
+        return True
+
+    def export_complete_report(self):
+        filename, _selected_filter = QFileDialog.getSaveFileName(
+            self, "Export complete after-action report", "Angerona-after-action.json", "JSON reports (*.json)")
+        if not filename:
+            return False
+        output = QSaveFile(filename)
+        output.setDirectWriteFallback(False)
+        try:
+            if not output.open(QIODevice.OpenModeFlag.WriteOnly):
+                raise OSError(output.errorString())
+            for chunk in _complete_report_chunks(self._report, _REVIEW_EXPORT_LIMIT):
+                if output.write(chunk) != len(chunk):
+                    raise OSError(output.errorString())
+            if not output.commit():
+                raise OSError(output.errorString())
+        except (OSError, TypeError, ValueError, OverflowError, RecursionError) as error:
+            output.cancelWriting()
+            self.review_status.setText("Complete report was not exported. " + str(error)[:1000])
+            return False
+        self.review_status.setText("Complete retained report exported as JSON. Display omissions were not exported.")
+        return True
 
     @staticmethod
     def _case_notice(report):
@@ -141,21 +364,29 @@ class AfterActionReportDialog(QDialog):
         selection = self.text.textCursor()
         self._report = report
         self._confirmed = bool(confirmed)
+        selected_report = report if type(report) is dict else {}
         self.notice.setText(self._case_notice(report)
-                            if confirmed else "Retained review record — current state: " + str(report.get("state", "unknown"))[:80])
+                            if confirmed else "Retained review record — current state: " + str(selected_report.get("state", "unknown"))[:80])
         previous = self.text.toPlainText()
         view = self._view
         # Render into a temporary plain string, then update the retained
         # document rather than resetting the reader's scroll and selection.
         if view == "trace":
-            selected = {key: report[key] for key in ("case_id", "request_id", "tool", "version", "commit", "sha256", "report",
-                                                      "provenance", "coverage", "references", "details") if key in report}
+            selected = {key: selected_report[key] for key in ("case_id", "request_id", "tool", "version", "commit", "sha256", "report",
+                                                      "provenance", "coverage", "references", "details") if key in selected_report}
             data = dict(review="Evidence and provenance trace; this does not contact a remote target.", trace=selected)
         else:
             data = report
-        rendered = json.dumps(data, indent=2, ensure_ascii=False).replace("\x00", "")[:96000]
+        rendered = _render_review_json(data)
         if rendered != previous:
-            _update_details_text(self.text, rendered)
+            # Incremental edits may temporarily contain parts of both bounded
+            # documents. Keep a finite 2x ceiling so Qt cannot discard the prefix.
+            document = self.text.document()
+            document.setMaximumBlockCount(_REVIEW_BLOCK_LIMIT * 2)
+            try:
+                _update_details_text(self.text, rendered)
+            finally:
+                document.setMaximumBlockCount(_REVIEW_BLOCK_LIMIT)
             self.text.setTextCursor(selection)
             self.text.verticalScrollBar().setValue(position)
         grants = {item.action: item for item in availability if type(item) is BreachActionAvailability}

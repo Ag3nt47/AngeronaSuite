@@ -204,9 +204,35 @@ def test_read_append_and_final_read_swaps_cannot_return_false_success(
 def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inert_installed_authority,
 ) -> None:
+    import dataclasses
+    import time
+
+    from angerona.core import windows_process_lease as lease_module
+    from angerona.core.eventbus import Event, Severity
+    from angerona.core.response_contract import authorize_response
+    from angerona.core.werfault_guard import OwnedProcessIdentity
+    from angerona.core.windows_process_lease import ProcessObjectIdentity, WindowsProcessLease
+
     anchors: dict[str, str] = {}
     module = _combat(tmp_path, anchors)
+    roster_reads = []
+
+    def owned_processes():
+        now = time.monotonic()
+        roster_reads.append(now)
+        return (OwnedProcessIdentity(
+            65001, "116444737000000000", 100.0, r"C:\fixture\angerona-core.exe",
+            "core", now, now + 5.0,
+        ),)
+
+    module.bind_manager(SimpleNamespace(
+        modules={module.name: module}, owned_process_identities=owned_processes,
+    ))
     assert module._reconcile_state() is True
+    action = _action()
+    action = dataclasses.replace(action, details={
+        **action.details, "exe": r"C:\fixture\inert.exe",
+    })
 
     class _InertProcess:
         delete_was_blocked = False
@@ -226,29 +252,124 @@ def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
             return False
 
     process = _InertProcess()
-    # Inject only the host effect. Windows termination now retains a native
-    # object lease; this existing test isolates canonical-journal custody.
-    lease = SimpleNamespace(
-        identity=SimpleNamespace(pid=4242, birth_ticks=1, image=r"C:\fixture\inert.exe"),
-        validate=lambda **_kwargs: None, wait_terminated=process.wait,
-        terminal_proof=lambda: {"inert_journal_custody": True}, close=lambda: None,
-        dispatch_started=False, dispatch_guard_ran=False,
+    boundary = []
+
+    class _InertNative:
+        """Only host operations are inert; real custody and authority remain."""
+        identity_value = ProcessObjectIdentity(
+            4242, 116444736500000000, r"c:\fixture\inert.exe",
+        )
+
+        def __init__(self):
+            self.calls = []
+            self.exited = False
+            self.live_polls = 0
+            self.authorized_poll = -1
+            self.dispatch_guard_ran = False
+
+        def open(self, pid, rights, inherit):
+            assert (pid, rights, inherit) == (4242, lease_module._RIGHTS, False)
+            self.calls.append(("open", pid, rights, inherit))
+            return 101
+
+        def identity(self, handle):
+            assert handle == 101
+            self.calls.append(("identity", handle))
+            return self.identity_value
+
+        def object_identity(self, handle):
+            assert handle == 101
+            self.calls.append(("object_identity", handle))
+            return self.identity_value.pid, self.identity_value.birth_ticks
+
+        def wait(self, handle, milliseconds):
+            assert handle == 101 and 0 <= milliseconds <= 3000
+            self.calls.append(("wait", handle, milliseconds))
+            if not self.exited and milliseconds == 0:
+                self.live_polls += 1
+            if milliseconds > 0:
+                process.wait(timeout=3)
+            return self.exited
+
+        def terminate(self, handle, code):
+            assert (handle, code) == (101, 1)
+            # The last native live poll belongs to WindowsProcessLease.terminate.
+            # A successful original-event check must follow it before dispatch.
+            assert self.live_polls >= 3
+            assert self.authorized_poll == self.live_polls
+            self.dispatch_guard_ran = True
+            records, legacy = module._read_journal(strict=True)
+            assert not legacy
+            assert [record["record_type"] for record in records] == ["intent"]
+            assert records[0]["action_id"] == action.action_id
+            assert records[0]["details"]["native_pid"] == self.identity_value.pid
+            assert records[0]["details"]["native_birth_ticks"] == self.identity_value.birth_ticks
+            assert records[0]["details"]["native_image"] == self.identity_value.image
+            boundary.append("durable-intent")
+            self.calls.append(("terminate", handle, code))
+            boundary.append("native-dispatch")
+            process.kill()
+            assert process.delete_was_blocked is True
+            boundary.append("delete-blocked")
+            self.exited = not process.is_running()
+
+        def exit_code(self, handle):
+            assert handle == 101 and self.exited
+            self.calls.append(("exit_code", handle))
+            return 1
+
+        def close(self, handle):
+            assert handle == 101
+            self.calls.append(("close", handle))
+            boundary.append("native-close")
+
+    native = _InertNative()
+    factories = []
+    leases = []
+    original_acquire = module._acquire_termination_lease
+    original_current_event = module._require_current_response_event
+
+    def observe_current_event(candidate_event, **kwargs):
+        result = original_current_event(candidate_event, **kwargs)
+        assert candidate_event is event
+        native.authorized_poll = native.live_polls
+        return result
+
+    def native_factory():
+        factories.append(True)
+        assert len(factories) == 1, "retained target was reopened"
+        return native
+
+    def observe_acquire(candidate_action):
+        lease = original_acquire(candidate_action)
+        assert type(lease) is WindowsProcessLease
+        leases.append(lease)
+        return lease
+
+    monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
+    monkeypatch.setattr(lease_module, "_Native", native_factory)
+    monkeypatch.setattr(module, "_acquire_termination_lease", observe_acquire)
+    monkeypatch.setattr(module, "_require_current_response_event", observe_current_event)
+    event = Event(
+        "inert-seventh-remediation", "Exact journal deletion custody control", Severity.HIGH,
+        details={"pid": 4242, "process_create_time": 50.0,
+                 **authorize_response(["terminate_process"], pid=4242, process_create_time=50.0)},
     )
+    committed = module._terminate_process_transaction(process, action, event=event)
 
-    def inert_terminate(*, before_dispatch=None):
-        lease.validate(alive=True)
-        if before_dispatch is not None:
-            before_dispatch()
-            lease.dispatch_guard_ran = True
-        lease.dispatch_started = True
-        process.kill()
-
-    lease.terminate = inert_terminate
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: lease)
-    committed = module._terminate_process_transaction(process, _action())
-
-    assert lease.dispatch_guard_ran is True
+    assert len(leases) == 1
+    assert leases[0].dispatch_started is True
+    assert native.dispatch_guard_ran is True
     assert process.delete_was_blocked is True
     assert committed is not None
     records, _legacy = module._read_journal(strict=True)
     assert [record["record_type"] for record in records] == ["intent", "commit"]
+    assert records[-1]["details"]["native_wait_signaled"] is True
+    assert records[-1]["details"]["native_birth_ticks"] == native.identity_value.birth_ticks
+    assert boundary == ["durable-intent", "native-dispatch", "delete-blocked", "native-close"]
+    assert factories == [True]
+    assert len(roster_reads) >= 2
+    assert native.calls.count(("terminate", 101, 1)) == 1
+    assert any(call[0] == "wait" and call[2] > 0 for call in native.calls)
+    assert native.calls[-1] == ("close", 101)
+    assert native.calls.count(("close", 101)) == 1

@@ -22,13 +22,27 @@ DOCS = (ROOT / "docs/security-flow.md", ROOT / "docs/safe-startup-recovery.md",
         ROOT / "docs/zero-breach-toolkit.md", ROOT / "docs/recorder-integrity.md",
         ROOT / "docs/managed-driver-policy.md")
 ASSETS = ("security-flow-overview.png", "security-flow-startup.png", "security-flow-response.png",
-          "security-flow-tools.png", "security-flow-breach.png", "security-flow-hardening.png")
+          "security-flow-tools.png", "security-flow-breach.png", "security-flow-hardening.png",
+          "security-flow-auto-adapt.png")
 START = b"<!-- ANGERONA_SECURITY_FLOW_START -->"
 END = b"<!-- ANGERONA_SECURITY_FLOW_END -->"
+
+HISTORY_START = b"<!-- ANGERONA_SECURITY_FLOW_RETAINED_HISTORY_START -->"
+HISTORY_END = b"<!-- ANGERONA_SECURITY_FLOW_RETAINED_HISTORY_END -->"
+HISTORY_MAX_BYTES = 256 * 1024
+HISTORY_HEADINGS = (
+    "1 November recorder admission and shutdown follow up",
+    "1 November remediation custody follow up",
+    "1 November recorder commit boundary follow up",
+    "1 November optional audit admission follow up",
+    "1 November telemetry storage and dialog recovery",
+    "1 November persistence baseline classification",
+)
 TITLE = "Security flow integrations and recovery"
-REVISION_DATE = "1 November 2026"
-REVISION_UTC = b"2026-11-01T00:00:00Z"
-CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-11-01-advisory-bursts.md"
+REVISION_DATE = "2 November 2026"
+REVISION_UTC = b"2026-11-02T00:00:00Z"
+CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md"
+NOVEMBER_1_EVIDENCE = "analysis/hardening-v1.15-2026-11-01-advisory-bursts.md"
 LIST_RESTART_START = b"<!-- ANGERONA_LIST_RESTARTS_START -->"
 LIST_RESTART_END = b"<!-- ANGERONA_LIST_RESTARTS_END -->"
 LIST_ABSTRACT_START = b"<!-- ANGERONA_LIST_ABSTRACTS_START -->"
@@ -231,6 +245,76 @@ def build_assets():
         ("8  Retain limits and ownership", ["Capacity pauses • missing history visible", "STOP drains owners • uncertain cleanup held"]),
     ], ["Implemented source layers do not attest signed deployment or physical independence.",
         "No certified ELAM/PPL, PID-bound ALE/socket teardown or kernel immunity is claimed."])
+    build_auto_adapt_asset()
+
+
+def build_auto_adapt_asset():
+    """Rebuild the reviewed seventh figure with the managed Pillow runtime."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    canvas = Image.new("RGB", (1600, 1500), "white")
+
+    draw = ImageDraw.Draw(canvas)
+
+    font_dir = Path("C:/Windows/Fonts")
+
+    def font(size, bold=False):
+        return ImageFont.truetype(str(font_dir / ("arialbd.ttf" if bold else "arial.ttf")), size)
+
+    def text(x, y, lines, *, size=34, bold=False, color="#17263b", leading=43):
+        face = font(size, bold)
+        for line in lines:
+            if draw.textlength(line, font=face) > 640:
+                raise ValueError("Figure line exceeds its reviewed column")
+            draw.text((x, y), line, font=face, fill=color)
+            y += leading
+
+    def box(x, y, title, body, *, held=False):
+        draw.rounded_rectangle((x, y, x + 700, y + 194), radius=16,
+                               fill="#fff6e8" if held else "#edf4fa", outline="#8ba4ba", width=2)
+        text(x + 24, y + 16, [title], size=36, bold=True)
+        text(x + 24, y + 69, body)
+
+    def arrow(start, end):
+        draw.line((start, end), fill="#235a86", width=5)
+        x, y = end
+        if start[0] == x:
+            draw.polygon(((x, y), (x - 10, y - 15), (x + 10, y - 15)), fill="#235a86")
+        else:
+            draw.polygon(((x, y), (x - 15, y - 10), (x - 15, y + 10)), fill="#235a86")
+
+    draw.text((54, 32), "Auto Adapt changes and recovery", font=font(48, True), fill="#000000")
+
+    draw.text((56, 100), "Review every change before applying a closed firewall profile", font=font(32), fill="#41566c")
+
+    rows = [
+        ("1  Audit this host", ["Collect host and firewall facts.", "Keep permission and coverage gaps."],
+         "Incomplete audit", ["Show the findings already collected.", "Hold Apply with a specific reason."], True),
+        ("2  Review the exact plan", ["Inspect reasons and before/after.", "Review history and rollback coverage."],
+         "Adjust the protection profile", ["Rebuild the immutable plan.", "Invalidate the earlier approval."], False),
+        ("3  Simulate without writes", ["Inspect commands and expected effects.", "Check baseline and recovery readiness."],
+         "Missing or stale prerequisite", ["Explain what needs attention.", "Keep previous evidence and settings."], True),
+        ("4  Approve and apply", ["Require the exact current plan.", "Record intent before native changes."],
+         "Authority and custody checks", ["Recheck expiry, policy and rollback.", "Source Observe cannot grant rights."], False),
+        ("5  Verify and record", ["Measure the resulting firewall state.", "Retain the transaction and full details."],
+         "Rollback a supported transaction", ["Restore its exact recorded state.", "Verify restoration or hold recovery."], False),
+    ]
+
+    for index, (title, body, side_title, side_body, held) in enumerate(rows):
+        y = 175 + index * 230
+        box(50, y, title, body)
+        box(850, y, side_title, side_body, held=held)
+        arrow((750, y + 97), (850, y + 97))
+        if index < len(rows) - 1:
+            arrow((400, y + 194), (400, y + 230))
+
+    draw.text((56, 1350), "History and Copy JSON expose evidence; they do not authorize a change.",
+              font=font(30), fill="#17263b")
+
+    draw.text((56, 1400), "Firewall rollback does not restore the whole PC or prove packet blocking.",
+              font=font(30), fill="#41566c")
+
+    canvas.save(ROOT / "assets" / "security-flow-auto-adapt.png", optimize=True)
 
 
 def plain(text):
@@ -328,7 +412,7 @@ def markdown_parts(text, *, include_catalog=False):
                 if name in line:
                     output.append(picture(name, number))
                     display_number = {ASSETS[0]: 1, ASSETS[3]: 2, ASSETS[2]: 3,
-                                      ASSETS[4]: 4, ASSETS[1]: 5, ASSETS[5]: 6}[name]
+                                      ASSETS[4]: 4, ASSETS[1]: 5, ASSETS[5]: 6, ASSETS[6]: 7}[name]
                     output.append(paragraph("Figure " + str(display_number) + " " + name.replace('security-flow-', '').replace('.png', '') + " flow", "Caption"))
         elif line.startswith('#'):
             flush()
@@ -369,7 +453,59 @@ def markdown_parts(text, *, include_catalog=False):
     return b''.join(output)
 
 
-def chapter():
+
+def retained_history(document):
+    """Retain the maintained Word history verbatim within a bounded named region.
+
+    The original generator omitted these six later editorial additions while
+    replacing their enclosing chapter. Missing or ambiguous history now holds
+    regeneration. Original relationships and package parts remain retained.
+    """
+    if document.count(START) != 1 or document.count(END) != 1:
+        raise ValueError("retained history needs one maintained chapter")
+    first, last = document.index(START) + len(START), document.index(END)
+    if first > last:
+        raise ValueError("retained history chapter markers are reversed")
+    body = document[first:last]
+    headings = []
+    for match in re.finditer(rb'<w:p(?:\s[^>]*)?(?<!/)>.*?</w:p>', body, re.DOTALL):
+        raw = match.group(0)
+        if not re.search(rb'<w:pStyle\b[^>]*\bw:val="Heading2"', raw):
+            continue
+        text = unescape(''.join(part.decode('utf-8') for part in re.findall(
+            rb'<w:t(?:\s[^>]*)?>(.*?)</w:t>', raw, re.DOTALL)))
+        headings.append((text, match.start(), match.end()))
+
+    def position(title):
+        matches = [item for item in headings if item[0] == title]
+        if len(matches) != 1:
+            raise ValueError("retained history heading missing or ambiguous: " + title)
+        return matches[0][1]
+
+    anchor = position("1 November runtime and shutdown follow up")
+    reference = position("Primary platform and toolkit references")
+    positions = [position(title) for title in HISTORY_HEADINGS]
+    if not anchor < positions[0] or positions != sorted(positions) or positions[-1] >= reference:
+        raise ValueError("retained history heading order held")
+    if HISTORY_START in body or HISTORY_END in body:
+        if body.count(HISTORY_START) != 1 or body.count(HISTORY_END) != 1:
+            raise ValueError("retained history markers are ambiguous")
+        start, end = body.index(HISTORY_START), body.index(HISTORY_END)
+        if not anchor < start < positions[0] or not positions[-1] < end < reference:
+            raise ValueError("retained history marker boundaries held")
+        if body[end + len(HISTORY_END):reference].strip():
+            raise ValueError("unowned content after retained history requires review")
+        history = body[start + len(HISTORY_START):end]
+    else:
+        # One-time migration of the exact existing maintained Word interval.
+        # Capture whole XML paragraphs/tables, not a text reconstruction.
+        history = body[positions[0]:reference]
+    if not history or len(history) > HISTORY_MAX_BYTES:
+        raise ValueError("retained history byte bound held")
+    return history
+
+
+def chapter(history):
     result = paragraph(TITLE, "Heading1", first=True)
     result += paragraph("Current operating guidance " + REVISION_DATE)
     result += paragraph("This chapter explains the suite from launch to evidence, governed response, retention and recovery. Source Observe and signed installed Protect have distinct authority. A visible dashboard does not attest working sensors or protection. The current security flow and Safe Startup sections below apply to the maintained source profile; earlier dated validation results remain historical evidence.")
@@ -386,7 +522,10 @@ def chapter():
     result += paragraph("1 November runtime and shutdown follow up", "Heading2")
     result += paragraph("Normal Python/Qt messages use a configurable whole-block limit (default 64 KiB, range 4–256 KiB) and default 8 MiB per-file/process-role budgets, with Block/Allow/change and pending retry. Existing bytes remain; native/external writes, upstream allocations, OS quotas and file-identity leases are outside this budget. Early AI refusal keeps final trust/hash TTL strict; stage timings include callbacks.")
     result += paragraph("A fixed 180-second readiness window applies only to an exact retained owned launch, not adopted PIDs or the cross-peer claim. Expiry is held, not healthy or permission to kill/duplicate. Recovery-copy confirmation is nonmodal; only Yes queues cleanup. Final Windows self-exit follows durable STOP and bounded cleanup but does not prove the native fault repaired or all I/O/children retired.")
-    result += paragraph("Mixed historical reports retain dates and gaps; earlier modal-held and lifecycle results stay separate. Port-only CAGT leads and SOAR burst counts are advisory without response authority; severity/thresholds remain. Full Setup maps existing normal-log controls. Combined Full60/STOP retired 40 observed generations with source/preferences unchanged, not all-detector acceptance. SOAR aggregate wording has offline coverage only. Evidence: " + CURRENT_EVIDENCE + ". Five exploit classes, native P0, unknown coverage and independent deployment requirements remain; no Optimus actor is established.")
+    result += paragraph("Mixed historical reports retain dates and gaps; earlier modal-held and lifecycle results stay separate. Port-only CAGT leads and SOAR burst counts are advisory without response authority; severity/thresholds remain. Full Setup maps existing normal-log controls. Combined Full60/STOP retired 40 observed generations with source/preferences unchanged, not all-detector acceptance. SOAR aggregate wording has offline coverage only. Historical evidence: " + NOVEMBER_1_EVIDENCE + ". Five exploit classes, native P0, unknown coverage and independent deployment requirements remain; no Optimus actor is established.")
+    result += paragraph("2 November workspaces and scan review", "Heading2")
+    result += paragraph("The current guide above describes concurrent workspaces, readable scan and after-action progress, installed sign-in enrollment, original producer proof, bounded crash capture, and Auto Adapt review, adjustments and firewall Undo. Settings failure recovery restores only its owned nonsecret environment keys; unrelated concurrent changes and scrubbed credentials remain preserved. Focused validation and the preceding incomplete combined scan retain separate scopes. Current evidence and pending deployment gates: " + CURRENT_EVIDENCE + ".")
+    result += HISTORY_START + history + HISTORY_END
     result += paragraph("Primary platform and toolkit references", "Heading2", first=True)
     for url in (
         "https://learn.microsoft.com/en-us/windows-hardware/drivers/gettingstarted/user-mode-and-kernel-mode",
@@ -787,6 +926,7 @@ def update(check=False):
     original_mapping = dict(mapping)
     current_version_parts(mapping)
     document = mapping['word/document.xml']
+    history = retained_history(document)
     if START in document or END in document:
         if document.count(START) != 1 or document.count(END) != 1:
             raise ValueError("security flow chapter markers are ambiguous")
@@ -809,9 +949,11 @@ def update(check=False):
     insertion = document.rfind(b'<w:sectPr')
     if insertion < 0:
         raise ValueError("manual has no final section properties")
-    updated = document[:insertion] + chapter() + document[insertion:]
+    updated = document[:insertion] + chapter(history) + document[insertion:]
     updated, mapping['word/numbering.xml'] = current_list_format(updated, mapping['word/numbering.xml'], mapping['word/styles.xml'])
     updated = keep_table_headers(updated)
+    if retained_history(updated) != history:
+        raise ValueError("manual normalization changed retained historical XML")
     ET.fromstring(updated)
     if check:
         if updated != original_mapping['word/document.xml']:

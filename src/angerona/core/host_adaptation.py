@@ -570,12 +570,25 @@ class HostAdaptationService:
                 _digest(target_firewall) if target_firewall else ""
             ),
             "after_firewall_digest": "",
+            "before_profiles": self._profile_review_values(before_firewall or {}),
+            "target_profiles": self._profile_review_values(target_firewall or {}),
             "commands": [],
             "receipt_digest": "",
             "error": "",
             "rollback_error": "",
         }
         return self._save_transaction_record(record)
+
+    @staticmethod
+    def _profile_review_values(firewall: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Bounded presentation evidence for the three closed-catalog profiles."""
+        values = []
+        for index, row in enumerate(firewall.get("profiles") or []):
+            if index >= 3:
+                break
+            if isinstance(row, Mapping) and row.get("name") in {"Domain", "Private", "Public"}:
+                values.append({key: row.get(key) for key in ("name", "enabled", "inbound", "outbound")})
+        return values
 
     def _transition_transaction(
         self, transaction_id: str, status: str, **updates: Any
@@ -1807,8 +1820,21 @@ class HostAdaptationService:
 
     def audit(self) -> dict[str, Any]:
         current = self.capture_snapshot()
-        baseline = self.load_baseline()
-        findings = self.compare(baseline, current) if baseline else []
+        baseline = None
+        baseline_error = ""
+        comparison_error = ""
+        findings = []
+        try:
+            baseline = self.load_baseline()
+        except Exception as exc:
+            # An unreadable/unauthenticated baseline must hold comparison, but
+            # must not discard the independently collected host evidence.
+            baseline_error = _safe_text(exc, 8192)
+        if baseline is not None:
+            try:
+                findings = self.compare(baseline, current)
+            except Exception as exc:
+                comparison_error = _safe_text(exc, 8192)
         active = [row for row in findings if not row["excluded"]]
         incomplete_collectors = [
             name for name in ("services", "ports", "firewall", "network", "hardware")
@@ -1820,7 +1846,7 @@ class HostAdaptationService:
             )
         ]
         skipped_collectors = []
-        if baseline:
+        if baseline and not comparison_error:
             skipped_collectors = [
                 name for name in ("services", "ports", "firewall", "network", "hardware")
                 if not self._collector_comparable(baseline, current, name)
@@ -1835,9 +1861,13 @@ class HostAdaptationService:
             "active_findings": len(active),
             "excluded_findings": len(findings) - len(active),
             "risk_score": min(100.0, round(sum(float(row["score"]) for row in active), 2)),
-            "risk_score_complete": not incomplete_collectors and not skipped_collectors,
+            "risk_score_complete": not (
+                incomplete_collectors or skipped_collectors or baseline_error or comparison_error
+            ),
             "incomplete_collectors": incomplete_collectors,
             "skipped_incomplete_collectors": skipped_collectors,
+            "baseline_error": baseline_error,
+            "comparison_error": comparison_error,
         }
         self.log_activity(
             "audit.completed", "success" if report["risk_score_complete"] else "partial",
@@ -1845,10 +1875,55 @@ class HostAdaptationService:
                 f"risk {report['risk_score']:.1f}/100."
                 if report["risk_score_complete"] else
                 "risk unavailable; incomplete coverage: "
-                + ", ".join(dict.fromkeys(incomplete_collectors + skipped_collectors))
+                + ", ".join(dict.fromkeys(
+                    incomplete_collectors + skipped_collectors
+                    + (["baseline held"] if baseline_error else [])
+                    + (["comparison held"] if comparison_error else [])
+                ))
             ),
         )
         return report
+
+    def prepare_review(
+        self, profile_id: str, *, capture_recovery: bool = False
+    ) -> dict[str, Any]:
+        """Retain audit evidence when a later preparation gate is held.
+
+        This never applies a plan. Recovery enrollment is a separate explicit
+        opt-in; all planning, integrity and collector gates remain authoritative.
+        """
+        report = self.audit()
+        result: dict[str, Any] = {
+            "report": report, "plan": None, "simulation": {},
+            "recovery": {}, "relaxes": False, "holds": [],
+        }
+
+        def held(stage: str, error: object) -> None:
+            result["holds"].append({"stage": stage, "detail": _safe_text(error, 8192)})
+
+        for key in ("baseline_error", "comparison_error"):
+            if report.get(key):
+                held(key.removesuffix("_error"), report[key])
+        current = report.get("current")
+        if not isinstance(current, dict):
+            held("audit", "Deep audit did not return a host snapshot")
+            return result
+        try:
+            plan = self.build_plan(profile_id, current)
+            result["plan"] = plan
+            result["simulation"] = self.simulate_plan(plan, current)
+            result["relaxes"] = self._plan_relaxes_current(plan, current.get("firewall") or {})
+        except Exception as exc:
+            held("preview", exc)
+        try:
+            recovery = self.security_baseline_status()
+            if (capture_recovery and not recovery.get("available")
+                    and not result["holds"] and not report.get("incomplete_collectors")):
+                recovery = self.capture_security_baseline(approved=True)
+            result["recovery"] = recovery
+        except Exception as exc:
+            held("recovery", exc)
+        return result
 
     def export_report(self, report: Mapping[str, Any], destination: str | Path, format: str) -> Path:
         target = Path(destination).expanduser().resolve()
@@ -1998,6 +2073,7 @@ class HostAdaptationService:
         before = self._indexed((current.get("firewall") or {}).get("profiles") or [], "name")
         after = {key: dict(value) for key, value in before.items()}
         changes = []
+        effects = []
         for action in plan.actions:
             for profile_name in action.profiles:
                 old = dict(after.get(profile_name, {"name": profile_name}))
@@ -2008,8 +2084,15 @@ class HostAdaptationService:
                     "outbound": action.outbound,
                 })
                 after[profile_name] = new
+                effect = {
+                    "profile": profile_name, "before": old, "after": new,
+                    "changed": old != new, "reason": PROFILES[plan.profile_id].description,
+                    "reversibility": "Authenticated Windows Firewall rollback snapshot required before apply",
+                    "verification": "Projected only; fresh firewall postconditions required after apply",
+                }
+                effects.append(effect)
                 if old != new:
-                    changes.append({"profile": profile_name, "before": old, "after": new})
+                    changes.append(effect)
         return {
             "schema": f"angerona.adaptation-sandbox/v{SCHEMA_VERSION}",
             "simulated_at": _utc_now(),
@@ -2018,6 +2101,7 @@ class HostAdaptationService:
             "plan_id": plan.plan_id,
             "commands": list(self.command_stack(plan)),
             "changes": changes,
+            "effects": effects,
             "warnings": list(plan.warnings),
         }
 
@@ -2442,6 +2526,9 @@ class HostAdaptationService:
         current = self.capture_snapshot()
         if _digest(current.get("firewall") or {}) != plan.precondition_digest:
             raise AdaptationError("firewall state changed after preview; build a fresh plan")
+        # Projection belongs before durable intent and native mutation. Never
+        # revalidate a cosmetic review after a verified host effect.
+        review = self.simulate_plan(plan, current)
         provider = snapshot_provider or self._capture_rollback_snapshot
         snapshot_id = provider(plan, current)
         if not snapshot_id:
@@ -2467,11 +2554,21 @@ class HostAdaptationService:
                 postcondition_provider() if postcondition_provider else self._firewall()
             )
             self._verify_profile_postconditions(plan, postcondition)
+            observed_profiles = self._indexed(postcondition.get("profiles") or [], "name")
+            verified_effects = [
+                {**effect, "after": dict(observed_profiles[effect["profile"]]),
+                 "verification": "Fresh firewall postconditions verified",
+                 "snapshot_id": snapshot_id}
+                for effect in review["effects"]
+            ]
             self._transition_transaction(
                 transaction_id,
                 "VERIFIED",
                 commands=list(commands),
                 after_firewall_digest=_digest(postcondition),
+                verified_effects=verified_effects,
+                after_profiles=self._profile_review_values(postcondition),
+                verification="fresh-postcondition",
             )
         except Exception as primary_exc:
             if not mutation_started:
@@ -2654,6 +2751,7 @@ class HostAdaptationService:
                 verification=(
                     "fresh-postcondition" if restored is not None else "broker-only"
                 ),
+                after_profiles=self._profile_review_values(restored) if restored is not None else [],
             )
             manifest["status"] = "restored"
             manifest["restored_at"] = _utc_now()
@@ -2813,6 +2911,8 @@ class HostAdaptationService:
                     transaction_id,
                     "VERIFIED",
                     after_firewall_digest=_digest(restored),
+                    after_profiles=self._profile_review_values(restored),
+                    verification="fresh-postcondition",
                 )
             except Exception as primary_exc:
                 if not mutation_started:

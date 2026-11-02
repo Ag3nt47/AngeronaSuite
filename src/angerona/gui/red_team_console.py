@@ -28,6 +28,7 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import QCoreApplication, QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from shiboken6 import isValid
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
     QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
@@ -155,6 +156,25 @@ class _HistoryWorker(QRunnable):
             self._retire_signals()
 
 
+class _HistoryResultReceiver(QObject):
+    """Route one reader result only to its still-current console generation."""
+
+    def __init__(self, owner, generation):
+        super().__init__(owner)
+        self._owner = owner
+        self._generation = generation
+
+    @Slot(str, str, object)
+    def receive(self, operation, name, result):
+        try:
+            owner = self._owner
+            if (isValid(owner) and owner._hist_accept_results
+                    and self._generation == getattr(owner, "_hist_generation", 0)):
+                owner._on_history_result(operation, name, result)
+        finally:
+            self.deleteLater()
+
+
 class _StageChip(QLabel):
     """Keyboard-accessible stage surface with an exact stable stage key."""
 
@@ -216,6 +236,7 @@ class RedTeamConsole(QDialog):
         self._launch_preparing = False
         self._history_pool = _history_pool()
         self._hist_accept_results = True
+        self._hist_generation = 0
         self._hist_listing = False
         self._hist_refresh_pending = False
         self._hist_reading = False
@@ -266,6 +287,19 @@ class RedTeamConsole(QDialog):
                 self._narration_connected = True
             except (AttributeError, RuntimeError, TypeError):
                 self.live_status.setText("Live event feed unavailable for this window.")
+        from angerona.gui.window_controls import configure_work_window
+        configure_work_window(self)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        if not getattr(self, "_hist_accept_results", True):
+            self._hist_generation = getattr(self, "_hist_generation", 0) + 1
+            self._hist_accept_results = True
+            self._hist_listing = self._hist_reading = self._hist_refresh_pending = False
+            self._hist_pending_name = self._hist_active_name = None
+            tabs = getattr(self, "_tabs", None)
+            if tabs is not None and "History" in tabs.tabText(tabs.currentIndex()):
+                self._load_history()
 
     # ── Run tab ──────────────────────────────────────────────────────────────
     def _build_run_tab(self, default_target: str | None) -> QWidget:
@@ -786,11 +820,13 @@ class RedTeamConsole(QDialog):
         self._hist_list.clear()
         self._hist_view.setPlainText("Loading report history…")
         worker = _HistoryWorker("list", self._history_dir())
-        worker.signals.finished.connect(self._on_history_result)
+        receiver = _HistoryResultReceiver(self, getattr(self, "_hist_generation", 0))
+        worker.signals.finished.connect(receiver.receive)
         try:
             self._admit_history_worker(worker)
         except Exception as exc:
             worker._retire_signals()
+            receiver.deleteLater()
             self._hist_listing = False
             self._hist_view.setPlainText(f"Could not load report history: {exc}")
 
@@ -876,11 +912,13 @@ class RedTeamConsole(QDialog):
     def _start_history_read(self, name: str) -> None:
         self._hist_reading = True
         worker = _HistoryWorker("text", self._history_dir(), name)
-        worker.signals.finished.connect(self._on_history_result)
+        receiver = _HistoryResultReceiver(self, getattr(self, "_hist_generation", 0))
+        worker.signals.finished.connect(receiver.receive)
         try:
             self._admit_history_worker(worker)
         except Exception as exc:
             worker._retire_signals()
+            receiver.deleteLater()
             self._hist_reading = False
             self._hist_view.setPlainText(f"Could not verify report history: {exc}")
 
@@ -897,6 +935,9 @@ class RedTeamConsole(QDialog):
 
     def _stop_history_loads(self, _result: int) -> None:
         self._hist_accept_results = False
+        self._hist_generation = getattr(self, "_hist_generation", 0) + 1
+        self._hist_listing = self._hist_reading = self._hist_refresh_pending = False
+        self._hist_pending_name = self._hist_active_name = None
 
     def _on_tab_changed(self, idx: int) -> None:
         try:
@@ -1543,6 +1584,8 @@ class RedTeamConsole(QDialog):
         row = QHBoxLayout(); row.addStretch(1); row.addWidget(close)
         layout.addLayout(row)
         self._stage_detail_dialog = dialog
+        from angerona.gui.window_controls import configure_work_window
+        configure_work_window(dialog)
         dialog.show()
         dialog.raise_()
 

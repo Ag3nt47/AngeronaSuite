@@ -431,11 +431,24 @@ def test_read_only_native_witness_binds_actual_pid_birth_and_rejects_wrong_role(
     # CI enters through tools.ci_pytest rather than pytest directly. Bind the
     # actual entry, while preserving the same retained native generation and
     # the negative check against a different component invocation below.
-    original = sys.orig_argv[1:]
-    if "-m" in original:
-        expected = (sys.executable, "-m", original[original.index("-m") + 1])
+    # runpy changes sys.argv[0] to pytest/__main__.py while the native process
+    # still runs tools/ci_pytest.py. Derive the entry from the interpreter's
+    # original prefix, stopping before pytest's own options (including -m).
+    original = iter(sys.orig_argv[1:])
+    for token in original:
+        if token in {"-u", "-B", "-E", "-I", "-s", "-S", "-P", "-O", "-OO", "-q"}:
+            continue
+        if token in {"-X", "-W"}:
+            next(original)
+            continue
+        if token == "-m":
+            expected = (sys.executable, "-m", next(original))
+        else:
+            assert not token.startswith("-"), "Unsupported native pytest interpreter entry"
+            expected = (sys.executable, str(Path(token).resolve()))
+        break
     else:
-        expected = (sys.executable, str(Path(sys.argv[0]).resolve()))
+        raise AssertionError("Native pytest interpreter entry is unavailable")
     witness = status._ReadOnlyProcessWitness(os.getpid(), expected)
     try:
         assert witness.validate()

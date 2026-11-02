@@ -12,9 +12,9 @@ import itertools
 import threading
 from contextlib import contextmanager
 
-from PySide6.QtCore import QObject, QPoint, QPropertyAnimation, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QPoint, QPropertyAnimation, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 
 # ── Live progress spinner: a smooth ring + a red→yellow→green percentage ──────
@@ -80,6 +80,85 @@ class _SpinRing(QWidget):
         p.end()
 
 
+class _ActivityLabel(QLabel):
+    """Shrinkable plain text; full activity details survive visual elision."""
+
+    def __init__(self) -> None:
+        super().__init__("")
+        self.full_text = ""
+        self.setTextFormat(Qt.PlainText)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+    def setText(self, text: str) -> None:  # noqa: N802 (Qt signature)
+        self.full_text = str(text)
+        self.setToolTip(self.full_text)
+        self.setAccessibleName(self.full_text)
+        self._elide()
+        self.updateGeometry()
+
+    def clear(self) -> None:
+        self.setText("")
+
+    def sizeHint(self):  # noqa: N802 (Qt signature)
+        hint = self._line_hint(super().sizeHint())
+        hint.setWidth(min(480, self.fontMetrics().horizontalAdvance(
+            getattr(self, "full_text", ""))))
+        return hint
+
+    def minimumSizeHint(self):  # noqa: N802 (Qt signature)
+        hint = self._line_hint(super().minimumSizeHint())
+        hint.setWidth(0)
+        return hint
+
+    def _line_hint(self, hint):
+        # Keep one readable line even when a narrow visual label becomes empty.
+        # Qt may ask for hints while constructing or applying a style.
+        margins = self.contentsMargins()
+        height = self.fontMetrics().height() + self.margin() * 2 + margins.top() + margins.bottom()
+        hint.setHeight(max(hint.height(), height))
+        return hint
+
+    def _elide(self) -> None:
+        QLabel.setText(self, self.fontMetrics().elidedText(
+            getattr(self, "full_text", ""), Qt.ElideRight,
+            max(0, self.contentsRect().width() - self.margin() * 2)))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        super().resizeEvent(event)
+        self._elide()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.ApplicationFontChange, QEvent.StyleChange):
+            self._elide()
+            self.updateGeometry()
+
+
+class HeaderActivityLane(QWidget):
+    """One full-width row that disappears when both indicators are idle."""
+
+    def __init__(self, *indicators: QWidget) -> None:
+        super().__init__()
+        self.setObjectName("HeaderActivityLane")
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._indicators = indicators
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        for indicator in indicators:
+            layout.addWidget(indicator, 1)
+            indicator.installEventFilter(self)
+        self.hide()
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 (Qt signature)
+        if event.type() == QEvent.ShowToParent:
+            self.show()
+        elif event.type() == QEvent.HideToParent:
+            self.setVisible(any(indicator is not watched and not indicator.isHidden()
+                                for indicator in self._indicators))
+        return super().eventFilter(watched, event)
+
+
 class RunSpinner(QWidget):
     """Compact 'actively running' indicator: a smooth spinning ring next to a
     live percentage, both coloured red→amber→green as progress climbs.
@@ -90,15 +169,18 @@ class RunSpinner(QWidget):
     eases the bar toward 95% over the expected duration; ``finish()`` completes it.
     """
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, bounded_text: bool = False) -> None:
         super().__init__(parent)
         self._ring = _SpinRing(self)
-        self._label = QLabel("")
+        self._label = _ActivityLabel() if bounded_text else QLabel("")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 0, 8, 0)
         lay.setSpacing(8)
         lay.addWidget(self._ring)
         lay.addWidget(self._label)
+        if bounded_text:
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.setAccessibleName("Dashboard operation progress")
         self._text = ""
         self._pct = 0
         self._t0 = 0.0
@@ -126,6 +208,10 @@ class RunSpinner(QWidget):
             self.layout().setSpacing(8)
             self.setMinimumWidth(0)
             self.setMaximumWidth(16_777_215)
+
+    @property
+    def current_text(self) -> str:
+        return self._label.full_text if isinstance(self._label, _ActivityLabel) else self._label.text()
 
     def start(self, text: str = "") -> None:
         self._text = text
@@ -174,7 +260,10 @@ class RunSpinner(QWidget):
         self._ring.hide()
         self._pct = 100
         self._text = text
-        self._label.setText(f"✓  {text}  100%")
+        label = f"✓  {text}  100%"
+        self._label.setText(label)
+        self.setToolTip(label)
+        self.setAccessibleDescription(label)
         self._label.setStyleSheet(
             "color:rgb(47,227,138); font-weight:800; letter-spacing:0.4px;"
         )
@@ -194,6 +283,7 @@ class RunSpinner(QWidget):
         self._label.setStyleSheet(
             f"color: rgb({c.red()},{c.green()},{c.blue()}); font-weight:700; letter-spacing:0.3px;")
         self.setToolTip(label)
+        self.setAccessibleDescription(label)
 
 
 # ── Application-wide loading activity ──────────────────────────────────────────
@@ -265,7 +355,7 @@ class GlobalLoadingIndicator(QWidget):
         super().__init__(parent)
         self._ring = _SpinRing(self)
         self._ring.set_color(QColor(56, 189, 248))
-        self._label = QLabel("")
+        self._label = _ActivityLabel()
         self._label.setStyleSheet(
             "color:#7dd3fc;font-weight:700;letter-spacing:0.3px;"
         )
@@ -274,6 +364,7 @@ class GlobalLoadingIndicator(QWidget):
         lay.setSpacing(8)
         lay.addWidget(self._ring)
         lay.addWidget(self._label)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         self._activities: dict[str, tuple[str, int, int]] = {}
         self._order: list[str] = []
         self._reveal_timer = QTimer(self)
@@ -314,7 +405,7 @@ class GlobalLoadingIndicator(QWidget):
 
     @property
     def current_text(self) -> str:
-        return self._label.text()
+        return self._label.full_text
 
     @Slot(str, str, int, int)
     def _on_started(self, token: str, label: str, done: int, total: int) -> None:
@@ -374,6 +465,7 @@ class GlobalLoadingIndicator(QWidget):
         text = f"{label}{progress}{overlap}"
         self._label.setText(text)
         self.setToolTip(text)
+        self.setAccessibleDescription(text)
 
 
 class _LevelBar(QWidget):

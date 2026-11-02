@@ -546,3 +546,81 @@ from angerona.core.curated_tool_worker import main
     assert result["scanner_progress"]["progress_gap"]
     assert result["scanner_progress"]["owner_retired"]
     assert selected.read_bytes() == b"owned inert evidence"
+
+
+def test_browser_snapshot_restores_main_source_after_sidecars(tmp_path):
+    observer, _output, _clock = tracker(tmp_path)
+    observer.current_step = "browser"
+    source = tmp_path / "Profile" / "History"
+    result = (str(tmp_path / "private-snapshot"), ["could not copy -journal"])
+    calls = []
+
+    def original(path, *args, **kwargs):
+        calls.append((path, args, kwargs))
+        observer.observe_file(str(path) + "-shm", 99)
+        return result
+
+    namespace = dict(reader_run=lambda *_a: None, reader_select=lambda _ctx: [],
+                     copy_locked=original)
+    observer.install(namespace)
+    actual = namespace["copy_locked"](source, "passthrough", marker=7)
+    assert actual is result  # includes original incomplete-sidecar coverage
+    assert calls == [(source, ("passthrough",), {"marker": 7})]
+    assert observer.current_file == str(source)
+    assert observer.item_total is None  # no invented whole-database denominator
+    assert observer.current_task == "Preparing a copied browser evidence database"
+
+
+
+def test_browser_snapshot_failure_keeps_exception_and_failing_artifact(tmp_path):
+    observer, _output, _clock = tracker(tmp_path)
+    observer.current_step = "browser"
+    source = tmp_path / "Profile" / "History"
+    failure = OSError("synthetic snapshot failure")
+
+    def original(path):
+        observer.observe_file(str(path) + "-wal", 99)
+        raise failure
+
+    namespace = dict(reader_run=lambda *_a: None, reader_select=lambda _ctx: [],
+                     copy_locked=original)
+    observer.install(namespace)
+    with pytest.raises(OSError) as raised:
+        namespace["copy_locked"](source)
+    assert raised.value is failure
+    assert observer.current_file == str(source) + "-wal"
+
+
+
+def test_other_reader_snapshot_display_is_unchanged(tmp_path):
+    observer, _output, _clock = tracker(tmp_path)
+    observer.current_step = "iphone"
+    observer.current_file = "unchanged-source-label"
+    result = object()
+    namespace = dict(reader_run=lambda *_a: None, reader_select=lambda _ctx: [],
+                     copy_locked=lambda _path: result)
+    observer.install(namespace)
+    assert namespace["copy_locked"](tmp_path / "database") is result
+    assert observer.current_file == "unchanged-source-label"
+
+
+
+@pytest.mark.parametrize("result", [None, False, (), (None, []), ("", []),
+                                    ("snapshot-path", None), ["snapshot-path", []]])
+def test_missing_or_unrecognized_snapshot_return_never_claims_copy(tmp_path, result):
+    observer, _output, _clock = tracker(tmp_path)
+    observer.current_step = "browser"
+    source = tmp_path / "Profile" / "History"
+
+    def original(path):
+        observer.observe_file(str(path) + "-wal", 99)
+        return result
+
+    namespace = dict(reader_run=lambda *_a: None, reader_select=lambda _ctx: [],
+                     copy_locked=original)
+    observer.install(namespace)
+    actual = namespace["copy_locked"](source)
+    assert actual is result
+    assert observer.current_file == str(source) + "-wal"
+    assert observer.current_task == "Reading evidence file"
+    assert observer.item_total == 99

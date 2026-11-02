@@ -207,18 +207,20 @@ class DashboardFooter(QAbstractButton):
         if not isinstance(state, str):
             state = None
         if state == "ARMED" and snapshot.get("ready") is True:
-            text = "Auto ARMED"
+            text = ("Auto ARMED" if snapshot.get("policy_armed") is True
+                    and snapshot.get("host_authority_verified") is True else "Auto HELD")
         elif state == "DISABLED":
             text = "Auto OFF"
         elif state == "STARTING":
             text = "Auto STARTING"
-        elif state in {"RECOVERY REQUIRED", "JOURNAL FULL", "QUEUE FULL"}:
+        elif state in {"AUTHORITY HELD", "RECOVERY REQUIRED", "JOURNAL FULL", "QUEUE FULL"}:
             text = "Auto HELD"
         else:
             text = "Auto UNAVAILABLE"
         reason = " ".join(str(snapshot.get("reason") or "Status unavailable.").split())[:500]
         description = (
             f"Automatic response: {text.removeprefix('Auto ')}. {reason} "
+            "Policy and effective privileges are checked separately. "
             "View effective rules and action history in Settings > Adversary Combat."
         )
         if (text, description) == (self._response, self._response_description):

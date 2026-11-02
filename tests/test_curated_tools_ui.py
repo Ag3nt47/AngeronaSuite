@@ -183,6 +183,8 @@ def test_failed_verification_discards_previous_verified_claim_and_stays_literal(
     widget = ui.CuratedScannerWidget(controller.manager)
     try:
         service = ready(controller)
+        widget.show()
+        QApplication.instance().processEvents()
         assert widget.run_button.isEnabled()
         service.fail = True
         controller.prepare()
@@ -199,6 +201,8 @@ def test_selected_evidence_stays_typed_and_no_password_control_exists(controller
     widget = ui.CuratedScannerWidget(controller.manager)
     try:
         service = ready(controller)
+        widget.show()
+        QApplication.instance().processEvents()
         widget.mode.setCurrentIndex(widget.mode.findData("targeted"))
         widget._scan()
         assert not service.requests
@@ -496,6 +500,8 @@ def test_source_execution_hold_does_not_fake_tool_readiness_or_block_native_scan
                                   execution_hold_reason="An ordinary-user toolkit runtime is required.",
                                   admin_state={"verified": True, "elevated": True})
     widget = ui.CuratedScannerWidget(controller.manager)
+    widget.show()
+    QApplication.instance().processEvents()
     try:
         controller.refresh()
         wait_until(lambda: not controller.snapshot()["busy"])
@@ -556,6 +562,7 @@ def test_all_maintained_credit_links_open_without_network_or_host_dispatch(monke
 def test_per_run_budget_constructs_operation_before_scan_without_changing_saved_default(controller):
     service = ready(controller)
     controller.manager.cfg.github_tools_timeout_seconds = 600
+    controller.manager.cfg.spyware_scan_timeout_seconds = 7200
     observed = []
 
     def scan(request, operation, *, progress):
@@ -565,11 +572,12 @@ def test_per_run_budget_constructs_operation_before_scan_without_changing_saved_
     service.scan = scan
     assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
     wait_until(lambda: not controller.snapshot()["busy"])
-    assert observed[-1][1] == 600 and observed[-1][2] > 590
+    assert observed[-1][1] == 7200 and observed[-1][2] > 7190
     assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, timeout_seconds=14400)
     wait_until(lambda: not controller.snapshot()["busy"])
     assert observed[-1][1] == 14400 and observed[-1][2] > 14390
     assert controller.manager.cfg.github_tools_timeout_seconds == 600
+    assert controller.manager.cfg.spyware_scan_timeout_seconds == 7200
     assert not Config.saved_on
     assert not controller.priority_scan(timeout_seconds=14401)
     assert "30 and 14400" in controller.snapshot()["message"]
@@ -786,3 +794,118 @@ def test_controller_real_native_request_keeps_inert_collector_until_it_returns(c
     finally:
         release.set()
         retire(native)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_hidden_views_do_not_present_or_duplicate_work_and_controller_still_settles(controller, monkeypatch, cancelled):
+    service = ready(controller)
+    first = ui.CuratedScannerWidget(controller.manager)
+    second = ui.CuratedScannerWidget(controller.manager)
+    first.show()
+    second.show()
+    QApplication.instance().processEvents()
+    first.hide()
+    second.hide()
+    presentations = []
+    for widget in (first, second):
+        apply = widget._apply
+        monkeypatch.setattr(widget, "_apply", lambda value, widget=widget, apply=apply: (
+            presentations.append(widget), apply(value))[-1])
+    try:
+        service.release = threading.Event()
+        assert controller.prepare()
+        wait_until(lambda: service.operation is not None)
+        assert type(controller._timer) is QTimer and controller._timer.isActive()
+        assert first.controller is second.controller is controller
+        assert not second.controller.prepare()
+        if cancelled:
+            controller.cancel()
+            assert service.operation.cancelled.is_set()
+        else:
+            service.release.set()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert presentations == []
+        assert len([call for call in service.calls if call[0] == "prepare"]) == 1
+        final = controller.snapshot()
+        assert second._presentation.latest == final
+        second.show()
+        QApplication.instance().processEvents()
+        assert presentations == [second]
+        assert final["state"] in second.status.text()
+        assert not second.cancel_button.isEnabled()
+    finally:
+        service.release.set()
+        first.close()
+        second.close()
+
+
+def test_missing_dedicated_timeout_uses_3600_only_for_priority_scan(controller):
+    service = ready(controller)
+    assert not hasattr(controller.manager.cfg, "spyware_scan_timeout_seconds")
+    assert not hasattr(controller.manager.cfg, "github_tools_timeout_seconds")
+    observed = []
+
+    def scan(_request, operation, *, progress):
+        observed.append(operation.timeout)
+        return dict(state="complete", findings=[])
+
+    service.scan = scan
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert observed[-1] == 3600
+    assert controller.scan(mode="full")
+    wait_until(lambda: not controller.snapshot()["busy"])
+    assert observed[-1] == 300
+    assert not Config.saved_on
+
+
+def test_standalone_widget_retains_generic_deadline_when_spyware_budget_changes(controller):
+    service = ready(controller)
+    config = controller.manager.cfg
+    config.github_tools_timeout_seconds = 45
+    config.spyware_scan_timeout_seconds = 7200
+    observed = []
+
+    def scan(_request, operation, *, progress):
+        observed.append(operation.timeout)
+        return dict(state="complete", findings=[])
+
+    service.scan = scan
+    widget = ui.CuratedScannerWidget(controller.manager)
+    try:
+        assert widget.mode.currentData() == "full"
+        assert widget.priority_controls.budget.value() == 7200
+        widget.priority_controls.native.setChecked(False)
+        widget.priority_controls.budget.setValue(14400)
+        widget._scan()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert observed[-1] == 45
+        widget._scan(priority=True)
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert observed[-1] == 14400
+        assert config.github_tools_timeout_seconds == 45
+        assert config.spyware_scan_timeout_seconds == 7200
+        assert not Config.saved_on
+    finally:
+        widget.close()
+        widget.deleteLater()
+
+
+def test_tool_settings_edit_independent_saved_scan_deadlines(controller):
+    service = ready(controller)
+    settings = ui.CuratedToolsSettings(controller)
+    try:
+        standalone = settings.controls["github_tools_timeout_seconds"]
+        spyware = settings.controls["spyware_scan_timeout_seconds"]
+        assert (standalone.minimum(), standalone.maximum(), standalone.value()) == (30, 900, 300)
+        assert (spyware.minimum(), spyware.maximum(), spyware.value()) == (30, 14400, 3600)
+        standalone.setValue(45)
+        spyware.setValue(7200)
+        settings._save()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert controller.manager.cfg.github_tools_timeout_seconds == 45
+        assert controller.manager.cfg.spyware_scan_timeout_seconds == 7200
+        assert Config.saved_on and not service.requests
+    finally:
+        settings.close()
+        settings.deleteLater()

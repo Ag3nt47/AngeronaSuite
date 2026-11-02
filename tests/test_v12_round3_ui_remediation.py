@@ -4,6 +4,9 @@ import inspect
 import os
 import threading
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -77,15 +80,9 @@ def test_auto_adapt_discards_consent_if_task_starts_while_dialog_is_open(
     launched: list[str] = []
     notices: list[str] = []
 
-    def accept_after_race(_prompt: QDialog) -> int:
-        dialog._busy_task = "audit"
-        return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(QDialog, "exec", accept_after_race)
+    monkeypatch.setattr(QDialog, "exec", lambda *_: (_ for _ in ()).throw(AssertionError("nested modal event loop")))
     monkeypatch.setattr(
-        QMessageBox,
-        "information",
-        lambda _parent, _title, message: notices.append(message),
+        dialog, "_show_notice", lambda _title, message, *_details: notices.append(message),
     )
     monkeypatch.setattr(
         dialog,
@@ -94,6 +91,10 @@ def test_auto_adapt_discards_consent_if_task_starts_while_dialog_is_open(
     )
     try:
         dialog._show_auto_adapt()
+        prompt = dialog._auto_intent_dialog
+        assert prompt is not None and not prompt.isModal()
+        dialog._busy_task = "audit"
+        prompt.accept()
         assert launched == []
         assert any("request was discarded" in message for message in notices)
     finally:
@@ -110,12 +111,7 @@ def test_auto_adapt_worker_uses_immutable_accepted_choices(
     captured: dict[str, object] = {}
     baseline_captures: list[bool] = []
 
-    def accept_with_apply(prompt: QDialog) -> int:
-        for checkbox in prompt.findChildren(QCheckBox):
-            checkbox.setChecked(True)
-        return QDialog.DialogCode.Accepted
-
-    monkeypatch.setattr(QDialog, "exec", accept_with_apply)
+    monkeypatch.setattr(QDialog, "exec", lambda *_: (_ for _ in ()).throw(AssertionError("nested modal event loop")))
     monkeypatch.setattr(
         dialog,
         "_run_task",
@@ -144,6 +140,11 @@ def test_auto_adapt_worker_uses_immutable_accepted_choices(
     )
     try:
         dialog._show_auto_adapt()
+        prompt = dialog._auto_intent_dialog
+        assert prompt is not None and not prompt.isModal()
+        for checkbox in prompt.findChildren(QCheckBox):
+            checkbox.setChecked(True)
+        prompt.accept()
         assert captured["name"] == "auto_prepare"
 
         # These were the old mutable cross-dialog fields. Mutating them after
@@ -199,6 +200,7 @@ def test_safe_automatic_checkup_audits_once_and_simulates_every_profile(
         dialog._run_safe_checkup()
         assert captured["name"] == "safe_checkup"
         result = captured["operation"]()
+        assert result["complete"] is True and result["holds"] == []
         assert audit_calls == [True]
         assert [item["profile_id"] for item in result["simulations"]] == [
             profile.profile_id for profile in profiles
@@ -206,6 +208,76 @@ def test_safe_automatic_checkup_audits_once_and_simulates_every_profile(
         assert simulated == [(profile.profile_id, current) for profile in profiles]
     finally:
         dialog.close()
+
+
+@pytest.mark.parametrize("gap", ["simulation", "missing-current", "collector", "baseline", "comparison"])
+def test_safe_checkup_retains_partial_results_without_authorizing_changes(gap) -> None:
+    current = {"firewall": {"supported": True}}
+    literal = "Get-NetFirewallAddressFilter <AccessDenied>\nRetained diagnostics 🛡"
+    report = {"current": current, "findings": [{"key": "retained audit evidence"}]}
+    if gap == "missing-current":
+        report.pop("current")
+    elif gap == "collector":
+        report["incomplete_collectors"] = ["firewall"]
+    elif gap in {"baseline", "comparison"}:
+        report[f"{gap}_error"] = literal
+    attempted, completed, queued = [], [], {}
+
+    def sandbox(profile_id, snapshot):
+        assert snapshot is current
+        attempted.append(profile_id)
+        if gap == "simulation" and profile_id == "public":
+            raise PermissionError(literal)
+        value = {"profile_id": profile_id, "changes": []}
+        completed.append(value)
+        return value
+
+    def mutation_forbidden(*_args, **_kwargs):
+        raise AssertionError("A no-write checkup attempted a host mutation")
+
+    service = SimpleNamespace(
+        audit=lambda: report, profiles=HostAdaptationService.profiles, sandbox=sandbox,
+        apply_plan=mutation_forbidden, rollback=mutation_forbidden,
+        capture_security_baseline=mutation_forbidden, restore_security_baseline=mutation_forbidden,
+    )
+    owner = SimpleNamespace(service=service, _run_task=lambda name, operation: queued.update(name=name, operation=operation))
+    AdaptationWorkbench._run_safe_checkup(owner)
+    assert queued["name"] == "safe_checkup"
+    result = queued["operation"]()
+    assert result["report"] is report and result["complete"] is False
+    assert result["simulations"] == completed
+    assert all(actual is expected for actual, expected in zip(result["simulations"], completed))
+    assert result["requested_profiles"] == 3 and result["holds"]
+    assert attempted == ([] if gap == "missing-current" else ["balanced", "public", "lockdown"])
+    if gap == "simulation":
+        assert [row["profile_id"] for row in completed] == ["balanced", "lockdown"]
+        assert result["holds"] == [{"stage": "public", "detail": literal}]
+    elif gap in {"baseline", "comparison"}:
+        assert literal in result["holds"][0]["detail"]
+
+    # Exercise the real completion branch while retaining an unrelated exact
+    # preview. Partial checkup evidence must not enable Apply or replace it.
+    class Label:
+        def setText(self, text): self.value = text
+        def text(self): return self.value
+
+    notices, audits, audit_enabled = [], [], []
+    exact_plan = object()
+    owner._latest_plan = owner._latest_review = exact_plan
+    owner.audit_button = SimpleNamespace(setEnabled=audit_enabled.append)
+    owner.apply_button = SimpleNamespace(setEnabled=mutation_forbidden)
+    owner.busy_label = Label()
+    owner.footer_detail = Label()
+    owner._display_audit = audits.append
+    owner._show_notice = lambda *args: notices.append(args)
+    owner._refresh_status = lambda: None
+    AdaptationWorkbench._on_task_finished(owner, "safe_checkup", result, None)
+    assert audits == [report] and audit_enabled == [True]
+    assert "incomplete" in owner.footer_detail.text() and "host untouched" in owner.footer_detail.text()
+    assert len(notices) == 1 and notices[0][0] == "Safe checkup incomplete"
+    assert owner._latest_plan is exact_plan and owner._latest_review is exact_plan
+    if gap in {"simulation", "baseline", "comparison"}:
+        assert literal in notices[0][2]
 
 
 def test_module_event_refresh_identity_covers_details_and_hmac(monkeypatch) -> None:
