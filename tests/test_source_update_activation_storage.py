@@ -655,7 +655,7 @@ def test_invalid_native_output_data_holds_before_any_irreversible_delete(native_
                 continue
             nonces.append(nonce)
             path = item.operation / "native-output" / nonce
-            path.mkdir(mode=0o700)
+            assert startup_recovery.private_directory(path, create=True)
             (path / "activation.log").write_bytes(b"bounded extra unit output")
             (path / "receipt.json").write_bytes(_encoded(receipt))
     if item.receipt_path.exists():

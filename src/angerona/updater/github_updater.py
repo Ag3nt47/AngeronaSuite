@@ -192,7 +192,23 @@ def _safe_state_root(directory: Path) -> Path:
             info = ancestor.lstat()
             if ancestor.is_symlink() or getattr(info, "st_file_attributes", 0) & 0x400:
                 raise ValueError("update state path is reparse-backed")
-    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "nt" and root.name.casefold() == "github-updates" and not os.path.lexists(root):
+        from angerona.core.startup_recovery import private_directory
+
+        # Discovery can be the first writer, before the source launcher runs.
+        # Older Windows Python builds ignore mkdir(0700). Make the new leaf
+        # match the source activation verifier without changing existing ACLs.
+        root.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            private = private_directory(root, create=True)
+        except FileExistsError:
+            info = root.lstat()
+            private = (stat.S_ISDIR(info.st_mode) and not getattr(info, "st_file_attributes", 0) & 0x400
+                       and private_directory(root, create=False))
+        if not private:
+            raise ValueError("update state could not be created privately")
+    else:
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if not root.is_dir():
         raise ValueError("update state is not a directory")
     return root

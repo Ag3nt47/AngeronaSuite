@@ -664,11 +664,48 @@ def test_owner_rights_classifier_refuses_each_profile_authority_gap(case):
                                           protected=protected, entries=profile) is False
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Actual Windows CPython 0700 ACL profile")
-def test_real_mode0700_directory_passes_exact_read_only_owner_rights_query(tmp_path):
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows OWNER RIGHTS ACL")
+def test_explicit_native_owner_rights_directory_passes_exact_read_only_query(tmp_path):
+    import pywintypes
+    import win32api
+    import win32file
+    import win32security
+
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+    try:
+        user, _attributes = win32security.GetTokenInformation(token, win32security.TokenUser)
+        sid = win32security.ConvertSidToStringSid(user)
+    finally:
+        token.Close()
+
+    attributes = pywintypes.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+        f"O:{sid}D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)", 1,
+    )
+    directory = tmp_path / "native-owner-rights"
+    win32file.CreateDirectory(str(directory), attributes)
+
+    flags = win32security.OWNER_SECURITY_INFORMATION | win32security.DACL_SECURITY_INFORMATION
+
+    def read_acl():
+        descriptor = win32security.GetFileSecurity(str(directory), flags)
+        return win32security.ConvertSecurityDescriptorToStringSecurityDescriptor(descriptor, 1, flags)
+
+    original_id, original_acl = _object_id(directory), read_acl()
+    assert files.private_owner_rights_directory(directory) is True
+    assert (_object_id(directory), read_acl()) == (original_id, original_acl)
+    assert not files._CLOSE_HOLDS
+
+
+@pytest.mark.skipif(os.name != "nt" or sys.implementation.name != "cpython",
+                    reason="Actual Windows CPython 0700 ACL profile")
+def test_windows_mkdir_mode0700_matches_cpython_security_support(tmp_path):
     private = tmp_path / "real-cpython-0700"
     private.mkdir(mode=0o700)
     original_id = _object_id(private)
-    assert files.private_owner_rights_directory(private) is True
+    # CVE-2024-4030 was backported at these patch levels. Older Windows
+    # builds ignore 0700 and the resulting inherited ACL must be refused.
+    minimum_patch = {(3, 10): 15, (3, 11): 10, (3, 12): 4}.get(sys.version_info[:2], 0)
+    assert files.private_owner_rights_directory(private) is (sys.version_info[2] >= minimum_patch)
     assert _object_id(private) == original_id
     assert not files._CLOSE_HOLDS

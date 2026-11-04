@@ -57,8 +57,14 @@ def _encoded(value):
                       ensure_ascii=True, allow_nan=False).encode("ascii")
 
 
+def _create_private_parents(path):
+    if not path.exists():
+        _create_private_parents(path.parent)
+        assert private_directory(path, create=True)
+
+
 def _write(path, raw):
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _create_private_parents(path.parent)
     path.write_bytes(raw)
 
 
@@ -253,10 +259,10 @@ def activation(tmp_path, monkeypatch, composition, request):
         profile_identity = file_api.directory_identity(profile_parent)
         assert root.drive.casefold() == "d:"
         data = profile_parent / ("activation-protocol-test-" + uuid.uuid4().hex)
-    root.mkdir(mode=0o700)
+    assert private_directory(root, create=True)
     assert private_directory(data, create=True)
     state = data / "github-updates"
-    state.mkdir(mode=0o700)
+    assert private_directory(state, create=True)
     repo = Path(__file__).resolve().parents[1]
     common = _recovery_fixture_tree({
         "src/angerona/__init__.py": (repo / "src/angerona/__init__.py").read_bytes(),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import stat
 import zipfile
 from contextlib import nullcontext
@@ -14,7 +15,7 @@ import pytest
 from angerona.updater import source_stage as stage
 from angerona.core.startup_recovery import (
     RECOVERY_COHERENCE_FILES, RECOVERY_MANIFEST_PATH, RECOVERY_VERIFIER_PATH,
-    RECOVERY_BATCH_PATH, derive_recovery_coherent_tree,
+    RECOVERY_BATCH_PATH, derive_recovery_coherent_tree, private_directory,
 )
 
 BASE, TARGET, LOCAL = "a" * 40, "b" * 40, "c" * 40
@@ -127,6 +128,27 @@ def test_preparation_preserves_custom_code_deletions_and_conflict_sides_without_
     assert validation["golden_baseline_reenrolled"] is False
     assert stage.snapshot_local(source, tuple(sorted(user))) == user
     assert not (source / "new.py").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows versions that ignore mkdir mode")
+def test_managed_preparation_does_not_depend_on_windows_mkdir_mode(tmp_path, monkeypatch) -> None:
+    source, data, archives, compare = fixture(tmp_path, monkeypatch, {"code.py": b"a=1\n"},
+                                             {"code.py": b"a=1\n"}, {"code.py": b"a=2\n"})
+    mkdir = Path.mkdir
+
+    def mkdir_without_windows_mode(self, mode=0o777, parents=False, exist_ok=False):
+        return mkdir(self, 0o777, parents, exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_without_windows_mode)
+    state = data / "github-updates"
+    stages = state / "stages"
+    result = stage.prepare_source_update(source, stages, TARGET,
+                                         fetch=lambda _path: compare, download=archives.__getitem__)
+    assert result.status == "prepared"
+    assert private_directory(state, create=False)
+    assert private_directory(stages / result.stage_id, create=False)
+    assert (stages / result.stage_id / "candidate" / "code.py").read_bytes() == b"a=2\n"
+    assert (source / "code.py").read_bytes() == b"a=1\n"
 
 
 def test_already_cancelled_stage_does_not_create_state_or_start_any_producer(tmp_path, monkeypatch) -> None:

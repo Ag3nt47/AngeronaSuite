@@ -635,8 +635,11 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
         raise SourceStageError("staging must be outside the source installation")
     # Containment rejection must not create even an empty directory in the
     # installed checkout, launch Git, or make a network request.
+    managed = root.name == "stages" and root.parent.name == "github-updates"
+    if managed and not os.path.lexists(root.parent):
+        _safe_state_root(root.parent)
     root = _safe_state_root(root)
-    if root.name == "stages" and root.parent.name == "github-updates":
+    if managed:
         from angerona.core.source_activation_storage import require_source_update_storage
         require_source_update_storage(source_root, root.parent,
             additional_bytes=MAX_TRANSACTION_BYTES + MAX_STAGE_METADATA_BYTES,
@@ -676,7 +679,9 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
         stage_id = "source-" + uuid.uuid4().hex
         stage = root / stage_id
         _require_stage_free(root, MAX_STAGE_METADATA_BYTES)
-        stage.mkdir(mode=0o700)
+        from angerona.core.startup_recovery import private_directory
+        if not private_directory(stage, create=True):
+            raise SourceStageError("new source stage directory lacks private custody")
         intent = {"schema": "angerona.source-stage/v1", "stage_id": stage_id,
                   "status": "preparing", "base_revision": base_revision,
                   "target_revision": target_revision, "local_revision": local,
