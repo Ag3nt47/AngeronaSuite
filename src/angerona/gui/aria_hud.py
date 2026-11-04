@@ -250,6 +250,10 @@ if _HAVE_QT:
             # bar, so a second chat box here would be redundant. The orb stays as
             # the live posture HUD next to the prompt.
             self._compact = compact
+            self._ask_worker = None
+            self._ask_activity = None
+            from angerona.gui.action_progress import ActionActivities, ActionProgressView
+            self._activities = ActionActivities(self)
 
             self._orb = _Orb(self)
             self._orb.clicked.connect(self.details_requested.emit)
@@ -306,6 +310,8 @@ if _HAVE_QT:
             col.addWidget(self.mic_button)
             top.addLayout(col)
             root = QVBoxLayout(self)
+            self.progress_view = ActionProgressView(self._activities, self)
+            root.addWidget(self.progress_view)
             root.addLayout(top)
             root.addWidget(self._log)
             root.addWidget(self._input)
@@ -347,6 +353,9 @@ if _HAVE_QT:
             self._log.ensureCursorVisible()
 
         def _on_submit(self) -> None:
+            if self._ask_worker is not None:
+                self._status.setText("An ARIA request is already running; this text is preserved.")
+                return
             text = self._input.text().strip()
             if not text:
                 return
@@ -358,29 +367,60 @@ if _HAVE_QT:
             # The handler may call the local LLM (blocking) — never on the Qt
             # thread. Run it on a worker; stream tokens (or post the full answer)
             # back via signals so the UI updates on the GUI thread.
-            import threading
             stream = self._stream_fn is not None
             self._log.append("ARIA: " if stream else "ARIA is thinking…")
+            ask, streaming = self._ask_fn, self._stream_fn
+            def produce(owner):
+                emitted = 0
+                def token(chunk):
+                    nonlocal emitted
+                    if owner.isInterruptionRequested():
+                        raise RuntimeError("ARIA request cancellation requested")
+                    emitted += 1
+                    owner.piece.emit(str(chunk))
+                answer = str(streaming(text, token)) if stream else str(ask(text))
+                if owner.isInterruptionRequested():
+                    raise RuntimeError("ARIA request cancellation requested")
+                return dict(answer=answer, streamed=stream, emitted=emitted)
+            from angerona.gui.action_worker import start_finite_action
+            self._ask_activity = self._activities.begin("aria-request", "Retrieving the requested ARIA response…", replace=True)
+            try:
+                self._ask_worker = start_finite_action(produce, name="AriaAsk", finished=self._on_ask_retired, piece=self._on_ask_piece)
+            except Exception as error:
+                self._ask_worker = None
+                self._log.append("[error] Request worker could not start: " + type(error).__name__)
+            if self._ask_worker is None:
+                self._activities.finish(self._ask_activity)
+                self._ask_activity = None
+                self._status.setText("ARIA action admission is held or unavailable.")
+            else:
+                self._input.setEnabled(False)
+                if getattr(self._ask_worker, "admission_error", ""):
+                    self._activities.finish(self._ask_activity)
+                    self._ask_activity = None
+                    self._status.setText("ARIA launch failed; exact native retirement remains unproved.")
 
-            def _run(_t: str = text) -> None:
-                emitted = {"n": 0}
+        def _on_ask_piece(self, text):
+            if self.sender() is self._ask_worker:
+                self.token_ready.emit(text)
 
-                def _tok(chunk: str) -> None:
-                    emitted["n"] += 1
-                    self.token_ready.emit(chunk)
-
-                try:
-                    if stream:
-                        ans = str(self._stream_fn(_t, _tok))
-                        if emitted["n"] == 0:      # instant answer (no tokens)
-                            self.token_ready.emit(ans)
-                        self.response_ready.emit("")   # blank line separates turns
-                    else:
-                        ans = str(self._ask_fn(_t)) if self._ask_fn else ""
-                        self.response_ready.emit(ans)
-                except Exception as exc:
-                    self.response_ready.emit(f"[error] {exc}")
-            threading.Thread(target=_run, name="AriaAsk", daemon=True).start()
+        def _on_ask_retired(self):
+            worker = self.sender()
+            if worker is not self._ask_worker:
+                return
+            self._ask_worker = None
+            self._activities.finish(self._ask_activity)
+            self._ask_activity = None
+            self._input.setEnabled(True)
+            value, error = worker.outcome
+            if error:
+                self.response_ready.emit("[error] " + error)
+            elif value["streamed"]:
+                if value["emitted"] == 0:
+                    self.token_ready.emit(value["answer"])
+                self.response_ready.emit("")
+            else:
+                self.response_ready.emit(value["answer"])
 
 
 if __name__ == "__main__":

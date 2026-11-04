@@ -356,6 +356,12 @@ class AdaptationWorkbench(QDialog):
         self._workbench_scroll = _scroll_surface(content, "adaptation_workbench_scroll")
         outer.addWidget(self._workbench_scroll)
         root = QVBoxLayout(content)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._task_activity = None
+        self._history_activity = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         root.setContentsMargins(14, 10, 14, 12)
         root.setSpacing(9)
         outer.setMenuBar(self._build_menu())
@@ -467,7 +473,8 @@ class AdaptationWorkbench(QDialog):
         safety_menu = menu.addMenu("Safety")
         safety_menu.addAction(self._action("Evaluate context triggers", self._evaluate_context))
         safety_menu.addAction(self._action("Reset circuit breaker…", self._reset_breaker))
-        safety_menu.addAction(self._action("Refresh snapshots and activity", self._load_persisted_views))
+        safety_menu.addAction(self._action("Refresh snapshots and activity", lambda: self._request_persisted_views(
+            *(name for name, _method in _STATUS_READS), user_requested=True)))
 
         help_menu = menu.addMenu("Help")
         help_menu.addAction(self._action("Safety model", self._show_safety_help))
@@ -807,7 +814,7 @@ class AdaptationWorkbench(QDialog):
         self.exceptions_table = self._table(["Category", "Item", "Reason", "Created", "ID"])
         layout.addWidget(self.exceptions_table, 1)
         refresh = QPushButton("Refresh exceptions")
-        refresh.clicked.connect(self._refresh_exceptions)
+        refresh.clicked.connect(lambda: self._refresh_exceptions(user_requested=True))
         remove = QPushButton("Remove selected exception")
         remove.clicked.connect(self._remove_exception)
         layout.addWidget(_AdaptiveRow(
@@ -906,7 +913,7 @@ class AdaptationWorkbench(QDialog):
         self.snapshot_combo.setMinimumContentsLength(12)
         self.snapshot_combo.currentTextChanged.connect(self.snapshot_combo.setToolTip)
         refresh = QPushButton("Refresh")
-        refresh.clicked.connect(self._refresh_snapshots)
+        refresh.clicked.connect(lambda: self._refresh_snapshots(user_requested=True))
         rollback_button = QPushButton("Roll back selected snapshot…")
         rollback_button.clicked.connect(self._rollback_selected)
         capture_baseline = QPushButton("Capture immutable host baseline…")
@@ -1038,7 +1045,7 @@ class AdaptationWorkbench(QDialog):
         self.transaction_status = _wrap_label(QLabel("Transaction history: checking…"))
         layout.addWidget(self.transaction_status)
         refresh = QPushButton("Refresh activity")
-        refresh.clicked.connect(self._refresh_activity)
+        refresh.clicked.connect(lambda: self._refresh_activity(user_requested=True))
         layout.addWidget(refresh, 0, Qt.AlignLeft)
         return page
 
@@ -1075,6 +1082,8 @@ class AdaptationWorkbench(QDialog):
         status_alive = self._status_thread is not None and self._status_thread.is_alive()
         if not task_alive:
             self._task_thread = None
+            self._activities.finish(self._task_activity)
+            self._task_activity = None
             if self._view_retired.is_set() or self._task_generation != self._lifecycle_generation:
                 self._busy_task = ""
                 self.audit_button.setEnabled(True)
@@ -1089,6 +1098,9 @@ class AdaptationWorkbench(QDialog):
             self._result_timer.stop()
         if not status_alive and self._pending_status_views and not self._view_retired.is_set():
             self._request_persisted_views(*tuple(self._pending_status_views))
+        elif not status_alive and not self._status_active:
+            self._activities.finish(self._history_activity)
+            self._history_activity = None
 
     @staticmethod
     def _concise_error(detail: str) -> str:
@@ -1180,6 +1192,7 @@ class AdaptationWorkbench(QDialog):
             )
             return
         self._busy_task = name
+        self._task_activity = self._activities.begin("adaptation-task", "Adaptation: " + name.replace("_", " ") + "…", replace=True)
         self.busy_label.setText(f"Working: {name.replace('_', ' ')}…")
         self.audit_button.setEnabled(False)
         self.apply_button.setEnabled(False)
@@ -1202,6 +1215,11 @@ class AdaptationWorkbench(QDialog):
             self._result_timer.start()
             task.start()
         except Exception as exc:
+            if task.is_alive():
+                self.footer_detail.setText("Startup acknowledgment unavailable; the existing task remains owned.")
+                return
+            self._activities.finish(self._task_activity)
+            self._task_activity = None
             self._task_thread = None
             self._busy_task = ""
             self.busy_label.setText("Worker unavailable")
@@ -1226,6 +1244,9 @@ class AdaptationWorkbench(QDialog):
         self.busy_label.setText("Ready")
         if name == "audit":
             self._display_audit(result)
+        elif name in {"export_json", "export_csv"}:
+            self.footer_detail.setText(f"Audit exported to {result}")
+            self._refresh_activity()
         elif name == "preview":
             self._display_review(result)
         elif name == "sandbox":
@@ -1512,12 +1533,8 @@ class AdaptationWorkbench(QDialog):
         )
         if not filename:
             return
-        try:
-            target = self.service.export_report(self._latest_report, filename, fmt)
-            self.footer_detail.setText(f"Audit exported to {target}")
-            self._refresh_activity()
-        except Exception as exc:
-            QMessageBox.warning(self, "Export audit", str(exc))
+        report = self._latest_report
+        self._run_task("export_" + fmt, lambda: self.service.export_report(report, filename, fmt))
 
     def _export_json(self) -> None:
         self._export("json")
@@ -1956,8 +1973,8 @@ class AdaptationWorkbench(QDialog):
             table.blockSignals(blocked)
             table.setUpdatesEnabled(True)
 
-    def _refresh_exceptions(self) -> None:
-        self._request_persisted_views("exceptions", "state")
+    def _refresh_exceptions(self, *, user_requested=False) -> None:
+        self._request_persisted_views("exceptions", "state", user_requested=user_requested)
 
     def _render_exceptions(self, entries: list[dict[str, Any]]) -> None:
         rows = tuple(
@@ -1984,8 +2001,8 @@ class AdaptationWorkbench(QDialog):
         self.service.remove_exception(str(exception_id))
         self._refresh_exceptions()
 
-    def _refresh_snapshots(self) -> None:
-        self._request_persisted_views("snapshots")
+    def _refresh_snapshots(self, *, user_requested=False) -> None:
+        self._request_persisted_views("snapshots", user_requested=user_requested)
 
     def _render_snapshots(self, rows: tuple[tuple[str, str], ...]) -> None:
         if rows == self._view_signatures.get("snapshots"):
@@ -2122,8 +2139,8 @@ class AdaptationWorkbench(QDialog):
         self._refresh_status()
         self._refresh_activity()
 
-    def _refresh_activity(self) -> None:
-        self._request_persisted_views("activity", "transactions")
+    def _refresh_activity(self, *, user_requested=False) -> None:
+        self._request_persisted_views("activity", "transactions", user_requested=user_requested)
 
     def _render_activity(self, entries: list[dict[str, Any]]) -> None:
         rows = tuple(
@@ -2184,10 +2201,12 @@ class AdaptationWorkbench(QDialog):
             self.exceptions_table.setToolTip(self._persisted_errors.get("exceptions", ""))
             self.automation_enabled.setToolTip(self._persisted_errors.get("state", ""))
 
-    def _request_persisted_views(self, *names: str) -> None:
+    def _request_persisted_views(self, *names: str, user_requested=False) -> None:
         # Keep the zero-argument refresh hook used by the inert public demo
         # and read-only GUI fixtures. The temporary scope is GUI-thread only.
         previous = self._requested_status_views
+        if user_requested and not self._view_retired.is_set():
+            self._history_activity = self._activities.begin("history", "Reading authenticated adaptation history…")
         self._requested_status_views = names
         try:
             self._refresh_status()
@@ -2390,6 +2409,7 @@ class AdaptationWorkbench(QDialog):
             event.ignore()
             return
         self._view_retired.set()
+        self._activities.close()
         self._reopen_refresh = True
         self._pending_status_views.clear()
         self._status_dirty = False

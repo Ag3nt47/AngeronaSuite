@@ -504,27 +504,48 @@ def test_windows_1175_accepts_only_an_exact_already_promoted_object(
 ) -> None:
     store = _provisional(tmp_path)
     original_replace = auth_extensions._replace_baseline_file
+    original_reconcile = store._reconcile_windows_promotion
     calls = 0
+    native_errors: list[int | None] = []
+    reconciliations: list[str] = []
+    simulated_errors = 0
+
+    def observe_reconciliation(**kwargs):
+        state = original_reconcile(**kwargs)
+        reconciliations.append(state)
+        return state
 
     def false_after_promotion(temporary, destination, *, parent_descriptor):
-        nonlocal calls
+        nonlocal calls, simulated_errors
+        # Each preceding native error must have proven exact unchanged custody
+        # both after the error and immediately before this retry.
+        assert reconciliations == ["unchanged"] * (2 * calls)
         calls += 1
-        original_replace(
-            temporary,
-            destination,
-            parent_descriptor=parent_descriptor,
-        )
+        try:
+            original_replace(
+                temporary,
+                destination,
+                parent_descriptor=parent_descriptor,
+            )
+        except OSError as exc:
+            native_errors.append(auth_extensions._windows_error_code(exc))
+            raise
+        simulated_errors += 1
         raise OSError(1175, "simulated false result after exact promotion")
 
-    monkeypatch.setattr(
-        auth_extensions,
-        "_replace_baseline_file",
-        false_after_promotion,
-    )
+    monkeypatch.setattr(store, "_reconcile_windows_promotion", observe_reconciliation)
+    monkeypatch.setattr(auth_extensions, "_replace_baseline_file", false_after_promotion)
     _enroll(store)
 
-    assert calls == 1
+    # A native failure can itself report 1175 after promotion. In either case,
+    # the real reconciler must prove promotion and stop without another call.
+    assert native_errors == [1175] * len(native_errors)
+    assert simulated_errors in (0, 1)
+    assert calls == len(native_errors) + simulated_errors
+    assert 1 <= calls <= len(auth_extensions._WINDOWS_REPLACE_RETRY_DELAYS) + 1
+    assert reconciliations == ["unchanged"] * (2 * (calls - 1)) + ["promoted"]
     assert store.observe(_snapshot()).status == "stable"
+    assert not tuple(store.path.parent.glob(f".{store.path.name}.tmp-*"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="ReplaceFileW reconciliation is Windows-only")

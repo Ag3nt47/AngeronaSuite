@@ -80,14 +80,111 @@ def _install_fast_pyside_feature_detection() -> bool:
         # private hook. Startup remains correct, only less optimized.
         return False
 
+
+def _source_activation_pending_at(base) -> bool:
+    """Presence/redirect predicate only; production supplies the OS-known folder."""
+    from pathlib import Path
+    import stat
+    base = Path(base)
+    if not base.is_absolute():
+        raise OSError("Canonical source storage is not absolute")
+    pending = base / "Angerona" / "SourceData" / "github-updates" / "activation-pending.json"
+    for path in (*reversed(pending.parents), pending):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+                or stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
+            raise OSError("Source activation storage has uncertain custody")
+    return os.path.lexists(pending)
+
+
+def _source_activation_pending_guard() -> bool:
+    """Hold mixed source before engine imports; package __init__ already ran.
+
+    This presence check executes no transaction or pending-supplied command.
+    Canonical startup alone may verify/reconcile the approved original capsule.
+    """
+    if bool(getattr(sys, "frozen", False)) or sys.platform != "win32":
+        return False
+    import ctypes
+    from ctypes import wintypes as w
+    from pathlib import Path
+    message = ""
+    try:
+        class GUID(ctypes.Structure):
+            _fields_ = [("a", w.DWORD), ("b", w.WORD), ("c", w.WORD), ("d", ctypes.c_ubyte * 8)]
+        # FOLDERID_LocalAppData; caller-provided environment paths are ignored.
+        guid = GUID(0xF1B32785, 0x6FBA, 0x4FCF, (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91))
+        shell = ctypes.WinDLL("shell32", use_last_error=True)
+        ole = ctypes.WinDLL("ole32", use_last_error=True)
+        shell.SHGetKnownFolderPath.argtypes = (ctypes.POINTER(GUID), w.DWORD, w.HANDLE, ctypes.POINTER(ctypes.c_void_p))
+        shell.SHGetKnownFolderPath.restype = ctypes.c_long
+        ole.CoTaskMemFree.argtypes, ole.CoTaskMemFree.restype = (ctypes.c_void_p,), None
+        result = ctypes.c_void_p()
+        try:
+            if shell.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(result)) != 0 or not result.value:
+                raise OSError("Canonical source storage is unavailable")
+            base = Path(ctypes.wstring_at(result.value))
+        finally:
+            if result.value:
+                ole.CoTaskMemFree(result)
+        if _source_activation_pending_at(base):
+            message = ("An interrupted source update is retained. Angerona's engines were not started. "
+                       "Run start-angerona.bat so Safe Startup can verify the approved original recovery capsule. "
+                       "Unknown or damaged evidence remains held; no approval is inferred.")
+    except Exception:
+        message = ("Source update custody could not be checked. Angerona's engines were not started. "
+                   "Run start-angerona.bat for Safe Startup. Existing source and evidence were preserved.")
+    if not message:
+        return False
+    print("[Angerona Safe Startup] " + message, file=sys.stderr, flush=True)
+    # A fixed system UI remains available even when application/Qt files are
+    # mixed. Never import those files just to display the held explanation.
+    try:
+        user = ctypes.WinDLL("user32", use_last_error=True)
+        user.MessageBoxW.argtypes, user.MessageBoxW.restype = (w.HWND, w.LPCWSTR, w.LPCWSTR, w.UINT), ctypes.c_int
+        user.MessageBoxW(None, message, "Angerona Safe Startup — source update held", 0x10 | 0x40000)
+    except Exception:
+        pass
+    return True
+
 def main() -> int:
+    if _source_activation_pending_guard():
+        return 85
     if any(argument.startswith("--kernel-telemetry-canary") for argument in sys.argv[1:]):
         # Reserved malformed variants must also fail here; they must never
         # fall through to Config, GUI startup or automatic-start mutation.
         return _run_kernel_telemetry_canary(tuple(sys.argv[1:]))
-    if any(argument.startswith("--protection-console") for argument in sys.argv[1:]):
-        if sys.argv[1:] != ["--protection-console"]:
-            print("[Angerona] Installed service status requires exactly --protection-console.", flush=True)
+    from angerona.core.privilege import (
+        ElevationResult, OPERATOR_ELEVATION_ARGUMENT, ensure_admin, is_admin,
+    )
+
+    frozen = bool(getattr(sys, "frozen", False))
+    installed_windows = frozen and sys.platform == "win32"
+    arguments = sys.argv[1:]
+    operator_elevation = any(arg.startswith(OPERATOR_ELEVATION_ARGUMENT) for arg in arguments)
+    console_requested = any(arg.startswith("--protection-console") for arg in arguments)
+    console_endpoint = None
+    if operator_elevation or console_requested:
+        from angerona.core.startup_protocol import parse_startup_arguments
+
+        try:
+            clean, ready = parse_startup_arguments(sys.argv)
+        except ValueError as error:
+            print(f"[Angerona] {error}.", flush=True)
+            return 2
+        if operator_elevation:
+            if (not installed_windows or ready is None
+                    or clean[1:] != [OPERATOR_ELEVATION_ARGUMENT, "--chill"]):
+                print("[Angerona] Request administrator mode from the installed Angerona settings.",
+                      flush=True)
+                return 2
+        elif clean[1:] == ["--protection-console"] and (ready is None or installed_windows):
+            console_endpoint = ready
+        else:
+            print("[Angerona] Invalid installed service status arguments.", flush=True)
             return 2
     if "--automatic-start" in sys.argv[1:]:
         # An inhibit-only flag: scheduled/recovery launches cannot resume STOP.
@@ -108,8 +205,6 @@ def main() -> int:
         print("[Angerona] Choose exactly one engine launch mode.", flush=True)
         return 2
     engine_mode = next(iter(engine_flags), "")
-    frozen = bool(getattr(sys, "frozen", False))
-    from angerona.core.privilege import ElevationResult, ensure_admin, is_admin
     if frozen and sys.platform == "win32":
         # Packaging metadata is not privilege authority.  Prove the exact
         # process-bound MSIX family/publisher before UAC, then prove it again
@@ -146,7 +241,23 @@ def main() -> int:
             if engine_mode not in {"--engine-service", "--response-service"} and is_admin():
                 print("[Angerona] Open the engine console in an ordinary-user session.", flush=True)
                 return 2
+            if console_endpoint is not None:
+                return _run_engine_mode(engine_mode, startup_endpoint=console_endpoint)
             return _run_engine_mode(engine_mode, **({"force_chill": True} if chill_requested else {}))
+        if not operator_elevation:
+            if is_admin() or sys.argv[1:]:
+                print("[Angerona] Open Angerona normally and use Settings to request administrator mode.",
+                      flush=True)
+                return 2
+            return _run_engine_mode("--protection-console")
+        from angerona.core.windows_package_identity import require_current_package_image
+
+        try:
+            require_current_package_image("Angerona.exe")
+        except OSError:
+            print("[Angerona] The administrator request did not come from the installed package image.",
+                  flush=True)
+            return 2
         elevation = ensure_admin()
         authority_after_elevation = verify_current_msix_authority()
         effective_administrator = is_admin()
@@ -276,6 +387,9 @@ def main() -> int:
     # Refuse to start a second copy (avoids stacked instances / duplicate scanners).
     from angerona.core.singleton import acquire_single_instance
     lock = acquire_single_instance()
+    if lock is None and operator_elevation:
+        print("[Angerona] A protected dashboard is already running.", flush=True)
+        return 2
 
     # Headless mode: silent sensor / home-server node. Build the core service
     # graph WITHOUT importing PySide6 so the suite runs on a box with no Qt.
@@ -305,7 +419,8 @@ def main() -> int:
     # parses arguments so the same dedicated setup shortcut works in source and
     # frozen releases without an unknown-option warning.
     qt = QApplication([
-        arg for arg in application_args if arg not in {"--setup", "--chill", "--live-debug"}
+        arg for arg in application_args
+        if arg not in {"--setup", "--chill", "--live-debug", OPERATOR_ELEVATION_ARGUMENT}
     ])
     qt.setApplicationName("Angerona")
 
@@ -345,20 +460,21 @@ def main() -> int:
             return 0
         if setup_requested:
             from PySide6.QtCore import QTimer
-            QTimer.singleShot(700, app.window._open_setup)
+            QTimer.singleShot(700, app.window, app.window._queue_setup_notice)
         return qt.exec()
     finally:
         app.shutdown()
 
 
-def _run_engine_mode(mode: str, *, force_chill: bool = False) -> int:
+def _run_engine_mode(mode: str, *, force_chill: bool = False,
+                     startup_endpoint: str | None = None) -> int:
     """Route before the embedded GUI singleton so only the engine owns sensors."""
     if mode == "--protection-console":
         from angerona.core.persistent_engine import _require_user
         _require_user()
         _install_fast_pyside_feature_detection()
         from angerona.gui.protection_service_console import run_console
-        return run_console()
+        return run_console(startup_endpoint=startup_endpoint) if startup_endpoint is not None else run_console()
     if mode == "--response-service":
         from angerona.core.response_service_host import run_dispatcher
         try:

@@ -61,7 +61,7 @@ class _CompactShell(_DashboardShell):
         card_layout.setSpacing(7)
         for index, (title, value) in enumerate((
             ("Modules running", "55/86"), ("Alerts (24h)", "21362"),
-            ("Active critical (10m)", "0"), ("Threat level", "Secure"),
+            ("Active critical (10m)", "0"), ("Active HIGH/CRITICAL (10m)", "None detected"),
         )):
             card = StatCard(title)
             card.set(value)

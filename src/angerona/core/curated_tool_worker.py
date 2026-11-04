@@ -21,7 +21,7 @@ import threading
 import tempfile
 import types
 
-from angerona.core.curated_tool_progress import MAX_RUN_SECONDS
+from angerona.core.curated_tool_progress import MAX_RUN_SECONDS, ObservedReader
 
 
 ENGINE_SHA256 = "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3"
@@ -279,20 +279,23 @@ class _WriteBudget:
             self._descriptor_generations[descriptor] = (self._descriptor_sequence, info.st_dev, info.st_ino)
 
     def _observed_read(self, real, filename, mode):
-        if self.observer is not None:
-            from angerona.core.curated_tool_progress import ObservedReader
-            if isinstance(filename, int):
-                with self.lock:
-                    known = self._read_descriptors.pop(filename, None)
-                if known is not None:
-                    try:
-                        held = os.fstat(real.fileno())
-                        if (held.st_dev, held.st_ino) == known[1:]:
-                            filename = known[0]
-                    except OSError:
-                        pass
-            return ObservedReader(real, self.observer, filename, binary=isinstance(mode, str) and "b" in mode)
-        return real
+        if self.observer is None:
+            return real
+        size = None
+        if isinstance(filename, int):
+            with self.lock:
+                known = self._read_descriptors.pop(filename, None)
+            if known is None:
+                return real
+            try:
+                held = os.fstat(real.fileno())
+            except OSError:
+                return real
+            if (held.st_dev, held.st_ino) != known[1:]:
+                return real
+            filename, size = known[0], held.st_size
+        return ObservedReader(real, self.observer, filename,
+                              binary=isinstance(mode, str) and "b" in mode, size=size)
 
     def file_limit(self, path):
         if path.parent == self.job:

@@ -44,6 +44,8 @@ class _Harness(QMainWindow):
     _claim_self_test = MainWindow._claim_self_test
     _run_self_test = MainWindow._run_self_test
     _self_test_worker = MainWindow._self_test_worker
+    _defer_selftest_completion = MainWindow._defer_selftest_completion
+    _settle_selftest_completion = MainWindow._settle_selftest_completion
     _on_selftest_done = MainWindow._on_selftest_done
     _prompt_selftest_fix = MainWindow._prompt_selftest_fix
     _selftest_results_closed = MainWindow._selftest_results_closed
@@ -56,6 +58,8 @@ class _Harness(QMainWindow):
     def __init__(self):
         super().__init__()
         self._selftest_active = threading.Event()
+        self._selftest_completion_pending = None
+        self._selftest_retire_timer = None
         self._selftest_btn = QPushButton("Self-test", self)
         self._selftest_btn.resize(100, 30)
         self.logs = []
@@ -111,6 +115,10 @@ def _pending_workers(monkeypatch):
 
         def start(self):
             started.append(self.kwargs)
+
+        def is_alive(self):
+            # No OS thread is created; callbacks are invoked explicitly below.
+            return False
 
     monkeypatch.setattr(main_window, "threading", SimpleNamespace(Thread=PendingThread))
     return started
@@ -268,6 +276,9 @@ def test_worker_launch_failure_is_visible_and_does_not_strand_controls(window, m
         def start(self):
             raise RuntimeError("controlled worker launch failure")
 
+        def is_alive(self):
+            return False
+
     monkeypatch.setattr(main_window, "threading", SimpleNamespace(Thread=FailedThread))
     assert window._run_self_test() is False
     assert not window._selftest_active.is_set()
@@ -298,3 +309,73 @@ def test_recovery_launch_failure_releases_gate_and_leaves_close_and_retry_usable
     assert dialog.retry_button.isEnabled()
     assert dialog.close_button.isEnabled()
     assert "success" not in dialog.summary.text().casefold()
+
+
+@pytest.mark.parametrize("kind", ["test", "repair"])
+def test_terminal_result_waits_for_its_exact_native_worker_to_exit(window, kind):
+    """Result delivery cannot make retry available while its worker is alive."""
+    entered, release = threading.Event(), threading.Event()
+
+    def retained_worker():
+        entered.set()
+        assert release.wait(5), "Fixture must release its exact inert worker"
+
+    worker = threading.Thread(target=retained_worker, name="inert-selftest-retirement")
+    attribute = "_selftest_thread" if kind == "test" else "_selftest_repair_thread"
+    setattr(window, attribute, worker)
+    window._selftest_active.set()
+    window._selftest_btn.setEnabled(False)
+    if kind == "repair":
+        _show_results(window, [])
+    try:
+        worker.start()
+        assert entered.wait(2)
+        if kind == "test":
+            window._on_selftest_done("Inert completed report", [])
+        else:
+            window._on_selftest_repair_done([], ["Inert recovery remains unverified"])
+        QTest.qWait(40)
+        assert worker.is_alive()
+        assert window._selftest_active.is_set()
+        assert not window._selftest_btn.isEnabled()
+        assert window._selftest_completion_pending[1] is worker
+        release.set()
+        worker.join(2)
+        assert not worker.is_alive()
+        for _index in range(100):
+            if not window._selftest_active.is_set():
+                break
+            QTest.qWait(10)
+        assert not window._selftest_active.is_set()
+        assert window._selftest_btn.isEnabled()
+        assert window._selftest_completion_pending is None
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(2)
+            assert not worker.is_alive()
+        if window._selftest_retire_timer is not None:
+            window._selftest_retire_timer.stop()
+
+
+@pytest.mark.parametrize("detail,late", [
+    ("test timed out after 15s; the call finished after its deadline", True),
+    ("test timed out after 15s; the call finished after its deadline; original error: RuntimeError: fixture", True),
+    ("test timed out after 15s; the call is still running", False),
+    ("test could not finish; a previous call is still running", False),
+])
+def test_timeout_advice_distinguishes_late_return_from_retained_work(window, detail, late):
+    failure = {"module": "Fixture sensor", "detail": detail, "repairable": False}
+    dialog = _show_results(window, [failure])
+    text = dialog.attention.toPlainText()
+    assert detail in text
+    assert dialog.summary.text() == "Completed — 1 item(s) need attention."
+    assert dialog.retry_button.isEnabled()
+    assert dialog.restart_button.isHidden() and dialog.approval.isHidden()
+    assert not dialog.approval.isChecked() and dialog.close_button.isDefault()
+    if late:
+        assert "The check returned after its deadline and remains failed." in text
+        assert "The check has not returned" not in text
+    else:
+        assert "The check has not returned" in text
+        assert "remains failed" not in text

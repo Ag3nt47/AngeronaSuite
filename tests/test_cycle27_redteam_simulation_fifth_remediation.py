@@ -317,13 +317,13 @@ def test_cleanup_never_deletes_a_same_path_replacement(
         original = purple_guard._marker_path_identity
         raced = False
 
-        def replacement(path, *, hold, delete_access=False):
+        def replacement(path, *, hold, delete_access=False, scope_only=False):
             nonlocal raced
             if delete_access and not raced:
                 raced = True
                 os.replace(marker, backup)
                 marker.write_text("unrelated replacement", encoding="utf-8")
-            return original(path, hold=hold, delete_access=delete_access)
+            return original(path, hold=hold, delete_access=delete_access, scope_only=scope_only)
 
         monkeypatch.setattr(purple_guard, "_marker_path_identity", replacement)
         assert not RedTeamValidationLease.remove_registered_artifact(

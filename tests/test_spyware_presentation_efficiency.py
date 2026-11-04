@@ -40,7 +40,9 @@ def test_scan_view_keeps_only_latest_hidden_status_and_restores_once(memory, mon
     scope_document = controls.scope_paths.document()
     row = controls.step_rows["toolkit:files"]
     controls.current_file.setSelection(0, 7)
-    selected = controls.current_file.selectedText()
+    cursor = controls.current_file.editor.textCursor()
+    selection = (cursor.anchor(), cursor.position())
+    assert cursor.hasSelection()
     if suspend == "hide":
         window.hide()
     else:
@@ -79,7 +81,12 @@ def test_scan_view_keeps_only_latest_hidden_status_and_restores_once(memory, mon
         assert controls.current_file.editor.document() is document
         assert controls.scope_paths.document() is scope_document
         assert controls.step_rows["toolkit:files"] is row
-        assert controls.current_file.selectedText() == selected
+        cursor = controls.current_file.editor.textCursor()
+        assert (cursor.anchor(), cursor.position()) == selection
+        assert cursor.hasSelection()
+        # Terminal status changes the live caption; preserve Qt selection
+        # offsets without requiring obsolete text to remain in the document.
+        assert controls.current_file.text().startswith("Last observed file: ")
         assert "frame-31.txt" in controls.current_file.text()
         assert controls._scope_mode == "targeted" and controls.cpu.value() == 30
         assert controls.scope_paths.toPlainText() == "D:/synthetic/retained-evidence"

@@ -23,10 +23,11 @@ def _isolate_model_environment(monkeypatch, tmp_path):
     monkeypatch.setattr(startup, "canonical_storage", lambda: tmp_path / "startup-errors")
 
 
-def _plan(tmp_path: Path, *, frozen: bool = False) -> startup.LaunchPlan:
+def _plan(tmp_path: Path, *, frozen: bool = False, operator_elevation: bool = False) -> startup.LaunchPlan:
     return startup.LaunchPlan(
         tmp_path, tmp_path / "runtime",
         (str(tmp_path / ("Angerona.exe" if frozen else "python.exe")),), frozen,
+        operator_elevation=operator_elevation,
     )
 
 
@@ -158,7 +159,7 @@ def test_frozen_zero_exit_waits_for_elevated_dashboard(tmp_path, monkeypatch) ->
         startup, "_ready_process",
         lambda pid, *_args: seen.append(pid) or pid == process.pid + 1,
     )
-    startup.wait_dashboard(listener, process, _plan(tmp_path, frozen=True), 0,
+    startup.wait_dashboard(listener, process, _plan(tmp_path, frozen=True, operator_elevation=True), 0,
                            threading.Event(), timeout=1)
     assert seen == [process.pid + 1]
     assert process.actions == []
@@ -168,7 +169,7 @@ def test_frozen_nonzero_exit_is_reported_without_retry(tmp_path) -> None:
     process = Process(2)
     listener = SimpleNamespace(receive=lambda: None)
     with pytest.raises(startup.StartupError, match="code 2"):
-        startup.wait_dashboard(listener, process, _plan(tmp_path, frozen=True), 0,
+        startup.wait_dashboard(listener, process, _plan(tmp_path, frozen=True, operator_elevation=True), 0,
                                threading.Event(), timeout=1)
     assert process.actions == []
 
@@ -178,6 +179,7 @@ def test_frozen_ready_requires_fresh_live_expected_image(tmp_path, monkeypatch, 
     import psutil
 
     plan = _plan(tmp_path, frozen=True)
+    process = Process()
 
     def candidate(_pid):
         if identity == "denied":
@@ -186,10 +188,11 @@ def test_frozen_ready_requires_fresh_live_expected_image(tmp_path, monkeypatch, 
             exe=lambda: str(tmp_path / "other.exe") if identity == "different_image" else plan.command[0],
             create_time=lambda: 10 if identity == "stale" else 100,
             is_running=lambda: identity != "dead",
+            ppid=lambda: process.pid,
         )
 
     monkeypatch.setattr(psutil, "Process", candidate)
-    assert startup._ready_process(123, Process(0), plan, 100) is (identity == "valid")
+    assert startup._ready_process(process.pid + 1, process, plan, 100) is (identity == "valid")
 
 
 @pytest.mark.parametrize("identity", [
@@ -780,35 +783,27 @@ def test_check_only_runs_all_startup_checks_without_constructing_tk(monkeypatch)
     assert calls == [{"check_only": True}]
 
 
-def test_malformed_readiness_endpoint_rejected_after_uac_without_runtime_writes(monkeypatch) -> None:
+def test_malformed_advanced_endpoint_rejected_before_uac_or_runtime_writes(tmp_path, monkeypatch) -> None:
     import angerona.__main__ as entry
     from angerona.core import data_paths, privilege, windows_package_identity
 
-    arguments = ["Angerona.exe", "--chill", "--startup-ready=invalid"]
-    calls = []
+    arguments = ["Angerona.exe", "--operator-elevation", "--chill", "--startup-ready=invalid"]
     monkeypatch.setattr(entry.sys, "argv", arguments)
     monkeypatch.setattr(entry.sys, "platform", "win32")
     monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
     monkeypatch.setattr(
         windows_package_identity, "verify_current_msix_authority",
-        lambda: calls.append("package") or windows_package_identity.PackageAuthority(True, "trusted"),
+        lambda: windows_package_identity.PackageAuthority(True, "fixture"),
     )
-
-    def elevate():
-        assert entry.sys.argv is arguments
-        assert entry.sys.argv[-1] == "--startup-ready=invalid"
-        calls.append("uac")
-        return privilege.ElevationResult(privilege.ElevationState.EFFECTIVE_ADMINISTRATOR, "test token")
-
-    monkeypatch.setattr(privilege, "ensure_admin", elevate)
-    monkeypatch.setattr(privilege, "is_admin", lambda: True)
+    monkeypatch.setattr(windows_package_identity, "require_current_package_image", lambda name: tmp_path / name)
+    monkeypatch.setattr(privilege, "ensure_admin", lambda: pytest.fail("Malformed endpoint reached UAC"))
+    monkeypatch.setattr(privilege, "is_admin", lambda: False)
     monkeypatch.setattr(
         data_paths, "configure_runtime_environment",
         lambda: pytest.fail("Malformed helper arguments reached runtime initialization"),
     )
     assert entry.main() == 2
-    assert calls == ["package", "uac", "package"]
-    assert arguments == ["Angerona.exe", "--chill", "--startup-ready=invalid"]
+    assert arguments == ["Angerona.exe", "--operator-elevation", "--chill", "--startup-ready=invalid"]
 
 
 def test_tk_source_environment_removes_optional_search_overrides_case_insensitively(monkeypatch) -> None:
@@ -877,3 +872,242 @@ def test_startup_window_suppresses_optional_tk_profile_callback() -> None:
     window = startup._startup_window(SimpleNamespace(Tk=ProfileTk))
     assert isinstance(window, ProfileTk)
     assert calls == ["initialized"]
+
+
+
+def _model_advanced_witness(monkeypatch, pid, image, created, *, parent=1, fault="none"):
+    """Model only the native process/token reads and assert one exact handle throughout."""
+    import sys
+
+    import psutil
+    from angerona.core import windows_process_lease
+
+    trace = []
+    process_handle = object()
+    identity = windows_process_lease.ProcessObjectIdentity(
+        pid, 116444736000000000 + int(created * 10_000_000), image,
+    )
+
+    class Native:
+        def open(self, target, access, inherit):
+            assert (target, access, inherit) == (pid, 0x00101000, False)
+            trace.append("process-open")
+            return process_handle
+
+        def identity(self, handle):
+            assert handle is process_handle
+            trace.append("identity")
+            return identity
+
+        def wait(self, handle, milliseconds):
+            assert handle is process_handle and milliseconds == 0
+            trace.append("live-check")
+            return False  # WAIT_TIMEOUT for this retained live process.
+
+        def close(self, handle):
+            assert handle is process_handle
+            trace.append("process-close")
+
+    token = SimpleNamespace(Close=lambda: trace.append("token-close"))
+
+    def open_token(handle, rights):
+        assert handle is process_handle and rights == 8
+        trace.append("token-open")
+        if fault == "denied":
+            raise PermissionError("inert token access refusal")
+        return token
+
+    def token_info(held, field):
+        assert held is token
+        return {
+            20: 0 if fault == "medium" else 1,
+            2: [("S-1-5-32-544", 16 if fault == "deny-only" else 4)],
+            11: [("S-1-5-32-544", 4)] if fault == "restricted" else [],
+        }[field]
+
+    monkeypatch.setattr(windows_process_lease, "_Native", Native)
+    monkeypatch.setattr(psutil, "Process", lambda target: SimpleNamespace(ppid=lambda: parent))
+    monkeypatch.setitem(sys.modules, "pywintypes", SimpleNamespace(error=OSError))
+    monkeypatch.setitem(sys.modules, "win32security", SimpleNamespace(
+        TOKEN_QUERY=8, TokenElevation=20, TokenGroups=2, TokenRestrictedSids=11,
+        OpenProcessToken=open_token, GetTokenInformation=token_info,
+        ConvertSidToStringSid=str,
+    ))
+    return trace
+
+
+@pytest.mark.parametrize("fault", ["none", "medium", "deny-only", "restricted", "denied"])
+def test_advanced_ready_requires_elevated_admin_token_on_same_native_object(tmp_path, monkeypatch, fault):
+    process = Process(0)
+    plan = _plan(tmp_path, frozen=True, operator_elevation=True)
+    pid = process.pid + 1
+    trace = _model_advanced_witness(monkeypatch, pid, plan.command[0], 100, fault=fault)
+    if fault == "denied":
+        with pytest.raises(startup.StartupError, match="could not independently verify"):
+            startup._ready_process(pid, process, plan, 100)
+    else:
+        assert startup._ready_process(pid, process, plan, 100) is (fault == "none")
+    assert trace[:4] == ["process-open", "identity", "live-check", "token-open"]
+    assert trace.count("token-close") == (0 if fault == "denied" else 1)
+    assert trace.count("process-close") == 1 and trace[-1] == "process-close"
+    if fault == "none":
+        assert trace[4:] == ["token-close", "identity", "live-check", "process-close"]
+
+
+def test_ordinary_frozen_zero_exit_without_notice_is_terminal(tmp_path) -> None:
+    process = Process(0)
+    with pytest.raises(startup.DashboardProcessFailed, match="read-only protection console.*code 0"):
+        startup.wait_dashboard(
+            SimpleNamespace(receive=lambda: None), process, _plan(tmp_path, frozen=True),
+            0, threading.Event(), timeout=1,
+        )
+    assert process.actions == []
+
+
+@pytest.mark.parametrize("advanced", [False, True])
+def test_installed_startup_fixed_argv_real_nonce_and_no_helper_stop_access(
+    tmp_path, monkeypatch, advanced,
+) -> None:
+    import psutil
+    from angerona.core import privilege
+    from angerona.resilience import shutdown_token
+
+    plan = _plan(tmp_path, frozen=True)
+    process = Process(0 if advanced else None)
+    process.pid += 1  # The actual notice comes from our fixture's runtime PID.
+    calls = []
+    reports = []
+    monkeypatch.delenv("ANGERONA_SUPERVISED_RECOVERY", raising=False)
+    monkeypatch.setattr(startup, "sys", SimpleNamespace(platform="win32", frozen=True))
+    monkeypatch.setattr(privilege, "is_admin", lambda: False)
+    monkeypatch.setattr(startup, "_interactive_windows_station", lambda: True)
+
+    def verified_plan(**options):
+        assert options == ({"operator_elevation": True} if advanced else {})
+        return plan
+
+    monkeypatch.setattr(startup, "platform_plan", verified_plan)
+    monkeypatch.setattr(startup, "select_temporary", lambda *_args, **_kwargs: plan.storage / "temp")
+    for name in ("clear_standdown_for_storage", "standdown_active_for_storage"):
+        monkeypatch.setattr(shutdown_token, name, lambda *_args: pytest.fail("Installed helper accessed STOP"))
+
+    def launch(command, **options):
+        calls.append((command, options))
+        if advanced:
+            _model_advanced_witness(monkeypatch, os.getpid(), plan.command[0], startup.time.time() + 1)
+        else:
+            monkeypatch.setattr(psutil, "Process", lambda pid: SimpleNamespace(
+                ppid=lambda: process.pid, exe=lambda: plan.command[0],
+                create_time=startup.time.time, is_running=lambda: pid == os.getpid(),
+            ))
+        assert notify_dashboard_ready(command[-1].split("=", 1)[1])
+        return process
+
+    monkeypatch.setattr(startup.subprocess, "Popen", launch)
+    assert startup.run_startup(reports.append, threading.Event(), operator_elevation=advanced) == plan.storage
+    assert len(calls) == 1
+    command, options = calls[0]
+    expected = ["--operator-elevation", "--chill"] if advanced else ["--protection-console"]
+    assert command[:-1] == [plan.command[0], *expected]
+    assert command[-1].startswith("--startup-ready=")
+    assert options["cwd"] == plan.root
+    assert "ANGERONA_DATA" not in options["env"]
+    assert "ANGERONA_SUPERVISED_RECOVERY" not in options["env"]
+    expected_window = "Dashboard" if advanced else "Read-only protection console"
+    assert reports[-1] == f"{expected_window} ready. Closing the startup assistant."
+    assert process.actions == []
+
+
+@pytest.mark.parametrize(("arguments", "frozen", "admin", "interactive", "automatic", "expected"), [
+    (["--operator-elevation"], False, False, True, False, 85),
+    (["--operator-elevation"], True, True, True, False, 85),
+    (["--operator-elevation"], True, False, False, False, 85),
+    (["--operator-elevation"], True, False, True, True, 85),
+    (["--operator-elevation", "--check-only"], True, False, True, False, 2),
+    (["--operator-elevation", "--no-startup-window"], True, False, True, False, 2),
+    (["--operator-elevation", "--automatic-start"], True, False, True, False, 2),
+    (["--operator-elevation", "--operator-elevation"], True, False, True, False, 2),
+    (["--automatic-start", "--no-startup-window"], True, True, True, False, 86),
+])
+def test_installed_startup_refuses_ineligible_requests_before_dispatch(
+    monkeypatch, arguments, frozen, admin, interactive, automatic, expected,
+) -> None:
+    from angerona.core import privilege
+
+    monkeypatch.setattr(startup.sys, "platform", "win32")
+    monkeypatch.setattr(startup.sys, "frozen", frozen, raising=False)
+    monkeypatch.setattr(startup.sys, "argv", ["AngeronaStartup.exe", *arguments])
+    monkeypatch.setattr(privilege, "is_admin", lambda: admin)
+    monkeypatch.setattr(startup, "_interactive_windows_station", lambda: interactive)
+    # Own a copy because main sets the supervised-recovery marker on automatic entry.
+    monkeypatch.setattr(startup.os, "environ", dict(startup.os.environ))
+    startup.os.environ.pop("ANGERONA_SUPERVISED_RECOVERY", None)
+    if automatic:
+        startup.os.environ["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+    for name in ("_interface_lease", "run_startup", "platform_plan"):
+        monkeypatch.setattr(startup, name, lambda *_args, **_kw: pytest.fail("Ineligible request reached startup work"))
+    if expected == 2:
+        with pytest.raises(SystemExit) as error:
+            startup.main()
+        assert error.value.code == 2
+    else:
+        assert startup.main() == expected
+
+
+def test_explicit_installed_plan_uses_only_the_os_bound_helper_root(tmp_path, monkeypatch) -> None:
+    from angerona.core import data_paths, privilege, windows_package_identity
+
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "Angerona.exe").write_bytes(b"inert fixture")
+    monkeypatch.setattr(startup, "sys", SimpleNamespace(
+        platform="win32", frozen=True, executable=str(tmp_path / "untrusted" / "AngeronaStartup.exe"),
+    ))
+    monkeypatch.setattr(privilege, "_windows_known_folder", lambda folder: tmp_path / str(folder))
+    monkeypatch.setattr(data_paths, "_fixed_volume_available", lambda _volume: True)
+    calls = []
+    monkeypatch.setattr(windows_package_identity, "verify_current_msix_authority",
+                        lambda: calls.append("package") or windows_package_identity.PackageAuthority(True, "fixture"))
+    monkeypatch.setattr(windows_package_identity, "require_current_package_image",
+                        lambda name: calls.append(name) or package / name)
+    plan = startup.platform_plan(operator_elevation=True)
+    assert calls == ["package", "AngeronaStartup.exe"]
+    assert plan.root == package
+    assert plan.command == (str(package / "Angerona.exe"),)
+
+
+@pytest.mark.parametrize(("failure", "exit_code"), [
+    (None, 0),
+    (startup.DashboardProcessFailed, 1),
+    (startup.OperatorStopped, 86),
+    (startup.StartupCancelled, startup.STARTUP_CANCELLED),
+    (startup.StartupError, startup.STARTUP_INFRASTRUCTURE_FAILURE),
+])
+def test_explicit_helper_closes_with_nonzero_on_any_nonready_result(monkeypatch, failure, exit_code) -> None:
+    from angerona.core import privilege
+
+    window, _widgets = _fake_tk(monkeypatch)
+    monkeypatch.delenv("ANGERONA_SUPERVISED_RECOVERY", raising=False)
+    monkeypatch.setattr(startup.sys, "platform", "win32")
+    monkeypatch.setattr(startup.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(startup.sys, "argv", ["AngeronaStartup.exe", "--operator-elevation"])
+    monkeypatch.setattr(privilege, "is_admin", lambda: False)
+    monkeypatch.setattr(startup, "_interactive_windows_station", lambda: True)
+    monkeypatch.setattr(startup, "_configure_tk_environment", lambda: None)
+    monkeypatch.setattr(startup.threading, "Thread", lambda **kw: SimpleNamespace(start=kw["target"]))
+    calls = []
+
+    def lease(*, operator_elevation):
+        calls.append(("lease", operator_elevation))
+        return SimpleNamespace(close=lambda: calls.append(("close",)))
+
+    def run(_report, _cancel, *, setup, _interface_lease, operator_elevation):
+        calls.append(("run", setup, operator_elevation))
+        if failure is not None:
+            raise failure("synthetic terminal result")
+
+    monkeypatch.setattr(startup, "_interface_lease", lease)
+    monkeypatch.setattr(startup, "run_startup", run)
+    assert startup.main() == exit_code
+    assert window.destroyed
+    assert calls == [("lease", True), ("run", False, True), ("close",)]

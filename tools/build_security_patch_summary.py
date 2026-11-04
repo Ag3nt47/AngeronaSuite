@@ -8,6 +8,8 @@ from __future__ import annotations
 import argparse
 from copy import deepcopy
 import hashlib
+import json
+import re
 from datetime import datetime, timezone
 from io import BytesIO
 from pathlib import Path
@@ -23,7 +25,7 @@ from docx.shared import Inches, Pt, RGBColor
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "docs/releases/Angerona_1.15_Security_Patch_Summary.docx"
-STAMP = datetime(2026, 11, 2, tzinfo=timezone.utc)
+STAMP = datetime(2026, 11, 3, tzinfo=timezone.utc)
 
 
 HISTORY_HEADINGS = (
@@ -36,6 +38,91 @@ HISTORY_HEADINGS = (
 )
 HISTORY_MAX_BYTES = 256 * 1024
 HYPERLINK_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink"
+
+
+def validation_record_lines(path=None, expected_sha256=None):
+    """Format only an optional pinned, maintainer-sanitized status record."""
+    if path is None and expected_sha256 is None:
+        return ("Current-revision acceptance is pending: no sanitized validation record was supplied. Earlier dated cohorts below are historical and do not establish acceptance of the current source.",)
+    if path is None or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("validation input requires its exact SHA256")
+    with Path(path).open("rb") as stream:
+        raw = stream.read(65537)
+    if len(raw) > 65536 or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("sanitized validation input size or digest differs")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate validation field")
+            result[key] = value
+        return result
+
+    def finite(_value):
+        raise ValueError("nonfinite validation value")
+
+    body = json.loads(raw.decode("utf-8"), object_pairs_hook=unique, parse_constant=finite)
+    if (type(body) is not dict or set(body) != {"schema", "revision", "source_manifest_sha256", "checks", "limitations"}
+            or type(body["schema"]) is not int or body["schema"] != 1
+            or type(body["revision"]) is not str or not re.fullmatch(r"[0-9a-f]{40}|reviewed-worktree", body["revision"])
+            or type(body["source_manifest_sha256"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", body["source_manifest_sha256"])
+            or type(body["checks"]) is not list or not 1 <= len(body["checks"]) <= 12
+            or type(body["limitations"]) is not list or not 1 <= len(body["limitations"]) <= 12):
+        raise ValueError("sanitized validation record shape differs")
+    scopes = {"lint", "syntax", "focused-tests", "full-suite", "native-response", "startup", "hosted", "live-observation"}
+    states = {"pending", "held", "incomplete", "failed", "passed"}
+    test_keys = {"passed", "failed", "errors", "skipped"}
+    native_keys = {"expected", "detected", "remediated", "remaining", "runs_requested", "runs_completed", "witness_verified", "native_retirement_verified"}
+    seen = set()
+    lines = ["Current validation record: revision " + body["revision"] + "; reviewed source manifest SHA256 " + body["source_manifest_sha256"] + ". Sanitized input SHA256 " + expected_sha256 + "."]
+    for check in body["checks"]:
+        if (type(check) is not dict or set(check) != {"scope", "state", "receipt_sha256", "counts"}
+                or type(check["scope"]) is not str or check["scope"] not in scopes or check["scope"] in seen
+                or type(check["state"]) is not str or check["state"] not in states
+                or not (check["receipt_sha256"] is None and check["state"] == "pending"
+                        or type(check["receipt_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", check["receipt_sha256"]))):
+            raise ValueError("scoped validation check shape differs")
+        if check["scope"] == "hosted" and check["state"] == "passed" and body["revision"] == "reviewed-worktree":
+            raise ValueError("hosted success requires the exact published commit")
+        seen.add(check["scope"])
+        counts, suffix = check["counts"], ""
+        if counts is not None:
+            expected_keys = native_keys if check["scope"] == "native-response" else test_keys
+            if type(counts) is not dict or set(counts) != expected_keys:
+                raise ValueError("scoped validation counts differ")
+            for key, value in counts.items():
+                if key in {"witness_verified", "native_retirement_verified"}:
+                    valid = type(value) is bool
+                else:
+                    valid = type(value) is int and 0 <= value <= 1000000
+                if not valid:
+                    raise ValueError("scoped validation count is invalid")
+            if check["scope"] == "native-response":
+                if (counts["expected"] < 1 or counts["runs_requested"] < 1
+                        or any(counts[key] > counts["expected"] for key in ("detected", "remediated", "remaining"))
+                        or counts["runs_completed"] > counts["runs_requested"]):
+                    raise ValueError("native validation counts are inconsistent")
+                native_complete = (counts["detected"] == counts["remediated"] == counts["expected"] and counts["remaining"] == 0
+                    and counts["runs_completed"] == counts["runs_requested"] and counts["witness_verified"] and counts["native_retirement_verified"])
+                if check["state"] == "passed" and not native_complete:
+                    raise ValueError("partial native evidence cannot be passed")
+                suffix = (f"; detected {counts['detected']}/{counts['expected']}; remediated {counts['remediated']}/{counts['expected']}; remaining source artifacts {counts['remaining']}; completed runs {counts['runs_completed']}/{counts['runs_requested']}; independent OS witness {'verified' if counts['witness_verified'] else 'unverified'}; native retirement {'verified' if counts['native_retirement_verified'] else 'unverified'}")
+            else:
+                if check["state"] == "passed" and (counts["failed"] or counts["errors"]):
+                    raise ValueError("failed test evidence cannot be passed")
+                if check["state"] == "passed" and check["scope"] in {"focused-tests", "full-suite"} and counts["passed"] == 0:
+                    raise ValueError("empty test coverage cannot be passed")
+                suffix = "; " + ", ".join(f"{key} {counts[key]}" for key in ("passed", "failed", "errors", "skipped"))
+        elif check["state"] == "passed" and check["scope"] in {"native-response", "focused-tests", "full-suite"}:
+            raise ValueError("passed test/native scope requires actual counts")
+        lines.append(check["scope"] + ": " + check["state"] + suffix + "; receipt SHA256 " + (check["receipt_sha256"] or "not supplied") + ".")
+    for limitation in body["limitations"]:
+        if type(limitation) is not str or not 1 <= len(limitation) <= 500 or any(ord(char) < 32 for char in limitation):
+            raise ValueError("sanitized limitation text is invalid")
+        lines.append("Remaining limit: " + limitation)
+    lines.append("Only the listed scopes are recorded; overlapping cohorts are not added. Missing or partial records do not establish final acceptance, and skips remain coverage gaps. Signed/service/hardware deployment, complete sensor coverage, hosted checks for the exact published commit and all-page document QA require their own evidence.")
+    return tuple(lines)
 
 
 def _history_text(node):
@@ -249,7 +336,7 @@ def residual_matrix(doc):
 def residual_appendix(doc):
     residual_page(doc, "Kernel telemetry blinding and vulnerable drivers", [
         ("Attacker prerequisites", "A vulnerable-driver attack generally needs a path to load a kernel driver or abuse an already loaded vulnerable component. Administrative or kernel execution puts the attacker beyond the ordinary source process boundary. A valid vendor signature does not by itself make a driver safe."),
-        ("Implemented mitigation", "Canaries distinguish actual ETW/Sysmon provenance from process polling and userspace pipeline echoes. A nonce-bound benign process challenge has retained native identity, bounded deadlines and recorder acknowledgment. The optional v2 driver-policy service admits fixed reviewed materials, independent approvals and exact native configuration outcomes."),
+        ("Implemented mitigation", "Canaries distinguish actual ETW/Sysmon provenance from process polling and userspace pipeline echoes. A nonce-bound benign process challenge has retained native identity, bounded deadlines and recorder acknowledgment. The optional v2 driver-policy source requires separate enrollment, trusted materials and privileged provisioning before its reviewed-plan, approval and native-readback workflow can be used."),
         ("What remains possible", "An attacker controlling the kernel can remove callbacks, interfere with delivery or fabricate inputs while user-mode peers stay alive. A forged matching event may defeat a software-only loopback; the canary is not independent kernel attestation. The current driver profile is unsigned/removable and may be changed by an administrator. It does not unload an active driver or restore stripped callbacks."),
         ("Detector limits", "A missed echo establishes a scoped availability problem with unconfirmed cause. A provider that never became available cannot prove new blinding. The observed userspace completions did not exercise a successful native ETW/Sysmon loopback. Fresh EKG liveness and zero queue drops cannot close that gap."),
         ("Deployment needed", "Trusted signed installation, protected service identity/materials, native rights, supported ConfigCI/CiTool, separately reviewed audit history and enforce/reboot/removal recovery acceptance. Microsoft blocklist/HVCI controls require their actual supported OS configuration; this source update does not enable them."),
@@ -262,7 +349,7 @@ def residual_appendix(doc):
         ("Implemented mitigation", "A bounded fast path correlates creation/access observations with cached native-owned PID, birth, role and image context. One post-acquisition clock preserves strict expiry/authentication. Immutable cached admission, generation, expiry and loss diagnostics perform no supplier/native query or lease renewal. Stronger correlation requires source identities/GUIDs; heartbeats require exact-generation evidence."),
         ("What remains possible", "Post-event observation can arrive after the vulnerable action. A sufficiently privileged attacker may suspend the Core, Watchdog, Scanner and recovery peers together, preventing local detection or respawn. A frozen Core can leave its last UI state visible until another independent observer detects staleness. No guaranteed pre-dump interceptor is deployed."),
         ("Detector limits", "Dump parameters and suspend-capable access do not prove threads stopped. Getter-time copied admission can expire before reading; fields are not one atomic process/queue receipt. Upstream delivery stays unverified. Copied zero-loss counters do not prove continuous availability or prevention. Historical cache-warning causes remain unresolved."),
-        ("Deployment needed", "Certified ELAM-backed antimalware PPL requires the appropriate signing and native installation prerequisites. The implemented virtual-account service separation is useful custody isolation but is not PPL or WinTCB protection. An independently administered observer is needed for stronger assurance against simultaneous local peer failure."),
+        ("Deployment needed", "Certified ELAM-backed antimalware PPL requires the appropriate signing and native installation prerequisites. The optional virtual-account service-admission source requires real installer/SCM/account provisioning; that separation is not PPL or WinTCB protection. An independently administered observer is needed for stronger assurance against simultaneous local peer failure."),
         ("Validation versus modeling", "Tests cover bounded queues, exact generation/provenance, lifecycle custody and wording. The benign Full capture showed live peers and no WER precursor or actual suspension finding. It was not a coordinated freeze experiment or proof that a privileged attack would be blocked."),
         ("Priority next steps", "P1: complete signed service acceptance and determine certification feasibility. P2: investigate measured lease-expiry gaps without extending trust, then test benign provider loss/freeze detection in a disposable authorized environment with unchanged identity checks."),
     ], [("Microsoft protected antimalware service requirements", "https://learn.microsoft.com/en-us/windows/win32/services/protecting-anti-malware-services-")])
@@ -279,7 +366,7 @@ def residual_appendix(doc):
 
     residual_page(doc, "OS downgrade hardware freshness and whole root replay", [
         ("Attacker prerequisites", "An OS servicing downgrade needs control of an applicable privileged servicing/recovery path, affected OS state or storage. Local evidence replay needs the ability to restore a coherent older data/key state. Authority-root rollback and hardware cloning are separate threat boundaries."),
-        ("Implemented mitigation", "The audit parses only bounded recognized direct servicing operations from the registry-selected local queue and compares fixed critical disk version resources. It separates Windows.old recovery copies from scheduled replacement. Independent providers are composed before state admission. TPM code verifies pinned fresh counter/extend/counter certifications bound to a typed checkpoint."),
+        ("Implemented mitigation", "The audit parses only bounded recognized direct servicing operations from the registry-selected local queue and compares fixed critical disk version resources. It separates Windows.old recovery copies from scheduled replacement. Separately enrolled independent providers compose before state admission. Optional TPM source verifies externally pinned fresh counter/extend/counter certifications bound to a typed checkpoint; no physical enrollment or protected NV writer is supplied."),
         ("What remains possible", "Unsupported/custom queues, unavailable files and unobserved servicing paths limit detection. A signed older binary can still be vulnerable. A local matching HMAC/database replay cannot prove its own age. A compromised or rolled-back independent authority can undermine freshness. No automatic physical TPM enrollment or protected NV writer is supplied."),
         ("Detector limits", "VERSIONINFO is a best-effort disk sample, not signer, loaded-image, security-build applicability or prevention proof. TPM PolicyNV is a precheck, not atomic digest compare-and-swap. Split writes or reply loss need reconciliation. A software vTPM or cloned authority cannot be assumed physically independent; trusted time and complete authority-root rollback resistance are not established."),
         ("Deployment needed", "Supported vendor OS mitigations remain necessary. Hardware use needs authenticated physical EK/AK enrollment, exact issuer-pinned NV names/policy, suitable platform-created non-ORDERLY counter/extend indexes and a protected serialized single-use-policy writer. These are external provisioning and acceptance tasks, not dashboard toggles."),
@@ -320,6 +407,21 @@ def native_metadata_followup(doc, history=None):
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-11-01-advisory-bursts.md")
 
 
+def simulation_diagnostics_followup(doc):
+    doc.add_page_break()
+    doc.add_heading("2 November simulation evidence and diagnostics", 1)
+    paragraph(doc, "The overall ring measures workflow progress. The caught and missed bar compares authenticated expected-positive checks; live counts are provisional and omit unrun stages. Workflow completion does not establish detection or containment success.", lead="Measured progress:")
+    paragraph(doc, "The badge distinguishes pending, unverified, inconclusive, partial, passing and failing evidence. Passing so far remains an amber provisional result. Final green Passing requires accepted current-run reports for every requested profile, all expected-positive detections and any requested verified containment outcomes.", lead="Performance state:")
+    paragraph(doc, "Verified step diagnostics show stage, technique, detection, response, status and the recorded reason. Filtering and refresh preserve the review position. Complete copied or exported diagnostics have a 4 MiB limit; a failure preserves the previous verified snapshot. Authenticated diagnostic-only reports preserve incomplete evidence without granting coverage scores.", lead="Failure analysis:")
+    paragraph(doc, "The read-only tools/redteam_diagnostics.py harness can bind a review to the expected run, report digest, head digest and sequence. Opening diagnostics applies no patch or response. Proposed fixes retain their separate target, policy and approval checks and need a fresh validation run after implementation.", lead="Review and correction:")
+    paragraph(doc, "CVE-2024-51324 identifies Baidu BdApiUtil process termination; CVE-2025-68947 identifies NSecsoft NSecKrnl process termination across user boundaries. Neither description alone establishes callback-array stripping or a particular ransomware campaign. Angerona's source controls do not patch these third-party drivers.", lead="Driver vulnerability scope:")
+    link(doc, "Baidu driver CNA record", "https://github.com/CVEProject/cvelistV5/blob/main/cves/2024/51xxx/CVE-2024-51324.json")
+    link(doc, "NSecsoft driver CNA record", "https://github.com/CVEProject/cvelistV5/blob/main/cves/2025/68xxx/CVE-2025-68947.json")
+    paragraph(doc, "Microsoft supplied the CVE-2024-38202 mitigation update on 8 October 2024; additional WinRE steps depend on the Windows version. CVE-2024-21302 has separate VBS rollback-policy servicing requirements. Angerona's servicing audit is supporting evidence and does not replace those vendor updates or prove their installation.", lead="Windows servicing scope:")
+    link(doc, "Windows Update Stack CNA record", "https://github.com/CVEProject/cvelistV5/blob/main/cves/2024/38xxx/CVE-2024-38202.json")
+    link(doc, "Microsoft VBS rollback guidance", "https://support.microsoft.com/en-us/servicing/os/windows/2024/07/guidance-for-blocking-rollback-of-virtualization-based-security-vbs-related-security-updates")
+
+
 def workspace_scan_followup(doc):
     doc.add_page_break()
     doc.add_heading("2 November workspaces and scan review", 1)
@@ -331,16 +433,18 @@ def workspace_scan_followup(doc):
     paragraph(doc, "Settings failure recovery restores only 21 owned nonsecret environment keys. It preserves unrelated concurrent changes and credentials removed by the secret store. It no longer clears or restores a stale snapshot of the whole process environment. This is scoped failure recovery, not a global atomic environment transaction.", lead="Credential and settings boundary:")
     paragraph(doc, "Original native-hash producer proof expires after 30 monotonic seconds and is bound to the producer generation; retaining it again cannot renew it. Generic synthetic SOAR wrappers stay held without original proof. Exact companion identity and actual native custody remain required. The registry shares the process failure domain.", lead="Response admission:")
     paragraph(doc, "Crash admission is bounded to 480 KiB per signed record, 256 records, 64 MiB sampled retained bytes and a 1,024-entry enumeration ceiling, with a sampled 2 GiB reserve. Publication does not overwrite existing records. Incomplete traceback holds automatic HEAL. These bounds do not reserve capacity across writers or add a normal dashboard-startup gate.", lead="Recovery storage:")
-    paragraph(doc, "Administrator sign-in enrollment is explicit and installed-only, with exact package, SID, task definition and security readback. It stores no password and supplies no restart or on-demand policy. Source Observe remains held. Production pins, independent signing and actual installed task acceptance are unprovisioned; this is not PPL or kernel protection.", lead="Privileged deployment:")
-    paragraph(doc, "Final focused validation passed 450 tests in 114.68 seconds with no failures, errors or skips, covering scan reporting, workspaces, Settings, setup, adaptation and installed-startup controls. A narrow-view regression now accounts for group-box frame margins. Hidden-window tests restore the normal visible cadence and separately check that short headlines correctly stop scrolling. Earlier 280, 10 and 53-test cohorts retain their own scope and are not added together. Lint, compilation, live observation and hosted checks have separate acceptance records.", lead="Validation scope:")
+    paragraph(doc, "The earlier installed sign-in workflow checked the package, user identity, task definition and security readback. Its review was limited to that dated workflow. The current per-session administrator policy is described in the following section.", lead="Privileged deployment:")
+    paragraph(doc, "An earlier workspace and scan revision passed 450 focused tests in 114.68 seconds with no failures, errors or skips, covering scan reporting, workspaces, Settings, setup, adaptation and installed-startup controls. A narrow-view regression now accounts for group-box frame margins. Hidden-window tests restore the normal visible cadence and separately check that short headlines correctly stop scrolling. Earlier 280, 10 and 53-test cohorts retain their own scope and are not added together. Lint, compilation, live observation and hosted checks have separate acceptance records.", lead="Validation scope:")
     paragraph(doc, "A preceding combined scan finished in approximately 45 minutes and retained one finding, two references and 24 coverage gaps. It predates the latest display corrections and is neither confirmed-breach nor clean-host evidence. Historical failed and passing observations below keep their own scope; the baseline's 15 green hosted checks attest that earlier commit only.", lead="Observed scan:")
     link(doc, "Current maintenance evidence and remaining acceptance",
          "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md")
 
 
-def build(*, service_reviewed=False, history_source=OUTPUT, history_sha256=None):
+def build(*, service_reviewed=False, history_source=OUTPUT, history_sha256=None,
+          validation_status=None, validation_sha256=None):
     if not service_reviewed:
         raise ValueError("final service/custody review must complete before producing the summary")
+    validation = validation_record_lines(validation_status, validation_sha256)
     history = _read_maintenance_history(history_source, history_sha256)
     doc = Document()
     section = doc.sections[0]
@@ -378,13 +482,19 @@ def build(*, service_reviewed=False, history_source=OUTPUT, history_sha256=None)
 
     doc.add_paragraph("Angerona 1.15 Security Patch Summary", "Title")
     doc.add_paragraph("Fixes and residual exposure with deployment requirements", "Subtitle")
-    paragraph(doc, "Version 1.15.0 | 2 November 2026")
+    paragraph(doc, "Version 1.15.0 | 3 November 2026")
     paragraph(doc, "This major update strengthens five user-mode security boundaries. These are implemented source controls, not a claim that every exploit is blocked or that Windows vulnerabilities have been patched. Source Observe, installed authority and independent services remain distinct.")
-    paragraph(doc, "A native shutdown access violation remains an unresolved P0 availability finding. The later logging patch improves observability; one subsequent normal exit does not establish a crash fix.", lead="Development status:")
+    paragraph(doc, "The cause of an earlier native shutdown access violation remains unresolved. Logging and later normal exits improve the available evidence without proving that cause repaired; current bounded acceptance is recorded separately.", lead="Development status:")
+
+    doc.add_heading("Current validation record", 1)
+    for line in validation:
+        paragraph(doc, line)
+    link(doc, "Current validation and runtime evidence: scope and remaining gates",
+         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/analysis/hardening-v1.15-2026-11-03-validation-and-runtime.md")
 
     doc.add_heading("1 Kernel telemetry blinding and vulnerable drivers", 1)
     paragraph(doc, "Provider-specific ETW/Sysmon canaries retain a benign nonce probe, native generation, collector provenance and recorder acknowledgment. Missing echoes and unavailable collectors stay explicit even if the heartbeat is alive. The kernel control tick continues in Chill.", lead="Implemented:")
-    paragraph(doc, "Enrolled installed v2 driver policy uses pinned materials, server-owned plans, two independent OS-bound approvals, durable capabilities and native readback. The policy is unsigned and removable; default v1 stays diagnostic-only.", lead="Policy workflow:")
+    paragraph(doc, "Optional installed v2 driver-policy source supports pinned materials, server-owned plans, two independent OS-bound approvals, durable capabilities and native readback after external enrollment and privileged provisioning. Its unsigned policy remains removable; default v1 stays diagnostic-only.", lead="Policy workflow:")
     paragraph(doc, "No accepted host policy, intact-callback proof, HVCI activation or guaranteed driver prevention is claimed.", lead="Boundary:")
 
     doc.add_heading("2 WER dump and suspension precursors", 1)
@@ -398,23 +508,32 @@ def build(*, service_reviewed=False, history_source=OUTPUT, history_sha256=None)
     doc.add_page_break()
     doc.add_heading("4 OS downgrade and whole root rollback", 1)
     paragraph(doc, "Bounded servicing review follows recognized direct operations in the registry-selected local queue and compares fixed critical disk VERSIONINFO resources. Older recovery copies are separate from scheduled replacements. Independent freshness is bound before persisted-state admission.", lead="Implemented:")
-    paragraph(doc, "The TPM adapter verifies issuer-pinned physical enrollment and fresh counter/extend/counter certifications bound to a checkpoint. It builds policy-write plans; it does not enroll a device or write NV. Policy prechecks are not atomic compare-and-swap.", lead="Hardware preparation:")
+    paragraph(doc, "The optional TPM source adapter verifies fresh counter/extend/counter certifications against externally provisioned issuer pins and enrolled checkpoint identity. It builds policy-write plans; it does not enroll hardware, supply a protected writer or write NV. Policy prechecks are not atomic compare-and-swap.", lead="Hardware preparation:")
     paragraph(doc, "Vendor mitigations, physical enrollment and a protected serialized external writer remain required. Disk versions do not prove signer, loaded image or patch applicability. Whole-authority rollback is separate.", lead="Boundary:")
 
     doc.add_heading("5 Same user tampering and history forgery", 1)
     paragraph(doc, "Optional independent Ed25519 signatures commit exact recorder row bytes. Remote admission enforces the next predecessor/epoch/nonoverlapping range; a durable pending claim reconciles reply loss. Protected request-key enrollment and retained workers preserve custody through STOP.", lead="Implemented:")
-    paragraph(doc, "Installed engine admission checks the actual virtual account, SCM process, restricted token, package and protected root before keys or sensors. Its console is status-only. Signed installer provisioning and acceptance remain separate.", lead="Service separation:")
+    paragraph(doc, "Optional installed-engine source checks the actual virtual account, SCM process, restricted token, package and protected root before keys or sensors. Its console is status-only. Signed installer/SCM/account provisioning and actual deployment acceptance remain separate.", lead="Service separation:")
     paragraph(doc, "Witnessing defaults off. Its 16 MiB/128-epoch archive preserves and pauses when full, potentially after roughly two hours at a 60-second cadence. Source Observe shares its user's failure domain. No Python secure-erasure or certified PPL claim is made.", lead="Boundary:")
 
-    doc.add_heading("Validation and operational findings", 1)
-    paragraph(doc, "Focused cohorts: native/service/status 183 passes; recorder 64; credential composition 71 plus one POSIX skip; TPM 83; retrieval 11; watchdog nine; socket presentation 39; crash-log observability 55. Cohorts overlap and are not summed. Broad selfcheck: 28 phase passes and one existing host Ollama listener-attestation failure; its 30-step defensive drill passes.")
+    doc.add_heading("Earlier validation and operational findings", 1)
+    paragraph(doc, "Earlier source cohorts: native/service/status 183 passes; recorder 64; credential composition 71 plus one POSIX skip; TPM 83; retrieval 11; watchdog nine; socket presentation 39; crash-log observability 55. Cohorts overlap and are not summed. Broad selfcheck: 28 phase passes and one existing host Ollama listener-attestation failure; its 30-step defensive drill passes.")
     paragraph(doc, "The earlier 180-second Full observation retained a 4,446-record initial gap. A later logging-enabled 120-second session retained a separate 2,898-record gap and 268 new events, with 75/75 workers running but native ETW/Sysmon unavailable and 69 collector states unknown. No confirmed breach was established. CPU cost and UI delays remain; the sessions are not a controlled benchmark.")
     paragraph(doc, "That session's STOP retired all retained generations with actual Core exit zero and unchanged source/preferences. Observation acceptance still failed on two process-inventory bounds; count versus deadline cause is unknown. A prior session's native shutdown crash remains unresolved. Both crash logs later disappeared for an unproved reason; private diagnostic text is preserved. The 55-pass logging patch verifies arming visibility, not complete capture or crash repair. The subsequent follow-up records the final changed-source lifecycle result separately.")
     link(doc, "Release scope, evidence and deployment limits",
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/releases/v1.15.0.md")
     link(doc, "Master Manual security flow",
         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/security-flow.md")
+    simulation_diagnostics_followup(doc)
     workspace_scan_followup(doc)
+    doc.add_page_break()
+    doc.add_heading("3 November scheduled scans and evidence review", 1)
+    paragraph(doc, "Automatic Spyware Scan starts enabled with Entire PC selected. Operators can save the switch and choose Entire PC, Browser checks or Quick system checks. The dashboard waits for an available scanner and spaces recorded attempts at least 24 hours apart. Automatic results appear in Notifications.")
+    paragraph(doc, "Native readers check supported Chromium security records, hosts-file overrides and selected local evidence within their scopes. Bounded Windows launch checks include IFEO and Silent Process Exit. Progress and Hits appear above Scan setup. After-action explains advisories, toolkit matches and gaps in plain English, with technical details available for review.")
+    paragraph(doc, "Supported Windows media review follows PIN approval and the exact drive root and volume GUID. Each bounded insertion review is advisory. Host-visible accessory functions, DMA posture and process-linked automation observations provide additional context when available. Response requires current original proof and authorized targets under policy.")
+    paragraph(doc, "The signed Windows startup policy opens an ordinary read-only console and offers Windows consent for administrator access in the current session. Signed package, installed UAC and independent response acceptance remain separate.")
+    link(doc, "Scan setup, research and coverage limits",
+         "https://github.com/Ag3nt47/AngeronaSuite/blob/main/docs/zero-breach-toolkit.md#priority-spyware-scan")
     native_metadata_followup(doc, history)
     if history is not None:
         for block in history["blocks"]:
@@ -454,14 +573,17 @@ def main():
     parser.add_argument("--history-sha256", help="Optional exact SHA256 for an explicit reviewed history source")
     parser.add_argument("--service-reviewed", action="store_true",
                         help="Required after final service/custody review; render QA is still separate")
+    parser.add_argument("--validation-status", type=Path, help="Optional private maintainer-sanitized validation JSON")
+    parser.add_argument("--validation-sha256", help="Required exact SHA256 when --validation-status is supplied")
     args = parser.parse_args()
     data = BytesIO()
     build(service_reviewed=args.service_reviewed, history_source=args.history_source,
-          history_sha256=args.history_sha256).save(data)
+          history_sha256=args.history_sha256, validation_status=args.validation_status,
+          validation_sha256=args.validation_sha256).save(data)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(data) as source, ZipFile(args.output, "w", compression=ZIP_DEFLATED, compresslevel=9) as target:
         for name in sorted(source.namelist()):
-            info = ZipInfo(name, date_time=(2026, 11, 2, 0, 0, 0))
+            info = ZipInfo(name, date_time=(2026, 11, 3, 0, 0, 0))
             info.compress_type, info.create_system = ZIP_DEFLATED, 0
             target.writestr(info, source.read(name))
     print(f"{args.output} (render every page before delivery)")

@@ -70,6 +70,8 @@ class DrillResolutionTests(unittest.TestCase):
             self.addCleanup(setattr, report_attest, "_key_path", original_key_path)
             report_attest.write_signed_json(report_path, {
                 "run_id": "run-one",
+                "report_kind": "red_team",
+                "coverage_score_eligible": True,
                 "verdicts": [{
                     "stage": "Credential Access (simulated)",
                     "technique": "T1003 marker",
@@ -108,6 +110,8 @@ class DrillResolutionTests(unittest.TestCase):
             self.assertTrue(proof["ok"])
             report_attest.write_signed_json(report_path, {
                 "run_id": "run-two",
+                "report_kind": "red_team",
+                "coverage_score_eligible": True,
                 "verdicts": [{
                     "stage": "Credential Access (simulated)",
                     "technique": "T1003 marker",

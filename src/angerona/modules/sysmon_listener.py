@@ -187,6 +187,9 @@ def _build_details(eid: int, root: ET.Element, label: str, tags: list[str]) -> d
     elif eid == 3:
         source_port = get("SourcePort")
         destination_port = get("DestinationPort")
+        raw_initiated = get("Initiated")
+        initiated = raw_initiated.casefold() if len(raw_initiated) in (4, 5) else ""
+        process_guid = get("ProcessGuid")
         try:
             source_port_number = int(source_port)
             destination_port_number = int(destination_port)
@@ -208,6 +211,9 @@ def _build_details(eid: int, root: ET.Element, label: str, tags: list[str]) -> d
             "dest_hostname":  get("DestinationHostname"),
             "protocol":       get("Protocol"),
             "pid":            get("ProcessId"),
+            "process_guid":   process_guid if len(process_guid) <= 38 else "",
+            "source_utc_time": get("UtcTime")[:32],
+            "initiated":      initiated == "true" if initiated in {"true", "false"} else None,
         })
         if community_id:
             base["community_id"] = community_id
@@ -285,6 +291,11 @@ def _build_details(eid: int, root: ET.Element, label: str, tags: list[str]) -> d
                     for char in field_name
                 ).lstrip("_")
                 base[key] = value[:4096]
+        if eid == 22:
+            process_guid = get("ProcessGuid")
+            base.update(process_guid=process_guid if len(process_guid) <= 38 else "",
+                        source_utc_time=get("UtcTime")[:32],
+                        pid=base.get("process_id", ""))
     return base
 
 

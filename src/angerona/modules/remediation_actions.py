@@ -823,7 +823,18 @@ class RegistryHardeningAction(RemediationAction):
         return control.subkey, control.value_name, control.dword, control.why
 
     def matches(self, w: dict) -> bool:
-        return os.name == "nt" and len(self._candidates(w)) == 1
+        candidates = self._candidates(w)
+        return (os.name == "nt" and len(candidates) == 1
+                and candidates[0].control_id != "windows.process_injection.mitigation")
+
+    @classmethod
+    def _unsupported_record(cls, record: dict) -> bool:
+        """Retain the old descriptor for undo, never new execution/credit."""
+        control = next(row for row in cls._CONTROLS
+                       if row.control_id == "windows.process_injection.mitigation")
+        return (record.get("control_id") == control.control_id
+                or (str(record.get("subkey", "")).casefold() == control.subkey.casefold()
+                    and str(record.get("name", "")).casefold() == control.value_name.casefold()))
 
     @staticmethod
     def _read_state(subkey: str, value_name: str) -> tuple[bool, object, int | None]:
@@ -864,6 +875,8 @@ class RegistryHardeningAction(RemediationAction):
         if len(candidates) != 1:
             raise ValueError("exactly one typed registry control is required")
         control = candidates[0]
+        if control.control_id == "windows.process_injection.mitigation":
+            raise ValueError("IFEO-root DWORD is not an effective per-image injection mitigation; native backend required")
         prior_present, prior, prior_type = self._read_state(
             control.subkey, control.value_name
         )
@@ -871,7 +884,7 @@ class RegistryHardeningAction(RemediationAction):
             prior_type != winreg.REG_DWORD or not isinstance(prior, int)
         ):
             raise ValueError("registry prior state is not an exact DWORD")
-        return {
+        transaction = {
             "ok": False,
             "action": self.key,
             "technique": _exact_mitre_id(w),
@@ -887,10 +900,17 @@ class RegistryHardeningAction(RemediationAction):
             "mutation_started": False,
             "compensation_ready": True,
         }
+        from angerona.core.patch_center import bind_reviewed_patch_transaction
+        bind_reviewed_patch_transaction(w, transaction)
+        return transaction
 
     def apply_transactional(
         self, w: dict, quarantine_dir: Path, transaction: dict
     ) -> dict:
+        if self._unsupported_record(transaction) or _exact_mitre_id(w) == "T1055":
+            raise PermissionError("Legacy IFEO-root control is unsupported for new mutation or protection credit")
+        from angerona.core.patch_center import require_reviewed_patch_dispatch
+        require_reviewed_patch_dispatch(w, transaction)
         del w, quarantine_dir
         import winreg
 
@@ -1023,14 +1043,12 @@ class RegistryHardeningAction(RemediationAction):
         )
 
     def verify(self, w: dict, record: dict) -> bool:
-        import winreg
+        if self._unsupported_record(record) or _exact_mitre_id(w) == "T1055":
+            return False
         try:
-            k = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, record["subkey"], 0, winreg.KEY_READ)
-            try:
-                val, _ = winreg.QueryValueEx(k, record["name"])
-            finally:
-                winreg.CloseKey(k)
-            return int(val) == int(record["new"])
+            return (type(record.get("new")) is int
+                    and self._state_matches(self._read_state(record["subkey"], record["name"]),
+                                            present=True, value=record["new"], value_type=4))
         except Exception:
             return False
 
@@ -1658,6 +1676,7 @@ class _RecoveryCoordinator:
         "_registry_object",
         "_registry_snapshot",
         "_store_ref",
+        "_registry_rollback_action",
     )
 
     def __init__(self, store, registry: list[RemediationAction]) -> None:
@@ -1665,7 +1684,12 @@ class _RecoveryCoordinator:
         self._store_ref = weakref.ref(store)
         self._registry_object = registry
         self._registry_snapshot = snapshot
-        self._capability = store._bind_recovery_coordinator(snapshot)
+        # Manual rollback has one fixed inverse action. It never participates
+        # in ordinary weakness matching, but an interrupted inverse must remain
+        # recoverable through this same durable coordinator.
+        from angerona.core.patch_controls import RegistryControlRollbackAction
+        self._registry_rollback_action = RegistryControlRollbackAction()
+        self._capability = store._bind_recovery_coordinator(snapshot + (self._registry_rollback_action,))
 
     def require_current(self, store, registry: list[RemediationAction]) -> None:
         if self._store_ref() is not store:
@@ -1680,7 +1704,7 @@ class _RecoveryCoordinator:
 
     def action_for(self, action_key: str) -> RemediationAction | None:
         matches = [
-            action for action in self._registry_snapshot if action.key == action_key
+            action for action in (*self._registry_snapshot, self._registry_rollback_action) if action.key == action_key
         ]
         return matches[0] if len(matches) == 1 else None
 
@@ -1731,6 +1755,10 @@ def classify_remediation(weakness: dict) -> RemediationDecision:
     Generic signal records may retain legacy matchers for compatibility, but
     overlapping matches are rejected instead of resolved by list ordering.
     """
+    if (_exact_mitre_id(weakness) == "T1055"
+            or _exact_control_id(weakness) == "windows.process_injection.mitigation"):
+        return RemediationDecision(reason=("Process-injection remediation is unsupported: the legacy IFEO-root "
+            "DWORD does not establish per-image native protection; a typed native mitigation backend and readback are required"))
     dominant = _matching_actions(weakness, DOMINANT_PROPOSAL_ACTIONS)
     if len(dominant) == 1:
         return RemediationDecision(
@@ -2046,11 +2074,18 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
             skipped += 1
             rec.update(
                 {
-                    "transaction_state": "apply_failed",
+                    "transaction_state": "recovery_required",
+                    "recovery_required": True,
+                    "blocked": True,
                     "mutation_started": False,
                     "error": f"durable MUTATING transition failed: {exc}",
                 }
             )
+            # The exact owner was already prepared durably. Keep its identity
+            # even though native mutation was never admitted; callers must not
+            # guess a transaction from recent audit rows or lose its recovery
+            # state. This does not manufacture a terminal result or receipt.
+            records.append(rec)
             _log("CRITICAL", f"{action.key} blocked before mutation: {exc}")
             _audit(mitre, action, "apply_failed", verified=0, rec=rec)
             continue
@@ -2086,6 +2121,8 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                         "journal_error": str(exc),
                     }
                 )
+                from angerona.core.patch_recovery import handoff_owned_failure
+                handoff_owned_failure(_rlog, transaction_owner, rec, failed_result="applied", error=exc)
                 mutation_circuit_open = True
                 skipped += 1
                 records.append(rec)
@@ -2113,6 +2150,8 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                         "journal_error": str(exc),
                     }
                 )
+                from angerona.core.patch_recovery import handoff_owned_failure
+                handoff_owned_failure(_rlog, transaction_owner, rec, failed_result="apply_failed_no_change", error=exc)
                 mutation_circuit_open = True
                 records.append(rec)
                 _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
@@ -2136,6 +2175,8 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                         "journal_error": str(exc),
                     }
                 )
+                from angerona.core.patch_recovery import handoff_owned_failure
+                handoff_owned_failure(_rlog, transaction_owner, rec, failed_result="recovery_required", error=exc)
                 _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
                 continue
             rec["proof_receipt"] = proof
@@ -2167,6 +2208,8 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                         "journal_error": str(exc),
                     }
                 )
+                from angerona.core.patch_recovery import handoff_owned_failure
+                handoff_owned_failure(_rlog, transaction_owner, rec, failed_result="rolled_back", error=exc)
                 mutation_circuit_open = True
                 records.append(rec)
                 _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
@@ -2189,6 +2232,8 @@ def apply_remediation(weaknesses: list[dict], quarantine_dir, apply: bool = Fals
                     "journal_error": str(exc),
                 }
             )
+            from angerona.core.patch_recovery import handoff_owned_failure
+            handoff_owned_failure(_rlog, transaction_owner, rec, failed_result="rollback_failed", error=exc)
             _log("CRITICAL", f"{action.key} terminal journal write failed: {exc}")
             continue
         _log("CRITICAL", f"{action.key} rollback failed; recovery required: {rec}")
@@ -2261,7 +2306,14 @@ def reconcile_remediation_transaction(
     record = dict(transaction.get("record") or {})
     if action.reversible:
         try:
-            rollback = action.rollback(record)
+            # A compensation may already have reached its exact prior state
+            # before its terminal receipt failed. Fresh native verification,
+            # never a retained boolean, can establish that no second write is
+            # needed. The usual postcondition verification and receipt still
+            # run through this same fixed coordinator capability.
+            already_prior = action.verify_rollback(record) is True
+            rollback = ({"ok": True, "changed": False, "retained_prior_already_verified": True}
+                        if already_prior else action.rollback(record))
             verified = (
                 isinstance(rollback, dict)
                 and rollback.get("ok") is True

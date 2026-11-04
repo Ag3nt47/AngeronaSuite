@@ -169,6 +169,11 @@ class ResolveCenter(QDialog):
             self.setStyleSheet(parent.styleSheet())
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._refresh_activity = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         self._head = QLabel("Resolve Center")
         self._head.setObjectName("PageTitle")
         root.addWidget(self._head)
@@ -265,6 +270,8 @@ class ResolveCenter(QDialog):
             return
         if not _READERS.acquire(blocking=False):
             self._status.setText("Alert readers are busy; keeping the previous view. Retrying…")
+            self._activities.finish(self._refresh_activity)
+            self._refresh_activity = None
             return
         self._busy = True
         self._pending_refresh = False
@@ -281,8 +288,12 @@ class ResolveCenter(QDialog):
             _READERS.release()
             self._busy = False
             self._status.setText("Could not start alert refresh; retrying…")
+            self._activities.finish(self._refresh_activity)
+            self._refresh_activity = None
 
     def _reload(self, *_args) -> None:
+        if not self._closed.is_set():
+            self._refresh_activity = self._activities.begin("refresh", "Refreshing selected alert view…")
         self._force_reload = True
         self._invalidate_snapshot()
 
@@ -309,8 +320,12 @@ class ResolveCenter(QDialog):
                 self._render_page()
         if self._pending_refresh or generation != self._generation:
             self._refresh()
+        else:
+            self._activities.finish(self._refresh_activity)
+            self._refresh_activity = None
 
     def closeEvent(self, event) -> None:
+        self._activities.close()
         self._closed.set()
         self._timer.stop()
         self._result_timer.stop()

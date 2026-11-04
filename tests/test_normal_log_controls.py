@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtWidgets import QApplication, QWidget
@@ -189,6 +190,38 @@ def test_warning_is_nonmodal_cached_only_and_shown_once_per_category(inert):
     assert not calls and not opened
     assert not config.settings_path.exists()
     controller.close()
+
+
+def test_inbox_normal_log_warning_rechecks_policy_and_opens_only_on_review(inert):
+    config, state, calls, parent = inert
+    opened = []
+    inbox = Mock()
+    owner = gui.NormalLogWarningController(config, parent, opened.append, notifications=inbox)
+    try:
+        state.update(configured_at="first")
+        state["targets"][0].update(reason="file-limit")
+        owner.poll()
+        old_review = inbox.upsert.call_args.args[3]
+        assert owner._warning is None and not calls
+        state["configured_at"] = "second"
+        old_review()
+        assert owner._warning is None and not calls
+        review = inbox.upsert.call_args.args[3]
+        review()
+        dialog = owner._warning
+        assert dialog is not None and not dialog.isModal()
+        review()
+        assert owner._warning is dialog
+        state["configured_at"] = "third"
+        _click(dialog, "Block")
+        assert owner._warning is None and not calls
+        inbox.upsert.call_args.args[3]()
+        _click(owner._warning, "Block")
+        assert len(calls) == 1 and calls[0]["paused"] is True
+        assert config.normal_log_paused is False and not opened
+        inbox.remove.assert_called_with("storage:normal-logs")
+    finally:
+        owner.close()
 
 
 def test_warning_block_does_not_persist_and_busy_result_opens_settings(inert, monkeypatch):

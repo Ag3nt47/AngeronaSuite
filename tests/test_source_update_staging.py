@@ -12,6 +12,10 @@ from types import SimpleNamespace
 import pytest
 
 from angerona.updater import source_stage as stage
+from angerona.core.startup_recovery import (
+    RECOVERY_COHERENCE_FILES, RECOVERY_MANIFEST_PATH, RECOVERY_VERIFIER_PATH,
+    RECOVERY_BATCH_PATH, derive_recovery_coherent_tree,
+)
 
 BASE, TARGET, LOCAL = "a" * 40, "b" * 40, "c" * 40
 
@@ -25,10 +29,17 @@ def archive(tree: dict[str, bytes], revision: str) -> bytes:
 
 
 def fixture(tmp_path: Path, monkeypatch, base, user, incoming):
+    repo = Path(__file__).resolve().parents[1]
+    names = (*RECOVERY_COHERENCE_FILES, RECOVERY_MANIFEST_PATH,
+             RECOVERY_VERIFIER_PATH, RECOVERY_BATCH_PATH)
+    controls = {name: (repo / name).read_bytes() for name in names}
+    controls["src/angerona/__init__.py"] = (repo / "src/angerona/__init__.py").read_bytes()
     for tree in (base, user, incoming):
-        tree.setdefault("pyproject.toml", b'[project]\nname="angerona"\nversion="1.14.0"\n')
-        tree.setdefault("src/angerona/__init__.py", b'__version__="1.14.0"\n')
-        tree.setdefault("src/angerona/__main__.py", b"pass\n")
+        complete = dict(controls)
+        complete.update(tree)
+        effective, _proof = derive_recovery_coherent_tree(complete)
+        tree.clear()
+        tree.update(effective)
     source, state = tmp_path / "installation", tmp_path / "state"
     source.mkdir()
     for name, content in user.items():
@@ -536,3 +547,97 @@ def test_posix_recorded_candidate_open_refuses_post_lstat_replacement_before_fdo
     assert acquired == closed == ([] if replacement == "symlink" else [29])
     if replacement != "symlink":
         assert events[-2:] == ["fstat", "close"]
+
+
+def test_large_real_supervisor_prefix_and_append_changes_merge_without_weakening_work_cap():
+    control = Path(__file__).resolve().parents[1] / "tools/Invoke-AngeronaSourceStartup.ps1"
+    base = control.read_bytes()
+    prefix, suffix = b"# local merge-window fixture\n", b"# upstream merge-window fixture\n"
+    assert base.endswith(b"\n")
+    base_lines = len(base.decode("utf-8").splitlines())
+    assert base_lines * (2 * base_lines + 2) > stage.MAX_MERGE_COMPARISONS
+    result = stage.merge_file(base, prefix + base, base + suffix)
+    assert result.action == "merged" and result.content == prefix + base + suffix
+    assert stage.MAX_MERGE_COMPARISONS == 2_000_000
+
+
+def test_actual_control_staging_merges_disjoint_comments_and_retains_source(tmp_path, monkeypatch):
+    name = "tools/Invoke-AngeronaSourceStartup.ps1"
+    control = (Path(__file__).resolve().parents[1] / name).read_bytes()
+    prefix, suffix = b"# retained local operational comment\n", b"# incoming operational comment\n"
+    base, user, incoming = {name: control}, {name: prefix + control}, {name: control + suffix}
+    source, state, archives, compare = fixture(tmp_path, monkeypatch, base, user, incoming)
+    original = (source / name).read_bytes()
+    result = stage.prepare_source_update(source, state, TARGET,
+        fetch=lambda _path: compare, download=archives.__getitem__)
+    assert result.status == "prepared" and result.conflicts == ()
+    candidate = state / result.stage_id / "candidate"
+    assert (candidate / name).read_bytes() == prefix + control + suffix
+    manifest = json.loads((state / result.stage_id / "manifest.json").read_bytes())
+    row = next(item for item in manifest["files"] if item["path"] == name)
+    assert row["action"] == "merged" and row["candidate"] == hashlib.sha256(prefix + control + suffix).hexdigest()
+    assert (source / name).read_bytes() == original
+    validation = stage.validate_source_candidate(state / result.stage_id, result.manifest_sha256)
+    assert validation["static_checks"] == "passed" and validation["activation"] == "held"
+
+
+@pytest.mark.parametrize("local_start,local_end,local_replacement,remote_start,remote_end,remote_replacement", [
+    (3, 5, [b"local-three\n"], 8, 9, [b"remote-eight-a\n", b"remote-eight-b\n"]),
+    (2, 2, [b"local-insert\n"], 8, 10, []),
+    (2, 4, [], 9, 9, [b"remote-insert\n"]),
+])
+def test_trimmed_two_side_edits_keep_independent_original_offsets(
+    local_start, local_end, local_replacement, remote_start, remote_end, remote_replacement,
+):
+    lines = [f"original-{index}\n".encode() for index in range(12)]
+    base = b"".join(lines)
+    local = b"".join(lines[:local_start] + local_replacement + lines[local_end:])
+    incoming = b"".join(lines[:remote_start] + remote_replacement + lines[remote_end:])
+    expected = b"".join(lines[:local_start] + local_replacement + lines[local_end:remote_start]
+                         + remote_replacement + lines[remote_end:])
+    result = stage.merge_file(base, local, incoming)
+    assert result.action == "merged" and result.content == expected
+
+
+@pytest.mark.parametrize("base,local,incoming", [
+    (b"a\nb\nc\nd\ne\n", b"a\nb\nC\nd\ne\n", b"a\nb\ninsert\nc\nd\ne\n"),
+    (b"a\nb\nc\nd\ne\n", b"a\nb\nC\nd\ne\n", b"a\nb\nc\ninsert\nd\ne\n"),
+    (b"a\nb\nc\n", b"a\nlocal\nb\nc\n", b"a\nremote\nb\nc\n"),
+    (b"head\nx\nx\nx\ntail\n", b"head\nx\nlocal\nx\ntail\n", b"head\nx\nremote\nx\ntail\n"),
+    (b"head\nx\nx\nx\ntail\n", b"head\nx\nx\ntail\n", b"head\nx\nx\nremote\nx\ntail\n"),
+])
+def test_trimmed_overlap_repeated_context_and_boundary_insertions_remain_conflicts(base, local, incoming):
+    result = stage.merge_file(base, local, incoming)
+    assert result.action == "conflict" and result.content is None
+    assert result.reason == "overlapping text changes"
+
+
+def test_cancellation_during_exact_edge_scan_raises_before_matcher(monkeypatch):
+    base = b"".join(f"unchanged-{index}\n".encode() for index in range(4000))
+    calls = 0
+
+    def cancelled():
+        nonlocal calls
+        calls += 1
+        return calls >= 20
+
+    monkeypatch.setattr(stage.difflib, "SequenceMatcher", lambda *_args, **_kwargs: pytest.fail("Cancelled trimming must not start matching"))
+    with pytest.raises(stage.SourceStageError, match="cancelled"):
+        stage.merge_file(base, b"local\n" + base, base + b"upstream\n", cancelled=cancelled)
+    assert calls == 20
+
+
+def test_cancellation_after_first_actual_matcher_raises_without_second_matcher(monkeypatch):
+    original_edits, calls, cancellation = stage._edits, [], [False]
+
+    def observed(base, changed):
+        result = original_edits(base, changed)
+        calls.append((tuple(base), tuple(changed)))
+        cancellation[0] = True
+        return result
+
+    monkeypatch.setattr(stage, "_edits", observed)
+    with pytest.raises(stage.SourceStageError, match="cancelled"):
+        stage.merge_file(b"a\nb\nc\nd\ne\n", b"A\nb\nc\nd\ne\n", b"a\nb\nc\nd\nE\n",
+                         cancelled=lambda: cancellation[0])
+    assert len(calls) == 1

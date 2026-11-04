@@ -1,6 +1,7 @@
 """Cached normal crash-log controls; no log reads, deletion or native queries."""
 from __future__ import annotations
 
+from collections import deque
 from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, Qt, QTimer
@@ -184,11 +185,15 @@ class NormalLogControls(QGroupBox):
 
 class NormalLogWarningController(QObject):
     """One nonmodal warning per category per run, from cached values only."""
-    def __init__(self, config, parent, open_settings):
+    _NOTICE = "storage:normal-logs"
+
+    def __init__(self, config, parent, open_settings, *, notifications=None):
         super().__init__(parent)
         self._config, self._open_settings = config, open_settings
+        self._notifications = notifications
         self._warning = None
-        self._acknowledged = set()
+        self._warning_key = None
+        self._acknowledged = deque(maxlen=64)
         self._closed = False
         self._timer = QTimer(self)
         self._timer.setInterval(30_000)
@@ -196,22 +201,63 @@ class NormalLogWarningController(QObject):
         self._timer.start()
         QApplication.instance().aboutToQuit.connect(self.close)
 
-    def poll(self):
-        if self._closed:
-            return
+    def _state(self):
         snapshot = normal_write_snapshot()
         pending = getattr(self._config, "_normal_log_policy_pending", False) is True
         category = "policy-not-applied" if pending else normal_log_warning(snapshot)
-        if not category or category in self._acknowledged or self._warning is not None:
+        if self._notifications is None or not category:
+            return snapshot, pending, category
+        live = snapshot if type(snapshot) is dict else {}
+        key = (category, live.get("configured_at"), live.get("limit_bytes"), live.get("message_bytes"),
+               self._config.normal_log_max_mib, self._config.normal_log_message_kib,
+               self._config.normal_log_paused)
+        return snapshot, pending, key
+
+    def poll(self):
+        if self._closed:
             return
-        self._acknowledged.add(category)
+        snapshot, pending, key = self._state()
+        if self._notifications is not None:
+            if not key or key in self._acknowledged:
+                self._notifications.remove(self._NOTICE)
+            else:
+                self._notifications.upsert(
+                    self._NOTICE, "Normal log storage needs review",
+                    self._review_text(snapshot, pending), lambda: self._review(key))
+            return
+        if key and key not in self._acknowledged and self._warning is None:
+            self._acknowledged.append(key)
+            self._show_review(snapshot, pending, key)
+
+    def _review(self, expected):
+        if self._closed:
+            return
+        snapshot, pending, key = self._state()
+        if key != expected or key in self._acknowledged:
+            self.poll()
+            return
+        if self._warning is not None:
+            if self._warning_key == key:
+                if self._warning.isMinimized():
+                    self._warning.showNormal()
+                self._warning.raise_()
+                self._warning.activateWindow()
+                return
+            self._warning.reject()
+        self._show_review(snapshot, pending, key)
+
+    @staticmethod
+    def _review_text(snapshot, pending):
         pending_text = ("Saved or requested normal log policy has not been applied to the live writer. "
                         "Active limits are shown below; your requested block or tighter limit may not be active.\n\n"
                         if pending else "")
-        dialog = QMessageBox(QMessageBox.Warning, "Angerona normal log storage needs review",
-            pending_text + normal_log_usage(snapshot) + "\n\nChoose Block for this run, or review Allow / change limits "
+        return (pending_text + normal_log_usage(snapshot) + "\n\nChoose Block for this run, or review Allow / change limits "
             "in Settings. Logging limits do not block startup or stop the security engines. "
-            "Native fault output is separate and remains outside this normal-message budget.",
+            "Native fault output is separate and remains outside this normal-message budget.")
+
+    def _show_review(self, snapshot, pending, key):
+        dialog = QMessageBox(QMessageBox.Warning, "Angerona normal log storage needs review",
+            self._review_text(snapshot, pending),
             parent=self.parent())
         block = dialog.addButton("Block for this run", QMessageBox.RejectRole)
         change = dialog.addButton("Allow / change limits…", QMessageBox.ActionRole)
@@ -221,14 +267,25 @@ class NormalLogWarningController(QObject):
         dialog.setEscapeButton(keep)
         dialog.setTextFormat(Qt.PlainText)
         dialog.setWindowModality(Qt.NonModal)
+        if self._notifications is not None:
+            dialog.setProperty("_angerona_no_reveal", True)
         self._warning = dialog
+        self._warning_key = key
 
         def finished(_result):
             clicked = dialog.clickedButton()
             self._warning = None
+            self._warning_key = None
+            dialog.deleteLater()
             if self._closed:
-                dialog.deleteLater()
                 return
+            if self._notifications is not None:
+                if self._state()[2] != key:
+                    self.poll()
+                    return
+                if clicked is not None and clicked is not change:
+                    self._acknowledged.append(key)
+                    self._notifications.remove(self._NOTICE)
             if clicked is block:
                 result = apply_normal_log_policy(SimpleNamespace(
                     normal_log_max_mib=self._config.normal_log_max_mib,
@@ -242,12 +299,13 @@ class NormalLogWarningController(QObject):
                     self._open_settings("General")
             elif clicked is change:
                 self._open_settings("General")
-            dialog.deleteLater()
         dialog.finished.connect(finished)
         dialog.show()
 
     def close(self, *_args):
         self._closed = True
         self._timer.stop()
+        if self._notifications is not None:
+            self._notifications.remove(self._NOTICE)
         if self._warning is not None:
             self._warning.reject()

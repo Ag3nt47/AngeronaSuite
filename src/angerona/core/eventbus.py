@@ -110,6 +110,18 @@ class SubscriberMetrics:
     total_delivery_ms: float
 
 
+@dataclass(frozen=True)
+class ActiveSubscriberDelivery:
+    name: str
+    started_monotonic: float
+
+
+@dataclass(frozen=True)
+class SubscriberActivity:
+    rows: tuple[ActiveSubscriberDelivery, ...]
+    untracked_active: int
+
+
 # ── G3-A: Bus authentication ──────────────────────────────────────────────────
 
 class BusAuthority:
@@ -260,6 +272,10 @@ class EventBus:
         self._revision: int = 0
         self._priority_revision: int = 0
         self._subscriber_stats: dict[int, dict[str, object]] = {}
+        # No Event, payload, callable or publisher identity is retained here.
+        # Concurrent/reentrant publications have separate bounded observations.
+        self._active_subscriber_deliveries: dict[object, ActiveSubscriberDelivery] = {}
+        self._untracked_active_subscriber_deliveries = 0
 
     # G3-A: wire in the signing authority
     def arm(self, authority: BusAuthority) -> None:
@@ -492,31 +508,62 @@ class EventBus:
         # an O(1), bounded memory/queue handoff; storage and other I/O use their
         # dedicated workers in both GUI and headless service graphs.
         for fn in subs:
-            started = time.perf_counter()
             failed = False
+            active_token = object()
+            with self._lock:
+                stats = self._subscriber_stats.get(id(fn))
+                name = stats["name"] if stats is not None else "unregistered callback"
+                started = time.perf_counter()
+                if len(self._active_subscriber_deliveries) < 64:
+                    self._active_subscriber_deliveries[active_token] = ActiveSubscriberDelivery(
+                        name=name, started_monotonic=started,
+                    )
+                else:
+                    self._untracked_active_subscriber_deliveries += 1
+                    active_token = None
             try:
                 fn(event)
             except Exception:
                 # A misbehaving subscriber must never crash the producer.
                 failed = True
-            elapsed_ms = (time.perf_counter() - started) * 1000.0
-            with self._lock:
-                stats = self._subscriber_stats.get(id(fn))
-                if stats is None:
-                    continue
-                stats["deliveries"] = int(stats["deliveries"]) + 1
-                stats["failures"] = int(stats["failures"]) + int(failed)
-                stats["last_delivery_ms"] = elapsed_ms
-                stats["max_delivery_ms"] = max(float(stats["max_delivery_ms"]), elapsed_ms)
-                stats["total_delivery_ms"] = float(stats["total_delivery_ms"]) + elapsed_ms
-                if elapsed_ms > float(stats["delivery_budget_ms"]):
-                    stats["budget_violations"] = int(stats["budget_violations"]) + 1
+            finally:
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                with self._lock:
+                    if active_token is None:
+                        self._untracked_active_subscriber_deliveries -= 1
+                    else:
+                        self._active_subscriber_deliveries.pop(active_token, None)
+                    stats = self._subscriber_stats.get(id(fn))
+                    if stats is not None:
+                        stats["deliveries"] = int(stats["deliveries"]) + 1
+                        stats["failures"] = int(stats["failures"]) + int(failed)
+                        stats["last_delivery_ms"] = elapsed_ms
+                        stats["max_delivery_ms"] = max(float(stats["max_delivery_ms"]), elapsed_ms)
+                        stats["total_delivery_ms"] = float(stats["total_delivery_ms"]) + elapsed_ms
+                        if elapsed_ms > float(stats["delivery_budget_ms"]):
+                            stats["budget_violations"] = int(stats["budget_violations"]) + 1
 
     def subscriber_metrics(self) -> tuple[SubscriberMetrics, ...]:
         """Return bounded inline-delivery SLO evidence for diagnostics/UI."""
         with self._lock:
             rows = [SubscriberMetrics(**dict(row)) for row in self._subscriber_stats.values()]
         return tuple(sorted(rows, key=lambda row: row.name.casefold()))
+
+    def subscriber_activity(self) -> SubscriberActivity | None:
+        """Copy bounded in-flight metadata without clocks, callbacks or I/O.
+
+        A busy cache is explicitly unavailable. Start stamps are observations,
+        not sensor heartbeats; quiet reads do not invent changing durations.
+        """
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            return SubscriberActivity(
+                rows=tuple(self._active_subscriber_deliveries.values()),
+                untracked_active=self._untracked_active_subscriber_deliveries,
+            )
+        finally:
+            self._lock.release()
 
     def recent(self, limit: int = 100) -> List[Event]:
         with self._lock:

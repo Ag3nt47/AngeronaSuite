@@ -48,7 +48,9 @@ def test_auto_adapt_chapter_extends_all_existing_bounded_demo_slots():
     assert tool.MAX_GIF == 12 * 1024 * 1024
     assert set(tool.SCREENSHOTS) == {"github-tools-demo", "zero-breach-demo", "spyware-scan-demo",
         "breach-lockdown-demo", "after-action-demo", "github-tools-settings-demo",
-        "github-tools-credits-demo", "auto-adapt-demo"}
+        "github-tools-credits-demo", "auto-adapt-demo",
+        "red-team-progress-demo", "red-team-passing-demo", "red-team-diagnostics-demo",
+        "component-heartbeats-demo", "heartbeat-details-demo"}
     assert {"src/angerona/gui/adaptation_workbench.py", "src/angerona/core/host_adaptation.py",
         "src/angerona/gui/window_controls.py", "src/angerona/gui/recovery_panel.py",
         "src/angerona/gui/prevention_panel.py", "src/angerona/core/windows_prevention.py"} <= set(tool.CAPTURE_SOURCES)

@@ -225,19 +225,69 @@ def _response_owner(monkeypatch):
 
 
 def test_producer_revocation_during_durable_intent_holds_before_effect(monkeypatch):
-    combat, _producer, event, current = _response_owner(monkeypatch)
-    monkeypatch.setattr(combat, "_require_host_mutation_authority", lambda **_: None)
+    # Seed only the existing inert native-sample seam. Retention, event signing
+    # and the producer's actual verifier still establish/revoke this unit proof.
+    producer, bus = make_module()
+    digest = "a" * 64
+    review = {"indicator_kind": "sha256", "indicator": digest, "locally_activated": True}
+    current = {"valid": True, "phase": "before-intent"}
+    review_calls = []
+
+    def current_review(value):
+        available = current["valid"] and value == digest
+        review_calls.append((current["phase"], value, available))
+        return review if available else None
+
+    monkeypatch.setattr(producer, "_current_hash_review", current_review)
+    monkeypatch.setattr("angerona.modules.spyware_guard.time.monotonic", lambda: 100.0)
+    monkeypatch.setattr("angerona.modules.adversary_combat.time.time", lambda: NOW)
+    record = {"kind": "definition_sha256_indicator_match", "pid": 45001,
+              "process_create_time": NOW - 10, "path": "C:/inert/fixture.exe",
+              "observed_content_sha256": digest, "evidence": review, "severity": "HIGH"}
+    token = object()
+    producer._native_hash_samples[token] = (
+        producer.lifecycle_generation, producer._stop, 100.0, record["path"], digest, 45001, NOW - 10)
+    producer._publish(record, local_authority=True, native_sample=token)
+    event = bus.recent(1)[0]
+    assert bus.verify(event) and producer.verify_response_event(event)
+    assert "terminate_process" in event.details["response_contract"]["actions"]
+
+    combat = AdversaryCombat()
+    combat.bind(bus)
+    combat.bind_manager(SimpleNamespace(modules={producer.name: producer}))
+    # Installed/native observations are inert in this admission unit; never
+    # replace the combined guard or the original producer verifier itself.
+    monkeypatch.setattr("angerona.core.breach_state.protect_authority",
+                        lambda: (True, "Inert installed-authority observation fixture"))
+    ownership_calls = []
+
+    def observe_target(pid, created, _image):
+        assert (pid, created) == (45001, NOW - 10)
+        ownership_calls.append(current["phase"])
+
+    monkeypatch.setattr(combat, "_require_process_not_owned", observe_target)
     monkeypatch.setattr(combat, "_journal_writer_lease", nullcontext)
     monkeypatch.setattr(combat, "_pinned_journal_session", lambda **_: nullcontext())
     monkeypatch.setattr(combat, "_reserve_journal_capacity", lambda _: None)
     monkeypatch.setattr(combat, "_validated_active_journal_cache", lambda: object())
-    monkeypatch.setattr(combat, "_journal_intent", lambda _: current.update(valid=False))
+    intents = []
+
+    def durable_intent(candidate):
+        intents.append(candidate)
+        assert producer.verify_response_event(event)
+        current.update(valid=False, phase="after-intent")
+
+    monkeypatch.setattr(combat, "_journal_intent", durable_intent)
     action = combat._action("terminate_process", "inert fixture", event, "inert-case",
                             reversible=False, details={"pid": 45001, "create_time": NOW - 10})
     effects = []
     with pytest.raises(HostMutationHeld, match="immutable producer proof"):
         with combat._journaled_mutation(action, event=event):
             effects.append("native effect must remain unreachable")
+    assert intents == [action] and current["valid"] is False
+    assert "after-intent" in ownership_calls
+    assert any(phase == "after-intent" and value == digest and available is False
+               for phase, value, available in review_calls)
     assert effects == []
 
 

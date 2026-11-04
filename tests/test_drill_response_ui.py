@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, Signal
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from angerona.gui.main_window import MainWindow
 from angerona.gui.red_team_console import RedTeamConsole
@@ -198,9 +198,11 @@ def _launch_window():
         red_team_engine=SimpleNamespace(is_running=False),
         manager=SimpleNamespace(modules={}),
         _eco_on=False,
+        _simulation_session=None,
         console=SimpleNamespace(_append=lines.append),
     )
-    for name in ("_simulation_launch_status", "_check_simulation_response", "_run_simulation"):
+    for name in ("_simulation_launch_status", "_check_simulation_response", "_run_simulation",
+                 "_session_is_active"):
         setattr(window, name, MethodType(getattr(MainWindow, name), window))
     return window, lines
 
@@ -287,6 +289,20 @@ def test_chill_queued_launch_checks_readiness_after_wake(monkeypatch):
     assert result["status"] == "queued"
     assert window._pending_simulation_cfg["auto_remediate"]
     assert not hasattr(window, "_shark_prev_armed")
+
+
+def test_chill_launch_cannot_bypass_unknown_session_custody(monkeypatch):
+    window, _ = _launch_window()
+    # Unknown session ownership must hold admission even with idle engine flags.
+    window._simulation_session = SimpleNamespace()
+    window._eco_on = True
+    window._chill_policy = SimpleNamespace(
+        enabled=True, force_escalate=lambda *_: pytest.fail("busy session woke sensors"),
+    )
+    monkeypatch.setattr(QMessageBox, "information", lambda *_args: None)
+    result = window._run_simulation({"run_redteam": True, "auto_remediate": True})
+    assert result["status"] == "rejected" and result["busy"] is True
+    assert not hasattr(window, "_pending_simulation_cfg")
 
 
 def test_stop_cancels_pending_wake_launch(console):

@@ -18,6 +18,7 @@ from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
 from angerona.core.module_manager import ModuleManager
 from angerona.gui.curated_tools import CuratedToolsController, SpywareScanControls
+from angerona.modules import spyware_guard
 from test_spyware_native_progress import module_with, retire
 
 
@@ -136,13 +137,16 @@ from angerona.core.curated_tool_worker import main
     entered, release = threading.Event(), threading.Event()
     native_calls = []
 
-    def persistence(**kwargs):
-        native_calls.append(kwargs)
+    def selected_paths(targets, *, cancelled):
+        native_calls.append(targets)
         entered.set()
         assert release.wait(45)
-        return {"findings": [], "coverage": {"controlled": "inert empty source"}}
+        assert not cancelled()
+        return {"state": "completed", "checked": 1, "skipped": 0, "findings": []}
 
-    native = module_with(monkeypatch, persistence_collector=persistence)
+    monkeypatch.setattr(spyware_guard, "scan_selected_paths", selected_paths)
+    native = module_with(monkeypatch, persistence_collector=lambda **_kwargs: pytest.fail(
+        "Selected-file scope collected unrelated system persistence"))
     pacing = background_pacing.BackgroundPacingController()
     monkeypatch.setattr(background_pacing, "_CONTROLLER", pacing)
     manager = ModuleManager(EventBus(), cfg)
@@ -186,8 +190,9 @@ from angerona.core.curated_tool_worker import main
         _until(lambda: not controller.snapshot()["busy"])
         _until(lambda: len(completed_reports) == 1)
         result = controller.snapshot()
-        assert result["state"] == "completed" and result["findings"]
         tool = result["details"]["zero_breach"]
+        assert result["state"] == ("incomplete" if tool.get("coverage_incomplete") else "completed")
+        assert result["findings"]
         assert tool["state"] == "findings" and tool["native_retired"] is True
         assert tool["native_generations"] and all(row["native_retired"] for row in tool["native_generations"])
         assert Path(result["report"]).is_relative_to(root) and Path(result["report"]).is_file()
@@ -219,7 +224,7 @@ from angerona.core.curated_tool_worker import main
                                     for value in observations)
         assert all(not value["busy"] or panel_value.get("finished", 0) < panel_value.get("total", 1)
                    for value in observations if (panel_value := value.get("scan_progress")))
-        assert native_calls == [{"max_entries": 512}]
+        assert native_calls == [(str(evidence),)]
         assert original.read_bytes() == inert
         assert hashlib.sha256((bundle / "engine.py").read_bytes()).hexdigest() == pinned
         stderr = Path(result["report"]).with_name("stderr.log").read_text(encoding="utf-8")

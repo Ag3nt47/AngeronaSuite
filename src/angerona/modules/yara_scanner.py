@@ -10,14 +10,17 @@ import hashlib
 import hmac
 import json
 import math
+from importlib.metadata import version as distribution_version
 import os
 import io
+import re
 import secrets
 import stat as stat_module
 import sys
 import threading
 import time
 import zipfile
+import weakref
 from bisect import bisect_right
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -30,6 +33,7 @@ from angerona.core.module_base import BaseModule, Severity
 from angerona.core.eventbus import Event
 from angerona.core.response_contract import authorize_response
 from angerona.core.archive_safety import preflight_zip_bytes
+from angerona.core.response_proof import ProducerResponseProofs, event_proof_digest, proof_digest
 
 
 SCAN_DIRS = [
@@ -47,6 +51,65 @@ _CURSOR_SCHEMA = "angerona.yara-fair-cursor.v1"
 _CURSOR_SIG = "hmac_sha256"
 _RUNTIME_ROOTS: set[Path] = set()
 _RUNTIME_ROOTS_LOCK = threading.Lock()
+_CONTROL_NATIVE_VERSION = "1.19.0"
+_CONTROL_SOURCE_LIMIT = 1024 * 1024
+
+
+class _YaraControlEnrollment:
+    """Plain owner-liveness metadata; never owns a native object or wrapper."""
+
+    __slots__ = ("enrollment_id", "generation", "source_epoch", "compile_input_sha256",
+                 "recipe_sha256", "native_version", "active", "producer_ref", "owner",
+                 "__weakref__")
+
+    def __init__(self, producer, *, source_digest, recipe_digest, native_version):
+        self.enrollment_id = secrets.token_hex(24)
+        self.generation = producer.lifecycle_generation
+        self.source_epoch = producer._control_source_epoch
+        self.compile_input_sha256 = source_digest
+        self.recipe_sha256 = recipe_digest
+        self.native_version = native_version
+        self.active = True
+        self.producer_ref = weakref.ref(producer)
+        self.owner = threading.get_ident()
+
+
+class _OwnerControlScanner:
+    """Native objects stay on the canonical scanner worker, including cleanup."""
+
+    __slots__ = ("_rules", "_scanner", "enrollment", "owner", "serial", "__weakref__")
+
+    def __init__(self, rules, scanner, enrollment):
+        self._rules, self._scanner = rules, scanner
+        self.enrollment = enrollment
+        self.owner = threading.get_ident()
+        self.serial = 0
+
+    def __setattr__(self, name, value):
+        if name in {"_rules", "_scanner", "enrollment", "owner"} and hasattr(self, name):
+            raise AttributeError("Controlled native scanner bindings are immutable.")
+        object.__setattr__(self, name, value)
+
+    def _require_owner(self):
+        if threading.get_ident() != self.owner:
+            raise RuntimeError("Controlled YARA scanner requires its creator thread.")
+
+    def begin_file_scan(self):
+        self._require_owner()
+        self.serial += 1
+        return self.serial
+
+    def scan(self, content):
+        self._require_owner()
+        if not self.enrollment.active:
+            raise RuntimeError("Controlled YARA scanner enrollment was revoked.")
+        return self._scanner.scan(content)
+
+    def close(self):
+        self._require_owner()
+        self.enrollment.active = False
+        object.__setattr__(self, "_scanner", None)
+        object.__setattr__(self, "_rules", None)
 
 
 def register_runtime_watch(path: str) -> bool:
@@ -121,6 +184,17 @@ class YaraScannerModule(BaseModule):
         self._scan_cache: OrderedDict[str, tuple[int, ...]] = OrderedDict()
         self._detection_receipts: OrderedDict[str, int] = OrderedDict()
         self._receipt_lock = threading.Lock()
+        self._redteam_receipt_capability = None
+        self._control_wake = threading.Event()
+        self._control_wake_request = None
+        self._control_source_epoch = secrets.token_hex(24)
+        self._control_enrollments = {}
+        self._control_enrollment_seals = {}
+        self._control_owner_refs = {}
+        self._control_proofs = ProducerResponseProofs()
+        self._control_proof_metadata = OrderedDict()
+        self._control_native_identity = None
+        self._control_last_error = ""
         self._cursor_state: dict[str, object] = {
             "schema": _CURSOR_SCHEMA,
             "sequence": 0,
@@ -179,7 +253,196 @@ class YaraScannerModule(BaseModule):
             raise
         return scanner
 
+    def bind_redteam_receipt_capability(self, capability, *, expected=None):
+        # Revocation touches plain state only; native retirement stays on owner.
+        with self._receipt_lock:
+            if expected is not None and self._redteam_receipt_capability is not expected:
+                return
+            self._redteam_receipt_capability = capability
+            self._control_source_epoch = secrets.token_hex(24)
+            for enrollment in self._control_enrollments.values():
+                enrollment.active = False
+            self._control_wake_request = None
+            self._control_wake.clear()
+            if capability is not None and self.status == "running" and not self.stopping:
+                self._control_wake_request = (self.lifecycle_generation, capability, None)
+                self._control_wake.set()
+
+    def signal_control_declaration(self, capability, enrollment, path):
+        """Coalesce a read-only hint for an exact declaration in an admitted root.
+
+        The issuer calls this after exclusive creation. The owner still uses
+        ordinary traversal and the complete native scan/proof path. Neither this
+        hint nor the plain enrollment token grants response authority.
+        """
+        try:
+            candidate = Path(path)
+            if (not self._control_enrollment_valid(enrollment)
+                    or candidate.parent not in scan_roots()
+                    or not candidate.name.startswith("_angerona_yara_control_")):
+                return False
+            with self._receipt_lock:
+                if (capability is not self._redteam_receipt_capability
+                        or not enrollment.active or enrollment.generation != self.lifecycle_generation
+                        or self.stopping or self.status != "running"):
+                    return False
+                self._control_wake_request = (self.lifecycle_generation, capability, enrollment)
+                self._control_wake.set()
+                return True
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+
+    def _sleep_for_scan(self):
+        self.sleep(_scan_interval(), _wake_event=self._control_wake)
+        with self._receipt_lock:
+            request = self._control_wake_request
+            self._control_wake_request = None
+            self._control_wake.clear()
+            current = bool(request is not None
+                and request[0] == self.lifecycle_generation
+                and request[1] is self._redteam_receipt_capability
+                and request[1] is not None and not self.stopping)
+        if current and (request[2] is None or self._control_enrollment_valid(request[2])):
+            # A hint can omit discretionary idle time, never the current
+            # throttle/Chill/priority floor. This is a wait, not a new cycle.
+            self.sleep(2.0, cycle_complete=False, _background_pacing=False)
+
+    @staticmethod
+    def _control_recipe(source_digest, source_size, native_version):
+        return {"schema": "canonical-yara-compile-input-v1",
+                "compile_input_sha256": source_digest, "source_bytes": source_size,
+                "native_version": native_version,
+                "compiler": "yara_x.compile-defaults-no-includes-imports-or-externals",
+                "scanner_timeout_seconds": 10, "max_matches_per_pattern": 64,
+                "fast_scan": True}
+
+    @staticmethod
+    def _enrollment_metadata(enrollment):
+        return {name: getattr(enrollment, name) for name in
+                ("enrollment_id", "generation", "source_epoch", "compile_input_sha256",
+                 "recipe_sha256", "native_version")}
+
+    def _make_control_scanner(self, source_snapshot: bytes):
+        """Compile exact immutable input on its real worker; no caller native inputs."""
+        import yara_x
+        if (type(self) is not YaraScannerModule
+                or self._thread is not threading.current_thread() or self.stopping
+                or self._redteam_receipt_capability is None
+                or type(source_snapshot) is not bytes
+                or not 1 <= len(source_snapshot) <= _CONTROL_SOURCE_LIMIT
+                or re.search(rb"\b(?:include|import)\b", source_snapshot, re.IGNORECASE)):
+            raise ValueError("Controlled YARA requires its worker and bounded include-free source.")
+        text = source_snapshot.decode("utf-8", errors="strict")
+        native_version = distribution_version("yara-x")
+        if native_version != _CONTROL_NATIVE_VERSION:
+            raise RuntimeError("Controlled YARA native version has not been validated.")
+        source_digest = hashlib.sha256(source_snapshot).hexdigest()
+        recipe_digest = proof_digest(self._control_recipe(source_digest, len(source_snapshot), native_version))
+        rules = scanner = wrapper = None
+        try:
+            rules = yara_x.compile(text)
+            if type(rules) is not yara_x.Rules:
+                raise RuntimeError("Controlled YARA did not compile native Rules.")
+            scanner = yara_x.Scanner(rules)
+            if type(scanner) is not yara_x.Scanner:
+                raise RuntimeError("Controlled YARA did not construct a native Scanner.")
+            scanner.set_timeout(10)
+            scanner.max_matches_per_pattern(64)
+            scanner.fast_scan(True)
+            enrollment = _YaraControlEnrollment(self, source_digest=source_digest,
+                recipe_digest=recipe_digest, native_version=native_version)
+            wrapper = _OwnerControlScanner(rules, scanner, enrollment)
+            with self._receipt_lock:
+                if self.stopping or enrollment.source_epoch != self._control_source_epoch:
+                    raise RuntimeError("Controlled YARA factory epoch was revoked.")
+                for prior in self._control_enrollments.values():
+                    prior.active = False
+                self._control_enrollments = {enrollment.enrollment_id: enrollment}
+                self._control_enrollment_seals = {enrollment.enrollment_id:
+                    proof_digest(self._enrollment_metadata(enrollment))}
+                self._control_owner_refs = {enrollment.enrollment_id: weakref.ref(wrapper)}
+                self._control_native_identity = (yara_x, yara_x.compile, yara_x.Rules, yara_x.Scanner)
+            return wrapper
+        except BaseException:
+            if wrapper is not None:
+                wrapper.close()
+            raise
+        finally:
+            # A configuration traceback must not carry these native aliases.
+            rules = scanner = wrapper = None
+
+    def _control_enrollment_valid(self, enrollment):
+        # This method never sees/dereferences a live native-owning wrapper.
+        try:
+            if (type(self) is not YaraScannerModule or type(enrollment) is not _YaraControlEnrollment
+                    or enrollment.producer_ref() is not self or not enrollment.active
+                    or enrollment.generation != self.lifecycle_generation or self.stopping
+                    or enrollment.source_epoch != self._control_source_epoch
+                    or self._thread is None or not self._thread.is_alive()
+                    or self.status != "running"
+                    or type(self)._make_control_scanner.__code__ is not _CONTROL_FACTORY_CODE
+                    or type(self)._scan_file.__code__ is not _CONTROL_SCAN_CODE):
+                return False
+            native, compiler, rules_type, scanner_type = self._control_native_identity
+            if (native.compile is not compiler or native.Rules is not rules_type
+                    or native.Scanner is not scanner_type):
+                return False
+            with self._receipt_lock:
+                return bool(self._control_enrollments.get(enrollment.enrollment_id) is enrollment
+                    and self._control_enrollment_seals.get(enrollment.enrollment_id)
+                    == proof_digest(self._enrollment_metadata(enrollment)))
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    def control_enrollment(self):
+        """Read-only plain token for issuer-owned control creation, never native objects."""
+        with self._receipt_lock:
+            return next((value for value in self._control_enrollments.values() if value.active), None)
+
+    def verify_control_detection_event(self, event):
+        try:
+            digest = event_proof_digest(event)
+            with self._receipt_lock:
+                metadata = self._control_proof_metadata.get(digest)
+                enrollment = self._control_enrollments.get(metadata["enrollment_id"]) if metadata else None
+                valid = bool(metadata and self._detection_receipts.get(digest) == self.lifecycle_generation
+                    and self._control_proofs.verify(event, generation=self.lifecycle_generation,
+                        now=time.monotonic(), review=metadata))
+            return bool(valid and self._control_enrollment_valid(enrollment))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            return False
+
+    def stop(self):
+        with self._receipt_lock:
+            for enrollment in self._control_enrollments.values():
+                enrollment.active = False
+            self._control_wake_request = None
+            self._control_wake.clear()
+        return super().stop()
+
+    def _optional_control_scanner(self):
+        if self._redteam_receipt_capability is None:
+            return None
+        try:
+            with Path(self._active_rules).open("rb") as source:
+                snapshot = source.read(_CONTROL_SOURCE_LIMIT + 1)
+            scanner = self._make_control_scanner(snapshot)
+            self._control_last_error = ""
+            return scanner
+        except Exception as exc:
+            reason = str(exc)[:500]
+            if reason != self._control_last_error:
+                self._control_last_error = reason
+                self.emit("YARA controlled validation unavailable; ordinary scanning continues.",
+                    Severity.MEDIUM, disposition="health", response_authorized=False,
+                    control_validation_reason=reason)
+            return None
+
     def _activate(self, path: Path):
+        with self._receipt_lock:
+            self._control_source_epoch = secrets.token_hex(24)
+            for enrollment in self._control_enrollments.values():
+                enrollment.active = False
         compiled = self._compile_rules(path)
         # yara-x Scanner is thread-bound. Validate configuration here, then
         # release this temporary scanner on its creator thread. The run thread
@@ -550,9 +813,65 @@ class YaraScannerModule(BaseModule):
                 remaining -= len(content)
                 yield member.filename[:512], content
 
-    def _scan_file(self, scanner, path: Path) -> str:
+    def _event_for_match(self, path, rule, member, digest, observed_file_identity,
+                         classification, archive_error, *, control_details=None):
+        # Construction alone grants no native receipt or response authority.
+        details = {
+            "path": str(path), "artifact_path": str(path), "rule": rule,
+            "observed_content_sha256": digest,
+            "observed_file_identity": observed_file_identity,
+            "evidence_type": "native_analytic_detection", "detector_verdict": "positive",
+            "producer_generation": self.lifecycle_generation,
+            "detector_receipt_nonce": secrets.token_hex(16),
+            "response_authorized": False, "scan_complete": not bool(archive_error),
+        }
+        if archive_error:
+            details["coverage_reason"] = archive_error
+        if member:
+            details["archive_member"] = member
+        if classification:
+            details.update(authorize_response(("quarantine_file",), path=path))
+            details["response_classification"] = classification
+        else:
+            details["response_withheld_reason"] = "heuristic signature requires corroboration"
+        if control_details is not None:
+            details.update(control_details)
+        return Event(self.name, f"YARA match: {rule} {path}",
+                     self._severity_for(rule), time.time(), details)
+
+    def _scan_file(self, scanner, path: Path, *, control_scanner=None) -> str:
+        capability = None
+        control_event = None
+        reservation = None
         try:
             path = Path(os.path.abspath(path))
+            # A separate optional owner scanner is eligible only for an exact
+            # issuer declaration. Unsupported controls never stop normal scans.
+            if (type(control_scanner) is _OwnerControlScanner
+                    and self._thread is threading.current_thread()
+                    and path.name.startswith("_angerona_yara_control_")):
+                control_capability = self._redteam_receipt_capability
+                try:
+                    declared = bool(control_capability is not None
+                        and control_capability.is_yara_control_path(
+                            self, str(path), control_scanner.enrollment))
+                except Exception:
+                    declared = False
+                if declared:
+                    scanner = control_scanner
+            controlled = False
+            scan_serial = 0
+            if (type(scanner) is _OwnerControlScanner
+                    and self._thread is threading.current_thread()
+                    and scanner.owner == threading.get_ident()
+                    and type(scanner).scan.__code__ is _CONTROL_WRAPPER_SCAN_CODE
+                    and self._control_enrollment_valid(scanner.enrollment)):
+                # Only the owner may dereference this weak native-wrapper ref.
+                reference = self._control_owner_refs.get(scanner.enrollment.enrollment_id)
+                controlled = bool(reference is not None and reference() is scanner)
+                if controlled:
+                    scan_serial = scanner.begin_file_scan()
+                    capability = self._redteam_receipt_capability
             before = path.stat(follow_symlinks=False)
             if (self._is_reparse(before) or stat_module.S_ISLNK(before.st_mode)
                     or not stat_module.S_ISREG(before.st_mode) or before.st_nlink != 1):
@@ -635,36 +954,75 @@ class YaraScannerModule(BaseModule):
                         or final_change != change_token or final_usn != usn
                         or self._file_identity(path.stat(follow_symlinks=False)) != identity):
                     raise OSError("file changed during signature inspection")
+                # Only the one declared inert recipe may need preparation while
+                # the scanner descriptor is held. Ordinary detections continue
+                # to be constructed/retained/published one at a time below.
+                expected_rule = {".txt": "EICAR_Test_File", ".html": "EICAR_Test_File", ".zip": "EICAR_Test_File",
+                                 ".sys": "Angerona_BYOVD_Probe"}.get(path.suffix.lower())
+                if (controlled and capability is not None and classification
+                        and not archive_error and expected_rule in matches):
+                    try:
+                        member = matches[expected_rule]
+                        reservation = capability.reserve_yara_observation(self,
+                            enrollment=scanner.enrollment, path=str(path), rule=expected_rule,
+                            archive_member=member, observed_content_sha256=digest,
+                            observed_file_identity=observed_file_identity,
+                            scan_serial=scan_serial, scan_complete=True)
+                        if reservation is not None:
+                            metadata = {**self._enrollment_metadata(scanner.enrollment),
+                                        "scan_serial": scan_serial}
+                            control_details = {"yara_control_claim_id": reservation.claim_id,
+                                "yara_control_scan_serial": scan_serial,
+                                **{"yara_control_" + key: value for key, value in metadata.items()
+                                   if key not in {"generation", "scan_serial"}}}
+                            control_event = self._event_for_match(path, expected_rule, member,
+                                digest, observed_file_identity, classification, archive_error,
+                                control_details=control_details)
+                            # Retain before sealing, then release this lock.
+                            # This is bounded to one new controlled Event.
+                            with self._receipt_lock:
+                                event_digest = self._event_digest(control_event)
+                                self._detection_receipts[event_digest] = self.lifecycle_generation
+                                while len(self._detection_receipts) > 4096:
+                                    self._detection_receipts.popitem(last=False)
+                                self._control_proofs.retain(control_event,
+                                    generation=self.lifecycle_generation,
+                                    now=time.monotonic(), review=metadata)
+                                self._control_proof_metadata[event_digest] = metadata
+                                while len(self._control_proof_metadata) > 4096:
+                                    self._control_proof_metadata.popitem(last=False)
+                            if not capability.seal_yara_observation(self, reservation, control_event):
+                                capability.cancel_yara_publication(self, reservation)
+                                control_event = None
+                    except Exception as exc:
+                        # A held control cannot suppress ordinary scan evidence.
+                        self._control_last_error = str(exc)[:500]
+                        if reservation is not None:
+                            capability.cancel_yara_publication(self, reservation)
+                        control_event = None
+            # The scanner's descriptor and every producer/issuer lock have
+            # been released. Preserve baseline per-event ordinary receipt
+            # availability, even when this file matches more than 4096 rules.
             for rule, member in matches.items():
-                details = {
-                    "path": str(path), "artifact_path": str(path), "rule": rule,
-                    "observed_content_sha256": digest,
-                    "observed_file_identity": observed_file_identity,
-                    "evidence_type": "native_analytic_detection", "detector_verdict": "positive",
-                    "producer_generation": self.lifecycle_generation,
-                    "detector_receipt_nonce": secrets.token_hex(16),
-                    "response_authorized": False,
-                    "scan_complete": not bool(archive_error),
-                }
-                if archive_error:
-                    details["coverage_reason"] = archive_error
-                if member:
-                    details["archive_member"] = member
-                if classification:
-                    details.update(authorize_response(("quarantine_file",), path=path))
-                    details["response_classification"] = classification
-                else:
-                    details["response_withheld_reason"] = "heuristic signature requires corroboration"
-                event = Event(self.name, f"YARA match: {rule} {path}",
-                              self._severity_for(rule), time.time(), details)
-                # Record immutable proof before publication: inline consumers
-                # can verify it, and mutated/re-signed lookalikes cannot pass.
+                event = (control_event if control_event is not None
+                         and rule == control_event.details["rule"] else
+                         self._event_for_match(path, rule, member, digest,
+                            observed_file_identity, classification, archive_error))
                 with self._receipt_lock:
                     self._detection_receipts[self._event_digest(event)] = self.lifecycle_generation
                     while len(self._detection_receipts) > 4096:
                         self._detection_receipts.popitem(last=False)
+                # Re-exposing the ordinary receipt does not reissue the sealed
+                # claim or touch its strict producer proof/monotonic deadline.
                 if self._bus is not None:
-                    self.publish_event(event)
+                    try:
+                        self.publish_event(event)
+                    except BaseException:
+                        if reservation is not None and event is control_event:
+                            # May already be reserved/moved by inline delivery:
+                            # issuer cancellation must preserve that custody.
+                            capability.cancel_yara_publication(self, reservation)
+                        raise
             if archive_error:
                 self.last_error = archive_error
                 return "failed"
@@ -675,12 +1033,15 @@ class YaraScannerModule(BaseModule):
                     self._scan_cache.popitem(last=False)
             return "scanned"
         except Exception as exc:
+            if capability is not None and reservation is not None:
+                capability.cancel_yara_publication(self, reservation)
             self.last_error = str(exc)
             return "failed"
         finally:
             # Exception frames can outlive the worker. Detach native aliases
             # while still on the scanner's owning thread.
             scanner = None
+            control_scanner = None
             results = None
             match = None
 
@@ -711,6 +1072,11 @@ class YaraScannerModule(BaseModule):
             matches = None
 
     def run(self) -> None:
+        replacement = None
+        control_scanner = None
+        control_capability = None
+        control_rules = None
+        control_epoch = None
         rules = self._find_rules()
         if not rules:
             self.status = "error"
@@ -746,6 +1112,16 @@ class YaraScannerModule(BaseModule):
                         continue
                     scanner = replacement
                     compiled = active_rules
+                if (control_capability is not self._redteam_receipt_capability
+                        or control_rules is not compiled
+                        or control_epoch != self._control_source_epoch
+                        or (control_scanner is not None and not control_scanner.enrollment.active)):
+                    if control_scanner is not None:
+                        control_scanner.close()
+                    control_scanner = self._optional_control_scanner()
+                    control_capability = self._redteam_receipt_capability
+                    control_rules = compiled
+                    control_epoch = self._control_source_epoch
                 scanned = 0
                 failed = 0
                 skipped = 0
@@ -782,7 +1158,10 @@ class YaraScannerModule(BaseModule):
                             break
                         if self.stopping:
                             break
-                        outcome = self._scan_file(scanner, path)
+                        if control_scanner is not None:
+                            outcome = self._scan_file(scanner, path, control_scanner=control_scanner)
+                        else:
+                            outcome = self._scan_file(scanner, path)
                         if outcome == "scanned":
                             scanned += 1
                         elif outcome == "failed":
@@ -873,7 +1252,15 @@ class YaraScannerModule(BaseModule):
                     self._last_coverage_alert = ""
                 if len(self._seen_matches) > 4096:
                     self._seen_matches.clear()
-                self.sleep(_scan_interval())
+                self._sleep_for_scan()
         finally:
             scanner = None
             replacement = None
+            if control_scanner is not None:
+                control_scanner.close()
+            control_scanner = None
+
+
+_CONTROL_FACTORY_CODE = YaraScannerModule._make_control_scanner.__code__
+_CONTROL_SCAN_CODE = YaraScannerModule._scan_file.__code__
+_CONTROL_WRAPPER_SCAN_CODE = _OwnerControlScanner.scan.__code__

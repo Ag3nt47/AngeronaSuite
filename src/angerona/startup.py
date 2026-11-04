@@ -7,6 +7,7 @@ response policy and authenticated journals are never reset here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ _PROBE_PHASE_SECONDS = 30
 _PROBE_OVERALL_SECONDS = 100
 _PROBE_CUSTODY_HOLDS = set()
 _PROBE_CUSTODY_LOCK = threading.Lock()
+_ELEVATED_READY_CLOSE_HOLDS = []
 
 
 def _startup_exit_code(error: BaseException) -> int:
@@ -46,7 +48,7 @@ def _startup_exit_code(error: BaseException) -> int:
     if type(error) is RepairableStartupError and error.exit_code in REPAIR_EXIT_CODES:
         return error.exit_code
     return {StartupCancelled: STARTUP_CANCELLED, ProbeTimedOut: STARTUP_PROBE_TIMEOUT,
-            DashboardProcessFailed: 1}.get(type(error), STARTUP_INFRASTRUCTURE_FAILURE)
+            DashboardProcessFailed: 1, InstalledStartupInhibited: 86}.get(type(error), STARTUP_INFRASTRUCTURE_FAILURE)
 
 
 def _record_startup_failure(error: BaseException, phase: str, *, exit_code: int | None = None) -> str:
@@ -88,6 +90,10 @@ class DashboardProcessFailed(StartupError):
     """Only an actual launched dashboard exit selects application rollback."""
 
     exit_code = 1
+
+
+class InstalledStartupInhibited(StartupError):
+    """The installed automatic launcher was invoked with an elevated token."""
 
 
 class OperatorStopped(StartupError):
@@ -320,11 +326,16 @@ class LaunchPlan:
     frozen: bool
     temporary: Path | None = None
     rendering: str = "default"
+    operator_elevation: bool = False
 
 
 def _assert_no_pending_repair(plan: LaunchPlan) -> None:
     if plan.frozen:
         return
+    activation_pending = plan.storage / "github-updates" / "activation-pending.json"
+    _plain_path(activation_pending)
+    if os.path.lexists(activation_pending):
+        raise StartupError("An interrupted source activation is held. Run start-angerona.bat for exact original-capsule reconciliation; security engines were not started.")
     for pending in (
         plan.root / ".tmp" / "repair-wheels" / "startup-repair.pending",
         plan.root / "venv" / ".angerona-startup-repair.json",
@@ -378,9 +389,9 @@ def _assert_no_pending_repair(plan: LaunchPlan) -> None:
         raise StartupError("Unresolved or unsafe source repair evidence requires maintainer review before startup. Preserve the repair scratch and use start-angerona.bat; no runtime probe or dashboard was started.") from exc
 
 
-def _interface_lease() -> StartupLease:
+def _interface_lease(*, operator_elevation: bool = False) -> StartupLease:
     """Claim canonical helper custody before Tcl/Tk can load runtime files."""
-    plan = platform_plan()
+    plan = platform_plan(operator_elevation=True) if operator_elevation else platform_plan()
     _STARTUP_CONTEXT.storage = plan.storage
     prepare_storage(plan.storage)
     lease = StartupLease(plan.storage)
@@ -392,7 +403,50 @@ def _interface_lease() -> StartupLease:
         raise
 
 
-def platform_plan() -> LaunchPlan:
+def _source_fresh_cache_arguments(root: Path, storage: Path) -> tuple[str, ...]:
+    """Read-only cache coherence, never approval or loaded-code attestation."""
+    evidence = storage / "github-updates" / "applied-base.json"
+    try:
+        _plain_path(evidence)
+        evidence.lstat()
+        required = True
+    except FileNotFoundError:
+        required = False
+    except (OSError, StartupError):
+        required = True  # Unknown update evidence cannot re-enable old caches.
+    prefix = getattr(sys, "pycache_prefix", None)
+    option = getattr(sys, "_xoptions", {}).get("pycache_prefix")
+    if prefix is None and not required:
+        return ()
+    valid = (type(prefix) is str and type(option) is str
+             and sys.flags.dont_write_bytecode == 1)
+    if valid:
+        location = Path(prefix)
+        allowed = (storage / "tmp" / "startup-temp.critical-preflight",
+                   root / ".tmp" / "startup-temp.critical-preflight")
+        valid = (location.is_absolute() and Path(option).is_absolute()
+                 and Path(option) == location and location.parent in allowed
+                 and re.fullmatch(r"source-pycache-[0-9a-f]{32}", location.name) is not None)
+        if valid:
+            try:
+                _plain_path(location.parent)
+                valid = private_directory(location.parent, create=False) and not os.path.lexists(location)
+            except (OSError, StartupError):
+                valid = False
+    if not valid:
+        if required:
+            raise StartupError("Updated source requires canonical startup with a fresh private bytecode-cache location")
+        return ()  # Unupdated ordinary/frozen launch behavior remains unchanged.
+    return ("-B", "-X", "pycache_prefix=" + str(location))
+
+
+def _source_core_command(executable: Path, root: Path, storage: Path, *, frozen: bool) -> tuple[str, ...]:
+    if frozen:
+        return (str(executable),)
+    return (str(executable), *_source_fresh_cache_arguments(root, storage), "-m", "angerona")
+
+
+def platform_plan(*, operator_elevation: bool = False) -> LaunchPlan:
     if sys.platform != "win32":
         raise StartupError("This startup assistant is for Windows. Use the platform's Angerona launcher.")
     from angerona.core.privilege import _windows_known_folder, is_admin
@@ -400,12 +454,15 @@ def platform_plan() -> LaunchPlan:
     frozen = bool(getattr(sys, "frozen", False))
     local = _windows_known_folder(0x1C) / "Angerona"
     if frozen:
-        from angerona.core.windows_package_identity import verify_current_msix_authority
+        from angerona.core.windows_package_identity import (
+            require_current_package_image, verify_current_msix_authority,
+        )
 
         authority = verify_current_msix_authority()
         if not authority.trusted:
             raise StartupError(f"Signed installation verification failed: {authority.reason}. Use the verified MSIX installer.")
-        root = Path(sys.executable).absolute().parent
+        root = (require_current_package_image("AngeronaStartup.exe").parent if operator_elevation
+                else Path(sys.executable).absolute().parent)
         executable = root / "Angerona.exe"
         storage = local / "Startup"
     else:
@@ -426,7 +483,7 @@ def platform_plan() -> LaunchPlan:
 
     if not _fixed_volume_available(Path(root.anchor)):
         raise StartupError("Angerona must start from a fixed local installation drive.")
-    command = (str(executable),) if frozen else (str(executable), "-m", "angerona")
+    command = _source_core_command(executable, root, storage, frozen=frozen)
     return LaunchPlan(root, storage, command, frozen)
 
 
@@ -459,6 +516,140 @@ def _source_model_directory(name: str, value: str) -> str:
     return str(location)
 
 
+
+_ACTIVATION_READY_CLOSE_HOLDS = []
+
+
+def _activation_existing_bytes(path: Path, limit: int) -> bytes:
+    _plain_path(path)
+    if not private_repair_file(path):
+        raise StartupError("Source activation launch descriptor is not private")
+    before = path.lstat()
+    with path.open("rb") as stream:
+        held = os.fstat(stream.fileno())
+        cross = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+        if (not stat.S_ISREG(held.st_mode) or held.st_nlink != 1
+                or cross(before) != cross(held) or not 0 < held.st_size <= limit):
+            raise StartupError("Source activation launch descriptor custody changed")
+        raw = stream.read(limit + 1)
+        after_held = os.fstat(stream.fileno())
+    after = path.lstat()
+    if (len(raw) != held.st_size or cross(held) != cross(after_held)
+            or cross(before) != cross(after) or before.st_ctime_ns != after.st_ctime_ns
+            or held.st_ctime_ns != after_held.st_ctime_ns or not private_repair_file(path)):
+        raise StartupError("Source activation launch descriptor changed during read")
+    return raw
+
+
+def _activation_native_identity(pid: int) -> dict:
+    """A fresh query/synchronize witness; no selection, assignment or actions."""
+    import ctypes
+    from ctypes import wintypes as w
+    if _ACTIVATION_READY_CLOSE_HOLDS:
+        raise StartupError("An earlier source activation query close remains held")
+    if sys.platform != "win32" or type(pid) is not int or not 0 < pid <= 0xffffffff:
+        raise StartupError("Source activation native identity is unavailable")
+    api = ctypes.WinDLL("kernel32", use_last_error=True)
+    api.OpenProcess.argtypes, api.OpenProcess.restype = (w.DWORD, w.BOOL, w.DWORD), w.HANDLE
+    api.GetProcessTimes.argtypes = (w.HANDLE, ctypes.POINTER(w.FILETIME),
+        ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME))
+    api.GetProcessTimes.restype = w.BOOL
+    api.QueryFullProcessImageNameW.argtypes = (w.HANDLE, w.DWORD, w.LPWSTR, ctypes.POINTER(w.DWORD))
+    api.QueryFullProcessImageNameW.restype = w.BOOL
+    api.WaitForSingleObject.argtypes, api.WaitForSingleObject.restype = (w.HANDLE, w.DWORD), w.DWORD
+    api.CloseHandle.argtypes, api.CloseHandle.restype = (w.HANDLE,), w.BOOL
+    handle = api.OpenProcess(0x00101000, False, pid)
+    if not handle:
+        raise StartupError("Source activation query handle is unavailable")
+    try:
+        times = [w.FILETIME() for _ in range(4)]
+        image, length = ctypes.create_unicode_buffer(32768), w.DWORD(32768)
+        if (api.WaitForSingleObject(handle, 0) != 258
+                or not api.GetProcessTimes(handle, *(ctypes.byref(value) for value in times))
+                or not api.QueryFullProcessImageNameW(handle, 0, image, ctypes.byref(length))
+                or api.WaitForSingleObject(handle, 0) != 258):
+            raise StartupError("Source activation native generation is not live")
+        birth = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        if birth <= 0 or not Path(image.value).is_absolute():
+            raise StartupError("Source activation native identity is malformed")
+        return {"pid": pid, "birth": str(birth), "image": image.value}
+    finally:
+        try:
+            closed = api.CloseHandle(handle)
+        except BaseException:
+            _ACTIVATION_READY_CLOSE_HOLDS.append((api, handle))
+            raise  # Unknown acknowledgement: retain the exact owner, no retry.
+        if not closed:
+            _ACTIVATION_READY_CLOSE_HOLDS.append((api, handle))
+            raise StartupError("Source activation query handle close is unproved")
+
+
+def _activation_launch_descriptor(plan: LaunchPlan):
+    """Read only the canonical parent's fixed private launch descriptor."""
+    launch_id = os.environ.get("ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID")
+    if plan.frozen or launch_id is None:
+        return None
+    if type(launch_id) is not str or re.fullmatch(r"[0-9a-f]{32}", launch_id) is None:
+        raise StartupError("Source activation launch identifier is malformed")
+    state = plan.storage / "github-updates"
+    directory = state / "launches" / launch_id
+    for parent in (state, state / "launches", directory):
+        _plain_path(parent)
+        from angerona.core.source_activation_file import private_owner_rights_directory
+        if not private_directory(parent, create=False) and not private_owner_rights_directory(parent):
+            raise StartupError("Source activation launch directory is not private")
+    raw = _activation_existing_bytes(directory / "descriptor.json", 8192)
+    def closed(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate source activation descriptor field")
+            result[key] = value
+        return result
+    value = json.loads(raw.decode("utf-8"), object_pairs_hook=closed,
+                       parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("Nonfinite descriptor")))
+    keys = {"schema", "launch_id", "source_root", "state_root", "supervisor_pid",
+            "supervisor_birth", "supervisor_image", "token", "broker_script_sha256"}
+    if (type(value) is not dict or set(value) != keys
+            or value["schema"] != "angerona.source-activation-launch/v1"
+            or value["launch_id"] != launch_id or value["source_root"] != str(plan.root)
+            or value["state_root"] != str(state)
+            or type(value["token"]) is not str or re.fullmatch(r"[0-9a-f]{64}", value["token"]) is None
+            or type(value["broker_script_sha256"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", value["broker_script_sha256"]) is None):
+        raise StartupError("Source activation descriptor does not match this launch")
+    supervisor = _activation_native_identity(value["supervisor_pid"])
+    expected = str(Path(os.environ.get("SystemRoot", "C:/Windows")) /
+                   "System32/WindowsPowerShell/v1.0/powershell.exe")
+    if (supervisor["birth"] != value["supervisor_birth"]
+            or os.path.normcase(os.path.normpath(supervisor["image"])) != os.path.normcase(os.path.normpath(expected))
+            or os.path.normcase(os.path.normpath(value["supervisor_image"])) != os.path.normcase(os.path.normpath(expected))):
+        raise StartupError("Source activation parent native binding is stale")
+    return directory, hashlib.sha256(raw).hexdigest(), value
+
+
+def _export_activation_ready(plan: LaunchPlan, ready_pid: int) -> bool:
+    """Optional update ownership; failure never invalidates painted readiness."""
+    descriptor = _activation_launch_descriptor(plan)
+    if descriptor is None:
+        return False
+    directory, descriptor_sha, value = descriptor
+    identity = _activation_native_identity(ready_pid)
+    payload = {"schema": "angerona.source-activation-ready/v1", "launch_id": value["launch_id"],
+        "source_root": str(plan.root), "state_root": str(plan.storage / "github-updates"),
+        "core_pid": ready_pid, "core_birth": identity["birth"], "core_image": identity["image"],
+        "descriptor_sha256": descriptor_sha}
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    target = directory / "ready.json"
+    _plain_path(target)
+    with target.open("xb") as stream:
+        stream.write(encoded)
+        stream.flush()
+        os.fsync(stream.fileno())
+    if not private_repair_file(target) or _activation_existing_bytes(target, 8192) != encoded:
+        raise StartupError("Source activation ready receipt did not retain private custody")
+    return True
+
 def child_environment(plan: LaunchPlan) -> dict[str, str]:
     from angerona.core.privilege import _minimal_environment
 
@@ -483,6 +674,13 @@ def child_environment(plan: LaunchPlan) -> dict[str, str]:
             "ANGERONA_DIAG_DIR": str(plan.storage / "diagnostics"),
             "ANGERONA_STORAGE_AUTOMIGRATE": "0",
         })
+        try:
+            descriptor = _activation_launch_descriptor(plan)
+            if descriptor is not None:
+                environment["ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID"] = descriptor[2]["launch_id"]
+        except Exception:
+            # An unsupported update owner is not a dashboard startup failure.
+            pass
         # The source launcher and dashboard both reject elevated execution.
         # Preserve only explicit local model locations, never Ollama commands,
         # endpoints or other inherited controls. The authenticated model guard
@@ -957,7 +1155,8 @@ def probe_source(plan: LaunchPlan, environment: dict[str, str], cancel: threadin
                 # Every preceding probe has already proved complete retirement.
                 raise ProbeTimedOut("The overall dependency/Qt check budget timed out; all owned probe trees are retired. No dashboard was started.")
             phase_deadline = min(deadline, phase_started + _PROBE_PHASE_SECONDS)
-            process = _spawn_probe([plan.command[0], *arguments], cwd=plan.root, env=probe_env, stdout=log)
+            process = _spawn_probe([plan.command[0], *_source_fresh_cache_arguments(plan.root, plan.storage), *arguments],
+                                   cwd=plan.root, env=probe_env, stdout=log)
             identity = process_identity(process)
             diagnostics.record(detail_phase, "started", attempt=index + 1,
                                expected=_PROBE_PHASE_SECONDS, process_role="probe-bootstrap", **identity)
@@ -1097,6 +1296,55 @@ class ReadyListener:
         self.socket.close()
 
 
+def _ready_elevated_process(pid: int, bootstrap_pid: int, image: str, started: float) -> bool:
+    """Verify the notified PID using one retained native process generation."""
+    import psutil
+    import pywintypes
+    import win32security
+
+    from angerona.core.windows_engine_custody import _close_auxiliary
+    from angerona.core.windows_process_lease import ProcessLeaseError, _Native
+
+    if pid == bootstrap_pid or not 0 < pid <= 0xffffffff:
+        return False
+    if _ELEVATED_READY_CLOSE_HOLDS:
+        raise StartupError("An earlier Advanced readiness process handle close is held.")
+    try:
+        native = _Native()
+        handle = native.open(pid, 0x00101000, False)  # Limited query and synchronize only.
+        try:
+            identity = native.identity(handle)
+            if (identity.pid != pid or identity.birth_ticks <= 0 or identity.create_time < started
+                    or Path(identity.image).resolve() != Path(image).resolve()
+                    or native.wait(handle, 0) or psutil.Process(pid).ppid() == bootstrap_pid):
+                return False
+            token = win32security.OpenProcessToken(handle, win32security.TOKEN_QUERY)
+            try:
+                elevated = win32security.GetTokenInformation(token, win32security.TokenElevation) == 1
+                groups = win32security.GetTokenInformation(token, win32security.TokenGroups)
+                admin = any(
+                    flags & 4 and not flags & 0x10
+                    and win32security.ConvertSidToStringSid(sid) == "S-1-5-32-544"
+                    for sid, flags in groups
+                )
+                unrestricted = not win32security.GetTokenInformation(token, win32security.TokenRestrictedSids)
+            finally:
+                _close_auxiliary([token])
+            return (elevated and admin and unrestricted and native.identity(handle) == identity
+                    and not native.wait(handle, 0))
+        finally:
+            try:
+                native.close(handle)
+            except BaseException:
+                _ELEVATED_READY_CLOSE_HOLDS.append((native, handle))
+                raise
+    except (ProcessLeaseError, OSError, psutil.Error, pywintypes.error) as exc:
+        raise StartupError(
+            "Windows could not independently verify the Advanced dashboard's live elevated process and token. "
+            "Startup did not confirm readiness."
+        ) from exc
+
+
 def _ready_process(pid: int, process, plan: LaunchPlan, started: float) -> bool:
     if not plan.frozen:
         if process.poll() is not None:
@@ -1120,12 +1368,18 @@ def _ready_process(pid: int, process, plan: LaunchPlan, started: float) -> bool:
             )
         except (psutil.Error, OSError):
             return False
-    # UAC can replace the initial child; require the actual installed dashboard
-    # image and a fresh live process, not the pre-elevation bootstrap PID.
+    if plan.operator_elevation:
+        return _ready_elevated_process(pid, process.pid, plan.command[0], started)
+    # The one-file package may report readiness from the bootloader's direct
+    # Python child. Ordinary startup retains the bootloader's live generation.
+    if process.poll() is not None:
+        return False
     import psutil
 
     try:
         candidate = psutil.Process(pid)
+        if pid != process.pid and candidate.ppid() != process.pid:
+            return False
         return (
             Path(candidate.exe()).resolve() == Path(plan.command[0]).resolve()
             and candidate.create_time() >= started - 1
@@ -1138,26 +1392,83 @@ def _ready_process(pid: int, process, plan: LaunchPlan, started: float) -> bool:
 def wait_dashboard(listener: ReadyListener, process, plan: LaunchPlan, started: float,
                    cancel: threading.Event, timeout: float = 120) -> int:
     deadline = time.monotonic() + timeout
+    console = plan.frozen and not plan.operator_elevation
+    presentation = "read-only protection console" if console else "dashboard"
     while time.monotonic() < deadline:
         if cancel.is_set():
-            raise StartupCancelled("Startup monitoring closed. The dashboard process was left running; do not launch another copy while it opens.")
+            raise StartupCancelled(f"Startup monitoring closed. The {presentation} process was left running; do not launch another copy while it opens.")
         pid = listener.receive()
         if pid is not None and _ready_process(pid, process, plan, started):
             return pid
         code = process.poll()
-        if code is not None and (not plan.frozen or code != 0):
+        if code is not None and (not plan.operator_elevation or code != 0):
+            if console:
+                raise DashboardProcessFailed(f"Angerona exited before confirming its read-only protection console (code {code}). Check for an existing console and inspect startup-dashboard.log before retrying.")
             raise DashboardProcessFailed(f"Angerona exited before confirming its dashboard (code {code}). It may already be running; check the tray. Otherwise inspect startup-dashboard.log and the crash log before retrying.")
-    raise StartupError(f"The dashboard did not respond within {timeout:g} seconds. Startup will not retry or start another copy. Check the existing dashboard, startup-dashboard.log and the crash log.")
+    raise StartupError(f"The {presentation} did not respond within {timeout:g} seconds. Startup will not retry or start another copy. Check the existing {presentation}, startup-dashboard.log and the crash log.")
+
+
+def _interactive_windows_station() -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    class UserObjectFlags(ctypes.Structure):
+        _fields_ = [
+            ("inherit", wintypes.BOOL), ("reserved", wintypes.BOOL), ("flags", wintypes.DWORD),
+        ]
+
+    user = ctypes.WinDLL("user32", use_last_error=True)
+    user.GetProcessWindowStation.argtypes = ()
+    user.GetProcessWindowStation.restype = wintypes.HANDLE
+    user.GetUserObjectInformationW.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD, wintypes.LPDWORD,
+    )
+    user.GetUserObjectInformationW.restype = wintypes.BOOL
+    station = user.GetProcessWindowStation()
+    flags = UserObjectFlags()
+    needed = wintypes.DWORD()
+    # UOI_FLAGS / WSF_VISIBLE. The process's window-station handle is borrowed.
+    return bool(station and user.GetUserObjectInformationW(
+        station, 1, ctypes.byref(flags), ctypes.sizeof(flags), ctypes.byref(needed),
+    ) and flags.flags & 1)
+
+
+def _check_installed_startup_request(
+    operator_elevation: bool, *, setup: bool, check_only: bool, software_renderer: bool,
+) -> None:
+    frozen_windows = sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+    automatic = os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
+    if operator_elevation and (
+        not frozen_windows or automatic or setup or check_only or software_renderer
+    ):
+        raise StartupError("Advanced elevation requires a standalone request from the signed Windows startup assistant.")
+    if not frozen_windows:
+        return
+
+    from angerona.core.privilege import is_admin
+
+    if is_admin():
+        if automatic and not operator_elevation:
+            raise InstalledStartupInhibited("Installed automatic startup was inhibited because its task supplied an elevated token.")
+        raise StartupError("Open the signed startup assistant from an ordinary Windows user session.")
+    if operator_elevation and not _interactive_windows_station():
+        raise StartupError("Advanced elevation requires an interactive Windows user session.")
+    if setup:
+        raise StartupError("Open setup from the Advanced dashboard after explicitly requesting elevation.")
 
 
 def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup: bool = False,
                 check_only: bool = False, _interface_lease: StartupLease | None = None,
-                software_renderer: bool = False) -> Path:
+                software_renderer: bool = False, operator_elevation: bool = False) -> Path:
+    _check_installed_startup_request(
+        operator_elevation, setup=setup, check_only=check_only, software_renderer=software_renderer,
+    )
     report("Checking the installation and Windows startup authority...")
     _STARTUP_CONTEXT.phase = "installation-authority"
-    plan = platform_plan()
+    plan = platform_plan(operator_elevation=True) if operator_elevation else platform_plan()
     _STARTUP_CONTEXT.storage = plan.storage
-    plan = replace(plan, rendering="software" if software_renderer else "default")
+    plan = replace(plan, rendering="software" if software_renderer else "default",
+                   operator_elevation=operator_elevation)
     critical = None
     _STARTUP_CONTEXT.critical_scratch_lease = None
     try:
@@ -1215,22 +1526,35 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
         from angerona.resilience.shutdown_token import (
             clear_standdown_for_storage, standdown_active_for_storage,
         )
-        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
-            if standdown_active_for_storage(plan.storage):
-                raise OperatorStopped("Authenticated STOP is active; automatic startup remains stopped.")
-        else:
-            # A user launch may resume only after its complete preflight. A
-            # check-only run and every automatic retry leave STOP untouched.
-            clear_standdown_for_storage(plan.storage)
-        # The helper has consumed this explicit resume exactly once. Its
-        # child must honor a NEW stop written during construction or warmup.
-        environment["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+        if not plan.frozen:
+            if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
+                if standdown_active_for_storage(plan.storage):
+                    raise OperatorStopped("Authenticated STOP is active; automatic startup remains stopped.")
+            else:
+                # A user launch may resume only after its complete preflight. A
+                # check-only run and every automatic retry leave STOP untouched.
+                clear_standdown_for_storage(plan.storage)
+            # The helper has consumed this explicit source resume exactly once.
+            # Its child must honor a NEW stop written during warmup.
+            environment["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+        elif operator_elevation:
+            # The elevated Core owns its authenticated protected-profile STOP.
+            # The installed helper neither opens nor clears that profile.
+            environment.pop("ANGERONA_SUPERVISED_RECOVERY", None)
+        console = plan.frozen and not operator_elevation
+        presentation = "read-only protection console" if console else "dashboard"
         listener = ReadyListener()
         try:
-            command = [*plan.command, "--chill", f"--startup-ready={listener.endpoint}"]
+            launch_args = ["--chill"]
+            if console:
+                launch_args = ["--protection-console"]
+            elif operator_elevation:
+                launch_args.insert(0, "--operator-elevation")
+            command = [*plan.command, *launch_args, f"--startup-ready={listener.endpoint}"]
             if setup:
                 command.append("--setup")
-            report("Opening the dashboard in Chill Mode...")
+            report("Opening the read-only protection console..." if console
+                   else "Opening the dashboard in Chill Mode...")
             _STARTUP_CONTEXT.phase = "dashboard-launch"
             started = time.time()
             with _log_file(plan.storage, "startup-dashboard.log") as log:
@@ -1252,23 +1576,37 @@ def run_startup(report: Callable[[str], None], cancel: threading.Event, *, setup
                         critical.close_duplicate(child_guard)
             diagnostics.record("dashboard", "launched-awaiting-readiness", strategy=plan.rendering,
                                dashboard_log=str(plan.storage / "logs" / "startup-dashboard.log"),
-                               process_role="dashboard-launcher",
+                               process_role="protection-console-launcher" if console else "dashboard-launcher",
                                **process_identity(process))
-            report("Waiting for the dashboard to paint and respond...")
+            report(f"Waiting for the {presentation} to paint and respond...")
             _STARTUP_CONTEXT.phase = "dashboard-readiness"
             try:
                 ready_pid = wait_dashboard(listener, process, plan, started, cancel)
             except StartupError:
-                if standdown_active_for_storage(plan.storage):
+                if not plan.frozen and standdown_active_for_storage(plan.storage):
                     raise OperatorStopped("Authenticated STOP was requested during startup; no retry will reopen the dashboard.") from None
                 raise
             identity = (process_identity(process) if ready_pid == process.pid else
                         {"pid": ready_pid, "coverage": "Ready PID verified; raw native birth not retained for redirected/elevated child"})
+            try:
+                exported = _export_activation_ready(plan, ready_pid)
+                try:
+                    diagnostics.record("source-activation", "ready-exported" if exported else "unavailable",
+                        scope="Native Core candidate only; external broker binding remains required")
+                except Exception:
+                    pass  # Optional ownership diagnostics cannot fail painted readiness.
+            except Exception:
+                try:
+                    diagnostics.record("source-activation", "held",
+                        scope="Dashboard readiness unchanged; update ownership unavailable")
+                except Exception:
+                    pass
             diagnostics.record("dashboard", "readiness-verified", strategy=plan.rendering,
-                               process_role="core-dashboard", bootstrap_pid=process.pid, **identity)
+                               process_role="read-only-protection-console" if console else "core-dashboard",
+                               bootstrap_pid=process.pid, **identity)
         finally:
             listener.close()
-        report("Dashboard ready. Closing the startup assistant.")
+        report(f"{presentation.capitalize()} ready. Closing the startup assistant.")
         return plan.storage
     finally:
         lease.close()
@@ -1313,24 +1651,39 @@ def main() -> int:
     parser.add_argument("--software-renderer", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--no-startup-window", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--automatic-start", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--operator-elevation", action="store_true", help=argparse.SUPPRESS)
     options = parser.parse_args()
+    if options.operator_elevation and sys.argv[1:] != ["--operator-elevation"]:
+        parser.error("--operator-elevation is a standalone interactive request")
     # This marker controls only this assistant window's lifetime. It never
     # authorizes a repair/retry and child_environment does not forward it.
     supervised = os.environ.get("ANGERONA_STARTUP_SUPERVISED") == "1"
     automatic = options.automatic_start or os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
     if automatic:
         os.environ["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+    _STARTUP_CONTEXT.phase = "installed-startup-admission"
+    try:
+        _check_installed_startup_request(
+            options.operator_elevation, setup=options.setup, check_only=options.check_only,
+            software_renderer=options.software_renderer,
+        )
+    except (StartupError, OSError) as exc:
+        _record_startup_failure(exc, "installed-startup-admission")
+        return _startup_exit_code(exc)
+    if automatic:
         if not options.check_only:
             try:
                 plan = platform_plan()
                 from angerona.resilience.shutdown_token import standdown_active_for_storage
                 if standdown_active_for_storage(plan.storage):
                     print("Authenticated STOP is active; automatic startup remains stopped.")
-                    return 86 if supervised else 0
+                    return 86 if supervised or plan.frozen else 0
             except Exception as exc:
                 _record_startup_failure(exc, "automatic-stop-admission", exit_code=85)
                 return 85
     strategy = {"software_renderer": True} if options.software_renderer else {}
+    if options.operator_elevation:
+        strategy["operator_elevation"] = True
     if options.check_only:
         _STARTUP_CONTEXT.phase = "source-check-only"
         try:
@@ -1358,8 +1711,10 @@ def main() -> int:
         except Exception as exc:
             _record_startup_failure(exc, "no-startup-window")
             return _startup_exit_code(exc)
+    _STARTUP_CONTEXT.phase = "startup-interface-authority"
     try:
-        interface_lease = _interface_lease()
+        interface_lease = (_interface_lease(operator_elevation=True) if options.operator_elevation
+                           else _interface_lease())
     except (StartupError, OSError) as exc:
         _record_startup_failure(exc, "startup-interface-authority")
         return _startup_exit_code(exc)
@@ -1397,7 +1752,9 @@ def main() -> int:
     outcome = {"code": STARTUP_INFRASTRUCTURE_FAILURE, "completed": False}
     tk.Label(window, text="ANGERONA  |  SAFE STARTUP", bg="#101820", fg="#38bdf8",
              font=("Segoe UI", 18, "bold"), anchor="w").pack(fill="x", padx=24, pady=(22, 8))
-    tk.Label(window, text="This window closes when your dashboard is ready.", bg="#101820",
+    console = bool(getattr(sys, "frozen", False)) and not options.operator_elevation
+    presentation = "read-only protection console" if console else "dashboard"
+    tk.Label(window, text=f"This window closes when your {presentation} is ready.", bg="#101820",
              fg="#d9e4ed", anchor="w").pack(fill="x", padx=24)
     progress = ttk.Progressbar(window, mode="indeterminate")
     progress.pack(fill="x", padx=24, pady=16)
@@ -1407,9 +1764,9 @@ def main() -> int:
     details.pack(fill="both", expand=True, padx=24)
 
     def close() -> None:
+        cancel.set()
         if not outcome["completed"]:
             outcome["code"] = STARTUP_CANCELLED
-        cancel.set()
         window.destroy()
 
     ttk.Button(window, text="Close startup assistant", command=close).pack(anchor="e", padx=24, pady=12)
@@ -1421,15 +1778,20 @@ def main() -> int:
         try:
             run_startup(lambda text: messages.put(("progress", text)), cancel,
                         setup=options.setup, _interface_lease=interface_lease, **strategy)
+            if options.operator_elevation and cancel.is_set():
+                raise StartupCancelled("The Advanced startup request was cancelled.")
             outcome.update(code=0, completed=True)
             messages.put(("ready", ""))
         except OperatorStopped as exc:
-            outcome.update(code=86 if supervised else 0, completed=True)
+            outcome.update(code=86 if supervised or options.operator_elevation or console else 0, completed=True)
             messages.put(("operator-stopped", str(exc)))
         except Exception as exc:
-            outcome.update(code=STARTUP_CANCELLED if cancel.is_set() else _startup_exit_code(exc), completed=True)
-            detail = _record_startup_failure(exc, "startup-worker")
-            if isinstance(exc, RepairableStartupError) and not cancel.is_set():
+            code = STARTUP_CANCELLED if cancel.is_set() else _startup_exit_code(exc)
+            if options.operator_elevation and code in REPAIR_EXIT_CODES:
+                code = STARTUP_INFRASTRUCTURE_FAILURE
+            outcome.update(code=code, completed=True)
+            detail = _record_startup_failure(exc, "startup-worker", exit_code=code)
+            if isinstance(exc, RepairableStartupError) and not options.operator_elevation and not cancel.is_set():
                 messages.put((f"repair:{exc.exit_code}", detail))
                 return
             messages.put(("error", detail))
@@ -1445,7 +1807,6 @@ def main() -> int:
                 window.after(250, close)
                 return
             if kind == "operator-stopped":
-                outcome["code"] = 86 if supervised else 0
                 window.after(250, close)
                 return
             if kind in {f"repair:{code}" for code in REPAIR_EXIT_CODES} and not cancel.is_set():
@@ -1463,7 +1824,7 @@ def main() -> int:
             if kind == "error":
                 progress.stop()
                 window.title("Angerona Safe Startup - needs attention")
-                if supervised:
+                if supervised or options.operator_elevation:
                     # The worker has unwound its probe/lease before queuing
                     # this error. Non-daemon ownership still prevents an
                     # interpreter exit while that worker is finishing.

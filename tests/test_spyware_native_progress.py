@@ -208,3 +208,60 @@ def test_routine_scan_does_not_create_priority_progress_or_schedule_more_sources
     assert module._scan_once()
     snapshot = module.priority_scan_snapshot()
     assert snapshot["state"] == "idle" and "progress" not in snapshot
+
+def test_scoped_browser_request_keeps_system_collectors_out_and_returns_advisory(monkeypatch):
+    module = module_with(
+        monkeypatch,
+        persistence_collector=lambda **_options: pytest.fail("Browser scope read system persistence"),
+        process_observer=lambda: pytest.fail("Browser scope read the process inventory"),
+    )
+    monkeypatch.setattr(spyware_guard, "scan_windows_user_temp",
+                        lambda **_options: pytest.fail("Browser scope read Windows Temp"))
+    monkeypatch.setattr(spyware_guard, "scan_chromium_hsts", lambda **_options: {
+        "state": "partial", "checked": 1, "skipped": 1, "findings": [
+            {"classification": "advisory", "evidence_type": "chromium-hsts",
+             "summary": "Historical contact", "response_authorized": False},
+        ],
+    })
+    module.start(initial_delay=30)
+    try:
+        assert module.request_scoped_priority_scan(REQUEST, mode="browser", background=True)
+        result = terminal(module)
+        assert result["request_id"] == REQUEST and result["state"] == "completed"
+        assert result["finding_counts"] == {"advisory": 1, "omitted": 0}
+        assert result["coverage_incomplete"] is True
+        assert [row["id"] for row in result["progress"]["steps"]] == ["browser"]
+        assert result["findings"][0]["response_authorized"] is False
+    finally:
+        retire(module)
+
+
+def test_scoped_windows_full_request_retains_temp_coverage_and_progress(monkeypatch):
+    module = module_with(monkeypatch)
+    monkeypatch.setattr(spyware_guard, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(module, "_scan_once", lambda **_options: True)
+
+    def complete(**_options):
+        return {"state": "completed", "checked": 1, "skipped": 0, "findings": []}
+
+    for name in ("scan_chromium_hsts", "scan_hosts_overrides", "scan_windows_launch_configuration"):
+        monkeypatch.setattr(spyware_guard, name, complete)
+
+    def held(*, cancelled):
+        assert not cancelled()
+        return {"state": "unavailable", "checked": 0, "skipped": 1, "findings": [],
+                "detail": "Configured Temp could not be verified."}
+
+    monkeypatch.setattr(spyware_guard, "scan_windows_user_temp", held)
+    module.start(initial_delay=30)
+    try:
+        assert module.request_scoped_priority_scan(REQUEST, mode="full", background=True)
+        result = terminal(module)
+        assert result["state"] == "completed" and result["coverage_incomplete"]
+        temp = result["coverage"]["artifact_checks"]["windows-temp"]
+        assert temp == {"state": "unavailable", "checked": 0, "skipped": 1,
+                        "detail": "Configured Temp could not be verified."}
+        progress = step(result, "windows-temp")
+        assert progress["state"] == "incomplete" and progress["checked"] == 0 and progress["skipped"] == 1
+    finally:
+        retire(module)

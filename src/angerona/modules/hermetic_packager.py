@@ -43,6 +43,7 @@ from typing import BinaryIO
 
 from angerona.core.data_paths import project_root
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.win import popen_interactive
 
 _BUILD_BAT = project_root() / "hermetic" / "build-hermetic.bat"
 _BIN_CANDIDATES = [
@@ -302,7 +303,7 @@ class HermeticPackagerModule(BaseModule):
             command = (system / "cmd.exe").resolve(strict=True)
             if not _protected_path(command):
                 raise PermissionError("trusted Windows command processor is unavailable")
-            process = subprocess.Popen(
+            process = popen_interactive(
                 [str(command), "/d", "/q", "/k", str(_BUILD_BAT.resolve())],
                 stdin=subprocess.DEVNULL,
                 cwd=str(_BUILD_BAT.parent.resolve()),

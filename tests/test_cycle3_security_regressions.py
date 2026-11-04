@@ -147,6 +147,8 @@ def test_purple_candidate_requires_a_distinct_later_run(tmp_path, monkeypatch):
 
     report = {
         "run_id": "run-a",
+        "report_kind": "red_team",
+        "coverage_score_eligible": True,
         "verdicts": [{
             "category": "detection", "technique": "T1003 marker",
             "stage": "Credential Access", "caught": True,
@@ -217,7 +219,7 @@ def test_source_launcher_is_bounded_and_reports_early_startup_failures():
         "Enter-RepairLease -Root $Root"
     ) < startup_pass.index("Invoke-OwnedRepairProcess -FilePath $python")
     assert startup_pass.index("Join-Path $Root 'tools\\source_trust_preflight.py'") < startup_pass.index(
-        "return Invoke-SourceStartupAssistant"
+        "$code=Invoke-SourceStartupAssistant @assistantCall"
     )
     for log in ("abi.log", "pip.log", "source-trust.log", "launcher-stderr.log"):
         assert log in supervisor

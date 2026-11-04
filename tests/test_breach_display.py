@@ -260,7 +260,7 @@ def test_plain_report_cannot_override_card_or_footer_incident_state():
         footer.update_posture(dict(score=86, label="Secure", color="#22c55e"))
         cards.set_breach_override({"active": True, "case_id": "untrusted"})
         footer.set_breach_override({"active": True, "case_id": "untrusted"})
-        assert cards.c_threat.value.text() == "Secure"
+        assert cards.c_threat.value.text() == "None detected"
         assert "Posture 86 · Secure" in footer._display_cells()[-1]
     finally:
         cards.close()
@@ -281,7 +281,7 @@ def test_review_clear_before_first_normal_snapshot_shows_updating_not_stale_comp
         assert cards.c_threat.value.text() == "Updating…"
         assert "Updating threat assessment" in cards.c_threat.toolTip()
         cards._apply_threat_snapshot((0, ("Secure", "#22c55e")))
-        assert cards.c_threat.value.text() == "Secure"
+        assert cards.c_threat.value.text() == "None detected"
     finally:
         cards.close()
         cards.deleteLater()

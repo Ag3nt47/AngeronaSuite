@@ -81,6 +81,7 @@ class _SystemPulseCollector:
                 cpu=float(psutil.cpu_percent(interval=None)),
                 ram=float(vm.percent),
                 available=float(vm.available),
+                memory_total=float(vm.total),
             )
             if self._last_net is not None and self._last_net_at > 0.0:
                 seconds = max(0.25, now - self._last_net_at)
@@ -393,10 +394,14 @@ class SystemPulseCard(QFrame):
         self.shutdown()
         super().closeEvent(event)
 
+    def latest_sample(self) -> dict[str, object]:
+        """Copy one retained GUI sample without copying the history."""
+        return dict(self._latest)
+
     def snapshot(self) -> dict[str, object]:
         """Return a bounded GUI-owned snapshot for the expanded detail view."""
         return {
-            "latest": dict(self._latest),
+            "latest": self.latest_sample(),
             "history": [dict(sample) for sample in self._history],
             "busy": self._busy.is_set(),
         }

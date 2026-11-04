@@ -1,14 +1,16 @@
 # GitHub update checks and preserving custom code
 
-Current development version: v1.14.2. This feature has two separate parts: discovering changes and preparing a
-source candidate. Preparing a candidate does not install it.
+Current development version: **v1.15.0**. Source updates have separate checks,
+candidate preparation, review and activation decisions. Downloading or preparing
+a candidate does not authorize applying it or stopping the running suite.
 
 **Historical validation:** daily/settings/setup/manual controls passed 179 focused cases
 with one optional native-8.3 skip. Frozen full R10 passed 7,554/0/49 for its
 exact snapshot; later installer/tooltip changes passed 141 controls and a
-default 29-phase selfcheck. Those are separate scopes. Daily checks default off;
-preparing or downloading source never authorizes installation. Activation
-remains held until trusted release, recovery and runtime checks are satisfied.
+default 29-phase selfcheck. Those are historical, separate scopes. Daily checks
+default off. The approved source-activation workflow below is separate from
+protected installed-release authorization; these historical counts do not prove
+current-revision activation, runtime health or final CI acceptance.
 
 The October 28 review separately exercised 266 updater cases with one native
 availability skip and the actual shared discovery transport. Canonical main
@@ -64,8 +66,10 @@ installation and are excluded from the candidate.
 
 Source preparation admits at most two retained candidates and 2 GiB of total
 logical candidate data, with a separate 2 GiB free-space reserve on the stage
-volume. Admission happens under the shared stage lease before a new download.
-Resolution and validation use the same capacity checks. Unknown entries,
+volume. It also checks the shared source-update storage allowance described
+below, so stages and activation backups do not each receive another 2 GiB.
+Admission happens under the shared stage lease before a new download.
+Resolution and validation retain their capacity checks. Unknown entries,
 unsafe paths or incomplete accounting hold preparation for review; the updater
 does not silently delete earlier candidates to make room. A low-space validation
 result may be shown without persisting another report, and says so explicitly.
@@ -82,7 +86,101 @@ Its result prints the stage identifier and exact manifest digest needed for
 later review. Use `--help` for the explicit `--resolve`, `--choose` and
 `--validate` operations. Review acts only on the isolated candidate.
 
-## Installation remains a separate boundary
+## Review and activate a source update
+
+After preparation, Angerona reviews the exact candidate and displays the target
+revision, current Git HEAD, preserved-change count, changed paths and immutable
+plan identity. Unresolved conflicts, changed source or approval evidence, missing
+private controller credentials, or incompatible runtime dependencies hold the
+review before STOP. A version or descriptive metadata change can be compatible;
+a Python requirement, dependency/lockfile, build-system or entry-point change
+requires separate verified runtime preparation.
+
+The confirmation depends on how the source application was launched:
+
+- **Apply and restart Angerona** is available with a verified external source
+  update controller from the canonical launcher. Yes records that exact approval
+  and requests the existing normal STOP. A held or incomplete STOP leaves source
+  publication held.
+- **Queue source update review** appears without that verified controller. Yes
+  records a proposal only and keeps Angerona running. A later canonical launch
+  must verify the same plan and ask again before applying it.
+
+Both questions default to **No**, and Escape declines. Checking for updates or
+preparing a stage never supplies this later consent. Turning off daily checks
+does not prevent an explicitly requested review or fresh confirmation of an
+already queued proposal. Without exact source-update consent, normal STOP does
+not trigger an update restart.
+
+### Preserve local work and settings
+
+Activation applies the reviewed merged file content while retaining Git HEAD,
+refs and index. It does not reset, rebase or commit the checkout. A separate
+verified applied-source record identifies the upstream base for the next update,
+including paths added by an earlier approved update. Local custom source edits
+remain part of subsequent merges; unresolved conflicts still need an explicit
+choice. Ignored data, settings, keys, the virtual environment and UGCAP baseline
+are outside the source-replacement scope. An addition that collides with ignored
+or unknown local data is held.
+
+The known startup-recovery manifest and four bootstrap digest values are derived
+from the approved merged bytes without executing candidate code. Other custom
+batch content is preserved. Unknown recovery profiles or changed retained inputs
+hold activation instead of silently replacing custom controls with upstream ones.
+
+### Normal STOP, publication and recovery
+
+The external controller verifies the clean, approval-bound managed STOP record
+and actual native retirement of the approved Core and owned components. Core exit
+alone is insufficient. It then acquires the runtime, source-helper and Core
+maintenance leases, checks for pending repair and active virtual-environment
+users, and runs a verified copy of the original update/recovery helpers.
+
+Original archives and the journal stay under the configured data directory's
+`github-updates` state. File moves use a private, operation-specific workspace
+under the source checkout's `.tmp` directory, keeping old and new payloads on the
+source volume even when the data directory is on another drive. Publication is
+journaled per file; it is not a whole-tree atomic swap. Git state and protected
+settings/key identities are checked again before recording success.
+
+A publication error can roll back only the exact retained file objects and
+approved bytes. Changed or unknown replacements are preserved and leave the
+operation held. An interrupted publication with a pending marker retains its
+archive and original recovery helpers; canonical startup stays held until the
+bound reconciliation path succeeds. Follow its explicit reconciliation prompt. Do not
+delete pending records, overwrite unknown files or reset baselines to force a
+retry. The workflow requests one canonical startup after a verified outcome;
+that request does not establish fresh runtime or protection health.
+
+### Review retained source-update storage
+
+Open **Updates → Source update storage…** to review current retained data,
+completed backups and space on the required volumes. The defaults allow two
+completed backups within one shared **2 GiB logical-data limit** covering managed
+stages, activation archives, capsules, journals and source workspaces. A fixed
+**2 GiB free-space reserve** is required on each involved physical volume, with
+combined admission when source and data share a volume. Source-stage-specific
+caps still apply. Capacity is checked before consent/STOP and again before
+publication; reaching a limit holds the update rather than deleting evidence.
+
+The dialog offers **Export selected backup**, **Permanently delete selected
+backup**, and **Change retention limits**, each with a fresh review and explicit
+confirmation that defaults to No. Eligible completed or inactive-candidate
+payloads can be reviewed; active requests, queued proposals, pending operations
+and current applied-source lineage remain protected. Export writes a verified ZIP
+to the chosen local destination without overwriting an existing file or deleting
+the retained original. Permanent deletion is allowed without export only after
+its separate confirmation; it retains compact audit/lineage metadata and removes
+only the verified eligible payload and its unreferenced stage/workspace. Unknown
+or changed objects stop cleanup, and a partial result is reported as held.
+
+The policy controls permit 1–8 completed backups and 64–4096 MiB of shared retained
+data. Raising a policy limit does not remove existing backups or waive the fixed
+free-space reserve and source-stage caps. An interrupted policy change remains a
+separate storage hold; it does not grant a default allowance or, by itself,
+inhibit ordinary startup.
+
+## Protected installed releases remain a separate boundary
 
 ### Canonical Windows executable custody (UPD-05)
 
@@ -109,11 +207,12 @@ to a malicious administrator/kernel. No live installation, UAC or restart-health
 result is claimed. A passing test that expects unsafe custody to be refused does
 not make the underlying host exposure healthy.
 
-The source-stage workflow retains user changes as file bytes with explicit
-conflicts. The packaged-release helper does not transplant those changes into a
-signed binary installation. Protected-installer backups and recovery holds
-remain separate; source staging does not authorize installation, UGCAP baseline
-replacement or automatic destructive conflict recovery.
+The source workflow retains user changes as file bytes with explicit conflicts
+and separate source-activation consent. The packaged-release helper does not
+transplant those changes into a signed binary installation. Protected-installer
+backups and recovery holds remain separate; source approval does not authorize
+installed-release trust, UGCAP baseline replacement or destructive conflict
+recovery.
 
 For scheduled metadata-only checks, inspect structured `status`: a partial
 result can exit zero while network metadata remains unavailable. Process exit
@@ -153,7 +252,8 @@ before an elevation request. The existing publisher-signature, threshold release
 authorization and rollback-floor verification remain the installation authority;
 no script from the downloaded archive is executed by the helper. Missing trusted
 installation files hold the operation and direct first installs to the signed
-MSIX. Source staging still cannot activate an update.
+MSIX. The separately approved source workflow above does not grant this
+protected-installation authority.
 
 The comparison version normally comes from protected installed release metadata.
 If it is unavailable, the helper labels its source-version comparison as advisory
@@ -209,7 +309,7 @@ from passing a slightly larger value to the worker. Invalid direct worker budget
 are rejected before multiprocessing setup. The merge retains canonical inbox
 custody checks, strict single-link assets and HOST-03's unsafe-host hold.
 
-Current combined-source tests and fresh native refusal: **229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips**.
+Historical UPD-06 combined-source tests and fresh native refusal: **229 focused checks passed: 228 production cases and one actual native custody-refusal check, with no failures/errors/skips**.
 The eleven deterministic additions exercise budget handoff with inert transports;
 they do not establish payload networking, installation or healthy host custody.
 The historical paragraph above is retained as reported remote evidence; it is
@@ -218,32 +318,43 @@ unresolved. This change adds no deadline for metadata, hashing, filesystem
 staging/rename, privileged installer runtime or entire providers. Actual archive
 audits and guarded-publication proof remain separate source-bound receipts.
 
-**Activation: HELD.** Checking, preparing and reviewing a stage do not install it.
+### Validation and remaining authority limits
 
-Static validation checks candidate hashes, Python syntax, required entry
-points and unresolved conflicts without executing downloaded code. It does not
-prove runtime health, dependency compatibility or privileged-service behavior.
-This phase therefore always holds activation, including a conflict-free stage.
+Static stage validation checks candidate hashes, Python syntax, required entry
+points and unresolved conflicts without executing downloaded code. It grants no
+activation consent, runtime-health verdict or privileged-service compatibility.
+The source workflow reuses the current runtime only when its checked dependency
+contract is unchanged; it does not install new dependencies or grant trust to a
+new runtime. A successful source-publication record still requires fresh startup,
+protection and normal-STOP acceptance for the changed revision.
 
-Packaged-installer backup retention is applied and passed 27 confined controls.
-Durable crash reconciliation and restart-health proof remain unproven. See the
-[recovery review](../analysis/live-debug-2026-10-22/weakness-review.md); staging
-cannot grant recovery or release authority.
+Regression cases cover source consent/retirement, successive updates, conditional
+rollback and crash checkpoints, storage maintenance, generated recovery controls,
+and GUI/launcher handoff in the [activation tests](../tests/test_source_update_activation.py),
+[storage tests](../tests/test_source_update_activation_storage.py),
+[recovery-coherence tests](../tests/test_source_update_recovery_coherence.py) and
+[UI tests](../tests/test_source_update_activation_ui.py). These source references
+are not a claim that a full current suite, a live source/data cross-volume update,
+an installed-release upgrade or final hosted CI has passed.
 
-A future activation workflow must stop the suite, validate an isolated runtime
-and dependencies, preserve recovery, verify service compatibility and obtain
-explicit UGCAP baseline review when enabled. It must retain the existing
-independently pinned signed-release authorization. HTTPS, a Git SHA, a clean
-merge and an AI recommendation do not replace that authorization.
+The historical packaged-installer review passed 27 confined backup-retention
+controls. Its durable crash-recovery and restart-health acceptance remains
+separate from source reconciliation. See the retained
+[recovery review](../analysis/live-debug-2026-10-22/weakness-review.md).
+Protected installation continues to require independently pinned signed-release
+authorization and its existing service/baseline checks. HTTPS, a Git SHA, a clean
+merge and an AI recommendation do not replace that authority.
 
-Staging currently preserves file bytes rather than Git history or executable
-permission modes. Path checks are not an atomic boundary against a concurrently
-malicious administrator or compromised kernel.
+Source merging preserves file content rather than replaying Git history or
+executable permission modes. Leaving HEAD/index unchanged can therefore leave
+source-update changes visible in the working tree. The filesystem checks do not
+provide an atomic boundary against a concurrently malicious administrator or
+compromised kernel.
 
 Protocol references: [GitHub branch metadata](https://docs.github.com/en/rest/branches/branches#get-a-branch)
 and [published stable release metadata](https://docs.github.com/en/rest/releases/releases#get-the-latest-release).
 
-Focused follow-ups passed 73 test-only cases and 83 YARA cache cases, followed
+Historical focused follow-ups passed 73 test-only cases and 83 YARA cache cases, followed
 by a fresh 29-phase module selfcheck. The historical failed full regression remains
 retained; its five failing nodes passed R7, which failed a separate GUI launch
 assertion. Later R10 passed7,554/0/49 for its frozen snapshot. These passes grant no

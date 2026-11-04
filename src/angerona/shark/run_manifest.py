@@ -873,6 +873,7 @@ def build_run_history(
     steps: Iterable[Any],
     preflight: PreflightDecision | Mapping[str, Any],
     status: str,
+    prepared_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a versioned history while retaining legacy top-level fields."""
     if isinstance(preflight, PreflightDecision):
@@ -889,6 +890,11 @@ def build_run_history(
     realized_plan: list[dict[str, Any]] = []
     for index, source_step in enumerate(steps):
         row = _step_dict(source_step)
+        if prepared_run is None:
+            if row.get("planned_step_id") == "":
+                row.pop("planned_step_id", None)
+            if row.get("settlement") == {}:
+                row.pop("settlement", None)
         row["run_id"] = str(run_id)
         step_identity = {
             "run_id": str(run_id),
@@ -962,6 +968,11 @@ def build_run_history(
             "step_count": len(serialized),
         },
     }
+    if prepared_run is not None:
+        from angerona.shark.simulation_session import prepared_history_matches
+        payload["campaign"]["prepared_run"] = prepared_run
+        if not prepared_history_matches(payload, prepared_run):
+            raise ValueError("prepared plan does not match the actual run prefix")
     return payload
 
 
@@ -1125,6 +1136,10 @@ def _verify_chain(history: Mapping[str, Any]) -> tuple[bool, str, str]:
         return False, "campaign realized plan does not match its steps", previous_hash
     if campaign.get("realized_plan_sha256") != _digest(realized_plan):
         return False, "campaign realized-plan digest does not match", previous_hash
+    if "prepared_run" in campaign:
+        from angerona.shark.simulation_session import prepared_history_matches
+        if not prepared_history_matches(history, campaign["prepared_run"]):
+            return False, "prepared plan binding does not match the actual run prefix", previous_hash
     if kind == "red_team":
         completeness = _red_team_plan_completeness(steps, safety)
         for key, expected_value in completeness.items():

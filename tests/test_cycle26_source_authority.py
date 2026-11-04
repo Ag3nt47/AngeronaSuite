@@ -127,7 +127,80 @@ def test_elevated_mutable_python_source_is_refused(monkeypatch) -> None:
     assert entry.main() == 2
 
 
-def test_unpinned_frozen_entrypoint_never_requests_elevation(monkeypatch) -> None:
+_READY_ENDPOINT = "41234:" + "a" * 64
+_ELEVATION_ARGS = [
+    "Angerona.exe", "--operator-elevation", "--chill",
+    f"--startup-ready={_READY_ENDPOINT}",
+]
+
+
+@pytest.fixture
+def explicit_elevation(monkeypatch):
+    import angerona.__main__ as entry
+    from angerona.core import windows_package_identity
+
+    monkeypatch.setattr(entry.sys, "argv", list(_ELEVATION_ARGS))
+    monkeypatch.setattr(windows_package_identity, "require_current_package_image", lambda _name: None)
+
+
+@pytest.mark.parametrize("elevated", [False, True])
+def test_installed_default_opens_ordinary_console_without_uac(monkeypatch, elevated) -> None:
+    import angerona.__main__ as entry
+    from angerona.core import privilege, windows_package_identity
+
+    calls = []
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(entry.sys, "platform", "win32")
+    monkeypatch.setattr(entry.sys, "argv", ["Angerona.exe"])
+    monkeypatch.setattr(privilege, "is_admin", lambda: elevated)
+    monkeypatch.setattr(privilege, "ensure_admin", lambda: pytest.fail("default requested UAC"))
+    monkeypatch.setattr(windows_package_identity, "verify_current_msix_authority",
+                        lambda: windows_package_identity.PackageAuthority(True, "trusted"))
+    monkeypatch.setattr(entry, "_run_engine_mode", lambda mode: calls.append(mode) or 73)
+
+    assert entry.main() == (2 if elevated else 73)
+    assert calls == ([] if elevated else ["--protection-console"])
+
+
+def test_signed_ordinary_console_receives_only_readiness_endpoint(monkeypatch) -> None:
+    import angerona.__main__ as entry
+    from angerona.core import privilege, windows_package_identity
+
+    calls = []
+    monkeypatch.setattr(entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(entry.sys, "platform", "win32")
+    monkeypatch.setattr(entry.sys, "argv", [
+        "Angerona.exe", "--protection-console", f"--startup-ready={_READY_ENDPOINT}",
+    ])
+    monkeypatch.setattr(privilege, "is_admin", lambda: False)
+    monkeypatch.setattr(privilege, "ensure_admin", lambda: pytest.fail("ordinary console requested UAC"))
+    monkeypatch.setattr(windows_package_identity, "verify_current_msix_authority",
+                        lambda: windows_package_identity.PackageAuthority(True, "trusted"))
+    monkeypatch.setattr(entry, "_run_engine_mode",
+                        lambda mode, **kwargs: calls.append((mode, kwargs)) or 73)
+
+    assert entry.main() == 73
+    assert calls == [("--protection-console", {"startup_endpoint": _READY_ENDPOINT})]
+
+
+@pytest.mark.parametrize("arguments,frozen", [
+    (_ELEVATION_ARGS[1:], False),
+    (_ELEVATION_ARGS[1:-1], True),
+    ([*_ELEVATION_ARGS[1:], "--automatic-start"], True),
+    ([*_ELEVATION_ARGS[1:], "--headless"], True),
+])
+def test_invalid_elevation_request_never_reaches_uac(monkeypatch, arguments, frozen) -> None:
+    import angerona.__main__ as entry
+    from angerona.core import privilege
+
+    monkeypatch.setattr(entry.sys, "frozen", frozen, raising=False)
+    monkeypatch.setattr(entry.sys, "platform", "win32")
+    monkeypatch.setattr(entry.sys, "argv", ["Angerona.exe", *arguments])
+    monkeypatch.setattr(privilege, "ensure_admin", lambda: pytest.fail("invalid request reached UAC"))
+    assert entry.main() == 2
+
+
+def test_unpinned_frozen_entrypoint_never_requests_elevation(monkeypatch, explicit_elevation) -> None:
     import angerona.__main__ as entry
     from angerona.core import privilege
 
@@ -141,7 +214,7 @@ def test_unpinned_frozen_entrypoint_never_requests_elevation(monkeypatch) -> Non
     assert entry.main() == 2
 
 
-def test_exact_package_authority_is_rechecked_after_elevation(monkeypatch) -> None:
+def test_exact_package_authority_is_rechecked_after_elevation(monkeypatch, explicit_elevation) -> None:
     import angerona.__main__ as entry
     from angerona.core import privilege, windows_package_identity
 
@@ -167,7 +240,7 @@ def test_exact_package_authority_is_rechecked_after_elevation(monkeypatch) -> No
 
 
 @pytest.mark.parametrize("state", ("cancelled", "failed"))
-def test_failed_uac_never_continues_frozen_runtime(monkeypatch, state: str) -> None:
+def test_failed_uac_never_continues_frozen_runtime(monkeypatch, explicit_elevation, state: str) -> None:
     import angerona.__main__ as entry
     from angerona.core import privilege, windows_package_identity
 
@@ -193,7 +266,7 @@ def test_failed_uac_never_continues_frozen_runtime(monkeypatch, state: str) -> N
 
 
 def test_typed_elevation_result_cannot_replace_effective_token_proof(
-    monkeypatch,
+    monkeypatch, explicit_elevation,
 ) -> None:
     import angerona.__main__ as entry
     from angerona.core import privilege, windows_package_identity
@@ -249,7 +322,7 @@ def test_uac_cancellation_returns_a_typed_fail_closed_result(monkeypatch) -> Non
     assert result.effective_administrator is False
 
 
-def test_exact_package_authority_can_reach_uac(monkeypatch) -> None:
+def test_exact_package_authority_can_reach_uac(monkeypatch, explicit_elevation) -> None:
     import angerona.__main__ as entry
     from angerona.core import privilege, windows_package_identity
 
@@ -267,6 +340,23 @@ def test_exact_package_authority_can_reach_uac(monkeypatch) -> None:
     monkeypatch.setattr(privilege, "ensure_admin", _installed_authority)
     with pytest.raises(SystemExit, match="73"):
         entry.main()
+
+
+def test_installed_elevation_image_must_be_in_current_package(monkeypatch, tmp_path) -> None:
+    from angerona.core import windows_package_identity as identity
+
+    root = tmp_path / "package"
+    root.mkdir()
+    expected = root / "Angerona.exe"
+    expected.touch()
+    unexpected = tmp_path / "Angerona.exe"
+    unexpected.touch()
+    monkeypatch.setattr(identity, "_query_native_string", lambda _name: str(root))
+    monkeypatch.setattr(identity.sys, "executable", str(expected))
+    assert identity.require_current_package_image("Angerona.exe") == expected
+    monkeypatch.setattr(identity.sys, "executable", str(unexpected))
+    with pytest.raises(PermissionError, match="installed package image"):
+        identity.require_current_package_image("Angerona.exe")
 
 
 def test_msix_authority_requires_exact_family_and_publisher() -> None:

@@ -1,15 +1,14 @@
 """Administrator-privilege handling.
 
-Angerona needs an elevated token for full-system telemetry (process internals,
-ETW kernel providers, protected file paths). On launch we check whether we are
-already elevated; if not, we relaunch ourselves through the UAC prompt. On
-non-Windows (developer machines) these are graceful no-ops.
+Some Windows telemetry and response operations need an elevated token. The
+installed dashboard requests one only through an explicit operator launch.
 """
 from __future__ import annotations
 
 import ctypes
 import hashlib
 import os
+import stat
 import struct
 import subprocess
 import sys
@@ -18,6 +17,14 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path, PureWindowsPath
+
+
+OPERATOR_ELEVATION_ARGUMENT = "--operator-elevation"
+OPERATOR_ELEVATION_WARNING = (
+    "Windows will ask for consent. Administrator access lets Angerona modify "
+    "protected files and system settings. A compromised Angerona process could "
+    "make the same changes. Approval applies to this session."
+)
 
 
 _WINDOWS_COPIED_ENVIRONMENT = (
@@ -491,6 +498,26 @@ def is_admin() -> bool:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
     except Exception:
         return False  # not Windows, or call unavailable
+
+
+def operator_elevation_launch() -> tuple[Path, dict[str, str]]:
+    """Resolve the installed helper for an explicit ordinary-console request."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False) or is_admin():
+        raise PermissionError("Administrator mode requires the ordinary signed Windows console.")
+    from .windows_package_identity import require_current_package_image, verify_current_msix_authority
+
+    authority = verify_current_msix_authority()
+    if not authority.trusted:
+        raise PermissionError(authority.reason)
+    executable = require_current_package_image("Angerona.exe").resolve(strict=True)
+    helper = executable.with_name("AngeronaStartup.exe")
+    info = helper.lstat()
+    if (not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+            or helper.resolve(strict=True).parent != executable.parent):
+        raise PermissionError("The installed startup helper could not be verified.")
+    environment = _minimal_environment({})
+    environment["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return helper, environment
 
 
 def ensure_admin() -> ElevationResult:

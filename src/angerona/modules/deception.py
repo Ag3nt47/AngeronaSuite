@@ -156,52 +156,50 @@ class DeceptionModule(BaseModule):
         self._canaries[key] = mtime
         self._canary_evidence[key] = evidence
 
-    def _plant(self) -> None:
+    def _plant(self, *, diagnostic_errors: list[str] | None = None) -> None:
         self._base.mkdir(parents=True, exist_ok=True)
-        for nm in CANARY_NAMES:
+        for position, nm in enumerate(CANARY_NAMES, 1):
             p = self._base / nm
             try:
                 if not p.exists():
                     p.write_text("# Do not modify — security canary.\n", encoding="utf-8")
                 _hide_file(p)
                 self._enroll_canary(p)
-            except Exception:
+            except Exception as exc:
+                if diagnostic_errors is not None and len(diagnostic_errors) < len(CANARY_NAMES):
+                    diagnostic_errors.append(f"slot{position}:{type(exc).__name__[:80]}")
                 continue
 
     def self_test(self) -> tuple[bool, str]:
-        """Plant only inert namespaced fixtures in a disposable directory."""
-        original_base = self._base
-        original_canaries = self._canaries
-        original_evidence = self._canary_evidence
+        """Exercise real planting on an unstarted disposable instance only."""
         try:
             with tempfile.TemporaryDirectory(prefix="angerona-deception-selftest-") as temp:
                 root = Path(temp).resolve()
-                self._base = root / "static"
-                self._canaries = {}
-                self._canary_evidence = {}
-                self._plant()
-                paths = [Path(path).resolve() for path in self._canaries]
-                ok = bool(
-                    len(paths) == len(CANARY_NAMES)
-                    and all(path.parent == self._base.resolve() for path in paths)
-                    and {path.name for path in paths} == set(CANARY_NAMES)
-                    and all(
-                        path.read_text(encoding="utf-8")
-                        == "# Do not modify — security canary.\n"
-                        for path in paths
+                probe = DeceptionModule()
+                probe._base = root / "static"
+                errors: list[str] = []
+                probe._plant(diagnostic_errors=errors)
+                if errors:
+                    return False, "disposable canary enrollment failed: " + "; ".join(errors)[:300]
+                paths = [Path(path).resolve() for path in probe._canaries]
+                if len(paths) != len(CANARY_NAMES):
+                    return False, (
+                        f"canary count contract failed: expected={len(CANARY_NAMES)}; "
+                        f"observed={len(paths)}"
                     )
-                )
+                if not all(path.parent == probe._base.resolve() for path in paths):
+                    return False, "canary path contract failed"
+                if {path.name for path in paths} != set(CANARY_NAMES):
+                    return False, "canary names contract failed"
+                expected = "# Do not modify — security canary.\n"
+                for position, path in enumerate(paths, 1):
+                    with path.open("r", encoding="utf-8") as stream:
+                        content = stream.read(len(expected) + 1)
+                    if content != expected:
+                        return False, f"canary content contract failed: slot{position}"
         except Exception as exc:
-            return False, f"disposable canary fixture failed: {exc}"
-        finally:
-            self._base = original_base
-            self._canaries = original_canaries
-            self._canary_evidence = original_evidence
-        return (
-            ok,
-            "disposable secret-free canary lifecycle passed"
-            if ok else "canary path/content contract failed",
-        )
+            return False, f"disposable canary fixture failed: {type(exc).__name__[:80]}"
+        return True, "disposable secret-free canary lifecycle passed"
 
     def run(self) -> None:
         self._plant()

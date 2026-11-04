@@ -523,3 +523,98 @@ def test_unsupported_platform_is_rejected_instead_of_guessed():
             platform_name="plan9",
             clock=lambda: NOW,
         )
+
+
+def _accessory_probe(rows, *, coverage="sampled", pnp_complete=True):
+    return observe_system_peripheral_posture(
+        platform_name="win32",
+        windows_probe=lambda: {
+            "pnp_complete": pnp_complete,
+            "accessory_coverage": coverage,
+            "accessory_rows": rows,
+        },
+        clock=lambda: NOW,
+    )
+
+
+def test_accessory_roles_are_joined_only_inside_the_same_usb_anchored_container():
+    observed = _accessory_probe([
+        [1, 0, True], [1, 1, False], [1, 2, False],
+        [2, 1, True], [2, 4, False],
+        [3, 1, False], [3, 2, False], [3, 4, False],  # No USB parent.
+        [4, 1, True], [5, 2, True],  # Two separate single-role devices.
+    ])
+    assert observed.usb_accessory_coverage == "sampled"
+    assert observed.usb_accessory_combinations == ("hid+network", "hid+storage")
+    details = assess_peripheral_posture(observed).event_details(observed)
+    assert details["usb_accessory_combinations"] == ["hid+network", "hid+storage"]
+    assert "accessory_rows" not in details
+    assert details["raw_device_identifiers_omitted"] is True
+    assert details["response_authorized"] is False
+
+
+@pytest.mark.parametrize("rows,coverage,pnp_complete", [
+    ([[True, 1, True]], "sampled", True),
+    ([[1, True, True]], "sampled", True),
+    ([[1, 7, True]], "sampled", True),  # Provider may report only one class per row.
+    ([[1, 1, 1]], "sampled", True),
+    ([[1, 0, False]], "sampled", True),
+    ([[65, 1, True]], "sampled", True),
+    ([[1, 1, True]] * 65, "sampled", True),
+    ([[1, 1, True], [1, 4, False]], "sampled", False),
+    ([[1, 1, True], [1, 4, False]], "unsupported", True),
+    (None, "sampled", True),
+])
+def test_invalid_accessory_evidence_cannot_supply_a_claim(rows, coverage, pnp_complete):
+    observed = _accessory_probe(rows, coverage=coverage, pnp_complete=pnp_complete)
+    assert observed.usb_accessory_coverage == "unavailable"
+    assert observed.usb_accessory_combinations == ()
+
+
+def test_accessory_snapshot_accepts_old_exact_shape_and_validates_new_fields():
+    baseline = asdict(snapshot())
+    del baseline["usb_accessory_coverage"]
+    del baseline["usb_accessory_combinations"]
+    assert snapshot_from_mapping(baseline).usb_accessory_coverage == "not-collected"
+    with pytest.raises(PeripheralPostureRejected, match="shape"):
+        snapshot_from_mapping({**baseline, "usb_accessory_coverage": "sampled"})
+    document = {**baseline, "usb_accessory_coverage": "partial",
+                "usb_accessory_combinations": ["hid+storage+network"]}
+    assert snapshot_from_mapping(document).usb_accessory_combinations == ("hid+storage+network",)
+    with pytest.raises(PeripheralPostureRejected, match="evidence"):
+        snapshot_from_mapping({**document, "usb_accessory_coverage": "unavailable"})
+    with pytest.raises(PeripheralPostureRejected, match="evidence"):
+        snapshot_from_mapping({**document, "platform": "linux"})
+
+
+def test_only_observed_combinations_emit_deduped_advisory_without_changing_dma_severity():
+    import dataclasses
+
+    initial = _accessory_probe([[1, 1, True], [1, 2, False], [1, 4, False]], coverage="partial")
+    exposed = dataclasses.replace(initial, kernel_dma_protection="disabled", thunderbolt="present")
+    gap = dataclasses.replace(exposed, usb_accessory_coverage="unavailable", usb_accessory_combinations=())
+    cleared = dataclasses.replace(exposed, usb_accessory_coverage="sampled", usb_accessory_combinations=())
+    current = [exposed]
+    module = PeripheralDMAGuardModule(observer=lambda: current[0])
+    bus = EventBus()
+    module.bind(bus)
+
+    for item in (exposed, exposed, gap, exposed):
+        current[0] = item
+        module._tick()
+    recent = bus.recent(16)
+    advisories = [event for event in recent if event.details.get("finding_code") == "peripheral.usb.multifunction"]
+    assert len(advisories) == 1
+    details = advisories[0].details
+    assert details["disposition"] == "observation" and details["active_attack"] is False
+    assert details["response_authorized"] is False and details["device_control_performed"] is False
+    assert details["usb_accessory_coverage"] == "partial"
+    assert details["usb_accessory_combinations"] == ["hid+storage+network"]
+    assert "raw_device_identifiers" not in details
+    assert any(event.details.get("state") == "dma-exposure-detected" and event.severity.name == "CRITICAL"
+               for event in recent)
+
+    for item in (cleared, exposed):
+        current[0] = item
+        module._tick()
+    assert sum(event.details.get("finding_code") == "peripheral.usb.multifunction" for event in bus.recent(16)) == 2

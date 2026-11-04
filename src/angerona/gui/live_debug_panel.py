@@ -23,6 +23,11 @@ from PySide6.QtWidgets import (
     QLineEdit, QPlainTextEdit, QPushButton, QSpinBox, QSplitter, QTableView,
     QVBoxLayout, QWidget,
 )
+from shiboken6 import isValid
+from angerona.gui.native_retirement import (
+    native_retirement_proven, native_start_failed, poll_native_retirement,
+    retain_native_retirement,
+)
 
 
 _MAX_RECORD_BYTES = 32 * 1024
@@ -31,6 +36,7 @@ _PENDING_LIMIT = 256
 _UI_BATCH = 64
 _VERDICTS = ("needs-review", "confirmed-threat", "false-positive", "health", "exposure")
 _ACTIVE_WORKERS: set[QThread] = set()
+_STREAM_ADMISSION = True
 
 
 def _shutdown_streams() -> None:
@@ -41,23 +47,58 @@ def _shutdown_streams() -> None:
     deadline = time.monotonic() + 4.0
     for worker in workers:
         try:
-            worker.wait(max(0, int((deadline - time.monotonic()) * 1000)))
+            waited = worker.wait(max(0, int((deadline - time.monotonic()) * 1000))) is True
+            if waited and worker.isFinished() is True:
+                try:
+                    poll_live_debug_retirement(worker)
+                except RuntimeError:
+                    pass  # Qt teardown may already own the event dispatcher.
         except RuntimeError:
             # QApplication.shutdown() may already have deleted a completed
             # wrapper while its queued finished callback was still pending.
-            _ACTIVE_WORKERS.discard(worker)
+            if live_debug_retirement_proven(worker):
+                _ACTIVE_WORKERS.discard(worker)
 
 
 atexit.register(_shutdown_streams)
 
 
-def _retain(worker: QThread) -> None:
+def _retain(worker: QThread, panel=None) -> None:
     # Independent ownership survives a panel being deleted during a bounded
     # connect/read. A running QThread must never be destroyed with its widget.
     _ACTIVE_WORKERS.add(worker)
-    reference = weakref.ref(worker)
-    worker.finished.connect(lambda: _ACTIVE_WORKERS.discard(reference()))
-    worker.destroyed.connect(lambda *_: _ACTIVE_WORKERS.discard(reference()))
+    worker._review_panel = weakref.ref(panel) if panel is not None else lambda: None
+    retain_native_retirement(worker, _stream_native_proven)
+
+
+def _stream_native_proven(worker):
+    panel = worker._review_panel()
+    try:
+        if panel is not None and isValid(panel):
+            panel._stream_native_retired(worker)
+        elif isValid(worker):
+            worker.deleteLater()
+    finally:
+        _ACTIVE_WORKERS.discard(worker)
+
+
+def active_live_debug_streams():
+    return tuple(_ACTIVE_WORKERS)
+
+
+def hold_live_debug_streams():
+    global _STREAM_ADMISSION
+    _STREAM_ADMISSION = False
+    for worker in tuple(_ACTIVE_WORKERS):
+        worker.request_stop()
+
+
+def live_debug_retirement_proven(worker):
+    return native_retirement_proven(worker)
+
+
+def poll_live_debug_retirement(worker):
+    return poll_native_retirement(worker)
 
 
 def _request_stop_all(workers: list) -> None:
@@ -97,6 +138,7 @@ class _StreamWorker(QThread):
 
     def __init__(self, pid: int, birth: float | None, factory=None, *, pending_limit=_PENDING_LIMIT):
         super().__init__()  # Deliberately has no QWidget parent.
+        self._start_attempted = False
         self.pid, self.birth = pid, birth
         self._factory = factory or _client_factory
         self._pending_limit = max(1, min(_PENDING_LIMIT, pending_limit))
@@ -107,6 +149,12 @@ class _StreamWorker(QThread):
         self._lost = 0
         self._state = "connecting"
         self._message = f"Connecting to PID {pid}…"
+
+    def start(self, *args, **kwargs):
+        if self._start_attempted:
+            raise RuntimeError("A diagnostic stream native generation cannot restart")
+        self._start_attempted = True
+        return super().start(*args, **kwargs)
 
     def request_stop(self) -> None:
         self._stop.set()
@@ -307,6 +355,12 @@ class LiveDebugPanel(QWidget):
         self.destroyed.connect(lambda *_: (_request_stop_all(workers), timer.stop()))
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._connect_activity = None
+        self._export_activities = {}
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         root.addWidget(_label("LIVE AI REVIEW · Local diagnostic client"))
         root.addWidget(_label("Connect to an explicitly selected Angerona PID. Redacted views are advisory; "
             "local notes do not change alerts, allowlists, containment, or source code."))
@@ -379,6 +433,9 @@ class LiveDebugPanel(QWidget):
         self.status.setText(self._status_text)
 
     def connect_to_pid(self) -> bool:
+        if not _STREAM_ADMISSION:
+            self._set_status("Diagnostic stream admission is held while Angerona stops.")
+            return False
         if self._closed or self._worker is not None:
             return False
         pid = self.pid_input.value()
@@ -395,14 +452,25 @@ class LiveDebugPanel(QWidget):
         worker = _StreamWorker(pid, birth, self._client_factory)
         self._worker = worker
         self._workers.append(worker)
-        _retain(worker)
         self._connected_pid = pid
         self.connect_button.setEnabled(False)
         self.disconnect_button.setEnabled(True)
         self.pid_input.setEnabled(False)
         self.birth_input.setEnabled(False)
         self._set_status(f"Connecting to PID {pid}…")
-        worker.start()
+        self._connect_activity = self._activities.begin("diagnostic-connect", "Connecting to the selected diagnostic endpoint…", replace=True)
+        try:
+            _retain(worker, self)
+            worker.start()
+        except Exception as error:
+            worker.admission_error = type(error).__name__
+            worker.retirement_uncertain = True
+            worker.request_stop()
+            native_start_failed(worker)
+            self._activities.finish(self._connect_activity)
+            self._connect_activity = None
+            self._set_status("Diagnostic stream launch failed; its exact native retirement is unproved. Review before retrying.")
+            return False
         self._timer.start()
         return True
 
@@ -412,10 +480,17 @@ class LiveDebugPanel(QWidget):
             self._set_status("Disconnecting diagnostic client…")
             self.disconnect_button.setEnabled(False)
 
-    def _drain(self) -> None:
+    def _drain(self, *, _retired_worker=None) -> None:
         worker = self._worker
         if worker is not None:
-            rows, lost, _state, message, pending = worker.take()
+            # At proven retirement there can be no new producer records. Take
+            # its entire bounded tail before clearing owner references, so a
+            # STOP proof consumer may safely permit deferred QObject deletion.
+            limit = _PENDING_LIMIT if worker is _retired_worker else _UI_BATCH
+            rows, lost, _state, message, pending = worker.take(limit)
+            if _state in {"connected", "failed", "stopped"} or worker.isFinished():
+                self._activities.finish(self._connect_activity)
+                self._connect_activity = None
             if lost:
                 self._lost += lost
                 rows.insert(0, {"kind": "gap", "source": "local-review-client",
@@ -423,15 +498,18 @@ class LiveDebugPanel(QWidget):
                     "dropped_events": lost, "advisory_only": True, "ts": time.time()})
             self.model.append(rows)
             self._set_status(message)
-            if worker.isFinished() and pending == 0:
+            if (worker is _retired_worker or live_debug_retirement_proven(worker)) and pending == 0:
                 self._worker = None
                 self._workers.remove(worker)
                 self.connect_button.setEnabled(not self._closed)
                 self.pid_input.setEnabled(not self._closed)
                 self.birth_input.setEnabled(not self._closed)
                 self.disconnect_button.setEnabled(False)
+                if isValid(worker):
+                    worker.deleteLater()
         for export in tuple(self._exports):
             if export.isFinished():
+                self._activities.finish(self._export_activities.pop(export, None))
                 self._exports.remove(export)
                 self._workers.remove(export)
                 self.review_status.setText("Selected evidence and local review exported." if export.saved
@@ -441,6 +519,33 @@ class LiveDebugPanel(QWidget):
             f"Client gaps: {self._lost} · History evicted: {self.model.evicted}")
         if self._worker is None and not self._exports:
             self._timer.stop()
+
+    def _stream_native_retired(self, worker):
+        was_current = self._worker is worker
+        try:
+            if not self._closed and was_current:
+                # Preserve at most the existing 256-record tail before
+                # publishing proof. Active reads stay batched at 64 records.
+                self._drain(_retired_worker=worker)
+        except Exception as error:
+            self._set_status("Diagnostic stream retired; final local view delivery failed "
+                f"({type(error).__name__}). View coverage is UNKNOWN; source evidence is unchanged.")
+        finally:
+            if self._worker is worker:
+                self._worker = None
+            if worker in self._workers:
+                self._workers.remove(worker)
+            if was_current:
+                self._activities.finish(self._connect_activity)
+                self._connect_activity = None
+                self.connect_button.setEnabled(not self._closed)
+                self.pid_input.setEnabled(not self._closed)
+                self.birth_input.setEnabled(not self._closed)
+                self.disconnect_button.setEnabled(False)
+            if self._worker is None and not self._exports:
+                self._timer.stop()
+            if isValid(worker):
+                worker.deleteLater()
 
     def _selected(self) -> tuple[int, _Row] | None:
         indexes = self.table.selectionModel().selectedRows()
@@ -496,7 +601,18 @@ class LiveDebugPanel(QWidget):
         self._workers.append(export)
         self.export_button.setEnabled(False)
         self.review_status.setText("Exporting the selected view and local note…")
-        export.start()
+        handle = self._activities.begin("diagnostic-export", "Exporting selected diagnostic evidence…", replace=True)
+        self._export_activities[export] = handle
+        try:
+            export.start()
+        except Exception:
+            if not export.is_alive():
+                self._activities.finish(self._export_activities.pop(export, None))
+                self._exports.remove(export)
+                self._workers.remove(export)
+                self.export_button.setEnabled(not self._closed)
+                self.review_status.setText("Diagnostic export worker could not start; no saved export was verified.")
+                return False
         self._timer.start()
         return True
 
@@ -517,15 +633,28 @@ class LiveDebugPanel(QWidget):
     def stop_workers(self, timeout_ms: int = 150) -> bool:
         """Cancel reads and wait a bounded interval; retain any finishing worker."""
         self._closed = True
+        self._activities.close()
         self._timer.stop()
         _request_stop_all(self._workers)
         deadline = time.monotonic() + max(0, min(timeout_ms, 4000)) / 1000
         stopped = True
         for worker in tuple(self._workers):
             remaining = max(0, int((deadline - time.monotonic()) * 1000))
-            stopped = worker.wait(remaining) and stopped
+            if isinstance(worker, _StreamWorker):
+                if live_debug_retirement_proven(worker):
+                    self._stream_native_retired(worker)
+                    proven = True
+                else:
+                    try:
+                        waited = worker.wait(remaining) is True
+                        proven = waited and worker.isFinished() is True and poll_live_debug_retirement(worker)
+                    except RuntimeError:
+                        proven = False
+                stopped = proven and stopped
+            else:
+                stopped = worker.wait(remaining) and stopped
         return stopped
 
     def closeEvent(self, event):  # noqa: N802
-        self.stop_workers()
+        self.stop_workers(0)
         super().closeEvent(event)

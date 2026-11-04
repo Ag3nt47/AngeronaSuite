@@ -31,7 +31,7 @@ from angerona.resilience import ipc_ring
 from angerona.resilience import heartbeat as hb
 from angerona.resilience import diagnostics as diag
 from angerona.resilience import shutdown_token as tok
-from angerona.resilience.supervisor import ProcessSupervisor, cached_cmdline_probe
+from angerona.resilience.supervisor import Component, ProcessSupervisor, cached_cmdline_probe
 
 _SENSOR_LABELS = {1: "process_creation"}
 _WATCHDOG_STALE_AFTER_SECONDS = 10.0
@@ -173,6 +173,7 @@ class ResilienceManager:
         self.frames_rejected = 0
         self.status = "stopped"
         self._component_heartbeat_cache = None
+        self._source_update_controller = None
         self._owned_core_pid = os.getpid() if os.name == "nt" else None
 
     def _sup_event(self, level: str, msg: str, details: dict) -> None:
@@ -212,11 +213,15 @@ class ResilienceManager:
         # Recovery always starts quiet. A peer watchdog may retain this command
         # across later Full/Chill changes; only a fresh manual Full selection
         # may authorize local AI after an automatic restart.
-        core_args = "-m angerona --chill"
-        # Rebuild this from the trusted current interpreter every generation.
-        # An older watchdog may legitimately hand us a stale pre-Chill command;
-        # carrying it forward would make the next crash restart in Full mode.
-        os.environ["ANGERONA_CORE_CMD"] = f'"{pyw}" {core_args}'
+        from angerona.core.privilege import OPERATOR_ELEVATION_ARGUMENT
+
+        if getattr(sys, "frozen", False) and OPERATOR_ELEVATION_ARGUMENT in sys.argv[1:]:
+            # An installed administrator session requires fresh consent after it ends.
+            # The peer can still supervise the other owned components.
+            os.environ.pop("ANGERONA_CORE_CMD", None)
+        else:
+            # Replace stale commands so an ordinary crash recovery starts quiet.
+            os.environ["ANGERONA_CORE_CMD"] = f'"{pyw}" -m angerona --chill'
         # Run the hidden scanner HEADLESS. It was spawning a full QApplication +
         # Qt window per (detached, no-console) scanner process — heavy RAM and a
         # frequent startup failure that pushed the scanner into SAFE_MODE. Headless
@@ -388,6 +393,197 @@ class ResilienceManager:
         cache = self._component_heartbeat_cache
         return cache.owned_process_identities() if not self._stop.is_set() and cache is not None else ()
 
+    def _capture_owned_process_scope(self, *, timeout: float = 1.0) -> tuple:
+        """Capture strong native-owner/configuration references; no native I/O."""
+        import math
+        from angerona.core.windows_child_job import OwnedWindowsChild
+        from angerona.core.windows_process_lease import ProcessObjectIdentity
+        from angerona.resilience.component_status import ComponentHeartbeatCache, ROLES
+        from angerona.telemetry.process_snapshot_worker import InventoryWorkerError, on_gui_thread
+
+        if on_gui_thread() or os.name != "nt":
+            raise InventoryWorkerError("Companion ownership requires a Windows background owner")
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or not 0 < timeout <= 1.0):
+            raise InventoryWorkerError("Invalid companion ownership deadline")
+        started = time.monotonic()
+        if type(started) not in (int, float) or not math.isfinite(started) or started < 0:
+            raise InventoryWorkerError("Companion ownership clock unavailable")
+        deadline = started + timeout
+        supervisor, cache = self._sup, self._component_heartbeat_cache
+        if type(supervisor) is not ProcessSupervisor or type(cache) is not ComponentHeartbeatCache:
+            raise InventoryWorkerError("Configured companion native owners are unavailable")
+
+        def remaining():
+            now = time.monotonic()
+            if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
+                raise InventoryWorkerError("Companion ownership observation deadline")
+            return deadline - now
+
+        def current():
+            if (self._stop.is_set() or self.status != "running" or self._sup is not supervisor
+                    or self._component_heartbeat_cache is not cache
+                    or supervisor._stop.is_set() or cache._stopped):
+                raise InventoryWorkerError("Companion ownership lifetime is unavailable")
+
+        current()
+        if cache._owned_close_failure or cache._native_cleanup_failed_roles:
+            raise InventoryWorkerError("Companion native observation cleanup remains unproven")
+        if type(self.start_watchdog) is not bool or type(self.with_ui) is not bool:
+            raise InventoryWorkerError("Configured companion roles are unavailable")
+        configuration = tuple((role, cache._enabled.get(role), cache._expected.get(role))
+                              for role in ROLES)
+        if (any(type(enabled) is not bool or expected is not None and type(expected) is not tuple
+                for _role, enabled, expected in configuration)
+                or cache._enabled.get("core") is not True
+                or cache._enabled.get("scanner") is not True):
+            raise InventoryWorkerError("Configured companion roles are unavailable")
+        if cache._enabled.get("watchdog") is True and not cache._expected.get("watchdog"):
+            raise InventoryWorkerError("External watchdog has no retained native ownership provider")
+        if cache._enabled.get("watchdog") is not self.start_watchdog:
+            raise InventoryWorkerError("Configured watchdog ownership state is contradictory")
+        required = {"scanner"}
+        if cache._enabled.get("watchdog") is True:
+            required.add("watchdog")
+        if cache._enabled.get("blackbox") is True:
+            required.add("blackbox")
+        if self.with_ui:
+            required.update(("watchdog_ui", "scanner_ui"))
+        if not supervisor._lifecycle_lock.acquire(timeout=remaining()):
+            raise InventoryWorkerError("Companion registry admission deadline")
+        try:
+            current()
+            registry = supervisor.components
+            if (type(registry) is not dict or not all(type(name) is str for name in registry)
+                    or not required.issubset(registry)):
+                raise InventoryWorkerError("Configured companion is missing its retained registry entry")
+            entries = []
+            for name, component in sorted(registry.items()):
+                if (type(component) is not Component or component.name != name
+                        or component._dead is not False or type(component.argv) is not list
+                        or not component.argv or not all(type(arg) is str and arg for arg in component.argv)):
+                    raise InventoryWorkerError("Configured companion registry is ambiguous")
+                owner, native_state, alias = component.proc, None, None
+                if owner is None:
+                    alias = cache._authenticated_identities.get(name)
+                    if type(alias) is not ProcessObjectIdentity:
+                        raise InventoryWorkerError("Configured companion has no retained native custody: " + name[:32])
+                else:
+                    if type(owner) is not OwnedWindowsChild:
+                        raise InventoryWorkerError("Configured companion has no retained native Job: " + name[:32])
+                    if not owner._handle_lock.acquire(timeout=remaining()):
+                        raise InventoryWorkerError("Companion native-owner admission deadline")
+                    try:
+                        process, job = owner._process, owner._job
+                        handle = getattr(job, "_handle", None)
+                        epoch = getattr(owner, "_owned_observation_epoch", None)
+                        holds = getattr(owner, "_owned_observation_close_holds", None)
+                        if (process is None or job is None or handle is None
+                                or type(epoch) is not int or epoch < 0
+                                or getattr(owner, "_owned_observation_stopped", None) is not False
+                                or type(holds) is not list or holds):
+                            raise InventoryWorkerError("Companion native custody is closed or uncertain")
+                        try:
+                            process_value, job_value = int(process), int(handle)
+                        except Exception:
+                            raise InventoryWorkerError("Companion retained native handle is not numeric") from None
+                        if not 0 < process_value < 0xFFFFFFFFFFFFFFFF or not 0 < job_value < 0xFFFFFFFFFFFFFFFF:
+                            raise InventoryWorkerError("Companion retained native handle is closed")
+                        native_state = (id(process), process, id(job), job, id(handle), handle,
+                                        owner.pid, epoch)
+                    finally:
+                        owner._handle_lock.release()
+                entries.append((name, id(component), component, tuple(component.argv),
+                                owner, native_state, alias))
+            current()
+            return (supervisor, cache, cache._owned_epoch, configuration, self.start_watchdog,
+                    self.with_ui, id(registry), registry, tuple(entries))
+        finally:
+            supervisor._lifecycle_lock.release()
+
+    def _owned_core_identity(self, cache, *, not_before: float):
+        """Admit the existing cached Core observation without refreshing it."""
+        from angerona.core.werfault_guard import OwnedProcessIdentity, read_owned_process_snapshot
+        from angerona.telemetry.process_snapshot_worker import InventoryWorkerError
+
+        rows = cache.owned_process_identities()
+        if type(rows) is not tuple or any(type(row) is not OwnedProcessIdentity for row in rows):
+            raise InventoryWorkerError("Retained Core native context is unavailable")
+        core = tuple(row for row in rows if row.role == "core")
+        checked = read_owned_process_snapshot(lambda: core, not_before=not_before,
+                                              clock=time.monotonic).rows
+        if (len(checked) != 1 or checked[0].pid != os.getpid()
+                or checked[0].pid != self._owned_core_pid):
+            raise InventoryWorkerError("Retained Core native identity differs from this process")
+        return checked[0]
+
+    def observe_owned_process_identities(self, *, timeout: float = 1.0) -> tuple:
+        """Observe complete registered child Jobs and Core off Qt; never authorize.
+
+        Native Job closure, not heartbeat health, includes redirectors and UI
+        helpers. An authenticated role alias can only select an already-proved
+        member. All original immutable two-second leases retain their expiry.
+        """
+        import math
+        from angerona.core.werfault_guard import MAX_OWNED_PROCESSES, read_owned_process_snapshot
+        from angerona.telemetry.process_snapshot_worker import InventoryWorkerError, on_gui_thread
+
+        if on_gui_thread() or os.name != "nt":
+            raise InventoryWorkerError("Companion ownership requires a Windows background owner")
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or not 0 < timeout <= 1.0):
+            raise InventoryWorkerError("Invalid companion ownership deadline")
+        started = time.monotonic()
+        if type(started) not in (int, float) or not math.isfinite(started) or started < 0:
+            raise InventoryWorkerError("Companion ownership clock unavailable")
+        deadline = started + timeout
+
+        def remaining():
+            now = time.monotonic()
+            if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
+                raise InventoryWorkerError("Companion ownership observation deadline")
+            return deadline - now
+
+        captured = self._capture_owned_process_scope(timeout=remaining())
+        cache = captured[1]
+        initial_core = self._owned_core_identity(cache, not_before=started)
+        rows_by_pid = {initial_core.pid: initial_core}
+        for name, _key, _component, _argv, owner, _native_state, _alias in captured[8]:
+            if owner is None:
+                continue
+            rows = owner.observe_owned_process_identities(
+                role=name.replace("_", "-"), timeout=remaining())
+            # Each actual owner must return its complete sample before any
+            # consistent overlap is deduplicated. No missing owner is skipped.
+            for row in read_owned_process_snapshot(lambda: rows, not_before=started,
+                                                   clock=time.monotonic).rows:
+                prior = rows_by_pid.get(row.pid)
+                if prior is not None:
+                    if ((prior.birth_ticks, prior.image, prior.create_time)
+                            != (row.birth_ticks, row.image, row.create_time)):
+                        raise InventoryWorkerError("Companion native PID identity is contradictory")
+                    if row.expires_monotonic < prior.expires_monotonic:
+                        rows_by_pid[row.pid] = row  # Preserve an original, no-later expiry.
+                else:
+                    rows_by_pid[row.pid] = row
+                if len(rows_by_pid) > MAX_OWNED_PROCESSES:
+                    raise InventoryWorkerError("Complete companion ownership exceeds its bound")
+        for name, _key, _component, _argv, owner, _native_state, alias in captured[8]:
+            if owner is None:
+                proved = rows_by_pid.get(alias.pid)
+                if (proved is None or str(alias.birth_ticks) != proved.birth_ticks
+                        or alias.image != proved.image or alias.create_time != proved.create_time):
+                    raise InventoryWorkerError("Adopted companion is outside retained native Jobs: " + name[:32])
+        if self._capture_owned_process_scope(timeout=remaining()) != captured:
+            raise InventoryWorkerError("Companion registry or native owner changed during observation")
+        current_core = self._owned_core_identity(cache, not_before=started)
+        if ((initial_core.pid, initial_core.birth_ticks, initial_core.image, initial_core.create_time)
+                != (current_core.pid, current_core.birth_ticks, current_core.image, current_core.create_time)):
+            raise InventoryWorkerError("Core native generation changed during companion observation")
+        remaining()
+        return read_owned_process_snapshot(lambda: tuple(rows_by_pid.values()), not_before=started,
+                                           clock=time.monotonic).rows
+
     def _owns_component_native_identity(self, role, identity) -> bool:
         """Background-only membership proof against a current retained owner."""
         from angerona.core.windows_child_job import OwnedWindowsChild
@@ -405,11 +601,28 @@ class ResilienceManager:
         finally:
             lock.release()
 
+    def set_source_update_controller(self, owner):
+        from angerona.core.source_activation import SourceActivationController
+        if type(owner) is not SourceActivationController or self._stop.is_set():
+            raise ValueError("Source-update observer needs its exact current controller")
+        prior = getattr(self, "_source_update_controller", None)
+        if prior is not None and prior is not owner:
+            raise ValueError("Source-update observer cannot replace an active generation")
+        self._source_update_controller = owner
+
     def _component_heartbeat_loop(self):
         cache = self._component_heartbeat_cache
         if cache is None:
             return
+        external = getattr(self, "_source_update_controller", None)
+        external_started = False
         try:
+            if external is not None:
+                try:
+                    external.heartbeat_started(threading.current_thread())
+                    external_started = True
+                except Exception as exc:
+                    self._source_update_observer_error = type(exc).__name__
             while not self._stop.wait(1.0):
                 held = {}
                 components = getattr(self._sup, "components", {})
@@ -420,6 +633,11 @@ class ResilienceManager:
                 if os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1":
                     held["watchdog"] = "The external native watchdog uses a separate protocol; no compatible component heartbeat is published."
                 cache.sample(held=held)
+                if external is not None and external_started:
+                    try:
+                        external.heartbeat_sample()
+                    except Exception as exc:
+                        self._source_update_observer_error = type(exc).__name__
                 refresh = getattr(cache, "refresh_owned_processes", None)
                 if callable(refresh):
                     refresh()
@@ -432,9 +650,21 @@ class ResilienceManager:
             except Exception as exc:
                 self._publish("Component Heartbeats", "Read-only native observation handles could not all be released.",
                               "LOW", {"error_type": type(exc).__name__})
+            if external is not None and external_started:
+                try:
+                    external.heartbeat_close()
+                except Exception as exc:
+                    self._publish("Source Update Progress", "Local observer query cleanup remains held.",
+                                  "LOW", {"error_type": type(exc).__name__})
 
     def request_stop(self) -> None:
         self._stop.set()
+        external = getattr(self, "_source_update_controller", None)
+        if external is not None:
+            try:
+                external.heartbeat_stop()
+            except Exception as exc:
+                self._source_update_observer_error = type(exc).__name__
         cache = self._component_heartbeat_cache
         if cache is not None:
             cache.mark_stopped()
@@ -456,9 +686,11 @@ class ResilienceManager:
                         self.status = "stopped"
 
 
-def start_resilience(bus=None, **kw) -> ResilienceManager:
+def start_resilience(bus=None, *, source_update_controller=None, **kw) -> ResilienceManager:
     """Convenience entry point for the Angerona core (call at launch)."""
     m = ResilienceManager(bus=bus, **kw)
+    if source_update_controller is not None:
+        m.set_source_update_controller(source_update_controller)
     m.start()
     return m
 

@@ -66,6 +66,34 @@ def _time_text(value) -> str:
     return _text(value)
 
 
+def _news_stamp(value, now):
+    if (type(value) not in (int, float) or not 0 < value <= now
+            or not math.isfinite(value)):
+        return None
+    return value
+
+
+def _news_checked_text(value, now):
+    stamp = _news_stamp(value, now)
+    if stamp is None:
+        return "not recorded"
+    return datetime.fromtimestamp(stamp, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _news_age_text(value, now):
+    stamp = _news_stamp(value, now)
+    if stamp is None:
+        return "age unavailable"
+    minutes = int(now - stamp) // 60
+    if minutes < 1:
+        return "less than a minute ago"
+    if minutes < 60:
+        return f"{minutes} minute(s) ago"
+    if minutes < 1440:
+        return f"{minutes // 60} hour(s) ago"
+    return f"{minutes // 1440} day(s) ago"
+
+
 def _details_text(value, limit=16_000) -> str:
     if isinstance(value, (dict, list, tuple)):
         return json.dumps(value, indent=2, ensure_ascii=False, default=str)[:limit]
@@ -207,6 +235,10 @@ class SpywareGuardPage(QWidget):
         self.destroyed.connect(lambda *_args: timer.stop())
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._news_activity = None
+        self.action_progress_view = ActionProgressView(self._activities, self, config=config)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
         self._header_grid = QGridLayout()
@@ -249,26 +281,43 @@ class SpywareGuardPage(QWidget):
     def _build_news_strip(self, root) -> None:
         self.news_strip = QWidget()
         self.news_strip.setObjectName("SpywareNewsStrip")
+        self.news_strip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.news_strip.setStyleSheet(
+            "QWidget#SpywareNewsStrip { border:1px solid palette(mid); "
+            "border-left:3px solid #38bdf8; border-radius:6px; }"
+        )
         self._news_grid = QGridLayout(self.news_strip)
-        self._news_grid.setContentsMargins(3, 2, 3, 2)
+        self._news_grid.setContentsMargins(9, 5, 7, 5)
         self._news_grid.setSpacing(7)
         self._news_identity = QWidget()
         identity = QHBoxLayout(self._news_identity)
         identity.setContentsMargins(0, 0, 0, 0)
         self.news_spinner = _NewsSpinner(self.news_strip)
         identity.addWidget(self.news_spinner)
+        masthead = QVBoxLayout()
+        masthead.setSpacing(0)
+        self.news_masthead = _label("RESEARCH WIRE")
+        self.news_masthead.setWordWrap(False)
+        self.news_masthead.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.news_masthead.setStyleSheet("font-weight:800;")
+        masthead.addWidget(self.news_masthead)
         self.news_badge = _label("INTEL")
         self.news_badge.setWordWrap(False)
         self.news_badge.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.news_badge.setStyleSheet("color:#38bdf8; font-weight:700;")
-        identity.addWidget(self.news_badge)
+        masthead.addWidget(self.news_badge)
+        identity.addLayout(masthead)
         self.news_scroll = QScrollArea()
         self.news_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         self.news_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.news_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.news_scroll.setMinimumWidth(0)
         self.news_headline = QPushButton("News offline · enable research network access in Policy / Beacon.")
-        self.news_headline.setStyleSheet("padding:2px; border:0; background:transparent; text-align:left;")
+        self.news_headline.setStyleSheet(
+            "QPushButton { padding:2px; border:1px solid transparent; background:transparent; "
+            "text-align:left; font-weight:700; } "
+            "QPushButton:focus { border-color:palette(highlight); }"
+        )
         self.news_headline.setCursor(Qt.CursorShape.PointingHandCursor)
         self.news_headline.clicked.connect(self._open_news_details)
         self.news_headline.setEnabled(False)
@@ -296,17 +345,37 @@ class SpywareGuardPage(QWidget):
         self.news_refresh_button.setStyleSheet("padding:3px 7px;")
         self.news_refresh_button.clicked.connect(self._request_news_refresh)
         self._news_action_grid.addWidget(self.news_refresh_button, 0, 2)
+        self.news_settings_button = QPushButton("News settings")
+        self.news_settings_button.setToolTip("Review research network access in Policy / Beacon; no setting changes automatically.")
+        self.news_settings_button.setStyleSheet("padding:3px 7px;")
+        self.news_settings_button.clicked.connect(self._open_news_settings)
+        self._news_action_grid.addWidget(self.news_settings_button, 0, 3)
         self._news_grid.addWidget(self._news_identity, 0, 0)
         self._news_grid.addWidget(self.news_scroll, 0, 1)
         self._news_grid.addWidget(self._news_actions, 0, 2)
         self._news_grid.setColumnStretch(1, 1)
-        root.addWidget(self.news_strip)
-        self.news_state = _label()
-        self.news_state.setStyleSheet("color:#94a3b8;")
-        root.addWidget(self.news_state)
         self.news_summary = _label()
-        self.news_summary.setStyleSheet("color:#cbd5e1;")
-        root.addWidget(self.news_summary)
+        self._news_grid.addWidget(self.news_summary, 2, 0, 1, 3)
+        footer = QHBoxLayout()
+        self.news_state = _label()
+        footer.addWidget(self.news_state, 1)
+        self.news_feed_details = QPushButton("Feed details")
+        self.news_feed_details.setCheckable(True)
+        self.news_feed_details.setToolTip("Show the last feed check and status of each research source.")
+        footer.addWidget(self.news_feed_details)
+        self._news_grid.addLayout(footer, 3, 0, 1, 3)
+        feed_details = QWidget()
+        detail_layout = QVBoxLayout(feed_details)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        self.news_checks = _label()
+        detail_layout.addWidget(self.news_checks)
+        self.news_sources = _label()
+        detail_layout.addWidget(self.news_sources)
+        feed_details.hide()
+        self.news_feed_details.toggled.connect(feed_details.setVisible)
+        self._news_grid.addWidget(feed_details, 4, 0, 1, 3)
+        self._news_grid.addWidget(self.action_progress_view, 5, 0, 1, 3)
+        root.addWidget(self.news_strip)
 
     def _news_message(self, message: str) -> None:
         self.news_badge.setText("INTEL")
@@ -328,6 +397,11 @@ class SpywareGuardPage(QWidget):
             status = {}
         state = str(status.get("state", ""))
         self._news_refreshing = enabled and (status.get("refreshing") is True or state in {"refreshing", "queued", "updating"})
+        if not self._news_refreshing:
+            self._activities.finish(self._news_activity)
+            self._news_activity = None
+        elif self._news_activity is not None:
+            self._activities.update(self._news_activity, label="Official news: " + str(state)[:60] + "…")
         self.news_refresh_button.setEnabled(enabled and self._module() is not None and not self._news_refreshing)
         previous_url = self._news_items[self._news_index]["url"] if self._news_items else None
         items = []
@@ -375,7 +449,9 @@ class SpywareGuardPage(QWidget):
             self._news_message("News unavailable · the latest official-feed refresh failed.")
         else:
             self._news_message("No verified spyware or exploit headlines from the last 30 days.")
-        mode = ("Downloads disabled" if not enabled else "Refreshing official sources" if self._news_refreshing else
+        mode = ("Downloads disabled" if not enabled else "Refresh queued" if state == "queued" else
+                "Refreshing official sources" if self._news_refreshing else
+                "Research worker stopped" if state == "stopped" else
                 "Waiting for the module's first refresh" if state == "awaiting-refresh" else
                 "Refresh unavailable" if state in {"failed", "error", "retry-required"} else
                 "Some sources unavailable" if state == "partial" else "Official-source research")
@@ -393,7 +469,50 @@ class SpywareGuardPage(QWidget):
             "Official research headlines only. Article publication dates determine freshness; "
             "news never activates detection or response rules. " + _text(status.get("error", ""), 200)
         ))
+        self._show_news_checks(status, now)
         self._sync_news_motion()
+
+    def _show_news_checks(self, status, now):
+        if not isinstance(status, dict):
+            status = {}
+        checks = ["Any-source last successful feed check: "
+                  + _news_checked_text(status.get("last_refresh"), now)]
+        if _news_stamp(status.get("last_attempt"), now) is not None:
+            checks.append("Last attempt: " + _news_checked_text(status["last_attempt"], now))
+        if self._news_items:
+            item = self._news_items[self._news_index]
+            if item.get("origin") == "bundled-reference":
+                checks.append("Bundled reference review: " + REFERENCE_REVIEWED + " (no live check)")
+            else:
+                checks.append("Selected headline cache confirmed: "
+                              + _news_checked_text(item.get("verified_at"), now)
+                              + " · " + _news_age_text(item.get("verified_at"), now))
+        if status.get("error"):
+            checks.append("Latest refresh error: " + _text(status["error"], 120))
+        if self._news_refreshing and status.get("queued_reason"):
+            checks.append(_text(status["queued_reason"], 180))
+        self.news_checks.setText(" · ".join(checks))
+        sources = status.get("sources")
+        sources = sources if isinstance(sources, dict) else {}
+        details = []
+        for name, label in NEWS_SOURCE_LABELS.items():
+            row = sources.get(name)
+            row = row if isinstance(row, dict) else {}
+            state = _text(row.get("state", "not checked this session"), 60)
+            text = f"{label}: {state}"
+            count = row.get("items")
+            if type(count) is int and 0 <= count <= MAX_NEWS_ITEMS:
+                text += f" · {count} eligible headline(s)"
+            stamp = _news_stamp(row.get("checked_at"), now)
+            if stamp is not None:
+                kind = "successful check" if state == "available" else "attempt"
+                text += f" · {kind} " + _news_checked_text(stamp, now)
+            if row.get("error"):
+                text += " · " + _text(row["error"], 100)
+            if row.get("reason"):
+                text += " · " + _text(row["reason"], 120)
+            details.append(text)
+        self.news_sources.setText(" | ".join(details))
 
     def _show_news_headline(self) -> None:
         if not self._news_items:
@@ -402,6 +521,8 @@ class SpywareGuardPage(QWidget):
         source = NEWS_SOURCE_LABELS[item["source"]]
         date = datetime.fromtimestamp(item["published"], timezone.utc).strftime("%Y-%m-%d")
         kind = "REFERENCE" if item.get("origin") == "bundled-reference" else "STALE CACHE" if item.get("stale") else "CACHED INTEL"
+        if item.get("content_kind") == "publisher-news" and item.get("origin") != "bundled-reference":
+            kind = "STALE NEWS" if item.get("stale") else "CACHED NEWS"
         self.news_badge.setText(f"{kind} {self._news_index + 1}/{len(self._news_items)}")
         self.news_headline.setText(item["title"].replace("&", "&&"))
         self.news_headline.setAccessibleName(item["title"])
@@ -416,6 +537,7 @@ class SpywareGuardPage(QWidget):
         self.news_summary.setText(preview)
         self.news_summary.setToolTip(_tooltip_text(_text(summary, MAX_NEWS_SUMMARY)))
         self.news_scroll.horizontalScrollBar().setValue(0)
+        self._show_news_checks(self._snapshot.get("news_status"), time.time())
         self._reflow_page()
 
     def _rotate_news(self) -> None:
@@ -451,11 +573,16 @@ class SpywareGuardPage(QWidget):
         self.news_spinner.set_active(self._news_refreshing, animate)
 
     def _request_news_refresh(self) -> None:
+        if self._news_refreshing:
+            self.status.setText("Official news refresh is already queued or running.")
+            return
         settings = self._snapshot.get("settings") or {}
         if settings.get("spyware_network_enabled", getattr(self.config, "spyware_network_enabled", False)) is not True:
             self.status.setText("Enable research network access in Policy / Beacon before refreshing news.")
+            self._open_news_settings()
             return
         if self._command("request_news_refresh"):
+            self._news_activity = self._activities.begin("official-news", "Official news refresh queued…")
             self._news_refreshing = True
             self.news_refresh_button.setEnabled(False)
             self.news_pause_button.setEnabled(True)
@@ -465,6 +592,13 @@ class SpywareGuardPage(QWidget):
             self.status.setText("Official news refresh queued. Headlines remain advisory research.")
         else:
             self.status.setText("News refresh was not queued. Enable network ingestion and check pending work.")
+
+    def _open_news_settings(self) -> None:
+        for index in range(self.tabs.count()):
+            if self.tabs.tabText(index) == "Policy / Beacon":
+                self.tabs.setCurrentIndex(index)
+                self.setting_checks["spyware_network_enabled"].setFocus()
+                break
 
     def _open_news_article(self) -> None:
         if not self._news_items:
@@ -516,6 +650,8 @@ class SpywareGuardPage(QWidget):
             item = items[index]
             label = "Bundled reference; not live news" if item.get("origin") == "bundled-reference" else (
                 "Stale cached headline; refresh has not confirmed current status" if item.get("stale") else "Cached official-feed headline")
+            if item.get("content_kind") == "publisher-news":
+                label += " · publisher news/update, not a new technical research report"
             published = datetime.fromtimestamp(item["published"], timezone.utc).isoformat()
             checked = datetime.fromtimestamp(item["verified_at"], timezone.utc).isoformat()
             hits = len(self._rows(self._snapshot.get("hits")))
@@ -1118,6 +1254,8 @@ class SpywareGuardPage(QWidget):
 
     def hideEvent(self, event) -> None:  # noqa: N802
         self._timer.stop()
+        self._activities.close()
+        self._news_activity = None
         self._news_rotation_timer.stop()
         self._news_scroll_timer.stop()
         self.news_spinner.set_active(self._news_refreshing, False)
@@ -1129,7 +1267,7 @@ class SpywareGuardPage(QWidget):
         self._reflowing_page = True
         try:
             for widget in (self.scan_button, self.news_headline, self.news_pause_button,
-                           self.news_refresh_button, self.news_source_button):
+                           self.news_refresh_button, self.news_source_button, self.news_settings_button):
                 widget.ensurePolished()
             margins = self.layout().contentsMargins()
             width = self.contentsRect().width()
@@ -1171,9 +1309,14 @@ class SpywareGuardPage(QWidget):
                 self._header_grid.addWidget(self.scan_button, 1 if stacked else 0, 0 if stacked else 1)
 
             margins = self._news_grid.contentsMargins()
-            available = max(0, self.news_strip.contentsRect().width() - margins.left() - margins.right())
+            # A stale minimum can temporarily expand the strip beyond its
+            # viewport. Never use that expanded geometry to choose more columns
+            # and perpetuate horizontal overflow after a font/width change.
+            news_width = min(available, self.news_strip.contentsRect().width())
+            available = max(0, news_width - margins.left() - margins.right())
             buttons = tuple(button for button in (self.news_source_button, self.news_pause_button,
-                                                   self.news_refresh_button) if not button.isHidden())
+                                                   self.news_refresh_button, self.news_settings_button)
+                            if not button.isHidden())
             gap = max(0, self._news_action_grid.horizontalSpacing())
             widths = [button.minimumSizeHint().width() for button in buttons]
             action_width = sum(widths) + gap * max(0, len(widths) - 1)
@@ -1197,7 +1340,8 @@ class SpywareGuardPage(QWidget):
                 self._news_grid.addWidget(self.news_scroll, 0, 1)
                 self._news_grid.addWidget(self._news_actions, 1 if stacked else 0,
                                           0 if stacked else 2, 1, 2 if stacked else 1)
-                for button in (self.news_source_button, self.news_pause_button, self.news_refresh_button):
+                for button in (self.news_source_button, self.news_pause_button,
+                               self.news_refresh_button, self.news_settings_button):
                     self._news_action_grid.removeWidget(button)
                 for column in range(self._news_action_grid.columnCount()):
                     self._news_action_grid.setColumnStretch(column, 0)
@@ -1229,6 +1373,8 @@ class SpywareGuardPage(QWidget):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._timer.stop()
+        self._activities.close()
+        self._news_activity = None
         self._closed = True
         self._sync_news_motion()
         if self._lab_dialog is not None:

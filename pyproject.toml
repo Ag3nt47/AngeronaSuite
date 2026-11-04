@@ -63,15 +63,15 @@ windows = [
     "pywin32>=306",
     "WMI>=1.5",
     "scapy>=2.5",
-    "yara-x>=1.15",
+    "yara-x==1.19.0",
     "PyJWT[crypto]>=2.15.0",
     "pywintrace>=0.2",
 ]
 macos = [
-    "yara-x>=1.15",
+    "yara-x==1.19.0",
 ]
 linux = [
-    "yara-x>=1.15",
+    "yara-x==1.19.0",
 ]
 voice = [
     "sounddevice>=0.5",
@@ -101,6 +101,9 @@ angerona = "angerona.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["angerona*"]
+
+[tool.setuptools.package-data]
+"angerona.core._source_tomli" = ["LICENSE"]
 
 [tool.ruff]
 target-version = "py310"

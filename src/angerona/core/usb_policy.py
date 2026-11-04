@@ -33,6 +33,7 @@ _PIN_RE = re.compile(r"[0-9]{4,12}\Z")
 _DUMMY_PIN = "000000"
 _ACTIVE_POLICIES: weakref.WeakSet = weakref.WeakSet()
 _ACTIVE_POLICIES_LOCK = threading.Lock()
+_INJECTED_PIN_WRITE_LOCK = threading.Lock()
 
 
 def _path_is_within_mount(target: object, mountpoint: str) -> bool:
@@ -146,10 +147,58 @@ def configure_usb_pin(
     if reason:
         return UsbPinChangeResult(False, reason)
     try:
-        (writer or _write_protected_usb_pin)(candidate)
+        if writer is None:
+            _write_protected_usb_pin(candidate)
+        else:
+            with _INJECTED_PIN_WRITE_LOCK:
+                writer(candidate)
     except Exception:
         return UsbPinChangeResult(False, "protected_store_unavailable")
     _notify_pin_reset()
+    return UsbPinChangeResult(True, "pin_configured")
+
+
+def enroll_usb_pin(
+    pin: object,
+    confirmation: object,
+    *,
+    loader: Callable[[], str | None] | None = None,
+    writer: Callable[[str], None] | None = None,
+) -> UsbPinChangeResult:
+    """Create the first PIN without replacing an existing protected credential."""
+    candidate, reason = _validate_pin_change(pin, confirmation)
+    if reason:
+        return UsbPinChangeResult(False, reason)
+
+    created = False
+
+    def create() -> str:
+        nonlocal created
+        created = True
+        return candidate
+
+    try:
+        if loader is None and writer is None:
+            from angerona.core.secure_store import get_or_create_secret
+            existing = get_or_create_secret(USB_PIN_SECRET, create)
+        elif loader is not None and writer is not None:
+            # Keep injected stores isolated from the operating-system store.
+            with _INJECTED_PIN_WRITE_LOCK:
+                existing = loader()
+                if existing is None:
+                    writer(candidate)
+                    created = True
+        else:
+            return UsbPinChangeResult(False, "protected_store_unavailable")
+    except Exception:
+        return UsbPinChangeResult(False, "protected_store_unavailable")
+
+    if not created:
+        if isinstance(existing, str) and _PIN_RE.fullmatch(existing):
+            return UsbPinChangeResult(False, "pin_already_configured")
+        return UsbPinChangeResult(False, "stored_pin_invalid")
+    # Initial enrollment has no reset authority. Existing approvals read the
+    # protected PIN on use, and any concurrent lockout or denial stays latched.
     return UsbPinChangeResult(True, "pin_configured")
 
 
@@ -300,6 +349,11 @@ class UsbApprovalPolicy:
             confirmation,
             writer=self._pin_writer,
         )
+
+    def enroll_pin(self, pin: object, confirmation: object) -> UsbPinChangeResult:
+        """Enroll through the device prompt, which has no PIN reset authority."""
+        loader = None if self._pin_loader is _protected_usb_pin else self._pin_loader
+        return enroll_usb_pin(pin, confirmation, loader=loader, writer=self._pin_writer)
 
     def request(
         self,

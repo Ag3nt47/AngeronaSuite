@@ -65,7 +65,7 @@ def test_shutdown_closes_after_successful_drains(monkeypatch):
 
 def test_shutdown_keeps_stores_open_when_optional_native_retirement_is_unproven(monkeypatch):
     monkeypatch.setattr(
-        "angerona.core.ollama_lifecycle.shutdown_ollama", lambda *_args: None,
+        "angerona.core.ollama_lifecycle.unload_angerona_models", lambda *_args, **_kwargs: None,
     )
     app = _app(True, True)
     app.manager._curated_tools_controller = SimpleNamespace(
@@ -99,7 +99,6 @@ class _ParkedRecorder(_Stopper):
 ])
 def test_retired_recorder_can_close_without_claiming_volatile_tail_drained(monkeypatch, changes, closed):
     from angerona.core import ollama_lifecycle
-    monkeypatch.setattr(ollama_lifecycle, "shutdown_ollama", lambda *_a, **_k: None)
     monkeypatch.setattr(ollama_lifecycle, "unload_angerona_models", lambda *_a, **_k: None)
     app = _app(False, True)
     app.flight_recorder_worker = _ParkedRecorder(changes)

@@ -65,6 +65,7 @@ _ICON_COLORS = {
     "setup": "#f472b6",
     "help": "#facc15",
     "settings": "#cbd5e1",
+    "mail": "#e2e8f0",
     "stop": "#ffffff",
 }
 
@@ -239,6 +240,10 @@ def _icon_pixmap(kind: str, color: str, size: int = 22) -> QPixmap:
         q.cubicTo(14.8, 11.6, 11.0, 11.3, 11.0, 14.0)
         p.drawPath(q)
         p.drawPoint(QPointF(11.0, 17.0))
+    elif kind == "mail":
+        p.drawRoundedRect(QRectF(2.5, 5.0, s - 5.0, s - 10.0), 2.0, 2.0)
+        p.drawLine(QPointF(4.0, 7.0), QPointF(cx, 12.0))
+        p.drawLine(QPointF(cx, 12.0), QPointF(s - 4.0, 7.0))
     elif kind == "settings":
         p.drawEllipse(QRectF(8.0, 8.0, 6.0, 6.0))
         for i in range(8):
@@ -415,6 +420,42 @@ class HeaderActionButton(QPushButton):
         QToolTip.hideText()
         super().leaveEvent(event)
 
+
+class NotificationHeaderButton(HeaderActionButton):
+    """Mail shortcut with an accessible count of pending prompts."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__("", "mail", "Notifications",
+                         "Open setup, storage and security requests waiting for review.", parent)
+        self._pending_count = 0
+
+    def set_pending_count(self, count: int) -> None:
+        if count == self._pending_count:
+            return
+        self._pending_count = count
+        self.setAccessibleDescription(f"{count} pending notification" + ("" if count == 1 else "s"))
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().paintEvent(event)
+        if not self._pending_count:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        font = painter.font()
+        font.setPixelSize(10)
+        font.setBold(True)
+        painter.setFont(font)
+        label = str(self._pending_count) if self._pending_count < 100 else "99+"
+        width = max(15, painter.fontMetrics().horizontalAdvance(label) + 6)
+        badge = QRect(self.width() - width - 2, 2, width, 15)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#b91c1c"))
+        painter.drawRoundedRect(badge, 7, 7)
+        painter.setPen(Qt.white)
+        painter.drawText(badge, Qt.AlignCenter, label)
+        painter.end()
+
     def focusInEvent(self, event) -> None:  # noqa: N802 - Qt signature
         QToolTip.showText(
             self.mapToGlobal(QPoint(self.width() // 2, self.height() + 6)),
@@ -422,6 +463,52 @@ class HeaderActionButton(QPushButton):
             self,
         )
         super().focusInEvent(event)
+
+
+class CurrentAssessmentBanner(QPushButton):
+    """One accessible line whose changing text never widens the header."""
+
+    _PREFIX = "Current assessment · "
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("CurrentAssessmentBanner")
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAccessibleName("Current assessment")
+        self._presented = None
+        self.present("Waiting for threat assessment", "Resolve Center")
+
+    def present(self, summary: str, destination: str, urgent: bool = False) -> None:
+        item = (summary, destination, urgent)
+        previous = self._presented
+        if item == previous:
+            return
+        self._presented = item
+        if previous is None or urgent != previous[2]:
+            emphasis = " border-color:#ef4444;" if urgent else ""
+            self.setStyleSheet("QPushButton#CurrentAssessmentBanner { padding:2px 7px;" + emphasis + " }")
+        self.setText(self._PREFIX + summary)
+        self.setAccessibleDescription(f"{summary}. Open {destination}.")
+        self.setToolTip(f"<qt>{escape(summary)}<br>Open {escape(destination)}.</qt>")
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt signature
+        return QSize(0, self.fontMetrics().height() + 8)
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt signature
+        return self.sizeHint()
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 - Qt signature
+        painter = QStylePainter(self)
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        contents = self.style().subElementRect(QStyle.SE_PushButtonContents, option, self)
+        metrics = self.fontMetrics()
+        text = self.text()
+        if contents.width() < metrics.horizontalAdvance(self._PREFIX + "Review now"):
+            text = self._presented[0]
+        option.text = metrics.elidedText(text, Qt.ElideRight, max(0, contents.width()))
+        painter.drawControl(QStyle.CE_PushButton, option)
 
 
 def _windows_client_animations_enabled() -> bool:

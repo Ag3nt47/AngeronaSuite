@@ -98,9 +98,13 @@ def test_terminal_insert_failure_preserves_native_fact_without_closing_finding(c
     result = module.apply_vetted_remediation(apply=True)
     record = result["records"][0]
     assert action.dispatches == 1 and result["applied"] == 0
-    assert record["verified"] is True
+    assert record["native_postcondition_before_commit"] is True
+    assert record["verified"] is False
     assert record["recovery_required"] is True and "inert terminal failure" in record["journal_error"]
-    assert store.transaction(record["transaction_id"])["state"] == "MUTATING"
+    assert store.transaction(record["transaction_id"])["state"] == "RECOVERY_REQUIRED"
+    from angerona.core.patch_recovery import verify_recovery_handoff
+    assert verify_recovery_handoff(store, record["transaction_id"], record["recovery_handoff_receipt"],
+        expected_mitre="T1112", expected_action=action.key) is True
     assert module.weaknesses()[0]["status"] == "VULNERABLE"
     assert not _proof_events(events)
 

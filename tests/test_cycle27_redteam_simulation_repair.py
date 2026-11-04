@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
+import threading
 import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from angerona.core import report_attest
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
@@ -28,6 +30,7 @@ from angerona.shark.run_manifest import (
     write_run_history,
 )
 from test_cycle27_redteam_validation_lease import _supply_contract_inventory
+from test_yara_automatic_response import controlled_runtime as controlled_runtime
 
 
 _KEY = bytes.fromhex("42" * 32)
@@ -815,20 +818,229 @@ def test_safe_end_to_end_campaign_validates_all_13_pipeline_canaries(
         recorder.close()
 
 
-def test_both_gui_launchers_fail_closed_and_honor_engine_start_boolean() -> None:
+@pytest.fixture
+def engine_start_refusal_runtime(monkeypatch, request):
+    """Only this fault test supplies a real, current, single-owned-PID input.
+
+    Completeness describes this explicit fixture scope, never the host table.
+    The real Process Monitor, issuer, recorder and generation gates consume it;
+    native detector/campaign coverage is tested by separate live cohorts.
+    The shared runtime verifies its initial lease with its own supplier.
+    Install this observer after setup and keep it through producer retirement.
+    """
+    import math
+    import os
+    from types import MappingProxyType
+
+    import psutil
+
+    from angerona.modules import process_monitor
+    from angerona.telemetry.sensors import ProcessSnapshot
+
+    pid = os.getpid()
+    owner = psutil.Process(pid)
+    birth, image = owner.create_time(), owner.exe()
+    observed = []
+
+    def owned_inventory(*, max_age=None):
+        row = psutil.Process(pid).as_dict(attrs=(
+            "pid", "ppid", "name", "exe", "cmdline", "create_time",
+        ))
+        # Missing/inaccessible or changed native identity remains a test failure.
+        assert row["pid"] == pid and row["create_time"] == birth
+        assert math.isfinite(birth) and birth > 0 and row["exe"] == image
+        assert isinstance(image, str) and Path(image).is_absolute()
+        assert isinstance(row["name"], str) and row["name"]
+        assert type(row["ppid"]) is int and row["ppid"] >= 0
+        assert isinstance(row["cmdline"], (list, tuple)) and row["cmdline"]
+        assert all(isinstance(part, str) for part in row["cmdline"])
+        row["cmdline"] = tuple(row["cmdline"])
+        snapshot = ProcessSnapshot(
+            processes=(MappingProxyType(row),), collected_at=time.time(), complete=True,
+            enumerated=1, skipped=0, unreadable=0, identity_incomplete=0,
+            error="", enumeration_complete=True,
+        )
+        observed.append((max_age, snapshot))
+        return snapshot
+
+    runtime = request.getfixturevalue("controlled_runtime")
+    monkeypatch.setattr(process_monitor, "process_snapshot", owned_inventory)
+    yield SimpleNamespace(runtime=runtime, observed=observed, pid=pid, birth=birth, image=image)
+
+
+@pytest.mark.parametrize("launch_error", [RuntimeError, OSError], ids=["runtime-refusal", "os-refusal"])
+def test_gui_session_engine_start_refusal_never_becomes_a_success(
+    engine_start_refusal_runtime, monkeypatch, launch_error,
+) -> None:
+    """A coordinator acknowledgement is not proof that its engine ran."""
+    from angerona.gui import main_window as main_ui
     from angerona.gui.simulation_launch import SimulationLaunch
+    from angerona.modules import file_integrity, purple_guard, yara_scanner
+    from angerona.shark import simulation_session as sessions
+    from angerona.shark.shark_attack import SharkAttackEngine
 
-    unified = inspect.getsource(MainWindow._run_simulation)
-    legacy = inspect.getsource(MainWindow._start_red_team)
-    abort = inspect.getsource(MainWindow._abort_simulation_launch)
-    worker = inspect.getsource(SimulationLaunch._prepare)
+    ctx = engine_start_refusal_runtime.runtime
+    inventory_baseline = len(engine_start_refusal_runtime.observed)
+    purple_guard.RedTeamValidationLease.release(ctx.lease)
+    ctx.lease = None
+    ctx.begin_scan()
+    narration = []
+    red = RedTeamEngine(ctx.root, documents_dir=ctx.target, on_event=narration.append)
+    shark = SharkAttackEngine(ctx.root, documents_dir=ctx.target, downloads_dir=ctx.target)
 
-    assert "SimulationLaunch(" in unified
-    assert "self._run_simulation(" in legacy
-    assert "acquire_redteam_validation_lease" in worker
-    assert "validation_lease=self.lease" in worker
-    assert "if not self.red_team_engine.start" in worker
-    assert "auto_remediate" not in worker[worker.index("acquire_redteam_validation_lease"):]
-    assert "self._sim_aar_pending = 0" in abort
-    assert "cancel_evidence_hold" in abort
-    assert "_release_redteam_validation_lease" in abort
+    # Exercise the real legacy entry point's decision and common-route handoff.
+    # The common route is observed here; the actual detached launcher is below.
+    routed = []
+    view = SimpleNamespace(
+        red_team_engine=red, shark_engine=shark, _run_simulation=routed.append,
+    )
+    answers = iter((main_ui.QMessageBox.No, main_ui.QMessageBox.Yes))
+    monkeypatch.setattr(main_ui.QMessageBox, "question", lambda *_args: next(answers))
+    MainWindow._start_red_team(view)
+    assert routed == [] and red._thread is None and shark._thread is None
+    MainWindow._start_red_team(view)
+    assert routed == [{
+        "run_redteam": True, "run_shark": False, "auto_remediate": True,
+        "comprehensive": False,
+    }]
+    cfg = dict(routed[0], intensity="Low", target_dir=str(ctx.target))
+    original_cfg = dict(cfg)
+
+    watches = (
+        ("fim", file_integrity, file_integrity.watch_roots),
+        ("yara", yara_scanner, yara_scanner.scan_roots),
+    )
+    before_watches = {
+        name: {Path(path).resolve(strict=False) for path in getter()}
+        for name, _module, getter in watches
+    }
+    watch_calls = []
+    for name, module, _getter in watches:
+        actual_register = module.register_runtime_watch
+        actual_unregister = module.unregister_runtime_watch
+
+        def register(path, *args, _call=actual_register, _name=name, **kwargs):
+            result = _call(path, *args, **kwargs)
+            if result is True:
+                watch_calls.append((_name, "register", Path(path).resolve(strict=False)))
+            return result
+
+        def unregister(path, *args, _call=actual_unregister, _name=name, **kwargs):
+            result = _call(path, *args, **kwargs)
+            watch_calls.append((_name, "unregister", Path(path).resolve(strict=False)))
+            return result
+
+        monkeypatch.setattr(module, "register_runtime_watch", register)
+        monkeypatch.setattr(module, "unregister_runtime_watch", unregister)
+
+    entered, permit_failure = threading.Event(), threading.Event()
+    attempted = []
+    released = []
+    actual_start = threading.Thread.start
+    actual_release = purple_guard.RedTeamValidationLease.release
+    job = SimulationLaunch(
+        cfg=cfg, manager=ctx.manager, bus=ctx.bus, storage=ctx.recorder,
+        data_root=ctx.root, red_team_engine=red, shark_engine=shark,
+    )
+
+    def reject_only_this_engine_thread(worker):
+        if worker is red._thread:
+            prepared = job.plan.runs[0]
+            lease = red._validation_lease
+            assert lease is job.session._active_lease and lease.active is True
+            assert red.run_id == prepared.run_id
+            assert purple_guard.RedTeamValidationLease.authority_matches(
+                lease, recorder=ctx.recorder, bus=ctx.bus, manager=ctx.manager,
+            )
+            attempted.append((worker, lease))
+            entered.set()
+            assert permit_failure.wait(10), "Fixture did not release its exact start-refusal gate"
+            raise launch_error("Synthetic engine-thread launch refusal")
+        return actual_start(worker)
+
+    def release(lease):
+        was_active = lease.active
+        result = actual_release(lease)
+        if was_active and not lease.active:
+            released.append(lease)
+        return result
+
+    monkeypatch.setattr(threading.Thread, "start", reject_only_this_engine_thread)
+    monkeypatch.setattr(purple_guard.RedTeamValidationLease, "release", release)
+    try:
+        job.start()
+        assert job.ready.wait(10) and job.success, job.reason
+        assert not job.accepted and attempted == []
+        assert type(job.session) is sessions.SimulationSession
+        assert job.claim() is True and entered.wait(10), job.session.launch_diagnostics()
+        assert job.finished.wait(5) and job.accepted, job.reason
+        fresh_inventory = engine_start_refusal_runtime.observed[inventory_baseline:]
+        assert any(age == 0.0 for age, _snapshot in fresh_inventory)
+        assert all(snapshot.enumerated == 1 and len(snapshot.processes) == 1
+                   and snapshot.processes[0]["pid"] == engine_start_refusal_runtime.pid
+                   and snapshot.processes[0]["create_time"] == engine_start_refusal_runtime.birth
+                   and snapshot.processes[0]["exe"] == engine_start_refusal_runtime.image
+                   for _age, snapshot in fresh_inventory)
+
+        # The real prepared adapter, preflight, and lease consume have run, but
+        # the exact engine Thread has not been created by the OS.
+        prepared = job.plan.runs[0]
+        worker, lease = attempted[0]
+        assert len(attempted) == 1 and worker.ident is None and not worker.is_alive()
+        assert job.session.completed_reports() == ()
+        assert job.session.performance_snapshot(prepared.run_id).finalized_misses is None
+        permit_failure.set()
+        assert job.session.finished.wait(10), job.session.snapshot()
+        for owned in job.owned_workers():
+            if owned.ident is not None:
+                owned.join(timeout=5)
+            assert not owned.is_alive()
+
+        assert not red.is_running and red._thread is worker and worker.ident is None
+        assert job.session.snapshot()["phase"] == "held"
+        assert job.session.completed_reports() == ()
+        diagnostic, = job.session.launch_diagnostics()
+        assert diagnostic.run_id == prepared.run_id
+        assert diagnostic.reason_code == "SessionHeld"
+        assert "did not accept" in diagnostic.detail
+        assert not diagnostic.authenticated_run and not diagnostic.response_authorized
+        assert any(
+            "worker launch failed" in message and launch_error.__name__ in message
+            and "Synthetic engine-thread launch refusal" in message
+            for message in narration
+        )
+        performance = job.session.performance_snapshot(prepared.run_id)
+        assert performance.evaluated_steps == 0
+        assert performance.native_verified_steps == performance.simulation_verified_steps == 0
+        assert performance.detection_verified_steps == performance.containment_verified_steps == 0
+        assert performance.finalized_misses is None and performance.final_report_sha256 is None
+        assert released == [lease] and lease.active is False
+        assert job.session.retirement_snapshot()["custody_released"] is True
+        with pytest.raises(purple_guard.RedTeamValidationError):
+            purple_guard.RedTeamValidationLease.consume_for_run(
+                lease, run_id=prepared.run_id, target=ctx.target, data_root=ctx.root,
+            )
+        target = ctx.target.resolve(strict=False)
+        expected_watch_calls = [
+            (name, action, target)
+            for name, _module, _getter in watches if target not in before_watches[name]
+            for action in ("register", "unregister")
+        ]
+        assert sorted(watch_calls) == sorted(expected_watch_calls)
+        for name, _module, getter in watches:
+            assert {Path(path).resolve(strict=False) for path in getter()} == before_watches[name]
+        assert not any((ctx.root / name).exists() for name in (
+            "redteam_history.json", "redteam_aar.json", "redteam_aar.txt",
+        ))
+        assert cfg == original_cfg and ctx.config.adversary_combat_mode == "maximum"
+        assert ctx.config.adversary_combat_isolate_host is False
+        assert ctx.config.adversary_combat_process_action == "none"
+        assert ctx.combat.response_snapshot()["host_authority_verified"] is False
+        assert job.claim() is False
+    finally:
+        permit_failure.set()
+        job.cancel()
+        for owned in job.owned_workers():
+            if owned.ident is not None:
+                owned.join(timeout=10)
+            assert not owned.is_alive(), "Fixture must retire every exact admitted owner"

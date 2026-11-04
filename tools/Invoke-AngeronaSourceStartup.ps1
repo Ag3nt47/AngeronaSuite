@@ -1,5 +1,6 @@
 [CmdletBinding()]
-param([string]$RepositoryRoot, [switch]$SetupOnly)
+param([string]$RepositoryRoot, [switch]$SetupOnly,
+    [string]$SourceActivationBroker, [string]$ActivationDescriptorSha256, [switch]$FreshSourceCache)
 
 $ErrorActionPreference = 'Stop'
 
@@ -468,7 +469,7 @@ function Assert-SourceStartupSupervisorBoundary([string]$Root) {
         throw 'Source startup requires a ready fixed local installation drive.'
     }
     foreach ($name in @('start-angerona.bat', 'tools\Invoke-AngeronaSourceStartup.ps1',
-        'tools\startup_repair_common.ps1', 'tools\Invoke-AngeronaStartupRepair.ps1',
+        'tools\startup_repair_common.ps1', 'tools\Resume-AngeronaSourceActivation.ps1', 'tools\Invoke-AngeronaStartupRepair.ps1',
         'tools\angerona_recovery.py', 'tools\Show-AngeronaStartupRecovery.ps1',
         'tools\startup_source_recovery.py', 'tools\startup_assistant_capture.ps1', 'Repair-Angerona-Python.ps1')) {
         $path = Join-Path $Root $name
@@ -665,20 +666,53 @@ function New-SourceStartupTemporary([string]$Root, [string]$Storage,
     throw 'No critical startup workspace could be privately leased and written. Existing active producers and unknown data were preserved; retained diagnostic counts and recommended reserves did not waive custody or actual writability.'
 }
 
+function Test-SourceStartupFreshCacheRequired {
+    if($FreshSourceCache){return $true}
+    $path=Join-Path (Get-CanonicalSourceStartupStorage) 'github-updates\applied-base.json'
+    try {Assert-SourceStartupPath $path;return [bool](Test-Path -LiteralPath $path)}
+    catch {return $true} # Unknown update evidence never re-enables legacy cache reads.
+}
+function Assert-SourceStartupCachePrefix([string]$Prefix,[string]$Root,[string]$Scratch) {
+    $storage=Get-CanonicalSourceStartupStorage
+    $allowed=@((Join-Path $storage 'tmp\startup-temp.critical-preflight'),(Join-Path $Root '.tmp\startup-temp.critical-preflight'))
+    $fullScratch=[IO.Path]::GetFullPath($Scratch)
+    if(!@($allowed|Where-Object{[string]::Equals([IO.Path]::GetFullPath($_),$fullScratch,[StringComparison]::OrdinalIgnoreCase)}).Count){
+        throw 'Fresh source cache is outside the canonical private preflight scratch.'
+    }
+    Assert-SourceStartupPath $Scratch;Assert-PrivateRepairCustody $Scratch
+    if(!(Test-Path -LiteralPath $Scratch -PathType Container) -or ![IO.Path]::IsPathRooted($Prefix) -or
+        ![string]::Equals([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Prefix)),$fullScratch,[StringComparison]::OrdinalIgnoreCase) -or
+        [IO.Path]::GetFileName($Prefix) -cnotmatch '^source-pycache-[0-9a-f]{32}$'){
+        throw 'Fresh source cache prefix is invalid.'
+    }
+    Assert-SourceStartupPath $Prefix
+    if(Test-Path -LiteralPath $Prefix){throw 'Fresh source cache prefix already exists; nothing was removed.'}
+}
+function New-SourceStartupCachePrefix([string]$Root,[string]$Scratch) {
+    $prefix=Join-Path $Scratch ('source-pycache-'+[Guid]::NewGuid().ToString('N'))
+    Assert-SourceStartupCachePrefix $prefix $Root $Scratch
+    return $prefix # NONEXISTENT: -B forbids creating cache files/directories.
+}
+
 function Invoke-SourceStartupAssistant([string]$Python, [string]$Root,
     [Collections.IDictionary]$Environment, [string]$Scratch, [switch]$SoftwareRenderer,
-    [switch]$NoStartupWindow) {
+    [switch]$NoStartupWindow,[string]$FreshCachePrefix) {
     $stdout = Join-Path $Scratch 'launcher-stdout.log'
     $stderr = Join-Path $Scratch 'launcher-stderr.log'
     . (Join-Path $Root 'tools\startup_assistant_capture.ps1')
     $arguments = @('-m', 'angerona.startup', '--chill')
+    if($FreshCachePrefix){
+        Assert-SourceStartupCachePrefix $FreshCachePrefix $Root $Scratch
+        $arguments=@('-B','-X',('pycache_prefix='+$FreshCachePrefix))+$arguments
+    } elseif(Test-SourceStartupFreshCacheRequired){throw 'Updated source requires a fresh private cache prefix before helper imports.'}
     if ($SoftwareRenderer) { $arguments += '--software-renderer' }
     if ($NoStartupWindow) { $arguments += '--no-startup-window' }
     $savedTemp, $savedTmp = $env:TEMP, $env:TMP
     try {
         $env:TEMP = $Scratch; $env:TMP = $Scratch
         $capture = Invoke-SourceStartupCapturedAssistant -Python $Python -Arguments $arguments `
-            -WorkingDirectory $Root -Environment $Environment -StdoutPath $stdout -StderrPath $stderr -TimeoutSeconds 240
+            -WorkingDirectory $Root -Environment $Environment -StdoutPath $stdout -StderrPath $stderr -TimeoutSeconds 240 `
+            -Heartbeat $(if($script:SourceStartupHeartbeat){$script:SourceStartupHeartbeat.Writer.PulseAction}else{$null})
     } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
     # Never place the assistant/dashboard in a kill-on-close repair job. The
     # helper preserves a live dashboard after monitoring cancellation/timeout.
@@ -760,13 +794,29 @@ function Invoke-SourceStartupPass([string]$Root, [switch]$SetupOnly, [switch]$So
             $value = [Environment]::GetEnvironmentVariable($name)
             if ($null -ne $value) { $child[$name] = $value }
         }
+        $freshCachePrefix='';$pythonOptions=@()
+        if(Test-SourceStartupFreshCacheRequired){
+            $freshCachePrefix=New-SourceStartupCachePrefix $Root $scratch
+            $pythonOptions=@('-B','-X',('pycache_prefix='+$freshCachePrefix))
+        }
+        $activationLaunch=$null
+        try {
+            if(!$SetupOnly){
+            $activationLaunch=New-SourceActivationLaunch $Root
+            $child['ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID']=$activationLaunch.Id
+            }
+        } catch {
+            $activationLaunch=$null
+            [void]$child.Remove('ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID')
+            Write-Host '[startup] Source update ownership is unavailable; the dashboard may still start.'
+        }
         $savedTemp, $savedTmp = $env:TEMP, $env:TMP
         try {
             $env:TEMP = $scratch; $env:TMP = $scratch
             Initialize-OwnedRepairProcess
         } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
         $abi = "import sys,sysconfig; raise SystemExit(0 if sys.version_info[:2] == (3, 12) and sysconfig.get_platform() == 'win-amd64' else 81)"
-        $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments @('-c', $abi) `
+        $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments ($pythonOptions+@('-c', $abi)) `
             -WorkingDirectory $Root -Environment $child -TimeoutSeconds 30 -LogPath (Join-Path $scratch 'abi.log')
         if ($code -ne 0) { if ($code -eq 81) { return 81 }; return 85 }
         if (Test-SourceStartupShellClosed) { return 1223 }
@@ -777,22 +827,28 @@ try:
 except m.PackageNotFoundError:
     raise SystemExit(82)
 '@
-        $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments @('-c', $pip) `
+        $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments ($pythonOptions+@('-c', $pip)) `
             -WorkingDirectory $Root -Environment $child -TimeoutSeconds 30 -LogPath (Join-Path $scratch 'pip.log')
         if ($code -ne 0) { if ($code -eq 82) { return 82 }; return 85 }
         if (Test-SourceStartupShellClosed) { return 1223 }
-        $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments @((Join-Path $Root 'tools\source_trust_preflight.py')) `
+        $code = Invoke-OwnedRepairProcess -FilePath $python -Arguments ($pythonOptions+@((Join-Path $Root 'tools\source_trust_preflight.py'))) `
             -WorkingDirectory $Root -Environment $child -TimeoutSeconds 30 -LogPath (Join-Path $scratch 'source-trust.log')
         if ($code -ne 0) { return 85 }
         if (Test-SourceStartupShellClosed) { return 1223 }
         if ($SetupOnly) {
-            $arguments = @('-m', 'angerona.startup', '--check-only', '--chill')
+            $arguments = $pythonOptions+@('-m', 'angerona.startup', '--check-only', '--chill')
             if ($SoftwareRenderer) { $arguments += '--software-renderer' }
             return Invoke-OwnedRepairProcess -FilePath $python -Arguments $arguments `
                 -WorkingDirectory $Root -Environment $child -TimeoutSeconds 120 -LogPath (Join-Path $scratch 'source-setup.log')
         }
-        return Invoke-SourceStartupAssistant -Python $python -Root $Root -Environment $child `
-            -Scratch $scratch -SoftwareRenderer:$SoftwareRenderer -NoStartupWindow:$NoStartupWindow
+        $assistantCall=@{Python=$python;Root=$Root;Environment=$child;Scratch=$scratch
+            SoftwareRenderer=$SoftwareRenderer;NoStartupWindow=$NoStartupWindow;FreshCachePrefix=$freshCachePrefix}
+        $code=Invoke-SourceStartupAssistant @assistantCall
+        if ($code -eq 0 -and $activationLaunch) {
+            try {Complete-SourceActivationLaunch $activationLaunch}
+            catch {Write-Host '[startup] Dashboard readiness is retained; source activation remains held.'}
+        }
+        return $code
     } finally { Exit-RepairLease -Lease $lease }
 }
 
@@ -1038,8 +1094,31 @@ if ($MyInvocation.InvocationName -ne '.') {
         if ($RepositoryRoot -and ![string]::Equals([IO.Path]::GetFullPath($RepositoryRoot).TrimEnd('\'), $fixedRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
             throw 'The source startup repository does not match this fixed launcher.'
         }
+        # Direct PS invocation cannot import a potentially mixed common/helper.
+        # The ordinary batch owns the verified original-capsule recovery route.
+        $activationPending=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona\SourceData\github-updates\activation-pending.json'
+        $activationHeld=$false
+        try {Assert-SourceStartupPath $activationPending;$activationHeld=Test-Path -LiteralPath $activationPending}
+        catch {$activationHeld=$true}
+        if ($activationHeld) {
+            $message='An interrupted source update is held. Run start-angerona.bat for exact approved original-capsule reconciliation. No application code will be loaded.'
+            Write-Host $message
+            try {[void]((New-Object -ComObject WScript.Shell).Popup($message,0,'Angerona Safe Startup - source update held',16))} catch {}
+            exit 85
+        }
         Assert-SourceStartupSupervisorBoundary $fixedRoot
         . (Join-Path $fixedRoot 'tools\startup_repair_common.ps1')
+        . (Join-Path $fixedRoot 'tools\Resume-AngeronaSourceActivation.ps1')
+        if ($SourceActivationBroker) {
+            if ($SetupOnly -or $SourceActivationBroker -cnotmatch '^[0-9a-f]{32}$' -or $ActivationDescriptorSha256 -cnotmatch '^[0-9a-f]{64}$') {
+                throw 'Malformed fixed source activation broker invocation.'
+            }
+            try {Invoke-SourceActivationBroker $fixedRoot $SourceActivationBroker $ActivationDescriptorSha256}
+            catch {Write-Host '[startup] Optional source controller is unavailable; no restart or source effect was accepted.';exit 85}
+            exit 0
+        }
+        if ($ActivationDescriptorSha256) {throw 'A descriptor binding cannot select a normal startup.'}
+
         $script:SourceStartupCriticalMode = $true
         $script:StartupRecoveryPreferences = @{ Enabled = $false; Github = $false }
         try {
@@ -1061,5 +1140,10 @@ if ($MyInvocation.InvocationName -ne '.') {
             exit 1223
         }
         exit 1
+    } finally {
+        if(Get-Command Stop-SourceControllerHeartbeat -ErrorAction SilentlyContinue){
+            Stop-SourceControllerHeartbeat $script:SourceStartupHeartbeat
+            $script:SourceStartupHeartbeat=$null
+        }
     }
 }

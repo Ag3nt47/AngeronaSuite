@@ -34,6 +34,22 @@ TELEMETRY_STORAGE_RANGES = (
 )
 
 
+SCANNER_REPORT_COUNT_UNLIMITED = "unlimited"
+SCANNER_REPORT_COUNT_MAX = 32
+SCANNER_REPORT_COUNT_FALLBACK = 8
+SPYWARE_SCAN_AUTO_SCOPES = ("full", "browser", "quick")
+
+
+def valid_scanner_report_count(value: object) -> bool:
+    return (type(value) is str and value == SCANNER_REPORT_COUNT_UNLIMITED
+            or type(value) is int and 1 <= value <= SCANNER_REPORT_COUNT_MAX)
+
+
+def scanner_report_count(value: object) -> int | str:
+    """Keep an invalid explicit preference at the legacy finite limit."""
+    return value if valid_scanner_report_count(value) else SCANNER_REPORT_COUNT_FALLBACK
+
+
 def telemetry_storage_policy_values(config) -> dict:
     """Validate four scalar preferences without constructing Config or doing I/O."""
     blocked = getattr(config, "telemetry_storage_blocked", False)
@@ -192,6 +208,27 @@ def _startup_recovery_settings(raw: str) -> tuple[bool, bool]:
         return False, False
 
 
+def _settings_document(raw: str) -> tuple[dict, bool]:
+    """Preserve legacy settings while detecting ambiguity in top-level scan consent."""
+    duplicate_scan_policy = False
+
+    def object_with_duplicates(pairs):
+        nonlocal duplicate_scan_policy
+        values = dict(pairs)
+        # The decoder calls the hook from the innermost object to the root.
+        # The final hook on an object document therefore describes only its top-level keys.
+        duplicate_scan_policy = len(values) != len(pairs) and any(
+            sum(key == name for key, _value in pairs) > 1
+            for name in ("spyware_scan_auto_enabled", "spyware_scan_auto_scope")
+        )
+        return values
+
+    data = json.loads(raw, object_pairs_hook=object_with_duplicates)
+    if type(data) is not dict:
+        raise ValueError("Settings must be a JSON object.")
+    return data, duplicate_scan_policy
+
+
 def _data_dir() -> Path:
     from angerona.core.data_paths import data_dir
     p = data_dir()
@@ -223,6 +260,7 @@ class Config:
     github_tools_allow_download: bool = True
     github_tools_job_limit_mib: int = 256
     github_tools_report_limit_mib: int = 64
+    github_tools_report_count: int | str = SCANNER_REPORT_COUNT_UNLIMITED
     github_tools_timeout_seconds: int = 300
     spyware_scan_timeout_seconds: int = 3600
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
@@ -352,6 +390,8 @@ class Config:
     spyware_auto_contain: bool = True
     spyware_scan_native_enabled: bool = True
     spyware_scan_zero_breach_enabled: bool = True
+    spyware_scan_auto_enabled: bool = True
+    spyware_scan_auto_scope: str = "full"
     spyware_scan_priority: str = "above-normal"
     spyware_scan_cpu_percent: int = 70
     spyware_scan_memory_mib: int = 512
@@ -622,13 +662,20 @@ class Config:
         cfg = cls()
         cls._load_dotenv(cfg)
         if cfg.settings_path.exists():
+            cfg.spyware_scan_auto_enabled = False  # Unreadable settings cannot enable unattended scans.
             cfg.startup_recovery_enabled = False
             cfg.startup_recovery_github_enabled = False
             try:
                 raw_settings = cfg.settings_path.read_text(encoding="utf-8")
                 (cfg.startup_recovery_enabled,
                  cfg.startup_recovery_github_enabled) = _startup_recovery_settings(raw_settings)
-                data = json.loads(raw_settings)
+                data, duplicate_scan_policy = _settings_document(raw_settings)
+                auto_enabled = data.get("spyware_scan_auto_enabled", True)
+                auto_scope = data.get("spyware_scan_auto_scope", cfg.spyware_scan_auto_scope)
+                if (not duplicate_scan_policy and type(auto_scope) is str
+                        and auto_scope in SPYWARE_SCAN_AUTO_SCOPES):
+                    cfg.spyware_scan_auto_scope = auto_scope
+                    cfg.spyware_scan_auto_enabled = auto_enabled is True
                 cfg.ollama_host = data.get("ollama_host", cfg.ollama_host)
                 cfg.ollama_model = data.get("ollama_model", cfg.ollama_model)
                 cfg.github_repo = data.get("github_repo", cfg.github_repo)
@@ -639,6 +686,9 @@ class Config:
                 for name in ("github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download"):
                     value = data.get(name, getattr(cfg, name))
                     setattr(cfg, name, value if type(value) is bool else False)
+                cfg.github_tools_report_count = scanner_report_count(
+                    data.get("github_tools_report_count", cfg.github_tools_report_count),
+                )
                 for name, low, high in (
                     ("github_tools_job_limit_mib", 64, 1024),
                     ("github_tools_report_limit_mib", 8, 256),
@@ -1150,10 +1200,14 @@ class Config:
         for name in (
             "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
             "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
-            "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
+            "spyware_scan_auto_enabled", "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
         ):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
+        if type(self.spyware_scan_auto_scope) is not str or self.spyware_scan_auto_scope not in SPYWARE_SCAN_AUTO_SCOPES:
+            raise ValueError("spyware_scan_auto_scope must be full, browser, or quick")
+        if not valid_scanner_report_count(self.github_tools_report_count):
+            raise ValueError(f"github_tools_report_count must be 'unlimited' or an integer from 1 to {SCANNER_REPORT_COUNT_MAX}")
         for name, low, high in (
             ("github_tools_job_limit_mib", 64, 1024),
             ("github_tools_report_limit_mib", 8, 256),
@@ -1266,8 +1320,9 @@ class Config:
                     "spyware_auto_contain": self.spyware_auto_contain,
                     **{name: getattr(self, name) for name in (
                         "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
-                        "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_timeout_seconds",
-                        "spyware_scan_timeout_seconds",
+                        "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_report_count",
+                        "github_tools_timeout_seconds",
+                        "spyware_scan_timeout_seconds", "spyware_scan_auto_enabled", "spyware_scan_auto_scope",
                         "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled", "spyware_scan_priority",
                         "spyware_scan_cpu_percent", "spyware_scan_memory_mib", "spyware_scan_background_percent",
                         "spyware_scan_verify_admin", "breach_auto_isolate_enabled",

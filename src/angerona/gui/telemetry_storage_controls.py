@@ -282,11 +282,15 @@ class TelemetryStorageControls(QGroupBox):
 
 class TelemetryStorageWarningController(QObject):
     """One nonmodal notice per reason/policy generation, from cached values only."""
-    def __init__(self, config, manager, parent, open_settings):
+    _NOTICE = "storage:telemetry"
+
+    def __init__(self, config, manager, parent, open_settings, *, notifications=None):
         super().__init__(parent)
         self._config, self._recorder = config, getattr(manager, "recorder", None)
         self._open_settings = open_settings
+        self._notifications = notifications
         self._warning = None
+        self._warning_key = None
         self._acknowledged = deque(maxlen=64)
         self._closed = False
         self._timer = QTimer(self)
@@ -295,25 +299,63 @@ class TelemetryStorageWarningController(QObject):
         self._timer.start()
         QApplication.instance().aboutToQuit.connect(self.close)
 
-    def poll(self):
-        if self._closed:
-            return
+    def _state(self):
         snapshot = telemetry_storage_snapshot(self._recorder)
         pending = getattr(self._config, "_telemetry_storage_policy_pending", False) is True
         category = "policy_unverified" if pending else telemetry_storage_warning(snapshot)
         generation = snapshot["policy_generation"] if snapshot is not None else -1
-        key = (category, generation)
-        if not category or key in self._acknowledged or self._warning is not None:
+        key = (category, generation) if category else None
+        if self._notifications is not None and key is not None:
+            key += tuple(getattr(self._config, name, None) for name in (
+                "telemetry_storage_blocked", "telemetry_db_target_mib",
+                "telemetry_wal_target_mib", "telemetry_min_free_mib"))
+        return snapshot, pending, key
+
+    def poll(self):
+        if self._closed:
             return
-        self._acknowledged.append(key)
+        snapshot, pending, key = self._state()
+        if self._notifications is not None:
+            if key is None or key in self._acknowledged:
+                self._notifications.remove(self._NOTICE)
+            else:
+                self._notifications.upsert(
+                    self._NOTICE, "Telemetry storage needs review",
+                    self._review_text(snapshot, pending), lambda: self._review(key))
+            return
+        if key is not None and key not in self._acknowledged and self._warning is None:
+            self._acknowledged.append(key)
+            self._show_review(snapshot, pending, key)
+
+    def _review(self, expected):
+        if self._closed:
+            return
+        snapshot, pending, key = self._state()
+        if key != expected or key in self._acknowledged:
+            self.poll()
+            return
+        if self._warning is not None:
+            if self._warning_key == key:
+                if self._warning.isMinimized():
+                    self._warning.showNormal()
+                self._warning.raise_()
+                self._warning.activateWindow()
+                return
+            self._warning.reject()
+        self._show_review(snapshot, pending, key)
+
+    def _review_text(self, snapshot, pending):
         note = getattr(self._config, "_telemetry_storage_apply_note", "") if pending else ""
         if type(note) is not str or len(note) > 512:
             note = "Live policy application is unverified."
-        dialog = QMessageBox(QMessageBox.Warning, "Angerona telemetry storage needs review",
-            note + ("\n\n" if note else "") + telemetry_storage_usage(snapshot) + "\n\n"
+        return (note + ("\n\n" if note else "") + telemetry_storage_usage(snapshot) + "\n\n"
             + telemetry_pending_text(snapshot) + "\n\nBlock or review Allow / change targets in System settings. "
             "Storage holds do not block the dashboard or STOP. The separate remediation writer shares the "
-            "database; these targets are not an OS quota or guaranteed response reserve.", parent=self.parent())
+            "database; these targets are not an OS quota or guaranteed response reserve.")
+
+    def _show_review(self, snapshot, pending, key):
+        dialog = QMessageBox(QMessageBox.Warning, "Angerona telemetry storage needs review",
+            self._review_text(snapshot, pending), parent=self.parent())
         block = dialog.addButton("Block for this run", QMessageBox.RejectRole)
         change = dialog.addButton("Allow / change targets…", QMessageBox.ActionRole)
         retry = dialog.addButton("Retry saved policy", QMessageBox.ActionRole) if pending else None
@@ -324,36 +366,52 @@ class TelemetryStorageWarningController(QObject):
         dialog.setWindowModality(Qt.NonModal)
         dialog.setProperty("_angerona_no_reveal", True)
         self._warning = dialog
+        self._warning_key = key
+
         def finished(_result):
             clicked = dialog.clickedButton()
             self._warning = None
-            if not self._closed:
-                if clicked is block:
-                    latest = telemetry_storage_snapshot(self._recorder)
-                    if latest is not None and latest["configured"]:
-                        policy = {"blocked": True, **{key: latest[key] for key in
-                                  ("db_target_bytes", "wal_target_bytes", "min_free_bytes")}}
-                    else:
-                        try:
-                            policy = telemetry_storage_policy_values(self._config)
-                            policy["blocked"] = True
-                        except (ValueError, TypeError):
-                            policy = None
-                    result = apply_telemetry_storage_values(self._recorder, policy, note_target=self._config)
-                    if result["accepted"] is not True:
-                        self._open_settings("System")
-                elif retry is not None and clicked is retry:
-                    result = apply_telemetry_storage_policy(self._config, self._recorder)
-                    if result["accepted"] is not True:
-                        self._open_settings("System")
-                elif clicked is change:
-                    self._open_settings("System")
+            self._warning_key = None
             dialog.deleteLater()
+            if self._closed:
+                return
+            latest = None
+            if self._notifications is not None:
+                latest, _, current_key = self._state()
+                if current_key != key:
+                    self.poll()
+                    return
+                if clicked is not None and clicked is not change:
+                    self._acknowledged.append(key)
+                    self._notifications.remove(self._NOTICE)
+            if clicked is block:
+                if self._notifications is None:
+                    latest = telemetry_storage_snapshot(self._recorder)
+                if latest is not None and latest["configured"]:
+                    policy = {"blocked": True, **{name: latest[name] for name in
+                              ("db_target_bytes", "wal_target_bytes", "min_free_bytes")}}
+                else:
+                    try:
+                        policy = telemetry_storage_policy_values(self._config)
+                        policy["blocked"] = True
+                    except (ValueError, TypeError):
+                        policy = None
+                result = apply_telemetry_storage_values(self._recorder, policy, note_target=self._config)
+                if result["accepted"] is not True:
+                    self._open_settings("System")
+            elif retry is not None and clicked is retry:
+                result = apply_telemetry_storage_policy(self._config, self._recorder)
+                if result["accepted"] is not True:
+                    self._open_settings("System")
+            elif clicked is change:
+                self._open_settings("System")
         dialog.finished.connect(finished)
         dialog.show()
 
     def close(self, *_args):
         self._closed = True
         self._timer.stop()
+        if self._notifications is not None:
+            self._notifications.remove(self._NOTICE)
         if self._warning is not None:
             self._warning.reject()

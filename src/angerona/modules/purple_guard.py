@@ -19,6 +19,7 @@ import copy
 import ctypes
 import hashlib
 import hmac
+import io
 import json
 import math
 import os
@@ -30,9 +31,10 @@ import threading
 import time
 import uuid
 import weakref
+import zipfile
 from collections import deque
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -99,6 +101,42 @@ _PURPLE_RECEIPT_V2_FIELDS = (
     "source_observation_sha256", "event_nonce", "observed_at",
     "evidence_type", "detector_verdict",
 )
+_PURPLE_REOBSERVATION_FIELDS = (
+    "reobservation_parent_hmac", "reobservation_parent_sha256",
+    "reobservation_root_nonce", "reobservation_request_id", "reobservation_attempt",
+    "reobservation_combat_generation", "reobservation_combat_policy_sha256",
+)
+
+
+def _purple_simulation_receipt_core(details):
+    """Select one strict simulation receipt family; native process v3 is distinct."""
+    if not isinstance(details, dict):
+        return None
+    version = details.get("redteam_detector_receipt_version")
+    lineage = {key for key in details if key.startswith("reobservation_")}
+    if type(version) is not int or version not in {2, 3}:
+        return None
+    if version == 2:
+        return None if lineage else {key: details.get(key) for key in _PURPLE_RECEIPT_V2_FIELDS}
+    if (lineage != set(_PURPLE_REOBSERVATION_FIELDS)
+            or details.get("receipt_type") != "purple_simulation_validation"
+            or details.get("evidence_kind") != "inert_file_marker"
+            or type(details.get("reobservation_attempt")) is not int
+            or details["reobservation_attempt"] != 1
+            or type(details.get("reobservation_combat_generation")) is not int
+            or details["reobservation_combat_generation"] <= 0):
+        return None
+    for key in ("reobservation_parent_hmac", "reobservation_parent_sha256",
+                "reobservation_combat_policy_sha256"):
+        if not isinstance(details.get(key), str) or not re.fullmatch(r"[0-9a-f]{64}", details[key]):
+            return None
+    for key in ("reobservation_root_nonce", "reobservation_request_id"):
+        if not isinstance(details.get(key), str) or not re.fullmatch(r"[0-9a-f]{32}", details[key]):
+            return None
+    fields = (*_PURPLE_RECEIPT_V2_FIELDS, *_PURPLE_REOBSERVATION_FIELDS)
+    return {key: details[key] for key in fields} if all(key in details for key in fields) else None
+
+
 _PROCESS_TOKEN = re.compile(r"\bANGERONA_REDTEAM_[0-9a-f]{8}\b", re.I)
 _PRACTICE_FILE_TOKEN = re.compile(
     r"_practice_(?P<id>[0-9a-f]{8,64})\.txt$",
@@ -282,6 +320,8 @@ class _LeaseAuthorityState:
     artifact_handoffs: set[str] | None = None
     artifact_custody_failed: bool = False
     process_challenges: dict[str, dict[str, object]] | None = None
+    yara_authority: object | None = None
+    queued_file_authority: object | None = None
     lock: threading.RLock | None = None
     marker_move_lock: threading.RLock | None = None
 
@@ -323,6 +363,8 @@ class _LeaseAuthorityAccess:
             "native_capabilities",
             "native_verifiers",
             "fim_scan_claims",
+            "yara_authority",
+            "queued_file_authority",
         }
     )
 
@@ -343,6 +385,15 @@ class _LeaseAuthorityAccess:
 
     def _verify_hmac(self, supplied: str, payload: bytes) -> bool:
         return hmac.compare_digest(supplied, self._sign_hmac(payload))
+
+    def _queued_files(self, lease, *, create=True):
+        state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
+        if state.queued_file_authority is not None or not create:
+            return state.queued_file_authority
+        with state.lock:
+            if state.queued_file_authority is None:
+                state.queued_file_authority = _QueuedFileReobservations(lease, state)
+            return state.queued_file_authority
 
     def _rotate_hmac_authority(self) -> None:
         state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
@@ -372,6 +423,44 @@ class _LeaseAuthorityAccess:
         state.native_capabilities = {}
         state.native_verifiers = {}
         state.fim_scan_claims = {}
+        if type(state.yara_authority) is _YaraLeaseAuthority:
+            state.yara_authority.revoke()
+        state.yara_authority = None
+
+    def _yara(self):
+        state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
+        authority = state.yara_authority
+        if type(authority) is not _YaraLeaseAuthority:
+            raise RedTeamValidationError("YARA control authority is unavailable")
+        return authority
+
+    def _cancel_yara_publication(self, capability, producer, reservation) -> None:
+        state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
+        assert state.lock is not None
+        with state.lock:
+            authority = state.yara_authority
+            if authority is None:
+                # Reset revoked the retired authority before removing it.
+                # There is no live claim left for this cancellation to revoke.
+                return
+            if type(authority) is not _YaraLeaseAuthority:
+                raise RedTeamValidationError("YARA control authority is invalid")
+            authority.cancel(capability, producer, reservation)
+
+    def _enroll_yara(self, lease, producer, capability) -> None:
+        state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
+        if (state.native_modules or {}).get("YARA Scanner") is not producer or (
+            state.native_capabilities or {}
+        ).get("YARA Scanner") is not capability:
+            raise RedTeamValidationError("YARA producer enrollment is unavailable")
+        state.yara_authority = _YaraLeaseAuthority(lease, producer, capability)
+
+    def _yara_records_safe(self) -> bool:
+        state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
+        if state.yara_authority is None:
+            return True
+        return (type(state.yara_authority) is _YaraLeaseAuthority
+                and state.yara_authority.records_safe())
 
     def _enroll_native(
         self,
@@ -431,6 +520,8 @@ class _LeaseAuthorityAccess:
 
     def _revoke_native_enrollment(self) -> None:
         state = object.__getattribute__(self, "_LeaseAuthorityAccess__state")
+        if type(state.yara_authority) is _YaraLeaseAuthority:
+            state.yara_authority.revoke()
         for name, capability in tuple((state.native_capabilities or {}).items()):
             producer = (state.native_modules or {}).get(name)
             binder = getattr(producer, "bind_redteam_receipt_capability", None)
@@ -584,6 +675,42 @@ class _ProducerReceiptCapability:
                 del frame
             except UnboundLocalError:
                 pass
+
+    def is_yara_control_path(self, producer, path, enrollment) -> bool:
+        """Select the optional control scanner without granting a receipt."""
+        try:
+            authority = self._authority(producer)
+            if (self.__kind != "yara" or authority is None
+                    or not self._canonical_caller(producer)):
+                return False
+            _lease, state = authority
+            return state._yara().is_declared(self, producer, path, enrollment)
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def reserve_yara_observation(self, producer, **observation):
+        authority = self._authority(producer)
+        if (self.__kind != "yara" or authority is None
+                or not self._canonical_caller(producer)):
+            return None
+        _lease, state = authority
+        return state._yara().reserve(self, producer, observation)
+
+    def seal_yara_observation(self, producer, reservation, event) -> bool:
+        authority = self._authority(producer)
+        if (self.__kind != "yara" or authority is None
+                or not self._canonical_caller(producer)):
+            return False
+        _lease, state = authority
+        return state._yara().seal(self, producer, reservation, event)
+
+    def cancel_yara_publication(self, producer, reservation) -> None:
+        authority = self._authority(producer)
+        if (self.__kind != "yara" or authority is None
+                or not self._canonical_caller(producer)):
+            return
+        _lease, state = authority
+        state._cancel_yara_publication(self, producer, reservation)
 
     def issue_fim_observation(
         self,
@@ -1140,13 +1267,25 @@ def _target_identity_matches(state: _LeaseAuthorityState) -> bool:
         _close_directory_handle(current_handle)
 
 
+class _MarkerScopeOnlyResult:
+    """Fresh inventory-safety result; never an enrolled artifact identity."""
+
+    __slots__ = ()
+
+
+_MARKER_SCOPE_ONLY_OK = _MarkerScopeOnlyResult()
+
+
 def _marker_path_identity(
     path: Path,
     *,
     hold: bool,
     delete_access: bool = False,
-) -> tuple[int | None, dict[str, object]]:
-    """Open one marker without following aliases and return its held identity."""
+    scope_only: bool = False,
+) -> tuple[int | None, dict[str, object] | _MarkerScopeOnlyResult]:
+    """Read/check one marker; scope-only success never supplies identity authority."""
+    if scope_only is True and (hold is not False or delete_access is not False):
+        raise ValueError("scope-only validation cannot retain or delete an object")
     candidate = Path(path)
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
     descriptor: int | None = None
@@ -1220,6 +1359,12 @@ def _marker_path_identity(
             or int(getattr(final_path, "st_nlink", 1)) != 1
         ):
             raise OSError("marker identity changed during validation")
+        if scope_only is True:
+            # Keep every fresh read/hash/stat check above. The inventory caller
+            # discards resolved path and both identity representations below.
+            os.close(descriptor)
+            descriptor = None
+            return None, _MARKER_SCOPE_ONLY_OK
         core: dict[str, object] = {
             "path": str(candidate.resolve(strict=False)),
             "device": int(after.st_dev),
@@ -1369,10 +1514,10 @@ def _validation_target_markers_safe(
                     ):
                         return False
                     continue
-                descriptor, identity = _marker_path_identity(
-                    candidate, hold=False
+                descriptor, scope_result = _marker_path_identity(
+                    candidate, hold=False, scope_only=True
                 )
-                if descriptor is not None or not identity:
+                if descriptor is not None or scope_result is not _MARKER_SCOPE_ONLY_OK:
                     return False
         return True
     except OSError:
@@ -1650,6 +1795,8 @@ class RedTeamValidationLease:
             move_lock=state.marker_move_lock,
         ):
             return False
+        if not state._yara_records_safe():
+            return False
         modules = getattr(state.manager, "modules", {})
         if (
             getattr(state.manager, "bus", None) is not state.bus
@@ -1911,6 +2058,24 @@ class RedTeamValidationLease:
                 )
             )
 
+    def create_yara_control(self, *, run_id, step_id, scanner_enrollment, control_kind):
+        """Create one fixed benign control, never enroll an arbitrary path."""
+        return _lease_authority(self)._yara().create(
+            run_id=run_id, step_id=step_id, scanner_enrollment=scanner_enrollment,
+            control_kind=control_kind,
+        )
+
+    def begin_yara_containment(self, combat, event, path):
+        return _lease_authority(self)._yara().begin(combat, event, path)
+
+    def bind_yara_containment_action(self, combat, event, action, pinned):
+        return _lease_authority(self)._yara().bind(combat, event, action, pinned)
+
+    def finish_yara_containment(self, combat, event, action, *, succeeded):
+        return _lease_authority(self)._yara().finish(
+            combat, event, action, succeeded=succeeded,
+        )
+
     def register_artifact_handle(self, path: Path, *, run_id: str) -> dict[str, object]:
         """Bind a newly-created marker's held file identity to this exact run."""
         state = _lease_authority(self)
@@ -2095,9 +2260,7 @@ class RedTeamValidationLease:
             modules = getattr(state.manager, "modules", {})
             record = (state.artifact_handles or {}).get(key)
             supplied = str(details.get("detector_receipt_mac") or "")
-            signed_core = {
-                field: details.get(field) for field in _PURPLE_RECEIPT_V2_FIELDS
-            }
+            signed_core = _purple_simulation_receipt_core(details)
             if (
                 os.name != "nt"
                 or type(combat) is not AdversaryCombat
@@ -2114,7 +2277,8 @@ class RedTeamValidationLease:
                 or record is None
                 or record[0] is None
                 or key in (state.artifact_handoffs or set())
-                or details.get("redteam_detector_receipt_version") != 2
+                or signed_core is None
+                or not verify_queued_file_event(self, combat, event)
                 or details.get("receipt_type") != "purple_simulation_validation"
                 or details.get("evidence_kind") != "inert_file_marker"
                 or details.get("lease_id") != state.lease_id
@@ -2830,6 +2994,9 @@ class RedTeamValidationLease:
         except (OSError, RuntimeError, TypeError, ValueError):
             return {}
 
+    def _queued_file_reobservations(self):
+        return _lease_authority(self)._queued_files(self)
+
     def attest_purple_detection(
         self,
         producer: object,
@@ -2974,7 +3141,7 @@ class RedTeamValidationLease:
             supplied = str(details.get("detector_receipt_mac") or "")
             core = {key: value for key, value in details.items() if key != "detector_receipt_mac"}
             version = details.get("redteam_detector_receipt_version")
-            if type(version) is not int or version not in {1, 2}:
+            if type(version) is not int or version not in {1, 2, 3}:
                 return False
             if version == 1 and "observed_content_sha256" in details:
                 # Legacy signatures did not cover this field; it must never
@@ -3002,9 +3169,15 @@ class RedTeamValidationLease:
                 "evidence_type",
                 "detector_verdict",
             }
-            if version == 2:
-                required.add("observed_content_sha256")
-            signed_core = {key: core.get(key) for key in required}
+            if version in {2, 3}:
+                signed_core = _purple_simulation_receipt_core(details)
+                if signed_core is None:
+                    return False
+                if version == 3 and not verify_queued_file_event(
+                        self, None, event, historical=True):
+                    return False
+            else:
+                signed_core = {key: core.get(key) for key in required}
             evidence_kind = str(details.get("evidence_kind") or "")
             if evidence_kind == "inert_file_marker":
                 observed_target = str(
@@ -3226,6 +3399,7 @@ class RedTeamValidationLease:
         """Attach one-run object capabilities to exact built-in producers."""
         from angerona.modules.file_integrity import FileIntegrityModule
         from angerona.modules.process_monitor import ProcessMonitorModule
+        from angerona.modules.yara_scanner import YaraScannerModule
 
         allowed = {
             "File Integrity Monitor": (
@@ -3242,6 +3416,11 @@ class RedTeamValidationLease:
                     ProcessMonitorModule.run.__code__,
                     ProcessMonitorModule.observe_validation_process.__code__,
                 ),
+            ),
+            "YARA Scanner": (
+                "angerona.builtin.yara_scanner", YaraScannerModule, "yara",
+                (YaraScannerModule._make_control_scanner.__code__,
+                 YaraScannerModule._scan_file.__code__),
             ),
         }
         state = _lease_authority(self)
@@ -3277,6 +3456,8 @@ class RedTeamValidationLease:
                     capability,
                     capability.public_verification_material(),
                 )
+                if kind == "yara":
+                    state._enroll_yara(self, producer, capability)
             binder = getattr(producer, "bind_redteam_receipt_capability", None)
             if not callable(binder):
                 raise RedTeamValidationError(
@@ -3573,6 +3754,7 @@ class RedTeamValidationLease:
                 return
             state.released = True
             state._rotate_hmac_authority()
+        state._queued_files(self).revoke_queued()
         try:
             PurpleGuard._set_validation_lease(state.module, None, expected=self)
         except Exception:
@@ -3618,6 +3800,1203 @@ class RedTeamValidationLease:
         # Keep the revoked tombstone while the handle is reachable so replay
         # attempts fail explicitly as released. Weak-key cleanup removes it
         # automatically once no caller retains the lease object.
+
+
+@dataclass(frozen=True, slots=True)
+class _YaraObservationReservation:
+    """An event carries only this ID; the issuer retains the semantic digest."""
+
+    claim_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class _YaraRestoringPinTicket:
+    """One synchronous immediate-rollback proof, never persisted or exported."""
+
+    control_key: str
+    reservation: _YaraObservationReservation
+    event: Event
+    combat: object
+    action: object
+    pinned: object
+    thread_id: int
+
+
+def _yara_held_identity(descriptor: int, path: Path) -> dict[str, object]:
+    """Hash an already held bounded object without opening a substituted name."""
+    position = os.lseek(descriptor, 0, os.SEEK_CUR)
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or not 0 <= before.st_size <= 1024 * 1024
+                or bool(getattr(before, "st_file_attributes", 0) & 0x400)):
+            return {}
+        digest = hashlib.sha256()
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(65536, remaining))
+            if not chunk:
+                return {}
+            digest.update(chunk)
+            remaining -= len(chunk)
+        after = os.fstat(descriptor)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_nlink")
+        if (any(getattr(before, field) != getattr(after, field) for field in fields)
+                or bool(getattr(after, "st_file_attributes", 0) & 0x400)):
+            return {}
+        core = {"path": str(path), "device": int(after.st_dev),
+                "inode": int(after.st_ino), "size": int(after.st_size),
+                "mtime_ns": int(after.st_mtime_ns), "link_count": 1,
+                "sha256": digest.hexdigest(), "regular": True, "no_follow": True}
+        return {**core, "identity_sha256": _sha256(core)}
+    finally:
+        os.lseek(descriptor, position, os.SEEK_SET)
+
+
+def _yara_creation_parent_handles(state) -> list[int]:
+    """Hold every Windows prefix no-reparse and deny directory rename."""
+    if os.name != "nt":
+        return []
+    handles = []
+    create = ctypes.windll.kernel32.CreateFileW
+    create.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                       ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                       ctypes.c_void_p]
+    create.restype = ctypes.c_void_p
+    path = Path(state.target.anchor)
+    if len(state.target.parts) > 128:
+        raise RedTeamValidationError("YARA target has too many directory prefixes")
+    try:
+        for part in ("", *state.target.parts[1:]):
+            if part:
+                path /= part
+            handle = create(str(path), 0x1 | 0x80, 0x1 | 0x2, None, 3,
+                            0x02000000 | 0x00200000, None)
+            if handle in (None, ctypes.c_void_p(-1).value):
+                raise OSError(int(ctypes.windll.kernel32.GetLastError()),
+                              "YARA control directory prefix cannot be held")
+            handles.append(int(handle))
+            identity = _directory_handle_identity(int(handle))
+            if identity.get("directory") is not True or identity.get("no_reparse") is not True:
+                raise RedTeamValidationError("YARA control directory prefix is unsafe")
+        held = _directory_handle_identity(handles[-1])
+        if {**held, "identity_sha256": _sha256(held)} != state.target_identity:
+            raise RedTeamValidationError("YARA control target identity changed")
+        return handles
+    except BaseException:
+        for handle in reversed(handles):
+            _close_directory_handle(handle)
+        raise
+
+
+def _create_yara_control_file(state, name: str) -> tuple[int, list[int]]:
+    """Exclusive creator handle: no arbitrary existing file can be enrolled."""
+    if os.name != "nt":
+        return os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL
+                       | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                       0o600, dir_fd=state.target_handle), []
+    import msvcrt
+
+    create = ctypes.windll.kernel32.CreateFileW
+    create.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32,
+                       ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                       ctypes.c_void_p]
+    create.restype = ctypes.c_void_p
+    handles = _yara_creation_parent_handles(state)
+    try:
+        handle = create(str(state.target / name), 0x80000000 | 0x40000000 | 0x10000,
+                        0x1 | 0x2 | 0x4, None, 1, 0x00200000, None)
+        if handle in (None, ctypes.c_void_p(-1).value):
+            raise OSError(int(ctypes.windll.kernel32.GetLastError()),
+                          "exclusive YARA control creation failed")
+        try:
+            descriptor = msvcrt.open_osfhandle(int(handle), os.O_RDWR | getattr(os, "O_BINARY", 0))
+        except BaseException:
+            ctypes.windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+            raise
+        return descriptor, handles
+    except BaseException:
+        for handle in reversed(handles):
+            _close_directory_handle(handle)
+        raise
+
+
+class _YaraLeaseAuthority:
+    """Lease-private controlled-file claims, with no native YARA referents.
+
+    Public event text cannot populate these tables. Every issuance operation
+    requires the captured native producer site; every mutation requires the
+    exact Combat generation, native file pin and one retained transaction.
+    """
+
+    __slots__ = ("__lease_ref", "__producer_ref", "__producer_type", "__capability", "__generation",
+                 "__enrollment_valid", "__event_valid", "__factory_code",
+                 "__scan_code", "__combat_code", "__rollback_code", "__controls", "__claims",
+                 "__revoked", "__restoring_local")
+
+    def __init__(self, lease, producer, capability):
+        from angerona.modules.yara_scanner import YaraScannerModule
+        from angerona.modules.adversary_combat import AdversaryCombat
+
+        self.__lease_ref = weakref.ref(lease)
+        self.__producer_ref = weakref.ref(producer)
+        self.__producer_type = type(producer)
+        self.__capability = capability
+        self.__generation = producer.lifecycle_generation
+        self.__enrollment_valid = YaraScannerModule._control_enrollment_valid
+        self.__event_valid = YaraScannerModule.verify_control_detection_event
+        self.__factory_code = YaraScannerModule._make_control_scanner.__code__
+        self.__scan_code = YaraScannerModule._scan_file.__code__
+        self.__combat_code = AdversaryCombat._quarantine_file.__code__
+        self.__rollback_code = AdversaryCombat._undo_record.__code__
+        self.__controls = {}
+        self.__claims = {}
+        self.__revoked = False
+        self.__restoring_local = threading.local()
+
+    def revoke(self) -> None:
+        self.__revoked = True
+        for claim in self.__claims.values():
+            claim["revoked"] = True
+
+    def _scope(self):
+        lease, producer = self.__lease_ref(), self.__producer_ref()
+        if lease is None or producer is None:
+            raise RedTeamValidationError("YARA lease or producer retired")
+        return lease, producer, _lease_authority(lease)
+
+    @staticmethod
+    def _metadata(enrollment):
+        result = {name: getattr(enrollment, name, None) for name in (
+            "enrollment_id", "generation", "source_epoch", "compile_input_sha256",
+            "recipe_sha256", "native_version")}
+        if (type(result["generation"]) is not int
+                or result["native_version"] != "1.19.0"
+                or any(type(result[name]) is not str or not result[name]
+                       or len(result[name]) > 160 for name in result if name != "generation")
+                or any(re.fullmatch(r"[0-9a-f]{64}", result[name]) is None
+                       for name in ("compile_input_sha256", "recipe_sha256"))):
+            raise RedTeamValidationError("YARA enrollment metadata is malformed")
+        return result
+
+    def _current(self, state, producer) -> bool:
+        modules = getattr(state.manager, "modules", {})
+        contract = getattr(producer, "_angerona_contract", None)
+        operational = BaseModule.operational_snapshot(producer)
+        return bool(not self.__revoked and not state.released and state.consumed
+                    and not state.artifact_custody_failed
+                    and state.process_epoch == _LEASE_PROCESS_EPOCH
+                    and time.monotonic() < state.run_deadline_monotonic
+                    and isinstance(modules, dict) and modules.get(producer.name) is producer
+                    and getattr(state.manager, "bus", None) is state.bus
+                    and type(producer) is self.__producer_type
+                    and getattr(producer, "_bus", None) is state.bus
+                    and state._native_module(producer.name) is producer
+                    and state._native_capability_is(producer.name, self.__capability)
+                    and contract is not None
+                    and contract.capability_id == "angerona.builtin.yara_scanner"
+                    and producer.lifecycle_generation == self.__generation
+                    and not producer.stopping
+                    and operational.get("status") == "running"
+                    and operational.get("thread_alive") is True
+                    and type(producer)._make_control_scanner.__code__ is self.__factory_code
+                    and type(producer)._scan_file.__code__ is self.__scan_code)
+
+    def _native_site(self, producer) -> bool:
+        frame = None
+        try:
+            frame = sys._getframe(1)
+            for _depth in range(5):
+                if frame.f_code is self.__scan_code and frame.f_locals.get("self") is producer:
+                    return True
+                frame = frame.f_back
+                if frame is None:
+                    break
+            return False
+        finally:
+            del frame
+
+    def _combat_site(self, combat) -> bool:
+        frame = None
+        try:
+            if type(combat)._quarantine_file.__code__ is not self.__combat_code:
+                return False
+            frame = sys._getframe(1)
+            for _depth in range(5):
+                if frame.f_code is self.__combat_code and frame.f_locals.get("self") is combat:
+                    return True
+                frame = frame.f_back
+                if frame is None:
+                    break
+            return False
+        finally:
+            del frame
+
+    def _rollback_site(self, combat) -> bool:
+        """Public Undo cannot manufacture the private immediate-rollback scope."""
+        frame = None
+        try:
+            if type(combat)._undo_record.__code__ is not self.__rollback_code:
+                return False
+            frame = sys._getframe(1)
+            for _depth in range(12):
+                if frame.f_code is self.__rollback_code and frame.f_locals.get("self") is combat:
+                    return True
+                frame = frame.f_back
+                if frame is None:
+                    break
+            return False
+        finally:
+            del frame
+
+    def _restoring_pin_matches(self, state, key, control, claim, ticket) -> bool:
+        """Bridge only the actual quarantined pin for the bound rollback call."""
+        from angerona.core.response_proof import event_proof_digest
+        from angerona.modules.adversary_combat import AdversaryCombat, CombatAction, _PinnedFileMove
+
+        if (type(ticket) is not _YaraRestoringPinTicket
+                or getattr(self.__restoring_local, "ticket", None) is not ticket
+                or ticket.thread_id != threading.get_ident() or ticket.control_key != key
+                or claim is None or ticket.reservation is not claim["reservation"]
+                or claim["phase"] != "BOUND_TO_ACTION" or claim["revoked"]
+                or type(ticket.combat) is not AdversaryCombat
+                or type(ticket.action) is not CombatAction
+                or type(ticket.pinned) is not _PinnedFileMove
+                or not self._rollback_site(ticket.combat)):
+            return False
+        combat, action, event, pinned = ticket.combat, ticket.action, ticket.event, ticket.pinned
+        _lease, producer, _state = self._scope()
+        policy = combat.policy()
+        if (not self._current(state, producer) or _state.bus is not state.bus
+                or not claim["observed_monotonic"] <= time.monotonic() < claim["expires_monotonic"]
+                or type(event) is not Event or type(event.details) is not dict
+                or type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                or not -1 <= time.time() - event.ts <= 30
+                or claim["event_digest"] != event_proof_digest(event)
+                or not self._event_binding(claim, event.details)
+                or not state.bus.verify(event) or not self.__event_valid(producer, event)
+                or not self.__enrollment_valid(producer, control["enrollment"])
+                or self._metadata(control["enrollment"]) != claim["metadata"]
+                or claim["combat_ref"] is None or claim["combat_ref"]() is not combat
+                or claim["combat_generation"] != combat.lifecycle_generation
+                or getattr(combat, "_manager", None) is not state.manager
+                or getattr(state.manager, "bus", None) is not state.bus
+                or getattr(state.manager, "modules", {}).get(combat.name) is not combat
+                or getattr(combat, "_bus", None) is not state.bus
+                or combat.data_root.resolve(strict=False) != state.data_root
+                or combat.stopping or policy.enabled is not True or policy.quarantine_files is not True
+                or control["run_id"] != state.bound_run_id
+                or action.action != "quarantine_file" or action.action_id != claim["action_id"]
+                or action.combat_id != claim["combat_id"] or action.target != control["path"]
+                or action.details.get("original") != control["path"]
+                or action.details.get("sha256") != control["identity"]["sha256"]
+                or action.details.get("quarantine") != claim["quarantine"]
+                or action.details.get("yara_control_claim_id") != control["claim_id"]
+                or action.details.get("yara_control_attempt_id") != claim["attempt_id"]
+                or str(pinned.path) != claim["quarantine"]
+                or Path(claim["quarantine"]).parent.parent != combat.quarantine_root
+                or Path(claim["quarantine"]).parent.name != action.combat_id
+                or pinned.require_single_link() != 1
+                or pinned.crosses_volume(Path(control["path"]))
+                or pinned.sha256() != control["identity"]["sha256"]):
+            return False
+        descriptor = pinned.duplicate_custody_descriptor()
+        try:
+            if _yara_held_identity(descriptor, Path(control["path"])) != control["identity"]:
+                return False
+        finally:
+            os.close(descriptor)
+        try:
+            Path(control["path"]).lstat()
+        except FileNotFoundError:
+            return True
+        return False
+
+    def create(self, *, run_id, step_id, scanner_enrollment, control_kind):
+        from angerona.core.practice_scope import register_artifact, unregister_artifact
+
+        lease, producer, state = self._scope()
+        if (type(run_id) is not str or not run_id or len(run_id) > 128
+                or type(control_kind) is not str):
+            raise RedTeamValidationError("YARA control run or recipe is malformed")
+        marker = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE :: inert local drill"
+        member = ""
+        if control_kind == "text":
+            suffix, payload, rule = ".txt", marker, "EICAR_Test_File"
+        elif control_kind == "pdf-text":
+            # A text lure with a double extension, not PDF parser coverage.
+            suffix, payload, rule = ".pdf.txt", marker, "EICAR_Test_File"
+        elif control_kind == "html":
+            suffix, payload, rule = (
+                ".html", b"<!doctype html><html><body><p>" + marker + b"</p></body></html>\n",
+                "EICAR_Test_File",
+            )
+        elif control_kind == "archive":
+            member = "../never-extracted.txt"
+            output = io.BytesIO()
+            with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr(member, marker)
+            suffix, payload, rule = ".zip", output.getvalue(), "EICAR_Test_File"
+        elif control_kind == "driver":
+            suffix, payload, rule = (".sys",
+                b"ANGERONA-BYOVD-DRILL-BENIGN-MARKER :: inert never loaded",
+                "Angerona_BYOVD_Probe")
+        else:
+            raise RedTeamValidationError("unsupported inert YARA control recipe")
+        if type(step_id) is not str or not step_id or len(step_id) > 128:
+            raise RedTeamValidationError("YARA control step is missing or oversized")
+        with state.lock:
+            if (run_id != state.bound_run_id or len(self.__controls) >= 64
+                    or not self._current(state, producer)
+                    or not self.__enrollment_valid(producer, scanner_enrollment)
+                    or not RedTeamValidationLease._state_matches(lease)):
+                raise RedTeamValidationError("YARA control creation scope is stale")
+            metadata = self._metadata(scanner_enrollment)
+            name = "_angerona_yara_control_" + secrets.token_hex(16) + suffix
+            candidate = state.target / name
+            descriptor = None
+            read_descriptor = None
+            read_custody = False
+            parent_handles = []
+            registered = retained = False
+            try:
+                descriptor, parent_handles = _create_yara_control_file(state, name)
+                offset = 0
+                while offset < len(payload):
+                    written = os.write(descriptor, payload[offset:])
+                    if written <= 0:
+                        raise OSError("YARA control write made no progress")
+                    offset += written
+                os.fsync(descriptor)
+                identity = _yara_held_identity(descriptor, candidate)
+                named = candidate.stat(follow_symlinks=False)
+                if (not identity or len(payload) > 1024 * 1024
+                        or named.st_nlink != 1 or not stat.S_ISREG(named.st_mode)
+                        or bool(getattr(named, "st_file_attributes", 0) & 0x400)
+                        or (named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns)
+                        != tuple(identity[field] for field in ("device", "inode", "size", "mtime_ns"))
+                        or not _target_identity_matches(state)
+                        or not self._current(state, producer)):
+                    raise RedTeamValidationError("YARA control creation identity changed")
+                if os.name == "nt":
+                    # Ordinary CRT readers do not necessarily share DELETE.
+                    # Transfer custody while the DELETE-capable creator is
+                    # still held, then retire it before returning/scanning.
+                    read_descriptor, reopened = _marker_path_identity(candidate, hold=True)
+                    if (read_descriptor is None or reopened != identity
+                            or _yara_held_identity(read_descriptor, candidate) != identity):
+                        raise RedTeamValidationError("YARA read-only custody transfer changed identity")
+                    creator_descriptor = descriptor
+                    descriptor = read_descriptor
+                    read_descriptor = None
+                    read_custody = True
+                    try:
+                        os.close(creator_descriptor)
+                    except OSError:
+                        # Do not retry an uncertain numeric descriptor: it
+                        # could have been retired/reused. The verified reader
+                        # still witnesses the exact created inert object.
+                        state.artifact_custody_failed = True
+                        raise
+                if not register_artifact(candidate, run_id, kind="shark", descriptor=descriptor):
+                    raise RedTeamValidationError("YARA control provenance registration failed")
+                registered = True
+                key = os.path.normcase(str(candidate))
+                self.__controls[key] = {"path": str(candidate), "identity": identity,
+                    "run_id": run_id, "step_id": step_id, "rule": rule,
+                    "archive_member": member, "metadata": metadata,
+                    "enrollment": scanner_enrollment, "phase": "HELD", "claim_id": ""}
+                state.artifact_handles[key] = (descriptor, copy.deepcopy(identity))
+                retained = True
+                # Scheduling hint only after the exact held declaration exists.
+                # No Event publication, native scan or proof issuance occurs here.
+                try:
+                    self.__producer_type.signal_control_declaration(producer,
+                        self.__capability, scanner_enrollment, str(candidate),
+                    )
+                except Exception:
+                    # This optional scheduling hint cannot undo an already
+                    # retained exact creation or hide it from its owning run.
+                    # Ordinary traversal/proof remains mandatory and a missed
+                    # deadline is still an explicit settlement coverage gap.
+                    pass
+                return {"path": str(candidate), "identity": copy.deepcopy(identity),
+                        "run_id": run_id, "step_id": step_id, "rule": rule,
+                        "archive_member": member, **metadata}
+            finally:
+                if descriptor is not None and not retained:
+                    removed = (
+                        _dispose_held_marker(descriptor, candidate, identity)
+                        if read_custody else
+                        RedTeamValidationLease.discard_unenrolled_marker(descriptor, candidate)
+                    )
+                    if registered:
+                        unregister_artifact(candidate, run_id=run_id)
+                    if not removed:
+                        state.artifact_custody_failed = True
+                    os.close(descriptor)
+                if read_descriptor is not None:
+                    os.close(read_descriptor)
+                for parent_handle in reversed(parent_handles):
+                    _close_directory_handle(parent_handle)
+
+    def records_safe(self) -> bool:
+        """Validate every declared text/ZIP/SYS control, including moved ones."""
+        try:
+            _lease, producer, state = self._scope()
+            with state.lock:
+                with state.marker_move_lock:
+                    if len(self.__controls) > 64:
+                        return False
+                    inspected = 0
+                    with os.scandir(state.target) as entries:
+                        for entry in entries:
+                            inspected += 1
+                            if inspected > _MAX_VALIDATION_TARGET_MARKERS:
+                                return False
+                            if entry.name.casefold().startswith("_angerona_yara_control_") and (
+                                os.path.normcase(str(state.target / entry.name)) not in self.__controls
+                            ):
+                                return False
+                    for key, control in self.__controls.items():
+                        if (control["run_id"] != state.bound_run_id
+                                or not control["step_id"]
+                                or not self.__enrollment_valid(producer, control["enrollment"])
+                                or self._metadata(control["enrollment"]) != control["metadata"]):
+                            return False
+                        record = state.artifact_handles.get(key)
+                        if record is None or record[1] != control["identity"]:
+                            return False
+                        descriptor, identity = record
+                        path = Path(control["path"])
+                        handoff = key in state.artifact_handoffs
+                        if descriptor is None:
+                            claim = self.__claims.get(control["claim_id"])
+                            if (not handoff or claim is None
+                                    or claim["phase"] not in {"RESERVED_FOR_ATTEMPT", "BOUND_TO_ACTION"}):
+                                return False
+                            ticket = getattr(self.__restoring_local, "ticket", None)
+                            if type(ticket) is _YaraRestoringPinTicket and ticket.control_key == key:
+                                if not self._restoring_pin_matches(state, key, control, claim, ticket):
+                                    return False
+                                continue
+                            named = path.stat(follow_symlinks=False)
+                            if (named.st_nlink != 1 or not stat.S_ISREG(named.st_mode)
+                                    or bool(getattr(named, "st_file_attributes", 0) & 0x400)
+                                    or (named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns)
+                                    != tuple(identity[field] for field in ("device", "inode", "size", "mtime_ns"))):
+                                return False
+                        elif _yara_held_identity(descriptor, path) != identity:
+                            return False
+                        elif not handoff:
+                            named = path.stat(follow_symlinks=False)
+                            if (named.st_nlink != 1 or not stat.S_ISREG(named.st_mode)
+                                    or bool(getattr(named, "st_file_attributes", 0) & 0x400)
+                                    or (named.st_dev, named.st_ino, named.st_size, named.st_mtime_ns)
+                                    != tuple(identity[field] for field in ("device", "inode", "size", "mtime_ns"))):
+                                return False
+                        else:
+                            try:
+                                path.lstat()
+                            except FileNotFoundError:
+                                pass
+                            else:
+                                return False
+                    return True
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def is_declared(self, capability, producer, path, enrollment) -> bool:
+        """Read-only exact membership; undeclared paths keep ordinary scanning."""
+        try:
+            lease, enrolled, state = self._scope()
+            if (capability is not self.__capability or producer is not enrolled
+                    or not self._native_site(producer)):
+                return False
+            key = os.path.normcase(os.path.abspath(path))
+            with state.lock:
+                control = self.__controls.get(key)
+                return bool(control is not None and control["phase"] == "HELD"
+                            and control["enrollment"] is enrollment
+                            and control["run_id"] == state.bound_run_id
+                            and self._current(state, producer)
+                            and self.__enrollment_valid(producer, enrollment)
+                            and self._metadata(enrollment) == control["metadata"]
+                            and RedTeamValidationLease._state_matches(lease))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def reserve(self, capability, producer, observation):
+        lease, enrolled, state = self._scope()
+        if (capability is not self.__capability or producer is not enrolled
+                or not self._native_site(producer) or type(observation) is not dict
+                or set(observation) != {"enrollment", "path", "rule", "archive_member",
+                    "observed_content_sha256", "observed_file_identity", "scan_serial", "scan_complete"}):
+            return None
+        with state.lock:
+            path = observation.get("path")
+            if type(path) is not str:
+                return None
+            key = os.path.normcase(os.path.abspath(path))
+            control = self.__controls.get(key)
+            if (control is None or control["phase"] != "HELD"
+                    or not self._current(state, producer)
+                    or not RedTeamValidationLease._state_matches(lease)
+                    or observation.get("enrollment") is not control["enrollment"]
+                    or not self.__enrollment_valid(producer, control["enrollment"])
+                    or self._metadata(control["enrollment"]) != control["metadata"]
+                    or observation.get("rule") != control["rule"]
+                    or observation.get("archive_member") != control["archive_member"]
+                    or observation.get("observed_content_sha256") != control["identity"]["sha256"]
+                    or observation.get("scan_complete") is not True
+                    or type(observation.get("scan_serial")) is not int
+                    or observation["scan_serial"] <= 0):
+                return None
+            observed = observation.get("observed_file_identity")
+            if (type(observed) is not dict
+                    or any(observed.get(field) != control["identity"][field] for field in ("device", "inode"))):
+                return None
+            prior = self.__claims.get(control["claim_id"])
+            if prior is not None and prior["phase"] != "CANCELLED_BEFORE_ATTEMPT":
+                return None
+            if len(self.__claims) >= 4096:
+                return None
+            reservation = _YaraObservationReservation(secrets.token_hex(24))
+            now = time.monotonic()
+            self.__claims[reservation.claim_id] = {"reservation": reservation,
+                "key": key, "phase": "OBSERVATION_RESERVED", "revoked": False,
+                "scan_serial": observation["scan_serial"], "metadata": copy.deepcopy(control["metadata"]),
+                "observed_monotonic": now, "expires_monotonic": min(now + 30, state.run_deadline_monotonic),
+                "event_digest": "", "combat_ref": None, "combat_generation": None,
+                "attempt_id": "", "action_id": "", "quarantine": "", "combat_id": ""}
+            control["claim_id"] = reservation.claim_id
+            return reservation
+
+    @staticmethod
+    def _event_binding(claim, details) -> bool:
+        metadata = claim["metadata"]
+        return bool(type(details) is dict
+                    and details.get("yara_control_scan_serial") == claim["scan_serial"]
+                    and all(details.get("yara_control_" + field) == metadata[field]
+                            for field in ("enrollment_id", "compile_input_sha256",
+                                          "recipe_sha256", "source_epoch", "native_version"))
+                    and details.get("producer_generation") == metadata["generation"])
+
+    def seal(self, capability, producer, reservation, event) -> bool:
+        from angerona.core.response_proof import event_proof_digest
+
+        lease, enrolled, state = self._scope()
+        if (capability is not self.__capability or producer is not enrolled
+                or not self._native_site(producer)
+                or type(reservation) is not _YaraObservationReservation or type(event) is not Event):
+            return False
+        with state.lock:
+            claim = self.__claims.get(reservation.claim_id)
+            if (claim is None or claim["reservation"] is not reservation
+                    or claim["phase"] != "OBSERVATION_RESERVED" or claim["revoked"]
+                    or not self._current(state, producer)
+                    or not claim["observed_monotonic"] <= time.monotonic() < claim["expires_monotonic"]
+                    or not RedTeamValidationLease._state_matches(lease)
+                    or not self.__event_valid(producer, event)):
+                return False
+            control = self.__controls[claim["key"]]
+            details = event.details
+            if (type(details) is not dict or event.module != producer.name
+                    or not self._event_binding(claim, details)
+                    or details.get("yara_control_claim_id") != reservation.claim_id
+                    or details.get("path") != control["path"]
+                    or details.get("rule") != control["rule"]
+                    or details.get("archive_member", "") != control["archive_member"]
+                    or details.get("observed_content_sha256") != control["identity"]["sha256"]
+                    or details.get("scan_complete") is not True):
+                return False
+            claim["event_digest"] = event_proof_digest(event)
+            claim["phase"] = "SEALED"
+            return True
+
+    def cancel(self, capability, producer, reservation) -> None:
+        _lease, enrolled, state = self._scope()
+        if (capability is not self.__capability or producer is not enrolled
+                or not self._native_site(producer)
+                or type(reservation) is not _YaraObservationReservation):
+            return
+        with state.lock:
+            claim = self.__claims.get(reservation.claim_id)
+            if claim is None or claim["reservation"] is not reservation:
+                return
+            claim["revoked"] = True
+            if claim["phase"] in {"OBSERVATION_RESERVED", "SEALED"}:
+                claim["phase"] = "CANCELLED_BEFORE_ATTEMPT"
+            # Inline delivery may already have admitted an action. Never reset
+            # RESERVED/BOUND/MOVED, close transaction custody, or grant replay.
+
+    def verify(self, combat, event, *, action=None, pinned=None, restoring=False,
+               _binding=False) -> bool:
+        from angerona.core.response_proof import event_proof_digest
+        from angerona.modules.adversary_combat import AdversaryCombat, CombatAction, _PinnedFileMove
+
+        try:
+            lease, producer, state = self._scope()
+            if (type(event) is not Event or type(combat) is not AdversaryCombat
+                    or type(event.details) is not dict
+                    or type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                    or not -1 <= time.time() - event.ts <= 30):
+                return False
+            digest = event_proof_digest(event)
+            with state.lock:
+                modules = getattr(state.manager, "modules", {})
+                policy = combat.policy()
+                claim = self.__claims.get(event.details.get("yara_control_claim_id"))
+                if (claim is None or claim["revoked"]
+                        or claim["phase"] not in {"SEALED", "RESERVED_FOR_ATTEMPT", "BOUND_TO_ACTION"}
+                        or not self._current(state, producer)
+                        or not claim["observed_monotonic"] <= time.monotonic() < claim["expires_monotonic"]
+                        or claim["event_digest"] != digest
+                        or not self._event_binding(claim, event.details)
+                        or getattr(combat, "_manager", None) is not state.manager
+                        or not isinstance(modules, dict) or modules.get(combat.name) is not combat
+                        or getattr(state.manager, "bus", None) is not state.bus
+                        or getattr(combat, "_bus", None) is not state.bus
+                        or state.data_root != combat.data_root.resolve(strict=False)
+                        or combat.stopping or policy.enabled is not True
+                        or policy.quarantine_files is not True
+                        or getattr(state.module, "_validation_lease", None) is not lease
+                        or not state.bus.verify(event)
+                        or not self.__event_valid(producer, event)):
+                    return False
+                control = self.__controls[claim["key"]]
+                if (not self.__enrollment_valid(producer, control["enrollment"])
+                        or self._metadata(control["enrollment"]) != claim["metadata"]):
+                    return False
+                if claim["phase"] == "SEALED":
+                    return (action is None and pinned is None and not restoring
+                            and RedTeamValidationLease._state_matches(lease))
+                if (claim["combat_ref"] is None or claim["combat_ref"]() is not combat
+                        or claim["combat_generation"] != combat.lifecycle_generation):
+                    return False
+                if type(pinned) is not _PinnedFileMove:
+                    return False
+                identity = control["identity"]
+                expected_pin = action.details.get("quarantine") if restoring and action is not None else control["path"]
+                if (str(pinned.path) != expected_pin or pinned.require_single_link() != 1
+                        or pinned.sha256() != identity["sha256"]):
+                    return False
+                descriptor = pinned.duplicate_custody_descriptor()
+                try:
+                    if _yara_held_identity(descriptor, Path(control["path"])) != identity:
+                        return False
+                finally:
+                    os.close(descriptor)
+                if (type(action) is not CombatAction or action.action != "quarantine_file"
+                        or action.target != control["path"]
+                        or action.details.get("original") != control["path"]
+                        or action.details.get("sha256") != identity["sha256"]):
+                    return False
+                destination = Path(action.details.get("quarantine", ""))
+                if (not destination.is_absolute() or destination.parent.parent != combat.quarantine_root
+                        or destination.parent.name != action.combat_id
+                        or pinned.crosses_volume(destination)):
+                    return False
+                if claim["phase"] == "RESERVED_FOR_ATTEMPT":
+                    return (_binding is True and self._combat_site(combat)
+                            and RedTeamValidationLease._state_matches(lease))
+                bound = bool(claim["action_id"] == action.action_id
+                            and claim["quarantine"] == str(destination)
+                            and claim["combat_id"] == action.combat_id
+                            and action.details.get("yara_control_claim_id") == control["claim_id"]
+                            and action.details.get("yara_control_attempt_id") == claim["attempt_id"])
+                if not bound:
+                    return False
+                if not restoring:
+                    return RedTeamValidationLease._state_matches(lease)
+                if (not self._rollback_site(combat)
+                        or getattr(self.__restoring_local, "ticket", None) is not None):
+                    return False
+                ticket = _YaraRestoringPinTicket(claim["key"], claim["reservation"],
+                    event, combat, action, pinned, threading.get_ident())
+                self.__restoring_local.ticket = ticket
+                try:
+                    return (self._restoring_pin_matches(state, claim["key"], control, claim, ticket)
+                            and RedTeamValidationLease._state_matches(lease))
+                finally:
+                    self.__restoring_local.ticket = None
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def begin(self, combat, event, path):
+        _lease, _producer, state = self._scope()
+        with state.lock:
+            if not self._combat_site(combat) or not self.verify(combat, event):
+                raise RedTeamValidationError("YARA containment admission refused")
+            claim = self.__claims[event.details["yara_control_claim_id"]]
+            control = self.__controls[claim["key"]]
+            if str(Path(os.path.abspath(path))) != control["path"]:
+                raise RedTeamValidationError("YARA containment target changed")
+            descriptor, identity = state.artifact_handles[claim["key"]]
+            if descriptor is None or control["phase"] != "HELD":
+                raise RedTeamValidationError("YARA control custody is not held")
+            claim.update(phase="RESERVED_FOR_ATTEMPT", combat_ref=weakref.ref(combat),
+                         combat_generation=combat.lifecycle_generation, attempt_id=secrets.token_hex(24))
+            control["phase"] = "HANDOFF"
+            state.artifact_handoffs.add(claim["key"])
+            state.artifact_handles[claim["key"]] = (None, identity)
+            try:
+                os.close(descriptor)
+            except OSError:
+                claim["revoked"] = True
+                claim["phase"] = "FAILED_OR_UNCERTAIN"
+                state.artifact_custody_failed = True
+                raise
+            return copy.deepcopy(identity)
+
+    def bind(self, combat, event, action, pinned):
+        _lease, _producer, state = self._scope()
+        with state.lock:
+            if not self.verify(combat, event, action=action, pinned=pinned, _binding=True):
+                raise RedTeamValidationError("YARA containment action binding refused")
+            claim = self.__claims[event.details["yara_control_claim_id"]]
+            claim["action_id"] = action.action_id
+            claim["quarantine"] = action.details["quarantine"]
+            claim["combat_id"] = action.combat_id
+            claim["phase"] = "BOUND_TO_ACTION"
+            return {"yara_control_claim_id": event.details["yara_control_claim_id"],
+                    "yara_control_attempt_id": claim["attempt_id"]}
+
+    def finish(self, combat, event, action, *, succeeded):
+        _lease, _producer, state = self._scope()
+        with state.lock:
+            claim = self.__claims.get(event.details.get("yara_control_claim_id"))
+            if (claim is None or not self._combat_site(combat)
+                    or claim["combat_ref"] is None or claim["combat_ref"]() is not combat
+                    or claim["combat_generation"] != combat.lifecycle_generation
+                    or (claim["action_id"] and (action is None or claim["action_id"] != action.action_id))):
+                return
+            claim["revoked"] = True
+            claim["phase"] = "TERMINAL" if succeeded is True else "FAILED_OR_UNCERTAIN"
+            self.__controls[claim["key"]]["phase"] = claim["phase"]
+
+
+def _build_yara_control_dispatch():
+    captured = _YaraLeaseAuthority.verify
+
+    def verify(lease, combat, event, *, action=None, pinned=None, restoring=False):
+        try:
+            authority = _lease_authority(lease)._yara()
+            return bool(captured(authority, combat, event, action=action,
+                                 pinned=pinned, restoring=restoring))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    return verify
+
+
+verify_yara_control_event = _build_yara_control_dispatch()
+del _build_yara_control_dispatch
+
+
+class _QueuedFileReobservations:
+    """One lease's bounded, non-authorizing before-attempt refresh tickets.
+
+    The small lock protects memory only. It is never held across file/native
+    checks, publication, or callbacks into Combat's admission lock. Original
+    roots remain consumed even when a fresh observation fails or is rejected.
+    """
+
+    __slots__ = ("__lease", "__state", "__lock", "__roots", "__entered", "__queue",
+                 "__seals", "__saturated", "__closed", "__request_site", "__queue_site",
+                 "__producer_site", "__admission_site")
+
+    def __init__(self, lease, state):
+        from angerona.modules.adversary_combat import AdversaryCombat
+        self.__request_site = AdversaryCombat._maybe_reobserve_queued_file.__code__
+        self.__queue_site = AdversaryCombat._run_response_generation.__code__
+        self.__admission_site = AdversaryCombat._submit.__code__
+        self.__producer_site = PurpleGuard.work_cycle.__code__
+        self.__lease = weakref.ref(lease)
+        self.__state = state
+        self.__lock = threading.RLock()
+        self.__roots = {}
+        self.__entered = set()
+        self.__queue = deque()
+        self.__seals = {}
+        self.__saturated = False
+        self.__closed = False
+
+    def _original(self, event):
+        state = self.__state
+        details = getattr(event, "details", {})
+        core = _purple_simulation_receipt_core(details)
+        if (type(event) is not Event or core is None
+                or core["redteam_detector_receipt_version"] != 2
+                or core["receipt_type"] != "purple_simulation_validation"
+                or core["evidence_kind"] != "inert_file_marker"
+                or event.module != state.module.name
+                or core["lease_id"] != state.lease_id
+                or core["receipt_id"] != state.receipt_id
+                or core["run_id"] != state.bound_run_id
+                or not re.fullmatch(r"[0-9a-f]{32}", str(core["event_nonce"]))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(event.hmac_sig))
+                or not state.bus.verify(event)
+                or not hmac.compare_digest(str(details.get("detector_receipt_mac") or ""),
+                    hmac.new(state.key, _canonical_json(core), hashlib.sha256).hexdigest())):
+            return None
+        return core["event_nonce"]
+
+    def _current(self, combat, record):
+        from angerona.modules.adversary_combat import AdversaryCombat
+        state = self.__state
+        modules = getattr(state.manager, "modules", {})
+        return bool(not self.__closed and type(combat) is AdversaryCombat
+            and isinstance(modules, dict) and modules.get(combat.name) is combat
+            and modules.get(state.module.name) is state.module
+            and combat._manager is state.manager and combat._bus is state.bus
+            and combat.data_root == record["data_root"]
+            and combat.lifecycle_generation == record["generation"]
+            and combat.policy() == record["policy"] and record["policy"].enabled
+            and record["policy"].quarantine_files
+            and combat.status == "running" and not combat.stopping
+            and not combat.generation_stop_event().is_set()
+            and not combat._mutation_blocked and not combat._journal_saturated
+            and type(state.module) is PurpleGuard
+            and state.module._validation_lease is self.__lease()
+            and state.module.lifecycle_generation == record["producer_generation"]
+            and state.module.status == "running" and not state.module.stopping
+            and not state.module.generation_stop_event().is_set()
+            and state.module._bus is state.bus
+            and not state.released and state.consumed
+            and not state.artifact_custody_failed
+            and time.monotonic() <= state.run_deadline_monotonic)
+
+    def note_entered(self, combat, event):
+        """A root that ever entered a handler cannot receive a queued retry."""
+        nonce = self._original(event)
+        if nonce is None:
+            return True
+        with self.__lock:
+            if self.__closed or self.__saturated or nonce in self.__roots:
+                return False
+            if len(self.__entered) >= 96 and nonce not in self.__entered:
+                return False
+            self.__entered.add(nonce)
+            return True
+
+    def note_mutation(self, combat, event):
+        # Every real pre-pin file entry shares the same atomic root fence.
+        return self.note_entered(combat, event)
+
+    def request(self, combat, event):
+        """Consume only the canonical queue owner's never-handled aged root."""
+        from angerona.modules.adversary_combat import AdversaryCombat
+        from angerona.core.response_proof import event_proof_digest
+        frame = sys._getframe(1)
+        if (frame.f_code is not self.__request_site
+                or frame.f_locals.get("self") is not combat
+                or frame.f_locals.get("event") is not event
+                or frame.f_back is None
+                or frame.f_back.f_code is not self.__queue_site
+                or frame.f_back.f_locals.get("self") is not combat
+                or frame.f_back.f_locals.get("event") is not event
+                or combat._thread is not threading.current_thread()):
+            return False
+        nonce = self._original(event)
+        if nonce is None:
+            return False
+        if (type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                or time.time() - event.ts < 20):
+            return False
+        state, lease = self.__state, self.__lease()
+        record = {"ticket": object(), "request_id": secrets.token_hex(16),
+            "nonce": nonce, "parent": copy.deepcopy(event),
+            "parent_digest": event_proof_digest(event), "consumer": combat,
+            "generation": combat.lifecycle_generation, "policy": combat.policy(),
+            "data_root": combat.data_root,
+            "producer_generation": state.module.lifecycle_generation,
+            "phase": "RESERVED", "pending": False, "child_hmac": ""}
+        # Historical parent authentication deliberately has no 30-second age
+        # requirement; it grants no new mutation authority.
+        valid = False
+        try:
+            valid = bool(record["data_root"].resolve(strict=False) == state.data_root
+                and self._current(combat, record)
+                and AdversaryCombat._response_actions(event) == frozenset({"quarantine_file"})
+                and verify_validation_purple_event(lease, event,
+                    {"attack_ids": [event.details.get("technique")]})
+                and not any((state.artifact_handles or {}).get(key, (None, {}))[0] is None
+                            for key in (state.artifact_handoffs or ())))
+            # This is the canonical response worker, before any admission or
+            # refresh-memory lock. A short reader overlap can clear before the
+            # same strict journal/anchor/witness proof is read. Busy or cancelled
+            # at the bound still consumes the root as held below.
+            rows, legacy = combat._read_journal(strict=True, wait_for_response_worker=True)
+            if legacy:
+                valid = False
+            known = set()
+            for row in rows:
+                if row.get("record_type") in {"intent", "commit", "action", "orphan"}:
+                    binding = row.get("details")
+                    trigger = binding.get("aar_trigger_event_digest") if isinstance(binding, dict) else None
+                    if not isinstance(trigger, str) or not re.fullmatch(r"[0-9a-f]{64}", trigger):
+                        valid = False  # Ambiguous older accounting is not no-effect proof.
+                    elif trigger == event.hmac_sig:
+                        valid = False
+                    known.add(row.get("action_id"))
+                elif row.get("action_id") not in known:
+                    valid = False
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            valid = False
+        # All expensive proof work is finished before bounded admission memory
+        # transitions. Native entry and refresh reserve race on __lock once.
+        with combat._admission_lock:
+            if combat._admitted_identities.get(id(event)) != combat._submission_identity(event):
+                return False
+            with self.__lock:
+                if nonce in self.__roots:
+                    return True
+                if len(self.__roots) >= 96:
+                    self.__saturated = True
+                    combat._response_counts["file_reobservation_held"] = combat._response_counts.get("file_reobservation_held", 0) + 1
+                    combat._last_response_decision = "file_reobservation_held"
+                    return True
+                self.__roots[nonce] = record  # Lifetime tombstone, never evicted.
+                key = os.path.normcase(str(event.details.get("path") or ""))
+                record["key"] = key
+                record["identity"] = copy.deepcopy((state.artifact_handles or {}).get(key, (None, {}))[1])
+                if (not valid or nonce in self.__entered or not self._current(combat, record)
+                        or any((state.artifact_handles or {}).get(held_key, (None, {}))[0] is None
+                               for held_key in (state.artifact_handoffs or ()))
+                        or len(self.__queue) >= 8
+                        or any(other is not record and other.get("key") == key
+                               for other in self.__roots.values())):
+                    record["phase"] = "HELD"
+                    combat._response_counts["file_reobservation_held"] = combat._response_counts.get("file_reobservation_held", 0) + 1
+                    combat._last_response_decision = "file_reobservation_held"
+                    return True
+                record["pending"] = True
+                combat._file_reobservations_pending[record["ticket"]] = (record["generation"], self)
+                self.__queue.append(record)
+        state.module._process_wake.set()
+        return True
+
+    def _terminal(self, record, phase):
+        # Caller must not hold __lock: callbacks always take admission first.
+        combat = record["consumer"]
+        with combat._admission_lock:
+            with self.__lock:
+                if not record["pending"]:
+                    return
+                record["phase"] = phase
+                record["pending"] = False
+                # Old-generation cleanup removes this exact opaque old ticket;
+                # generation mismatch never grants admission or touches a new one.
+                combat._file_reobservations_pending.pop(record["ticket"], None)
+        combat._response_decision("file_reobservation_held" if phase == "HELD" else "file_reobservation_cancelled")
+
+    def verify_event(self, combat, event, *, historical=False, admission=False,
+                     _original_impl=None, _current_impl=None):
+        if (type(self) is not _QueuedFileReobservations
+                or _original_impl is None or _current_impl is None):
+            return False
+        details = getattr(event, "details", {})
+        core = _purple_simulation_receipt_core(details)
+        if core is None:
+            return False
+        if core["redteam_detector_receipt_version"] == 2:
+            nonce = _original_impl(self, event)
+            with self.__lock:
+                return bool(nonce is not None and (historical or (not self.__closed and not self.__saturated and nonce not in self.__roots)))
+        if core["redteam_detector_receipt_version"] != 3:
+            return False
+        from angerona.core.response_proof import event_proof_digest
+        with self.__lock:
+            seal = self.__seals.get(core.get("reobservation_request_id"))
+            if (seal is None or core != seal["core"]
+                    or event.module != self.__state.module.name
+                    or details.get("path") != seal["path"]
+                    or details.get("artifact_path") != seal["path"]
+                    or details.get("response_authorized") is not True
+                    or details.get("response_contract") != {"version": 1,
+                        "actions": ["quarantine_file"], "targets": {"path": seal["path"]}}
+                    or not self.__state.bus.verify(event)
+                    or not hmac.compare_digest(str(details.get("detector_receipt_mac") or ""),
+                        hmac.new(self.__state.key, _canonical_json(core), hashlib.sha256).hexdigest())):
+                return False
+            record = seal["record"]
+            if (_original_impl(self, record["parent"]) != record["nonce"]
+                    or event_proof_digest(record["parent"]) != core["reobservation_parent_sha256"]
+                    or record["parent"].hmac_sig != core["reobservation_parent_hmac"]
+                    or record["nonce"] != core["reobservation_root_nonce"]):
+                return False
+            if historical:
+                return bool(record["child_hmac"] == event.hmac_sig
+                    and seal.get("event_digest") == event_proof_digest(event))
+            if (not _current_impl(self, combat, record)
+                    or time.monotonic() > seal["expires"]
+                    or type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                    or not -1 <= time.time() - event.ts <= 30):
+                return False
+            if admission and record["phase"] == "SEALED" and record["pending"]:
+                return True
+            return bool(record["phase"] == "ADMITTED"
+                and record["child_hmac"] == event.hmac_sig
+                and seal.get("event_digest") == event_proof_digest(event))
+
+    def acknowledge(self, combat, event):
+        """Called under admission only AFTER the actual signed child was put."""
+        from angerona.core.response_proof import event_proof_digest
+        frame = sys._getframe(1)
+        if (frame.f_code is not self.__admission_site
+                or frame.f_locals.get("self") is not combat
+                or frame.f_locals.get("event") is not event
+                or combat._admitted_identities.get(id(event)) != combat._submission_identity(event)
+                or not verify_queued_file_event(self.__lease(), combat, event, admission=True)):
+            return False
+        request_id = event.details["reobservation_request_id"]
+        with self.__lock:
+            seal = self.__seals[request_id]
+            record = seal["record"]
+            if (record["phase"] != "SEALED" or not record["pending"]
+                    or record["ticket"] not in combat._file_reobservations_pending):
+                return False
+            record["child_hmac"] = event.hmac_sig
+            seal["event_digest"] = event_proof_digest(event)
+            record["phase"] = "ADMITTED"
+            record["pending"] = False
+            combat._file_reobservations_pending.pop(record["ticket"], None)
+            return True
+
+    def process(self, producer):
+        """Existing producer thread performs a NEW exact-target native read."""
+        state, lease = self.__state, self.__lease()
+        if (producer is not state.module or producer._thread is not threading.current_thread()
+                or sys._getframe(1).f_code is not self.__producer_site):
+            return 0
+        hits = 0
+        # One cycle is bounded by the admitted queue size; no new polling worker.
+        for _ in range(8):
+            with self.__lock:
+                if not self.__queue:
+                    break
+                record = self.__queue.popleft()
+                if record["phase"] != "RESERVED" or not record["pending"]:
+                    continue
+                record["phase"] = "OBSERVING"
+            try:
+                combat = record["consumer"]
+                parent = record["parent"]
+                path = Path(parent.details["path"])
+                observed = time.monotonic()  # Conservative, BEFORE all native/read work.
+                if not self._current(combat, record):
+                    continue
+                with state.lock:
+                    with state.marker_move_lock:
+                        classified = classify_marker(path)
+                        if (classified is None or classified[0] != parent.details["technique"]
+                                or classified[0] not in producer._policy_snapshot()
+                                or not self._current(combat, record)
+                                or not RedTeamValidationLease._state_matches(lease)
+                                or RedTeamValidationLease._validated_artifact_identity(state, str(path))
+                                   != record["identity"]):
+                            continue
+                        # This performs its own fresh held/native read and creates
+                        # a new nonce and observation time. No old payload is signed.
+                        fresh = RedTeamValidationLease.attest_purple_detection(lease, producer,
+                            technique=classified[0], observed_target=str(path),
+                            evidence_kind="inert_file_marker")
+                        if (not fresh or fresh.get("event_nonce") == record["nonce"]
+                                or not self._current(combat, record)):
+                            continue
+                        core = {field: fresh[field] for field in _PURPLE_RECEIPT_V2_FIELDS}
+                        core.update(redteam_detector_receipt_version=3,
+                            reobservation_parent_hmac=parent.hmac_sig,
+                            reobservation_parent_sha256=record["parent_digest"],
+                            reobservation_root_nonce=record["nonce"],
+                            reobservation_request_id=record["request_id"],
+                            reobservation_attempt=1,
+                            reobservation_combat_generation=record["generation"],
+                            reobservation_combat_policy_sha256=_sha256(asdict(record["policy"])))
+                        # Keep ordinary polling dedup intact for this same file;
+                        # a child must not induce a new v2 root on the next scan.
+                        producer._seen.add((str(path.resolve()),
+                            record["identity"]["mtime_ns"], record["identity"]["size"]))
+                        expires = min(observed + 30.0, state.run_deadline_monotonic)
+                        if time.monotonic() > expires:
+                            continue
+                        with self.__lock:
+                            if record["phase"] != "OBSERVING" or not record["pending"]:
+                                continue
+                            self.__seals[record["request_id"]] = {"record": record,
+                                "core": copy.deepcopy(core), "path": str(path),
+                                "observed": observed, "expires": expires}
+                            record["phase"] = "SEALED"
+                        receipt = {**core, "detector_receipt_mac": hmac.new(state.key,
+                            _canonical_json(core), hashlib.sha256).hexdigest()}
+                # EventBus signs a detached copy. Actual _submit admission binds
+                # its HMAC only after queue.put; publication never holds issuer lock.
+                if not self._current(combat, record) or time.monotonic() > expires:
+                    continue
+                practice_id = _practice_id_from_marker(path)
+                producer.emit("Purple Guard freshly re-observed an aged queued drill target.",
+                    Severity.HIGH, path=str(path), artifact_path=str(path), mitre=classified[0],
+                    drill_target=str(state.target), detector_policy="reviewed-redteam-candidate",
+                    response_authorized=True, response_contract={"version": 1,
+                        "actions": ["quarantine_file"], "targets": {"path": str(path)}},
+                    **({"practice_verification_id": practice_id} if practice_id else {}), **receipt)
+                with self.__lock:
+                    admitted = record["phase"] == "ADMITTED"
+                if admitted:
+                    producer.detected += 1
+                    hits += 1
+            except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+                pass  # Terminal held accounting below retains no success claim.
+            finally:
+                self._terminal(record, "HELD")
+        return hits
+
+    def revoke_queued(self):
+        """Withdraw never-started producer work; observing work retires itself."""
+        with self.__lock:
+            self.__closed = True
+            records = tuple(self.__queue)
+            self.__queue.clear()
+            for record in records:
+                record["phase"] = "CANCELLED"
+        for record in records:
+            self._terminal(record, "CANCELLED")
+
+    def cancel(self, producer):
+        """Owner-thread retirement; never drop in-flight pending on a timeout."""
+        if producer is not self.__state.module or producer._thread is not threading.current_thread():
+            return
+        with self.__lock:
+            self.__closed = True
+            self.__queue.clear()
+            records = tuple(row for row in self.__roots.values() if row["pending"])
+        for record in records:
+            self._terminal(record, "CANCELLED")
+
+
+def _build_queued_file_dispatch():
+    # Capture grant-sensitive helpers as well as the outer verifier: reachable
+    # instance/class method replacements cannot redirect the mandatory proof.
+    captured = _QueuedFileReobservations.verify_event
+    original = _QueuedFileReobservations._original
+    current = _QueuedFileReobservations._current
+
+    def verify(lease, combat, event, *, historical=False, admission=False):
+        try:
+            authority = _lease_authority(lease)._queued_files(lease, create=False)
+            return bool(captured(authority, combat, event,
+                historical=historical, admission=admission,
+                _original_impl=original, _current_impl=current))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    return verify
+
+
+verify_queued_file_event = _build_queued_file_dispatch()
+del _build_queued_file_dispatch
 
 
 def _build_validation_dispatch() -> tuple[object, object, object, object]:
@@ -3996,7 +5375,15 @@ class PurpleGuard(BaseModule):
         with self._validation_cycle:
             if expected is not None and self._validation_lease is not expected:
                 return
+            old_lease = self._validation_lease
             self._validation_lease = lease
+        if old_lease is not None and old_lease is not lease:
+            try:
+                authority = _lease_authority(old_lease)._queued_files(old_lease, create=False)
+            except RedTeamValidationError:
+                authority = None
+            if authority is not None:
+                authority.revoke_queued()
 
     def _reserve_validation_lease(self, lease: RedTeamValidationLease) -> None:
         """Atomically reserve this detector for one pending simulation."""
@@ -4364,7 +5751,14 @@ class PurpleGuard(BaseModule):
         faster and makes every check in the cycle observe one policy version.
         """
         policy = self._policy_snapshot()
-        file_hits = self.scan_once(policy)
+        lease = self._validation_lease
+        try:
+            authority = (_lease_authority(lease)._queued_files(lease, create=False)
+                         if lease is not None else None)
+        except RedTeamValidationError:
+            authority = None  # Missing/retired registry supplies no fresh proof.
+        fresh_hits = authority.process(self) if authority is not None else 0
+        file_hits = fresh_hits + self.scan_once(policy)
         process_hits = self.scan_process_once(policy)
         with self._validation_cycle:
             self._validation_cycle_serial += 1
@@ -4427,26 +5821,36 @@ class PurpleGuard(BaseModule):
         if self._bus is not None:
             self._bus.subscribe(self._capture_process_event)
             self._process_subscription_active = True
-        while not self.stopping:
-            # Clear before the scan. Evidence racing with the clear is already
-            # in the retained queue and is consumed by this work cycle; evidence
-            # arriving during/after the scan leaves the event set and wakes the
-            # next cycle immediately.
-            self._process_wake.clear()
-            _file_hits, _process_hits, count = self.work_cycle()
-            self._update_policy_health(count)
-            if count:
-                # The reviewed file policy keeps its one-second cadence, but a
-                # nonce-tagged native process receipt must wake the detector
-                # immediately rather than landing just after a scan and waiting
-                # a full interval before its lease-bound promotion.
-                self._wait_for_process_evidence(1.0)
-                continue
-            # Idle file evidence remains on the low-cost five-second cadence,
-            # while an exact process receipt wakes the module immediately. Small
-            # stop-aware slices preserve responsive stop/restart semantics and
-            # the explicit watchdog deadline without rescanning four times/sec.
-            self._wait_for_process_evidence(5.0)
+        try:
+            while not self.stopping:
+                # Clear before the scan. Evidence racing with the clear is already
+                # in the retained queue and is consumed by this work cycle; evidence
+                # arriving during/after the scan leaves the event set and wakes the
+                # next cycle immediately.
+                self._process_wake.clear()
+                _file_hits, _process_hits, count = self.work_cycle()
+                self._update_policy_health(count)
+                if count:
+                    # The reviewed file policy keeps its one-second cadence, but a
+                    # nonce-tagged native process receipt must wake the detector
+                    # immediately rather than landing just after a scan and waiting
+                    # a full interval before its lease-bound promotion.
+                    self._wait_for_process_evidence(1.0)
+                    continue
+                # Idle file evidence remains on the low-cost five-second cadence,
+                # while an exact process receipt wakes the module immediately. Small
+                # stop-aware slices preserve responsive stop/restart semantics and
+                # the explicit watchdog deadline without rescanning four times/sec.
+                self._wait_for_process_evidence(5.0)
+        finally:
+            lease = self._validation_lease
+            try:
+                authority = (_lease_authority(lease)._queued_files(lease, create=False)
+                             if lease is not None else None)
+            except RedTeamValidationError:
+                authority = None
+            if authority is not None:
+                authority.cancel(self)
 
     def self_test(self) -> tuple[bool, str]:
         import tempfile

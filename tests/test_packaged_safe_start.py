@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -25,7 +26,8 @@ def compile_source(source: str, output: Path, *, main=None):
         "mscorlib.dll", "System.dll", "System.Core.dll", "System.Windows.Forms.dll", "System.Drawing.dll")]
     if main:
         args.append("/main:" + main)
-    result = subprocess.run([*args, str(path)], cwd=output.parent, capture_output=True, text=True, timeout=45, check=False)
+    result = subprocess.run([*args, str(path)], cwd=output.parent, capture_output=True, text=True, timeout=45, check=False,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 0, result.stdout + result.stderr
 
 
@@ -48,16 +50,26 @@ internal static class FixtureStartup {
     environment = dict(os.environ, PSModulePath="", TEMP=str(tmp_path), TMP=str(tmp_path))
     result = subprocess.run([str(POWERSHELL), "-NoLogo", "-NoProfile", "-NonInteractive", "-File",
                              str(ROOT / "tools/build_packaged_safe_start.ps1"), "-PayloadRoot", str(root)],
-                            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60, check=False)
+                            cwd=ROOT, env=environment, capture_output=True, text=True, timeout=60, check=False,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 0, result.stdout + result.stderr
     assert (root / "AngeronaSafeStart.exe").is_file()
     assert not list(root.glob(".safe-start-build.*"))
+    assert not list(root.glob(".ss.*"))
+    workspace = Path(json.loads(result.stdout)["build_workspace"])
+    assert workspace.is_absolute() and workspace.drive.casefold() == root.drive.casefold()
+    assert workspace.parent in (root, *root.parents)
+    assert workspace.name.startswith(".ss.") and len(workspace.name) == 36
+    assert all(char in "0123456789abcdef" for char in workspace.name[4:])
+    assert len(str(workspace / ("CSC" + "0" * 32 + ".TMP")).encode("utf-16-le")) // 2 + 1 <= 260
+    assert not workspace.exists()
     return root
 
 
 def verify(root):
     return subprocess.run([str(root / "AngeronaSafeStart.exe"), "--verify-bootstrap"], cwd=root,
-                          capture_output=True, text=True, timeout=20, check=False)
+                          capture_output=True, text=True, timeout=20, check=False,
+                          creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
 def test_built_native_entry_verifies_pinned_helper_without_launching_it(payload):
@@ -98,7 +110,8 @@ def harness(payload, tmp_path, body):
     source += "string root=args[0];\n" + body + "\nreturn 0; } } }\n"
     target = tmp_path / "NativeHarness.exe"
     compile_source(source, target, main="Angerona.SafeStart.TestHarness")
-    result = subprocess.run([str(target), str(payload)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False)
+    result = subprocess.run([str(target), str(payload)], cwd=tmp_path, capture_output=True, text=True, timeout=30, check=False,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 0, result.stdout + result.stderr
 
 

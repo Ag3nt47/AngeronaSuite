@@ -136,7 +136,7 @@ def test_single_module_inspector_reports_skip_without_a_false_pass(monkeypatch):
     assert not passed and detail.startswith("SKIP:")
 
 
-def test_chill_during_startup_stops_exact_owned_child(monkeypatch):
+def test_chill_during_startup_stops_root_but_retains_unproved_descendants(monkeypatch):
     config = SimpleNamespace()
     stopped = []
     child = SimpleNamespace(poll=lambda: 0 if stopped else None,
@@ -151,7 +151,9 @@ def test_chill_during_startup_stops_exact_owned_child(monkeypatch):
     result = lifecycle.ensure_ollama_service()
     assert result.state == "blocked"
     assert stopped == ["owned"]
-    assert lifecycle._owned_services == {}
+    assert tuple(lifecycle._owned_services.values()) == (child,)
+    outcome = lifecycle.ollama_retirement_snapshot()
+    assert not outcome["complete"] and not outcome["records"][0]["job_empty"]
 
 
 def test_enter_chill_stops_retained_child_without_process_discovery(monkeypatch):
@@ -165,7 +167,8 @@ def test_enter_chill_stops_retained_child_without_process_discovery(monkeypatch)
         return {"models": []}
     monkeypatch.setattr(lifecycle, "_json_request", resident_list)
     assert lifecycle.unload_angerona_models() == []
-    assert stopped == ["owned"] and lifecycle._owned_services == {}
+    assert stopped == ["owned"] and tuple(lifecycle._owned_services.values()) == (child,)
+    assert not lifecycle.ollama_retirement_snapshot()["complete"]
 
 
 def test_failed_startup_retry_cannot_spawn_more_children_before_exit(monkeypatch):
@@ -197,17 +200,22 @@ def test_failed_startup_retry_cannot_spawn_more_children_before_exit(monkeypatch
     set_chill_ai_blocked(SimpleNamespace(), True)
     deny_termination[0] = False
     lifecycle.stop_owned_ollama_services()
-    assert released == ["first"] and lifecycle._owned_services == {}
+    assert released == ["first"] and len(lifecycle._owned_services) == 1
+    set_chill_ai_blocked(SimpleNamespace(), False)
+    assert lifecycle.ensure_ollama_service().state == "failed"
+    assert len(lifecycle._owned_services) == 1
 
 
-def test_release_retains_and_stops_multiple_exact_owned_handles():
+def test_release_stops_multiple_roots_and_retains_unproved_descendants():
     released = []
     for name in ("first", "second"):
         child = SimpleNamespace(poll=lambda label=name: 0 if label in released else None,
                                 terminate=lambda label=name: released.append(label))
         lifecycle._owned_services[("http://127.0.0.1:11434", id(child))] = child
     lifecycle.stop_owned_ollama_services()
-    assert released == ["first", "second"] and lifecycle._owned_services == {}
+    assert released == ["first", "second"] and len(lifecycle._owned_services) == 2
+    outcome = lifecycle.ollama_retirement_snapshot()
+    assert not outcome["complete"] and all(not row["job_empty"] for row in outcome["records"])
 
 
 def test_termination_without_observed_exit_keeps_custody():
@@ -220,7 +228,7 @@ def test_termination_without_observed_exit_keeps_custody():
     assert calls == ["requested"] and lifecycle._owned_services[key] is child
 
 
-def test_confirmed_owned_stop_invalidates_cached_ready_status():
+def test_unproved_descendant_stop_holds_cached_ready_status():
     host = "http://127.0.0.1:11434"
     attempt = lifecycle._StartupAttempt()
     attempt.status = lifecycle.OllamaStartupStatus("ready", "Service ready", 100, daemon_ready=True)
@@ -232,4 +240,5 @@ def test_confirmed_owned_stop_invalidates_cached_ready_status():
     lifecycle._owned_services[(host, id(child))] = child
     lifecycle.stop_owned_ollama_services()
     status = lifecycle.startup_snapshot(host)
-    assert status.state == "idle" and not status.daemon_ready and status.percent == 0
+    assert status.state == "held" and not status.daemon_ready and status.percent == 0
+    assert len(lifecycle._owned_services) == 1

@@ -57,16 +57,22 @@ def test_canonical_launcher_refuses_an_unreviewed_existing_venv_before_launch():
     canonical = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
     supervisor = (ROOT / "tools" / "Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
 
-    abi_gate = supervisor.index(
+    startup_pass = supervisor.split("function Invoke-SourceStartupPass(", 1)[1].split("\nfunction ", 1)[0]
+    lease = startup_pass.index("Enter-RepairLease -Root $Root")
+    abi_gate = startup_pass.index(
         "sys.version_info[:2] == (3, 12) and "
         "sysconfig.get_platform() == 'win-amd64'"
     )
-    pip_gate = supervisor.index("m.version('pip') == '26.2.2'")
-    dependency_preflight = supervisor.index("Join-Path $Root 'tools\\source_trust_preflight.py'")
-    launch = supervisor.index("return Invoke-SourceStartupAssistant")
+    pip_gate = startup_pass.index("m.version('pip') == '26.2.2'")
+    dependency_preflight = startup_pass.index("Join-Path $Root 'tools\\source_trust_preflight.py'")
+    setup_probe = startup_pass.index("'-m', 'angerona.startup', '--check-only'")
+    launch = startup_pass.index("$code=Invoke-SourceStartupAssistant @assistantCall")
+    release = startup_pass.index("finally { Exit-RepairLease -Lease $lease }")
 
-    assert abi_gate < pip_gate < dependency_preflight < launch
-    assert "Enter-RepairLease -Root $Root" in supervisor
+    assert lease < abi_gate < pip_gate < dependency_preflight < setup_probe < launch < release
+    assert "if ($code -ne 0) { if ($code -eq 81) { return 81 }; return 85 }" in startup_pass[abi_gate:pip_gate]
+    assert "if ($code -ne 0) { if ($code -eq 82) { return 82 }; return 85 }" in startup_pass[pip_gate:dependency_preflight]
+    assert "if ($code -ne 0) { return 85 }" in startup_pass[dependency_preflight:setup_probe]
     # The mutable supervisor is reached only through the embedded pinned
     # bootstrap and its byte-verified recovery-bundle boundary.
     verifier = (ROOT / "tools" / "verify_startup_recovery_bundle.ps1").read_text(encoding="utf-8")

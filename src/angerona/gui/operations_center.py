@@ -11,7 +11,6 @@ from angerona.gui.presentation_timer import PresentationTimer
 
 import json
 import platform
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -281,6 +280,9 @@ class OperationsCenterDialog(QDialog):
         self.callbacks = dict(callbacks or {})
         self._tasks: set[str] = set()
         self._task_loading: dict[str, str] = {}
+        self._task_workers = {}
+        self._local_task_handles = {}
+        self._refresh_activity = None
         self._hunt_rows: tuple[Any, ...] = ()
         self._has_refreshed = False
         self._refresh_paused = False
@@ -293,6 +295,10 @@ class OperationsCenterDialog(QDialog):
         self.task_done.connect(self._finish_task)
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self, publish_global=False)
+        self.progress_view = ActionProgressView(self._activities, self, config=getattr(service, "config", None))
+        root.addWidget(self.progress_view)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(10)
         heading = QHBoxLayout()
@@ -309,7 +315,7 @@ class OperationsCenterDialog(QDialog):
         self.busy.setStyleSheet("color:#fbbf24")
         heading.addWidget(self.busy)
         refresh = QPushButton("↻ Refresh")
-        refresh.clicked.connect(self.refresh_all)
+        refresh.clicked.connect(lambda: self.refresh_all(user_requested=True))
         heading.addWidget(refresh)
         root.addLayout(heading)
 
@@ -325,7 +331,7 @@ class OperationsCenterDialog(QDialog):
         self.tabs.addTab(self._build_detections(), "Detection Content")
         self.fleet_center = FleetCenterWidget(
             service.fleet_fabric, self, auto_refresh=False,
-            refresh_request=self.refresh_all,
+            refresh_request=lambda: self.refresh_all(user_requested=True),
         )
         fleet_error = service.program_errors.get("fleet_fabric")
         if fleet_error:
@@ -340,7 +346,7 @@ class OperationsCenterDialog(QDialog):
         )
         self.detection_forge = DetectionForgeWidget(
             self.detection_forge_service, self, auto_refresh=False,
-            refresh_request=self.refresh_all,
+            refresh_request=lambda: self.refresh_all(user_requested=True),
         )
         governance_error = service.program_errors.get("detection_governance")
         if governance_error:
@@ -766,26 +772,46 @@ class OperationsCenterDialog(QDialog):
         self._task_loading[name] = begin_loading(
             f"Retrieving {name.replace('-', ' ')} information…"
         )
+        self._local_task_handles[name] = self._activities.begin(name, "Working locally: " + name.replace("-", " ") + "…", replace=True)
         self.busy.setText("Working locally: " + ", ".join(sorted(self._tasks)))
 
-        def work() -> None:
-            try:
-                result = function()
-                error = ""
-            except Exception as exc:  # surfaced on GUI thread
-                result = None
-                error = f"{type(exc).__name__}: {exc}"
-            self.task_done.emit(name, result, error)
+        from angerona.gui.action_worker import start_finite_action
+        try:
+            worker = start_finite_action(lambda _owner: function(), name=f"angerona-soc-{name}", finished=self._task_retired)
+        except Exception as error:
+            self._finish_task(name, None, "Worker could not start: " + type(error).__name__)
+            return
+        if worker is None:
+            self._finish_task(name, None, "Finite action admission is held while Angerona stops or eight owned actions are active.")
+            return
+        self._task_workers[worker] = name
+        if getattr(worker, "admission_error", ""):
+            self._activities.finish(self._local_task_handles.pop(name, None))
+            finish_loading(self._task_loading.pop(name, None))
+            self.busy.setText("Action launch failed; its exact native owner is retained because retirement is unproved.")
 
-        threading.Thread(target=work, name=f"angerona-soc-{name}", daemon=True).start()
+    def _task_retired(self):
+        worker = self.sender()
+        name = self._task_workers.pop(worker, None)
+        if name is not None:
+            self._finish_task(name, *worker.outcome)
 
     def _finish_task(self, name: str, result: object, error: str) -> None:
+        self._activities.finish(self._local_task_handles.pop(name, None))
         self._tasks.discard(name)
         finish_loading(self._task_loading.pop(name, None))
         self.busy.setText(
             "Working locally: " + ", ".join(sorted(self._tasks)) if self._tasks else "")
         if error:
-            QMessageBox.warning(self, "Local SOC", error)
+            notice = getattr(self, "_task_notice", None)
+            if notice is None:
+                notice = self._task_notice = QMessageBox(self)
+                notice.setStandardButtons(QMessageBox.StandardButton.Close)
+                notice.setWindowModality(Qt.WindowModality.NonModal)
+                notice.setTextFormat(Qt.TextFormat.PlainText)
+            notice.setWindowTitle("Local SOC action needs review")
+            notice.setText(str(error)[:1600])
+            notice.show()
             return
         if name == "hunt":
             self._show_hunt_result(result)
@@ -804,9 +830,11 @@ class OperationsCenterDialog(QDialog):
             )
         self.refresh_all()
 
-    def refresh_all(self) -> None:
+    def refresh_all(self, *, user_requested=False) -> None:
         """Coalesce refreshes; audit verification and store reads never run on Qt."""
         if not self._refresh_paused:
+            if user_requested:
+                self._refresh_activity = self._activities.begin("manual-refresh", "Refreshing local SOC evidence and integrity views…")
             self._flow_reader.request(invalidate=True)
 
     def _prepare_flow_snapshot(self):
@@ -844,6 +872,9 @@ class OperationsCenterDialog(QDialog):
         return read
 
     def _flow_snapshot_status(self, state: str) -> None:
+        if state in {"current", "unavailable"}:
+            self._activities.finish(self._refresh_activity)
+            self._refresh_activity = None
         if state == "current":
             self.boundary.setText("● LOCAL ONLY  ·  NO REMOTE SHELL  ·  SIGNED DETECTIONS")
             self.boundary.setStyleSheet("color:#34d399")
@@ -914,7 +945,7 @@ class OperationsCenterDialog(QDialog):
                         "no trusted local exposure provider has bound a snapshot"
                     )
                 else:
-                    self.aegis_path.set_snapshot(snapshot)
+                    self.aegis_path.set_snapshot(snapshot, user_requested=self._refresh_activity is not None)
                 self._aegis_digest = digest
             self._refresh_parity(result["parity"], result["osquery"])
             self._refresh_audit(result["audit_records"])
@@ -1332,6 +1363,7 @@ class OperationsCenterDialog(QDialog):
             self.refresh_all()
 
     def closeEvent(self, event) -> None:
+        self._activities.close()
         self.deck.stop()
         self._refresh_paused = True
         self._flow_reader.pause()

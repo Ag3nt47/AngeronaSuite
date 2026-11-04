@@ -88,7 +88,7 @@ def test_build_launch_requires_exact_reviewed_digest_and_retains_custody(
     )
     monkeypatch.setattr(
         "angerona.core.privilege.sanitized_child_environment",
-        lambda **_kwargs: {"SystemRoot": str(system.parent), "PYTHONNOUSERSITE": "1"},
+        lambda _allowlist=None, **_kwargs: {"SystemRoot": str(system.parent), "PYTHONNOUSERSITE": "1"},
     )
 
     launches: list[tuple[list[str], dict]] = []

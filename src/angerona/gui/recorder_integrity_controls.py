@@ -30,6 +30,11 @@ class RecorderIntegrityControls(QGroupBox):
         self._detached = False
         self._fields = {}
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._identity_activity = None
+        self.progress_view = ActionProgressView(self._activities, self, config=config)
+        layout.addWidget(self.progress_view)
         self.status = QLabel()
         self.status.setTextFormat(Qt.PlainText)
         self.status.setWordWrap(True)
@@ -115,7 +120,8 @@ class RecorderIntegrityControls(QGroupBox):
     def _request_identity(self):
         if self._enrollment is not None:
             try:
-                self._enrollment.request()
+                if self._enrollment.request() is True:
+                    self._identity_activity = self._activities.begin("public-identity", "Resolving protected public enrollment identity…")
             except Exception:
                 pass  # The retained owner publishes its sticky failure state.
             self._refresh_identity()
@@ -134,6 +140,9 @@ class RecorderIntegrityControls(QGroupBox):
             self._identity_status.setText("Open these controls from the running dashboard to enroll its owned profile.")
             return
         snapshot = self._enrollment.latest_status()
+        if snapshot.state != "running":
+            self._activities.finish(self._identity_activity)
+            self._identity_activity = None
         self._identity_button.setEnabled(snapshot.state not in {"running", "stopped", "retirement-held"})
         if snapshot.revision == self._identity_revision:
             return
@@ -173,6 +182,8 @@ class RecorderIntegrityControls(QGroupBox):
             setattr(candidate, name, value)
 
     def shutdown_reader(self):
+        self._activities.close()
+        self._identity_activity = None
         self._detached = True
         self._timer.stop()
         # Detach presentation only. The runtime retains any credential task

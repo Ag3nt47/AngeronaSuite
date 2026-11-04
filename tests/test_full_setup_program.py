@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from angerona.core.config import Config
+from angerona.core.config import (
+    Config,
+    SCANNER_REPORT_COUNT_MAX,
+    SCANNER_REPORT_COUNT_UNLIMITED,
+    SPYWARE_SCAN_AUTO_SCOPES,
+)
 from angerona.gui.setup_wizard import (
     CONFIG_KINDS,
     SETUP_PROFILES,
@@ -286,6 +291,7 @@ def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> Non
         "spyware_beacon_enabled", "spyware_beacon_channel", "spyware_beacon_signal",
         "spyware_research_urls",
         "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
+        "spyware_scan_auto_enabled", "spyware_scan_auto_scope",
         "spyware_scan_priority", "spyware_scan_timeout_seconds", "spyware_scan_cpu_percent",
         "spyware_scan_memory_mib", "spyware_scan_background_percent",
         "spyware_scan_verify_admin",
@@ -297,12 +303,22 @@ def test_full_setup_maps_spyware_and_ugcap_to_dedicated_opt_in_sections() -> Non
     } | WITNESS_DEFAULTS.keys()
     defaults = _default_values()
     assert defaults["spyware_research_urls"] == []
+    assert defaults["spyware_scan_auto_enabled"] is True
+    assert defaults["spyware_scan_auto_scope"] == "full"
+    auto_scan = next(field for field in spyware.fields if field.key == "spyware_scan_auto_enabled")
+    auto_scope = next(field for field in spyware.fields if field.key == "spyware_scan_auto_scope")
+    assert auto_scan.kind == "check"
+    assert auto_scope.kind == "combo" and auto_scope.options == SPYWARE_SCAN_AUTO_SCOPES
     scan_budget = next(field for field in spyware.fields if field.key == "spyware_scan_timeout_seconds")
     toolkit_budget = next(field for step in STEPS for field in step.fields if field.key == "github_tools_timeout_seconds")
     assert (scan_budget.minimum, scan_budget.maximum) == (30, 14400)
     assert (toolkit_budget.minimum, toolkit_budget.maximum) == (30, 900)
     assert defaults["spyware_scan_timeout_seconds"] == 3600
     assert defaults["github_tools_timeout_seconds"] == 300
+    assert defaults["github_tools_report_count"] == SCANNER_REPORT_COUNT_UNLIMITED
+    report_count = next(field for step in STEPS for field in step.fields if field.key == "github_tools_report_count")
+    assert report_count.kind == "spin"
+    assert (report_count.minimum, report_count.maximum) == (0, SCANNER_REPORT_COUNT_MAX)
     assert "Spyware Scan" in scan_budget.label and "Standalone toolkit" in toolkit_budget.label
     assert defaults["spyware_auto_contain"] is defaults["ugcap_lockdown"] is True
     assert defaults["ugcap_cadence_hours"] == 168
@@ -405,7 +421,8 @@ def test_runtime_exposes_full_setup_but_migration_wrapper_never_launches_it() ->
     assert "CreateAppDir=no" in installer
     assert "Install-Angerona-Release.ps1" in installer
     assert '"--setup" in sys.argv' in entrypoint
-    assert 'arg not in {"--setup", "--chill", "--live-debug"}' in entrypoint
+    assert 'arg not in {"--setup",' in entrypoint
+    assert 'QTimer.singleShot(700, app.window, app.window._queue_setup_notice)' in entrypoint
 
 
 @pytest.mark.skipif(os.environ.get("CI_NO_QT") == "1", reason="Qt disabled by runner")
@@ -415,8 +432,15 @@ def test_full_setup_dialog_constructs_without_writing(tmp_path, monkeypatch) -> 
     from angerona.gui.setup_wizard import SetupWizard
 
     app = QApplication.instance() or QApplication([])
-    cfg = Config(data_dir=tmp_path, spyware_research_urls=[
-        "https://example.org/" + ("a" * 1900) + str(index) for index in range(32)])
+    cfg = Config(
+        data_dir=tmp_path,
+        spyware_scan_auto_enabled=False,
+        spyware_scan_auto_scope="quick",
+        github_tools_report_count=12,
+        spyware_research_urls=[
+            "https://example.org/" + ("a" * 1900) + str(index) for index in range(32)
+        ],
+    )
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     cfg.ugcap_witness_authority_public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
@@ -427,6 +451,16 @@ def test_full_setup_dialog_constructs_without_writing(tmp_path, monkeypatch) -> 
         assert dialog._stack.count() == len(STEPS)
         staged, secrets, providers = dialog._staged()
         assert staged["spyware_research_urls"] == cfg.spyware_research_urls
+        assert staged["spyware_scan_auto_enabled"] is False
+        assert staged["spyware_scan_auto_scope"] == "quick"
+        assert staged["github_tools_report_count"] == 12
+        dialog._set_widget("spyware_scan_auto_enabled", True)
+        dialog._set_widget("spyware_scan_auto_scope", "browser")
+        dialog._set_widget("github_tools_report_count", 0)
+        changed, _, _ = dialog._staged()
+        assert changed["spyware_scan_auto_enabled"] is True
+        assert changed["spyware_scan_auto_scope"] == "browser"
+        assert changed["github_tools_report_count"] == SCANNER_REPORT_COUNT_UNLIMITED
         assert staged["ugcap_key_name"] == cfg.ugcap_key_name
         assert staged["ugcap_witness_authority_public_key"] == cfg.ugcap_witness_authority_public_key.strip()
         assert not staged["identity_session_collection_enabled"]

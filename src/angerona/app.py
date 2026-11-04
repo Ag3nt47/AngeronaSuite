@@ -2,8 +2,10 @@
 together. Keep this thin — real logic lives in core/ and modules/."""
 from __future__ import annotations
 
+import os
 import threading
 import time
+from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
@@ -243,7 +245,16 @@ class AngeronaApp:
             high_water_provider=high_water_provider,
         )
         self.manager.live_debug_service = self.live_debug_service
-        self.manager.owned_process_identities = self._owned_process_identities_cached
+        # Mutator workers observe the complete retained native ownership scope.
+        # Display readers retain the separate memory-only cached getter.
+        self.manager.owned_process_identities = self._owned_process_identities_for_response
+        from angerona.core.source_activation import (
+            register_source_activation_runtime, source_activation_controller_registration,
+        )
+        self._source_update_controller = (source_activation_controller_registration(
+            Path(__file__).absolute().parents[2], Path(self.config.data_dir) / "github-updates")
+            if startup_endpoint is not None else None)
+        register_source_activation_runtime(self)
         from angerona.core.recorder_integrity_runtime import RecorderIntegrityRuntime
         self.recorder_integrity_runtime = RecorderIntegrityRuntime(self.config, self.bus, high_water_provider)
         self.manager.recorder_integrity_runtime = self.recorder_integrity_runtime
@@ -346,6 +357,7 @@ class AngeronaApp:
             runtime_metrics=self.runtime_metrics,
             shutdown_prepare=self.prepare_shutdown,
             shutdown_callback=self.shutdown,
+            shutdown_critical=self._shutdown_critical_owned,
         )
         # Settings consumes only this bounded, privacy-safe status provider; it
         # never receives fleet service keys or endpoint private-key material.
@@ -361,13 +373,157 @@ class AngeronaApp:
         self._start_live_debug(live_debug)
 
     def _owned_process_identities_cached(self) -> tuple:
-        """WER context reads immutable native-owner memory, never UI status."""
+        """Display context reads immutable native-owner memory, never UI status."""
         requested = getattr(self, "_shutdown_requested", None)
         if requested is not None and requested.is_set():
             return ()
         resilience = getattr(self, "_resilience", None)
         supplier = getattr(resilience, "owned_process_identities", None)
         return supplier() if callable(supplier) else ()
+
+    def _owned_process_identities_for_response(self) -> tuple:
+        """Complete native companion/inventory context, on a worker only.
+
+        This is an exclusion read, never response authority. Display callers
+        retain the separate no-I/O cached getter. A configured owner cannot be
+        omitted or replaced by a fresh Core-only tuple after any failure.
+        """
+        import math
+        from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
+        from angerona.core.werfault_guard import MAX_OWNED_PROCESSES, read_owned_process_snapshot
+        from angerona.resilience.manager import ResilienceManager
+        from angerona.telemetry import sensors
+        from angerona.telemetry.process_snapshot_worker import (
+            InventoryWorkerError, ProcessSnapshotProvider, _Job, _Pin, on_gui_thread,
+        )
+
+        if on_gui_thread():
+            raise InventoryWorkerError("Complete companion ownership cannot run on the GUI thread")
+        started = time.monotonic()
+        if type(started) not in (int, float) or not math.isfinite(started) or started < 0:
+            raise InventoryWorkerError("Complete companion ownership clock unavailable")
+        deadline = started + 1.0
+        resilience = getattr(self, "_resilience", None)
+        inventory = getattr(self, "_process_snapshot_lifecycle", None)
+        if type(resilience) is not ResilienceManager or type(inventory) is not ProcessSnapshotLifecycle:
+            raise InventoryWorkerError("Configured companion and inventory owners are required")
+        provider = inventory.provider
+        if type(provider) is not ProcessSnapshotProvider:
+            raise InventoryWorkerError("Configured inventory native provider is unavailable")
+        routing_generation = sensors._process_snapshot_provider_generation
+        external_controller = getattr(self, "_source_update_controller", None)
+
+        def remaining():
+            now = time.monotonic()
+            if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
+                raise InventoryWorkerError("Complete companion ownership observation deadline")
+            return deadline - now
+
+        def capture_inventory():
+            requested = getattr(self, "_shutdown_requested", None)
+            if (requested is None or requested.is_set() or self._resilience is not resilience
+                    or self._process_snapshot_lifecycle is not inventory
+                    or sensors._process_snapshot_provider is not provider
+                    or sensors._process_snapshot_provider_generation != routing_generation
+                    or getattr(self, "_source_update_controller", None) is not external_controller):
+                raise InventoryWorkerError("Configured ownership lifetime or inventory routing changed")
+            if not inventory._lock.acquire(timeout=remaining()):
+                raise InventoryWorkerError("Inventory lifecycle admission deadline")
+            try:
+                if (inventory.provider is not provider or inventory._ready is not True
+                        or inventory._state != "running" or inventory._error_type
+                        or inventory._stop_requested.is_set() or inventory._retired.is_set()):
+                    raise InventoryWorkerError("Configured inventory owner is unavailable or stopping")
+                owner_thread = inventory._thread
+            finally:
+                inventory._lock.release()
+            if not provider._lock.acquire(timeout=remaining()):
+                raise InventoryWorkerError("Inventory native-owner admission deadline")
+            try:
+                if (not provider._ready or provider._stopping or provider._retired
+                        or provider._failure or provider._launching or provider._starting_thread
+                        or provider._retirement_error or provider._popen_close_failed
+                        or provider._auxiliary_close_unproven):
+                    raise InventoryWorkerError("Configured inventory native custody is unavailable")
+                job, wrapper, child = provider._job, provider._wrapper, provider._child
+                if (type(job) is not _Job or job.handle is None or job.close_failed
+                        or type(wrapper) is not _Pin or type(child) is not _Pin
+                        or any(pin.closed or pin.close_failed or pin.handle is None
+                               for pin in (wrapper, child))):
+                    raise InventoryWorkerError("Configured inventory native custody is incomplete")
+                return (owner_thread, job, id(job.handle), job.handle,
+                        wrapper, id(wrapper.handle), wrapper.handle,
+                        child, id(child.handle), child.handle)
+            finally:
+                provider._lock.release()
+
+        from angerona.core import ollama_lifecycle
+        ai_scope = ollama_lifecycle.capture_owned_ollama_process_scope(timeout=remaining())
+        inventory_scope = capture_inventory()
+        companion_scope = resilience._capture_owned_process_scope(timeout=remaining())
+        companion_rows = resilience.observe_owned_process_identities(timeout=remaining())
+        inventory_rows = provider.observe_owned_process_identities(timeout=remaining())
+        ai_rows = ollama_lifecycle.observe_owned_ollama_process_identities(captured=ai_scope, timeout=remaining())
+        external_rows = (() if external_controller is None else
+                         external_controller.observe(timeout=remaining()))
+        if capture_inventory() != inventory_scope:
+            raise InventoryWorkerError("Configured inventory native owner changed during observation")
+        if resilience._capture_owned_process_scope(timeout=remaining()) != companion_scope:
+            raise InventoryWorkerError("Configured companion native owners changed during observation")
+        if ollama_lifecycle.capture_owned_ollama_process_scope(timeout=remaining()) != ai_scope:
+            raise InventoryWorkerError("Owned AI registry/admission changed during complete observation")
+        current_core = resilience._owned_core_identity(companion_scope[1], not_before=started)
+        native_scopes = [companion_rows, inventory_rows]
+        # Only an actually revalidated empty AI registry is an absent scope.
+        # Required producers and every configured external owner stay strict.
+        if not (type(ai_rows) is tuple and not ai_rows and ai_scope[2] == ()):
+            native_scopes.append(ai_rows)
+        if external_controller is not None:
+            native_scopes.append(external_rows)
+        rows_by_pid = {}
+        for rows in native_scopes:
+            for row in read_owned_process_snapshot(lambda: rows, not_before=started,
+                                                   clock=time.monotonic).rows:
+                prior = rows_by_pid.get(row.pid)
+                if prior is not None:
+                    if ((prior.birth_ticks, prior.image, prior.create_time)
+                            != (row.birth_ticks, row.image, row.create_time)):
+                        raise InventoryWorkerError("Complete native ownership has contradictory PID identities")
+                    if row.expires_monotonic < prior.expires_monotonic:
+                        rows_by_pid[row.pid] = row  # Keep an original DTO; never renew its lease.
+                else:
+                    rows_by_pid[row.pid] = row
+                if len(rows_by_pid) > MAX_OWNED_PROCESSES:
+                    raise InventoryWorkerError("Complete native ownership exceeds its bound")
+        original_core = rows_by_pid.get(current_core.pid)
+        if (original_core is None or original_core.role != "core"
+                or (original_core.birth_ticks, original_core.image, original_core.create_time)
+                != (current_core.birth_ticks, current_core.image, current_core.create_time)):
+            raise InventoryWorkerError("Retained Core generation changed during complete observation")
+        remaining()
+        return read_owned_process_snapshot(lambda: tuple(rows_by_pid.values()), not_before=started,
+                                           clock=time.monotonic).rows
+
+    def source_update_controller_status(self) -> dict:
+        """Cached display metadata, no file/native I/O or Core retirement join."""
+        controller = getattr(self, "_source_update_controller", None)
+        return ({"configured": False, "state": "unsupported-direct-launch"}
+                if controller is None else controller.cached_status())
+
+    def source_update_observer_workers(self) -> tuple:
+        controller = getattr(self, "_source_update_controller", None)
+        if controller is None:
+            return ()
+        worker = getattr(controller, "_observer_thread", None)
+        if worker is None:
+            if getattr(controller, "_heartbeat_cache", None) is not None:
+                raise RuntimeError("Source progress has query custody without its exact observer thread")
+            return ()
+        return (worker,)
+
+    def source_update_observer_retirement_proven(self, worker) -> bool:
+        controller = getattr(self, "_source_update_controller", None)
+        return bool(controller is not None and controller.heartbeat_retired(worker))
 
     def _component_heartbeats_cached(self) -> tuple[dict, ...]:
         """GUI publication copy only: no files, native probes or held locks."""
@@ -399,6 +555,19 @@ class AngeronaApp:
         if getattr(self.config, "runtime_chill_ai_blocked", getattr(
                 self.config, "runtime_chill_active", getattr(self.config, "eco_mode", False))) is True:
             rows[-1].update(state="disabled", reason="Chill Mode blocks local AI; no model heartbeat is expected.")
+        controller = getattr(self, "_source_update_controller", None)
+        if controller is None:
+            rows.extend({"role": role, "generation_id": "", "pid": None,
+                "last_heartbeat_monotonic": None, "deadline_seconds": 10.0,
+                "state": "disabled", "reason": "No canonical source-update controller is enrolled for this launch."}
+                for role in ("source_startup", "source_update_owner", "activation_broker"))
+        else:
+            optional_rows = controller.heartbeat_snapshot()
+            if getattr(resilience, "_source_update_observer_error", ""):
+                optional_rows = tuple(dict(row, state="held", last_heartbeat_monotonic=None,
+                    reason="The optional controller observer failed; baseline component observation remains independent.")
+                    for row in optional_rows)
+            rows.extend(optional_rows)
         requested = getattr(self, "_shutdown_requested", None)
         if requested is not None and requested.is_set():
             for row in rows:
@@ -652,11 +821,17 @@ class AngeronaApp:
         QTimer.singleShot(0, self._prepare_curated_tools_after_paint)
 
     def _prepare_curated_tools_after_paint(self) -> None:
-        if self._startup_cancelled() or getattr(self.config, "github_tools_enabled", True) is not True:
+        if self._startup_cancelled():
             return
         try:
             from angerona.gui.curated_tools import get_curated_tools_controller
-            get_curated_tools_controller(self.manager).auto_prepare()
+            controller = get_curated_tools_controller(self.manager)
+            queue_notice = getattr(self.window, "_queue_automatic_scan_notice", None)
+            if callable(queue_notice):
+                controller.scan_outcome_ready.connect(queue_notice)
+            controller.start_automatic_schedule()
+            if getattr(self.config, "github_tools_enabled", True) is True:
+                controller.auto_prepare()
         except Exception as exc:
             self._record_startup_degradation(
                 "Curated scanners", "optional scanner preparation is unavailable", exc,
@@ -896,6 +1071,9 @@ class AngeronaApp:
                 # Console already expose the same live status on demand. Not
                 # spawning those idle windows saves two full Qt processes and
                 # hundreds of MB while preserving supervision and telemetry.
+                source_owner = getattr(self, "_source_update_controller", None)
+                source_options = ({"source_update_controller": source_owner}
+                                  if source_owner is not None else {})
                 self._resilience = start_resilience(
                     self.bus,
                     with_ui=not bool(
@@ -905,6 +1083,7 @@ class AngeronaApp:
                             getattr(self.config, "eco_mode", True),
                         )
                     ),
+                    **source_options,
                 )
             except Exception as exc:
                 self._resilience = None
@@ -1289,6 +1468,7 @@ class AngeronaApp:
             "duplicate_retries": bounded_count(duplicate_retries),
             "uncertain_clock_events": bounded_count(uncertain_clock_events),
             "fleet_api_contract_sha256": api_contract_sha256,
+            "source_update_controller": self.source_update_controller_status(),
         }
 
     def _cancel_owned_work(self) -> None:
@@ -1373,6 +1553,16 @@ class AngeronaApp:
         if metrics_publisher is not None:
             metrics_publisher.stop()
         self._shutdown_services_and_stores()
+        from angerona.core.ollama_lifecycle import OllamaRetirementIncomplete, owned_ollama_retirement_proven, ollama_retirement_snapshot
+        if not owned_ollama_retirement_proven():
+            # All remaining critical/service cleanup ran before this error.
+            try:
+                outcome = ollama_retirement_snapshot()
+            except Exception as error:
+                raise OllamaRetirementIncomplete({"state": "incomplete", "complete": False,
+                    "diagnostic_error_type": type(error).__name__,
+                    "coverage": "Owned retirement is unproven; its diagnostic snapshot is unavailable"}) from error
+            raise OllamaRetirementIncomplete(outcome)
 
     def _drain_optional_owned(self, timeout: float = 5.0) -> bool:
         """Retire scanner/review workers before their evidence stores close."""
@@ -1397,6 +1587,34 @@ class AngeronaApp:
                 breach_drained = False
             drained = breach_drained and drained
         return drained
+
+    def _record_ai_retirement_outcome(self) -> None:
+        """Reuse bounded private diagnostics; immutable originals stay separate."""
+        self._critical_ai_diagnostic_error_type = ""
+        from angerona.core.ollama_lifecycle import ollama_retirement_snapshot
+        outcome = ollama_retirement_snapshot()
+        self._critical_ai_outcome = outcome
+        saved = False
+        directory = getattr(getattr(self, 'config', None), 'data_dir', None)
+        if directory is not None:
+            try:
+                from angerona.core.startup_diagnostics import StartupDiagnostics
+                writer = StartupDiagnostics(Path(directory))
+                saved = writer.record('ollama-owned-retirement', outcome['state'],
+                    pid=os.getpid(), coverage='Exact retained owners only; shared listeners are not owned or killed',
+                    actual='pending=' + str(outcome['pending_owned']) + '; launch_quiescent=' + str(outcome['launch_quiescent']))
+                for row in outcome['records']:
+                    identities = row['identities'] or ({'pid': row['pid'], 'birth_ticks': None, 'image': ''},)
+                    for identity in identities:
+                        saved = writer.record('ollama-owned-generation', row['state'],
+                            pid=identity['pid'], birth_filetime=identity['birth_ticks'], executable=identity['image'],
+                            exception_type=row['error_type'], coverage='historical native identity; server_exit=' + str(row['service_exited'])
+                                + '; Job0=' + str(row['job_empty']) + '; handles_closed=' + str(row['handles_closed'])
+                                + '; close_held=' + str(row['close_held'])) and saved
+            except Exception as error:
+                saved = False
+                self._critical_ai_diagnostic_error_type = type(error).__name__
+        self._critical_ai_diagnostic_saved = saved
 
     def _shutdown_critical_owned(self) -> None:
         inventory = getattr(self, "_process_snapshot_lifecycle", None)
@@ -1425,14 +1643,21 @@ class AngeronaApp:
         # The terminal fence also catches an in-flight late server launch.
         try:
             if not getattr(self, "_critical_ai_done", False):
-                from angerona.core.ollama_lifecycle import shutdown_ollama
+                from angerona.core.ollama_lifecycle import shutdown_ollama, owned_ollama_retirement_proven
                 shutdown_ollama(
                     getattr(self.config, "ollama_host", "http://localhost:11434"),
                     getattr(self.config, "ollama_model", "llama3"),
                 )
-                self._critical_ai_done = True
-        except Exception:
-            pass
+                self._critical_ai_done = owned_ollama_retirement_proven()
+                self._critical_ai_error_type = "" if self._critical_ai_done else "OllamaRetirementIncomplete"
+        except Exception as error:
+            self._critical_ai_done = False
+            self._critical_ai_error_type = type(error).__name__
+        try:
+            self._record_ai_retirement_outcome()
+        except Exception as error:
+            self._critical_ai_diagnostic_saved = False
+            self._critical_ai_diagnostic_error_type = type(error).__name__
         resilience = getattr(self, "_resilience", None)
         if resilience is not None:
             try:

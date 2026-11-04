@@ -15,6 +15,7 @@ from angerona.core.config import Config
 from angerona.gui import setup_wizard
 from angerona.gui import update_controller as updates
 from angerona.gui.main_window import MainWindow
+from angerona.gui.notification_inbox import NotificationInbox
 from angerona.gui.pages import SettingsDialog
 from angerona.updater.github_updater import UpdateReport
 
@@ -79,6 +80,7 @@ def _producer(owned, monkeypatch):
 def _owner(owned, tmp_path, *, enabled=False):
     class Owner(QWidget):
         _on_daily_update_report = MainWindow._on_daily_update_report
+        _review_update_notice = MainWindow._review_update_notice
         _open_setup = MainWindow._open_setup
 
         def _update_message(self, title, text, *, question=False):
@@ -88,6 +90,7 @@ def _owner(owned, tmp_path, *, enabled=False):
     owner = Owner()
     owner.config = SimpleNamespace(data_dir=tmp_path, github_daily_check_enabled=enabled)
     owner.prompts = []
+    owner._notifications = NotificationInbox(owner)
     owner._update_prompt_revision = ""
     controller = updates.UpdateController(owner.config, tmp_path / "source", owner)
     controller._timer.stop()
@@ -323,7 +326,12 @@ def test_accepted_setup_enabling_daily_checks_starts_the_owned_due_path(owned, t
     _until(entered.is_set)
     assert calls[0][1] is False
     release.set()
-    _until(lambda: not controller._check.busy)
+    _until(lambda: owner._notifications.count == 1)
+    assert not owner.prompts
+    inbox = owner._notifications.show()
+    inbox._review.click()
+    assert len(owner.prompts) == 1
+    assert owner._notifications.count == 0
 
 
 def test_daily_off_has_no_owned_periodic_or_initial_wakeup(owned, tmp_path):

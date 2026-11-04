@@ -20,7 +20,10 @@ from angerona.core.windows_child_job import NativeOwnershipObservationError
 from angerona.resilience import heartbeat as hb
 
 ROLES = ("core", "watchdog", "scanner", "blackbox")
-DEADLINES = {"core": 10.0, "watchdog": 10.0, "scanner": 8.0, "blackbox": 5.0}
+OPTIONAL_ROLES = hb.OPTIONAL_ROLES
+SUPPORTED_ROLES = ROLES + OPTIONAL_ROLES
+DEADLINES = {"core": 10.0, "watchdog": 10.0, "scanner": 8.0, "blackbox": 5.0,
+             "source_startup": 10.0, "source_update_owner": 10.0, "activation_broker": 8.0}
 _FILETIME_EPOCH = 116444736000000000
 
 
@@ -83,13 +86,16 @@ class _ExistingHeartbeatReader(hb.HeartbeatReader):
 
 
 class _ExistingHeartbeatReaders:
-    def __init__(self, directory: Path | None):
+    def __init__(self, directory: Path | None, *, component_names=None):
         self.directory = Path(directory) if directory is not None else None
         self._authority = None
+        self._component_names = dict(component_names or {})
 
     def __call__(self, role: str):
-        if self.directory is None or role not in ROLES:
+        if self.directory is None or role not in SUPPORTED_ROLES:
             raise ValueError("The actual producer heartbeat directory is unavailable")
+        if role in OPTIONAL_ROLES and role not in self._component_names:
+            raise ValueError("Optional heartbeat lacks an exact launch/native component binding")
         if self._authority is None:
             authority = self.directory.parent / "shutdown.key"
             with _existing_private_file(authority, limit=128) as descriptor:
@@ -103,7 +109,8 @@ class _ExistingHeartbeatReaders:
             self._authority = key
         # Explicit path/key avoid hb_path mkdir and shutdown_token._load_key's
         # creating/hardening behavior. This observer has no repair authority.
-        return _ExistingHeartbeatReader(role, path=self.directory / f"{role}.hb", key_raw=self._authority)
+        return _ExistingHeartbeatReader(self._component_names.get(role, role),
+            path=self.directory / f"{role}.hb", key_raw=self._authority)
 
 
 class ProgressHeartbeat:
@@ -182,28 +189,50 @@ class _ReadOnlyProcessWitness:
 
 
 class ComponentHeartbeatCache:
-    """A fixed four-role observer, sampled outside Qt by the actual core owner."""
+    """Default four roles, with closed optional progress profiles; never authority."""
 
     def __init__(self, expected: dict[str, tuple[str, ...] | None], *,
                  enabled: dict[str, bool] | None = None, heartbeat_directory: Path | None = None,
                  reader_factory=None,
                  identity_factory=_ReadOnlyProcessWitness, clock=time.monotonic,
                  wall_ns=time.time_ns, owned_core_pid: int | None = None,
-                 owner_matcher=None):
-        self._expected = {role: expected.get(role) for role in ROLES}
-        self._enabled = {role: (enabled or {}).get(role, True) is True for role in ROLES}
+                 owner_matcher=None, selected_roles=ROLES, component_names=None):
+        if (type(selected_roles) is not tuple or not 1 <= len(selected_roles) <= 7
+                or any(type(role) is not str or role not in SUPPORTED_ROLES for role in selected_roles)
+                or len(set(selected_roles)) != len(selected_roles)):
+            raise ValueError("Heartbeat roles must be a unique closed tuple of at most seven profiles")
+        self._roles = selected_roles
+        names = dict(component_names or {})
+        if set(names) != set(selected_roles).intersection(OPTIONAL_ROLES):
+            raise ValueError("Each optional heartbeat needs exactly one component binding")
+        for role, name in names.items():
+            if type(name) is not str:
+                raise ValueError("Optional heartbeat component binding is invalid")
+            parts = name.split(":")
+            if role == "activation_broker" and len(parts) == 4:
+                canonical = hb.optional_component(role, parts[1], parts[3], guard_nonce=parts[2])
+            elif role != "activation_broker" and len(parts) == 3:
+                canonical = hb.optional_component(role, parts[1], parts[2])
+            else:
+                raise ValueError("Optional heartbeat component binding is invalid")
+            if name != canonical:
+                raise ValueError("Optional heartbeat component role or generation is contradictory")
+        self._component_names = names
+        self._expected = {role: expected.get(role) for role in self._roles}
+        self._enabled = {role: (enabled or {}).get(role, True) is True for role in self._roles}
         self._readers = {}
         self._witnesses = {}
         self._previous = {}
         self._progress = {}
-        self._reader_factory = reader_factory if reader_factory is not None else _ExistingHeartbeatReaders(heartbeat_directory)
+        self._reader_factory = (reader_factory if reader_factory is not None else
+                                _ExistingHeartbeatReaders(heartbeat_directory, component_names=names))
         self._identity_factory = identity_factory
         self._clock, self._wall_ns = clock, wall_ns
         self._last_sample_monotonic = None
         self._stopped = False
         self._stopped_publication = tuple(MappingProxyType(self._empty(
-            role, state="stopped", reason="The core owner stopped component heartbeat observation.")) for role in ROLES)
-        self._publication = tuple(MappingProxyType(self._empty(role)) for role in ROLES)
+            role, state="stopped", reason="The core owner stopped component heartbeat observation.")) for role in self._roles)
+        self._publication = tuple(MappingProxyType(self._empty(role)) for role in self._roles)
         self._owned_core_pid = owned_core_pid
         self._owner_matcher = owner_matcher
         self._owned_witnesses = {}
@@ -287,6 +316,9 @@ class ComponentHeartbeatCache:
                 or witness.birth_ticks <= _FILETIME_EPOCH):
             return dict(row, reason="The native process generation is unavailable.")
         row.update(pid=pid, generation_id=generation)
+        if (role in OPTIONAL_ROLES and self._component_names[role].rsplit(":", 1)[-1]
+                != str(witness.birth_ticks)):
+            return dict(row, reason="Optional component birth differs from the actual native process generation.")
         previous = self._previous.get(role)
         if previous and previous[0] != generation:
             # Reused PIDs may legitimately restart their counter. Reset this
@@ -362,7 +394,11 @@ class ComponentHeartbeatCache:
             return
         self._last_owned_sample = started
         rows = []
-        for role in ROLES:
+        # Optional progress is presentation only. Actual external ownership is
+        # supplied separately by the exact source-activation controller.
+        for role in self._roles:
+            if role not in ROLES:
+                continue
             if self._stopped:
                 return
             witness = self._owned_witnesses.get(role)
@@ -430,11 +466,11 @@ class ComponentHeartbeatCache:
         if (not math.isfinite(now) or now < 0 or type(wall_ns) is not int or
                 (self._last_sample_monotonic is not None and now < self._last_sample_monotonic)):
             self._publication = tuple(MappingProxyType(self._empty(
-                role, reason="Heartbeat observation clocks are unavailable.")) for role in ROLES)
+                role, reason="Heartbeat observation clocks are unavailable.")) for role in self._roles)
             return
         self._last_sample_monotonic = now
         rows = []
-        for role in ROLES:
+        for role in self._roles:
             if self._stopped:
                 return
             try:
@@ -458,7 +494,7 @@ class ComponentHeartbeatCache:
     def close(self):
         self.mark_stopped()
         failure = None
-        for role in ROLES:
+        for role in self._roles:
             try:
                 self._release_witness(role)
             except Exception as exc:

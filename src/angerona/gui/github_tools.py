@@ -29,6 +29,8 @@ class GitHubToolsPanel(QWidget):
         self._plan = None
         self._rows: list[dict] = []
         self._busy = False
+        self._worker = None
+        self._activity_handle = None
         self._operation: ImportOperation | None = None
         self._results: queue.Queue = queue.Queue(maxsize=1)
         self._lifetime = {"closed": False, "operation": None}
@@ -41,6 +43,10 @@ class GitHubToolsPanel(QWidget):
 
         self.destroyed.connect(on_destroyed)
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         title = QLabel("GitHub Tools — source review")
         title.setObjectName("sectionTitle")
         layout.addWidget(title)
@@ -194,17 +200,26 @@ class GitHubToolsPanel(QWidget):
                 results.put_nowait(outcome)
 
         self.status.setText(message)
+        self._activity_handle = self._activities.begin("source-review", message, replace=True)
         self._update_buttons()
         try:
-            threading.Thread(target=run, daemon=True, name="GitHubSourceReview").start()
+            self._worker = threading.Thread(target=run, daemon=True, name="GitHubSourceReview")
+            self._worker.start()
         except Exception:
+            if self._worker is not None and self._worker.is_alive():
+                self._timer.start()
+                return  # A lost start acknowledgment is not thread retirement.
             _WORKERS.release()
             self._busy = False
+            self._activities.finish(self._activity_handle)
+            self._activity_handle = None
             self._update_buttons()
             raise
         self._timer.start()
 
     def _poll(self):
+        if self._worker is not None and self._worker.is_alive():
+            return  # Result publication can precede this exact worker's exit.
         try:
             kind, result, error = self._results.get_nowait()
         except queue.Empty:
@@ -213,6 +228,9 @@ class GitHubToolsPanel(QWidget):
         if self._operation is not None and self._operation.cancelled.is_set():
             error = "Source review operation cancelled."
         self._busy = False
+        self._worker = None
+        self._activities.finish(self._activity_handle)
+        self._activity_handle = None
         self._operation = None
         self._lifetime["operation"] = None
         if error:

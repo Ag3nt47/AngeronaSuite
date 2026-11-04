@@ -137,7 +137,14 @@ def inert_owner(monkeypatch):
     monkeypatch.setattr(worker._Pin, "retire", forbidden)
     monkeypatch.setattr(worker._Job, "assign", forbidden)
     monkeypatch.setattr(worker.ProcessSnapshotProvider, "lifecycle_snapshot", forbidden)
-    monkeypatch.setattr(worker.subprocess, "Popen", forbidden)
+    # Guard this provider namespace only. Mutating the shared stdlib module
+    # also forbids legitimate separate subprocess owners in composed fixtures.
+    subprocess_api = worker.subprocess
+    monkeypatch.setattr(worker, "subprocess", SimpleNamespace(
+        Popen=forbidden, TimeoutExpired=subprocess_api.TimeoutExpired,
+        PIPE=subprocess_api.PIPE, DEVNULL=subprocess_api.DEVNULL,
+        CREATE_NO_WINDOW=getattr(subprocess_api, "CREATE_NO_WINDOW", 0),
+    ))
     return SimpleNamespace(provider=provider, native=native, job=job, members=members,
                            member_reads=member_reads, clock=clock)
 
@@ -444,3 +451,30 @@ def test_native_owned_worker_observation_covers_exact_job_and_then_retires(monke
                                               for proof in state["retirement_proofs"])
     with pytest.raises(worker.InventoryWorkerError):
         _off_gui(provider.observe_owned_process_identities)
+
+
+def test_inert_owner_spawn_guard_is_local_and_leaves_separate_stdlib_owner_real(inert_owner, tmp_path):
+    import subprocess
+
+    sample = inert_owner
+    assert worker.subprocess is not subprocess
+    assert worker.subprocess.TimeoutExpired is subprocess.TimeoutExpired
+    # The original provider's no-spawn contract still fails before any launch.
+    with pytest.raises(pytest.fail.Exception, match="Observation created, changed or retired an owner"):
+        worker.subprocess.Popen(["must-not-run-provider-owner"])
+    rows = sample.provider.observe_owned_process_identities()
+    assert {row.pid for row in rows} == {1001, 1002, 1003}
+    assert sample.provider._proofs == [] and sample.provider._extra_pins == []
+    before = (sample.provider._wrapper, sample.provider._child, sample.job.handle)
+    # This actual short-lived test owner is independent of the inert inventory
+    # provider. It starts no application, service, network or descendant payload.
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", "print('independent-owned-fixture')"],
+        cwd=tmp_path, capture_output=True, text=True, timeout=10, check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "independent-owned-fixture" and result.stderr == ""
+    assert (sample.provider._wrapper, sample.provider._child, sample.job.handle) == before
+    assert not sample.provider._wrapper.closed and not sample.provider._child.closed
+    assert sample.provider._proofs == [] and sample.provider._extra_pins == []

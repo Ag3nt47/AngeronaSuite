@@ -171,6 +171,8 @@ def test_source_canary_cannot_authorize_stale_foreign_or_metadata_only_targets(s
         RedTeamValidationLease.release(graph.lease)
     elif change == "replaced":
         old_identity = target.stat().st_ino
+        # Use the real pre-pin issuer admission before releasing enrolled custody.
+        assert graph.combat._practice_mutation(event, "quarantine_file") is not None
         RedTeamValidationLease.begin_marker_containment(graph.lease, graph.combat, event, target)
         data = target.read_bytes()
         target.replace(graph.root / "retained-original-control.txt")

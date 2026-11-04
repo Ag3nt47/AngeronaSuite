@@ -149,6 +149,52 @@ def _button(dialog, caption):
                 if button.text() == caption or button.accessibleName() == caption)
 
 
+def test_manual_history_wheel_coalesces_while_automatic_reads_stay_quiet(workbench):
+    service = _Service()
+    entered, release = service.gate("snapshots")
+    dialog = workbench(service)
+    _until(entered.is_set)
+    assert dialog._activities.snapshot() == {}  # Initial/automatic history is quiet.
+    dialog._refresh_snapshots(user_requested=True)
+    first = dialog._history_activity
+    dialog._refresh_snapshots(user_requested=True)
+    assert dialog._history_activity == first
+    assert dialog.progress_view.ring.percent is None
+    release.set()
+    _idle(dialog)
+    assert dialog._activities.snapshot() == {} and service.calls["snapshots"] == 2
+
+
+def test_task_result_publication_does_not_finish_wheel_before_thread_exit(workbench, monkeypatch):
+    service = _Service()
+    dialog = workbench(service)
+    _idle(dialog)
+    original = threading.Thread
+    published, release = threading.Event(), threading.Event()
+
+    def held_thread(*, target, **kwargs):
+        def run():
+            target()
+            published.set()
+            assert release.wait(5)
+        return original(target=run, **kwargs)
+
+    monkeypatch.setattr("angerona.gui.adaptation_workbench.threading.Thread", held_thread)
+    try:
+        dialog._run_task("fixture", lambda: {"literal": "result"})
+        assert published.wait(2)
+        dialog._poll_results()
+        assert dialog._task_thread.is_alive() and dialog._activities.snapshot()
+        release.set()
+        _idle(dialog)
+        assert dialog._activities.snapshot() == {}
+    finally:
+        release.set()
+        if dialog._task_thread is not None:
+            dialog._task_thread.join(3)
+            assert not dialog._task_thread.is_alive()
+
+
 @pytest.mark.parametrize("blocked", ["state", "exceptions", "snapshots", "activity"])
 def test_initial_history_reads_leave_qt_responsive(workbench, blocked):
     service = _Service()

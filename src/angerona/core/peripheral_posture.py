@@ -47,6 +47,15 @@ COLLECTION_SOURCES = frozenset(
 )
 MAX_COLLECTION_SOURCES = 16
 MAX_WINDOWS_OUTPUT_BYTES = 64 * 1024
+MAX_WINDOWS_ACCESSORY_NODES = 64
+_USB_COMBINATIONS = {
+    3: "hid+storage",
+    5: "hid+network",
+    6: "storage+network",
+    7: "hid+storage+network",
+}
+_USB_ACCESSORY_COVERAGE = ("sampled", "partial", "unavailable", "not-collected")
+_USB_ACCESSORY_FIELDS = {"usb_accessory_coverage", "usb_accessory_combinations"}
 
 
 class PeripheralPostureRejected(ValueError):
@@ -85,6 +94,8 @@ class PeripheralPostureSnapshot:
     collection_complete: bool
     collection_sources: tuple[str, ...]
     observed_at: float
+    usb_accessory_coverage: str = "not-collected"
+    usb_accessory_combinations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema != POSTURE_SCHEMA:
@@ -122,6 +133,15 @@ class PeripheralPostureSnapshot:
         ):
             raise PeripheralPostureRejected("peripheral collection sources are invalid")
         _safe_observed_at(self.observed_at)
+        if type(self.usb_accessory_coverage) is not str or self.usb_accessory_coverage not in _USB_ACCESSORY_COVERAGE:
+            raise PeripheralPostureRejected("USB accessory coverage is invalid")
+        combinations = self.usb_accessory_combinations
+        if (type(combinations) is not tuple or len(combinations) > len(_USB_COMBINATIONS)
+                or any(type(item) is not str or item not in _USB_COMBINATIONS.values() for item in combinations)
+                or tuple(sorted(set(combinations))) != combinations
+                or (self.platform != "windows" and self.usb_accessory_coverage != "not-collected")
+                or (combinations and self.usb_accessory_coverage not in ("sampled", "partial"))):
+            raise PeripheralPostureRejected("USB accessory evidence is invalid")
         if self.thunderbolt == "absent" and self.thunderbolt_authorization not in {
             "not-present",
             "unknown",
@@ -146,6 +166,7 @@ class PeripheralPostureSnapshot:
             False,
             (),
             observed_at,
+            usb_accessory_coverage="unavailable" if platform == "windows" else "not-collected",
         )
 
 
@@ -176,6 +197,8 @@ class PeripheralPostureAssessment:
             "removable_storage": snapshot.removable_storage,
             "removable_storage_control": snapshot.removable_storage_control,
             "device_install_control": snapshot.device_install_control,
+            "usb_accessory_coverage": snapshot.usb_accessory_coverage,
+            "usb_accessory_combinations": list(snapshot.usb_accessory_combinations),
             "raw_device_identifiers_omitted": True,
             "device_control_performed": False,
             "observation_only": True,
@@ -302,6 +325,7 @@ def _windows_probe() -> Mapping[str, object] | None:
 $pnpOk = $false; $policyOk = $false; $removableComplete = $false
 $thunderbolt = $null; $usb4 = $null; $removable = $null
 $removablePolicy = 'unknown'; $installPolicy = 'unknown'
+$accessoryCoverage = 'unavailable'; $accessoryRows = [Collections.Generic.List[object]]::new()
 try {
   $devices = @(Get-PnpDevice -PresentOnly -ErrorAction Stop)
   $pnpOk = $true
@@ -328,6 +352,79 @@ try {
   if ($denyUnspecified -eq 1) { $installPolicy = 'blocked-unapproved' }
   $policyOk = $true
 } catch { }
+
+# Current USB function evidence. Keep actual identifiers in this process.
+if ($pnpOk) {
+  try {
+    $usbParent = '^USB\\VID_[0-9A-F]{4}&PID_[0-9A-F]{4}(?:&REV_[0-9A-F]{4})?\\[0-9A-Z&_.-]{1,128}$'
+    $functionId = '^(?:USB|HID|USBSTOR|SCSI)\\[0-9A-Z&_.{}-]{1,128}\\[0-9A-Z&_.{}-]{1,128}$'
+    $selected = @($devices | Where-Object {
+      $id = [string]$_.InstanceId
+      $id -match $usbParent -or ($id -match $functionId -and
+        $_.Class -in @('HIDClass','Keyboard','Mouse','DiskDrive','Net'))
+    } | Select-Object -First ($accessoryLimit + 1))
+    $accessoryCoverage = 'sampled'
+    if ($selected.Count -gt $accessoryLimit) {
+      $accessoryCoverage = 'partial'
+      $selected = @($selected | Select-Object -First $accessoryLimit)
+    }
+    if ($selected.Count -gt 0) {
+      $byId = @{}; $invalid = @{}
+      foreach ($device in $selected) {
+        $id = [string]$device.InstanceId
+        if ($byId.ContainsKey($id)) { throw 'Duplicate present device identity.' }
+        $byId[$id] = @{}
+      }
+      $keys = @('DEVPKEY_Device_ContainerId', 'DEVPKEY_Device_ClassGuid')
+      $properties = @(Get-PnpDeviceProperty -InputObject $selected -KeyName $keys -ThrottleLimit 1 -ErrorAction SilentlyContinue |
+        Select-Object -First (2 * $accessoryLimit + 1))
+      if ($properties.Count -gt 2 * $accessoryLimit) { throw 'Device property bound exceeded.' }
+      foreach ($property in $properties) {
+        $fields = $property.CimInstanceProperties
+        if ($null -eq $fields) { $accessoryCoverage = 'partial'; continue }
+        $id = [string]$fields['DeviceID'].Value
+        $key = [string]$fields['KeyName'].Value
+        if (!$byId.ContainsKey($id) -or $key -notin $keys) {
+          $accessoryCoverage = 'partial'
+          continue
+        }
+        $guid = [guid]::Empty
+        if ($fields['Type'].Value -ne 13 -or $byId[$id].ContainsKey($key) -or
+            ![guid]::TryParse([string]$fields['Data'].Value, [ref]$guid) -or $guid -eq [guid]::Empty) {
+          $accessoryCoverage = 'partial'
+          $invalid[$id] = $true
+          continue
+        }
+        $byId[$id][$key] = $guid.ToString('D')
+      }
+      $ordinals = @{}
+      $classRoles = @{
+        '745a17a0-74d3-11d0-b6fe-00a0c90f57da' = 1 # HIDClass
+        '4d36e96b-e325-11ce-bfc1-08002be10318' = 1 # Keyboard
+        '4d36e96f-e325-11ce-bfc1-08002be10318' = 1 # Mouse
+        '4d36e967-e325-11ce-bfc1-08002be10318' = 2 # DiskDrive
+        '4d36e972-e325-11ce-bfc1-08002be10318' = 4 # Net
+      }
+      foreach ($device in $selected) {
+        $id = [string]$device.InstanceId
+        if ($invalid.ContainsKey($id) -or $byId[$id].Count -ne 2) {
+          $accessoryCoverage = 'partial'
+          continue
+        }
+        $container = $byId[$id]['DEVPKEY_Device_ContainerId']
+        if ($container -eq '00000000-0000-0000-ffff-ffffffffffff') { continue }
+        $anchor = $id -match $usbParent
+        $role = [int]$classRoles[$byId[$id]['DEVPKEY_Device_ClassGuid']]
+        if (!$anchor -and $role -eq 0) { continue }
+        if (!$ordinals.ContainsKey($container)) { $ordinals[$container] = $ordinals.Count + 1 }
+        $accessoryRows.Add(@([int]$ordinals[$container], $role, [bool]$anchor))
+      }
+    }
+  } catch {
+    $accessoryCoverage = 'unavailable'
+    $accessoryRows.Clear()
+  }
+}
 [pscustomobject]@{
   pnp_complete = $pnpOk; policy_complete = $policyOk
   thunderbolt_complete = $false; usb4_complete = $false
@@ -335,7 +432,8 @@ try {
   thunderbolt_present = $thunderbolt; usb4_present = $usb4
   removable_present = $removable; removable_control = $removablePolicy
   device_install_control = $installPolicy
-} | ConvertTo-Json -Compress
+  accessory_coverage = $accessoryCoverage; accessory_rows = $accessoryRows.ToArray()
+} | ConvertTo-Json -Depth 3 -Compress
 """
     command = [
         str(powershell),
@@ -345,7 +443,7 @@ try {
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "$ErrorActionPreference='Stop'; " + script,
+        f"$ErrorActionPreference='Stop'; $accessoryLimit={MAX_WINDOWS_ACCESSORY_NODES}; " + script,
     ]
     try:
         from angerona.core.win import run_hidden
@@ -381,12 +479,40 @@ def _presence(value: object, *, complete: bool) -> str:
     return "unknown"
 
 
+def _windows_usb_accessory_evidence(probe: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
+    coverage = probe.get("accessory_coverage")
+    rows = probe.get("accessory_rows")
+    if (probe.get("pnp_complete") is not True or type(coverage) is not str
+            or coverage not in ("sampled", "partial") or type(rows) is not list
+            or len(rows) > MAX_WINDOWS_ACCESSORY_NODES):
+        return "unavailable", ()
+    grouped: dict[int, int] = {}
+    anchored: set[int] = set()
+    for row in rows:
+        if type(row) is not list or len(row) != 3:
+            return "unavailable", ()
+        ordinal, role, usb_parent = row
+        if (type(ordinal) is not int or not 1 <= ordinal <= MAX_WINDOWS_ACCESSORY_NODES
+                or type(role) is not int or role not in (0, 1, 2, 4)
+                or type(usb_parent) is not bool or (role == 0 and not usb_parent)):
+            return "unavailable", ()
+        grouped[ordinal] = grouped.get(ordinal, 0) | role
+        if usb_parent:
+            anchored.add(ordinal)
+    observed = {
+        _USB_COMBINATIONS[grouped[ordinal]] for ordinal in anchored
+        if grouped[ordinal] in _USB_COMBINATIONS
+    }
+    return coverage, tuple(sorted(observed))
+
+
 def _windows_snapshot(
     probe: Mapping[str, object] | None,
     observed_at: float,
 ) -> PeripheralPostureSnapshot:
     if not isinstance(probe, Mapping):
         return PeripheralPostureSnapshot.unknown("windows", observed_at)
+    accessory_coverage, accessory_combinations = _windows_usb_accessory_evidence(probe)
     pnp_complete = probe.get("pnp_complete") is True
     policy_complete = probe.get("policy_complete") is True
     dma_complete = probe.get("dma_complete") is True
@@ -448,6 +574,8 @@ def _windows_snapshot(
         ),
         tuple(sorted(sources)),
         observed_at,
+        usb_accessory_coverage=accessory_coverage,
+        usb_accessory_combinations=accessory_combinations,
     )
 
 
@@ -704,14 +832,14 @@ def observe_system_peripheral_posture(
 
 def snapshot_from_mapping(value: Mapping[str, object]) -> PeripheralPostureSnapshot:
     """Parse a strict snapshot from an external sensor boundary."""
-    if not isinstance(value, Mapping) or set(value) != set(
-        PeripheralPostureSnapshot.__dataclass_fields__
-    ):
+    fields = set(PeripheralPostureSnapshot.__dataclass_fields__)
+    if not isinstance(value, Mapping) or set(value) not in (fields, fields - _USB_ACCESSORY_FIELDS):
         raise PeripheralPostureRejected("peripheral posture document shape is invalid")
     document = dict(value)
-    sources = document.get("collection_sources")
-    if isinstance(sources, Sequence) and not isinstance(sources, (str, bytes)):
-        document["collection_sources"] = tuple(sources)
+    for field in ("collection_sources", "usb_accessory_combinations"):
+        items = document.get(field)
+        if isinstance(items, Sequence) and not isinstance(items, (str, bytes)):
+            document[field] = tuple(items)
     try:
         return PeripheralPostureSnapshot(**document)
     except TypeError as exc:

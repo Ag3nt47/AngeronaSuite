@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import pytest
 
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QLineEdit, QMainWindow
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.core.usb_policy import UsbApprovalPolicy
 from angerona.gui.main_window import MainWindow
+from angerona.gui.notification_inbox import NotificationInbox
 from angerona.gui.usb_approval_dialog import UsbApprovalDialog
 from angerona.modules.usb_monitor import USBMonitorModule
 
@@ -77,7 +78,7 @@ def test_usb_dialog_masks_pin_and_grants_only_current_mount_trust() -> None:
     dialog.close()
 
 
-def test_main_window_opens_only_live_usb_approval_and_closes_on_removal() -> None:
+def test_main_window_queues_once_and_only_opens_on_review() -> None:
     app = _app()
     module = _module()
     approval = module._approval_policy.request("Y:\\")
@@ -86,8 +87,10 @@ def test_main_window_opens_only_live_usb_approval_and_closes_on_removal() -> Non
         modules={"Removable-Media / USB Monitor": module}
     )
     parent._usb_approval_dialogs = {}
-    parent._qss = lambda: ""
-    parent.tray = SimpleNamespace(showMessage=lambda *_args: None)
+    parent._usb_notification_keys = set()
+    parent._notifications = NotificationInbox(parent)
+    for name in ("_usb_approval_module", "_handle_usb_approval_events", "_open_usb_approval"):
+        setattr(parent, name, MethodType(getattr(MainWindow, name), parent))
 
     forged = Event(
         module.name,
@@ -100,10 +103,10 @@ def test_main_window_opens_only_live_usb_approval_and_closes_on_removal() -> Non
         },
     )
     MainWindow._handle_usb_approval_events(parent, [forged])
-    # A forged ID cannot manufacture a prompt.  The authoritative live pending
-    # set is still reconciled, so its real request opens even if its original
-    # EventBus notification was lost during an alert burst.
-    assert list(parent._usb_approval_dialogs) == [approval.approval_id]
+    # A forged ID cannot manufacture a prompt. A real pending request
+    # still enters the inbox if its original event was lost.
+    assert parent._notifications.count == 1
+    assert not parent._usb_approval_dialogs
 
     live = Event(
         module.name,
@@ -112,7 +115,13 @@ def test_main_window_opens_only_live_usb_approval_and_closes_on_removal() -> Non
         details=approval.event_details(),
     )
     MainWindow._handle_usb_approval_events(parent, [live])
-    assert list(parent._usb_approval_dialogs) == [approval.approval_id]
+    assert parent._notifications.count == 1
+    assert not parent._usb_approval_dialogs
+    inbox = parent._notifications.show()
+    inbox._review.click()
+    dialog = parent._usb_approval_dialogs[approval.approval_id]
+    inbox._review.click()
+    assert parent._usb_approval_dialogs == {approval.approval_id: dialog}
 
     removed = Event(
         module.name,
@@ -121,7 +130,12 @@ def test_main_window_opens_only_live_usb_approval_and_closes_on_removal() -> Non
         details={"event_type": "usb_media_removed", "mountpoint": "Y:\\"},
     )
     MainWindow._handle_usb_approval_events(parent, [removed])
-    assert parent._usb_approval_dialogs == {}
+    assert parent._usb_approval_dialogs == {approval.approval_id: dialog}
+    module._approval_policy.remove("Y:\\")
+    MainWindow._handle_usb_approval_events(parent, [removed])
+    assert not parent._usb_approval_dialogs
+    assert parent._notifications.count == 0
+    parent._notifications.shutdown()
     # The real dashboard keeps its parent window alive while Qt drains the
     # WA_DeleteOnClose event. This synthetic owner is torn down immediately, so
     # drain the child deletion first to avoid a double-destruction race in Qt.
@@ -284,7 +298,7 @@ def test_close_before_queued_approval_result_revokes_trust() -> None:
     assert module.trust_state("S:\\") == "denied"
 
 
-def test_enrollment_timeout_revokes_late_reset_without_approving(monkeypatch) -> None:
+def test_enrollment_timeout_keeps_exact_request_denied_after_late_write(monkeypatch) -> None:
     _app()
     module = _module(pin=None)
     approval = module._approval_policy.request("R:\\")
@@ -292,6 +306,7 @@ def test_enrollment_timeout_revokes_late_reset_without_approving(monkeypatch) ->
     _ready(dialog)
     entered, release, returned = threading.Event(), threading.Event(), threading.Event()
     configured = {}
+    module._approval_policy._pin_loader = lambda: configured.get("pin")
 
     def slow_writer(pin):
         entered.set()
@@ -313,10 +328,14 @@ def test_enrollment_timeout_revokes_late_reset_without_approving(monkeypatch) ->
         assert dialog._deny_button.isEnabled()
         assert not dialog._approve_button.isEnabled()
         assert module.trust_state("R:\\") == "denied"
+        worker = dialog._operation_worker
+        assert worker is not None
         release.set()
-        _wait(lambda: returned.is_set() and module.trust_state("R:\\") == "pending")
-        assert module.pending_approvals()[0].approval_id != approval.approval_id
+        _wait(lambda: returned.is_set() and not worker.is_alive())
         assert configured["pin"] == "246810"
+        assert module.trust_state("R:\\") == "denied"
+        assert module.pending_approvals() == ()
+        assert module._approval_policy.verify(approval.approval_id, "246810").reason == "operator_denied"
         dialog.close()
     finally:
         release.set()

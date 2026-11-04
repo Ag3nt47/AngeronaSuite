@@ -22,9 +22,15 @@ class VMwareSetupDialog(QDialog):
         self.setWindowTitle("Optional Analysis Lab setup")
         self.resize(660, 460)
         self._busy = False
+        self._worker = None
+        self._activity = None
         self._progress = queue.Queue(maxsize=8)
         self._completion = queue.Queue(maxsize=1)
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         for text in (
             setup.PURPOSE,
             "Broadcom requires a free account and may require compliance approval. "
@@ -100,10 +106,17 @@ class VMwareSetupDialog(QDialog):
             completion.put_nowait(result)
 
         try:
-            threading.Thread(target=run, name="vmware-setup", daemon=True).start()
+            self._activity = self._activities.begin('vmware-setup', 'Running the requested VMware setup action…', replace=True)
+            self._worker = threading.Thread(target=run, name="vmware-setup", daemon=True)
+            self._worker.start()
         except Exception:
+            if self._worker is not None and self._worker.is_alive():
+                self._timer.start()
+                return
             _WORKERS.release()
             self._busy = False
+            self._activities.finish(self._activity)
+            self._activity = None
             self._buttons()
             raise
         self.status.setText("Starting the requested setup action…")
@@ -112,14 +125,21 @@ class VMwareSetupDialog(QDialog):
     def _poll(self):
         for _ in range(8):
             try:
-                self.status.setText(self._progress.get_nowait())
+                message = self._progress.get_nowait()
+                self.status.setText(message)
+                self._activities.update(self._activity, label=message)
             except queue.Empty:
                 break
+        if self._worker is not None and self._worker.is_alive():
+            return
         try:
             ok, message = self._completion.get_nowait()
         except queue.Empty:
             return
         self._busy = False
+        self._activities.finish(self._activity)
+        self._activity = None
+        self._worker = None
         self._timer.stop()
         self._buttons()
         self.status.setText(message + ("\n\n" + setup.VALIDATION_NOTE if ok else ""))

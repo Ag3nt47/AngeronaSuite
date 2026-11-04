@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import base64
+from collections import OrderedDict
 import json
 import os
 import re
 import queue
+import secrets
 import threading
 import time
 from pathlib import Path
@@ -95,6 +97,8 @@ class ImmutableRecoveryGuardModule(BaseModule):
         self._commands = queue.Queue(maxsize=4)
         self._wake = threading.Event()
         self._work_units = 0
+        self._command_lock = threading.RLock()
+        self._command_requests = OrderedDict()
 
     def bind_manager(self, manager):
         self._manager = manager
@@ -124,64 +128,137 @@ class ImmutableRecoveryGuardModule(BaseModule):
             if isinstance(value, bytearray):
                 value[:] = b"\0" * len(value)
 
-    def _queue_recovery(self, command, payload):
-        if (self.status != "running" or self.stopping
-                or getattr(self._manager, "ugcap_paused", False)):
-            self._wipe_keys(payload)
-            return False
-        try:
-            self._commands.put_nowait((command, payload))
+    def _queue_recovery(self, command, payload, *, return_ticket=False):
+        # Admission observes one immutable BaseModule generation/stop token.
+        # This brief lock never covers workflow IO or a worker wait.
+        return_ticket = return_ticket is True
+        with self._lifecycle_lock:
+            generation, stop = self.lifecycle_generation, self.generation_stop_event()
+            if (self.status != "running" or stop.is_set()
+                    or getattr(self._manager, "ugcap_paused", False)
+                    or return_ticket and generation <= 0):
+                self._wipe_keys(payload)
+                return False
+            ticket = dict(request_id=secrets.token_hex(16), generation=generation, command=command)
+            with self._command_lock:
+                if self._commands.full():
+                    self._wipe_keys(payload)
+                    return False
+                for _attempt in range(4):
+                    if ticket["request_id"] not in self._command_requests:
+                        break
+                    ticket["request_id"] = secrets.token_hex(16)
+                else:
+                    self._wipe_keys(payload)
+                    return False
+                while len(self._command_requests) >= 16:
+                    retired = next((key for key, value in self._command_requests.items()
+                                    if value["state"] not in {"queued", "running"}), None)
+                    if retired is None:
+                        self._wipe_keys(payload)
+                        return False
+                    self._command_requests.pop(retired)
+                self._command_requests[ticket["request_id"]] = dict(ticket, state="queued",
+                    operation_settled=False, action_returned=False, completed=None, total=None,
+                    workflow_status=None, error_type=None)
+                try:
+                    self._commands.put_nowait((command, payload, ticket, stop))
+                except queue.Full:
+                    self._command_requests.pop(ticket["request_id"], None)
+                    self._wipe_keys(payload)
+                    return False
             self._wake.set()
-            return True
-        except queue.Full:
-            self._wipe_keys(payload)
+            return dict(ticket) if return_ticket else True
+
+    def queue_tracked_recovery(self, method, *args, **kwargs):
+        """Existing validated command methods, with a presentation-only ticket."""
+        allowed = {"queue_enroll_recovery_authority", "queue_import_recovery_evidence",
+                   "queue_restore_recovery", "queue_recheck_recovery", "queue_recovery_schedule"}
+        if type(method) is not str or method not in allowed or "return_ticket" in kwargs:
             return False
+        return getattr(self, method)(*args, **kwargs, return_ticket=True)
+
+    def command_request_snapshot(self, ticket):
+        """Memory only; no paths, payloads, keys, IO or response authority."""
+        if (type(ticket) is not dict or set(ticket) != {"request_id", "generation", "command"}
+                or type(ticket.get("request_id")) is not str
+                or not re.fullmatch("[0-9a-f]{32}", ticket["request_id"])
+                or type(ticket.get("generation")) is not int or ticket["generation"] < 0
+                or type(ticket.get("command")) is not str
+                or ticket.get("command") not in {"enroll", "import", "restore", "recheck", "schedule"}):
+            return {"state": "unavailable", "operation_settled": False}
+        with self._command_lock:
+            row = self._command_requests.get(ticket["request_id"])
+            if row is None or row["generation"] != ticket["generation"] or row["command"] != ticket.get("command"):
+                return dict(ticket, state="unavailable", operation_settled=False)
+            return dict(row)
+
+    def _command_state(self, ticket, **values):
+        if ticket is None:
+            return
+        with self._command_lock:
+            row = self._command_requests.get(ticket["request_id"])
+            if (row is not None and row["generation"] == ticket["generation"]
+                    and row["command"] == ticket["command"] and row["state"] in {"queued", "running"}):
+                row.update(values)
 
     @staticmethod
     def _local_path(path):
         return (isinstance(path, str) and 1 <= len(path) <= 32768 and Path(path).is_absolute()
                 and not path.startswith(("\\\\", "//")) and not any(ord(c) < 32 for c in path))
 
-    def queue_enroll_recovery_authority(self, signer_id, public_key):
+    def queue_enroll_recovery_authority(self, signer_id, public_key, *, return_ticket=False):
         if (not isinstance(signer_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:@-]{2,127}", signer_id)
                 or not isinstance(public_key, str) or not 1 <= len(public_key) <= 256):
             return False
-        return self._queue_recovery("enroll", {"signer_id": signer_id, "public_key": public_key})
+        return self._queue_recovery("enroll", {"signer_id": signer_id, "public_key": public_key}, return_ticket=return_ticket)
 
-    def queue_import_recovery_evidence(self, path):
-        return self._local_path(path) and self._queue_recovery("import", {"path": path})
+    def queue_import_recovery_evidence(self, path, *, return_ticket=False):
+        return self._local_path(path) and self._queue_recovery("import", {"path": path}, return_ticket=return_ticket)
 
-    def queue_restore_recovery(self, archive, evidence, keys=None):
+    def queue_restore_recovery(self, archive, evidence, keys=None, *, return_ticket=False):
         if not self._local_path(archive) or not self._local_path(evidence):
             return False
         if keys is not None and (not isinstance(keys, tuple) or len(keys) != 2
                 or any(not isinstance(key, bytearray) or len(key) not in (32, 64) for key in keys)):
             return False
         copies = tuple(bytearray(key) for key in keys) if keys is not None else None
-        return self._queue_recovery("restore", {"archive": archive, "evidence": evidence, "keys": copies})
+        return self._queue_recovery("restore", {"archive": archive, "evidence": evidence, "keys": copies}, return_ticket=return_ticket)
 
-    def queue_recheck_recovery(self, keys=None):
+    def queue_recheck_recovery(self, keys=None, *, return_ticket=False):
         if keys is not None and (not isinstance(keys, tuple) or len(keys) != 2
                 or any(not isinstance(key, bytearray) or len(key) not in (32, 64) for key in keys)):
             return False
         copies = tuple(bytearray(key) for key in keys) if keys is not None else None
-        return self._queue_recovery("recheck", {"keys": copies})
+        return self._queue_recovery("recheck", {"keys": copies}, return_ticket=return_ticket)
 
-    def queue_recovery_schedule(self, enabled, interval_hours=24):
+    def queue_recovery_schedule(self, enabled, interval_hours=24, *, return_ticket=False):
         if type(enabled) is not bool or type(interval_hours) is not int or not 1 <= interval_hours <= 720:
             return False
-        return self._queue_recovery("schedule", {"enabled": enabled, "interval_hours": interval_hours})
+        return self._queue_recovery("schedule", {"enabled": enabled, "interval_hours": interval_hours}, return_ticket=return_ticket)
 
     def _process_recovery_command(self):
-        try:
-            command, payload = self._commands.get_nowait()
-        except queue.Empty:
-            return
+        with self._command_lock:
+            try:
+                queued = self._commands.get_nowait()
+            except queue.Empty:
+                return
+        command, payload = queued[:2]
+        ticket, admitted_stop = queued[2:] if len(queued) == 4 else (None, self.generation_stop_event())
+        worker_generation = getattr(self._run_context, "generation", self.lifecycle_generation)
+        worker_stop = self.generation_stop_event()
         decoded_keys = []
-        workflow = self._get_workflow()
+        workflow = None
+        state, action_returned, workflow_status, error_type = "failed", False, None, None
         try:
+            if (ticket is not None and (ticket["generation"] != worker_generation
+                    or admitted_stop is not worker_stop
+                    or self.command_request_snapshot(ticket).get("state") != "queued")):
+                raise InterruptedError("Recovery command generation no longer owns admission")
+            self._command_state(ticket, state="running")
             if not self._continue_recovery():
                 raise InterruptedError("Recovery workspace is held or worker stopped")
+            workflow = self._get_workflow()
             if payload.get("keys") is not None:
                 for key in payload["keys"]:
                     decoded_keys.append(bytearray.fromhex(key.decode("ascii")) if len(key) == 64 else bytearray(key))
@@ -196,26 +273,75 @@ class ImmutableRecoveryGuardModule(BaseModule):
                 workflow.recheck(keys=tuple(decoded_keys) if decoded_keys else None)
             elif command == "schedule":
                 workflow.configure_schedule(payload["enabled"], payload["interval_hours"])
+            else:
+                raise ValueError("Unknown recovery command")
+            action_returned = True
+            workflow_status = str(workflow.snapshot().get("status", "unknown"))[:80]
             self.emit("Operator recovery workflow completed; review its scoped verification result.",
-                      Severity.INFO, event_type="recovery_workflow", workflow_status=workflow.snapshot()["status"],
+                      Severity.INFO, event_type="recovery_workflow", workflow_status=workflow_status,
+                      request_id=ticket["request_id"] if ticket is not None else None,
+                      command_generation=ticket["generation"] if ticket is not None else None,
                       response_authorized=False, observation_only=True)
+            state = "completed"
         except Exception as exc:
-            workflow.failure(exc)
-            self.emit("Operator recovery workflow is held or failed verification.", Severity.HIGH,
-                      event_type="recovery_workflow", error_type=type(exc).__name__,
-                      response_authorized=False, observation_only=True, disposition="exposure")
+            error_type = type(exc).__name__
+            state = ("cancelled" if worker_stop.is_set() or ticket is not None and ticket["generation"] != worker_generation
+                     else "held" if isinstance(exc, InterruptedError) else "failed")
+            if workflow is not None:
+                try:
+                    workflow.failure(exc)
+                    workflow_status = str(workflow.snapshot().get("status", "unknown"))[:80]
+                except Exception:
+                    self._command_state(ticket, failure_reporting_unavailable=True)
+            try:
+                self.emit("Operator recovery workflow is held or failed verification.", Severity.HIGH,
+                          event_type="recovery_workflow", error_type=error_type,
+                          request_id=ticket["request_id"] if ticket is not None else None,
+                          command_generation=ticket["generation"] if ticket is not None else None,
+                          response_authorized=False, observation_only=True, disposition="exposure")
+            except Exception:
+                self._command_state(ticket, event_delivery_unavailable=True)
         finally:
             self._wipe_keys(payload)
             for key in decoded_keys or ():
                 key[:] = b"\0" * len(key)
             self._commands.task_done()
+            # Every action is synchronous on this existing worker, including
+            # isolated extraction, reread and proof writes. Keys are wiped
+            # before this exact command becomes terminal. This is operation
+            # settlement, not termination of the persistent guard thread.
+            self._command_state(ticket, state=state, operation_settled=True,
+                action_returned=action_returned, workflow_status=workflow_status, error_type=error_type)
+
+    def _cancel_queued_recovery(self, generation):
+        while True:
+            with self._command_lock:
+                try:
+                    queued = self._commands.get_nowait()
+                except queue.Empty:
+                    return
+                ticket = queued[2] if len(queued) == 4 else None
+                if ticket is not None and ticket["generation"] != generation:
+                    # All this module's queue writers share _command_lock;
+                    # restoring the just-freed slot cannot lose a newer job.
+                    self._commands.put_nowait(queued)
+                    self._commands.task_done()
+                    return
+            self._wipe_keys(queued[1])
+            self._commands.task_done()
+            self._command_state(ticket, state="cancelled", operation_settled=True,
+                                action_returned=False, error_type="GuardStoppedBeforeDispatch")
 
     def dashboard_snapshot(self):
         workflow = self._workflow
-        return workflow.snapshot() if workflow is not None else {
+        result = workflow.snapshot() if workflow is not None else {
             "status": "deployment-required", "latest_verified_revision": None,
             "latest_restore_seconds": None, "schedule_enabled": False,
             "physical_independence_proven": False, "finding_codes": ["no recovery workflow performed"]}
+        with self._command_lock:
+            result = dict(result, command_requests=[dict(row) for row in self._command_requests.values()],
+                          command_generation=self.lifecycle_generation)
+        return result
 
     def _paths(self) -> tuple[Path, Path]:
         root = self._profile_root() / "recovery-assurance"
@@ -247,6 +373,7 @@ class ImmutableRecoveryGuardModule(BaseModule):
 
     def run(self) -> None:
         next_observe = 0.0
+        generation = getattr(self._run_context, "generation", self.lifecycle_generation)
         try:
             while not self.stopping:
                 self._process_recovery_command()
@@ -264,15 +391,11 @@ class ImmutableRecoveryGuardModule(BaseModule):
                 self._observe_and_emit()
                 self.mark_cycle_complete(interval_seconds=5.0)
         finally:
-            if self._workflow is not None:
-                self._workflow.cancel_schedule()
-            while True:
-                try:
-                    _command, payload = self._commands.get_nowait()
-                    self._wipe_keys(payload)
-                    self._commands.task_done()
-                except queue.Empty:
-                    break
+            try:
+                if self._workflow is not None:
+                    self._workflow.cancel_schedule()
+            finally:
+                self._cancel_queued_recovery(generation)
 
     def stop(self):
         super().stop()

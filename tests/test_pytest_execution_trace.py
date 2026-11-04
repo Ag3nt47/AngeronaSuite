@@ -47,8 +47,14 @@ def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
     environment["TMP"] = str(tmp_path)
     environment["QT_QPA_PLATFORM"] = "offscreen"
     environment["ANGERONA_PYTEST_TRACE_PATH"] = str(trace)
+    # Keep the named observer importable from the repository, while collection
+    # starts at this one disposable probe rather than scanning ancestor siblings.
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "tools.pytest_execution_trace", str(probe)],
+        [
+            sys.executable, "-m", "pytest", "-q",
+            "--confcutdir", str(tmp_path), "--rootdir", str(tmp_path),
+            "-p", "tools.pytest_execution_trace", str(probe),
+        ],
         cwd=Path(__file__).resolve().parents[1], env=environment,
         capture_output=True, timeout=60,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -61,8 +67,27 @@ def test_trace_preserves_failure_and_last_test_identity(tmp_path, fault):
     assert any(row["kind"] == "test-start" and row["nodeid"].endswith("test_inert_probe") for row in records), (
         result.returncode, result.stdout.decode(errors="replace"), result.stderr.decode(errors="replace"),
     )
+    starts = [row for row in records if row["kind"] == "test-start"]
+    assert [row["nodeid"] for row in starts] == ["test_trace_probe.py::test_inert_probe"]
+    if fault != "qt-fatal":
+        reports = [row for row in records
+                   if row["kind"] == "test-report" and row.get("when") == "call"]
+        assert len(reports) == 1 and reports[0]["nodeid"] == starts[0]["nodeid"]
+        finishes = [row for row in records if row["kind"] == "session-finish"]
+        assert len(finishes) == 1
+        expected_status = 1 if fault == "assertion" else 0
+        assert result.returncode == expected_status
+        assert finishes[0]["exitstatus"] == expected_status
+        assert finishes[0]["testsfailed"] == expected_status
+        assert finishes[0]["testscollected"] == 1
+        assert [(row["kind"], row.get("completed")) for row in records
+                if row["kind"] in {"unconfigure-begin", "unconfigure-end", "session-end"}] == [
+            ("unconfigure-begin", None), ("unconfigure-end", True), ("session-end", None),
+        ]
+        assert records[-1]["kind"] == "session-end"
     if fault == "assertion":
         assert any(row.get("outcome") == "failed" and row.get("when") == "call" for row in records)
+        assert "inert assertion probe" in reports[0]["failure"]
     elif fault == "qt-fatal":
         assert any(
             row["kind"] == "qt-message" and row["severity"] == "QtFatalMsg"

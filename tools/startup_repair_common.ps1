@@ -1061,7 +1061,22 @@ public static class StartupRepairProcess {
             return new Window(file,args,directory,environment,log,inherited,critical);
         } catch {if(inherited!=IntPtr.Zero)CloseHandle(inherited);throw;}
     }
-    static void RetireJob(IntPtr job,IntPtr root,System.Collections.Generic.List<IntPtr> retained) {
+    sealed class NativeCloseCustody {
+        public readonly IntPtr raw;public readonly string kind;public readonly object owner;public readonly Exception failure;
+        public NativeCloseCustody(IntPtr raw,string kind,object owner,Exception failure){this.raw=raw;this.kind=kind;this.owner=owner;this.failure=failure;}
+    }
+    // Real dispatch passes only the fixed native CloseHandle implementation.
+    // The parameter permits isolated acknowledgement tests with inert values.
+    static bool CloseOriginal(IntPtr raw,string kind,object owner,bool strict,Func<IntPtr,bool> close) {
+        if(raw==IntPtr.Zero || raw==new IntPtr(-1))return true;
+        if(!strict){close(raw);return true;}
+        Exception failure=null;
+        try{if(close(raw))return true;failure=new Win32Exception(Marshal.GetLastWin32Error());}
+        catch(Exception error){failure=error;}
+        lock(custodyGuard)heldCustody.Add(new NativeCloseCustody(raw,kind,owner,failure));
+        return false; // Exact original raw owner stays parked; never a retry.
+    }
+    static void RetireJob(IntPtr job,IntPtr root,System.Collections.Generic.List<IntPtr> retained,bool strictClose=false,object closeOwner=null) {
         Exception custodyError=null;
         IntPtr list=Marshal.AllocHGlobal(8+4096*IntPtr.Size);
         try {
@@ -1079,9 +1094,9 @@ public static class StartupRepairProcess {
                     }
                     bool member;
                     if(!IsProcessInJob(handle,job,out member)) {
-                        int error=Marshal.GetLastWin32Error();CloseHandle(handle);throw new Win32Exception(error);
+                        int error=Marshal.GetLastWin32Error();CloseOriginal(handle,"membership-query",closeOwner,strictClose,CloseHandle);throw new Win32Exception(error);
                     }
-                    if(member)retained.Add(handle);else CloseHandle(handle); // PID reuse never gains custody.
+                    if(member)retained.Add(handle);else CloseOriginal(handle,"nonmember-query",closeOwner,strictClose,CloseHandle); // PID reuse never gains custody.
                 }
             } catch(Exception error) { custodyError=error; }
             Check(TerminateJobObject(job,1223));
@@ -1110,6 +1125,26 @@ public static class StartupRepairProcess {
         if(critical && inherited==IntPtr.Zero)throw new InvalidOperationException("Critical startup requires a retained read guard.");
         return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null,inherited,critical);
     }
+    static long heartbeatFailures;
+    public static long HeartbeatFailures {get{return System.Threading.Interlocked.Read(ref heartbeatFailures);}}
+    public static int Run(string file,string[] args,string directory,string environment,string log,int timeout,
+        SafeFileHandle scratchLease,bool critical,Action heartbeat) {
+        IntPtr inherited=DuplicateScratchLease(scratchLease);
+        if(critical && inherited==IntPtr.Zero)throw new InvalidOperationException("Critical startup requires a retained read guard.");
+        return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null,inherited,critical,heartbeat);
+    }
+    public static int Run(string file,string[] args,string directory,string environment,string log,int timeout,
+        SafeFileHandle scratchLease,bool critical,Action heartbeat,bool requireClosedHandles) {
+        if(!requireClosedHandles)return Run(file,args,directory,environment,log,timeout,scratchLease,critical,heartbeat);
+        // Activation has no pump or borrowed critical scratch owner. Every
+        // native handle remains in this checked raw close path.
+        if(scratchLease!=null || critical)throw new InvalidOperationException("Strict activation dispatch cannot borrow a critical output/scratch owner.");
+        return RunCore(file,args,directory,environment,log,timeout,System.Threading.CancellationToken.None,null,IntPtr.Zero,false,heartbeat,true);
+    }
+    static void ObservedHeartbeat(Action heartbeat) {
+        if(heartbeat==null)return;
+        try{heartbeat();}catch(Exception){System.Threading.Interlocked.Increment(ref heartbeatFailures);}
+    }
     static string BindScratchEnvironment(string environment,IntPtr scratchLease) {
         if(environment==null)return null; // Existing direct native callers retain their original environment mode.
         var entries=new System.Collections.Generic.List<string>();
@@ -1125,12 +1160,13 @@ public static class StartupRepairProcess {
         return String.Join("\0",entries.ToArray())+"\0\0";
     }
     static int RunCore(string file,string[] args,string directory,string environment,string log,int timeout,
-        System.Threading.CancellationToken stop,Window owner,IntPtr scratchLease,bool critical) {
+        System.Threading.CancellationToken stop,Window owner,IntPtr scratchLease,bool critical,Action heartbeat=null,bool strictClose=false) {
         IntPtr job=IntPtr.Zero, attrs=IntPtr.Zero, jobs=IntPtr.Zero, handles=IntPtr.Zero, env=IntPtr.Zero;
         IntPtr output=IntPtr.Zero, input=IntPtr.Zero; bool initialized=false;
         bool boundedOutput=scratchLease!=IntPtr.Zero;
         IntPtr pipeRead=IntPtr.Zero,pipeWrite=IntPtr.Zero;CriticalOutput criticalOutput=null;
         var pi = new PROCESS_INFORMATION();
+        object closeOwner=strictClose ? new object() : null;
         try {
             if(owner==null)RequireRetiredCustody(); // Independent diagnostic windows remain usable.
             job=CreateJobObjectW(IntPtr.Zero,null); Check(job!=IntPtr.Zero);
@@ -1175,7 +1211,9 @@ public static class StartupRepairProcess {
             foreach (string arg in args) command.Append(' ').Append(Quote(arg));
             env=Marshal.StringToHGlobalUni(BindScratchEnvironment(environment,scratchLease));
             Check(CreateProcessW(file,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref startup,out pi));
-            if(pipeWrite!=IntPtr.Zero){IntPtr bridge=pipeWrite;pipeWrite=IntPtr.Zero;Check(CloseHandle(bridge));}
+            if(pipeWrite!=IntPtr.Zero){IntPtr bridge=pipeWrite;pipeWrite=IntPtr.Zero;
+                if(strictClose){if(!CloseOriginal(bridge,"parent-pipe-bridge",closeOwner,true,CloseHandle))throw new InvalidOperationException("Strict native bridge close is held.");}
+                else Check(CloseHandle(bridge));}
             // The child now owns its read-only copy. Do not keep an accidental
             // parent bridge that could disguise failed inheritance in tests.
             if(scratchLease!=IntPtr.Zero){Check(CloseHandle(scratchLease));scratchLease=IntPtr.Zero;}
@@ -1191,6 +1229,7 @@ public static class StartupRepairProcess {
             while(timeout<0 || clock.ElapsedMilliseconds<timeout) {
                 if(stop.IsCancellationRequested)return 1223;
                 waited=WaitForSingleObject(pi.process,(uint)(timeout<0 ? 100 : Math.Min(100,timeout-clock.ElapsedMilliseconds)));
+                ObservedHeartbeat(heartbeat); // Actual same-thread native wait progress only.
                 if(waited!=258) break;
                 if(timeout<0)continue; // The read-only recovery UI waits for its operator.
                 foreach(string volume in volumes) {
@@ -1208,12 +1247,12 @@ public static class StartupRepairProcess {
             Check(waited==0); uint code; Check(GetExitCodeProcess(pi.process,out code));
             return unchecked((int)code);
         } finally {
-            if(pipeWrite!=IntPtr.Zero){CloseHandle(pipeWrite);pipeWrite=IntPtr.Zero;}
+            if(pipeWrite!=IntPtr.Zero){IntPtr bridge=pipeWrite;pipeWrite=IntPtr.Zero;CloseOriginal(bridge,"pending-pipe-bridge",closeOwner,strictClose,CloseHandle);}
             // Do not release a reader/mutation lease merely because a redirector
             // exited. Observe every descendant in this exact non-inherited job.
             var retained=new System.Collections.Generic.List<IntPtr>();
             try {
-                if(job!=IntPtr.Zero && pi.process!=IntPtr.Zero)RetireJob(job,pi.process,retained);
+                if(job!=IntPtr.Zero && pi.process!=IntPtr.Zero)RetireJob(job,pi.process,retained,strictClose,closeOwner);
             } catch(Exception error) {
                 lock(custodyGuard)heldCustody.Add(new PendingCustody {
                     job=job,process=pi.process,thread=pi.thread,members=retained,failure=error,outputOwner=criticalOutput });
@@ -1234,20 +1273,21 @@ public static class StartupRepairProcess {
                     }
                 }finally{criticalOutput.Release();}
             }
-            if(retained!=null)foreach(IntPtr process in retained)CloseHandle(process);
-            if (job!=IntPtr.Zero) CloseHandle(job);
-            if (pi.thread!=IntPtr.Zero) CloseHandle(pi.thread);
-            if (pi.process!=IntPtr.Zero) CloseHandle(pi.process);
-            if (output!=IntPtr.Zero && output!=new IntPtr(-1)) CloseHandle(output);
-            if (input!=IntPtr.Zero && input!=new IntPtr(-1)) CloseHandle(input);
-            if (scratchLease!=IntPtr.Zero) CloseHandle(scratchLease);
-            if (pipeRead!=IntPtr.Zero) CloseHandle(pipeRead);
+            if(retained!=null)foreach(IntPtr process in retained)CloseOriginal(process,"retained-member",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(job,"job",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(pi.thread,"root-thread",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(pi.process,"root-process",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(output,"output",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(input,"input",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(scratchLease,"scratch",closeOwner,strictClose,CloseHandle);
+            CloseOriginal(pipeRead,"pipe-read",closeOwner,strictClose,CloseHandle);
             if (initialized) DeleteProcThreadAttributeList(attrs);
             if (attrs!=IntPtr.Zero) Marshal.FreeHGlobal(attrs);
             if (jobs!=IntPtr.Zero) Marshal.FreeHGlobal(jobs);
             if (handles!=IntPtr.Zero) Marshal.FreeHGlobal(handles);
             if (env!=IntPtr.Zero) Marshal.FreeHGlobal(env);
             if(outputRetirementError!=null)throw outputRetirementError;
+            if(strictClose)RequireRetiredCustody(); // No strict return with any close/job/pump ambiguity.
             }
         }
     }
@@ -1287,7 +1327,7 @@ function Get-SourceStartupCriticalMode([bool]$Requested, [bool]$ExplicitMode) {
 function Invoke-OwnedRepairProcess {
     param([string]$FilePath, [string[]]$Arguments, [string]$WorkingDirectory,
         [Collections.IDictionary]$Environment, [ValidateRange(1,1800)][int]$TimeoutSeconds,
-        [string]$LogPath, [IO.FileStream]$ScratchLease, [switch]$CriticalStartup)
+        [string]$LogPath, [IO.FileStream]$ScratchLease, [switch]$CriticalStartup, [Action]$Heartbeat, [switch]$RequireClosedHandles)
     # Windows servicing legitimately hard-links system executables to WinSxS.
     # Callers choose/signature-check their fixed executable; it is never edited.
     Assert-PlainRepairPath $FilePath -AllowHardLinks
@@ -1307,6 +1347,18 @@ function Invoke-OwnedRepairProcess {
     $scratchGuard = Get-SourceStartupReadLease $ScratchLease ($PSBoundParameters.ContainsKey('ScratchLease'))
     $critical = Get-SourceStartupCriticalMode $CriticalStartup.IsPresent ($PSBoundParameters.ContainsKey('CriticalStartup'))
     $block = ($entries -join [char]0) + [char]0 + [char]0
+    if(!$PSBoundParameters.ContainsKey('Heartbeat')){
+        $own=Get-Variable -Name SourceStartupHeartbeat -Scope Script -ErrorAction SilentlyContinue
+        if($own -and $own.Value){$Heartbeat=$own.Value.Writer.PulseAction}
+    }
+    if($RequireClosedHandles){
+        return [Angerona.StartupRepairProcess]::Run($FilePath,$Arguments,$WorkingDirectory,$block,$LogPath,($TimeoutSeconds*1000),
+            $(if($scratchGuard){$scratchGuard.SafeFileHandle}else{$null}),$critical,$Heartbeat,$true)
+    }
+    if($Heartbeat){
+        return [Angerona.StartupRepairProcess]::Run($FilePath,$Arguments,$WorkingDirectory,$block,$LogPath,($TimeoutSeconds*1000),
+            $(if($scratchGuard){$scratchGuard.SafeFileHandle}else{$null}),$critical,$Heartbeat)
+    }
     return [Angerona.StartupRepairProcess]::Run($FilePath, $Arguments,
         $WorkingDirectory, $block, $LogPath, ($TimeoutSeconds * 1000),
         $(if ($scratchGuard) { $scratchGuard.SafeFileHandle } else { $null }), $critical)
@@ -1339,4 +1391,450 @@ function Start-OwnedRepairWindow {
     $critical = Get-SourceStartupCriticalMode $CriticalStartup.IsPresent ($PSBoundParameters.ContainsKey('CriticalStartup'))
     return [Angerona.StartupRepairProcess]::StartWindow($FilePath, $Arguments, $WorkingDirectory, $block, $LogPath,
         $(if ($scratchGuard) { $scratchGuard.SafeFileHandle } else { $null }), $critical)
+}
+
+# Source activation observes one exact external launch generation. This owner
+# is never assigned to the Core Job and must never be joined before Core exit.
+function Initialize-SourceActivationProcessOwner {
+    if ('Angerona.SourceActivationProcessOwner' -as [type]) { return }
+    $scratch = Get-RepairProcessCompilerScratch
+    $savedTemp, $savedTmp = $env:TEMP, $env:TMP
+    try {
+        $env:TEMP = $scratch; $env:TMP = $scratch
+        Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Angerona {
+public sealed class SourceActivationProcessOwner : IDisposable {
+    [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint rights,bool inherit,uint pid);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint WaitForSingleObject(IntPtr handle,uint milliseconds);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr handle,out long birth,out long exit,out long kernel,out long user);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr handle,out uint code);
+    [DllImport("kernel32.dll",SetLastError=true,CharSet=CharSet.Unicode)] static extern bool QueryFullProcessImageNameW(IntPtr handle,uint flags,StringBuilder path,ref uint length);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("ntdll.dll")] static extern int NtQueryInformationProcess(IntPtr process,int information,IntPtr buffer,int length,out int returned);
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool present);
+    static readonly List<object> closeHolds=new List<object>();
+    IntPtr handle;
+    public uint ProcessId {get;private set;}
+    public long Birth {get;private set;}
+    public string Image {get;private set;}
+    public uint? ExitCode {get;private set;}
+    public bool CloseProven {get;private set;}
+    public bool CloseHeld {get;private set;}
+    public static bool CustodyPending {get {return closeHolds.Count!=0;}}
+    static void Check(bool valid){if(!valid)throw new Win32Exception(Marshal.GetLastWin32Error());}
+    public SourceActivationProcessOwner(uint pid) {
+        ProcessId=pid;
+        handle=OpenProcess(0x00101000,false,pid);Check(handle!=IntPtr.Zero);
+        try {
+            if(WaitForSingleObject(handle,0)!=258)throw new IOException("Exact source launch generation is not live.");
+            long birth,exit,kernel,user;Check(GetProcessTimes(handle,out birth,out exit,out kernel,out user));
+            var path=new StringBuilder(32768);uint length=32768;
+            Check(QueryFullProcessImageNameW(handle,0,path,ref length));
+            if(birth<=0 || !Path.IsPathRooted(path.ToString()))throw new IOException("Native source launch identity is incomplete.");
+            Birth=birth;Image=Path.GetFullPath(path.ToString());
+            if(WaitForSingleObject(handle,0)!=258)throw new IOException("Exact source launch generation retired during binding.");
+        } catch {Dispose();throw;}
+    }
+    public void AssertLive(long birth,string image) {
+        if(CloseHeld || handle==IntPtr.Zero || Birth!=birth || !String.Equals(Image,Path.GetFullPath(image),StringComparison.OrdinalIgnoreCase)
+            || WaitForSingleObject(handle,0)!=258)throw new IOException("Exact source launch binding is no longer live.");
+    }
+    public uint ParentProcessId() {
+        AssertLive(Birth,Image);
+        if(IntPtr.Size!=8)throw new IOException("Fixed source handoff requires the native 64-bit system host.");
+        IntPtr data=Marshal.AllocHGlobal(IntPtr.Size*6);
+        try {
+            int returned;
+            if(NtQueryInformationProcess(handle,0,data,IntPtr.Size*6,out returned)!=0 || returned<IntPtr.Size*6)
+                throw new IOException("Native parent identity is unavailable.");
+            long pid=Marshal.ReadIntPtr(data,IntPtr.Size*5).ToInt64();
+            if(pid<=0 || pid>uint.MaxValue)throw new IOException("Native parent identity is invalid.");
+            AssertLive(Birth,Image);return (uint)pid;
+        } finally {Marshal.FreeHGlobal(data);}
+    }
+    public bool InAnyJob() {
+        AssertLive(Birth,Image);bool present;Check(IsProcessInJob(handle,IntPtr.Zero,out present));
+        AssertLive(Birth,Image);return present;
+    }
+    public string CommandLine() {
+        AssertLive(Birth,Image);int needed;
+        NtQueryInformationProcess(handle,60,IntPtr.Zero,0,out needed);
+        if(needed<16 || needed>131072)throw new IOException("Native command line exceeds its bound or is unavailable.");
+        IntPtr data=Marshal.AllocHGlobal(needed);
+        try {
+            int returned;
+            if(NtQueryInformationProcess(handle,60,data,needed,out returned)!=0 || returned>needed)
+                throw new IOException("Native command line query failed.");
+            int length=(ushort)Marshal.ReadInt16(data);
+            IntPtr text=Marshal.ReadIntPtr(data,8);long offset=text.ToInt64()-data.ToInt64();
+            if(length%2!=0 || offset<16 || offset+length>needed)throw new IOException("Native command line buffer is invalid.");
+            string result=Marshal.PtrToStringUni(text,length/2);AssertLive(Birth,Image);return result;
+        } finally {Marshal.FreeHGlobal(data);}
+    }
+    public uint WaitForExit(uint milliseconds) {
+        if(CloseHeld || handle==IntPtr.Zero)throw new IOException("Source launch query custody is held.");
+        uint status=WaitForSingleObject(handle,milliseconds);
+        if(status==258)return status;
+        if(status!=0)throw new IOException("Source launch native wait is uncertain.");
+        uint code;Check(GetExitCodeProcess(handle,out code));
+        if(code==259)throw new IOException("Native wait and exit status disagree.");
+        ExitCode=code;return 0;
+    }
+    public static bool GenerationRetired(uint pid,long expectedBirth,string expectedImage) {
+        IntPtr owned=OpenProcess(0x00101000,false,pid);
+        if(owned==IntPtr.Zero) {
+            if(Marshal.GetLastWin32Error()==87)return true;
+            throw new IOException("Approved native generation cannot be inspected.");
+        }
+        try {
+            uint state=WaitForSingleObject(owned,0);
+            if(state==0)return true;
+            if(state!=258)throw new IOException("Approved generation wait is unknown.");
+            long birth,exit,kernel,user;Check(GetProcessTimes(owned,out birth,out exit,out kernel,out user));
+            var path=new StringBuilder(32768);uint length=32768;
+            Check(QueryFullProcessImageNameW(owned,0,path,ref length));
+            if(birth<=0 || !Path.IsPathRooted(path.ToString()))throw new IOException("Approved identity is incomplete.");
+            uint after=WaitForSingleObject(owned,0);
+            if(after==0)return true;
+            if(after!=258)throw new IOException("Approved generation final wait is unknown.");
+            if(birth!=expectedBirth)return true;
+            if(!String.Equals(Path.GetFullPath(path.ToString()),Path.GetFullPath(expectedImage),StringComparison.OrdinalIgnoreCase))
+                throw new IOException("Same native birth has a contradictory image.");
+            return false;
+        } finally {
+            if(!CloseHandle(owned)) {
+                closeHolds.Add(new object[]{owned});
+                throw new IOException("Approved-generation query close is unproved.");
+            }
+        }
+    }
+    public void Dispose() {
+        if(CloseHeld)throw new IOException("Source launch native close is held.");
+        IntPtr owned=handle;handle=IntPtr.Zero;
+        if(owned==IntPtr.Zero)return;
+        if(!CloseHandle(owned)) {
+            CloseHeld=true;closeHolds.Add(new object[]{this,owned});
+            throw new IOException("Source launch native close is unproved; owner retained.");
+        }
+        CloseProven=true;
+    }
+}
+public sealed class SourceControllerHeartbeat : IDisposable {
+    static readonly List<object> closeHolds=new List<object>();
+    public static bool CustodyPending {get{return closeHolds.Count!=0;}}
+    [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+    [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetProcessTimes(IntPtr process,out long birth,out long exit,out long kernel,out long user);
+    readonly System.IO.MemoryMappedFiles.MemoryMappedFile mapping;
+    readonly System.IO.MemoryMappedFiles.MemoryMappedViewAccessor view;
+    readonly byte[] key;
+    readonly byte[] component;
+    uint counter;
+    long lastPulse;
+    bool disposed;
+    public bool Available {get;private set;}
+    public string ErrorType {get;private set;}
+    public uint ProcessId {get;private set;}
+    public string Component {get;private set;}
+    public string Birth {get;private set;}
+    public uint Counter {get{return counter;}}
+    public int OwnerThreadId {get;private set;}
+    public int LastThreadId {get;private set;}
+    public Action PulseAction {get{return new Action(Pulse);}}
+    public SourceControllerHeartbeat(string role,string launch,byte[] master,FileStream slot) {
+        if(role!="source_startup" && role!="source_update_owner")throw new ArgumentException("Unsupported own heartbeat role.");
+        if(launch==null || !System.Text.RegularExpressions.Regex.IsMatch(launch,"\\A[0-9a-f]{32}\\z") || master==null || master.Length!=32)
+            throw new ArgumentException("Heartbeat component identity/key is unavailable.");
+        if(slot==null || !slot.CanRead || !slot.CanWrite || slot.Length!=32 || Path.GetFileName(slot.Name)!=role+".hb" || Path.GetFileName(Path.GetDirectoryName(slot.Name))!="heartbeats")
+            throw new ArgumentException("Heartbeat slot is outside its fixed role.");
+        ProcessId=GetCurrentProcessId();long born,exited,kernel,user;
+        if(!GetProcessTimes(GetCurrentProcess(),out born,out exited,out kernel,out user) || born<=0)throw new IOException("Own native heartbeat generation is unavailable.");
+        Birth=born.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Component=role+":"+launch+":"+Birth;component=Encoding.UTF8.GetBytes(Component);
+        byte[] context=Encoding.UTF8.GetBytes("angerona-resilience-heartbeat-v2\0"+Component);
+        using(var hmac=new System.Security.Cryptography.HMACSHA256(master))key=hmac.ComputeHash(context);
+        try {
+            mapping=System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile(slot,null,32,System.IO.MemoryMappedFiles.MemoryMappedFileAccess.ReadWrite,HandleInheritability.None,true);
+            view=mapping.CreateViewAccessor(0,32,System.IO.MemoryMappedFiles.MemoryMappedFileAccess.ReadWrite);
+            OwnerThreadId=System.Threading.Thread.CurrentThread.ManagedThreadId;Available=true;ErrorType="";
+        } catch {
+            bool failed=false;
+            try{if(view!=null)view.Dispose();}catch(Exception){failed=true;}
+            try{if(mapping!=null)mapping.Dispose();}catch(Exception){failed=true;}
+            Array.Clear(key,0,key.Length);disposed=true;
+            if(failed){Available=false;ErrorType="HeartbeatCloseHeld";closeHolds.Add(this);}
+            throw;
+        }
+    }
+    void Emit(uint flags,bool force) {
+        if(disposed || !Available)return;
+        long now=System.Diagnostics.Stopwatch.GetTimestamp();
+        if(!force && lastPulse!=0 && now-lastPulse<System.Diagnostics.Stopwatch.Frequency)return;
+        try {
+            LastThreadId=System.Threading.Thread.CurrentThread.ManagedThreadId;
+            if(LastThreadId!=OwnerThreadId)throw new InvalidOperationException("Heartbeat callback left its actual owner thread.");
+            ulong stamp=checked((ulong)(DateTime.UtcNow.Ticks-621355968000000000L)*100UL);
+            uint next=(flags&1u)!=0 ? unchecked(counter+1) : counter;
+            byte[] payload=new byte[2+component.Length+20];
+            Array.Copy(BitConverter.GetBytes((ushort)component.Length),0,payload,0,2);
+            Array.Copy(component,0,payload,2,component.Length);
+            int offset=2+component.Length;
+            Array.Copy(BitConverter.GetBytes(stamp),0,payload,offset,8);
+            Array.Copy(BitConverter.GetBytes(ProcessId),0,payload,offset+8,4);
+            Array.Copy(BitConverter.GetBytes(next),0,payload,offset+12,4);
+            Array.Copy(BitConverter.GetBytes(flags),0,payload,offset+16,4);
+            byte[] mac;using(var hmac=new System.Security.Cryptography.HMACSHA256(key))mac=hmac.ComputeHash(payload);
+            byte[] frame=new byte[32];
+            Array.Copy(BitConverter.GetBytes(0x41574447u),0,frame,0,4);
+            Array.Copy(BitConverter.GetBytes(stamp),0,frame,4,8);
+            Array.Copy(BitConverter.GetBytes(ProcessId),0,frame,12,4);
+            Array.Copy(mac,0,frame,16,8);
+            Array.Copy(BitConverter.GetBytes(next),0,frame,24,4);
+            Array.Copy(BitConverter.GetBytes(flags),0,frame,28,4);
+            view.WriteArray(0,frame,0,frame.Length);
+            counter=next;lastPulse=now;
+        } catch(Exception error) {Available=false;ErrorType=error.GetType().Name;}
+    }
+    public void Pulse(){Emit(0x80000001u,false);}
+    public void Stop(){Emit(0x80000000u,true);}
+    public void Dispose() {
+        if(disposed)return;Stop();disposed=true;
+        bool failed=false;
+        try{if(view!=null)view.Dispose();}catch(Exception){failed=true;}
+        try{if(mapping!=null)mapping.Dispose();}catch(Exception){failed=true;}
+        Array.Clear(key,0,key.Length);
+        if(failed){Available=false;ErrorType="HeartbeatCloseHeld";closeHolds.Add(this);throw new IOException("Own heartbeat close custody is held.");}
+    }
+}
+
+}
+'@
+    } finally { $env:TEMP = $savedTemp; $env:TMP = $savedTmp }
+}
+
+function Read-SourceActivationRecord([string]$Path, [int]$Limit = 65536) {
+    Assert-SourceActivationCustody $Path -AllowInherited
+    $stream = [IO.File]::Open($Path, 'Open', 'Read', 'Read')
+    try {
+        Assert-PlainRepairPath $Path
+        if ($stream.Length -lt 2 -or $stream.Length -gt $Limit) { throw 'Source activation record exceeds its bounded size.' }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length-$offset)
+            if ($read -lt 1) { throw 'Source activation record changed during read.' }
+            $offset += $read
+        }
+        if ($stream.ReadByte() -ne -1) { throw 'Source activation record grew during read.' }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $digest = [BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-', '').ToLowerInvariant() }
+        finally { $sha.Dispose() }
+        $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        try {$value = $text | ConvertFrom-Json -ErrorAction Stop}
+        catch {throw 'Source activation metadata is invalid.'}
+        if (!$value -or $value -is [Array] -or $value -is [string]) { throw 'Source activation record is not an object.' }
+        return [pscustomobject]@{ Value=$value; Sha256=$digest; Bytes=$bytes.Length }
+    } finally { $stream.Dispose() }
+}
+
+function Assert-SourceActivationFields($Value, [string[]]$Names) {
+    $actual = @($Value.PSObject.Properties.Name)
+    if ($actual.Count -ne $Names.Count -or @($actual | Where-Object { $_ -cnotin $Names }).Count) {
+        throw 'Source activation record is outside its closed schema.'
+    }
+}
+
+function Write-NewSourceActivationRecord([string]$Path, $Value) {
+    $bytes = [Text.UTF8Encoding]::new($false, $true).GetBytes(($Value | ConvertTo-Json -Depth 12 -Compress))
+    if ($bytes.Length -gt 65536) { throw 'Source activation output exceeds its bound.' }
+    $stream = Open-PrivateRepairFile -Path $Path -Mode CreateNew -Share Read
+    try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) }
+    finally { $stream.Dispose() }
+    $record = Read-SourceActivationRecord $Path
+    if ($record.Bytes -ne $bytes.Length) { throw 'Source activation output readback failed.' }
+    return $record
+}
+
+function Assert-SourceActivationStopReceipt($Receipt, $Request, $Context) {
+    if ($Receipt.schema -isnot [int] -or $Receipt.schema -ne 1 -or $Receipt.state -cne 'retired' -or
+        $Receipt.operator_stop_recorded -isnot [bool] -or !$Receipt.operator_stop_recorded -or
+        $Receipt.forced -isnot [bool] -or $Receipt.forced -or $Receipt.pending_workers -isnot [Array] -or
+        $Receipt.pending_custody -isnot [Array] -or @($Receipt.pending_workers).Count -ne 0 -or
+        @($Receipt.pending_custody).Count -ne 0 -or $Receipt.before_cleanup_pending -isnot [int] -or $Receipt.before_cleanup_pending -ne 0 -or
+        $Receipt.tracked_workers -isnot [int] -or $Receipt.tracked_workers -lt 0 -or $Receipt.tracked_workers -gt 256 -or
+        $Receipt.cleanup_error -cne '' -or $Receipt.discovery_error -cne '') {
+        throw 'The actual operator STOP coordinator did not prove clean retirement.'
+    }
+    $binding = $Receipt.source_activation
+    Assert-SourceActivationFields $binding @('launch_id','activation_id','request_sha256','core_pid','core_birth')
+    if ($binding.launch_id -cne $Context.launch_id -or $binding.activation_id -cne $Request.Value.activation_id -or
+        $binding.request_sha256 -cne $Request.Sha256 -or $binding.core_pid -ne $Context.core_pid -or
+        $binding.core_birth -isnot [string] -or $binding.core_birth -cne $Context.core_birth) {
+        throw 'The clean STOP receipt belongs to another source approval or Core generation.'
+    }
+}
+
+function Assert-SourceActivationRetiredScope($Request, $Context) {
+    $rows = @($Request.retirement_scope)
+    if (!$rows.Count -or $rows.Count -gt 16) { throw 'Approved native retirement scope is incomplete.' }
+    $seen = @{}; $hasCore = $false
+    foreach ($row in $rows) {
+        Assert-SourceActivationFields $row @('pid','birth','image','role')
+        if ($row.pid -isnot [int] -or $row.pid -lt 1 -or $row.birth -isnot [string] -or
+            $row.birth -cnotmatch '^[1-9][0-9]{0,19}$' -or $row.image -isnot [string] -or
+            ![IO.Path]::IsPathRooted($row.image) -or $row.role -isnot [string] -or $seen.ContainsKey([string]$row.pid)) {
+            throw 'Approved native retirement row is invalid.'
+        }
+        $seen[[string]$row.pid] = $true
+        if ($row.pid -eq $Context.broker_pid) { throw 'External broker cannot be a Core retirement dependency.' }
+        if ($row.pid -eq $Context.core_pid -and $row.birth -ceq $Context.core_birth) { $hasCore = $true }
+        Initialize-SourceActivationProcessOwner
+        if (![Angerona.SourceActivationProcessOwner]::GenerationRetired([uint32]$row.pid, [long]$row.birth, [string]$row.image)) {
+            throw 'An approved native generation is still live.'
+        }
+    }
+    if (!$hasCore) { throw 'The exact approved Core is missing from retirement scope.' }
+}
+
+function Assert-SourceActivationCustody([string]$Path,[switch]$AllowInherited) {
+    try { Assert-PrivateRepairCustody $Path -AllowInherited:$AllowInherited;return } catch { }
+    # Exact CPython0700/current-owner fallback only; no ACL mutation or subset.
+    Assert-PlainRepairPath $Path
+    $item=Get-Item -LiteralPath $Path -Force
+    $acl=Get-RepairPathAcl $Path
+    $user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $user) { throw 'Activation custody owner differs.' }
+    $raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
+    $allowed=@('S-1-3-4','S-1-5-18','S-1-5-32-544')
+    if (!$raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne 3) { throw 'Activation custody DACL count differs.' }
+    $seen=@{}
+    if ($item.PSIsContainer) {
+        if (!$acl.AreAccessRulesProtected) { throw 'Activation directory custody is unprotected.' }
+        $flags=3
+    } else {
+        if (!$AllowInherited) { throw 'Only inherited activation file custody is supported.' }
+        Assert-SourceActivationCustody ([IO.Path]::GetDirectoryName($Path))
+        $flags=16
+    }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+        if ($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or [int]$ace.AceFlags -ne $flags -or
+            $ace.AccessMask -ne 2032127 -or $ace.SecurityIdentifier.Value -cnotin $allowed -or
+            $seen.ContainsKey($ace.SecurityIdentifier.Value)) { throw 'Activation custody has an unknown ACE.' }
+        $seen[$ace.SecurityIdentifier.Value]=$true
+    }
+}
+
+function Assert-SourceControllerHeartbeatDirectory([string]$Directory,[string]$Storage) {
+    $expected=Join-Path $Storage 'heartbeats'
+    if(![string]::Equals([IO.Path]::GetFullPath($Directory),[IO.Path]::GetFullPath($expected),[StringComparison]::OrdinalIgnoreCase)){
+        throw 'Own heartbeat directory differs from its fixed DATA child.'
+    }
+    Assert-PlainRepairPath $Storage
+    foreach($path in @($Storage,$Directory)){
+        if($path -ceq $Directory -and !(Test-Path -LiteralPath $Directory)){New-PrivateRepairDirectory $Directory}
+        Assert-PlainRepairPath $path
+        if(!(Test-Path -LiteralPath $path -PathType Container)){throw 'Own heartbeat directory is unavailable.'}
+        $acl=Get-RepairPathAcl $path
+        $user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $user){throw 'Own heartbeat directory owner differs.'}
+        $raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
+        if(!$raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne 3){throw 'Own heartbeat directory DACL count differs.'}
+        $inherited=![bool]$acl.AreAccessRulesProtected
+        if($path -ceq $Storage -and $inherited){throw 'The heartbeat DATA parent is not protected.'}
+        $flags=if($inherited){19}else{3}
+        $allowed=if($inherited){@($user,'S-1-5-18','S-1-5-32-544')}else{@($user,'S-1-3-4','S-1-5-18','S-1-5-32-544')}
+        $seen=@{}
+        foreach($ace in $raw.DiscretionaryAcl){
+            $sid=$ace.SecurityIdentifier.Value
+            if($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or [int]$ace.AceFlags -ne $flags -or
+                $ace.AccessMask -ne 2032127 -or $sid -cnotin $allowed -or $seen.ContainsKey($sid)){
+                throw 'Own heartbeat directory has an unknown ACE.'
+            }
+            $seen[$sid]=$true
+        }
+        if(!$seen.ContainsKey('S-1-5-18') -or !$seen.ContainsKey('S-1-5-32-544') -or
+            ($seen.ContainsKey($user) -eq $seen.ContainsKey('S-1-3-4'))){throw 'Own heartbeat directory principals differ.'}
+    }
+}
+function Assert-SourceControllerHeartbeatCustody {
+    if(($script:SourceControllerHeartbeatCloseHolds -and $script:SourceControllerHeartbeatCloseHolds.Count) -or
+        (('Angerona.SourceControllerHeartbeat' -as [type]) -and [Angerona.SourceControllerHeartbeat]::CustodyPending)){
+        throw 'Own heartbeat cleanup is unavailable; source activation remains held.'
+    }
+}
+
+function Start-SourceControllerHeartbeat([ValidateSet('source_startup','source_update_owner')][string]$Role,[string]$LaunchId) {
+    $key=$null;$keyPin=$null;$lease=$null;$slot=$null;$writer=$null;$raw=$null;$decoded=$null
+    try {
+        Assert-SourceControllerHeartbeatCustody
+        Initialize-SourceActivationProcessOwner
+        $storage=Get-CanonicalSourceStartupStorage
+        $keyPath=Join-Path $storage 'shutdown.key'
+        Assert-SourceActivationCustody $keyPath -AllowInherited
+        # Reuse existing retained native local-file/ancestor custody, but deny
+        # every alias by requiring the physical path equal the fixed key path.
+        $keyPin=Open-RepairPythonHint $keyPath
+        if(![string]::Equals($keyPin.PhysicalPath,[IO.Path]::GetFullPath($keyPath),[StringComparison]::OrdinalIgnoreCase)){throw 'Existing heartbeat key is redirected.'}
+        $keyPin.AssertBound()
+        $key=[IO.File]::Open($keyPath,'Open','Read','Read') # EXISTING only; no fallback/default key loader.
+        if($key.Length -lt 1 -or $key.Length -gt 128){throw 'Existing heartbeat key exceeds its bound.'}
+        $raw=New-Object byte[] ([int]$key.Length);$offset=0
+        while($offset -lt $raw.Length){$read=$key.Read($raw,$offset,$raw.Length-$offset);if(!$read){throw 'Existing heartbeat key changed.'};$offset+=$read}
+        if($key.ReadByte() -ne -1){throw 'Existing heartbeat key grew.'}
+        $text=[Text.Encoding]::ASCII.GetString($raw).Trim()
+        if($text -cnotmatch '^[0-9a-fA-F]{64}$'){throw 'Existing heartbeat key encoding is unavailable.'}
+        $decoded=New-Object byte[] 32
+        for($index=0;$index -lt 32;$index++){$decoded[$index]=[Convert]::ToByte($text.Substring($index*2,2),16)}
+        $text=$null;$keyPin.AssertBound()
+        $directory=Join-Path $storage 'heartbeats';Assert-SourceControllerHeartbeatDirectory $directory $storage
+        $lease=Open-PrivateRepairFile (Join-Path $directory ($Role+'.hb.lock')) -Mode OpenOrCreate -Share ReadWrite
+        if($lease.Length -ne 0){throw 'Heartbeat writer lock contains unknown data.'}
+        $lease.Lock(0,1)
+        $path=Join-Path $directory ($Role+'.hb')
+        if(Test-Path -LiteralPath $path){Assert-SourceActivationCustody $path -AllowInherited}
+        $created=$false
+        if(Test-Path -LiteralPath $path){
+            $slot=Open-PrivateRepairFile $path -Mode Open -Share ReadWrite
+        }else{
+            # Exclusive creation; a racing or existing leaf is never resized.
+            $slot=Open-PrivateRepairFile $path -Mode CreateNew -Share ReadWrite
+            $created=$true
+        }
+        if($created){$slot.SetLength(32);$slot.Flush($true)}
+        if($slot.Length -ne 32){throw 'Existing heartbeat slot is not exactly32 bytes.'}
+        $writer=[Angerona.SourceControllerHeartbeat]::new($Role,$LaunchId,$decoded,$slot)
+        $writer.Pulse()
+        return [pscustomobject]@{Writer=$writer;KeyLease=$key;KeyPin=$keyPin;WriterLease=$lease;Slot=$slot;Role=$Role;CloseAttempted=$false;CloseHeld=$false}
+    } catch {
+        $partial=[pscustomobject]@{Writer=$writer;KeyLease=$key;KeyPin=$keyPin;WriterLease=$lease;Slot=$slot
+            Role=$Role;CloseAttempted=$false;CloseHeld=$false}
+        Stop-SourceControllerHeartbeat $partial
+        Write-Host ('[startup] Own '+$Role+' heartbeat is unavailable; no health/authority was inferred.')
+        return $null
+    } finally {
+        if($raw){[Array]::Clear($raw,0,$raw.Length)}
+        if($decoded){[Array]::Clear($decoded,0,$decoded.Length)}
+    }
+}
+function Stop-SourceControllerHeartbeat($Owner) {
+    if(!$Owner -or $Owner.CloseAttempted){return}
+    $Owner.CloseAttempted=$true
+    $failed=$false
+    if($Owner.Writer){try{$Owner.Writer.Dispose()}catch{$failed=$true}}
+    foreach($stream in @($Owner.Slot,$Owner.KeyLease,$Owner.KeyPin,$Owner.WriterLease)){
+        if($stream){try{$stream.Dispose()}catch{$failed=$true}}
+    }
+    if(('Angerona.SourceControllerHeartbeat' -as [type]) -and [Angerona.SourceControllerHeartbeat]::CustodyPending){$failed=$true}
+    if($failed){
+        $Owner.CloseHeld=$true
+        if(!$script:SourceControllerHeartbeatCloseHolds){$script:SourceControllerHeartbeatCloseHolds=[Collections.Generic.List[object]]::new()}
+        $script:SourceControllerHeartbeatCloseHolds.Add($Owner)
+        Write-Host '[startup] Own heartbeat cleanup is unavailable; exact owners are retained until process exit.'
+    }
 }

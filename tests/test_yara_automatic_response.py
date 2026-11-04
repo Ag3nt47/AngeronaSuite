@@ -6,21 +6,252 @@ import os
 import threading
 import time
 import zipfile
+from collections import deque
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
+import psutil
 import pytest
-from test_breach_lockdown import installed_protect_for_inert_combat
 import yara_x
 
+from angerona.core import breach_state
+from angerona.core.config import Config
 from angerona.core.eventbus import BusAuthority, EventBus
+from angerona.core.module_base import BaseModule
+from angerona.core.module_contract import build_capability_contract
+from angerona.core.module_manager import ModuleManager
 from angerona.core.practice_scope import register_artifact, unregister_run
+from angerona.core.storage import FlightRecorder
+from angerona.modules import process_monitor, purple_guard, yara_scanner
 from angerona.modules.adversary_combat import AdversaryCombat
+from angerona.modules.process_monitor import ProcessMonitorModule
 from angerona.modules.yara_scanner import YaraScannerModule
+from angerona.telemetry.sensors import ProcessSnapshot
 
 
 MARKER = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE :: inert local drill"
+
+
+def _wait_for(predicate, *, description, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        time.sleep(0.01)
+    raise AssertionError(description)
+
+
+@pytest.fixture
+def controlled_runtime(tmp_path, monkeypatch, request):
+    """Real producers and issuer custody; ambient host mutation stays held."""
+    root = tmp_path / "state"
+    root.mkdir()
+    idle_root = tmp_path / "empty-watch-root"
+    idle_root.mkdir()
+    repository = next(parent for parent in Path(__file__).resolve().parents
+                      if (parent / "rules.yar").is_file()
+                      and (parent / "pyproject.toml").is_file())
+    monkeypatch.setenv("ANGERONA_DATA", str(root))
+    monkeypatch.setenv("ANGERONA_YARA_RULES", str(repository / "rules.yar"))
+    monkeypatch.setenv("ANGERONA_ADVERSARY_COMBAT_ENABLED", "1")
+    monkeypatch.setenv("ANGERONA_ADVERSARY_COMBAT_MODE", "maximum")
+    monkeypatch.setattr(BusAuthority, "_key_path", staticmethod(lambda: root / "bus.key"))
+    monkeypatch.setattr(breach_state, "protect_authority", lambda: (
+        False, "Explicit Source Observe fixture; no installed host authority"))
+    # These YARA cases own a file corpus. Keep ambient process churn out of
+    # their input while the actual monitor and validation lease prove readiness.
+    owner = psutil.Process(os.getpid())
+    image = owner.exe()
+    row = MappingProxyType(dict(pid=owner.pid, name=Path(image).name, exe=image,
+                               create_time=owner.create_time(), ppid=None, username=None, cmdline=()))
+    fresh_inventory_requested = threading.Event()
+
+    def owned_process_snapshot(max_age=None):
+        receipt = ProcessSnapshot((row,), time.time(), complete=True, enumerated=1, skipped=0)
+        if max_age == 0.0:
+            fresh_inventory_requested.set()
+        return receipt
+
+    monkeypatch.setattr(psutil, "pids", lambda: [owner.pid])
+    monkeypatch.setattr(process_monitor, "process_snapshot", owned_process_snapshot)
+    # Isolate actual traversal input, not native factories, scans or readiness.
+    roots = {"current": (idle_root,)}
+    monkeypatch.setattr(yara_scanner, "scan_roots", lambda: roots["current"])
+    monkeypatch.setattr(yara_scanner, "data_dir", lambda: root)
+    recorder = FlightRecorder(root / "flight-recorder.db")
+    bus = EventBus(ring_size=4096)
+    bus.arm(recorder.authority)
+    bus.subscribe(recorder.record_bus, delivery_budget_ms=60_000)
+    config = Config(
+        data_dir=root, ugcap_enabled=False, adversary_combat_enabled=True,
+        adversary_combat_mode="maximum", adversary_combat_min_severity="LOW",
+        adversary_combat_quarantine_files=True, adversary_combat_block_network=False,
+        adversary_combat_process_action="none", adversary_combat_isolate_host=False,
+        adversary_combat_activate_honeypots=False,
+    )
+    manager = ModuleManager(bus, config, recorder=recorder)
+    guard = purple_guard.PurpleGuard(root)
+    process = ProcessMonitorModule()
+    detector = YaraScannerModule()
+    combat = AdversaryCombat(root)
+    sources = (detector, guard, process)
+    for module in (*sources, combat):
+        module.bind(bus)
+        module._angerona_origin = "builtin"
+        module._angerona_trust = "release"
+        module._angerona_contract = build_capability_contract(
+            module, capability_id="angerona.builtin." + type(module).__module__.rsplit(".", 1)[-1],
+            origin="builtin", trust="release", publisher="Angerona")
+        manager.modules[module.name] = module
+        binder = getattr(module, "bind_manager", None)
+        if callable(binder):
+            binder(manager)
+        binder = getattr(module, "bind_recorder", None)
+        if callable(binder):
+            binder(recorder)
+    events = deque(maxlen=512)
+    events_lock = threading.Lock()
+
+    def capture(event):
+        if event.module in {detector.name, combat.name}:
+            with events_lock:
+                events.append(event)
+
+    names = {
+        "test_real_scan_drives_signed_containment_and_undo": "yara-native-proof",
+        "test_live_worker_responds_automatically_without_ollama_or_manual_dispatch": "yara-automatic-worker",
+        "test_registered_driver_probe_uses_actual_bundled_signature": "driver-probe",
+    }
+    run_id = names.get(request.node.originalname, "yara-control-" + hashlib.sha256(
+        request.node.nodeid.encode("utf-8")).hexdigest()[:16])
+    ctx = SimpleNamespace(
+        root=root, target=guard.sandbox, detector=detector, guard=guard,
+        process=process, combat=combat, config=config, manager=manager,
+        bus=bus, recorder=recorder, lease=None, run_id=run_id,
+        source_threads=(), sources_retired=False, controls={},
+    )
+
+    def captured():
+        with events_lock:
+            return tuple(events)
+
+    def drain():
+        _wait_for(lambda: combat.response_snapshot()["queue_pending"] == 0,
+                  description="owned Combat queue did not drain")
+
+    def create_control(kind, *, step_id="native-signature"):
+        declaration = purple_guard.RedTeamValidationLease.create_yara_control(
+            ctx.lease, run_id=run_id, step_id=step_id,
+            scanner_enrollment=detector.control_enrollment(), control_kind=kind)
+        path = Path(declaration["path"])
+        assert path.parent == ctx.target and path.name.startswith("_angerona_yara_control_")
+        original = path.read_bytes()
+        assert hashlib.sha256(original).hexdigest() == declaration["identity"]["sha256"]
+        ctx.controls[str(path)] = (declaration, original)
+        return declaration, path, original
+
+    def begin_scan():
+        roots["current"] = (ctx.target,)
+
+    def detection(path):
+        return next((event for event in captured()
+                     if event.module == detector.name
+                     and event.details.get("artifact_path") == str(path)
+                     and event.details.get("detector_verdict") == "positive"), None)
+
+    def response(event):
+        return next((row for row in captured()
+                     if row.module == combat.name and bus.verify(row)
+                     and row.details.get("trigger_module") == event.module
+                     and row.details.get("trigger_ts") == event.ts
+                     and row.details.get("trigger_event_digest") == event.hmac_sig
+                     and row.details.get("postcondition_verified") is True), None)
+
+    def stop_sources():
+        roots["current"] = (idle_root,)
+        for module in sources:
+            module.stop()
+        for thread in ctx.source_threads:
+            thread.join(10)
+            assert not thread.is_alive(), "owned source worker did not retire"
+        if ctx.lease is not None:
+            purple_guard.RedTeamValidationLease.release(ctx.lease)
+        ctx.sources_retired = True
+        drain()
+
+    def undo_exact(action_id):
+        stop_sources()
+        assert combat.status == "running" and not combat.stopping
+        action = next(row for row in combat.list_actions() if row["action_id"] == action_id)
+        assert action["action"] == "quarantine_file" and action["status"] == "applied"
+        declaration, original = ctx.controls[action["target"]]
+        assert action["target"] == declaration["path"]
+        assert action["details"]["sha256"] == hashlib.sha256(original).hexdigest()
+        owner = threading.get_ident()
+
+        def this_manual_call_only():
+            accepted = (threading.get_ident() == owner and ctx.sources_retired
+                        and all(not thread.is_alive() for thread in ctx.source_threads)
+                        and combat.response_snapshot()["queue_pending"] == 0)
+            return accepted, "Scoped installed-authority fixture for one exact owned Undo"
+
+        # All producer threads are retired and the private bus is drained.
+        # Other threads retain held host authority throughout this sync call.
+        with monkeypatch.context() as patch:
+            patch.setattr(breach_state, "protect_authority", this_manual_call_only)
+            return combat.undo_action(action_id)
+
+    ctx.captured = captured
+    ctx.drain = drain
+    ctx.create_control = create_control
+    ctx.begin_scan = begin_scan
+    ctx.detection = detection
+    ctx.response = response
+    ctx.stop_sources = stop_sources
+    ctx.undo_exact = undo_exact
+    try:
+        detector.start()
+        combat.start()
+        _wait_for(lambda: BaseModule.operational_snapshot(detector).get("first_cycle_complete"),
+                  description="real YARA worker did not complete its initial cycle")
+        ctx.lease = purple_guard.acquire_redteam_validation_lease(
+            manager, bus, recorder, root, ctx.target, timeout=8)
+        assert fresh_inventory_requested.is_set()
+        ctx.source_threads = tuple(module._thread for module in sources)
+        purple_guard.RedTeamValidationLease.consume_for_run(
+            ctx.lease, run_id=run_id, target=ctx.target, data_root=root)
+        _wait_for(detector.control_enrollment,
+                  description="real YARA owner did not establish control enrollment")
+        for module in sources:
+            state = BaseModule.operational_snapshot(module)
+            assert state["status"] == "running" and state["thread_alive"] is True
+            assert state["first_cycle_complete"] is True
+        _wait_for(lambda: combat.response_snapshot()["canary_ready"],
+                  description="real Combat canary worker did not initialize")
+        assert combat.response_snapshot()["ready"] is False
+        assert combat.response_snapshot()["host_authority_verified"] is False
+        # Register after Combat's admission subscriber so observing an event
+        # also proves its queue admission turn has already completed.
+        bus.subscribe(capture)
+        yield ctx
+    finally:
+        try:
+            # Snapshot exact thread objects even when setup failed partway.
+            ctx.source_threads = tuple(module._thread for module in sources
+                                       if module._thread is not None)
+            stop_sources()
+        finally:
+            combat_thread = combat._thread
+            combat.stop()
+            if combat_thread is not None:
+                combat_thread.join(10)
+                assert not combat_thread.is_alive(), "owned Combat worker did not retire"
+            bus.unsubscribe(capture)
+            bus.unsubscribe(recorder.record_bus)
+            recorder.close()
+            unregister_run(run_id)
 
 
 def _setup(tmp_path):
@@ -72,61 +303,65 @@ class _CountedNativeScanner:
 
 
 @pytest.mark.parametrize("archive", [False, True])
-def test_real_scan_drives_signed_containment_and_undo(tmp_path, monkeypatch, archive):
-    bus, detector, scanner, combat = _setup(tmp_path)
-    path = tmp_path / ("probe.zip" if archive else "probe.txt")
-    if archive:
-        with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as output:
-            output.writestr("../never-extracted.txt", MARKER)
+def test_real_scan_drives_signed_containment_and_undo(controlled_runtime, monkeypatch, archive):
+    ctx = controlled_runtime
+    bus, detector, combat = ctx.bus, ctx.detector, ctx.combat
+    declaration, path, original = ctx.create_control("archive" if archive else "text")
+    if not archive:
+        assert original == MARKER
     else:
-        path.write_bytes(MARKER)
-    original = path.read_bytes()
-    register_artifact(path, "yara-native-proof", kind="shark")
-    try:
-        started = time.time()
-        assert detector._scan_file(scanner, path) == "scanned", detector.last_error
-        event = bus.recent(1)[0]
-        assert bus.verify(event) and detector.verify_detection_event(event)
-        assert event.details["observed_content_sha256"] == hashlib.sha256(original).hexdigest()
-        combat._handle(event)
-        assert not path.exists()
-        response = bus.recent(1)[0]
-        assert response.details["postcondition_verified"] is True
-        assert response.details["actions"] == ["quarantine_file"]
-        from angerona.shark.aar_report import evaluate, _live_combat_action_verifier
-        history = {"run_id": "yara-native-proof", "kind": "shark", "steps": [{
-            "stage": "Initial Access", "ts_start": started, "ts_end": time.time(),
-            "technique": "signature probe", "description": "native inert file scan",
-            "ok": True, "artifact_paths": [str(path)],
-        }]}
-        response_events = bus.recent(50)
-        def verdict_for_current_journal():
-            return evaluate(
-                history, response_events, require_authenticated=True,
-                event_verifier=bus.verify,
-                native_verifier=lambda row, _step: detector.verify_detection_event(row),
-                combat_verifier=_live_combat_action_verifier(
-                    combat._manager, bus, combat.data_root.resolve(), red_team=False,
-                ),
-            )[0]
-        verdict = verdict_for_current_journal()
-        assert verdict.native_catch is not None and verdict.target_containment_verified
-        action = combat.list_actions()[0]
-        if archive:
-            append_phase = combat._append_undo_phase
-            def fail_terminal_undo(phase, *args, **kwargs):
-                if phase == "undo_commit":
-                    raise OSError("simulated terminal journal failure")
-                return append_phase(phase, *args, **kwargs)
-            monkeypatch.setattr(combat, "_append_undo_phase", fail_terminal_undo)
-            assert combat.undo_action(action["action_id"])["ok"] is False
-        else:
-            assert combat.undo_action(action["action_id"])["ok"] is True
-        assert path.read_bytes() == original
-        assert not verdict_for_current_journal().target_containment_verified
-        assert not (tmp_path.parent / "never-extracted.txt").exists()
-    finally:
-        unregister_run("yara-native-proof")
+        assert declaration["archive_member"] == "../never-extracted.txt"
+    started = time.time()
+    ctx.begin_scan()
+    event = _wait_for(lambda: ctx.detection(path), description="actual YARA control scan did not publish")
+    assert bus.verify(event) and detector.verify_detection_event(event)
+    assert event.details["observed_content_sha256"] == hashlib.sha256(original).hexdigest()
+    assert event.details["rule"] == declaration["rule"]
+    assert event.details["scan_complete"] is True
+    response = _wait_for(lambda: ctx.response(event), description="actual worker did not commit quarantine")
+    assert not path.exists()
+    assert response.details["postcondition_verified"] is True
+    assert response.details["actions"] == ["quarantine_file"]
+    assert combat.response_snapshot()["host_authority_verified"] is False
+    from angerona.shark.aar_report import evaluate, _live_combat_action_verifier
+    history = {"run_id": ctx.run_id, "kind": "shark", "steps": [{
+        "stage": "Initial Access", "ts_start": started, "ts_end": time.time(),
+        "technique": "signature probe", "description": "native inert file scan",
+        "plan_step_id": declaration["step_id"],
+        "ok": True, "artifact_paths": [str(path)],
+    }]}
+    response_events = ctx.captured()
+
+    def verdict_for_current_journal():
+        return evaluate(
+            history, response_events, require_authenticated=True,
+            event_verifier=bus.verify,
+            native_verifier=lambda row, _step: detector.verify_detection_event(row),
+            combat_verifier=_live_combat_action_verifier(
+                combat._manager, bus, combat.data_root.resolve(), red_team=False,
+            ),
+        )[0]
+
+    verdict = verdict_for_current_journal()
+    assert verdict.native_catch is not None and verdict.target_containment_verified
+    assert verdict.native_catch.module == detector.name
+    assert verdict.native_catch.hmac_sig == event.hmac_sig
+    action = next(row for row in combat.list_actions() if row["target"] == str(path))
+    if archive:
+        append_phase = combat._append_undo_phase
+
+        def fail_terminal_undo(phase, *args, **kwargs):
+            if phase == "undo_commit":
+                raise OSError("simulated terminal journal failure")
+            return append_phase(phase, *args, **kwargs)
+
+        monkeypatch.setattr(combat, "_append_undo_phase", fail_terminal_undo)
+        assert ctx.undo_exact(action["action_id"])["ok"] is False
+    else:
+        assert ctx.undo_exact(action["action_id"])["ok"] is True
+    assert path.read_bytes() == original
+    assert not verdict_for_current_journal().target_containment_verified
+    assert not (ctx.target.parent / "never-extracted.txt").exists()
 
 
 def test_changed_target_is_not_quarantined_on_stale_content(tmp_path):
@@ -145,8 +380,9 @@ def test_changed_target_is_not_quarantined_on_stale_content(tmp_path):
         unregister_run("yara-stale-proof")
 
 
-def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(tmp_path, monkeypatch):
-    bus, detector, scanner, combat = _setup(tmp_path)
+def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(controlled_runtime, monkeypatch):
+    ctx = controlled_runtime
+    bus, detector, combat = ctx.bus, ctx.detector, ctx.combat
     commit_entered = threading.Event()
     release_commit = threading.Event()
     commit = combat._commit_after_mutation
@@ -163,19 +399,19 @@ def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(tm
             event.module == combat.name and bus.verify(event)
             and event.details.get("postcondition_verified") is True
             and "quarantine_file" in event.details.get("actions", [])
-            for event in bus.recent(50)
+            for event in ctx.captured()
         )
 
-    path = tmp_path / "automatic-probe.txt"
-    path.write_bytes(MARKER)
-    register_artifact(path, "yara-automatic-worker", kind="shark")
-    combat.start()
+    _declaration, path, original = ctx.create_control("text")
+    assert original == MARKER
     try:
-        deadline = time.monotonic() + 10
-        while not combat.response_snapshot()["ready"] and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert combat.response_snapshot()["ready"], combat.response_snapshot()
-        assert detector._scan_file(scanner, path) == "scanned", detector.last_error
+        assert combat.response_snapshot()["canary_ready"], combat.response_snapshot()
+        assert combat.response_snapshot()["ready"] is False
+        assert combat.response_snapshot()["host_authority_verified"] is False
+        ctx.begin_scan()
+        event = _wait_for(lambda: ctx.detection(path), description="real automatic YARA scan did not publish")
+        assert bus.verify(event) and detector.verify_detection_event(event)
+        assert event.details["observed_content_sha256"] == hashlib.sha256(MARKER).hexdigest()
         assert commit_entered.wait(10), combat.response_snapshot()
         # No _handle/_submit call: the actual subscribed worker owns this action.
         assert not path.exists(), combat.response_snapshot()
@@ -190,12 +426,10 @@ def test_live_worker_responds_automatically_without_ollama_or_manual_dispatch(tm
         action = combat.list_actions()[0]
         assert action["status"] == "applied"
         assert action["details"]["postcondition_verified"] is True
-        assert combat.undo_action(action["action_id"])["ok"]
+        assert ctx.undo_exact(action["action_id"])["ok"]
         assert path.read_bytes() == MARKER
     finally:
         release_commit.set()
-        combat.stop()
-        unregister_run("yara-automatic-worker")
 
 
 def test_keyword_in_document_is_detected_without_destructive_authority(tmp_path):
@@ -374,21 +608,20 @@ def test_usn_instability_during_native_scan_refuses_receipt_and_cache(
     assert not detector._scan_cache
 
 
-def test_registered_driver_probe_uses_actual_bundled_signature(tmp_path):
-    bus, detector, _scanner, combat = _setup(tmp_path)
-    scanner = detector._make_scanner(detector._compile_rules(Path(__file__).parents[1] / "rules.yar"))
-    path = tmp_path / "inert-driver.sys"
-    path.write_bytes(b"ANGERONA-BYOVD-DRILL-BENIGN-MARKER :: inert never loaded")
-    register_artifact(path, "driver-probe", kind="shark")
-    try:
-        assert detector._scan_file(scanner, path) == "scanned", detector.last_error
-        event = bus.recent(1)[0]
-        assert event.details["rule"] == "Angerona_BYOVD_Probe"
-        combat._handle(event)
-        assert not path.exists()
-        assert combat.undo_action(combat.list_actions()[0]["action_id"])["ok"]
-    finally:
-        unregister_run("driver-probe")
+def test_registered_driver_probe_uses_actual_bundled_signature(controlled_runtime):
+    ctx = controlled_runtime
+    declaration, path, original = ctx.create_control("driver")
+    assert original == b"ANGERONA-BYOVD-DRILL-BENIGN-MARKER :: inert never loaded"
+    ctx.begin_scan()
+    event = _wait_for(lambda: ctx.detection(path), description="actual bundled driver signature was not scanned")
+    assert ctx.bus.verify(event) and ctx.detector.verify_detection_event(event)
+    assert event.details["rule"] == declaration["rule"] == "Angerona_BYOVD_Probe"
+    assert event.details["observed_content_sha256"] == hashlib.sha256(original).hexdigest()
+    _wait_for(lambda: ctx.response(event), description="actual worker did not contain benign driver control")
+    assert not path.exists()
+    action = next(row for row in ctx.combat.list_actions() if row["target"] == str(path))
+    assert ctx.undo_exact(action["action_id"])["ok"]
+    assert path.read_bytes() == original
 
 
 def test_archive_budget_failure_never_caches_complete_coverage(tmp_path, monkeypatch):

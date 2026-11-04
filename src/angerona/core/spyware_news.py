@@ -34,8 +34,8 @@ MAX_CACHED_NEWS_AGE = 180 * 86400
 MAX_NEWS_SUMMARY = 1200
 REFERENCE_REVIEWED = "2026-10-22"
 NEWS_SOURCES = MappingProxyType({
-    # Its general RSS stream omits current research reports. The homepage's
-    # dated research cards include the reports without crawling article pages.
+    # Its general RSS stream omits current research reports. The homepage has
+    # dated research and publisher news cards; parse both without article crawls.
     "citizen_lab": "https://citizenlab.ca/",
     # The Atom endpoint contains the complete archive and exceeds the shared
     # transport limit. Its official recent-post index is small and bounded.
@@ -274,14 +274,18 @@ class _ProjectZeroIndexParser(HTMLParser):
         classes = (attributes.get("class") or "").split()
         inherited = self._stack[-1][1] if self._stack else 0
         ignored = (self._stack[-1][2] if self._stack else False) or tag in self._IGNORE
-        entry = (tag == "div" and "nua-home-slider-mobile__slide" in classes if self._citizen
-                 else tag == "article")
+        citizen_news = (self._citizen and tag == "article"
+                        and "content-card--post" in classes)
+        entry = ((tag == "div" and "nua-home-slider-mobile__slide" in classes
+                  or citizen_news) if self._citizen else tag == "article")
         if entry and not ignored:
             if self._article is not None:
                 raise ValueError("news index contains nested articles")
             self._count += 1
             if (self._citizen or "grid" in classes) and self._count <= MAX_FEED_ENTRIES:
                 self._article = {"title": "", "date": "", "summary": "", "link": ""}
+                if citizen_news:
+                    self._article["content_kind"] = "publisher-news"
                 self._article_depth = len(self._stack) + 1
         flags = inherited
         if self._article is not None and not ignored:
@@ -294,6 +298,12 @@ class _ProjectZeroIndexParser(HTMLParser):
             elif self._citizen and "nua-home-slider-mobile__slide-date" in classes:
                 flags |= 2
             elif self._citizen and "nua-home-slider-mobile__slide-excerpt" in classes:
+                flags |= 4
+            elif self._citizen and "content-card__title" in classes:
+                flags |= 1
+            elif self._citizen and "content-card__date" in classes:
+                flags |= 2
+            elif self._citizen and "content-card__excerpt" in classes:
                 flags |= 4
             elif tag == "div" and "post-title" in classes:
                 flags |= 1
@@ -348,6 +358,8 @@ def _parse_official_index(payload: bytes | str, *, source_name: str, now=None) -
         parser.close()
     except (UnicodeError, AssertionError) as exc:
         raise ValueError("news index HTML is malformed") from exc
+    if source_name == "citizen_lab" and parser._count == 0:
+        raise ValueError("Citizen Lab index has no recognized research or news cards")
     results = {}
     for entry in parser.entries:
         if source_name == "citizen_lab":
@@ -372,6 +384,8 @@ def _parse_official_index(payload: bytes | str, *, source_name: str, now=None) -
         row = _news_entry(entry["title"], entry["summary"], stamp, link,
                           source_name=source_name, timestamp=timestamp)
         if row is not None:
+            if entry.get("content_kind") == "publisher-news":
+                row["content_kind"] = "publisher-news"
             existing = results.get(row["url"])
             if existing is None or stamp > existing["published"]:
                 results[row["url"]] = row
@@ -383,7 +397,7 @@ def parse_project_zero_index(payload: bytes | str, *, now=None) -> list[dict]:
 
 
 def parse_citizen_lab_index(payload: bytes | str, *, now=None) -> list[dict]:
-    """Parse dated official research cards; do not fetch assets or follow links."""
+    """Parse dated official research/news cards; never fetch assets or links."""
     return _parse_official_index(payload, source_name="citizen_lab", now=now)
 
 

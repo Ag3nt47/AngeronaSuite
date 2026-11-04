@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import time
 
 try:
-    from angerona.core.module_base import BaseModule
+    from angerona.core.module_base import BaseModule, watchdog_fault_kind
     from angerona.core.eventbus import Severity
 except Exception:                                   # standalone/test fallback
     class Severity:
@@ -26,6 +26,16 @@ except Exception:                                   # standalone/test fallback
         def sleep(self, s): time.sleep(min(s, 0.01))
         @property
         def stopping(self): return getattr(self, "_stopflag", False)
+
+    def watchdog_fault_kind(snapshot):
+        status = snapshot.get("status")
+        if status == "error":
+            return "error"
+        if status == "running" and not snapshot.get("thread_alive", False):
+            return "thread_exit"
+        if snapshot.get("watchdog_deadline_missed", False):
+            return "deadline"
+        return None
 
 
 @dataclass
@@ -70,7 +80,10 @@ class WatchdogMonitor(BaseModule):
             self.sleep(self.SWEEP_SECONDS)
 
     @staticmethod
-    def _snapshot(mod) -> dict[str, object]:
+    def _snapshot(mod) -> dict[str, object] | None:
+        watchdog_snapshot = getattr(mod, "try_watchdog_snapshot", None)
+        if callable(watchdog_snapshot):
+            return watchdog_snapshot()
         snapshot = getattr(mod, "operational_snapshot", None)
         if callable(snapshot):
             value = snapshot()
@@ -90,13 +103,12 @@ class WatchdogMonitor(BaseModule):
 
     @staticmethod
     def _module_fault(snapshot: dict[str, object]) -> str | None:
-        status = str(snapshot.get("status", "unknown"))
-        alive = bool(snapshot.get("thread_alive", False))
-        if status == "error":
+        fault_kind = watchdog_fault_kind(snapshot)
+        if fault_kind == "error":
             return "worker reported terminal lifecycle error"
-        if status == "running" and not alive:
+        if fault_kind == "thread_exit":
             return "running lifecycle has no live worker thread"
-        if bool(snapshot.get("watchdog_deadline_missed", False)):
+        if fault_kind == "deadline":
             age = snapshot.get("last_cycle_age_seconds")
             if bool(snapshot.get("first_cycle_complete", False)):
                 rendered = f"{float(age):.1f}s" if isinstance(age, (int, float)) else "unknown"
@@ -110,11 +122,17 @@ class WatchdogMonitor(BaseModule):
         mod,
         generation: int,
     ) -> bool:
+        guarded_authority = getattr(self._mgr, "restart_faulted_module_generation", None)
+        if callable(guarded_authority):
+            return bool(guarded_authority(name, mod, generation))
         authority = getattr(self._mgr, "restart_module_generation", None)
         if callable(authority):
             return bool(authority(name, mod, generation))
         # Restricted fallback supports a minimal embedded manager while keeping
         # the same generation CAS.  Never fall back to a racy stop/start pair.
+        restart_faulted = getattr(mod, "restart_faulted_generation", None)
+        if callable(restart_faulted):
+            return bool(restart_faulted(generation))
         restart = getattr(mod, "restart_if_generation", None)
         return bool(callable(restart) and restart(generation))
 
@@ -143,6 +161,7 @@ class WatchdogMonitor(BaseModule):
         unresolved = 0
         terminal = 0
         stabilizing = 0
+        unavailable = 0
         monitored = 0
         active_names: set[str] = set()
         for name, mod in list(getattr(mgr, "modules", {}).items()):
@@ -154,6 +173,12 @@ class WatchdogMonitor(BaseModule):
             monitored += 1
             active_names.add(name)
             snapshot = self._snapshot(mod)
+            if snapshot is None:
+                unavailable += 1
+                state = self._restart_state.get(name)
+                if state is not None and state.module_identity == id(mod):
+                    state.stable_since = 0.0
+                continue
             fault = self._module_fault(snapshot)
             if fault is None:
                 if self._healthy_state(name, mod, now):
@@ -227,29 +252,36 @@ class WatchdogMonitor(BaseModule):
             self._restart_state.pop(stale_name, None)
 
         if terminal:
-            self.set_health(
-                20,
+            health = 20
+            note = (
                 f"{terminal} enabled module(s) exhausted restart recovery; "
-                f"{unresolved} unresolved of {monitored} monitored",
+                f"{unresolved} unresolved of {monitored} monitored"
             )
         elif unresolved:
-            self.set_health(
-                55 if recovery_scheduled else 45,
+            health = 55 if recovery_scheduled else 45
+            note = (
                 f"{unresolved} enabled module(s) unresolved; "
-                f"{recovery_scheduled} exact-generation recovery request(s) scheduled",
+                f"{recovery_scheduled} exact-generation recovery request(s) scheduled"
             )
         elif stabilizing:
-            self.set_health(
-                85,
+            health = 85
+            note = (
                 f"{stabilizing} recovered module(s) remain inside the "
-                f"{self.STABILITY_RESET_SECONDS:.0f}s stability window",
+                f"{self.STABILITY_RESET_SECONDS:.0f}s stability window"
             )
+        elif unavailable:
+            health = 60
+            note = f"{monitored - unavailable} enabled sibling worker(s) observed without a fault"
         else:
-            self.set_health(
-                100,
+            health = 100
+            note = (
                 f"{monitored} enabled sibling workers have no observed "
-                "lifecycle/deadline faults; detector coverage is separate.",
+                "lifecycle/deadline faults; detector coverage is separate."
             )
+        if unavailable:
+            health = min(health, 60)
+            note += f"; {unavailable} lifecycle sample(s) unavailable during worker transition or operation"
+        self.set_health(health, note)
 
     def self_test(self) -> tuple[bool, str]:
         class _Fake:

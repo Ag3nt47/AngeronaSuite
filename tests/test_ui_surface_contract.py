@@ -7,7 +7,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import SIGNAL
+from PySide6.QtCore import SIGNAL, Qt
 from PySide6.QtWidgets import QApplication, QPushButton, QScrollArea
 
 from angerona.core.config import Config
@@ -231,7 +231,8 @@ def test_settings_tabs_buttons_and_close_behavior_offscreen(tmp_path: Path) -> N
         "Info",
     ]
     try:
-        assert dialog.isModal()
+        assert not dialog.isModal()
+        assert dialog.windowModality() == Qt.WindowModality.NonModal
         assert dialog.minimumWidth() >= 720
         assert [
             dialog.tabs.tabText(index) for index in range(dialog.tabs.count())

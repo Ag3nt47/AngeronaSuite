@@ -9,10 +9,9 @@ the end of the source supervisor's recovery round.
 
 Use `start-angerona.bat` in a source checkout. Its trusted supervisor verifies
 the runtime and source checks, then opens **Angerona Safe Startup**.
-The release build includes **AngeronaStartup.exe**, and the Windows package,
-desktop shortcut and Windows sign-in startup use that helper. `--setup` opens
-the setup page after the dashboard starts. Direct dashboard execution remains
-available for diagnostics, with its existing authority and singleton checks.
+For a direct Python startup-helper launch, `--setup` opens the setup page after
+the dashboard starts. Direct dashboard execution remains available for
+diagnostics, with its existing authority and singleton checks.
 
 The helper uses Tk, independently of the dashboard's Qt runtime. It:
 
@@ -25,11 +24,12 @@ The helper uses Tk, independently of the dashboard's Qt runtime. It:
 3. Checks source Python 3.12 x64, exact reviewed dependency versions, dependency
    consistency and native offscreen Qt in separate processes sharing the
    original 30-second probe deadline. These probes do not start sensors.
-4. Launches one dashboard in Chill Mode using a clean environment. A helper
-   lease prevents concurrent helpers; the dashboard retains its own singleton.
+4. Launches one source dashboard in Chill Mode or, for an ordinary signed
+   Windows launch, one read-only Protection Service Console. Each starts with
+   a clean environment. The helper lease and dashboard singleton still apply.
 5. Waits up to 120 seconds for a per-launch nonce and live process confirmation.
-   The dashboard sends readiness from a worker only after its visible window
-   has yielded back to the Qt event loop. The helper then closes automatically.
+   The launched window sends readiness from a worker after visible paint and
+   a return to the Qt event loop. The helper then closes automatically.
 
 New package builds prepare an independent `AngeronaSafeStart.exe` MSIX entry
 outside that Python/Tk helper. Its OS .NET/Windows Forms interface can display
@@ -38,12 +38,33 @@ native leases and the unchanged signed release boundary still apply; signing
 and accepted release deployment are not provisioned by a source build. See
 [the packaged entry contract](safe-startup-recovery.md#independent-entry-for-signed-package-builds).
 
+### Administrator access for one session
+
+An ordinary launch of a verified signed Windows package opens the read-only
+Protection Service Console. In its **Settings**, **Run Angerona with administrator
+privileges** starts off, with a warning about the authority directly below it.
+Select the checkbox to request Windows consent for this session. The console
+launches the fixed signed startup helper. The elevated dashboard starts in
+Chill Mode, and setup is available from that dashboard. Administrator approval
+applies to the current session only. Automatic startup under an elevated
+Windows token is held.
+
 The readiness receipt is a small, one-way message on an ephemeral IPv4 loopback
 socket. It accepts no commands or file paths and grants no security authority.
 Source launches require the launched PID or its fresh Windows venv interpreter
-child using the helper's same CPython image. Packaged UAC handoff also
-requires a fresh live process running the installed `Angerona.exe` image.
-Old `dashboard-ready.signal` files cannot satisfy this handshake.
+child using the helper’s same CPython image. For the ordinary installed console,
+the helper checks the retained live launcher or its fresh direct child with the
+expected installed image. Old `dashboard-ready.signal` files cannot satisfy
+this handshake.
+
+For elevation, the dashboard checks the installed package and its administrator
+token before reporting ready. The helper independently verifies the reported
+native process generation, its freshness and installed `Angerona.exe` image,
+and a live, elevated token with an enabled Administrators group and no restricted
+SIDs. The ordinary console closes only after the helper verifies readiness.
+If consent is declined or cancelled, or the helper cannot verify readiness,
+the console stays available and reports readiness as unverified. A timeout or uncertain result
+does not trigger an automatic retry or terminate a possibly live dashboard.
 
 ## Repairs and failures
 
@@ -75,11 +96,14 @@ Source/MSIX trust failures, insufficient persistent storage, busy environments,
 cancellation and unknown failures require their specific corrective action.
 Packaged installations retain their signed installer repair boundary.
 
-A nonrepairable failure or early dashboard exit leaves the helper open with
-an explanation. A dashboard timeout leaves the existing process running and
-does not retry. Closing the assistant also leaves a launched dashboard running;
-an active disposable dependency probe is cancelled and reaped before the helper
-process exits. Check the tray before manually retrying a failed launch.
+For a direct source-helper launch without the supervisor, a nonrepairable
+failure or early dashboard exit leaves the helper open with an explanation.
+The canonical batch path keeps the failure in its independent recovery view
+after the bounded recovery round. A dashboard timeout leaves the existing
+process running and does not retry. Closing the assistant also leaves a
+launched dashboard running. An active disposable dependency probe is
+cancelled and reaped before the helper process exits. Check the tray before
+manually retrying a failed launch.
 
 Source helper logs are under `%LOCALAPPDATA%\Angerona\SourceData\logs`:
 
@@ -117,6 +141,7 @@ old strict evidence allowlist need an approved installer-authority upgrade to
 accept a release containing the new helper. Source launch works through the
 normal unelevated batch path.
 
-Dashboard readiness confirms a visible, responding window. It does not certify
-all protection modules or guarantee future stability; the dashboard continues
-to show genuine missing prerequisites and degraded modules.
+An accepted signed package, a real Windows consent and elevation test, and
+clean-machine installation acceptance remain pending. Readiness verifies a
+visible, responding window. The dashboard reports missing prerequisites and
+degraded modules separately.

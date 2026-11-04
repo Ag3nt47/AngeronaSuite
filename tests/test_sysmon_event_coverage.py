@@ -50,3 +50,20 @@ def test_sysmon_network_events_join_on_community_id():
     details = _build_details(3, root, *_EID_MAP[3][:2])
 
     assert details["community_id"] == "1:LQU9qZlK+B5F3KDmev6m5PMibrg="
+
+
+def test_sysmon_network_and_dns_keep_exact_common_process_identity():
+    guid = "{01234567-89AB-CDEF-0123-456789ABCDEF}"
+    utc = "2026-11-03 12:00:00.123"
+    root = _xml(ProcessGuid=guid, ProcessId="123", UtcTime=utc, Initiated="true", QueryName="example.invalid")
+    network = _build_details(3, root, *_EID_MAP[3][:2])
+    dns = _build_details(22, root, *_EID_MAP[22][:2])
+    assert network["initiated"] is True
+    for row in (network, dns):
+        assert row["process_guid"] == guid and row["pid"] == "123" and row["source_utc_time"] == utc
+        assert row["response_authorized"] is False
+    assert dns["process_id"] == "123" and dns["query_name"] == "example.invalid"
+    malformed = _xml(ProcessGuid=guid + "extra", Initiated="true appended")
+    assert _build_details(3, malformed, *_EID_MAP[3][:2])["process_guid"] == ""
+    assert _build_details(3, malformed, *_EID_MAP[3][:2])["initiated"] is None
+    assert _build_details(22, malformed, *_EID_MAP[22][:2])["process_guid"] == ""

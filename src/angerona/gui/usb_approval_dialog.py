@@ -1,7 +1,7 @@
 """PIN enrollment and fail-closed removable-media approval dialog.
 
-This is a standalone UI surface so the main dashboard can open it when it sees
-``event_type=usb_approval_required``. Closing the window leaves the drive
+The dashboard opens this surface when an operator reviews a live removable-media
+request in Notifications. Closing the window leaves the drive
 untrusted; only ``USBMonitorModule.approve_media`` can grant Angerona workflow
 trust for the current mount.
 """
@@ -25,7 +25,6 @@ from PySide6.QtWidgets import (
 
 from angerona.core.usb_policy import (
     UsbApprovalView,
-    configure_usb_pin,
 )
 
 
@@ -84,6 +83,12 @@ class UsbApprovalDialog(QDialog):
         self.destroyed.connect(destroyed_cleanup)
 
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._activity = None
+        self._operation_worker = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         self._title = QLabel()
         title = self._title
         title.setObjectName("sectionTitle")
@@ -175,7 +180,7 @@ class UsbApprovalDialog(QDialog):
             )
             self._approve_button.setEnabled(False)
             self._deny_button.setEnabled(False)
-            QTimer.singleShot(600, self.accept)
+            QTimer.singleShot(600, self, self.accept)
             return
         if decision.reason == "pin_not_configured":
             self._enrollment_mode = True
@@ -216,23 +221,26 @@ class UsbApprovalDialog(QDialog):
         self._pin.clear()
         self._confirm_pin.clear()
         policy = getattr(self._module, "_approval_policy", None)
-        setter = getattr(policy, "configure_pin", None)
+        enroll = getattr(policy, "enroll_pin", None)
+        if not callable(enroll):
+            self._status.setText("Protected PIN enrollment is unavailable. Use the USB PIN setup in Settings.")
+            return
         self._begin_operation(
             "enroll",
-            lambda: (
-                setter(pin, confirmation)
-                if callable(setter)
-                else configure_usb_pin(pin, confirmation)
-            ),
+            lambda: enroll(pin, confirmation),
             "Saving the PIN in protected storage… Closing keeps this media "
             "blocked; an already-started PIN save may still finish.",
         )
 
     def _enrollment_finished(self, result) -> None:
-        if not result.updated:
+        if not result.updated and result.reason != "pin_already_configured":
             message = {
                 "invalid_format": "Create a PIN containing 4–12 digits.",
                 "confirmation_mismatch": "The two PIN entries did not match.",
+                "stored_pin_invalid": (
+                    "The saved PIN is invalid. Use the USB PIN reset in Settings. "
+                    "The drive remains untrusted."
+                ),
                 "protected_store_unavailable": (
                     "The operating-system protected credential store could not "
                     "save the PIN. The drive remains untrusted."
@@ -258,6 +266,8 @@ class UsbApprovalDialog(QDialog):
         self._status.setText(
             "PIN created in protected storage. This media is still untrusted; "
             "enter the new PIN once to approve Angerona's scan."
+            if result.updated else
+            "A PIN is already configured. Enter that PIN to approve Angerona's scan."
         )
         self._pin.setFocus(Qt.PopupFocusReason)
 
@@ -280,6 +290,7 @@ class UsbApprovalDialog(QDialog):
         if self._closed:
             return
         self._closed = True
+        self._activities.close()
         self._poll_timer.stop()
         self._cancelled.set()
         if not self._resolved:
@@ -323,6 +334,7 @@ class UsbApprovalDialog(QDialog):
             )
             return
         self._operation = operation
+        self._activity = self._activities.begin("usb-check", message, replace=True)
         self._operation_started = time.monotonic()
         self._status.setText(message)
         results, cancelled = self._results, self._cancelled
@@ -338,8 +350,7 @@ class UsbApprovalDialog(QDialog):
                 except Exception:
                     result, succeeded = None, False
                 if cancelled.is_set():
-                    # In particular, a late enrollment resets pending records;
-                    # reinstate the operator's denial after its write finishes.
+                    # A closing prompt cannot retain a late verification.
                     _revoke_approval(policy, approval_id)
                     return
                 results.put_nowait((succeeded, result))
@@ -347,9 +358,15 @@ class UsbApprovalDialog(QDialog):
                 workers.release()
 
         try:
-            threading.Thread(target=work, name=f"UsbApproval-{operation}", daemon=True).start()
+            self._operation_worker = threading.Thread(target=work, name=f"UsbApproval-{operation}", daemon=True)
+            self._operation_worker.start()
         except Exception:
+            if self._operation_worker is not None and self._operation_worker.is_alive():
+                self._poll_timer.start()
+                return
             workers.release()
+            self._activities.finish(self._activity)
+            self._activity = None
             self._operation = None
             self._status.setText("USB check could not start; this media stays untrusted.")
             return
@@ -361,6 +378,8 @@ class UsbApprovalDialog(QDialog):
         # A result that arrives after the deadline cannot authorize a late UI
         # success just because the Qt loop was busy when the timer was due.
         if time.monotonic() - self._operation_started >= _OPERATION_TIMEOUT_S:
+            self._activities.finish(self._activity)
+            self._activity = None
             operation = self._operation
             self._operation = None
             self._poll_timer.stop()
@@ -372,11 +391,16 @@ class UsbApprovalDialog(QDialog):
                 + (" An already-started PIN save may still finish." if operation == "enroll" else "")
             )
             return
+        if self._operation_worker is not None and self._operation_worker.is_alive():
+            return
         try:
             succeeded, result = self._results.get_nowait()
         except queue.Empty:
             return
         operation = self._operation
+        self._activities.finish(self._activity)
+        self._activity = None
+        self._operation_worker = None
         self._operation = None
         self._poll_timer.stop()
         if not succeeded:

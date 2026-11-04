@@ -219,6 +219,51 @@ def test_file_read_progress_never_observes_control_scratch_or_becomes_scan_progr
         assert observer.item_completed == 1 and "non-sequential" in observer.item_unit
 
 
+def test_guarded_read_descriptor_reuses_validated_size(tmp_path, monkeypatch):
+    observer, _, _ = tracker(tmp_path)
+    observer.current_step = "hash"
+    budget = worker._WriteBudget(observer.job, 16 * 1024**2)
+    budget.observer = observer
+    evidence = tmp_path / "evidence"
+    evidence.write_bytes(b"12345678")
+    stat_calls = []
+    fstat = os.fstat
+
+    def count_stat(fd):
+        stat_calls.append(fd)
+        return fstat(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fstat", count_stat)
+        fd = budget.os_open(evidence, os.O_RDONLY)
+        with budget.io_open(fd, "rb") as stream:
+            assert stream.read(4) == b"1234"
+            assert observer.current_file == str(evidence)
+            assert observer.item_total == 8 and observer.item_percent == 50
+            assert stream.read() == b"5678" and observer.item_percent == 100
+    # One registration sample and one identity check when io.open adopts the fd.
+    assert stat_calls == [fd, fd]
+
+
+@pytest.mark.parametrize("stale_registration", [False, True])
+def test_unmatched_read_descriptor_remains_unobserved(tmp_path, stale_registration):
+    observer, _, _ = tracker(tmp_path)
+    observer.current_step = "hash"
+    budget = worker._WriteBudget(observer.job, 16 * 1024**2)
+    budget.observer = observer
+    evidence = tmp_path / "evidence"
+    evidence.write_bytes(b"data")
+    fd = os.open(evidence, os.O_RDONLY)
+    with os.fdopen(fd, "rb") as raw:
+        if stale_registration:
+            held = os.fstat(fd)
+            budget._read_descriptors[fd] = (evidence, held.st_dev, held.st_ino + 1)
+        assert budget._observed_read(raw, fd, "rb") is raw
+        assert raw.read() == b"data"
+    assert observer.current_file == "" and observer.item_percent is None
+    assert fd not in budget._read_descriptors
+
+
 def test_reader_result_and_cancellation_preserve_real_counts(tmp_path):
     observer, output, clock = tracker(tmp_path)
     ctx = SimpleNamespace(partial=None, quick=False, targets=())

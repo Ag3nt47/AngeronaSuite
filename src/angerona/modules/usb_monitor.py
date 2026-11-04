@@ -20,6 +20,8 @@ import struct
 import sys
 import threading
 import time
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -28,12 +30,14 @@ except Exception:  # pragma: no cover
     psutil = None
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.security_scan_center import ScanCancellationToken, ScanFinding, SecurityScanCenter
 from angerona.core.usb_policy import (
     AutoRunPolicyResult,
     UsbApprovalDecision,
     UsbApprovalPolicy,
     UsbApprovalView,
     WindowsAutoRunPolicy,
+    active_usb_scan_authorization,
 )
 
 
@@ -167,7 +171,7 @@ class _WindowsVolumeProbe:
             return "removable-media"
         return None
 
-    def volume_identity(self, mountpoint: object) -> str:
+    def volume_identity(self, mountpoint: object, *, require_guid: bool = False) -> str:
         """Return a privacy-safe stable ID without opening volume content."""
         root = _windows_drive_root(mountpoint)
         api = self._api()
@@ -198,7 +202,7 @@ class _WindowsVolumeProbe:
             )
         except (AttributeError, OSError, TypeError, ValueError):
             return ""
-        if not guid_ok and not info_ok:
+        if (require_guid and not guid_ok) or not (guid_ok or info_ok):
             return ""
         material = (
             f"{guid_buffer.value if guid_ok else ''}|"
@@ -350,13 +354,53 @@ def _has_autorun(mountpoint: str) -> bool:
         return False
 
 
+def _supports_automatic_file_review(mountpoint: str) -> bool:
+    # The Scan Center rejects NTFS reparse points and checks the opened file's
+    # volume. POSIX bind mounts need a separate mount-provenance check.
+    return sys.platform.startswith("win") and (
+        len(mountpoint) == 3 and _windows_drive_root(mountpoint).casefold() == mountpoint.casefold()
+        and mountpoint[1:] == ":\\"
+    )
+
+
+def _automatic_scan_identity(mountpoint: str) -> str:
+    return _WINDOWS_VOLUME_PROBE.volume_identity(mountpoint, require_guid=True)
+
+
+class _MediaScanCancellation(ScanCancellationToken):
+    def __init__(self, still_authorized):
+        super().__init__()
+        self._still_authorized = still_authorized
+
+    @property
+    def cancelled(self) -> bool:
+        if not super().cancelled and not self._still_authorized():
+            self.cancel()
+        return super().cancelled
+
+
+@dataclass(frozen=True)
+class UsbMediaScanResult:
+    """Bounded, advisory evidence tied to one approval, with no action authority."""
+
+    approval_id: str
+    mountpoint: str
+    state: str
+    summary: str
+    files_scanned: int = 0
+    findings_total: int = 0
+    findings: tuple[ScanFinding, ...] = ()
+    action_taken: str = "none"
+
+
 class USBMonitorModule(BaseModule):
     CODE = "USBW"
     NAME = "Removable-Media / USB Monitor"
     name = "Removable-Media / USB Monitor"
     description = (
         "Alerts on removable media, keeps it untrusted until a protected-store "
-        "PIN approves Angerona scanning, and disables Windows AutoRun/AutoPlay."
+        "PIN approves Angerona scanning, and disables Windows AutoRun/AutoPlay. "
+        "Reviews a bounded file sample after verified Windows volume approval."
     )
     category = "Detection"
     version = "1.14.0"
@@ -364,6 +408,8 @@ class USBMonitorModule(BaseModule):
 
     _POLL = 4.0
     _POLICY_VERIFY_S = 900.0
+    _PENDING_MEDIA_SCANS = 8
+    _MEDIA_SCAN_RESULTS = 16
 
     def __init__(self) -> None:
         super().__init__()
@@ -391,6 +437,9 @@ class USBMonitorModule(BaseModule):
             verified_values=0,
         )
         self._last_policy_verify = 0.0
+        self._media_scan_lock = threading.Lock()
+        self._media_scans: deque[tuple[int, str, tuple[str, str]]] = deque()
+        self._media_scan_results: deque[UsbMediaScanResult] = deque(maxlen=self._MEDIA_SCAN_RESULTS)
 
     @property
     def state(self) -> str:
@@ -422,6 +471,7 @@ class USBMonitorModule(BaseModule):
             try:
                 self._check()
                 self._verify_autorun_policy_if_due()
+                self._run_pending_media_scan()
                 pending = len(self._approval_policy.pending())
                 if self._identity_blind_mounts:
                     health = 35
@@ -608,6 +658,114 @@ class USBMonitorModule(BaseModule):
     def trust_state(self, mountpoint: object) -> str:
         return self._approval_policy.trust_state(mountpoint)
 
+    def recent_media_scan_results(self) -> tuple[UsbMediaScanResult, ...]:
+        """Return the latest completed/held review rows without opening a drive."""
+        with self._media_scan_lock:
+            return tuple(self._media_scan_results)
+
+    def _publish_media_scan_result(self, result: UsbMediaScanResult) -> None:
+        with self._media_scan_lock:
+            self._media_scan_results.append(result)
+        self.emit(
+            f"Removable-media file review at {result.mountpoint}. {result.summary}",
+            Severity.MEDIUM if result.findings_total else Severity.INFO,
+            event_type="usb_media_scan_result",
+            approval_id=result.approval_id,
+            mountpoint=result.mountpoint,
+            scan_state=result.state,
+            files_scanned=result.files_scanned,
+            findings_total=result.findings_total,
+            action_taken=result.action_taken,
+            disposition="observation",
+            active_attack=False,
+            response_authorized=False,
+        )
+
+    def _queue_media_scan(self, approval_id: str, binding: tuple[str, str]) -> None:
+        with self._media_scan_lock:
+            if not self.stopping and len(self._media_scans) < self._PENDING_MEDIA_SCANS:
+                self._media_scans.append((self.lifecycle_generation, approval_id, binding))
+                return
+        self._publish_media_scan_result(UsbMediaScanResult(
+            approval_id, binding[0], "held", "The automatic file review queue is unavailable."
+        ))
+
+    def _run_pending_media_scan(self) -> None:
+        # The monitor's existing generation owns the scan and retires it with
+        # the normal module lifecycle. It never starts a detached worker.
+        with self._media_scan_lock:
+            if not self._media_scans:
+                return
+            generation, approval_id, binding = self._media_scans.popleft()
+        mountpoint, expected_identity = binding
+        if not _supports_automatic_file_review(mountpoint):
+            self._publish_media_scan_result(UsbMediaScanResult(
+                approval_id, mountpoint, "held", "Automatic file review requires a Windows drive-letter mount."
+            ))
+            return
+
+        def binding_current() -> bool:
+            return (
+                not self.stopping and self.lifecycle_generation == generation
+                and self._approval_policy.approval_binding(approval_id) == binding
+                and self._approval_policy.trust_state(mountpoint) == "trusted"
+            )
+
+        def still_authorized() -> bool:
+            if not binding_current():
+                return False
+            try:
+                identity = _automatic_scan_identity(mountpoint)
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return False
+            if not identity:
+                return False
+            if not hmac.compare_digest(identity, expected_identity):
+                self._approval_policy.cancel(approval_id)
+                return False
+            return binding_current()
+
+        def authorize_target(target: Path) -> tuple[bool, str]:
+            if os.path.normcase(os.path.normpath(target)) == mountpoint and still_authorized():
+                allowed, reason = active_usb_scan_authorization(target)
+                if allowed is True and still_authorized():
+                    return True, reason
+            return False, "approval-ended"
+
+        cancellation = _MediaScanCancellation(still_authorized)
+        if cancellation.cancelled:
+            self._publish_media_scan_result(UsbMediaScanResult(
+                approval_id, mountpoint, "held", "The approved insertion identity could not be confirmed."
+            ))
+            return
+        try:
+            scan = SecurityScanCenter(
+                max_files=64, max_total_bytes=16 * 1024**2, max_file_bytes=2 * 1024**2,
+                max_directory_entries=256, max_directories=32, max_duration_seconds=10,
+                usb_authorizer=authorize_target,
+            ).scan_path(mountpoint, cancellation=cancellation)
+        except Exception:
+            result = UsbMediaScanResult(approval_id, mountpoint, "failed", "The bounded file review failed.")
+        else:
+            if cancellation.cancelled or scan.status == "cancelled":
+                result = UsbMediaScanResult(approval_id, mountpoint, "cancelled", "The approved review ended early.")
+            elif not scan.executed:
+                result = UsbMediaScanResult(approval_id, mountpoint, "held", "The approved scan scope was unavailable.")
+            else:
+                files = scan.metrics["files_scanned"]
+                findings_total = len(scan.findings)
+                summary = f"Checked {files} file(s) in the bounded sample. {findings_total} finding(s) for review."
+                state = scan.status
+                if scan.metrics.get("yara_status") != "active":
+                    state = "limited"
+                    summary += " Content signatures were unavailable."
+                elif state == "limited":
+                    summary += " Some content was skipped or a scan limit was reached."
+                result = UsbMediaScanResult(
+                    approval_id, mountpoint, state, summary, files, findings_total, scan.findings[:16]
+                )
+        self._publish_media_scan_result(result)
+
     def approve_media(self, approval_id: object, pin: object) -> UsbApprovalDecision:
         binding = self._approval_policy.approval_binding(approval_id)
         require_identity = bool(getattr(self._approval_policy, "_require_identity", False))
@@ -710,6 +868,8 @@ class USBMonitorModule(BaseModule):
                     content_inspected=True,
                     mitre="T1091",
                 )
+            if decision.reason == "approved" and require_identity and binding is not None:
+                self._queue_media_scan(decision.approval_id, binding)
             return decision
 
         severity = Severity.HIGH if decision.reason == "locked" else Severity.LOW

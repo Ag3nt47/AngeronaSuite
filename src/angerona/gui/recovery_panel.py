@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 
 from PySide6.QtCore import Qt, QTimer
@@ -27,6 +28,15 @@ class RecoveryPanel(QWidget):
         self._timer.setInterval(1500)
         self._timer.timeout.connect(self.refresh)
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._command_requests = {}
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
+        self.command_progress = QLabel("No operator recovery command has been requested in this view.")
+        self.command_progress.setTextFormat(Qt.PlainText)
+        self.command_progress.setWordWrap(True)
+        root.addWidget(self.command_progress)
         body = QWidget()
         layout = QVBoxLayout(body)
         layout.addWidget(_label("INDEPENDENT RECOVERY · signed backup evidence and measured isolated restores"))
@@ -138,14 +148,63 @@ class RecoveryPanel(QWidget):
         return modules.get("Immutable Recovery Assurance Guard") if isinstance(modules, Mapping) else None
 
     def _queue(self, method, *args, **kwargs):
-        action = getattr(self._module(), method, None)
+        module = self._module()
+        action = getattr(module, method, None)
         try:
-            accepted = callable(action) and action(*args, **kwargs) is True
+            tracked = getattr(module, "queue_tracked_recovery", None)
+            outcome = tracked(method, *args, **kwargs) if callable(tracked) else action(*args, **kwargs) if callable(action) else False
+            accepted = outcome is True or type(outcome) is dict
         except Exception:
+            outcome = False
             accepted = False
-        self.status.setText("Operator recovery request queued to the existing guard worker." if accepted else
-            "Recovery request was not queued. Check the running guard, workspace gate and selected inputs.")
+        ticket = outcome if type(outcome) is dict else None
+        valid = (ticket is not None and set(ticket) == {"request_id", "generation", "command"}
+                 and type(ticket.get("request_id")) is str and re.fullmatch("[0-9a-f]{32}", ticket["request_id"])
+                 and type(ticket.get("generation")) is int and ticket["generation"] > 0
+                 and type(ticket.get("command")) is str
+                 and ticket.get("command") in {"enroll", "import", "restore", "recheck", "schedule"})
+        if valid:
+            self._command_requests[ticket["request_id"]] = dict(ticket=dict(ticket), module=module,
+                handle=self._activities.begin(ticket["request_id"], "Recovery " + ticket["command"] + " · queued · counts unavailable"))
+            self.command_progress.setText("Recovery command queued; its own completion and the shared guard state are separate.")
+            self._update_command_progress()
+        else:
+            if ticket is not None:
+                accepted = False
+                self.command_progress.setText("Recovery request acknowledgment is unavailable; no dispatch or completion is verified. Review before retrying.")
+            else:
+                self.command_progress.setText("Recovery request queued, but command-bound progress is unavailable; no completion is claimed." if accepted else
+                    "Recovery request was not queued. Check the running guard, workspace gate and selected inputs.")
         return accepted
+
+    def _update_command_progress(self):
+        for identity, request in tuple(self._command_requests.items()):
+            ticket = request["ticket"]
+            try:
+                row = request["module"].command_request_snapshot(ticket)
+            except Exception:
+                row = {}
+            exact = (type(row) is dict and type(row.get("generation")) is int
+                     and all(row.get(key) == value for key, value in ticket.items()))
+            state = row.get("state") if exact and type(row.get("state")) is str else "unavailable"
+            settled = exact and row.get("operation_settled") is True
+            if state in {"queued", "running"} or state in {"completed", "failed", "held", "cancelled"} and not settled:
+                if request["handle"] is None:
+                    request["handle"] = self._activities.begin(identity, "Observing the existing recovery command…")
+                phase = state if state in {"queued", "running"} else "settlement unverified"
+                self._activities.update(request["handle"], label="Recovery " + ticket["command"] + " · " + phase + " · counts unavailable")
+                continue
+            self._activities.finish(request["handle"])
+            self._command_requests.pop(identity, None)
+            if settled and state in {"completed", "failed", "held", "cancelled"}:
+                if state == "completed" and row.get("action_returned") is not True:
+                    state = "completion-unverified"
+                scoped = row.get("workflow_status")
+                scoped = scoped[:80] if type(scoped) is str else "unknown"
+                self.command_progress.setText(f"Recovery {ticket['command']} · {state} · generation {ticket['generation']}. "
+                    f"Scoped workflow status: {scoped}. Shared guard health and future scheduled drills are separate.")
+            else:
+                self.command_progress.setText("Recovery command progress is unavailable; its outcome is not verified. Review guard diagnostics.")
 
     def _keys(self):
         first, second = self.encryption_key.text(), self.audit_key.text()
@@ -172,6 +231,7 @@ class RecoveryPanel(QWidget):
                 key[:] = b"\0" * len(key)
 
     def refresh(self):
+        self._update_command_progress()
         module = self._module()
         available = module is not None and getattr(module, "status", "stopped") == "running"
         for button in self._buttons:
@@ -192,7 +252,8 @@ class RecoveryPanel(QWidget):
         self.latest.setText("Latest tested archive's signed revision: " + str(snapshot.get("latest_verified_revision") or "unknown")[:64]
             + " · checked age: " + (f"{age:.0f}s" if type(age) in (int, float) else "unknown")
             + " · measured restore: " + (f"{duration:.3f}s" if type(duration) in (int, float) else "unknown"))
-        self.details.setPlainText(json.dumps(snapshot, indent=2, ensure_ascii=True, default=str)[:18000])
+        from angerona.gui.component_heartbeat import _update_details_text
+        _update_details_text(self.details, json.dumps(snapshot, indent=2, ensure_ascii=True, default=str)[:18000])
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
@@ -200,12 +261,18 @@ class RecoveryPanel(QWidget):
         self._timer.start()
 
     def hideEvent(self, event):  # noqa: N802
+        self._activities.close()
+        for request in self._command_requests.values():
+            request["handle"] = None
         self._timer.stop()
         self.encryption_key.clear()
         self.audit_key.clear()
         super().hideEvent(event)
 
     def closeEvent(self, event):  # noqa: N802
+        self._activities.close()
+        for request in self._command_requests.values():
+            request["handle"] = None
         self._timer.stop()
         self.encryption_key.clear()
         self.audit_key.clear()

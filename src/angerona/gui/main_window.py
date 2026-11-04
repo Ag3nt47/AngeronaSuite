@@ -18,7 +18,8 @@ from PySide6.QtCore import QEvent, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QDialog, QGridLayout, QHBoxLayout, QLabel, QLayout, QMainWindow, QMenu, QMessageBox,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QSystemTrayIcon, QTabWidget, QVBoxLayout, QWidget,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSplitter, QSystemTrayIcon, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from angerona.academy.security_academy import FlightInstructor
@@ -38,8 +39,9 @@ from angerona.core.module_usage import (
 from angerona.gui.animations import GlobalLoadingIndicator, HeaderActivityLane, RunSpinner
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.header_controls import (
-    HeaderActionButton, PanelRevealOverlay, motion_allowed)
+    CurrentAssessmentBanner, HeaderActionButton, NotificationHeaderButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.holographic_orb import HolographicOrbController
+from angerona.gui.notification_inbox import NotificationInbox
 from angerona.gui.live_defense_activity import LiveDefenseActivityCard
 from angerona.gui.dashboard_details import (
     AriaDetailDialog,
@@ -261,6 +263,12 @@ def _dashboard_refresh_plan(
 
 
 class MainWindow(QMainWindow):
+    _ASSESSMENT_DWELL_SECONDS = 9.0
+    # Quiet Chill panels can refresh every 120 seconds; old results still
+    # expire when the reader stops delivering snapshots.
+    _ASSESSMENT_FRESH_SECONDS = 150.0
+    _AUTOMATIC_SCAN_NOTICE = "spyware-scan:automatic"
+
     _breach_projection = Signal(object)
     # Emitted from background threads; Qt signals are the safe way to hand
     # control back to the GUI thread to touch widgets.
@@ -289,12 +297,18 @@ class MainWindow(QMainWindow):
         runtime_metrics=None,
         shutdown_prepare=None,
         shutdown_callback=None,
+        shutdown_critical=None,
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
         self._shutdown_prepare = shutdown_prepare
         self._shutdown_callback = shutdown_callback
+        self._shutdown_critical = shutdown_critical
         self._termination_started = False
+        self._simulation_session = None
+        self._simulation_plan = None
+        self._session_ui_finished = True
+        self._session_destroy_cancel = None
         self._posture_reader = AsyncSnapshot(
             self, self._prepare_posture_snapshot, self._apply_posture_snapshot,
             name="DashboardPostureReader",
@@ -493,13 +507,23 @@ class MainWindow(QMainWindow):
         _bl.setSpacing(0)
         _bl.addWidget(brand)
         _bl.addWidget(self.posture_lbl)
+        self._assessment_banner = CurrentAssessmentBanner(brand_box)
+        self._assessment_banner.clicked.connect(self._open_current_assessment)
+        self._assessment_key = "updating"
+        self._assessment_keys = ()
+        self._assessment_since = 0.0
+        self._assessment_threat = None
+        self._assessment_threat_at = 0.0
+        self._assessment_coverage = (0, 0)
+        _bl.addWidget(self._assessment_banner)
         # Activity gets the dashboard's full width, independently of the
         # centered brand and action budgets. Hidden indicators consume no row.
         self._header_activity_box = HeaderActivityLane(
             self.run_spinner, self.loading_indicator)
 
-        right = QWidget(); rl = QHBoxLayout(right)
+        right = QWidget(); rl = QGridLayout(right)
         rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(8)
+        rl.setColumnStretch(0, 1)
         worldview_btn = HeaderActionButton(
             "WORLD VIEW",
             "world",
@@ -622,6 +646,10 @@ class MainWindow(QMainWindow):
         settings_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 settings_btn, self._open_settings, "#cbd5e1"))
+        self._notifications = NotificationInbox(self)
+        self._notification_btn = NotificationHeaderButton()
+        self._notifications.count_changed.connect(self._notification_btn.set_pending_count)
+        self._notification_btn.clicked.connect(lambda _checked=False: self._notifications.show())
         stop_btn = HeaderActionButton(
             "STOP",
             "stop",
@@ -634,15 +662,6 @@ class MainWindow(QMainWindow):
         stop_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 stop_btn, self._full_shutdown, "#ef4444"))
-        rl.addStretch(1)
-        rl.addWidget(worldview_btn); rl.addWidget(attack_heatmap_btn)
-        rl.addWidget(self.threat_intel_btn)
-        rl.addWidget(self._spyware_guard_btn)
-        rl.addWidget(self._github_tools_btn)
-        rl.addWidget(forensics_btn)
-        rl.addWidget(operations_btn)
-        rl.addWidget(console_btn); rl.addWidget(setup_btn); rl.addWidget(self._help_btn)
-        rl.addWidget(settings_btn); rl.addWidget(stop_btn)
 
         # Keep references so the guided tour can highlight each control by name.
         self._adaptation_btn = adaptation_btn
@@ -668,12 +687,16 @@ class MainWindow(QMainWindow):
             console_btn,
             setup_btn,
             self._help_btn,
+            self._notification_btn,
             settings_btn,
         ]
         # The destructive Stop action keeps its label whenever the available
         # width permits; at very narrow widths it remains uniquely identifiable
         # by its red square icon and definition tooltip.
         self._header_stop_button = stop_btn
+        self._header_nav_columns = len(self._header_nav_buttons) + 1
+        for column, button in enumerate((*self._header_nav_buttons, stop_btn), 1):
+            rl.addWidget(button, 0, column)
 
         self._header_groups = (left, brand_box, right)
         self._header_layout_mode = None
@@ -912,10 +935,14 @@ class MainWindow(QMainWindow):
         except Exception:
             self._last_bus_revision = None
         self._init_security_event_reader()
-        # One fail-closed prompt per currently mounted removable volume.  The
-        # dialog map is bounded by the USB policy's mount bound and entries are
-        # removed as soon as each window finishes.
+        # Policy owns the requests. The inbox offers one row per live approval.
         self._usb_approval_dialogs: dict[str, object] = {}
+        self._usb_notification_keys: set[str] = set()
+        self._usb_scan_rows = {}
+        self._dismissed_usb_scan_rows = {}
+        self._usb_scan_review = None
+        self._automatic_scan_notice = None
+        self._dismissed_automatic_scan_notice = None
         self.shark_banner = _NoAnim()
 
         # Shark Attack Engine — the adversary-simulation test harness.
@@ -933,7 +960,7 @@ class MainWindow(QMainWindow):
         self._settings_combat_status.connect(self._show_settings_combat_status)
         self._fi_coaching.connect(self.shark_monitor.append_instructor)
         self._selftest_done.connect(self._on_selftest_done)
-        self._selftest_progress.connect(self.run_spinner.set_progress)
+        self._selftest_progress.connect(self._on_selftest_progress)
         self._selftest_repair_done.connect(self._on_selftest_repair_done)
         self._mic_level.connect(self._on_mic_level)
         self._voice_live_requested.connect(self._enable_voice_live)
@@ -1002,16 +1029,24 @@ class MainWindow(QMainWindow):
         self._update_controller.update_available.connect(self._on_daily_update_report)
         self._update_controller.status_changed.connect(self._on_update_status)
         self._update_controller.candidate_ready.connect(self._on_source_candidate_ready)
+        self._update_controller.activation_ready.connect(self._on_source_activation_ready)
+        self._update_controller.activation_request_ready.connect(self._on_source_activation_requested)
+        self._source_activation_stop_binding = None
+        self._update_controller.activation_held.connect(self._on_source_activation_held)
+        updates_menu = self.menuBar().addMenu("Updates")
+        updates_menu.addAction("Check GitHub now", self._update_controller.check_now)
+        updates_menu.addAction("Source update storage…", self._show_source_update_storage)
+        self._source_update_storage_dialog = None
         QApplication.instance().aboutToQuit.connect(self._update_controller.close)
         from angerona.gui.storage_controls import StorageWarningController
         self._storage_warning_controller = StorageWarningController(
-            self.config, self.manager, self, self._show_settings)
+            self.config, self.manager, self, self._show_settings, notifications=self._notifications)
         from angerona.gui.normal_log_controls import NormalLogWarningController
         self._normal_log_warning_controller = NormalLogWarningController(
-            self.config, self, self._show_settings)
+            self.config, self, self._show_settings, notifications=self._notifications)
         from angerona.gui.telemetry_storage_controls import TelemetryStorageWarningController
         self._telemetry_storage_warning_controller = TelemetryStorageWarningController(
-            self.config, self.manager, self, self._show_settings)
+            self.config, self.manager, self, self._show_settings, notifications=self._notifications)
         # Do NOT call self._refresh() here — modules haven't loaded yet
         # (discover/start run on a background thread after first paint).
         # The first timer tick at t=1s will populate the panels with live data.
@@ -1154,6 +1189,7 @@ class MainWindow(QMainWindow):
         # single-row desktop, the centered brand. Stacked rows get independent
         # budgets so the right-side destinations remain reachable at 480 px.
         row_budget = max(408, width - 80)
+        navigation_budget = row_budget
         if width < 850 * scale:
             allocate(primary, row_budget)
             allocate(navigation, row_budget)
@@ -1164,6 +1200,22 @@ class MainWindow(QMainWindow):
                                if len(groups) > 1 else 0)
                 row_budget -= max(180, round(180 * scale), brand_width)
             allocate(primary + navigation, row_budget - gap)
+        # A fixed-width button may paint outside its layout slot when the
+        # minimum widths plus gaps exceed the narrow viewport. Keep the same
+        # widgets and wrap navigation only when its single row cannot fit.
+        if navigation:
+            columns = len(navigation)
+            row_width = sum(button.minimumWidth() for button in navigation) + gap * (columns - 1)
+            if row_width > navigation_budget:
+                columns = (columns + 1) // 2
+            if columns != self._header_nav_columns:
+                layout = self._header_groups[2].layout()
+                for button in navigation:
+                    layout.removeWidget(button)
+                for index, button in enumerate(navigation):
+                    row, column = divmod(index, columns)
+                    layout.addWidget(button, row, column + 1)
+                self._header_nav_columns = columns
         for indicator in (
             getattr(self, "run_spinner", None),
             getattr(self, "loading_indicator", None),
@@ -1226,6 +1278,7 @@ class MainWindow(QMainWindow):
         states = [value[0] for value in getattr(strip, "_prev", {}).values() if value]
         critical = sum(state in {"critical", "failed"} for state in states)
         degraded = states.count("degraded")
+        self._assessment_coverage = critical, degraded
         if states:
             summary = f"Coverage: {critical} critical/failed · {degraded} degraded · {live} · expand for coverage and workload"
         else:
@@ -1427,7 +1480,10 @@ class MainWindow(QMainWindow):
         self._right_tabs.setCurrentWidget(self.alerts_panel)
 
     def _run_header_action(self, source: QWidget, callback, color: str) -> None:
-        """Route a top-row action through the real destination reveal."""
+        """Keep critical STOP independent of optional destination motion."""
+        if source is getattr(self, "_stop_btn", None):
+            callback()
+            return
         self._reveal_window_from(source, callback, color)
 
     def _reveal_window_from(
@@ -1717,6 +1773,10 @@ class MainWindow(QMainWindow):
         if self._tick_count % status_period == 0:
             self.status_strip.refresh()
             MainWindow._update_module_ribbon_summary(self)
+        if getattr(self, "_automatic_scan_notice", None) is not None:
+            self._sync_automatic_scan_notice()
+        if getattr(self, "_assessment_banner", None) is not None:
+            self._refresh_current_assessment()
         self.red_swords.set_active(self.shark_engine.is_running or self.red_team_engine.is_running)
         self._check_threat_animation()
 
@@ -1856,6 +1916,7 @@ class MainWindow(QMainWindow):
         # only after the wake worker has finished and ten quiet minutes elapsed.
         drill_busy = (
             getattr(self, "_sim_launch_job", None) is not None
+            or self._session_is_active()
             or self.shark_engine.is_running
             or self.red_team_engine.is_running
             or int(getattr(self, "_sim_aar_pending", 0)) > 0
@@ -1870,140 +1931,225 @@ class MainWindow(QMainWindow):
             cooldown = self._chill_policy.tick()
             if cooldown is not None and cooldown.action == "cooldown" and self._eco_on:
                 self._enter_eco(auto_return=True)
-    def _handle_usb_approval_events(self, events) -> None:
-        """Present pending USB PIN gates one at a time.
 
-        The EventBus payload is used only to locate a secret-free approval ID.
-        The dialog receives the live approval object from the USB module, so a
-        forged event cannot manufacture trust state or obtain a PIN prompt.
-        """
-        relevant = []
-        terminal_ids: set[str] = set()
-        removed_mounts: set[str] = set()
-        for event in events:
-            details = getattr(event, "details", None)
-            if not isinstance(details, dict):
-                continue
-            event_type = str(details.get("event_type") or "").strip().casefold()
-            if not event_type.startswith("usb_"):
-                continue
-            approval_id = str(details.get("approval_id") or "").strip()
-            mountpoint = str(details.get("mountpoint") or "").strip()
-            if event_type == "usb_approval_required" and approval_id:
-                relevant.append((approval_id, mountpoint))
-            elif event_type in {"usb_approval_decision", "usb_approval_rejected"}:
-                # The asynchronous dialog owns successful result delivery. A
-                # trusted event can precede that delivery and must not turn it
-                # into a cancellation. Explicit denial still closes promptly.
-                state = str(details.get("approval_state") or "").casefold()
-                if approval_id and state == "denied":
-                    terminal_ids.add(approval_id)
-            elif event_type == "usb_media_removed" and mountpoint:
-                removed_mounts.add(mountpoint.casefold())
+    def _usb_approval_module(self):
+        module = self.manager.modules.get("Removable-Media / USB Monitor")
+        if module is None:
+            module = next((candidate for candidate in self.manager.modules.values()
+                           if getattr(candidate, "CODE", "") == "USBW"), None)
+        return module if callable(getattr(module, "pending_approvals", None)) else None
 
-        # Close stale prompts first. A close never grants trust and never
-        # re-enables Windows AutoRun/AutoPlay.
-        for approval_id, dialog in tuple(self._usb_approval_dialogs.items()):
-            dialog_mount = str(
-                getattr(getattr(dialog, "_approval", None), "mountpoint", "")
-            ).casefold()
-            if approval_id in terminal_ids or dialog_mount in removed_mounts:
-                try:
-                    dialog.close()
-                except RuntimeError:
-                    pass
-                self._usb_approval_dialogs.pop(approval_id, None)
-
-        usb_module = self.manager.modules.get("Removable-Media / USB Monitor")
-        if usb_module is None:
-            usb_module = next(
-                (
-                    module for module in self.manager.modules.values()
-                    if getattr(module, "CODE", "") == "USBW"
-                ),
-                None,
-            )
-        if usb_module is None or not hasattr(usb_module, "pending_approvals"):
+    def _handle_usb_approval_events(self, _events) -> None:
+        """Reconcile inbox entries against the current USB policy snapshot."""
+        if getattr(self, "_termination_started", False):
             return
+        module = self._usb_approval_module()
+        if hasattr(self, "_usb_scan_rows"):
+            self._sync_usb_scan_notices(module)
         try:
-            pending = {
-                approval.approval_id: approval
-                for approval in usb_module.pending_approvals()
-            }
+            pending = {view.approval_id: view for view in module.pending_approvals()} if module else {}
         except Exception:
             return
 
-        # Reconcile removals/decisions from policy state too: informational bus
-        # events may be evicted during an alert burst. A stale prompt must not
-        # prevent the next live insertion from being presented.
+        # Pending policy state also covers lost or reordered event notices.
+        # A delayed removal event must never cancel a newer device at that mount.
+        binding = getattr(getattr(module, "_approval_policy", None), "approval_binding", None)
         for approval_id, dialog in tuple(self._usb_approval_dialogs.items()):
-            if approval_id not in pending:
-                # Verification marks policy trusted before its worker returns.
-                # Keep this exact live request until the dialog receives the
-                # result (or reaches its deadline); removal/replacement still
-                # cancels because the old binding no longer exists.
-                binding = getattr(
-                    getattr(usb_module, "_approval_policy", None),
-                    "approval_binding", None,
-                )
-                if (
-                    getattr(dialog, "_operation", None) == "approve"
-                    and callable(binding)
-                    and binding(approval_id) is not None
-                ):
+            if isValid(dialog) and getattr(dialog, "_module", None) is module:
+                if approval_id in pending:
                     continue
-                try:
-                    dialog.close()
-                except RuntimeError:
-                    pass
-                self._usb_approval_dialogs.pop(approval_id, None)
-        if self._usb_approval_dialogs:
+                delivering = getattr(dialog, "_operation", None) == "approve" or getattr(dialog, "_resolved", False)
+                if delivering and callable(binding) and binding(approval_id) is not None:
+                    continue
+            self._usb_approval_dialogs.pop(approval_id, None)
+            if isValid(dialog):
+                dialog.close()
+
+        keys = {f"usb:{id(module)}:{approval_id}" for approval_id in pending}
+        for key in self._usb_notification_keys - keys:
+            self._notifications.remove(key)
+        self._usb_notification_keys = keys
+        for approval_id, approval in pending.items():
+            key = f"usb:{id(module)}:{approval_id}"
+            title = f"Removable media at {approval.mountpoint}"
+            if approval.state == "locked":
+                self._notifications.upsert(
+                    key, title, "This approval is locked. Use the USB PIN reset in Settings to review it again.",
+                    self._show_settings, review_label="Open Settings")
+            else:
+                self._notifications.upsert(
+                    key, title, "Review this device to approve Angerona scanning or keep the device blocked.",
+                    lambda owner=module, token=approval_id: self._open_usb_approval(owner, token))
+
+    def _sync_usb_scan_notices(self, module) -> None:
+        read = getattr(module, "recent_media_scan_results", None)
+        try:
+            retained = read() if callable(read) else ()
+        except Exception:
+            retained = None
+        rows = {}
+        if type(retained) is tuple and retained:
+            from angerona.modules.usb_monitor import UsbMediaScanResult
+
+            rows = {f"usb-scan:{id(module)}:{row.approval_id}": row for row in retained[-16:]
+                    if type(row) is UsbMediaScanResult}
+        previous = self._usb_scan_rows
+        if type(retained) is tuple:
+            self._dismissed_usb_scan_rows = {
+                key: row for key, row in self._dismissed_usb_scan_rows.items() if rows.get(key) == row
+            }
+        if rows == previous:
+            return
+        self._usb_scan_rows = rows
+        for key in previous.keys() - rows.keys():
+            self._notifications.remove(key)
+        review = self._usb_scan_review
+        if review is not None and isValid(review):
+            key, row = review._usb_review_binding
+            if rows.get(key) != row:
+                review.close()
+        for key, row in rows.items():
+            if previous.get(key) == row or self._dismissed_usb_scan_rows.get(key) == row:
+                continue
+            self._notifications.upsert(
+                key, f"Removable-media review at {row.mountpoint}",
+                f"{row.summary}\nAction taken · {row.action_taken}",
+                lambda owner=module, token=key, expected=row: self._open_usb_scan_review(owner, token, expected),
+                dismiss=lambda token=key, expected=row: self._dismiss_usb_scan_notice(token, expected),
+            )
+
+    def _dismiss_usb_scan_notice(self, key: str, expected) -> None:
+        if self._usb_scan_rows.get(key) == expected:
+            self._dismissed_usb_scan_rows[key] = expected
+            self._notifications.remove(key)
+
+    def _open_usb_scan_review(self, module, key: str, expected) -> None:
+        if getattr(self, "_termination_started", False):
+            return
+        owner = self._usb_approval_module()
+        self._sync_usb_scan_notices(owner)
+        if (owner is not module or self._usb_scan_rows.get(key) != expected
+                or self._dismissed_usb_scan_rows.get(key) == expected):
             return
 
-        # Pending policy state is authoritative.  Include it even if its
-        # informational EventBus notification was evicted by an alert burst.
-        requested_ids = {approval_id for approval_id, _mountpoint in relevant}
-        requested_ids.update(pending)
-        if removed_mounts:
-            requested_ids = {
-                approval_id
-                for approval_id in requested_ids
-                if str(getattr(pending.get(approval_id), "mountpoint", "")).casefold()
-                not in removed_mounts
-            }
+        from angerona.gui.window_controls import work_window_registry
+        from angerona.gui.window_fit import install_window_fit
 
+        def create():
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Angerona — Removable-media scan review")
+            dialog.setModal(False)
+            dialog.resize(620, 440)
+            layout = QVBoxLayout(dialog)
+            dialog._usb_review_text = QPlainTextEdit()
+            dialog._usb_review_text.setObjectName("RemovableScanReview")
+            dialog._usb_review_text.setAccessibleName("Removable-media scan details")
+            dialog._usb_review_text.setReadOnly(True)
+            layout.addWidget(dialog._usb_review_text, 1)
+            close = QPushButton("Close")
+            close.clicked.connect(dialog.close)
+            layout.addWidget(close)
+            install_window_fit(dialog)
+            return dialog
+
+        lines = [expected.summary, "", f"Scope · {expected.mountpoint}",
+                 f"Status · {expected.state}", f"Files checked · {expected.files_scanned}",
+                 f"Findings · {expected.findings_total}", f"Action taken · {expected.action_taken}"]
+        for finding in expected.findings[:16]:
+            lines.extend(("", f"{finding.severity.upper()} · {finding.title}", finding.category, *finding.evidence))
+        omitted = expected.findings_total - len(expected.findings[:16])
+        if omitted > 0:
+            lines.extend(("", f"Additional findings outside this retained preview · {omitted}"))
+        text = "\n".join(lines)
+        if len(text) > 12_000:
+            text = text[:12_000] + "\n\nAdditional detail exceeds this preview's display limit."
+        dialog = work_window_registry(self).show("usb-scan-review", create)
+        dialog._usb_review_binding = (key, expected)
+        dialog._usb_review_text.setPlainText(text)
+        self._usb_scan_review = dialog
+
+    def _sync_automatic_scan_notice(self):
+        controller = getattr(self.manager, "_curated_tools_controller", None)
+        retained = getattr(controller, "retained_scan_attempt", None)
+        try:
+            attempt = retained() if callable(retained) else None
+        except RuntimeError:
+            attempt = None
+        binding = (controller, attempt) if type(attempt) is int and attempt > 0 else None
+        if self._automatic_scan_notice is not None and self._automatic_scan_notice != binding:
+            self._automatic_scan_notice = None
+            self._notifications.remove(self._AUTOMATIC_SCAN_NOTICE)
+        return binding
+
+    def _queue_automatic_scan_notice(self, report) -> None:
+        """Queue only the exact retained automatic terminal result on the GUI thread."""
+        if getattr(self, "_termination_started", False) or type(report) is not dict:
+            return
+        binding = self._sync_automatic_scan_notice()
+        attempt = report.get("review_attempt")
+        state = report.get("state")
+        if (report.get("automatic") is not True or report.get("lifecycle") != "terminal"
+                or type(attempt) is not int or binding is None or binding[1] != attempt
+                or type(state) is not str or state not in {
+                    "completed", "incomplete", "failed", "cancelled", "timed-out", "held",
+                } or binding == self._dismissed_automatic_scan_notice):
+            return
+        self._automatic_scan_notice = binding
+
+        def review():
+            if (not self._termination_started and self._sync_automatic_scan_notice() == binding
+                    and self._automatic_scan_notice == binding):
+                binding[0].open_retained_scan_report(expected_attempt=attempt)
+
+        def dismiss():
+            if self._automatic_scan_notice == binding:
+                self._dismissed_automatic_scan_notice = binding
+                self._automatic_scan_notice = None
+                self._notifications.remove(self._AUTOMATIC_SCAN_NOTICE)
+
+        summary = "Review the retained report for scan coverage and findings."
+        if report.get("coverage_incomplete") is True:
+            summary += " Coverage gaps were recorded."
+        self._notifications.upsert(
+            self._AUTOMATIC_SCAN_NOTICE, f"Automatic Spyware Scan · {state}", summary, review, dismiss=dismiss,
+        )
+
+    def _open_usb_approval(self, module, approval_id: str) -> None:
+        if getattr(self, "_termination_started", False) or self._usb_approval_module() is not module:
+            return
+        try:
+            approval = next((view for view in module.pending_approvals()
+                             if view.approval_id == approval_id and view.state != "locked"), None)
+        except Exception:
+            return
+        if approval is None:
+            self._handle_usb_approval_events(())
+            return
+        dialog = self._usb_approval_dialogs.get(approval_id)
+        if dialog is not None and isValid(dialog):
+            if dialog._module is module:
+                if dialog.isMinimized():
+                    dialog.showNormal()
+                else:
+                    dialog.show()
+                dialog.raise_()
+                dialog.activateWindow()
+                return
+            dialog.close()
         from angerona.gui.usb_approval_dialog import UsbApprovalDialog
 
-        # The module orders pending state by insertion time. Keep that order
-        # and create at most one window per refresh; additional drives remain
-        # blocked while the operator handles the current prompt.
-        for approval_id, approval in pending.items():
-            if approval_id not in requested_ids or approval.state == "locked":
-                # A wrong PIN locks the session. Only Settings can reset it;
-                # repeatedly reopening its rejected prompt cannot help.
-                continue
-            dialog = UsbApprovalDialog(usb_module, approval, self)
-            # Child windows inherit the dashboard stylesheet. Reapplying the
-            # entire theme here causes a second layout/style event cascade.
-            dialog.finished.connect(
-                lambda _result, token=approval_id: self._usb_approval_dialogs.pop(
-                    token, None
-                )
-            )
-            self._usb_approval_dialogs[approval_id] = dialog
-            dialog.show()
-            dialog.raise_()
-            dialog.activateWindow()
-            try:
-                self.tray.showMessage(
-                    "Angerona — removable media blocked",
-                    "AutoRun is disabled. Enter the USB PIN to approve Angerona scanning.",
-                    QSystemTrayIcon.Warning,
-                    8000,
-                )
-            except Exception:
-                pass
-            break
+        dialog = UsbApprovalDialog(module, approval, self)
+        self._usb_approval_dialogs[approval_id] = dialog
+
+        def finished(_result):
+            if self._usb_approval_dialogs.get(approval_id) is dialog:
+                self._usb_approval_dialogs.pop(approval_id, None)
+            self._handle_usb_approval_events(())
+
+        dialog.finished.connect(finished)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
 
     def _notify_critical(self, crits) -> None:
         now = time.time()
@@ -2116,6 +2262,8 @@ class MainWindow(QMainWindow):
             layout = QVBoxLayout(dialog)
             layout.setContentsMargins(6, 6, 6, 6)
             page = SpywareGuardPage(self.manager, self.config, self.bus, dialog)
+            self.system_pulse.sample_ready.connect(page.priority_scan.update_computer_specs)
+            page.priority_scan.update_computer_specs(self.system_pulse.latest_sample())
             page.settings_requested.connect(self._show_settings)
             page.github_tools_requested.connect(
                 lambda analysis: self._open_github_tools(open_analysis=analysis))
@@ -2388,6 +2536,11 @@ class MainWindow(QMainWindow):
 
     def _wake_chill_modules(self, *, auto: bool) -> bool:
         """Wake policy-paused modules sequentially; return True if queued."""
+        from angerona.gui.native_retirement import (
+            native_retirement_proven, native_start_failed, retain_native_retirement,
+        )
+        if getattr(self, "_termination_started", False):
+            return False
         self._apply_chill_throttles(False)
         self._set_chill_runtime(False)
         self._chill_auto_wake = bool(auto)
@@ -2408,19 +2561,18 @@ class MainWindow(QMainWindow):
             self.eco_btn.setStyleSheet("")
 
         worker = getattr(self, "_eco_worker", None)
-        try:
-            if worker is not None and worker.isRunning():
-                if bool(getattr(worker, "_abort", False)):
-                    # The cancelled worker owns a QThread until its run method
-                    # returns. Queue one non-blocking retry so a fast
-                    # Chill -> Full click cannot strand the deep sensors.
-                    self._pending_chill_wake = bool(auto)
-                    if self._wake_retry_worker is not worker:
-                        self._wake_retry_worker = worker
-                        worker.finished.connect(self._resume_pending_chill_wake)
-                return True
-        except (RuntimeError, AttributeError):
-            pass
+        if worker is not None and (not isinstance(worker, EcoWakeupWorker)
+                                   or not native_retirement_proven(worker)):
+            # Finished/isRunning(False) cannot stand in for wait(0). Keep this
+            # exact owner until native settlement, including an unknown wrapper.
+            try:
+                running = isValid(worker) and worker.isRunning()
+            except (RuntimeError, AttributeError):
+                running = False
+            if bool(getattr(worker, "_abort", False)) or not running:
+                self._pending_chill_wake = bool(auto)
+                self._wake_retry_worker = worker
+            return True
 
         names = []
         for name in self._ECO_HEAVY_MODULES:
@@ -2469,15 +2621,37 @@ class MainWindow(QMainWindow):
                 generation, ok, failed
             )
         )
-        self._eco_worker.finished.connect(self._eco_worker.deleteLater)
-        self._eco_worker.start()
+        try:
+            retain_native_retirement(self._eco_worker, self._on_eco_worker_retired)
+            self._eco_worker.start()
+        except BaseException:
+            # A raised admission remains owned and unproved; never delete it
+            # or retry a numeric/native generation as successful completion.
+            native_start_failed(self._eco_worker)
+            raise
         return True
+
+    def _on_eco_worker_retired(self, worker) -> None:
+        """Producer settlement after actual native wait proof, before deletion."""
+        if not isinstance(worker, EcoWakeupWorker):
+            return
+        current = getattr(self, "_eco_worker", None) is worker
+        if current:
+            self._eco_worker = None
+        if getattr(self, "_wake_retry_worker", None) is worker:
+            if current:
+                self._resume_pending_chill_wake()
+            else:
+                self._wake_retry_worker = None
+                self._pending_chill_wake = None
+        if isValid(worker):
+            worker.deleteLater()
 
     def _resume_pending_chill_wake(self) -> None:
         self._wake_retry_worker = None
         auto = self._pending_chill_wake
         self._pending_chill_wake = None
-        if auto is not None:
+        if auto is not None and not getattr(self, "_termination_started", False):
             QTimer.singleShot(0, lambda: self._wake_chill_modules(auto=auto))
 
     def _on_eco_module_ready(self, generation: int, name: str, ok: bool) -> None:
@@ -2527,8 +2701,20 @@ class MainWindow(QMainWindow):
         # Keep drill artifacts with Angerona's bounded runtime data by default.
         # User folders remain explicit presets for deliberate coverage tests.
         default_target = str(self.config.data_dir / "drill-sandbox")
-        if getattr(self, "_rt_console", None) is None:
+        if getattr(self, "_rt_console", None) is None or not isValid(self._rt_console):
             self._rt_console = RedTeamConsole(self, default_target=default_target)
+            session, plan = self._simulation_session, self._simulation_plan
+            if session is not None and plan is not None:
+                self._simulation_launch_status("accepted", "Showing the retained sequential session.",
+                    {"auto_remediate": getattr(self, "_sim_auto_remediate", True)})
+                self._rt_console.bind_performance_session(plan.session_id, plan.generation,
+                    {run.run_id: run.plan_sha256 for run in plan.runs})
+                # A newly opened view may review already-cached reports. The
+                # immutable verifier still runs on each distinct view delivery.
+                for report in session.completed_reports():
+                    self._show_aar_dialog(report)
+                self._session_ui_finished = False
+                self._poll_sequential_session()
         if self._rt_console.isMinimized():
             self._rt_console.showNormal()
         else:
@@ -2624,8 +2810,12 @@ class MainWindow(QMainWindow):
             result["response_warning"] = str(getattr(self, "_sim_response_warning", ""))
         rtc = getattr(self, "_rt_console", None)
         if rtc is not None:
-            rtc.set_launch_status(result, cfg)
-            result["dispatched"] = True
+            try:
+                rtc.set_launch_status(result, cfg)
+                result["dispatched"] = True
+            except RuntimeError:
+                # Closing a view never releases its detached session custody.
+                self._rt_console = None
         return result
 
     def _check_simulation_response(self, cfg: dict) -> dict:
@@ -2652,6 +2842,10 @@ class MainWindow(QMainWindow):
         return {"status": "ready", "reason": str(readiness.get("reason") or "")}
 
     def _abort_simulation_launch(self, reason: str, started: tuple = ()) -> None:
+        if getattr(self, "_simulation_session", None) is not None:
+            self._simulation_session.cancel()
+            self.console._append("[red-team] Cancellation requested from the exact session owner: " + str(reason)[:1000])
+            return
         """Collapse a refused launch without ever scheduling a stale AAR."""
         for engine in started:
             try:
@@ -2691,6 +2885,9 @@ class MainWindow(QMainWindow):
 
     def _run_simulation(self, cfg) -> dict:
         if (bool(getattr(self, "_simulation_closing", False))
+                or bool(getattr(self, "_termination_started", False))
+                or self._session_is_active()
+                or any(worker.is_alive() for worker in getattr(self, "_aar_report_threads", {}).values())
                 or getattr(self, "_aar_work_owner", None) is not None
                 or getattr(self, "_sim_launch_job", None) is not None
                 or getattr(self, "_sim_stop_timer", None) is not None
@@ -2733,10 +2930,8 @@ class MainWindow(QMainWindow):
         from angerona.gui.simulation_launch import SimulationLaunch
 
         self._sim_auto_remediate = bool(cfg.get("auto_remediate", True))
-        self._sim_response_escalated = (
-            self._sim_auto_remediate
-            and self._sim_response_readiness_start.get("ready") is True
-        )
+        # A prepared drill does not grant temporary response authority.
+        self._sim_response_escalated = False
         self._fi_enabled = bool(cfg.get("analogy", False))
         self.shark_monitor.fi_check.setChecked(self._fi_enabled)
         self._sim_ran_shark = bool(cfg.get("run_shark"))
@@ -2750,11 +2945,14 @@ class MainWindow(QMainWindow):
             "Preparing simulation — checking target safety, fresh detector cycles "
             "and authenticated recorder delivery. Stop remains available."
         )
-        job = SimulationLaunch(
-            cfg=cfg, manager=self.manager, bus=self.bus, storage=self.storage,
-            data_root=self.config.data_dir, red_team_engine=self.red_team_engine,
-            shark_engine=self.shark_engine, response_escalated=self._sim_response_escalated,
-        )
+        try:
+            job = SimulationLaunch(
+                cfg=cfg, manager=self.manager, bus=self.bus, storage=self.storage,
+                data_root=self.config.data_dir, red_team_engine=self.red_team_engine,
+                shark_engine=self.shark_engine,
+            )
+        except (TypeError, ValueError) as exc:
+            return self._simulation_launch_status("rejected", str(exc), cfg)
         self._sim_launch_job = job
         # This callback retains only the detached job, never Qt in its worker.
         self.destroyed.connect(job.cancel)
@@ -2767,59 +2965,247 @@ class MainWindow(QMainWindow):
             self._sim_launch_job = None
             self.destroyed.disconnect(job.cancel)
             self._sim_launch_timer.deleteLater()
+            self._sim_launch_timer = None
             return self._simulation_launch_status("rejected", str(exc), cfg)
         self._sim_launch_timer.start()
         return self._simulation_launch_status(
             "preparing", "Waiting for validated detector and recorder readiness.", cfg,
         )
 
+    def _session_is_active(self) -> bool:
+        session = getattr(self, "_simulation_session", None)
+        if session is None:
+            return False
+        from angerona.gui.simulation_launch import session_custody_released
+        try:
+            workers = session.owned_workers()
+            if (type(workers) is not tuple or not 1 <= len(workers) <= 4
+                    or any(not isinstance(worker, threading.Thread) for worker in workers)):
+                return True
+            if any(worker.ident is None or worker.is_alive() for worker in workers):
+                return True
+            plan = getattr(self, "_simulation_plan", None)
+            snapshot = session.snapshot()
+            if (plan is None or type(snapshot) is not dict
+                    or type(snapshot.get("schema")) is not int or snapshot["schema"] != 1
+                    or snapshot.get("session_id") != plan.session_id
+                    or type(snapshot.get("session_generation")) is not int
+                    or snapshot.get("session_generation") != plan.generation):
+                return True
+            if type(session.finished) is not threading.Event:
+                return True
+            return not session.finished.is_set() or not session_custody_released(session)
+        except Exception:
+            return True  # Unknown custody cannot admit a competing owner.
+
+    def _retire_simulation_launch_view(self, job) -> None:
+        timer = getattr(self, "_sim_launch_timer", None)
+        if timer is not None:
+            timer.stop()
+            timer.deleteLater()
+            self._sim_launch_timer = None
+        if getattr(self, "_sim_launch_job", None) is job:
+            self._sim_launch_job = None
+        try:
+            self.destroyed.disconnect(job.cancel)
+        except (RuntimeError, TypeError):
+            pass
+
     def _poll_simulation_launch(self) -> None:
         job = getattr(self, "_sim_launch_job", None)
-        if job is None or not job.ready.is_set():
+        if job is None:
             return
-        if bool(getattr(self, "_simulation_closing", False)):
+        if getattr(self, "_simulation_closing", False) or getattr(self, "_termination_started", False):
             job.cancel()
             return
-        if job.success and job.claim():
-            self._sim_launch_timer.stop()
-            self._sim_launch_timer.deleteLater()
-            self._sim_launch_job = None
-            self.destroyed.disconnect(job.cancel)
-            self._shark_prev_armed = job.previous_policy.get("ANGERONA_SOAR_KILL_AND_ROLLBACK")
-            self._shark_prev_minsev = job.previous_policy.get("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY")
-            self._shark_prev_scope = job.previous_policy.get("ANGERONA_SOAR_RESPONSE_SCOPE")
-            self._sim_runtime_watch = job.runtime_watch
-            self._redteam_validation_lease = job.lease
-            if job.readiness:
-                self.console._append(
-                    "[red-team] Simulation validation plane ready: "
-                    f"{job.readiness.get('policy_count', 0)} exact contracts, "
-                    f"sensor health {job.readiness.get('sensor_health', 0)}%, "
-                    "authenticated recorder echo verified."
-                )
-            self._sim_aar_pending = len(job.started)
-            self._sim_report_runs = {
-                kind: str(engine.run_id)
-                for kind, engine in (("red_team", self.red_team_engine), ("shark", self.shark_engine))
-                if engine in job.started
-            }
+        if not job.ready.is_set():
+            return
+        if job.success and not job._claimed and not job.cancelled.is_set():
+            job.claim()  # Merely requests start; actual acknowledgement follows.
+        if job.thread.is_alive():
+            return
+        if job.accepted:
+            from angerona.gui.simulation_launch import SessionReportInbox
+            previous_cancel = getattr(self, "_session_destroy_cancel", None)
+            if previous_cancel is not None:
+                try:
+                    self.destroyed.disconnect(previous_cancel)
+                except (RuntimeError, TypeError):
+                    pass
+            self._simulation_session, self._simulation_plan = job.session, job.plan
+            self._session_destroy_cancel = job.session.cancel
+            self.destroyed.connect(self._session_destroy_cancel)
+            self._session_reports = SessionReportInbox(job.plan)
+            self._session_missing_reports = set()
+            self._session_ui_finished = False
+            self._session_release_delivered = False
+            self._session_status_key = None
+            self._sim_report_runs = {run.kind: run.run_id for run in job.plan.runs}
+            self._sim_aar_pending = 1  # Custody sentinel, never a scored count.
+            self._sim_response_escalated = False
+            self._retire_simulation_launch_view(job)
+            for name in ("_sim_poll", "_rt_poll", "_shark_poll"):
+                old = getattr(self, name, None)
+                if old is not None:
+                    old.stop()
+                    if name == "_sim_poll":
+                        old.deleteLater()
+            self._sim_poll = QTimer(self)
+            self._sim_poll.setInterval(500)
+            self._sim_poll.timeout.connect(self._sim_check_done)
+            self._simulation_launch_status("accepted", "Sequential session accepted; current response policy is unchanged.", job.cfg)
+            rtc = getattr(self, "_rt_console", None)
+            if rtc is not None:
+                rtc.bind_performance_session(job.plan.session_id, job.plan.generation,
+                    {run.run_id: run.plan_sha256 for run in job.plan.runs})
+                if job.cancelled.is_set():
+                    rtc._run_cancelled = True
+                    rtc._render_performance_badge()
             self.shark_swim.start()
             self.shark_banner.start()
-            self._sim_poll = QTimer(self)
-            self._sim_poll.timeout.connect(self._sim_check_done)
-            self._sim_poll.start(500)
-            self._simulation_launch_status("accepted", "Drill accepted.", job.cfg)
-        elif job.finished.is_set():
-            self._sim_launch_timer.stop()
-            self._sim_launch_timer.deleteLater()
-            self._sim_launch_job = None
-            self.destroyed.disconnect(job.cancel)
-            self._sim_response_escalated = False  # Worker already restored policy.
-            self._sim_aar_pending = 0
-            self.shark_swim.stop()
-            self.shark_banner.stop()
-            self.console._append(f"[red-team] Simulation launch stopped: {job.reason}")
-            self._simulation_launch_status("rejected", job.reason, job.cfg)
+            self._sim_poll.start()
+            self._poll_sequential_session()
+            return
+        # A lost start acknowledgement can still leave a real owned session
+        # thread. Retain the entire job until its exact children return.
+        from angerona.gui.simulation_launch import session_custody_released
+        if (any(worker.is_alive() for worker in job.owned_workers())
+                or (job.session is not None and not session_custody_released(job.session))):
+            job.cancel()
+            if getattr(self, "_sim_launch_hold_notified_job", None) is not job:
+                self._sim_launch_hold_notified_job = job
+                self.console._append("[red-team] Launch is held until its exact worker and lease custody retire. "
+                    + str(job.reason or "Cancellation requested; original evidence remains preserved."))
+            return
+        self._retire_simulation_launch_view(job)
+        self._sim_aar_pending = 0
+        self._sim_response_escalated = False
+        self.shark_swim.stop()
+        self.shark_banner.stop()
+        self.console._append("[red-team] Session preparation held: " + job.reason)
+        self._simulation_launch_status("rejected", job.reason or "Session was not accepted.", job.cfg)
+        if self._eco_on and self._chill_policy.enabled:
+            self.chill_return_requested.emit()
+
+    def _session_report_failure(self, run_id, kind, reason) -> None:
+        # This is an explicitly unverified diagnostic, never a signed AAR or
+        # a manufactured detection miss. Existing report controls stay held.
+        self._show_aar_dialog({"report_kind": kind, "run_id": run_id, "error": str(reason)[:1000],
+            "text": ("Simulation report unavailable\n\n" + str(reason)[:1000]
+                     + "\n\nNo authenticated coverage, containment or patch credit is assigned. "
+                       "Original evidence is preserved for review.")})
+
+    def _poll_sequential_session(self) -> None:
+        session, plan = self._simulation_session, self._simulation_plan
+        if session is None or plan is None or getattr(self, "_termination_started", False):
+            return
+        from angerona.gui.simulation_launch import prepared_execution_rows, session_custody_released
+        try:
+            snapshot = session.snapshot()
+            valid_snapshot = (type(snapshot) is dict
+                and type(snapshot.get("schema")) is int and snapshot["schema"] == 1
+                and snapshot.get("session_id") == plan.session_id
+                and type(snapshot.get("session_generation")) is int
+                and snapshot.get("session_generation") == plan.generation)
+        except Exception:
+            snapshot, valid_snapshot = {}, False
+        if not valid_snapshot:
+            session.cancel()
+            snapshot = {"phase": "held", "current_task": "Session cache binding unavailable; cancellation requested"}
+        try:
+            workers = session.owned_workers()
+            worker_source = (type(workers) is tuple and 1 <= len(workers) <= 4
+                and all(isinstance(worker, threading.Thread) for worker in workers))
+            workers_retired = worker_source and all(worker.ident is not None and not worker.is_alive() for worker in workers)
+            finished_source = type(session.finished) is threading.Event
+            owner_finished = finished_source and session.finished.is_set()
+        except Exception:
+            worker_source = finished_source = workers_retired = owner_finished = False
+        terminal = owner_finished and workers_retired
+        custody_released = session_custody_released(session)
+        lifecycle_released = bool(custody_released and valid_snapshot and worker_source and finished_source)
+        phase = snapshot.get("phase")
+        if terminal and phase not in {"completed", "cancelled", "held"}:
+            phase = "held"
+        rtc = getattr(self, "_rt_console", None)
+        if rtc is not None:
+            try:
+                from angerona.gui.red_team_console import SessionLifecycleProjection
+                rtc.record_session_lifecycle(SessionLifecycleProjection(plan.session_id, plan.generation,
+                    tuple(sorted((run.run_id, run.plan_sha256) for run in plan.runs)),
+                    str(phase)[:80], bool(valid_snapshot and worker_source and finished_source),
+                    bool(owner_finished), bool(workers_retired), custody_released))
+                if phase == "cancelled":
+                    rtc._run_cancelled = True
+                rtc.update_execution_progress(prepared_execution_rows(plan,
+                    {"red_team": self.red_team_engine, "shark": self.shark_engine}, phase=phase, terminal=terminal))
+                if valid_snapshot:
+                    for run in plan.runs:
+                        performance = session.performance_snapshot(run.run_id)
+                        if performance is not None:
+                            rtc.record_performance_snapshot(performance)
+            except RuntimeError:
+                self._rt_console, rtc = None, None
+        deliveries, notices = self._session_reports.take(session.completed_reports())
+        for report in deliveries:
+            # The existing immutable verifier is unchanged and called once on
+            # new report display. No report generation/evaluation runs on Qt.
+            self._show_aar_dialog(report)
+        for run_id, kind, reason in notices:
+            self.console._append("[red-team] " + reason)
+            if run_id:
+                self._session_report_failure(run_id, kind, reason)
+        status_key = phase, str(snapshot.get("current_task") or "")[:200]
+        if self._session_status_key != status_key:
+            self._session_status_key = status_key
+            self.shark_monitor.append("Session " + str(phase) + " · " + (status_key[1] or "Waiting for the current owner"))
+        if not terminal:
+            self._sim_aar_pending = 1
+            if rtc is not None:
+                rtc._run_pending = True
+                rtc.launch_btn.setEnabled(False)
+            return
+        if rtc is not None:
+            rtc.launch_btn.setEnabled(lifecycle_released)
+        if self._session_ui_finished:
+            if lifecycle_released and not getattr(self, "_session_release_delivered", False):
+                self._session_release_delivered = True
+                poll = getattr(self, "_sim_poll", None)
+                if poll is not None:
+                    poll.stop()
+                if self._eco_on and self._chill_policy.enabled:
+                    self.chill_return_requested.emit()
+            return
+        self._session_ui_finished = True
+        self._sim_aar_pending = 0
+        poll = getattr(self, "_sim_poll", None)
+        if poll is not None and lifecycle_released:
+            poll.stop()
+        self.shark_swim.stop()
+        self.shark_banner.stop()
+        from angerona.shark.simulation_session import LaunchDiagnostic
+        diagnostics = [row for row in session.launch_diagnostics()
+            if type(row) is LaunchDiagnostic and row.session_id == plan.session_id]
+        for run in plan.runs:
+            if run.run_id in self._session_reports.seen:
+                continue
+            reason = "; ".join((row.reason_code + ": " + row.detail)[:1000]
+                for row in diagnostics if not row.run_id or row.run_id == run.run_id)
+            self._session_report_failure(run.run_id, run.kind,
+                reason or "The exact session ended without an authenticated report; phase=" + str(phase))
+            self._session_missing_reports.add(run.run_id)
+        if rtc is not None:
+            rtc._run_pending = False
+            rtc._render_execution_progress()
+        previous_cancel = getattr(self, "_session_destroy_cancel", None)
+        if previous_cancel is not None:
+            try:
+                self.destroyed.disconnect(previous_cancel)
+            except (RuntimeError, TypeError):
+                pass
+            self._session_destroy_cancel = None
+        if lifecycle_released:
+            self._session_release_delivered = True
             if self._eco_on and self._chill_policy.enabled:
                 self.chill_return_requested.emit()
 
@@ -2827,7 +3213,11 @@ class MainWindow(QMainWindow):
         self._pending_simulation_cfg = None
         job = getattr(self, "_sim_launch_job", None)
         if job is None:
-            return False
+            session = getattr(self, "_simulation_session", None)
+            if session is None:
+                return False
+            session.cancel()
+            return True
         job.cancel()
         return True
 
@@ -2880,10 +3270,39 @@ class MainWindow(QMainWindow):
                 rtc.record_cleanup_failure(message)
 
     def _sim_check_done(self) -> None:
+        if getattr(self, "_termination_started", False) or getattr(self, "_simulation_closing", False):
+            return
+        if getattr(self, "_simulation_session", None) is not None:
+            self._poll_sequential_session()
+            return
+        # Reuse this existing GUI poll for bounded cached workflow counts. No
+        # sensor query, event-history evaluation or worker is added here.
+        progress_active = False
+        rtc = getattr(self, "_rt_console", None)
+        snapshots = {}
+        runs = getattr(self, "_sim_report_runs", {})
+        for kind, engine in (("red_team", self.red_team_engine), ("shark", self.shark_engine)):
+            if kind not in runs or runs.get(kind) != str(getattr(engine, "run_id", "")):
+                continue
+            getter = getattr(engine, "progress_snapshot", None)
+            if callable(getter):
+                try:
+                    row = getter()
+                    snapshots[kind] = row
+                    progress_active |= (type(row) is dict and row.get("run_id") == runs[kind]
+                                        and type(row.get("state")) is str
+                                        and row["state"] in {"queued", "running", "stopping"})
+                except Exception:
+                    snapshots[kind] = None
+        if rtc is not None:
+            try:
+                rtc.update_execution_progress(snapshots)
+            except (AttributeError, RuntimeError, TypeError, ValueError):
+                pass
         cleanup = getattr(self, "_sim_stop_complete", None)
         if cleanup is not None and not cleanup.is_set():
             return
-        if self.shark_engine.is_running or self.red_team_engine.is_running:
+        if progress_active or self.shark_engine.is_running or self.red_team_engine.is_running:
             return
         self._sim_poll.stop()
         self.shark_swim.stop(); self.shark_banner.stop()
@@ -2902,12 +3321,14 @@ class MainWindow(QMainWindow):
             self._sim_redteam_cleanup_scope = (
                 self.red_team_engine.evidence_cleanup_scope()
             )
-            threading.Thread(target=self._red_team_build_aar, daemon=True).start()
+            self._start_owned_report_worker("red_team", self._red_team_build_aar)
         if getattr(self, "_sim_ran_shark", False):
-            threading.Thread(target=self._shark_build_aar, daemon=True).start()
+            self._start_owned_report_worker("shark", self._shark_build_aar)
 
     def _simulation_aar_finished(self) -> None:
         """Restore the pre-drill response policy after every requested AAR settles."""
+        if getattr(self, "_simulation_session", None) is not None:
+            return  # The sequential owner alone settles and releases its lease.
         lock = getattr(self, "_sim_aar_lock", None)
         if lock is None:
             return
@@ -2994,6 +3415,9 @@ class MainWindow(QMainWindow):
         })
 
     def _red_team_check_done(self) -> None:
+        if getattr(self, "_simulation_session", None) is not None:
+            self._poll_sequential_session()
+            return
         if self.red_team_engine.is_running:
             return
         self._rt_poll.stop()
@@ -3006,7 +3430,7 @@ class MainWindow(QMainWindow):
             self.red_team_engine.evidence_cleanup_scope()
         )
         import threading
-        threading.Thread(target=self._red_team_build_aar, daemon=True).start()
+        self._start_owned_report_worker("red_team", self._red_team_build_aar)
 
     def _wait_for_redteam_response_settlement(
         self,
@@ -3061,6 +3485,8 @@ class MainWindow(QMainWindow):
             time.sleep(min(0.5, remaining))
 
     def _red_team_build_aar(self) -> None:
+        if getattr(self, "_simulation_session", None) is not None:
+            return  # Never create a second report/release owner.
         settle_started = time.monotonic()
         from angerona.shark.aar_report import (
             AARReportResult,
@@ -3200,6 +3626,9 @@ class MainWindow(QMainWindow):
             self._fi_coaching_worker.submit(msg)
 
     def _shark_check_done(self) -> None:
+        if getattr(self, "_simulation_session", None) is not None:
+            self._poll_sequential_session()
+            return
         if self.shark_engine.is_running:
             return
         self._shark_poll.stop()
@@ -3213,11 +3642,13 @@ class MainWindow(QMainWindow):
             os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = self._shark_prev_armed
 
         import threading
-        threading.Thread(target=self._shark_build_aar, daemon=True).start()
+        self._start_owned_report_worker("shark", self._shark_build_aar)
 
     def _shark_build_aar(self) -> None:
         """Runs on a background thread — never touch widgets here directly,
         only emit the signal that hands the result back to the GUI thread."""
+        if getattr(self, "_simulation_session", None) is not None:
+            return  # Session owns report verification and post-report release.
         from angerona.shark.aar_report import (
             AARReportResult, generate_aar, verified_aar_handoff_text,
         )
@@ -3265,6 +3696,8 @@ class MainWindow(QMainWindow):
         self._aar_ready.emit(report_handoff)
 
     def _show_aar_dialog(self, handoff: object) -> None:
+        if getattr(self, "_termination_started", False):
+            return
         from angerona.shark.aar_report import (
             AARReportResult,
             verified_aar_handoff_text,
@@ -3303,7 +3736,14 @@ class MainWindow(QMainWindow):
         ) or bool(failed_result and failed_result.get("report_kind") == "red_team") or "RED TEAM ATTACK" in text.upper()
         report_path = self.config.data_dir / ("redteam_aar.json" if is_redteam
                                               else "shark_aar.json")
-        report_binding = {"run_id": "", "sha256": "", "error": ""}
+        report_binding = {"run_id": "", "sha256": "", "error": "",
+                          "handoff_verified": False, "coverage_score_eligible": False,
+                          "diagnostic_only": False}
+        current_plan = getattr(self, "_simulation_plan", None)
+        if (immutable_result is not None and current_plan is not None
+                and any(run.run_id == immutable_result.run_id
+                        and run.kind == immutable_result.report_kind for run in current_plan.runs)):
+            report_binding["session_owned"] = True
         try:
             if immutable_result is not None:
                 if (
@@ -3321,7 +3761,12 @@ class MainWindow(QMainWindow):
                     "head_sha256": immutable_result.head_sha256,
                     "sequence": immutable_result.sequence,
                 })
+                bound_payload = json.loads(immutable_result.report_bytes.decode("utf-8"))
+                report_binding.update(handoff_verified=True,
+                    coverage_score_eligible=bound_payload.get("coverage_score_eligible") is True,
+                    diagnostic_only=bound_payload.get("diagnostic_only") is True)
             elif failed_result is not None:
+                report_binding["run_id"] = str(failed_result.get("run_id") or "")[:160]
                 raise ValueError(str(failed_result.get("error") or "report failed"))
             else:
                 raw_report = report_path.read_bytes()
@@ -3461,6 +3906,83 @@ class MainWindow(QMainWindow):
                     return f"Captured drill cleanup failed: {exc}"
             return total
 
+        def _open_patch_workspace():
+            from angerona.gui.patch_center import AngeronaPatchDialog
+            from angerona.gui.sandbox_editor import launch_sandbox_editor
+
+            workspaces = getattr(self, "_angerona_patch_dialogs", None)
+            if workspaces is None:
+                workspaces = self._angerona_patch_dialogs = {}
+            patch_key = ((immutable_result.report_kind, report_binding.get("run_id"), report_binding.get("sha256"))
+                         if immutable_result is not None else ("unverified", id(report_binding)))
+            existing_patch = workspaces.get(patch_key)
+            if existing_patch is not None and isValid(existing_patch):
+                if existing_patch.isMinimized():
+                    existing_patch.showNormal()
+                else:
+                    existing_patch.show()
+                existing_patch.raise_()
+                existing_patch.activateWindow()
+                return existing_patch
+            patch_dialog = AngeronaPatchDialog(pm,
+                immutable_result if not report_binding.get("error") else None, self,
+                open_source=lambda: launch_sandbox_editor(self.manager, self.bus, parent=self,
+                                                          preselect="Posture Hardening"))
+            patch_dialog.setStyleSheet(self._qss())
+            workspaces[patch_key] = patch_dialog
+            def release_patch(_result):
+                if workspaces.get(patch_key) is patch_dialog and not patch_dialog.has_active_work():
+                    workspaces.pop(patch_key, None)
+                    patch_dialog.deleteLater()
+            patch_dialog.finished.connect(release_patch)
+            patch_dialog.show()
+            patch_dialog.raise_()
+            patch_dialog.activateWindow()
+            return patch_dialog
+
+        def _open_failure_diagnostics():
+            from angerona.gui.simulation_diagnostics import SimulationDiagnosticsPanel
+            views = getattr(self, "_simulation_diagnostic_dialogs", None)
+            if views is None:
+                views = self._simulation_diagnostic_dialogs = {}
+            identity = ("red_team" if is_redteam else "shark", report_binding.get("run_id") or "",
+                        report_binding.get("sha256") or "", report_binding.get("head_sha256") or "",
+                        report_binding.get("sequence") or 0)
+            existing_view = views.get(identity)
+            if existing_view is not None and isValid(existing_view):
+                existing_view.showNormal() if existing_view.isMinimized() else existing_view.show()
+                existing_view.raise_()
+                existing_view.activateWindow()
+                return existing_view
+            if len(views) >= 8:
+                raise RuntimeError("Close an existing diagnostics view before opening another report")
+            def review_exact_fix(selection):
+                # Detached explanation rows are untrusted input, never a plan,
+                # an action target or an elevation/patch authorization.
+                selected = selection.get("diagnostics_identity") if type(selection) is dict else None
+                if (type(selected) is not dict or immutable_result is None
+                        or report_binding.get("error")
+                        or type(selected.get("sequence")) is not int
+                        or (selected.get("report_kind"), selected.get("run_id"), selected.get("report_sha256"),
+                            selected.get("head_sha256"), selected.get("sequence")) != identity):
+                    raise ValueError("The selected explanation is not bound to this immutable report")
+                return _open_patch_workspace()
+            view = SimulationDiagnosticsPanel(self, config=self.config,
+                handoff=immutable_result if not report_binding.get("error") else None,
+                data_dir=self.config.data_dir, report_kind=identity[0], expected_run_id=identity[1] or None,
+                expected_report_sha256=identity[2] or None, expected_head_sha256=identity[3] or None,
+                expected_sequence=identity[4] or None, patch_review=review_exact_fix)
+            views[identity] = view
+            def release_view(_result):
+                if views.get(identity) is view:
+                    views.pop(identity, None)
+                    view.deleteLater()
+            view.finished.connect(release_view)
+            view.show()
+            view.raise_()
+            view.activateWindow()
+            return view
+
         # Only authenticated immutable handoffs may reuse a live report view.
         # Failed and compatibility deliveries never borrow another run's key.
         if immutable_result is not None and not report_binding.get("error"):
@@ -3485,6 +4007,8 @@ class MainWindow(QMainWindow):
                         on_attempt_fix=_attempt_fix, on_apply=None,
                         on_clean=_clean_markers, redteam=is_redteam,
                         report_binding=report_binding,
+                        on_patch=_open_patch_workspace,
+                        on_diagnostics=_open_failure_diagnostics,
                         apply_hold_reason=("" if is_redteam else
                             "Exact reviewed remediation plan is unavailable; review current Posture actions"))
         dlg.setStyleSheet(self._qss())
@@ -3515,7 +4039,9 @@ class MainWindow(QMainWindow):
     def _admit_aar_work(self, dialog, _kind) -> bool:
         # Qt dispatch sets this owner before starting the worker, so another
         # report action or GUI drill launch cannot pass while it is retained.
-        if (getattr(self, "_aar_work_owner", None) is not None
+        if (getattr(self, "_termination_started", False)
+                or self._session_is_active()
+                or getattr(self, "_aar_work_owner", None) is not None
                 or getattr(self, "_sim_launch_job", None) is not None
                 or getattr(self, "_pending_simulation_cfg", None) is not None
                 or bool(getattr(self, "_simulation_closing", False))
@@ -4887,6 +5413,88 @@ class MainWindow(QMainWindow):
     def _refresh_posture(self) -> None:
         self._posture_reader.request()
 
+    def _current_assessment_rows(self, now: float) -> list[tuple[str, str, str, bool]]:
+        """Small review routes from delivered snapshots and GUI-owned state."""
+        if getattr(getattr(self, "_breach_view", None), "active", False):
+            return [("case", "Confirmed case · review now", "the case report", True)]
+
+        cards = self.cards
+        snapshot = cards._normal_threat_snapshot
+        status = cards._normal_threat_status
+        if (status == "current" and not cards._normal_threat_failed
+                and snapshot is not self._assessment_threat):
+            self._assessment_threat = snapshot
+            self._assessment_threat_at = now
+        fresh = (snapshot is not None and status == "current" and not cards._normal_threat_failed
+                 and now - self._assessment_threat_at <= self._ASSESSMENT_FRESH_SECONDS)
+        rows = []
+        if fresh:
+            count, (label, _) = snapshot
+            if label == "Critical":
+                rows.append(("critical", f"{count} active critical detections (10m)", "Resolve Center", True))
+            elif label == "High":
+                rows.append(("high", "Active high detections (10m)", "Resolve Center", False))
+        elif cards._normal_threat_failed or status == "current":
+            rows.append(("unavailable", "Threat assessment unavailable", "Resolve Center", False))
+        else:
+            rows.append(("updating", "Waiting for threat assessment", "Resolve Center", False))
+
+        critical, degraded = self._assessment_coverage
+        if critical or degraded:
+            rows.append(("coverage", f"Coverage · {critical} failed/critical · {degraded} degraded", "Modules", False))
+        inbox = self._notifications
+        storage_count = sum(key in inbox._entries for key in (
+            "storage:recovery", "storage:normal-logs", "storage:telemetry"))
+        if storage_count:
+            rows.append(("storage", "Storage needs review", "System settings", False))
+        pending = inbox.count - storage_count
+        if pending > 0:
+            notice = "notification" if pending == 1 else "notifications"
+            rows.append(("inbox", f"{pending} pending {notice}", "Notifications", False))
+        if self._eco_on:
+            rows.append(("mode", "Chill mode · review coverage settings", "System settings", False))
+        return rows or [("clear", "No active HIGH/CRITICAL detections (10m)", "Resolve Center", False)]
+
+    def _refresh_current_assessment(self, now: float | None = None) -> None:
+        if self._termination_started:
+            return
+        now = time.monotonic() if now is None else now
+        banner = self._assessment_banner
+        rows = self._current_assessment_rows(now)
+        keys = tuple(row[0] for row in rows)
+        if keys != self._assessment_keys:
+            if (not self._assessment_keys or keys[0] != self._assessment_keys[0]
+                    or self._assessment_key not in keys):
+                self._assessment_key = keys[0]
+            self._assessment_keys = keys
+            self._assessment_since = now
+        elif (len(keys) > 1 and now - self._assessment_since >= self._ASSESSMENT_DWELL_SECONDS
+              and self.isVisible() and not self.isMinimized() and not banner.underMouse()
+              and not banner.hasFocus() and getattr(self.config, "ui_motion_enabled", True)):
+            self._assessment_key = keys[(keys.index(self._assessment_key) + 1) % len(keys)]
+            self._assessment_since = now
+        _, summary, destination, urgent = rows[keys.index(self._assessment_key)]
+        banner.present(summary, destination, urgent)
+
+    def _open_current_assessment(self) -> None:
+        if self._termination_started:
+            return
+        key = self._assessment_key
+        now = time.monotonic()
+        rows = self._current_assessment_rows(now)
+        if not any(row[0] == key for row in rows):
+            self._refresh_current_assessment(now)
+        elif key == "case":
+            self._on_posture_click()
+        elif key == "coverage":
+            self.cards._open_modules()
+        elif key in {"storage", "mode"}:
+            self._show_settings("System")
+        elif key == "inbox":
+            self._notifications.show()
+        else:
+            self.cards._open_threat()
+
     def _prepare_aria_history_snapshot(self):
         history = self.aria_history
 
@@ -5443,6 +6051,13 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
+    def _queue_setup_notice(self) -> None:
+        self._notifications.upsert(
+            "setup", "Set up Angerona",
+            "Review the setup wizard to choose how Angerona should run on this computer.",
+            self._open_setup, review_label="Open setup",
+            dismiss=lambda: self._notifications.remove("setup"))
+
     def _open_setup(self) -> None:
         """Open the comprehensive, platform-aware end-user setup program."""
         try:
@@ -5473,6 +6088,7 @@ class MainWindow(QMainWindow):
                 if getattr(self, "_setup_dialog", None) is not dlg:
                     return
                 self._setup_dialog = None
+                self._notifications.remove("setup")
                 if result == QDialog.DialogCode.Accepted and isValid(self):
                     controller = getattr(self, "_update_controller", None)
                     if controller is not None:
@@ -5762,12 +6378,38 @@ class MainWindow(QMainWindow):
         if not isValid(self):
             return
         controller = self._update_controller
-        if not controller.prompt_eligible(report) or not report.available:
+        if not controller.prompt_eligible(report):
+            return
+        if not report.available:
+            self._notifications.remove("update-available")
             return
         key = report.remote_revision if report.source_status == "different" else report.release_tag
-        if key == self._update_prompt_revision and not controller.manual_report(report):
+        if controller.manual_report(report):
+            self._update_prompt_revision = key
+            self._notifications.remove("update-available")
+            self._review_update_notice(report)
             return
-        self._update_prompt_revision = key
+        if key == self._update_prompt_revision:
+            return
+        title = ("Angerona source update available" if report.source_status == "different"
+                 else "Angerona release available")
+
+        def acknowledge():
+            self._notifications.remove("update-available")
+            if not controller.prompt_eligible(report):
+                return False
+            self._update_prompt_revision = key
+            return True
+
+        self._notifications.upsert(
+            "update-available", title, report.summary(),
+            lambda: self._review_update_notice(report) if acknowledge() else None,
+            dismiss=acknowledge)
+
+    def _review_update_notice(self, report) -> None:
+        controller = self._update_controller
+        if not isValid(self) or not controller.prompt_eligible(report):
+            return
         if report.source_status == "different":
             if self._update_message("Angerona source update available",
                     report.summary() + "\n\nDownload an isolated candidate and preserve local edits for review? "
@@ -5789,6 +6431,118 @@ class MainWindow(QMainWindow):
         self._update_message("Source candidate prepared",
             f"Status: {result.status}\nPreserved changes: {result.preserved_changes}\nConflicts: {len(result.conflicts)}\n\n"
             + str(path) + "\n\n" + result.message)
+        if isValid(self) and self._update_controller.alive():
+            self._update_controller.review_source_candidate(result)
+
+    def _show_source_update_storage(self) -> None:
+        if not isValid(self) or not self._update_controller.alive():
+            return
+        from angerona.gui.update_controller import SourceUpdateStorageDialog
+        dialog = getattr(self, "_source_update_storage_dialog", None)
+        if dialog is None or not isValid(dialog):
+            dialog = SourceUpdateStorageDialog(self._update_controller, self)
+            configure_work_window(dialog)
+            dialog.setStyleSheet(self._qss())
+            self._source_update_storage_dialog = dialog
+        if dialog.isMinimized():
+            dialog.showNormal()
+        else:
+            dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        self._update_controller.review_storage()
+
+    def _on_source_activation_held(self, reason) -> None:
+        if not isValid(self) or not self._update_controller.alive() or getattr(self, "_termination_started", False):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Source activation held")
+        box.setTextFormat(Qt.PlainText)
+        box.setText(str(reason)[:2048] + "\n\nNo STOP or source replacement was performed. "
+                    "Storage review is available when retained update data needs attention.")
+        box.setStandardButtons(QMessageBox.Close)
+        review = box.addButton("Review source update storage", QMessageBox.ActionRole)
+        box.setDefaultButton(QMessageBox.Close)
+        box.setEscapeButton(QMessageBox.Close)
+        box.setProperty("_angerona_no_reveal", True)
+        box.setProperty("_angerona_security_prompt", True)
+        try:
+            box.exec()
+            if box.clickedButton() is review and isValid(self):
+                self._show_source_update_storage()
+        finally:
+            if isValid(box):
+                box.deleteLater()
+
+    def _on_source_activation_ready(self, preview) -> None:
+        controller = self._update_controller
+        if (not isValid(self) or not controller.alive() or type(preview) is not dict
+                or not controller._activation_current(preview.get("serial"))
+                or getattr(self, "_termination_started", False)):
+            return
+        previous = getattr(self, "_source_activation_question", None)
+        if previous is not None and isValid(previous):
+            return
+        supervised = preview.get("supervised") is True
+        paths = preview["changed_paths"]
+        shown = "\n".join("  " + path[:240] for path in paths[:60])
+        if len(paths) > 60:
+            shown += f"\n  … {len(paths) - 60} additional paths in the immutable reviewed plan"
+        text = ("Apply the reviewed source update and restart Angerona?" if supervised else
+                "Queue this reviewed source update for confirmation on the next canonical launch?")
+        text += ("\n\nThe external launch controller applies files only after normal STOP, exact native retirement "
+                 "and exclusive maintenance checks. A held STOP leaves the update unapplied." if supervised else
+                 "\n\nThis launch has no verified external update controller. This action records a proposal only; "
+                 "Angerona stays running and a later canonical launch must ask again.")
+        text += (f"\n\nSource: {preview['source_root']}\nTarget: {preview['target_revision']}"
+                 f"\nCurrent HEAD: {preview['original_head']}\nPreserved local changes: {preview['preserved_changes']}"
+                 f"\nPlan: {preview['plan_sha256']}\nStage: {preview['stage_id']}"
+                 f"\nManifest: {preview['manifest_sha256']}\nResolution: {preview['resolution_sha256']}"
+                 f"\nOriginal inventory: {preview['original_inventory_sha256']}"
+                 f"\n\nChanged paths ({len(paths)}):\n{shown}"
+                 "\n\nGit HEAD/index, settings and custom data are preserved. Continue?")
+        question = QMessageBox(self)
+        question.setObjectName("SourceActivationConfirmation")
+        question.setWindowTitle("Apply and restart Angerona" if supervised else "Queue source update review")
+        question.setTextFormat(Qt.PlainText)
+        question.setWindowModality(Qt.ApplicationModal)
+        question.setProperty("_angerona_no_reveal", True)
+        question.setProperty("_angerona_security_prompt", True)
+        question.setText(text)
+        question.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        question.setDefaultButton(QMessageBox.No)
+        question.setEscapeButton(QMessageBox.No)
+        self._source_activation_question = question
+        try:
+            reply = question.exec()
+        finally:
+            if getattr(self, "_source_activation_question", None) is question:
+                self._source_activation_question = None
+            if isValid(question):
+                question.deleteLater()
+        if not isValid(self):
+            return
+        if reply == QMessageBox.Yes:
+            controller.approve_activation(preview["serial"], accepted=True)
+        else:
+            controller.decline_activation(preview["serial"])
+
+    def _on_source_activation_requested(self, value) -> None:
+        if (not isValid(self) or getattr(self, "_termination_started", False)
+                or not self._update_controller.alive()):
+            return
+        binding = self._update_controller.accept_activation_handoff(value)
+        if binding is None:
+            return
+        self._source_activation_stop_binding = binding
+        # The explicit question consents to the existing durable STOP. It does
+        # not supply external native retirement or parent maintenance leases.
+        try:
+            self._terminate()
+        finally:
+            if not getattr(self, "_termination_started", False):
+                self._source_activation_stop_binding = None
+                self._update_controller.reject_activation_handoff(value)
 
     def _open_settings(self) -> None:
         self._show_settings()
@@ -6033,6 +6787,8 @@ class MainWindow(QMainWindow):
         return True
 
     def _run_self_test(self) -> bool:
+        if getattr(self, "_termination_started", False):
+            return False
         if not self._claim_self_test():
             self.console._append("[self-test] already running")
             return False
@@ -6044,11 +6800,12 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.set_busy("Running self-test…")
         try:
-            threading.Thread(
+            self._selftest_thread = threading.Thread(
                 target=self._self_test_worker,
                 name="AngeronaSelfTest",
                 daemon=True,
-            ).start()
+            )
+            self._selftest_thread.start()
         except Exception as exc:
             report = f"Self-test worker could not start: {type(exc).__name__}: {str(exc)[:2000]}"
             self._on_selftest_done(report, [
@@ -6056,6 +6813,45 @@ class MainWindow(QMainWindow):
             ])
             return False
         return True
+
+    def _on_selftest_progress(self, done: int, total: int) -> None:
+        if getattr(self, "_termination_started", False):
+            return
+        self.run_spinner.set_progress(done, total)
+        dialog = getattr(self, "_selftest_results", None)
+        if dialog is not None:
+            dialog.set_progress(done, total)
+
+    def _defer_selftest_completion(self, kind, payload) -> bool:
+        attribute = "_selftest_thread" if kind == "test" else "_selftest_repair_thread"
+        worker = getattr(self, attribute, None)
+        if not isinstance(worker, threading.Thread) or not worker.is_alive():
+            return False
+        self._selftest_completion_pending = (attribute, worker, kind, payload)
+        timer = getattr(self, "_selftest_retire_timer", None)
+        if timer is None:
+            timer = self._selftest_retire_timer = QTimer(self)
+            timer.setInterval(25)
+            timer.timeout.connect(self._settle_selftest_completion)
+        timer.start()
+        return True
+
+    def _settle_selftest_completion(self) -> None:
+        pending = getattr(self, "_selftest_completion_pending", None)
+        if pending is None:
+            self._selftest_retire_timer.stop()
+            return
+        attribute, worker, kind, payload = pending
+        if worker.is_alive():
+            return
+        self._selftest_completion_pending = None
+        self._selftest_retire_timer.stop()
+        if getattr(self, attribute, None) is not worker:
+            return
+        if kind == "test":
+            self._on_selftest_done(*payload)
+        else:
+            self._on_selftest_repair_done(*payload)
 
     def _self_test_worker(self) -> None:
         try:
@@ -6075,6 +6871,13 @@ class MainWindow(QMainWindow):
             pass  # The dashboard was closed while the worker completed.
 
     def _on_selftest_done(self, report: str, failures) -> None:
+        if self._defer_selftest_completion("test", (report, failures)):
+            return
+        dialog = getattr(self, "_selftest_results", None)
+        if dialog is not None:
+            dialog.finish_activity()
+        if getattr(self, "_termination_started", False):
+            return
         self._selftest_active.clear()
         self._selftest_btn.setEnabled(True)
         self.console._append(report)
@@ -6112,7 +6915,7 @@ class MainWindow(QMainWindow):
             return
         dialog = getattr(self, "_selftest_results", None)
         if dialog is not None:
-            dialog.close()
+            dialog.set_busy("Running self-test…")
         QTimer.singleShot(0, self._run_self_test)
 
     def _eligible_selftest_failures(self, failures):
@@ -6126,7 +6929,7 @@ class MainWindow(QMainWindow):
         return eligible
 
     def _start_selftest_repairs(self, failures) -> None:
-        if self._selftest_active.is_set():
+        if self._selftest_active.is_set() or getattr(self, "_termination_started", False):
             return
         repairable = self._eligible_selftest_failures(failures)
         if not repairable:
@@ -6141,12 +6944,13 @@ class MainWindow(QMainWindow):
         if dialog is not None:
             dialog.set_busy("Requesting approved restarts…")
         try:
-            threading.Thread(
+            self._selftest_repair_thread = threading.Thread(
                 target=self._selftest_repair_worker,
                 args=(repairable,),
                 name="AngeronaSelfTestRepair",
                 daemon=True,
-            ).start()
+            )
+            self._selftest_repair_thread.start()
         except Exception:
             self._selftest_active.clear()
             self._selftest_btn.setEnabled(True)
@@ -6168,6 +6972,10 @@ class MainWindow(QMainWindow):
             pass  # The dashboard was closed while the worker completed.
 
     def _on_selftest_repair_done(self, restarted, errors) -> None:
+        if self._defer_selftest_completion("repair", (restarted, errors)):
+            return
+        if getattr(self, "_termination_started", False):
+            return
         self._selftest_active.clear()
         self._selftest_btn.setEnabled(True)
         self.run_spinner.finish("Recovery requested")
@@ -6335,6 +7143,8 @@ class MainWindow(QMainWindow):
         bridge = getattr(self, "_breach_view", None)
         if bridge is not None:
             bridge.poll()
+        if getattr(self, "_assessment_banner", None) is not None:
+            self._refresh_current_assessment()
         QTimer.singleShot(0, self._sync_idle_presentation)
         if not getattr(self, "_did_center", False):
             self._did_center = True
@@ -6441,11 +7251,292 @@ class MainWindow(QMainWindow):
         Always finish with an immediate self-exit so that can't happen."""
         self._terminate()
 
+    def _shutdown_view_owners(self):
+        """Bounded references to owned views, never process/name discovery."""
+        from PySide6.QtCore import QObject
+        owners = [self, *self.findChildren(QDialog)]
+        for value in tuple(vars(self).values()):
+            if isinstance(value, QObject):
+                owners.append(value)
+        unique = {id(owner): owner for owner in owners if isValid(owner)}
+        if len(unique) > 512:
+            raise RuntimeError("Owned shutdown view inventory exceeds its review bound")
+        return tuple(unique.values())
+
+    def _hold_shutdown_views(self) -> None:
+        """Close admission and cancel readers without aborting durable work."""
+        from PySide6.QtCore import QThread
+        from angerona.gui.breach_display import hold_report_exports
+        from angerona.gui.action_worker import hold_finite_actions
+        from angerona.gui.live_debug_panel import hold_live_debug_streams
+        hold_finite_actions()
+        hold_report_exports()
+        hold_live_debug_streams()
+        notifications = getattr(self, "_notifications", None)
+        if notifications is not None:
+            notifications.shutdown()
+        for dialog in tuple(getattr(self, "_usb_approval_dialogs", {}).values()):
+            if isValid(dialog):
+                dialog.close()
+        usb_review = getattr(self, "_usb_scan_review", None)
+        if usb_review is not None and isValid(usb_review):
+            usb_review.close()
+        self._simulation_closing = True
+        self._pending_simulation_cfg = None
+        poll = getattr(self, "_sim_poll", None)
+        if poll is not None:
+            poll.stop()
+        launch_poll = getattr(self, "_sim_launch_timer", None)
+        if launch_poll is not None:
+            launch_poll.stop()
+        for engine in (getattr(self, "red_team_engine", None), getattr(self, "shark_engine", None)):
+            cancel = getattr(engine, "_cancel", None)
+            if isinstance(cancel, threading.Event):
+                cancel.set()
+        session = getattr(self, "_simulation_session", None)
+        if session is not None:
+            session.cancel()
+        preparing = getattr(self, "_sim_launch_job", None)
+        if preparing is not None:
+            preparing.cancel()
+        self._eco_wake_epoch = getattr(self, "_eco_wake_epoch", 0) + 1
+        self._pending_chill_wake = None
+        self._wake_retry_worker = None
+        eco = getattr(self, "_eco_worker", None)
+        if isinstance(eco, QThread) and isValid(eco) and eco.isRunning():
+            eco.cancel()
+        for view in self._shutdown_view_owners():
+            if view is getattr(self, "_update_controller", None):
+                view.close()  # Its nonce revocation worker must remain admitted.
+                continue
+            if isinstance(view, QWidget):
+                view.setEnabled(False)
+            if hasattr(view, "_accept_async_results"):
+                view._accept_async_results = False
+            for value in tuple(vars(view).values()):
+                if isinstance(value, AsyncSnapshot):
+                    value.close()
+                elif isinstance(value, QThread) and isValid(value) and value.isRunning():
+                    value.requestInterruption()
+        for dialog in tuple(getattr(self, "_angerona_patch_dialogs", {}).values()):
+            # Closing the view only hides it while its exact worker settles.
+            dialog._close_requested = True
+            dialog._availability()
+            dialog.hide()
+        for dialog in tuple(getattr(self, "_aar_dialogs", {}).values()):
+            dialog._clean_after_work = False
+            dialog._close_requested = True
+            dialog.hide()
+        update = getattr(self, "_update_controller", None)
+        if update is not None:
+            update.close()
+        self._close_flight_instructor()
+        self._close_spyware_guard_window()
+        self._close_github_tools_window()
+        bridge = getattr(self, "_breach_view", None)
+        if bridge is not None:
+            bridge.shutdown()
+        monitor = getattr(self, "_responsiveness_monitor", None)
+        if monitor is not None:
+            monitor.close()
+        self._aria_voice_stop = True
+        voice = getattr(self, "aria_voice", None)
+        if voice is not None:
+            voice.interrupt()
+        timer = getattr(self, "_aria_hand_timer", None)
+        if timer is not None:
+            timer.stop()
+        controls = getattr(self, "aria_hands", None)
+        if controls is not None:
+            controls.stop()
+
+    def _retained_shutdown_workers(self):
+        from PySide6.QtCore import QThread
+        from angerona.gui.breach_display import (active_report_exports, report_export_retirement_proven,
+                                                poll_report_export_retirement)
+        from angerona.gui.action_worker import (active_finite_actions, finite_action_retirement_proven,
+                                               poll_finite_action_retirement)
+        from angerona.gui.live_debug_panel import (active_live_debug_streams, live_debug_retirement_proven,
+                                                  poll_live_debug_retirement)
+        from angerona.gui.shutdown_retirement import RetainedWorker
+        from angerona.gui.native_retirement import poll_native_retirement
+        rows = {}
+        def retain(label, worker, before=False, proof=None):
+            if isinstance(worker, (threading.Thread, QThread)):
+                prior = rows.get(id(worker))
+                if proof is None and prior is not None:
+                    proof = prior.retirement_proof
+                if proof is None and isinstance(worker, EcoWakeupWorker):
+                    # Attach before completion so an existing STOP record keeps
+                    # this exact producer's proof through later QObject deletion.
+                    proof = poll_native_retirement
+                if proof is None and isinstance(worker, QThread):
+                    if finite_action_retirement_proven(worker):
+                        proof = finite_action_retirement_proven
+                    elif report_export_retirement_proven(worker):
+                        proof = report_export_retirement_proven
+                    elif live_debug_retirement_proven(worker):
+                        proof = live_debug_retirement_proven
+                rows[id(worker)] = RetainedWorker(label, worker, before or bool(prior and prior.before_cleanup), proof)
+        for index, worker in enumerate(active_report_exports()):
+            retain("atomic-report-export-" + str(index), worker, proof=poll_report_export_retirement)
+        for index, worker in enumerate(active_finite_actions()):
+            retain("finite-user-action-" + str(index), worker, True, proof=poll_finite_action_retirement)
+        for index, worker in enumerate(active_live_debug_streams()):
+            retain("live-debug-stream-" + str(index), worker, proof=poll_live_debug_retirement)
+        for kind in ("red_team_engine", "shark_engine"):
+            retain(kind, getattr(getattr(self, kind, None), "_thread", None), True)
+        launch = getattr(self, "_sim_launch_job", None)
+        if launch is not None:
+            for worker in launch.owned_workers():
+                retain("simulation-preparation-owner", worker, True)
+        retain("simulation-cleanup", getattr(self, "_sim_stop_thread", None), True)
+        session = getattr(self, "_simulation_session", None)
+        if session is not None:
+            for worker in session.owned_workers():
+                retain("simulation-session", worker, True)
+        for kind, worker in tuple(getattr(self, "_aar_report_threads", {}).items()):
+            retain("after-action-report-" + kind, worker, True)
+        update = getattr(self, "_update_controller", None)
+        if update is not None:
+            for worker in update.owned_workers():
+                retain("source-update-worker", worker, True)
+        from angerona.app import AngeronaApp
+        app_owner = getattr(getattr(self, "_shutdown_callback", None), "__self__", None)
+        if type(app_owner) is AngeronaApp:
+            # Exact existing sampler custody may close during normal runtime
+            # cleanup. This is not a join on either external launch controller.
+            for worker in app_owner.source_update_observer_workers():
+                retain("source-update-identity-observer", worker, False,
+                       app_owner.source_update_observer_retirement_proven)
+        retain("self-test", getattr(self, "_selftest_thread", None), True)
+        retain("self-test-repair", getattr(self, "_selftest_repair_thread", None), True)
+        retain("flight-instructor", getattr(getattr(self, "_fi_coaching_worker", None), "thread", None))
+        for view in self._shutdown_view_owners():
+            if view is getattr(self, "_update_controller", None):
+                continue  # Actual workers are retained above; close is specialized.
+            is_patch = view in tuple(getattr(self, "_angerona_patch_dialogs", {}).values())
+            patch_mutation = is_patch and bool(getattr(view, "_mutation_admitted", False))
+            aar_mutation = isinstance(view, AARDialog) and getattr(view, "_work_kind", "") in {"fix", "clean"}
+            for attribute in ("_worker", "_work_thread", "_test_worker", "_action_worker"):
+                worker = getattr(view, attribute, None)
+                retain("owned-view-" + attribute, worker, patch_mutation or aar_mutation or not is_patch)
+            for attribute, value in tuple(vars(view).items()):
+                if isinstance(value, AsyncSnapshot):
+                    # Idempotent close also fences a reader admitted just before
+                    # STOP. Its retained .thread proves the actual read returned.
+                    value.close()
+                    retain("view-reader-" + attribute[:40], value.thread)
+                elif isinstance(value, QThread):
+                    retain("native-view-worker-" + attribute[:40], value, True)
+            workers = getattr(view, "_settings_owned_workers", {})
+            if type(workers) is dict:
+                for name, worker in tuple(workers.items()):
+                    retain("settings-" + str(name)[:40], worker, True)
+        for index, worker in enumerate(self.findChildren(QThread)):
+            retain("native-child-worker-" + str(index), worker, True)
+        if getattr(self, "_operator_stop_admission_error", ""):
+            raise RuntimeError("One view admission fence was unavailable")
+        return tuple(rows.values())
+
+    def _retained_shutdown_custody(self):
+        from angerona.gui.shutdown_retirement import RetainedCustody
+        from angerona.gui.simulation_launch import session_custody_released
+        launch = getattr(self, "_sim_launch_job", None)
+        sessions = (getattr(self, "_simulation_session", None), getattr(launch, "session", None))
+        owners = {id(session): session for session in sessions if session is not None}
+        holds = [RetainedCustody("simulation-lease-and-session-custody", session,
+                 lambda exact=session: session_custody_released(exact)) for session in owners.values()]
+        update = getattr(self, "_update_controller", None)
+        if update is not None:
+            holds.append(RetainedCustody("source-update-consent-cancellation", update,
+                         update.activation_custody_released))
+        from angerona.core.source_activation import source_activation_resource_retirement_proven
+        holds.append(RetainedCustody("source-update-resource-retirement", source_activation_resource_retirement_proven,
+                     source_activation_resource_retirement_proven))
+        return tuple(holds)
+
+    def _start_owned_report_worker(self, kind, target) -> bool:
+        if getattr(self, "_termination_started", False) or getattr(self, "_simulation_closing", False):
+            return False
+        workers = getattr(self, "_aar_report_threads", None)
+        if workers is None:
+            workers = self._aar_report_threads = {}
+        previous = workers.get(kind)
+        if previous is not None and previous.is_alive():
+            return False
+        worker = threading.Thread(target=target, name="AfterAction-" + kind, daemon=True)
+        workers[kind] = worker
+        try:
+            worker.start()
+        except Exception:
+            workers.pop(kind, None)
+            raise
+        return True
+
+    def _operator_stop_cleanup(self) -> None:
+        # This exact worker starts only after admitted report/patch mutations,
+        # engine workers and critical companion cleanup have actually retired.
+        errors = []
+        launch = getattr(self, "_sim_launch_job", None)
+        session = (getattr(self, "_simulation_session", None)
+                   or getattr(launch, "session", None))
+        if session is None:
+            # Compatibility owners only. Session has already performed (or
+            # explicitly held) its exact report/evidence/lease cleanup.
+            for engine in (getattr(self, "red_team_engine", None), getattr(self, "shark_engine", None)):
+                if engine is not None:
+                    try:
+                        engine.stop_and_clean()
+                    except Exception as exc:
+                        errors.append(type(exc).__name__)
+            try:
+                self._release_redteam_validation_lease()
+            except Exception as exc:
+                errors.append(type(exc).__name__)
+        try:
+            if self._shutdown_callback is not None:
+                self._shutdown_callback()
+            else:
+                self.manager.stop_all()
+        except Exception as exc:
+            errors.append(type(exc).__name__)
+        if errors:
+            raise RuntimeError("One or more owned cleanup phases remained unverified")
+
+    def _operator_stop_progress(self, pending: int, before_cleanup: bool) -> None:
+        state = pending, before_cleanup
+        if getattr(self, "_operator_stop_progress_state", None) == state:
+            return
+        self._operator_stop_progress_state = state
+        self.console._append("[STOP] Waiting for " + str(pending) + " owned worker/custody hold(s)"
+            + (" before stores close." if before_cleanup else " to retire; dashboard remains responsive."))
+
+    def _operator_stop_finish(self, result) -> None:
+        self._operator_stop_result = result
+        forced = result.get("forced") is True
+        if not forced:
+            try:
+                self._holographic_orb.shutdown()
+            except Exception:
+                pass
+            try:
+                self.tray.hide()
+            except Exception:
+                pass
+            app = QApplication.instance()
+            if app is not None:
+                app.quit()
+        # Incomplete timeout deliberately avoids QApplication.quit/destruction
+        # of any retained running native QThread. OS self-exit is the bounded
+        # fallback; pending diagnostics and durable recovery journals remain.
+        from angerona.core.process_exit import exit_after_operator_shutdown
+        exit_after_operator_shutdown()
+
     def _terminate(self) -> None:
-        """Best-effort graceful cleanup, then an unconditional hard exit."""
+        """Record STOP, fence admission, then poll exact workers without joining Qt."""
         if self._termination_started:
             return
-        # Persist operator intent before a child exits or aboutToQuit runs.
         try:
             if self._shutdown_prepare is not None:
                 self._shutdown_prepare()
@@ -6455,125 +7546,82 @@ class MainWindow(QMainWindow):
                 request_operator_stop()
                 begin_ollama_shutdown()
         except Exception as error:
-            from PySide6.QtWidgets import QMessageBox
-            QMessageBox.critical(
-                self, "Angerona could not record STOP",
+            QMessageBox.critical(self, "Angerona could not record STOP",
                 "STOP could not be completed, so Angerona has not exited. "
                 "If STOP was already recorded, protection may be partially paused. "
                 "Check free disk space and storage permissions, then retry STOP.\n\n"
-                + type(error).__name__,
-            )
+                + type(error).__name__)
             return
         self._termination_started = True
-        # Revoke cosmetic close interception before any owned window closes.
-        # A rejected or unrecorded STOP must leave normal UI motion available.
         reveal = getattr(self, "_panel_reveal", None)
         if reveal is not None:
             try:
                 reveal.shutdown()
             except RuntimeError:
-                # Qt may already have disposed the coordinator or its children.
-                # Durable operator STOP must still retire the owned runtime.
                 pass
-        cleanup_done = threading.Event()
-
-        def cleanup_owned():
-            try:
-                if self._shutdown_callback is not None:
-                    self._shutdown_callback()
-                else:
-                    from angerona.core.ollama_lifecycle import shutdown_ollama
-                    shutdown_ollama(
-                        getattr(self.config, "ollama_host", "http://localhost:11434"),
-                        getattr(self.config, "ollama_model", "llama3"),
-                    )
-                    self.manager.stop_all()
-            finally:
-                cleanup_done.set()
-
-        threading.Thread(target=cleanup_owned, name="OperatorStopCleanup", daemon=True).start()
-        update_controller = getattr(self, "_update_controller", None)
-        if update_controller is not None:
-            update_controller.close()
-        self._close_flight_instructor()
-        self._close_spyware_guard_window()
-        self._close_github_tools_window()
-        bridge = getattr(self, "_breach_view", None)
-        if bridge is not None:
-            bridge.shutdown()
-        self._simulation_closing = True
-        preparing = getattr(self, "_sim_launch_job", None)
-        if preparing is not None:
-            preparing.cancel()
-        monitor = getattr(self, "_responsiveness_monitor", None)
-        if monitor is not None:
-            monitor.close()
-        self._aria_voice_stop = True
         try:
-            voice = getattr(self, "aria_voice", None)
-            if voice is not None:
-                voice.interrupt()
-        except Exception:
-            pass
-        try:
-            timer = getattr(self, "_aria_hand_timer", None)
-            if timer is not None:
-                timer.stop()
-            controls = getattr(self, "aria_hands", None)
-            if controls is not None:
-                controls.stop()
-        except Exception:
-            pass
-        try:
-            cleanup = getattr(self, "_sim_stop_complete", None)
-            if preparing is not None:
-                # Its worker owns unclaimed resources, including a lease that
-                # may still be arriving. Never race a second cleanup against it.
-                preparing.finished.wait(timeout=1.0)
-            elif cleanup is not None and not cleanup.is_set():
-                cleanup.wait(timeout=1.0)
-            else:
-                for engine in (self.red_team_engine, self.shark_engine):
-                    engine.stop_and_clean()
-                self._release_redteam_validation_lease()
-        except Exception:
-            pass
-        # Native calls in a sensor cannot trap the UI forever. The admission
-        # fences are already durable; retained Ollama jobs close with this
-        # process even if a late sensor drain exceeds the shutdown budget.
-        cleanup_done.wait(timeout=30.0)
-        try:
-            self._holographic_orb.shutdown()
-        except Exception:
-            pass
-        try:
-            self.tray.hide()
-        except Exception:
-            pass
-        try:
-            from PySide6.QtWidgets import QApplication
-            QApplication.instance().quit()
-        except Exception:
-            pass
-        from angerona.core.process_exit import exit_after_operator_shutdown
-        exit_after_operator_shutdown()  # final self-exit; no other process is selected
+            self._hold_shutdown_views()
+        except Exception as exc:
+            # Preserve the durable inhibit and continue critical owned cleanup;
+            # an unknown admission fence cannot earn normal Qt teardown.
+            self._operator_stop_admission_error = type(exc).__name__
+        from angerona.gui.shutdown_retirement import ShutdownRetirement
+        critical = self._shutdown_critical
+        if critical is None:
+            def critical():
+                from angerona.core.ollama_lifecycle import shutdown_ollama
+                shutdown_ollama(getattr(self.config, "ollama_host", "http://localhost:11434"),
+                               getattr(self.config, "ollama_model", "llama3"))
+        self._operator_stop_retirement = ShutdownRetirement(self,
+            workers=self._retained_shutdown_workers, critical=critical,
+            custody=self._retained_shutdown_custody,
+            cleanup=self._operator_stop_cleanup, finish=self._operator_stop_finish,
+            status=self._operator_stop_progress, data_root=self.config.data_dir,
+            activation_binding=getattr(self, "_source_activation_stop_binding", None))
+        self._operator_stop_retirement.start()
 
     def _full_shutdown(self) -> None:
         """Red STOP: persist operator intent and retire owned suite resources."""
         from PySide6.QtWidgets import QMessageBox
         from angerona.gui.telemetry_storage_controls import telemetry_pending_text, telemetry_storage_snapshot
+        if getattr(self, "_termination_started", False):
+            return
+        previous = getattr(self, "_stop_confirmation_dialog", None)
+        if previous is not None and isValid(previous):
+            previous.raise_()
+            previous.activateWindow()
+            return
         pending = telemetry_storage_snapshot(getattr(self, "storage", None))
         pending_note = (telemetry_pending_text(pending) + "\n\n"
                         if pending is None or pending["storage_pending_events"] else "")
-        reply = QMessageBox.question(
-            self, "Stop Angerona",
+        question = QMessageBox(self)
+        question.setObjectName("OperatorStopConfirmation")
+        question.setWindowTitle("Stop Angerona")
+        question.setTextFormat(Qt.PlainText)
+        question.setIcon(QMessageBox.Question)
+        question.setWindowModality(Qt.ApplicationModal)
+        # Security consent must never acquire a decorative mask or wait behind
+        # another window's opening/closing transition. Set both flags before Show.
+        question.setProperty("_angerona_no_reveal", True)
+        question.setProperty("_angerona_security_prompt", True)
+        question.setText(
             "Stop protection, unload Angerona's local AI models, stop its owned "
             "AI services and watchdogs, and exit. Automatic recovery remains "
             "stopped until you launch Angerona again.\n\n"
             "A shared Ollama server remains running. Unloading a shared model "
             "also releases its residency for other apps. Downloaded model files "
-            "are kept.\n\n" + pending_note + "Continue?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            "are kept.\n\n" + pending_note + "Continue?")
+        question.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        question.setDefaultButton(QMessageBox.No)
+        question.setEscapeButton(QMessageBox.No)
+        self._stop_confirmation_dialog = question
+        try:
+            reply = question.exec()
+        finally:
+            if getattr(self, "_stop_confirmation_dialog", None) is question:
+                self._stop_confirmation_dialog = None
+            if isValid(question):
+                question.deleteLater()
         if reply != QMessageBox.Yes:
             return
 

@@ -23,6 +23,15 @@ def _offline_practice_inventory(monkeypatch):
         ProcessSnapshot((), time.time(), True, 0, 0, 0, 0, "", True))
 
 
+@pytest.fixture
+def live_owned_process_context(isolate_process_inventory_provider, request):
+    """Keep real native companion ownership available through scoring cleanup."""
+    from native_companion_context import native_companion_context
+
+    with native_companion_context(retirement_owner=request.node) as supplier:
+        yield supplier
+
+
 def _drain_validation_workers(manager, lease) -> None:
     # Capture lease-inserted producers before release removes them from inventory.
     modules = tuple(manager.modules.values())
@@ -83,6 +92,7 @@ def workspace_tmp_path() -> Path:
 def test_live_redteam_marker_custody_allows_verified_containment(
     workspace_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    live_owned_process_context,
     comprehensive: bool,
     expected_steps: int,
     expected_count: int,
@@ -136,6 +146,7 @@ def test_live_redteam_marker_custody_allows_verified_containment(
         modules={guard.name: guard, combat.name: combat},
         bus=bus,
         config=SimpleNamespace(data_dir=root),
+        owned_process_identities=live_owned_process_context,
     )
     combat.bind_manager(manager)
     engine = RedTeamEngine(root, documents_dir=target)

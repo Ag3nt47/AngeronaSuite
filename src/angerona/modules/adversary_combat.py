@@ -85,6 +85,7 @@ _SIGNED_RECORD_TYPES = frozenset({
 _RECOVERY_AUTHORIZATION_SCOPE = "response/adversary-combat"
 _RECOVERY_AUTHORIZATION_MAX_AGE_S = 300.0
 _STARTUP_REQUEST_MAX_AGE_S = 30.0
+_REOBSERVATION_JOURNAL_WAIT_S = 0.20
 _RECOVERY_DISPOSITIONS = frozenset({"confirmed_applied", "confirmed_not_applied"})
 _MUTATION_GENERATION = re.compile(r"[0-9a-f]{32}\Z")
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -1329,6 +1330,7 @@ class AdversaryCombat(BaseModule):
         self._startup_buffering = False
         self._startup_admitted_at: dict[int, float] = {}
         self._admitted_identities: dict[int, str] = {}
+        self._file_reobservations_pending: dict[object, tuple[int, object]] = {}
         self._response_counts: dict[str, int] = {}
         self._last_response_decision = "waiting"
         self._breach_results: dict[str, dict[str, Any]] = {}
@@ -1498,8 +1500,12 @@ class AdversaryCombat(BaseModule):
         with self._admission_lock:
             counts = dict(self._response_counts)
             last_decision = self._last_response_decision
-        with self._queue.all_tasks_done:
-            queue_pending = int(self._queue.unfinished_tasks)
+            # Register, actual child put/ack, and terminal removal use this same
+            # admission -> queue order. A deferred producer cannot appear quiet
+            # in the gap between the old task retiring and its fresh child.
+            producer_pending = len(self._file_reobservations_pending)
+            with self._queue.all_tasks_done:
+                queue_pending = int(self._queue.unfinished_tasks) + producer_pending
         return {
             "ready": state == "ARMED",
             "policy_armed": policy.enabled,
@@ -1512,6 +1518,7 @@ class AdversaryCombat(BaseModule):
             "reason": " ".join(str(reason).split())[:500],
             "queue_depth": self._queue.qsize(),
             "queue_pending": queue_pending,
+            "producer_pending": producer_pending,
             "queue_capacity": self._queue.maxsize,
             "queue_drops": self._dropped_events,
             "counts": counts,
@@ -1898,6 +1905,12 @@ class AdversaryCombat(BaseModule):
                                 response_authorized=False,
                             )
                         continue
+                    if admitted_at is None and self._maybe_reobserve_queued_file(event):
+                        with self._admission_lock:
+                            self._admitted_identities.pop(id(event), None)
+                        self._response_decision("file_reobservation_root_consumed")
+                        self.mark_cycle_complete(interval_seconds=1.0)
+                        continue
                     with self._admission_lock:
                         self._admitted_identities.pop(id(event), None)
                     self._handle(event)
@@ -1992,6 +2005,53 @@ class AdversaryCombat(BaseModule):
             except ValueError:
                 pass
 
+    def _queued_file_authority(self, event, *, create=False):
+        if type(event) is not Event:
+            return None
+        details = event.details if type(event) is Event and isinstance(event.details, dict) else {}
+        if (event.module != "Purple Remediation Guard"
+                or details.get("receipt_type") != "purple_simulation_validation"
+                or details.get("evidence_kind") != "inert_file_marker"):
+            return None
+        from angerona.modules.purple_guard import RedTeamValidationLease, _lease_authority
+        modules = getattr(self._manager, "modules", {})
+        producer = modules.get("Purple Remediation Guard") if isinstance(modules, dict) else None
+        lease = getattr(producer, "_validation_lease", None)
+        if type(lease) is not RedTeamValidationLease:
+            return None
+        try:
+            return _lease_authority(lease)._queued_files(lease, create=create)
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            # A retired/missing issuer registry is a held capability, never a
+            # new worker crash. Mandatory v3 checks still reject absent authority.
+            return None
+
+    def _queued_file_event_valid(self, event, *, admission=False):
+        from angerona.modules.purple_guard import verify_queued_file_event
+        modules = getattr(self._manager, "modules", {})
+        producer = modules.get("Purple Remediation Guard") if isinstance(modules, dict) else None
+        return verify_queued_file_event(getattr(producer, "_validation_lease", None),
+                                        self, event, admission=admission)
+
+    def _maybe_reobserve_queued_file(self, event):
+        """Scheduling only: replace a never-handled aged queued file observation.
+
+        The producer must read and classify the same native enrolled file anew.
+        This does not renew an old proof or retry an attempted transaction.
+        """
+        details = event.details if type(event) is Event and isinstance(event.details, dict) else {}
+        if (details.get("redteam_detector_receipt_version") != 2
+                or type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                or time.time() - event.ts < 20):
+            return False
+        try:
+            authority = self._queued_file_authority(event, create=True)
+            return bool(authority is not None and authority.request(self, event))
+        except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
+            # A scheduling failure grants nothing; the ordinary immutable proof
+            # path still refuses expired or revoked evidence.
+            return False
+
     def _submit(self, event: Event) -> None:
         if (
             self.status != "running" or self.stopping
@@ -2031,7 +2091,12 @@ class AdversaryCombat(BaseModule):
         details = event.details if isinstance(event.details, dict) else {}
         queue_request_id = str(details.get("queue_request_id") or "").casefold()
         identity = self._submission_identity(event)
+        authority = self._queued_file_authority(event)
         with self._admission_lock:
+            if (details.get("redteam_detector_receipt_version") == 3
+                    and details.get("receipt_type") == "purple_simulation_validation"
+                    and (authority is None or not self._queued_file_event_valid(event, admission=True))):
+                return
             if identity in self._seen:
                 return
             if len(self._seen_order) == self._seen_order.maxlen:
@@ -2052,6 +2117,10 @@ class AdversaryCombat(BaseModule):
                     self._queue.put_urgent_nowait(event)
                 else:
                     self._queue.put_nowait(event)
+                if authority is not None and details.get("redteam_detector_receipt_version") == 3:
+                    # Queue unfinished increments BEFORE the opaque producer
+                    # pending entry can retire; bind the actual Bus-signed copy.
+                    authority.acknowledge(self, event)
             except queue.Full:
                 saturated = True
                 self._admitted_identities.pop(id(event), None)
@@ -2348,6 +2417,10 @@ class AdversaryCombat(BaseModule):
         return tuple(found)
 
     def _handle(self, event: Event) -> None:
+        authority = self._queued_file_authority(event, create=True)
+        if authority is not None and not authority.note_entered(self, event):
+            self._response_decision("reobserved_root_consumed")
+            return
         # Recheck at the execution boundary because tests and internal callers
         # may invoke _handle directly without passing through the queue.
         if self._mutation_blocked or self._journal_saturated:
@@ -2379,16 +2452,52 @@ class AdversaryCombat(BaseModule):
         if response_actions is None:
             self._response_decision("invalid_contract")
             return
-        kind = (event.details or {}).get("evidence_kind")
-        canary = self._practice_mutation(event, "quarantine_file" if kind == "inert_file_marker" else "terminate_process")
-        try:
-            self._require_current_response_event(event, canary=canary)
-        except HostMutationHeld:
-            self._response_decision("producer_proof_held")
-            return
-        if not self._host_mutation_allowed(canary=canary):
-            self._response_decision("authority_held")
-            return
+        details = event.details or {}
+        kind = details.get("evidence_kind")
+        file_control = (kind == "inert_file_marker" or event.module == "YARA Scanner"
+                        and bool(details.get("yara_control_claim_id")))
+        # Shape selects only a stricter synchronous route, never authority.
+        # The actual issuer/native proof and host policy must still validate.
+        combined_file_admission = (disposition == "active"
+            and event.module == "Purple Remediation Guard"
+            and kind == "inert_file_marker"
+            and type(details.get("redteam_detector_receipt_version")) is int
+            and details["redteam_detector_receipt_version"] in {2, 3}
+            and details.get("receipt_type") == "purple_simulation_validation"
+            and response_actions == frozenset({"quarantine_file"}))
+        if combined_file_admission:
+            generation = self.lifecycle_generation
+            try:
+                # Ordinary current-event checks precede potentially blocking
+                # issuer work. This does not use the weaker admission shortcut.
+                self._require_current_response_event(event)
+                canary = self._practice_mutation(event, "quarantine_file", require_host=True)
+                if canary is None:
+                    raise HostMutationHeld("Current issuer-owned canary proof is unavailable.")
+                if (self.stopping or self.generation_stop_event().is_set()
+                        or self.lifecycle_generation != generation):
+                    raise HostMutationHeld("The owning response generation has stopped.")
+                if self.policy() != policy:
+                    raise HostMutationHeld("Response policy changed during current proof verification.")
+                if (not self._integrity_ok(event) or canary.signature != event.hmac_sig):
+                    raise HostMutationHeld("Original response event integrity is unavailable.")
+                if (type(event.ts) not in (int, float) or not math.isfinite(event.ts)
+                        or not -1 <= time.time() - event.ts <= 30):
+                    raise HostMutationHeld("Original response evidence expired.")
+            except HostMutationHeld:
+                # A refused issuer proof must not become ordinary Protect.
+                self._response_decision("producer_proof_held")
+                return
+        else:
+            canary = self._practice_mutation(event, "quarantine_file" if file_control else "terminate_process")
+            try:
+                self._require_current_response_event(event, canary=canary)
+            except HostMutationHeld:
+                self._response_decision("producer_proof_held")
+                return
+            if not self._host_mutation_allowed(canary=canary):
+                self._response_decision("authority_held")
+                return
         combat_id = f"combat-{uuid.uuid4().hex[:12]}"
         actions: list[CombatAction] = []
         path = self._event_path(event)
@@ -3728,9 +3837,35 @@ class AdversaryCombat(BaseModule):
         )
 
     def _read_journal(
+        self, *, strict: bool = False, wait_for_response_worker: bool = False,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Read one journal/anchor/witness publication, or withhold a busy view.
+
+        A row is fsynced before its protected checkpoint and witness advance.
+        Readers must share the writer's custody through the complete comparison;
+        otherwise a valid in-flight publication can look like a disk rollback.
+        Contention grants no cached proof and must not latch an integrity error.
+        A strict queued refresh on the response worker can briefly wait for
+        this in-process lock. Other readers keep their nonblocking behavior.
+        """
+        response_wait = (strict and wait_for_response_worker
+                         and self._thread is threading.current_thread())
+        acquired = (self._receipt_lock.acquire(timeout=_REOBSERVATION_JOURNAL_WAIT_S)
+                    if response_wait else self._receipt_lock.acquire(blocking=False))
+        if not acquired:
+            raise JournalIntegrityError("combat journal snapshot is busy")
+        try:
+            if response_wait and self.generation_stop_event().is_set():
+                raise JournalIntegrityError("combat journal snapshot was cancelled")
+            with self._journal_writer_lease():
+                return self._read_journal_under_custody(strict=strict)
+        finally:
+            self._receipt_lock.release()
+
+    def _read_journal_under_custody(
         self, *, strict: bool = False
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        """Return verified signed records and display-only legacy records."""
+        """Verify bytes and checkpoints while retained reader/writer custody is held."""
         if strict:
             cached = self._cached_active_journal()
             if cached is not None:
@@ -4016,19 +4151,17 @@ class AdversaryCombat(BaseModule):
                             "combat journal intent checkpoint is unavailable"
                         )
                     # Locks, protected-store admission and fsync can block.
-                    # Recheck the *current* generation and installed authority
-                    # after durable intent, immediately before any host effect.
-                    self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
-                    if self.policy() != admitted_policy:
-                        raise HostMutationHeld("Response policy changed while the durable intent was being persisted.")
+                    # Retain this exact dispatch before its combined final guard;
+                    # no native effect is admitted until current proof returns.
                     startup_deception = (event is None and action.action == "activate_honeypots"
                         and action.combat_id == "startup" and action.trigger_module == self.name
                         and action.details.get("module") == "Smart Deception")
-                    if not startup_deception:
-                        self._require_current_response_event(event, canary=canary, action=action, pinned=pinned)
                     previous_dispatch = getattr(self._response_dispatch_local, "context", None)
                     self._response_dispatch_local.context = None if startup_deception else (event, canary, action, pinned)
                     try:
+                        self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
+                        if self.policy() != admitted_policy:
+                            raise HostMutationHeld("Response policy changed while the durable intent was being persisted.")
                         yield
                     finally:
                         self._response_dispatch_local.context = previous_dispatch
@@ -4388,19 +4521,26 @@ class AdversaryCombat(BaseModule):
     ) -> CombatAction | None:
         if self.policy().quarantine_files is not True:
             return None
-        canary = self._practice_mutation(event, "quarantine_file")
+        try:
+            canary = self._practice_mutation(event, "quarantine_file", require_host=True)
+        except HostMutationHeld:
+            # A recognized issuer proof was refused. Installed Protect must
+            # not turn that refusal into an ordinary unbound file response.
+            self._response_decision("issuer_canary_held")
+            return None
         if canary is not None:
             try:
                 if str(_absolute_path(Path(raw_path))) != canary.target:
                     return None
             except (OSError, TypeError, ValueError):
                 return None
-        if not self._host_mutation_allowed(canary=canary):
+        if canary is None and not self._host_mutation_allowed():
             return None
         action: CombatAction | None = None
         handoff_lease: Any = None
         handoff_started = False
         handoff_succeeded = False
+        yara_handoff = False
         source: Path | None = None
         try:
             source = _absolute_path(Path(raw_path).expanduser())
@@ -4413,9 +4553,10 @@ class AdversaryCombat(BaseModule):
             destination = destination_dir / source.name
             if destination.exists():
                 destination = destination_dir / f"{uuid.uuid4().hex[:8]}-{source.name}"
-            if os.name == "nt" and (event.details or {}).get(
-                "receipt_type"
-            ) == "purple_simulation_validation":
+            yara_handoff = bool(canary is not None and event.module == "YARA Scanner"
+                                and (event.details or {}).get("yara_control_claim_id"))
+            if yara_handoff or os.name == "nt" and (event.details or {}).get(
+                "receipt_type") == "purple_simulation_validation":
                 from angerona.modules.purple_guard import RedTeamValidationLease
 
                 modules = getattr(self._manager, "modules", {})
@@ -4425,9 +4566,12 @@ class AdversaryCombat(BaseModule):
                 lease = getattr(guard, "_validation_lease", None)
                 if type(lease) is not RedTeamValidationLease:
                     raise OSError("signed marker response has no live custody lease")
-                enrollment = RedTeamValidationLease.begin_marker_containment(
-                    lease, self, event, source
-                )
+                if yara_handoff:
+                    enrollment = RedTeamValidationLease.begin_yara_containment(
+                        lease, self, event, source)
+                else:
+                    enrollment = RedTeamValidationLease.begin_marker_containment(
+                        lease, self, event, source)
                 handoff_lease = lease
                 handoff_started = True
             with _PinnedFileMove(source) as pinned:
@@ -4489,8 +4633,14 @@ class AdversaryCombat(BaseModule):
                         "move_strategy": planned_strategy,
                     },
                 )
+                if yara_handoff:
+                    binding = RedTeamValidationLease.bind_yara_containment_action(
+                        handoff_lease, self, event, action, pinned)
+                    action = CombatAction(**{**asdict(action),
+                        "details": {**action.details, **binding}})
                 with self._journaled_mutation(action, canary=canary, pinned=pinned, event=event):
                     destination_identity = ""
+                    native_dispatch_started = False
                     try:
                         pinned.require_single_link()
                         if handoff_started:
@@ -4499,9 +4649,11 @@ class AdversaryCombat(BaseModule):
                                     handoff_lease, source,
                                 ):
                                     self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
+                                    native_dispatch_started = True
                                     destination_identity = pinned.rename_to(destination)
                         else:
                             self._require_host_mutation_authority(canary=canary, action=action, pinned=pinned)
+                            native_dispatch_started = True
                             destination_identity = pinned.rename_to(destination)
                         destination_link_count = pinned.require_single_link()
                         if pinned.sha256() != digest:
@@ -4554,6 +4706,10 @@ class AdversaryCombat(BaseModule):
                             )
                             return committed
                     except Exception as exc:
+                        if not native_dispatch_started:
+                            # No rename/copy API was entered. Keep the ordinary
+                            # durable failure path; there is no effect to undo.
+                            raise
                         if destination_identity:
                             action = CombatAction(**{
                                 **asdict(action),
@@ -4599,10 +4755,18 @@ class AdversaryCombat(BaseModule):
                 )
             return None
         finally:
-            if handoff_started and not handoff_succeeded and source is not None:
-                RedTeamValidationLease.abort_marker_containment(
-                    handoff_lease, self, source, recapture=True
-                )
+            try:
+                if handoff_started and not handoff_succeeded and source is not None:
+                    RedTeamValidationLease.abort_marker_containment(
+                        handoff_lease, self, source, recapture=True
+                    )
+            finally:
+                # An abort/recapture failure must not leave an issued YARA
+                # claim available for a second transaction. Custody uncertainty
+                # stays with the existing journal; this grants no new effect.
+                if handoff_started and yara_handoff:
+                    RedTeamValidationLease.finish_yara_containment(
+                        handoff_lease, self, event, action, succeeded=handoff_succeeded)
 
     def _acquire_termination_lease(self, action: CombatAction) -> Any:
         """Acquire object custody independently of psutil's cached PID view."""
@@ -4935,7 +5099,8 @@ class AdversaryCombat(BaseModule):
                 and not self.stopping):
             self.mark_cycle_complete(interval_seconds=1.0)
 
-    def _practice_mutation(self, event: Event, operation: str) -> _CanaryMutation | None:
+    def _practice_mutation(self, event: Event, operation: str, *,
+                           require_host: bool = False) -> _CanaryMutation | None:
         """Bind only an issuer-enrolled canary to its immutable original event."""
         if type(event) is not Event or operation not in {"quarantine_file", "terminate_process"}:
             return None
@@ -4954,6 +5119,9 @@ class AdversaryCombat(BaseModule):
                     if record is None or record[0] is None:
                         return None
                     identity = copy.deepcopy(record[1])
+                    authority = RedTeamValidationLease._queued_file_reobservations(lease)
+                    if not authority.note_mutation(self, original):
+                        raise HostMutationHeld("The queued original was consumed for fresh observation.")
                 else:
                     target = details["pid"]
                     identity = RedTeamValidationLease._validated_process_identity(
@@ -4962,7 +5130,17 @@ class AdversaryCombat(BaseModule):
                     )
                 proof = _CanaryMutation(original, original.hmac_sig, lease, operation,
                                         target, self.lifecycle_generation, identity)
-                return proof if self._canary_mutation_valid(proof) else None
+                if not require_host:
+                    return proof if self._canary_mutation_valid(proof) else None
+            # Bind proof and host admission in one synchronous check after
+            # releasing construction custody. The required canary is verified
+            # even under Protect; no result crosses later native acquisition.
+            self._require_host_mutation_authority(canary=proof, require_canary=True)
+            return proof
+        except HostMutationHeld:
+            if require_host:
+                raise  # A refused recognized proof is not an absent canary.
+            return None
         except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
             return None
 
@@ -4973,8 +5151,9 @@ class AdversaryCombat(BaseModule):
         """Recheck live issuer, original contract and exact held object/child."""
         try:
             from angerona.modules.purple_guard import (
-                PurpleGuard, RedTeamValidationLease, _PURPLE_RECEIPT_V2_FIELDS,
+                PurpleGuard, RedTeamValidationLease, _purple_simulation_receipt_core,
                 _canonical_json, _lease_authority, verify_validation_purple_event,
+                verify_queued_file_event,
             )
             if (type(proof) is not _CanaryMutation or type(self) is not AdversaryCombat
                     or proof.generation != self.lifecycle_generation
@@ -4989,6 +5168,13 @@ class AdversaryCombat(BaseModule):
                     or (proof.operation == "terminate_process"
                         and (policy.process_action != "terminate" or policy.mode == "contain"))):
                 return False
+            if proof.event.module == "YARA Scanner":
+                # The practice branch does not reach ordinary producer checks.
+                # Its captured YARA verifier must run at every barrier itself.
+                from angerona.modules.purple_guard import verify_yara_control_event
+                return bool(proof.operation == "quarantine_file"
+                    and verify_yara_control_event(proof.lease, self, proof.event,
+                        action=action, pinned=pinned, restoring=restoring))
             state = _lease_authority(proof.lease)
             details = proof.event.details
             modules = getattr(self._manager, "modules", {})
@@ -5001,7 +5187,11 @@ class AdversaryCombat(BaseModule):
                         or state.data_root != self.data_root.resolve(strict=False)
                         or state.released or not state.consumed or state.artifact_custody_failed
                         or time.monotonic() > state.run_deadline_monotonic
-                        or details.get("redteam_detector_receipt_version") != 2
+                        or (proof.operation == "quarantine_file"
+                            and (_purple_simulation_receipt_core(details) is None
+                                 or not verify_queued_file_event(proof.lease, self, proof.event)))
+                        or (proof.operation == "terminate_process"
+                            and details.get("redteam_detector_receipt_version") != 2)
                         or details.get("lease_id") != state.lease_id
                         or details.get("receipt_id") != state.receipt_id
                         or details.get("run_id") != state.bound_run_id
@@ -5078,7 +5268,7 @@ class AdversaryCombat(BaseModule):
                 finally:
                     os.close(descriptor)
                 return bool(state._verify_hmac(str(details.get("detector_receipt_mac") or ""),
-                    _canonical_json({field: details.get(field) for field in _PURPLE_RECEIPT_V2_FIELDS})))
+                    _canonical_json(_purple_simulation_receipt_core(details))))
         except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError):
             return False
 
@@ -5095,7 +5285,7 @@ class AdversaryCombat(BaseModule):
             yield
 
     def _require_current_response_event(self, event, *, canary=None, admission=False,
-                                        action=None, pinned=None):
+                                        action=None, pinned=None, require_canary=False):
         """Current original proof, separate from source/installed authority.
 
         SpywareGuard's new native-hash path MUST retain producer proof. Existing
@@ -5112,6 +5302,13 @@ class AdversaryCombat(BaseModule):
             raise HostMutationHeld("Original response event exceeds proof bounds.") from None
         if not self._integrity_ok(event):
             raise HostMutationHeld("Original response event integrity is unavailable.")
+        authority = self._queued_file_authority(event)
+        details = event.details if isinstance(event.details, dict) else {}
+        if ((authority is not None and not self._queued_file_event_valid(event, admission=admission))
+                or (details.get("redteam_detector_receipt_version") == 3
+                    and details.get("receipt_type") == "purple_simulation_validation"
+                    and authority is None)):
+            raise HostMutationHeld("Queued file observation lineage is unavailable or consumed.")
         if (type(event.ts) not in (int, float) or not math.isfinite(event.ts)
                 or not -1 <= time.time() - event.ts <= 30):
             raise HostMutationHeld("Original response evidence expired.")
@@ -5121,10 +5318,22 @@ class AdversaryCombat(BaseModule):
         # reject these envelopes at admission AND every dispatch recheck.
         if event.module == "Active Response SOAR Request":
             raise HostMutationHeld("Synthetic SOAR response has no retained exact original producer proof.")
+        # Display classification is not an issuer/native contract. Bind the
+        # requested live proof to this exact signed original; its full check
+        # stays AFTER potentially blocking classification/producer work below.
+        if require_canary and (type(canary) is not _CanaryMutation
+                or canary.signature != event.hmac_sig):
+            raise HostMutationHeld("Current issuer-owned canary proof is unavailable.")
         if event_disposition(event) == "practice":
+            if admission and not require_canary and event.module == "YARA Scanner":
+                # Ordinary practice admission is non-authorizing, but the new
+                # YARA path also proves its captured native receipt here.
+                if self._practice_mutation(event, "quarantine_file") is None:
+                    raise HostMutationHeld("Current issuer-owned YARA proof is unavailable.")
+                return
             # Admission makes no practice authority claim. The existing live
             # issuer/child/marker checks remain mandatory after durable intent.
-            if admission:
+            if admission and not require_canary:
                 return
             if canary is None or not self._canary_mutation_valid(canary, action=action, pinned=pinned):
                 raise HostMutationHeld("Current issuer-owned practice proof is unavailable.")
@@ -5148,6 +5357,8 @@ class AdversaryCombat(BaseModule):
                 current = False
             if not current:
                 raise HostMutationHeld("Original immutable producer proof expired or was revoked.")
+        if require_canary and not self._canary_mutation_valid(canary, action=action, pinned=pinned):
+            raise HostMutationHeld("Current issuer-owned canary proof is unavailable.")
 
     def _require_not_owned_identity(self, identity):
         from angerona.core.werfault_guard import OwnedProcessReadError, read_owned_process_snapshot
@@ -5268,7 +5479,7 @@ class AdversaryCombat(BaseModule):
                                          canary: _CanaryMutation | None = None,
                                          action: CombatAction | None = None,
                                          pinned: _PinnedFileMove | None = None,
-                                         restoring: bool = False) -> None:
+                                         restoring: bool = False, require_canary: bool = False) -> None:
         """No legacy/new queue route can turn Source Observe into Protect.
 
         This observes the existing native installed authority; it accepts no
@@ -5281,9 +5492,30 @@ class AdversaryCombat(BaseModule):
         from angerona.core.breach_state import protect_authority
         allowed, reason = protect_authority()
         host_reason = reason
+        dispatch = (getattr(self._response_dispatch_local, "context", None)
+                    if check_policy and not restoring else None)
+        guard_policy = self.policy() if dispatch is not None else None
+        # Only this exact retained issuer-file boundary can combine its two
+        # synchronous checks. The final current-event guard below MUST perform
+        # the full live issuer/native scope check before this call returns.
+        # No proof result or deadline is retained across a native/effect barrier.
+        deferred_canary = bool(allowed is not True and check_policy is True and restoring is False
+            and require_canary is False
+            and type(dispatch) is tuple and len(dispatch) == 4
+            and type(canary) is _CanaryMutation and canary is dispatch[1]
+            and type(action) is CombatAction and action is dispatch[2]
+            and action.action == canary.operation == "quarantine_file"
+            and type(pinned) is _PinnedFileMove and pinned is dispatch[3]
+            and type(dispatch[0]) is Event and dispatch[0].hmac_sig == canary.signature)
+        canary_valid = False
+        if require_canary or (allowed is not True and canary is not None and not deferred_canary):
+            canary_valid = self._canary_mutation_valid(
+                canary, action=action, pinned=pinned, restoring=restoring)
         canary_only = bool(allowed is not True and canary is not None
-                           and self._canary_mutation_valid(canary, action=action, pinned=pinned, restoring=restoring))
-        if canary_only:
+                           and (deferred_canary or canary_valid))
+        if require_canary and not canary_valid:
+            allowed, reason = False, "Current issuer-owned canary proof is unavailable."
+        elif canary_only:
             allowed, reason = True, "Only the exact live issuer-enrolled canary is admitted."
         if self.stopping or self.generation_stop_event().is_set():
             allowed, reason = False, "The owning response generation has stopped."
@@ -5293,14 +5525,14 @@ class AdversaryCombat(BaseModule):
               and self.policy().quarantine_files is not True):
             allowed, reason = False, "File quarantine is disabled in the current response policy."
         with self._admission_lock:
+            # A tentative canary premise is never installed host authority;
+            # publish an observed Protect loss even if its final proof refuses.
             self._host_authority_verified = allowed is True and not canary_only
             self._host_authority_reason = "" if allowed is True and not canary_only else str(host_reason if canary_only else reason)[:500]
         if allowed is not True:
             raise HostMutationHeld(str(reason)[:500])
         # Exact restorative/rollback custody remains available after original
         # evidence expires; it retains every existing authority/receipt gate.
-        dispatch = (getattr(self._response_dispatch_local, "context", None)
-                    if check_policy and not restoring else None)
         if dispatch is not None:
             response_event, response_canary, response_action, response_pin = dispatch
             action = response_action if action is None else action
@@ -5314,8 +5546,20 @@ class AdversaryCombat(BaseModule):
                     action.details.get("create_time"), action.details.get("exe"))
         if dispatch is not None:
             # Recheck expiry after native lease/roster acquisition can block.
-            self._require_current_response_event(response_event, canary=response_canary,
-                                                action=action, pinned=response_pin)
+            if deferred_canary:
+                self._require_current_response_event(response_event, canary=response_canary,
+                    action=action, pinned=response_pin, require_canary=True)
+            else:
+                self._require_current_response_event(response_event, canary=response_canary,
+                                                    action=action, pinned=response_pin)
+            # Scope/native checks can themselves block. Preserve freshness,
+            # generation and the complete policy immediately after they return.
+            if self.stopping or self.generation_stop_event().is_set():
+                raise HostMutationHeld("The owning response generation has stopped.")
+            if self.policy() != guard_policy:
+                raise HostMutationHeld("Response policy changed during current proof verification.")
+            if not -1 <= time.time() - response_event.ts <= 30:
+                raise HostMutationHeld("Original response evidence expired.")
 
     def _host_mutation_allowed(self, *, check_policy: bool = True,
                                canary: _CanaryMutation | None = None,
@@ -6025,13 +6269,17 @@ $policy=New-Object -ComObject HNetCfg.FwPolicy2
                         self._journal_saturated = not self._journal_has_capacity(
                             _JOURNAL_MUTATION_RESERVE_RECORDS
                         )
+                        # Keep the final verified snapshot inside startup's
+                        # existing custody and error boundary. A second read
+                        # after release may legitimately be busy with a writer.
+                        actions = self.list_actions(limit=None)
         except (JournalIntegrityError, OSError, RuntimeError, ValueError) as exc:
             self._journal_error = str(exc)
             self._journal_saturated = True
             self._mutation_blocked = True
             self.set_health(0, "combat journal integrity failure")
             return False
-        for record in self.list_actions(limit=None):
+        for record in actions:
             if (
                 record.get("integrity_status") != "verified"
                 or record.get("undone")

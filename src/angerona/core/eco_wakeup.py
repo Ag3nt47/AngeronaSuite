@@ -15,6 +15,7 @@ reported purely through Qt signals.
 Wiring (main_window.py, "Eco Mode Off" path)
 --------------------------------------------
     from angerona.core.eco_wakeup import EcoWakeupWorker
+    from angerona.gui.native_retirement import retain_native_retirement
 
     def _resume_from_eco(self) -> None:
         mods = [self.manager.modules[n] for n in self._eco_paused
@@ -26,7 +27,7 @@ Wiring (main_window.py, "Eco Mode Off" path)
             lambda name, ok: self.console._append(
                 f"[eco]   {name}: {'online' if ok else 'FAILED to wake'}"))
         self._eco_worker.wakeup_complete.connect(self._on_eco_wakeup_done)
-        self._eco_worker.finished.connect(self._eco_worker.deleteLater)
+        retain_native_retirement(self._eco_worker, self._on_eco_worker_retired)
         self._eco_worker.start()
 
     def _on_eco_wakeup_done(self, ok: int, failed: int) -> None:
@@ -90,9 +91,17 @@ class EcoWakeupWorker(QThread):
         self._poll = max(0.02, float(poll_interval))
         self._min_settle = max(0.0, float(min_settle))
         self._abort = False
+        self._start_attempted = False
         self._control_lock = threading.Lock()
 
     # ── Public ────────────────────────────────────────────────────────────────
+    def start(self, *args, **kwargs):
+        """One native generation per exact retirement-proof owner."""
+        if self._start_attempted:
+            raise RuntimeError("An Eco wake native generation cannot restart")
+        self._start_attempted = True
+        return super().start(*args, **kwargs)
+
     def cancel(self) -> None:
         """Request an early stop; no new module starts after this returns."""
         # Publish the monotonic request before waiting: Lock is not fair, so a

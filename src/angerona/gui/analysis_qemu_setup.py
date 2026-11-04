@@ -34,9 +34,15 @@ class QEMUSetupDialog(QDialog):
         self.resize(650, 390)
         self._root = Path(root) if root is not None else jobs.default_root()
         self._busy = False
+        self._worker = None
+        self._activity = None
         self._progress = queue.Queue(maxsize=8)
         self._completion = queue.Queue(maxsize=1)
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         for text in (PURPOSE, SETUP_DETAILS,
                      'After setup, use Prepare runtime and Check readiness. Skip changes nothing.'):
             label = QLabel(text)
@@ -91,10 +97,17 @@ class QEMUSetupDialog(QDialog):
             completion.put_nowait(result)
 
         try:
-            threading.Thread(target=work, name='analysis-lab-setup', daemon=True).start()
+            self._activity = self._activities.begin('emulator-setup', 'Preparing the requested emulator setup…', replace=True)
+            self._worker = threading.Thread(target=work, name='analysis-lab-setup', daemon=True)
+            self._worker.start()
         except Exception:
+            if self._worker is not None and self._worker.is_alive():
+                self._timer.start()
+                return
             _WORKERS.release()
             self._busy = False
+            self._activities.finish(self._activity)
+            self._activity = None
             self.install_button.setEnabled(True)
             self.vmware_button.setEnabled(True)
             self.close_button.setEnabled(True)
@@ -105,15 +118,22 @@ class QEMUSetupDialog(QDialog):
     def _poll(self):
         for _ in range(8):
             try:
-                self.status.setText(self._progress.get_nowait())
+                message = self._progress.get_nowait()
+                self.status.setText(message)
+                self._activities.update(self._activity, label=message)
             except queue.Empty:
                 break
+        if self._worker is not None and self._worker.is_alive():
+            return
         try:
             result = self._completion.get_nowait()
         except queue.Empty:
             return
         self._timer.stop()
         self._busy = False
+        self._activities.finish(self._activity)
+        self._activity = None
+        self._worker = None
         self.install_button.setEnabled(sys.platform == 'win32')
         self.vmware_button.setEnabled(sys.platform == 'win32')
         self.close_button.setEnabled(True)

@@ -1632,11 +1632,12 @@ class DashboardCards(QWidget):
         self.c_modules = StatCard("Modules running")
         self.c_alerts = StatCard("Alerts (24h)")
         self.c_crit = StatCard("Active critical (10m)")
-        self.c_threat = StatCard("Threat level")
+        self.c_threat = StatCard("Active HIGH/CRITICAL (10m)")
         self._normal_threat_snapshot = None
         self._breach_projection = None
         self._breach_open_report = None
-        self._normal_threat_status = "current"
+        self._normal_threat_status = "updating"
+        self._normal_threat_failed = False
         for c in (self.c_modules, self.c_alerts, self.c_crit, self.c_threat):
             lay.addWidget(c, 1)
         # Each tile opens its own focused detail window.
@@ -1688,19 +1689,68 @@ class DashboardCards(QWidget):
         return read
 
     def _apply_threat_snapshot(self, snapshot) -> None:
+        if not self._accept_async_results:
+            return
+        # Only a successfully delivered snapshot can clear failed-read state.
+        # Status callbacks and clearing a retained case cannot make old data fresh.
+        _crit, (_label, _color) = snapshot
         self._normal_threat_snapshot = snapshot
-        crit, (label, color) = snapshot
-        self.c_crit.set(str(crit), "#ef4444" if crit else "#ffffff")
-        if self._breach_projection is None:
-            self.c_threat.set(label, color)
+        self._normal_threat_failed = False
+        self._normal_threat_status = "current"
+        self._render_threat_snapshot()
 
     def _set_threat_reader_status(self, state) -> None:
+        if not self._accept_async_results:
+            return
         self._normal_threat_status = state
-        if self._breach_projection is None:
-            self.c_threat.setToolTip(
-                "Threat assessment current" if state == "current" else
-                "Updating threat assessment; showing the previous result" if state == "updating" else
-                "Threat assessment unavailable; showing the previous result and retrying on refresh")
+        if state == "unavailable":
+            self._normal_threat_failed = True
+        self._render_threat_snapshot()
+
+    def _render_threat_snapshot(self) -> None:
+        """Present one retained assessment without treating unknown as clear."""
+        snapshot = self._normal_threat_snapshot
+        failed = self._normal_threat_failed
+        if snapshot is None:
+            crit_text, crit_color = "—", "#fbbf24"
+            label = "Unavailable" if failed else "Updating…"
+            color = "#fbbf24"
+        else:
+            crit, (label, color) = snapshot
+            if failed and label in {"High", "Critical"}:
+                label = f"{label} · stale"
+                crit_text = f"{crit} · stale"
+                crit_color = "#ef4444" if crit else "#fbbf24"
+            elif failed:
+                label, color = "Unavailable", "#fbbf24"
+                crit_text, crit_color = "—", "#fbbf24"
+            else:
+                # The core's historical Secure label is an active-event result,
+                # not a host-health or complete-coverage claim.
+                label = "None detected" if label == "Secure" else label
+                crit_text, crit_color = str(crit), "#ef4444" if crit else "#ffffff"
+        self.c_crit.set(crit_text, crit_color)
+        critical_tip = "Active critical detections in the last 10 minutes."
+        if failed:
+            critical_tip += " Current assessment unavailable; any stale number is the last completed count."
+        elif self._normal_threat_status == "updating":
+            critical_tip += " Updating; the previous completed count is retained."
+        if self._breach_projection is not None:
+            self.c_crit.setToolTip(critical_tip + " A retained confirmed case can outlive this count; review its case status.")
+            return
+        self.c_crit.setToolTip(critical_tip)
+        self.c_threat.set(label, color)
+        scope = ("Unresolved active HIGH/CRITICAL detections in the last 10 minutes. "
+                 "Exposures and collection gaps are shown separately. ")
+        if failed:
+            status = ("Retrying unavailable threat assessment; waiting for a completed result."
+                      if self._normal_threat_status == "updating" else
+                      "Threat assessment unavailable; any stale warning is the last completed result.")
+        elif self._normal_threat_status == "updating" or snapshot is None:
+            status = "Updating threat assessment; showing the previous completed result when available."
+        else:
+            status = "Threat assessment current."
+        self.c_threat.setToolTip(scope + status)
 
     def set_breach_override(self, snapshot, *, open_report=None) -> None:
         """Latch a typed case advisory without changing engine threat counts."""
@@ -1709,22 +1759,14 @@ class DashboardCards(QWidget):
             return
         self._breach_projection = snapshot if snapshot.active else None
         self._breach_open_report = open_report if snapshot.active and callable(open_report) else None
+        self._render_threat_snapshot()
         if snapshot.active:
             self.c_threat.set("Compromised", "#ef4444")
             self.c_threat.setToolTip(
                 f"Confirmed case {snapshot.case_id}; containment: {snapshot.containment_state}. "
                 "Open the live after-action report. The separate critical count covers active "
                 "events in the last 10 minutes; a retained case can outlive that window.")
-            self.c_crit.setToolTip("Active critical events in the last 10 minutes. "
-                                  "A retained confirmed case can outlive this count; review Threat level for its status.")
         else:
-            if self._normal_threat_snapshot is not None:
-                self._apply_threat_snapshot(self._normal_threat_snapshot)
-            else:
-                self.c_threat.set("Updating…", "#fbbf24")
-                self._normal_threat_status = "updating"
-            self._set_threat_reader_status(self._normal_threat_status)
-            self.c_crit.setToolTip("Active critical events in the last 10 minutes.")
             self._threat_reader.request()
 
     def _apply_count(self, revision, count) -> None:
@@ -2682,7 +2724,9 @@ class ThreatWindow(QDialog):
         self._selected_mitre = ""
         self.apply_btn.setEnabled(False)
         _fill_event_table(self.table, events)
-        self.status_lbl.setText(f"Threat level: {label} · {len(events)} active findings in this snapshot.")
+        visible_label = "None detected" if label == "Secure" else label
+        self.status_lbl.setText(
+            f"Active HIGH/CRITICAL (10m): {visible_label} · {len(events)} findings in this snapshot.")
         if not events:
             self.detail.setPlainText("No active HIGH/CRITICAL findings in the completed snapshot.")
 
@@ -3452,6 +3496,29 @@ def _summary_column_width(table: QTableWidget, column: int, sample: str, minimum
 class _ResponsiveModulesTable(QTableWidget):
     """Keep the summary readable while optional contract columns stay available."""
 
+    _SUMMARY_COLUMNS = (
+        (0, "Off", 44), (2, "running 100%", 80), (3, "100%", 72),
+        (4, "Category", 110), (5, "protect", 76), (6, "1.14.0", 76),
+    )
+    _APPEARANCE_EVENTS = (
+        QEvent.FontChange, QEvent.StyleChange, QEvent.PaletteChange,
+        QEvent.Type.ScreenChangeInternal, QEvent.Type.DevicePixelRatioChange,
+    )
+
+    def __init__(self, rows: int, columns: int) -> None:
+        super().__init__(rows, columns)
+        self._summary_appearance = None
+        self._summary_widths = {}
+        self._summary_row_height = 0
+        self._summary_fit_timer = QTimer(self)
+        self._summary_fit_timer.setSingleShot(True)
+        self._summary_fit_timer.timeout.connect(self.fit_summary_columns)
+        header = self.horizontalHeader()
+        header.installEventFilter(self)
+        header.sortIndicatorChanged.connect(self._queue_summary_fit)
+        self.model().headerDataChanged.connect(self._queue_summary_fit)
+        self.model().layoutChanged.connect(self._queue_summary_fit)
+
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self.fit_summary_columns()
@@ -3462,13 +3529,35 @@ class _ResponsiveModulesTable(QTableWidget):
             self.fit_summary_columns()
         return handled
 
-    def changeEvent(self, event) -> None:  # noqa: N802
-        super().changeEvent(event)
-        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
-            self.fit_summary_columns()
+    def event(self, event) -> bool:
+        if event.type() in self._APPEARANCE_EVENTS:
+            self._summary_appearance = None
+            self._queue_summary_fit()
+        return super().event(event)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() in self._APPEARANCE_EVENTS:
+            self._summary_appearance = None
+            self._queue_summary_fit()
+        return super().eventFilter(watched, event)
+
+    def _queue_summary_fit(self, *_args) -> None:
+        timer = getattr(self, "_summary_fit_timer", None)
+        if timer is not None and not timer.isActive() and not self.signalsBlocked():
+            timer.start(0)
+
+    @staticmethod
+    def _summary_item_key(item):
+        if item is None:
+            return None
+        return (
+            item.text(), item.data(Qt.CheckStateRole), item.data(Qt.FontRole),
+            item.data(Qt.SizeHintRole), item.icon().cacheKey(),
+        )
 
     def fit_summary_columns(self) -> None:
-        if self.columnCount() != 7 or getattr(self, "_fitting_columns", False):
+        if (not hasattr(self, "_summary_widths") or self.columnCount() != 7
+                or getattr(self, "_fitting_columns", False)):
             return
         self._fitting_columns = True
         try:
@@ -3477,22 +3566,48 @@ class _ResponsiveModulesTable(QTableWidget):
             self._fitting_columns = False
 
     def _fit_summary_columns(self) -> None:
-        metrics = self.fontMetrics()
-        widths = {
-            0: _summary_column_width(self, 0, "Off", 44),
-            2: _summary_column_width(self, 2, "running 100%", 80),
-            3: _summary_column_width(self, 3, "100%", 72),
-            4: _summary_column_width(self, 4, "Category", 110),
-            5: _summary_column_width(self, 5, "protect", 76),
-            6: _summary_column_width(self, 6, "1.14.0", 76),
-        }
-        for column, width in widths.items():
-            self.setColumnWidth(column, width)
-        fixed = sum(width for column, width in widths.items() if not self.isColumnHidden(column))
-        minimum_name = 160 if not self.isColumnHidden(4) else 100
-        self.setColumnWidth(1, max(minimum_name, self.viewport().width() - fixed))
-        row_height = max(26, metrics.height() + 10)
-        self.verticalHeader().setDefaultSectionSize(row_height)
+        header = self.horizontalHeader()
+        appearance = (
+            self.font(), header.font(), self.logicalDpiX(), self.logicalDpiY(),
+            self.devicePixelRatioF(),
+        )
+        if appearance != self._summary_appearance:
+            self._summary_appearance = appearance
+            self._summary_widths.clear()
+            self._summary_row_height = max(26, self.fontMetrics().height() + 10)
+
+        sample_rows = range(min(8, self.rowCount()))
+        sort_column = header.sortIndicatorSection() if header.isSortIndicatorShown() else -1
+        fixed = 0
+        for column, sample, minimum in self._SUMMARY_COLUMNS:
+            if self.isColumnHidden(column):
+                continue
+            key = (
+                self._summary_item_key(self.horizontalHeaderItem(column)),
+                column == sort_column,
+                tuple(self._summary_item_key(self.item(row, column)) for row in sample_rows),
+            )
+            cached = self._summary_widths.get(column)
+            if cached is None or key != cached[0]:
+                width = _summary_column_width(self, column, sample, minimum)
+                cached = self._summary_widths[column] = (key, width)
+            width = min(header.maximumSectionSize(), max(header.minimumSectionSize(), cached[1]))
+            if self.columnWidth(column) != width:
+                self.setColumnWidth(column, width)
+            fixed += width
+        if not self.isColumnHidden(1):
+            minimum_name = 160 if not self.isColumnHidden(4) else 100
+            width = min(header.maximumSectionSize(), max(
+                header.minimumSectionSize(), minimum_name, self.viewport().width() - fixed,
+            ))
+            if self.columnWidth(1) != width:
+                self.setColumnWidth(1, width)
+        vertical = self.verticalHeader()
+        row_height = min(vertical.maximumSectionSize(), max(
+            vertical.minimumSectionSize(), self._summary_row_height,
+        ))
+        if vertical.defaultSectionSize() != row_height:
+            vertical.setDefaultSectionSize(row_height)
 
 
 class _ModuleNameTableItem(QTableWidgetItem):
@@ -4233,13 +4348,18 @@ class ModuleAssuranceDialog(QDialog):
 
 
 class ModuleInspector(QDialog):
-    _test_done = Signal(str)
+    _test_done = Signal(object, str)
 
     def __init__(self, manager, bus, module, parent=None) -> None:
         super().__init__(parent)
         self.manager, self.bus, self.module = manager, bus, module
         self._accept_async_results = True
         self._test_worker: threading.Thread | None = None
+        self._test_generation = None
+        self._test_result_pending = None
+        from angerona.gui.action_progress import ActionActivities
+        self._test_activities = ActionActivities(self)
+        self._test_activity = None
         self._cached_bus_revision: int | None = None
         self._cached_bus_events: list = []
         self._feed_fingerprint: tuple | None = None
@@ -4341,6 +4461,9 @@ class ModuleInspector(QDialog):
             lay.addWidget(protected)
         self.test_lbl = QLabel(""); self.test_lbl.setWordWrap(True)
         self.test_lbl.setTextFormat(Qt.PlainText); lay.addWidget(self.test_lbl)
+        from angerona.gui.action_progress import ActionProgressView
+        lay.addWidget(ActionProgressView(self._test_activities, self,
+            config=getattr(self.manager, "config", None)))
         lay.addWidget(_section("This module's recent events  —  click a row for full detail + actions"))
         self.feed = QTableWidget(0, 3)
         self.feed.setHorizontalHeaderLabels(["Time", "Severity", "Message"])
@@ -4837,6 +4960,8 @@ class ModuleInspector(QDialog):
 
     def _selftest(self) -> None:
         from angerona.core.selftest import module_selftest_lock
+        if not self._accept_async_results:
+            return
         if self._test_worker is not None and self._test_worker.is_alive():
             self.test_lbl.setText("A self-test is already running for this capability.")
             return
@@ -4845,19 +4970,27 @@ class ModuleInspector(QDialog):
             return
         self.test_lbl.setText("Testing…")
         self.selftest_btn.setEnabled(False)
+        generation = object()
+        self._test_generation = generation
+        self._test_result_pending = None
         self._test_worker = threading.Thread(
             target=self._run_test,
+            args=(generation,),
             name=f"ModuleSelfTest-{self.module.name}",
             daemon=True,
         )
         try:
+            self._test_activity = self._test_activities.begin("module-selftest", "Testing " + self.module.name)
             self._test_worker.start()
         except Exception as exc:
+            if self._test_activity is not None:
+                self._test_activities.finish(self._test_activity)
+                self._test_activity = None
             self._test_worker = None
             self.selftest_btn.setEnabled(True)
             self.test_lbl.setText(f"Self-test could not start: {type(exc).__name__}")
 
-    def _run_test(self) -> None:
+    def _run_test(self, generation) -> None:
         try:
             from angerona.core.selftest import run_module_selftest
             from angerona.modules.ai_triage import AITriageModule
@@ -4870,26 +5003,39 @@ class ModuleInspector(QDialog):
             _emit_if_accepting(
                 self,
                 "_test_done",
+                generation,
                 f"{label} — {str(detail)[:4000]}",
             )
         except Exception as exc:
             _emit_if_accepting(
                 self,
                 "_test_done",
+                generation,
                 f"FAIL — {str(exc)[:4000]}",
             )
 
-    def _apply_test_result(self, message: str) -> None:
+    def _apply_test_result(self, generation, message: str) -> None:
+        if self._accept_async_results and generation is self._test_generation:
+            self._test_result_pending = str(message)
+            self._settle_test_activity()
+
+    def _settle_test_activity(self) -> None:
+        if self._test_worker is None or self._test_worker.is_alive() or self._test_activity is None:
+            return
         if self._accept_async_results:
-            self.test_lbl.setText(message)
+            self.test_lbl.setText(self._test_result_pending or "Self-test worker returned without a result; status unavailable.")
             self.selftest_btn.setEnabled(True)
+        self._test_activities.finish(self._test_activity)
+        self._test_activity = None
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt signature
         self._accept_async_results = False
         self._timer.stop()
+        self._test_activities.close()
         super().closeEvent(event)
 
     def _refresh(self) -> None:
+        self._settle_test_activity()
         try:
             operational = self.module.operational_snapshot()
         except Exception:
@@ -8399,10 +8545,12 @@ def _read_aar_review(data_dir, redteam, binding, expected, services):
     for name, value in zip(fields, expected):
         setattr(state, name, value)
     saved_verified = False
+    read_saved = state._redteam or (isinstance(state._report_binding, dict)
+                                   and state._report_binding.get("session_owned") is True)
     try:
-        if state._redteam:
-            # The one-use Red Team validation lease is deliberately revoked
-            # after the original AAR. Post-lease refresh must never rescore
+        if read_saved:
+            # The one-use validation lease is deliberately revoked after a
+            # Session report. Post-lease refresh must never rescore
             # ledger rows without those live authorities; reload the text
             # whose digest is covered by the attested JSON instead.
             binding = (
@@ -8432,8 +8580,8 @@ def _read_aar_review(data_dir, redteam, binding, expected, services):
             )
             text = _load_verified_aar_text(
                 state.data_dir,
-                basename="redteam_aar",
-                expected_kind="red_team",
+                basename="redteam_aar" if state._redteam else "shark_aar",
+                expected_kind="red_team" if state._redteam else "shark",
                 expected_run_id=expected_run_id,
                 expected_report_sha256=expected_report_sha256,
                 expected_head_sha256=expected_head_sha256,
@@ -8451,11 +8599,11 @@ def _read_aar_review(data_dir, redteam, binding, expected, services):
                 manager=getattr(owner, "manager", None),
             )
     except Exception as exc:
-        if state._redteam and isinstance(state._report_binding, dict):
+        if read_saved and isinstance(state._report_binding, dict):
             state._report_binding["error"] = str(exc)
         text = (
             f"Could not load authenticated report: {exc}"
-            if state._redteam
+            if read_saved
             else f"Could not generate report: {exc}"
         )
     if state._report_binding is not None and not text.startswith("Could not"):
@@ -8467,7 +8615,7 @@ def _read_aar_review(data_dir, redteam, binding, expected, services):
             payload = json.loads(raw.decode("utf-8"))
             current_run_id = str(payload.get("run_id") or "")
             current_sha256 = hashlib.sha256(raw).hexdigest()
-            head_path = Path(state.data_dir) / "redteam_aar.head.json"
+            head_path = Path(state.data_dir) / ("redteam_aar.head.json" if state._redteam else "shark_aar.head.json")
             current_head_sha256 = ""
             current_sequence = 0
             if head_path.is_file() and not head_path.is_symlink():
@@ -8518,6 +8666,8 @@ def _read_aar_review(data_dir, redteam, binding, expected, services):
                 )
             else:
                 state._report_binding["error"] = ""
+            state._report_binding["diagnostic_only"] = payload.get("diagnostic_only") is True
+            state._report_binding["coverage_score_eligible"] = payload.get("coverage_score_eligible") is True
         except (OSError, UnicodeDecodeError, ValueError, TypeError) as exc:
             state._report_binding["error"] = str(exc)
             saved_verified = False
@@ -8537,7 +8687,8 @@ class AARDialog(QDialog):
     _fix_progress = Signal(int, str)
 
     def __init__(self, data_dir, parent=None, on_attempt_fix=None, on_apply=None,
-                 on_clean=None, redteam=False, report_binding=None, apply_hold_reason="") -> None:
+                 on_clean=None, redteam=False, report_binding=None, apply_hold_reason="", on_patch=None,
+                 on_diagnostics=None) -> None:
         super().__init__(parent)
         self.data_dir = data_dir
         self._angerona_preserve_on_close = True
@@ -8556,6 +8707,9 @@ class AARDialog(QDialog):
         self._on_attempt_fix = on_attempt_fix
         self._on_apply = on_apply
         self._on_clean = on_clean
+        self._on_patch = on_patch
+        self._on_diagnostics = on_diagnostics
+        self._saved_report_verified = False
         self._redteam = bool(redteam)
         self._report_binding = report_binding
         initial_binding = report_binding if isinstance(report_binding, dict) else {}
@@ -8574,6 +8728,7 @@ class AARDialog(QDialog):
         if parent:
             self.setStyleSheet(parent.styleSheet())
         lay = QVBoxLayout(self)
+        lay.setSizeConstraint(QLayout.SetNoConstraint)
 
         title = QLabel(f"{report_title} — After-Action Report")
         title.setObjectName("PageTitle")
@@ -8594,15 +8749,31 @@ class AARDialog(QDialog):
             "background:#0b0d12; color:#cbd5e1; border:1px solid #232a36; border-radius:8px;")
         lay.addWidget(self.body)
 
-        row = QHBoxLayout()
+        patch_row = QHBoxLayout()
+        self._patch_btn = QPushButton("AngeronaPatch")
+        self._patch_btn.setObjectName("AngeronaPatch")
+        self._patch_btn.setToolTip("Open a modeless exact-report gap and typed OS-control review. No host change happens until one concrete reviewed plan is applied.")
+        self._patch_btn.clicked.connect(self._open_patch_center)
+        patch_row.addWidget(self._patch_btn)
+        self._diagnostics_btn = QPushButton("Diagnostics / Explain failures")
+        self._diagnostics_btn.setObjectName("AARSimulationDiagnostics")
+        self._diagnostics_btn.setToolTip("Read exact-report per-step evidence, reasons, coverage gaps and supported next steps. Imported text does not grant any action.")
+        self._diagnostics_btn.clicked.connect(self._open_diagnostics)
+        patch_row.addWidget(self._diagnostics_btn)
+        patch_scope = QLabel("Verified gaps · exact typed plans · durable receipts · rollback and recurrence review")
+        patch_scope.setWordWrap(True)
+        patch_scope.setMinimumWidth(0)
+        patch_row.addWidget(patch_scope, 1)
+        lay.addLayout(patch_row)
+
+        row = QGridLayout()
         refresh = QPushButton(
-            "Reload verified report" if self._redteam else "Re-run report"
+            "Reload verified report" if self._redteam or initial_binding.get("session_owned") is True else "Re-run report"
         )
         self._reload_btn = refresh
         refresh.setObjectName("Primary")
         refresh.clicked.connect(self.refresh)
-        row.addWidget(refresh)
-        row.addStretch(1)
+        row.addWidget(refresh, 0, 0)
         self._fix_btn = QPushButton("\U0001F6E0  " +
                                     ("Apply Practice Fix" if self._redteam else "Attempt Fix"))
         self._fix_btn.setObjectName("Primary")
@@ -8612,10 +8783,10 @@ class AARDialog(QDialog):
             "Ask the local AI to generate a remediation for each open weakness, then "
             + (self._apply_hold_reason or "optionally apply it (with your confirmation)."))
         self._fix_btn.clicked.connect(self._attempt_fix)
-        row.addWidget(self._fix_btn)
+        row.addWidget(self._fix_btn, 0, 1)
         from angerona.gui.animations import RunSpinner
-        self._fix_spinner = RunSpinner()
-        row.addWidget(self._fix_spinner)
+        self._fix_spinner = RunSpinner(bounded_text=True)
+        row.addWidget(self._fix_spinner, 1, 2)
         self._test_fix_btn = QPushButton("✓  Test Fix Again")
         self._test_fix_btn.setToolTip(
             "Replay the exact inert positive and benign negative controls through the "
@@ -8623,7 +8794,7 @@ class AARDialog(QDialog):
         )
         self._test_fix_btn.clicked.connect(self._attempt_fix)
         self._test_fix_btn.hide()
-        row.addWidget(self._test_fix_btn)
+        row.addWidget(self._test_fix_btn, 1, 0)
         self._source_btn = QPushButton("</>  Open Fix Source")
         self._source_btn.setToolTip(
             "Open the exact Purple Remediation Guard implementation in Angerona's "
@@ -8631,35 +8802,62 @@ class AARDialog(QDialog):
         )
         self._source_btn.clicked.connect(self._open_fix_source)
         self._source_btn.hide()
-        row.addWidget(self._source_btn)
-        row.addStretch(1)
+        row.addWidget(self._source_btn, 1, 1)
         close = QPushButton("\U0001F9F9  Clean & Close")
         close.setToolTip("Erase every benign drill marker / persistence-marker file used during "
                          "the simulation, then close this report.")
         close.clicked.connect(self._clean_and_close)
-        row.addWidget(close)
+        row.addWidget(close, 0, 2)
         lay.addLayout(row)
         self._update_report_status()
         from angerona.gui.window_controls import configure_work_window
         configure_work_window(self)
+        from angerona.gui.window_fit import install_window_fit
+        install_window_fit(self)
+
+    def _open_patch_center(self) -> None:
+        if self.has_active_work():
+            return
+        if not callable(self._on_patch):
+            self.body.appendPlainText("\nAngeronaPatch is unavailable: this report has no exact authenticated patch-workspace callback.")
+            return
+        try:
+            self._on_patch()
+        except Exception as exc:
+            self.body.appendPlainText("\nAngeronaPatch could not open: " + str(exc)[:512])
+
+    def _open_diagnostics(self) -> None:
+        if not callable(self._on_diagnostics):
+            self.body.appendPlainText("\nDiagnostics are unavailable: no exact report review callback was supplied.")
+            return
+        try:
+            self._on_diagnostics()
+        except Exception as exc:
+            self.body.appendPlainText("\nDiagnostics could not open: " + str(exc)[:512])
 
     def _update_report_status(self, *, saved_verified: bool = False) -> None:
         """Separate delivered report text from saved-copy authentication."""
-        if not self._redteam:
-            self._fix_btn.setEnabled(not self.has_active_work())
-            self._test_fix_btn.setEnabled(not self.has_active_work())
-            self._report_status.hide()
-            return
         binding = self._report_binding if isinstance(self._report_binding, dict) else {}
         error = str(binding.get("error") or "").strip()
+        if saved_verified:
+            self._saved_report_verified = True
+        if error:
+            self._saved_report_verified = False
+        authenticated = self._saved_report_verified or binding.get("handoff_verified") is True
+        eligible = binding.get("coverage_score_eligible") is True and binding.get("diagnostic_only") is not True
         if error:
             message = (
                 "Report verification failed: " + error[:300]
                 + ". Practice Fix is unavailable until a verified report loads."
             )
             color = "#f87171"
+        elif not eligible:
+            message = ("Authenticated diagnostic report; coverage, Practice Fix and host-fix authority remain held. "
+                       if authenticated else "Report scope is incomplete or unverified; fixes remain held. ")
+            message += "AngeronaPatch can review diagnostics and preserved history without applying controls."
+            color = "#fbbf24"
         elif saved_verified and binding.get("run_id") and binding.get("sha256"):
-            message = "Saved Red Team report authenticated for this run."
+            message = "Saved after-action report authenticated for this run."
             color = "#4ade80"
         else:
             message = (
@@ -8668,9 +8866,14 @@ class AARDialog(QDialog):
             )
             color = "#9fb3c8"
         self._report_status.setText(message)
+        self._report_status.show()
         self._report_status.setStyleSheet(f"color:{color}; font-weight:600;")
-        self._fix_btn.setEnabled(not error and not self.has_active_work())
-        self._test_fix_btn.setEnabled(not error and not self.has_active_work())
+        can_fix = authenticated and eligible and not error and not self.has_active_work()
+        self._fix_btn.setEnabled(can_fix)
+        self._test_fix_btn.setEnabled(can_fix)
+        self._patch_btn.setEnabled(callable(self._on_patch) and not self.has_active_work())
+        if not callable(self._on_patch):
+            self._patch_btn.setToolTip("Exact authenticated patch-workspace callback unavailable for this report")
 
     def _clean_and_close(self) -> None:
         """Sweep the drill's marker files, then close the report."""
@@ -8691,6 +8894,12 @@ class AARDialog(QDialog):
             return f"[error] {exc}"
 
     def _attempt_fix(self) -> None:
+        binding = self._report_binding if isinstance(self._report_binding, dict) else {}
+        if (binding.get("error") or binding.get("diagnostic_only") is True
+                or binding.get("coverage_score_eligible") is not True
+                or not (self._saved_report_verified or binding.get("handoff_verified") is True)):
+            self.body.appendPlainText("\nFix held: an exact authenticated complete report is required; diagnostic history cannot authorize learning, candidates, host changes or closure.")
+            return
         if self.has_active_work() or self._close_requested:
             return
         if not self._on_attempt_fix:
@@ -8723,9 +8932,12 @@ class AARDialog(QDialog):
 
     def _show_fix_result(self, text: str) -> None:
         binding = self._report_binding if isinstance(self._report_binding, dict) else {}
-        self._fix_btn.setEnabled(not bool(binding.get("error")))
-        self._test_fix_btn.setEnabled(True)
-        verified = "[PRACTICE FIX VERIFIED]" in text and not binding.get("error")
+        can_fix = (not binding.get("error") and binding.get("diagnostic_only") is not True
+                   and binding.get("coverage_score_eligible") is True
+                   and (self._saved_report_verified or binding.get("handoff_verified") is True))
+        self._fix_btn.setEnabled(can_fix)
+        self._test_fix_btn.setEnabled(can_fix)
+        verified = "[PRACTICE FIX VERIFIED]" in text and can_fix
         if self._redteam:
             if verified:
                 # The practice receipt updates the lifecycle state, so re-render
@@ -8848,6 +9060,7 @@ class AARDialog(QDialog):
         self._fix_btn.setEnabled(False)
         self._test_fix_btn.setEnabled(False)
         self._reload_btn.setEnabled(False)
+        self._patch_btn.setEnabled(False)
         self._angerona_work_window_retained = True
         try:
             worker.start()
@@ -8914,6 +9127,7 @@ class AARDialog(QDialog):
         else:
             self.body.appendPlainText("\n" + str(result))
             self._update_report_status()
+        self._update_report_status()
         if self._close_requested and not self.has_active_work():
             self._close_requested = False
             if self._clean_after_work:
@@ -9202,6 +9416,10 @@ class SettingsDialog(QDialog):
         return True
 
     def _finish_settings_loading(self):
+        update_activities = getattr(self, "_update_activities", None)
+        if update_activities is not None:
+            update_activities.close()
+            self._update_activity = None
         token, self._voice_model_loading_token = self._voice_model_loading_token, None
         if token is not None:
             finish_loading(token)
@@ -9677,6 +9895,28 @@ class SettingsDialog(QDialog):
 
         # ── Integrity / performance (advanced) ──────────────────────────────
         lay.addWidget(self._section("Integrity & Performance"))
+        from angerona.core.privilege import OPERATOR_ELEVATION_WARNING, is_admin
+
+        self._administrator_mode = QCheckBox("Run Angerona with administrator privileges")
+        self._administrator_mode.setEnabled(False)
+        if sys.platform != "win32":
+            administrator_status = "This setting applies to signed Windows installations."
+        elif not getattr(sys, "frozen", False):
+            administrator_status = "This source checkout runs in Observe mode. Administrator mode requires the signed Windows installation."
+        else:
+            from angerona.core.windows_package_identity import verify_current_msix_authority
+
+            active = verify_current_msix_authority().trusted and is_admin()
+            self._administrator_mode.setChecked(active)
+            administrator_status = (
+                "Administrator mode is active for this session. Use STOP to end the session, "
+                "then open Angerona normally to start with this setting off."
+                if active else "Open the installed Angerona status console to request administrator mode."
+            )
+        lay.addWidget(self._administrator_mode)
+        administrator_warning = QLabel(OPERATOR_ELEVATION_WARNING + "\n" + administrator_status)
+        administrator_warning.setWordWrap(True)
+        lay.addWidget(administrator_warning)
         self._require_signed_aar_chk = QCheckBox(
             "Require signed After-Action Reports (refuse unsigned/forged self-hardening input)")
         self._require_signed_aar_chk.setToolTip(
@@ -9724,7 +9964,16 @@ class SettingsDialog(QDialog):
             self._shared_update_controller.status_changed.connect(self._shared_update_status)
             self._shared_update_controller.check_busy_changed.connect(self._shared_update_busy)
             self._github_daily_check.toggled.connect(self._on_daily_update_staged)
+            from angerona.gui.action_progress import ActionProgressView
+            self._update_progress_view = ActionProgressView(self._shared_update_controller.activities,
+                self, config=self._cfg)
+            lay.addWidget(self._update_progress_view)
         else:
+            from angerona.gui.action_progress import ActionActivities, ActionProgressView
+            self._update_activities = ActionActivities(self)
+            self._update_activity = None
+            self._update_progress_view = ActionProgressView(self._update_activities, self, config=self._cfg)
+            lay.addWidget(self._update_progress_view)
             self._update_check_reader = AsyncSnapshot(
                 self, self._prepare_update_check, self._apply_update_check,
                 name="Settings GitHub Update Check", status=self._update_check_status)
@@ -12016,6 +12265,9 @@ class SettingsDialog(QDialog):
         if controller is not None:
             controller.check_now()
         else:
+            if not self._accept_async_results or self._update_check_reader._closed:
+                return
+            self._update_activity = self._update_activities.begin("settings-update", "Checking canonical GitHub metadata")
             self._update_check_reader.request()
 
     @Slot(bool)
@@ -12067,6 +12319,11 @@ class SettingsDialog(QDialog):
         self._update_status.setText((report.summary() if hasattr(report, "summary") else str(report))[:4096])
 
     def _update_check_status(self, status: str) -> None:
+        if status in {"current", "unavailable"}:
+            handle = getattr(self, "_update_activity", None)
+            if handle is not None:
+                self._update_activities.finish(handle)
+                self._update_activity = None
         self._btn_check.setEnabled(status != "updating")
         if status == "updating":
             self._update_status.setText("Checking canonical GitHub metadata in the background…")

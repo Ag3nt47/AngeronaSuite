@@ -263,3 +263,109 @@ def test_undo_intent_failure_retains_only_typed_cause_and_preserves_hold(
     assert secret not in json.dumps(emitted)
     records, legacy = module._read_journal(strict=True)
     assert not legacy and records[-1]["record_type"] == "orphan"
+
+
+@pytest.mark.parametrize("separate_owner", [False, True])
+@pytest.mark.parametrize("strict", [False, True])
+def test_read_during_durable_append_withholds_proof_without_false_rollback(
+    tmp_path, monkeypatch, separate_owner, strict,
+):
+    module, values = _fixture(tmp_path, monkeypatch)
+    reader = AdversaryCombat(tmp_path) if separate_owner else module
+    appended, release = threading.Event(), threading.Event()
+    failures = []
+    original_advance = module._advance_recovery_anchor
+    action = _action(module)
+
+    def pause_before_checkpoint(record):
+        appended.set()
+        assert release.wait(5), "Exact test-owned publisher was not released"
+        return original_advance(record)
+
+    monkeypatch.setattr(module, "_advance_recovery_anchor", pause_before_checkpoint)
+
+    def publish():
+        try:
+            module._journal_intent(action)
+        except BaseException as exc:
+            failures.append(exc)
+
+    publisher = threading.Thread(target=publish, name="inert-journal-publication")
+    publisher.start()
+    try:
+        assert appended.wait(2)
+        # This is the real interrupted publication interval: durable row three,
+        # but the old protected anchor and independent witness still name two.
+        assert len(module.receipt_path.read_bytes().splitlines()) == 3
+        anchor = json.loads(values[module._recovery_anchor_name()])
+        assert anchor["last_journal_sequence"] == 2
+        assert json.loads(module.recovery_witness_path.read_text())["last_journal_sequence"] == 2
+        before = _authority(module)
+        with pytest.raises(JournalIntegrityError, match="snapshot is busy|writer lease is already held"):
+            reader._read_journal(strict=strict)
+        assert reader._journal_error == "" and module._journal_error == ""
+        assert not reader._mutation_blocked and not module._mutation_blocked
+        assert _authority(module) == before
+    finally:
+        release.set()
+        publisher.join(timeout=3)
+    assert not publisher.is_alive() and failures == []
+
+    records, legacy = reader._read_journal(strict=True)
+    assert len(records) == 3 and not legacy
+    assert records[-1]["action_id"] == action.action_id
+    assert reader._journal_error == "" and module._journal_error == ""
+    assert module._recovery_anchor(allow_create=False)["last_journal_sequence"] == 3
+
+    # Once publication is complete, a real older authentic prefix must still be
+    # rejected against the current protected checkpoint. No retry/adoption path
+    # may turn that persistent rollback into a successful or cached read.
+    current = module.receipt_path.read_bytes().splitlines(keepends=True)
+    module.receipt_path.write_bytes(b"".join(current[:-1]))
+    protected_before = (tmp_path / "secrets.dpapi").read_bytes()
+    witness_before = module.recovery_witness_path.read_bytes()
+    with pytest.raises(JournalIntegrityError, match="rollback or incomplete anchor transaction"):
+        reader._read_journal(strict=True)
+    assert "rollback or incomplete anchor transaction" in reader._journal_error
+    assert (tmp_path / "secrets.dpapi").read_bytes() == protected_before
+    assert module.recovery_witness_path.read_bytes() == witness_before
+
+
+def test_startup_collects_final_action_snapshot_inside_existing_journal_custody(
+    tmp_path, monkeypatch,
+):
+    module, _values = _fixture(tmp_path, monkeypatch)
+    before = _authority(module)
+    original_actions = module.list_actions
+    observed = []
+
+    def snapshot(*, limit):
+        # A real pinned session exists only while startup retains its exact
+        # journal object. The delegated read must reenter those same gates.
+        session = module._active_journal_session()
+        assert session is not None
+        observed.append(session)
+        return original_actions(limit=limit)
+
+    monkeypatch.setattr(module, "list_actions", snapshot)
+    assert module._reconcile_state() is True
+    assert len(observed) == 1
+    assert module._active_journal_session() is None
+    assert not module._mutation_blocked and module._journal_error == ""
+    assert _authority(module) == before
+
+
+def test_startup_snapshot_unavailability_returns_blocked_without_escaping(
+    tmp_path, monkeypatch,
+):
+    module, _values = _fixture(tmp_path, monkeypatch)
+    before = _authority(module)
+
+    def unavailable(*, limit):
+        raise JournalIntegrityError("inert final snapshot unavailable")
+
+    monkeypatch.setattr(module, "list_actions", unavailable)
+    assert module._reconcile_state() is False
+    assert module._mutation_blocked and module._journal_saturated
+    assert module._journal_error == "inert final snapshot unavailable"
+    assert _authority(module) == before

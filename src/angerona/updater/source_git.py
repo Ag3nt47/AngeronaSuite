@@ -43,6 +43,7 @@ def read_source_git(root: Path, arguments: tuple[str, ...]) -> bytes:
     allowed = arguments in {
         ("remote", "get-url", "origin"),
         ("rev-parse", "--verify", "HEAD"),
+        ("rev-parse", "--git-path", "index"),
         ("rev-parse", "--verify", "refs/remotes/origin/main"),
         ("ls-files", "-z", "--cached", "--others", "--exclude-standard"),
     }

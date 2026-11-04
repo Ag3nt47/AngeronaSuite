@@ -9,8 +9,10 @@ authority must inject the exact reviewed values before it signs a future MSIX.
 from __future__ import annotations
 
 import ctypes
+import stat
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Final
 
 
@@ -81,6 +83,21 @@ def query_current_package_identity() -> NativePackageIdentity:
         full_name=_query_native_string("GetCurrentPackageFullName"),
         family_name=_query_native_string("GetCurrentPackageFamilyName"),
     )
+
+
+def require_current_package_image(name: str) -> Path:
+    """Bind a verified package process to its own installed executable path."""
+    if name not in {"Angerona.exe", "AngeronaStartup.exe"}:
+        raise ValueError("Unknown Angerona package image.")
+    root = Path(_query_native_string("GetCurrentPackagePath"))
+    if not root.is_absolute():
+        raise PermissionError("Windows did not report an absolute package path.")
+    expected = root / name
+    info = expected.lstat()
+    if (not stat.S_ISREG(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+            or expected.resolve(strict=True) != Path(sys.executable).resolve(strict=True)):
+        raise PermissionError("The running executable does not match the installed package image.")
+    return expected
 
 
 def verify_current_msix_authority(

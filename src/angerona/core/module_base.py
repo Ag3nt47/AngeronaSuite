@@ -769,6 +769,18 @@ def _health_callsite(frame) -> dict[str, object]:
     }
 
 
+def watchdog_fault_kind(snapshot: dict[str, object]) -> str | None:
+    """Classify a worker fault from a lifecycle-bound watchdog sample."""
+    status = snapshot.get("status")
+    if status == "error":
+        return "error"
+    if status == "running" and not snapshot.get("thread_alive", False):
+        return "thread_exit"
+    if snapshot.get("watchdog_deadline_missed", False):
+        return "deadline"
+    return None
+
+
 class BaseModule:
     # ── Override these in your subclass ─────────────────────────────────────
     name: str = "Unnamed Module"
@@ -1081,18 +1093,36 @@ class BaseModule:
         by the bounded deferred waiter), never that an unrelated generation was
         restarted.
         """
+        return self._restart_generation(expected_generation, initial_delay, only_if_faulted=False)
+
+    def restart_faulted_generation(self, expected_generation: int) -> bool:
+        """Signal a restart only if the observed generation is still faulty."""
+        return self._restart_generation(expected_generation, 0.0, only_if_faulted=True)
+
+    def _restart_generation(
+        self, expected_generation: int, initial_delay: float, *, only_if_faulted: bool,
+    ) -> bool:
         delay = max(0.0, float(initial_delay))
-        with self._lifecycle_lock:
+        if not self._lifecycle_lock.acquire(blocking=not only_if_faulted):
+            return False
+        try:
             if self._lifecycle_generation != int(expected_generation):
                 return False
             old_thread = self._thread
             if old_thread is None:
                 return False
-            self._lifecycle_serial += 1
-            request_serial = self._lifecycle_serial
-            self._restart_request = (request_serial, delay)
-            self._stop.set()
-            self.status = "restarting"
+            # Order the fault check and stop signal against a worker's fresh
+            # cycle or status publication, as well as competing lifecycle actions.
+            with self._cycle_lock, self._health_lock:
+                if only_if_faulted and watchdog_fault_kind(self.operational_snapshot()) is None:
+                    return False
+                self._lifecycle_serial += 1
+                request_serial = self._lifecycle_serial
+                self._restart_request = (request_serial, delay)
+                self._stop.set()
+                self.status = "restarting"
+        finally:
+            self._lifecycle_lock.release()
 
         if old_thread is not threading.current_thread():
             old_thread.join(timeout=max(0.0, float(self._RESTART_JOIN_TIMEOUT)))
@@ -1258,7 +1288,7 @@ class BaseModule:
                 + self._last_sleep_interval_seconds
                 + self._watchdog_work_budget_seconds()
             )
-        self._first_cycle_complete.set()
+            self._first_cycle_complete.set()
 
     def _watchdog_startup_budget_seconds(self) -> float:
         """Return the bounded first-cycle deadline for this capability."""
@@ -1436,6 +1466,21 @@ class BaseModule:
         revision, events, overflow = self.read_bus_events(priority=priority)
         self.commit_bus_cursor(revision, priority=priority)
         return events, overflow
+
+    def try_watchdog_snapshot(self) -> dict[str, object] | None:
+        """Bind the watchdog's worker, status and generation to one lifecycle.
+
+        A start or retirement in progress is unknown. A sweep never waits for
+        another thread holding the lifecycle lock, which some modules use to
+        serialize host operations. Ordinary UI readers keep their existing view.
+        """
+        if not self._lifecycle_lock.acquire(blocking=False):
+            return None
+        try:
+            with self._cycle_lock, self._health_lock:
+                return self.operational_snapshot()
+        finally:
+            self._lifecycle_lock.release()
 
     def operational_snapshot(self) -> dict[str, object]:
         """Return a bounded, JSON-safe live contract snapshot for UI and API.

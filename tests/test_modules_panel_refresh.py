@@ -459,3 +459,71 @@ def test_render_failure_restores_table_state_and_next_refresh_recovers(
     assert all(item is not None for item in _items(panel, "Bravo"))
     assert panel.table.signalsBlocked() is initially_blocked
     assert manager.enable_calls == []
+
+
+def test_summary_reflow_measures_only_changed_visible_columns(panel_factory, monkeypatch):
+    application = QApplication.instance()
+    panel, _manager = panel_factory([])
+    table = panel.table
+    widths = []
+    writes = []
+    measure = pages._summary_column_width
+    set_width = table.setColumnWidth
+
+    def measured(widget, column, *args):
+        widths.append(column)
+        return measure(widget, column, *args)
+
+    def set_column_width(column, width):
+        writes.append(column)
+        set_width(column, width)
+
+    monkeypatch.setattr(pages, "_summary_column_width", measured)
+    monkeypatch.setattr(table, "setColumnWidth", set_column_width)
+    values = (
+        True, "Synthetic", "running 100%", "#22c55e", 100, "Initial assurance",
+        "Synthetic category", "observe", "1.14.0", "Synthetic state",
+    )
+    panel.resize(850, 350)
+    panel.show()
+    application.processEvents()
+    panel._render_rows({"Synthetic": values})
+    assert set(widths) == {0, 2, 3}
+    widths.clear()
+    writes.clear()
+
+    # Tooltip/color updates exercise the actual changed-row render. They do
+    # not change the default delegate's size hint or the viewport geometry.
+    metadata_only = values[:3] + ("#ef4444", 100, "New assurance") + values[6:]
+    panel._render_rows({"Synthetic": metadata_only})
+    table.fit_summary_columns()
+    assert widths == writes == []
+
+    panel.resize(950, 350)
+    application.processEvents()
+    assert widths == []
+    assert writes and set(writes) == {1}
+    writes.clear()
+
+    status = "longer running status " * 8
+    changed_text = metadata_only[:2] + (status,) + metadata_only[3:]
+    panel._render_rows({"Synthetic": changed_text})
+    assert widths == [2]
+    assert 2 in writes
+    widths.clear()
+
+    panel._columns_button.setChecked(True)
+    assert set(widths) == {4, 5, 6}
+    widths.clear()
+
+    table.horizontalHeaderItem(4).setText("A much longer category heading")
+    application.processEvents()
+    assert widths == [4]
+    widths.clear()
+
+    font = table.font()
+    font.setPixelSize(max(28, table.fontMetrics().height() + 12))
+    table.setFont(font)
+    application.processEvents()
+    assert set(widths) == {0, 2, 3, 4, 5, 6}
+    assert table.verticalHeader().defaultSectionSize() >= table.fontMetrics().height() + 10

@@ -1071,27 +1071,39 @@ class ModuleManager:
             else:
                 mod.stop()
 
-    def restart_module_generation(
+    def restart_faulted_module_generation(
         self,
         name: str,
         expected_module: BaseModule,
         expected_generation: int,
     ) -> bool:
+        """Apply watchdog recovery only while the observed worker is faulty."""
+        return self.restart_module_generation(
+            name, expected_module, expected_generation, only_if_faulted=True,
+        )
+
+    def restart_module_generation(
+        self,
+        name: str,
+        expected_module: BaseModule,
+        expected_generation: int,
+        *,
+        only_if_faulted: bool = False,
+    ) -> bool:
         """Restart only the still-enabled, still-registered observed worker.
 
-        This is the watchdog's sole restart authority.  It prevents a stale
-        sweep from acting on a replacement object, a newer lifecycle
-        generation, or an operator-disabled capability.
+        The manager rejects replacement objects and disabled capabilities.
+        The module rejects a newer generation, and in watchdog mode also a
+        worker that has already recovered.
         """
         with self._module_control_lock:
             current = self.modules.get(name)
             if (self._shutdown or current is not expected_module
                     or not self.is_enabled(name) or not self._ugcap_allows(current)):
                 return False
-            restart = getattr(current, "restart_if_generation", None)
-            if not callable(restart):
-                return False
-            return bool(restart(int(expected_generation)))
+            restart_method = "restart_faulted_generation" if only_if_faulted else "restart_if_generation"
+            restart = getattr(current, restart_method, None)
+            return bool(callable(restart) and restart(int(expected_generation)))
 
     def stop_all(self) -> None:
         with self._module_control_lock:

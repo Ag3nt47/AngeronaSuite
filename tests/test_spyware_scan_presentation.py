@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 from PySide6.QtCore import QObject, QPoint, QPointF, QRect, Qt, Signal
 from PySide6.QtGui import QFontDatabase, QTextCursor, QTextOption, QWheelEvent
-from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QPlainTextEdit, QScrollArea, QVBoxLayout
+from PySide6.QtWidgets import QApplication, QDialog, QGroupBox, QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout
 
 from angerona.gui import curated_tools as ui
 from angerona.gui import spyware_guard_page as spyware_ui
@@ -32,6 +32,7 @@ class MemoryController(QObject):
         self._closed = False
         self.requests = []
         self.cancels = 0
+        self.storage_reviews = 0
         self.value = dict(state="ready", busy=False, installed=True, verified=True,
                           version="0.1.10", execution_available=True)
 
@@ -57,6 +58,9 @@ class MemoryController(QObject):
     def revert(self): pass
     def save_options(self, _values): pass
     def clear_reports(self): pass
+
+    def show_storage_review(self):
+        self.storage_reviews += 1
 
 
 @pytest.fixture
@@ -97,9 +101,12 @@ def test_full_scope_is_explicit_and_saved_selections_survive_status_updates(memo
     panel = ui.SpywareScanControls(manager)
     try:
         assert {group.title() for group in panel.findChildren(QGroupBox)} >= {
-            "Scope", "Included checks", "Progress", "What's happening now", "Resource and privilege details",
+            "Scope", "Included checks", "Progress", "What's happening now", "Computer specs",
         }
         assert "Entire PC" in panel.scope_button.text()
+        assert panel.layout().itemAt(0).widget() is panel.progress_group
+        assert panel.layout().indexOf(panel.activity) < panel.layout().indexOf(panel.hits) < panel.layout().indexOf(panel.setup_toggle)
+        assert panel.setup_body.isHidden() and "Entire PC · Zero-Breach" in panel.setup_summary.text()
         assert not panel.native.isChecked() and panel.zero_breach.isChecked()
         assert panel.priority.currentData() == "high"
         assert panel.cpu.value() == 40 and panel.memory.value() == 256
@@ -120,10 +127,39 @@ def test_full_scope_is_explicit_and_saved_selections_survive_status_updates(memo
         before = len(controller.requests)
         assert not panel.start()
         assert len(controller.requests) == before
+        assert panel.setup_toggle.isChecked() and not panel.setup_body.isHidden()
         assert "Choose local evidence" in panel.scope_error.text()
         panel.scope_paths.setPlainText("D:/synthetic/evidence")
         assert panel.start()
         assert controller.requests[-1]["targets"] == ("D:/synthetic/evidence",)
+    finally:
+        panel.close()
+
+
+def test_hits_keep_exact_native_advisories_separate_from_toolkit_classification(memory):
+    controller, manager, _, module = memory
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    QApplication.processEvents()
+    try:
+        controller.publish(busy=True, scan_progress=progress())
+        assert "Native advisory counts pending" in panel.hits.text()
+        assert "Zero-Breach counts pending" in panel.hits.text()
+        assert "0" not in panel.hits.text()
+        native = dict(request_id="b" * 32, lifecycle_generation=3, request_finished=True, collector_finished=True,
+                      finding_counts={"advisory": 3, "omitted": 1}, coverage_incomplete=True)
+        controller.publish(native_scan_completion=native)
+        assert "3 advisory hits" not in panel.hits.text()
+        native["request_id"] = "a" * 32
+        toolkit = dict(match_counts={"total": 3, "tool_findings": 1, "references": 2, "withdrawn": 0,
+                                     "displayed": 3, "omitted": 0}, coverage_incomplete=False)
+        controller.publish(busy=False, lifecycle="terminal", scan_progress=progress(4, stage="finished"),
+                           native_scan_completion=native, details={"zero_breach": toolkit},
+                           match_counts=toolkit["match_counts"], coverage_incomplete=True)
+        hits = panel.hits.text()
+        assert "3 advisory hits · omitted details: 1. Coverage incomplete." in hits
+        assert "1 tool finding · 2 contextual references" in hits and "Recorded coverage only" in hits
+        assert not controller.requests and not module.calls
     finally:
         panel.close()
 
@@ -152,7 +188,7 @@ def test_scan_options_ignore_wheel_but_keep_click_and_keyboard_selection(memory)
 
 @pytest.mark.parametrize("work", [QRect(-1920, 0, 1536, 816), QRect(-1920, 0, 640, 480)])
 def test_real_github_hub_keeps_all_tabs_and_scope_edits_inside_work_area(memory, work):
-    controller, manager, _, _ = memory
+    controller, manager, _, module = memory
     dialog = ui.GitHubToolsDialog(manager)
     dialog.screen = lambda: SimpleNamespace(availableGeometry=lambda: QRect(work))
     dialog.setStyleSheet(build_qss(scale=1.1))
@@ -167,6 +203,11 @@ def test_real_github_hub_keeps_all_tabs_and_scope_edits_inside_work_area(memory,
             assert work.contains(dialog.frameGeometry())
             assert dialog.tabs.currentIndex() == index
         assert dialog.tabs.count() == 3
+        review = next(button for button in dialog.findChildren(ui.QPushButton)
+                      if button.text() == "Review / export retained reports…")
+        assert controller.storage_reviews == 0
+        review.click()
+        assert controller.storage_reviews == 1 and module.calls == []
         assert dialog.scanner.mode.currentData() == "browser"
         assert dialog.scanner.targets.toPlainText() == "D:/synthetic/kept-evidence"
         assert controller.requests == []
@@ -210,14 +251,15 @@ def test_progress_uses_only_stage_counters_and_stops_animation_when_hidden(memor
         controller.publish(busy=False, state="incomplete", scan_progress=progress(4, stage="finished"))
         assert panel.progress_ring.percent == 100
         assert "incomplete coverage" in panel.progress_stage.text()
-        assert "held, unavailable or did not complete" in panel.stage_explanation.text()
-        assert "do not establish a clean PC" in panel.stage_explanation.text()
+        assert "unavailable or stopped early" in panel.stage_explanation.text()
+        assert "A clean verdict requires more evidence" in panel.stage_explanation.text()
         controller.publish(resource_usage={"process_alive": False, "cpu_percent": 12, "rss_mib": 48})
         assert "Toolkit process · stopped · latest available sample" in panel.resources.text()
         assert "12.0%" in panel.resources.text()
         panel.explanation_toggle.setChecked(True)
         assert panel.explanation_details.isVisible()
         assert "External toolkit findings remain leads" in panel.explanation_details.text()
+        assert "Coverage gaps are checks that were skipped, unavailable, or interrupted" in panel.explanation_details.text()
         config.ui_motion_enabled = False
         controller.publish(busy=True, scan_progress=progress(2))
         assert not panel.progress_ring._timer.isActive()
@@ -226,6 +268,61 @@ def test_progress_uses_only_stage_counters_and_stops_animation_when_hidden(memor
         assert panel.progress_ring.percent == 50
     finally:
         panel.close()
+
+
+def test_spyware_workspace_orders_sections_and_reuses_dashboard_sample_on_reopen(memory):
+    from angerona.gui.main_window import MainWindow
+
+    controller, manager, config, module = memory
+    owner = QDialog()
+    owner.manager, owner.config, owner.bus = manager, config, None
+    owner._spyware_guard_dialog = None
+    owner._spyware_guard_btn = QPushButton(owner)
+    owner._show_settings = lambda _section: None
+    sample = dict(cpu=18, ram=75, memory_total=16 * 1024**3, available=4 * 1024**3)
+    reads = []
+    receivers = []
+
+    def latest_sample():
+        reads.append(True)
+        return dict(sample)
+
+    owner.system_pulse = SimpleNamespace(
+        latest_sample=latest_sample, sample_ready=SimpleNamespace(connect=receivers.append),
+    )
+    try:
+        dialog = MainWindow._open_spyware_guard(owner)
+        page = owner.spyware_guard_page
+        panel = page.priority_scan
+        assert page.layout().indexOf(page.news_strip) < page.layout().indexOf(panel)
+        assert page.layout().indexOf(panel) < page.layout().indexOf(page.tabs)
+        layout = panel.layout()
+        assert layout.indexOf(panel.progress_group) < layout.indexOf(panel.item_progress)
+        assert layout.indexOf(panel.item_progress) < layout.indexOf(panel.explanation_group)
+        assert layout.indexOf(panel.explanation_group) < layout.indexOf(panel.resource_group)
+        assert layout.indexOf(panel.resource_group) < layout.indexOf(panel.setup_toggle)
+        assert layout.indexOf(panel.resource_group) < layout.indexOf(panel.steps_scroll)
+        assert "Host CPU load: 18.0%" in panel.host_specs.text()
+        assert "16.0 GiB total · 4.0 GiB available · 75.0% used" in panel.host_specs.text()
+        assert "Toolkit process" in panel.resources.text() and "Privilege" in panel.privileges.text()
+        assert reads == [True] and len(receivers) == 1
+        receivers[0](dict(sample, cpu=26))
+        assert "Host CPU load: 26.0%" in panel.host_specs.text()
+        receivers[0]({"error": "synthetic unavailable sample"})
+        assert "Host CPU load: 26.0%" in panel.host_specs.text()
+        dialog.close()
+        assert MainWindow._open_spyware_guard(owner) is dialog
+        assert reads == [True] and len(receivers) == 1
+
+        standalone = page.zero_breach.priority_controls
+        assert standalone.host_specs is None
+        assert standalone.resource_group.title() == "Resource and privilege details"
+        assert standalone.layout().indexOf(standalone.steps_scroll) < standalone.layout().indexOf(standalone.explanation_group)
+        assert controller.requests == [] and module.calls == []
+    finally:
+        MainWindow._close_spyware_guard_window(owner)
+        owner.close()
+        owner.deleteLater()
 
 
 @pytest.mark.parametrize("width,height", [(1536, 816), (1092, 582), (640, 480)])
@@ -535,6 +632,7 @@ def test_live_scan_content_reflows_without_horizontal_overflow_or_lost_state(mem
                            state="running", completed=25, total=100, unit="records", elapsed_s=12)
                       for index in range(14)])
     try:
+        panel.setup_toggle.setChecked(True)
         panel._scope_actions["targeted"].trigger()
         panel.scope_paths.setPlainText("D:/synthetic/preserved-selection")
         panel.toggle.setChecked(True)
@@ -638,11 +736,12 @@ def test_news_and_scan_actions_reflow_and_full_summary_height_remains_readable(m
         assert page.news_summary.height() >= page.news_summary.heightForWidth(page.news_summary.width())
         assert page.news_scroll.height() >= page.news_headline.sizeHint().height()
         for widget in (page._page_title, page.scan_button, page.news_strip, page.news_summary,
-                       page.news_source_button, page.news_pause_button, page.news_refresh_button):
+                       page.news_source_button, page.news_pause_button, page.news_refresh_button, page.news_settings_button):
             _inside_horizontally(widget, page)
         _no_sibling_overlap((page._page_title, page.scan_button), page)
         _no_sibling_overlap((page._news_identity, page.news_scroll, page._news_actions), page.news_strip)
-        _no_sibling_overlap((page.news_source_button, page.news_pause_button, page.news_refresh_button), page._news_actions)
+        _no_sibling_overlap((page.news_source_button, page.news_pause_button, page.news_refresh_button,
+                             page.news_settings_button), page._news_actions)
         headline = page.news_headline
         scan = page.priority_scan
         scope_document = scan.scope_paths.document()
@@ -696,7 +795,8 @@ def test_news_source_visibility_and_caption_changes_reflow_without_resizing(memo
                                 title="Synthetic inert headline", summary="Synthetic summary.",
                                 url="https://example.invalid/synthetic", origin="bundled-reference")]
         page._news_index = 0
-        widgets = (page.news_source_button, page.news_pause_button, page.news_refresh_button)
+        widgets = (page.news_source_button, page.news_pause_button, page.news_refresh_button,
+                   page.news_settings_button)
         source_document = page.priority_scan.scope_paths.document()
         viewport_size = area.size()
         grid = page._news_action_grid
@@ -710,7 +810,8 @@ def test_news_source_visibility_and_caption_changes_reflow_without_resizing(memo
             _settle_layout()
             assert area.size() == viewport_size
             assert area.horizontalScrollBar().maximum() == 0
-            assert (page.news_source_button, page.news_pause_button, page.news_refresh_button) == widgets
+            assert (page.news_source_button, page.news_pause_button, page.news_refresh_button,
+                    page.news_settings_button) == widgets
             assert page.priority_scan.scope_paths.document() is source_document
             active = tuple(widget for widget in widgets if not widget.isHidden())
             for widget in active:
@@ -721,24 +822,25 @@ def test_news_source_visibility_and_caption_changes_reflow_without_resizing(memo
                        for column in range(grid.columnCount()) if column != columns)
 
         page._show_news_headline()
-        check_layout(3, True)
+        check_layout(4, True)
         page._news_message("Synthetic offline message")
-        check_layout(2, False)
+        check_layout(3, False)
         page._show_news_headline()
-        check_layout(3, True)
+        check_layout(4, True)
 
         # Change only the actual source caption. Choose two bounded lengths
-        # from current font/control measurements to require two then one column.
+        # from all four current font/control measurements to require three then one column.
         margins = page._news_grid.contentsMargins()
         available = page.news_strip.contentsRect().width() - margins.left() - margins.right()
         gap = max(0, grid.horizontalSpacing())
         pause_width = page.news_pause_button.minimumSizeHint().width()
         refresh_width = page.news_refresh_button.minimumSizeHint().width()
+        settings_width = page.news_settings_button.minimumSizeHint().width()
         metrics = page.news_source_button.fontMetrics()
         chrome = (page.news_source_button.minimumSizeHint().width()
                   - metrics.horizontalAdvance(page.news_source_button.text()))
-        for columns, target in ((2, available - pause_width - gap - refresh_width / 2),
-                                (1, available - pause_width / 2)):
+        for columns, target in ((3, available - pause_width - refresh_width - 2 * gap - settings_width / 2),
+                                (1, available - min(pause_width, refresh_width, settings_width) / 2)):
             for length in range(1, 256):
                 label = "Synthetic " + "W" * length
                 text_width = metrics.horizontalAdvance(label + " · 2023-11-14") + chrome
@@ -752,10 +854,10 @@ def test_news_source_visibility_and_caption_changes_reflow_without_resizing(memo
             check_layout(columns, True)
 
         page._news_message("Synthetic unavailable message")
-        check_layout(2, False)
+        check_layout(3, False)
         monkeypatch.setitem(source_labels, source_key, "Lab")
         page._show_news_headline()
-        check_layout(3, True)
+        check_layout(4, True)
         assert controller.requests == [] and module.calls == []
     finally:
         page.priority_scan._clock.stop()

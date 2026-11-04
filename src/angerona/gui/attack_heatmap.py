@@ -18,6 +18,7 @@ and attack_coverage; the only optional network call is loopback Ollama.
 from __future__ import annotations
 
 from angerona.gui.presentation_timer import PresentationTimer
+from angerona.gui.window_fit import install_window_fit
 
 import json
 import math
@@ -34,7 +35,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QFileDialog, QGraphicsItem,
     QGraphicsRectItem, QGraphicsScene, QGraphicsTextItem, QGraphicsView,
-    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSizePolicy,
+    QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QPushButton, QSizePolicy,
     QTabWidget, QTableWidget, QTableWidgetItem, QTextBrowser, QVBoxLayout,
     QWidget,
 )
@@ -251,6 +252,16 @@ class _CellItem(QGraphicsRectItem):
         self.set_heat(self._heat)
 
 
+def _wrap_heatmap_label(label: QLabel) -> None:
+    """Keep summaries readable without imposing their full text width."""
+    label.setMinimumWidth(0)
+    label.setWordWrap(True)
+    policy = label.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Ignored)
+    policy.setHeightForWidth(True)
+    label.setSizePolicy(policy)
+
+
 # ── Heatmap window ───────────────────────────────────────────────────────────
 class AttackHeatmapWindow(QDialog):
     event_clicked = Signal(str)
@@ -290,6 +301,7 @@ class AttackHeatmapWindow(QDialog):
         self._stats_lbl = QLabel("Initialising…")
         self._stats_lbl.setStyleSheet("color:#94a3b8; font:8pt 'Segoe UI'; padding:4px 8px;")
         self._stats_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        _wrap_heatmap_label(self._stats_lbl)
 
         self._actor: str = "— All —"
         self._actor_combo = QComboBox()
@@ -339,7 +351,8 @@ class AttackHeatmapWindow(QDialog):
         toolbar = QVBoxLayout()
         toolbar.setSpacing(4)
         filters_row = QHBoxLayout()
-        filters_row.addWidget(self._stats_lbl)
+        # Summary text gets its own wrapping row; fixed-width filters
+        # and actions remain reachable on compact scaled work areas.
         filters_row.addStretch(1)
         for widget in (self._search, self._active_only, self._actor_combo):
             filters_row.addWidget(widget)
@@ -347,11 +360,13 @@ class AttackHeatmapWindow(QDialog):
         actions_row.addStretch(1)
         for widget in (explain_btn, export_nav_btn, reset_btn):
             actions_row.addWidget(widget)
+        toolbar.addWidget(self._stats_lbl)
         toolbar.addLayout(filters_row)
         toolbar.addLayout(actions_row)
 
         # ── Detail panel ──────────────────────────────────────────────────────
         self._detail_hdr = QLabel("Click a technique cell for details")
+        _wrap_heatmap_label(self._detail_hdr)
         self._detail_hdr.setStyleSheet("color:#f1f5f9; font:9pt 'Segoe UI' bold; padding:4px 8px;")
         self._detail_txt = QTextBrowser()
         self._detail_txt.setReadOnly(True)
@@ -381,6 +396,7 @@ class AttackHeatmapWindow(QDialog):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
+        root.setSizeConstraint(QLayout.SetNoConstraint)
         root.addLayout(toolbar)
         root.addWidget(self._tabs, 1)
 
@@ -391,11 +407,13 @@ class AttackHeatmapWindow(QDialog):
         self._timer.timeout.connect(self._refresh)
         self._timer.start(self._REFRESH_MS)
         self._refresh()
+        install_window_fit(self)
 
     # ── Coverage tab ─────────────────────────────────────────────────────────
     def _build_coverage_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
         self._cov_hdr = QLabel("Coverage…")
+        _wrap_heatmap_label(self._cov_hdr)
         self._cov_hdr.setStyleSheet("color:#e2e8f0; font:9pt 'Segoe UI' bold; padding:4px 2px;")
         lay.addWidget(self._cov_hdr)
         explanation = QLabel(
@@ -495,8 +513,11 @@ class AttackHeatmapWindow(QDialog):
     # ── Top techniques tab ───────────────────────────────────────────────────
     def _build_top_tab(self) -> QWidget:
         w = QWidget(); lay = QVBoxLayout(w)
-        lay.addWidget(QLabel("The currently hottest techniques (by decayed heat), most active first. "
-                             "Double-click a row to open its MITRE ATT&CK page."))
+        description = QLabel(
+            "The currently hottest techniques (by decayed heat), most active first. "
+            "Double-click a row to open its MITRE ATT&CK page.")
+        _wrap_heatmap_label(description)
+        lay.addWidget(description)
         self._top_tbl = QTableWidget()
         self._top_tbl.setColumnCount(6)
         self._top_tbl.setHorizontalHeaderLabels(

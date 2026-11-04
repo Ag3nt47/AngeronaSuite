@@ -25,6 +25,9 @@ class AnalysisLabPanel(QWidget):
         self._root = root
         self._ready = False
         self._busy = False
+        self._worker = None
+        self._terminal_pending = None
+        self._activity_handle = None
         self._loaded = False
         self._rows = []
         self._report = None
@@ -40,6 +43,10 @@ class AnalysisLabPanel(QWidget):
 
         self.destroyed.connect(destroyed)
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         self.status = QLabel('Open Analysis Lab to check its optional emulator and reviewed runtime.')
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -178,12 +185,19 @@ class AnalysisLabPanel(QWidget):
                             pass
 
         self.status.setText(message)
+        self._activity_handle = self._activities.begin('analysis-lab', message, replace=True)
         self._buttons()
         try:
-            threading.Thread(target=worker, daemon=True, name='OfflineAnalysisLab').start()
+            self._worker = threading.Thread(target=worker, daemon=True, name='OfflineAnalysisLab')
+            self._worker.start()
         except Exception:
+            if self._worker is not None and self._worker.is_alive():
+                self._timer.start()
+                return
             _WORKERS.release()
             self._busy = False
+            self._activities.finish(self._activity_handle)
+            self._activity_handle = None
             self._operation = None
             self._lifetime['operation'] = None
             self._buttons()
@@ -192,15 +206,28 @@ class AnalysisLabPanel(QWidget):
 
     def _poll(self):
         while True:
-            try:
-                kind, value, error = self._queue.get_nowait()
-            except queue.Empty:
-                return
+            if self._terminal_pending is not None:
+                if self._worker is not None and self._worker.is_alive():
+                    return
+                kind, value, error = self._terminal_pending
+                self._terminal_pending = None
+            else:
+                try:
+                    kind, value, error = self._queue.get_nowait()
+                except queue.Empty:
+                    return
             if kind == 'progress':
                 if self._operation is None or not self._operation.cancelled.is_set():
                     self.status.setText(value)
+                    self._activities.update(self._activity_handle, label=value)
                 continue
+            if self._worker is not None and self._worker.is_alive():
+                self._terminal_pending = kind, value, error
+                return
             self._timer.stop()
+            self._worker = None
+            self._activities.finish(self._activity_handle)
+            self._activity_handle = None
             if self._operation is not None and self._operation.cancelled.is_set():
                 error = 'Analysis cancelled; no late result was accepted.'
             self._operation = None

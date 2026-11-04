@@ -223,6 +223,12 @@ class TopTalkersDialog(QDialog):
                 pass
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._refresh_activity = None
+        self._ai_activity = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         head = QLabel("Who is this machine talking to? Established outbound connections "
                       "grouped by process. External (untrusted) destinations are flagged red. "
                       "Double-click a process for Allow / Block / Ask-AI actions.")
@@ -254,7 +260,7 @@ class TopTalkersDialog(QDialog):
         row.addWidget(self._resolve_chk)
         row.addStretch()
         refresh = QPushButton("Refresh now")
-        refresh.clicked.connect(self.refresh)
+        refresh.clicked.connect(lambda: self.refresh(user_requested=True))
         close = QPushButton("Close")
         close.clicked.connect(self.close)
         row.addWidget(refresh)
@@ -278,18 +284,24 @@ class TopTalkersDialog(QDialog):
         self.refresh()
 
     # ── Data ──────────────────────────────────────────────────────────────────
-    def refresh(self) -> None:
+    def refresh(self, *, user_requested=False) -> None:
         if psutil is None:
             self.summary.setText("psutil unavailable — cannot enumerate connections.")
             return
         if not self._accept_results or self._refresh_in_flight:
+            if user_requested and self._accept_results and self._refresh_in_flight:
+                self._refresh_activity = self._activities.begin("connections", "Waiting for the admitted connection snapshot…")
             return
         self._refresh_in_flight = True
+        if user_requested:
+            self._refresh_activity = self._activities.begin("connections", "Refreshing connection snapshot…")
         worker = _TopTalkersWorker(self._resolve_chk.isChecked())
         worker.signals.finished.connect(self._apply_snapshot)
         try:
             self._pool.start(worker)
         except Exception as exc:
+            self._activities.finish(self._refresh_activity)
+            self._refresh_activity = None
             worker.signals.deleteLater()
             self._refresh_in_flight = False
             self.summary.setText(f"Could not start connection refresh: {exc}")
@@ -297,6 +309,8 @@ class TopTalkersDialog(QDialog):
     @Slot(object)
     def _apply_snapshot(self, snapshot: object) -> None:
         """Render a completed snapshot; Qt widgets are touched only here."""
+        self._activities.finish(self._refresh_activity)
+        self._refresh_activity = None
         self._refresh_in_flight = False
         if not self._accept_results or not isinstance(snapshot, dict):
             return
@@ -343,6 +357,7 @@ class TopTalkersDialog(QDialog):
 
     @Slot(int)
     def _stop_refreshes(self, _result: int) -> None:
+        self._activities.close()
         self._accept_results = False
         self._timer.stop()
         if self._ai_context is not None:
@@ -528,6 +543,14 @@ class TopTalkersDialog(QDialog):
             return False
 
         self._ai_request_token += 1
+        self._ai_activity = self._activities.begin("connection-ai", "Retrieving local connection analysis…", replace=True)
+        from angerona.gui.action_progress import ActionProgressView
+        local_progress = getattr(action_dialog, "_angerona_action_progress", None)
+        if local_progress is None:
+            local_progress = ActionProgressView(self._activities, action_dialog)
+            if action_dialog.layout() is not None:
+                action_dialog.layout().addWidget(local_progress)
+            action_dialog._angerona_action_progress = local_progress
         token = self._ai_request_token
         self._ai_in_flight = True
         self._ai_context = {
@@ -550,6 +573,8 @@ class TopTalkersDialog(QDialog):
             # Interactive work runs ahead of periodic connection snapshots.
             self._pool.start(worker, 10)
         except Exception as exc:
+            self._activities.finish(self._ai_activity)
+            self._ai_activity = None
             worker.signals.deleteLater()
             self._ai_in_flight = False
             self._ai_context = None
@@ -565,6 +590,8 @@ class TopTalkersDialog(QDialog):
         context = self._ai_context
         if context is None or token != context.get("token"):
             return
+        self._activities.finish(self._ai_activity)
+        self._ai_activity = None
         self._ai_in_flight = False
         self._ai_context = None
         if not self._accept_results or context.get("abandoned"):

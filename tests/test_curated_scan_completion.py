@@ -80,6 +80,102 @@ def test_completion_waits_for_native_request_and_backend_custody(controller):
         release.set()
 
 
+def test_terminal_outcome_survives_progress_refill_between_queue_get_and_put(controller, monkeypatch):
+    service = ready(controller)
+    wait_until(lambda: not controller._worker.is_alive())
+    entered, release = threading.Event(), threading.Event()
+
+    def scan(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(3)
+        return {"state": "findings", "findings": [{"classification": "fixture"}]}
+
+    service.scan = scan
+    outcomes, refills = [], []
+    controller.scan_outcome_ready.connect(outcomes.append)
+    try:
+        assert controller.scan(mode="full") and entered.wait(2)
+        controller._timer.stop()
+        frames = controller._frames
+        for _ in range(frames.maxsize):
+            controller._frame("progress", "Fixture progress backlog")
+        assert frames.full()
+        dequeue = frames.get_nowait
+
+        def get_with_competing_refill():
+            value = dequeue()
+            if threading.current_thread() is controller._worker:
+                frames.put_nowait(("progress", "Competing observation refilled the vacancy"))
+                refills.append(True)
+            return value
+
+        monkeypatch.setattr(frames, "get_nowait", get_with_competing_refill)
+        release.set()
+        assert controller._done.wait(2)
+        controller._worker.join(2)
+        assert not controller._worker.is_alive() and refills
+        controller._drain()
+        assert report_visible(controller) and len(outcomes) == 1
+        assert outcomes[0]["state"] == "findings" and controller.snapshot()["lifecycle"] == "terminal"
+        assert "fixture" in controller._completion_dialog.text.toPlainText()
+        controller._drain()
+        assert len(outcomes) == 1
+    finally:
+        release.set()
+
+
+def test_presentation_failure_has_visible_retained_retry_without_rescan(controller, monkeypatch):
+    service = ready(controller)
+    wait_until(lambda: not controller._worker.is_alive())
+    panel = ui.SpywareScanControls(controller.manager, controller=controller)
+    panel.show()
+    QApplication.processEvents()
+    original = controller.show_after_action
+    attempts, outcomes = [], []
+    controller.scan_outcome_ready.connect(outcomes.append)
+
+    def show(report=None):
+        attempts.append(report)
+        if len(attempts) == 1:
+            raise ValueError("Fixture automatic presentation failure")
+        return original(report)
+
+    monkeypatch.setattr(controller, "show_after_action", show)
+    try:
+        assert panel.review_button.isHidden() and controller.open_retained_scan_report() is None
+        assert panel.start()
+        wait_until(lambda: bool(outcomes))
+        assert not report_visible(controller) and len(outcomes) == 1
+        assert panel.review_button.isVisible() and panel.review_button.isEnabled()
+        assert "could not open (ValueError)" in panel.review_notice.text()
+        panel.review_button.click()
+        assert report_visible(controller)
+        assert len(service.requests) == 1 and len(outcomes) == 1 and len(attempts) == 2
+        assert "ready for review" in panel.review_notice.text()
+        assert controller._completion_dialog._report == outcomes[0]
+        assert controller._completion_dialog._confirmed is False
+    finally:
+        panel.close()
+
+
+def test_toolkit_findings_keep_independent_coverage_gap_in_combined_review(controller):
+    service = ready(controller)
+    wait_until(lambda: not controller._worker.is_alive())
+    service.scan = lambda *_args, **_kwargs: dict(
+        state="findings", findings=[{"classification": "unconfirmed fixture"}],
+        coverage_incomplete=True, coverage={"not_checked": ["fixture collector unavailable"]})
+    outcomes = []
+    controller.scan_outcome_ready.connect(outcomes.append)
+    assert controller.priority_scan(native_enabled=False, zero_breach_enabled=True, mode="full")
+    wait_until(lambda: report_visible(controller))
+    report, = outcomes
+    assert report["state"] == "incomplete" and report["coverage_incomplete"] is True
+    assert report["details"]["zero_breach"]["state"] == "findings"
+    assert report["findings"] == [{"classification": "unconfirmed fixture"}]
+    assert "fixture collector unavailable" in controller._completion_dialog.text.toPlainText()
+    assert controller._completion_dialog._confirmed is False
+
+
 @pytest.mark.parametrize("expected", ["failed", "timed-out", "cancelled"])
 def test_partial_failure_outcome_is_shown_once_with_literal_reason(controller, expected):
     service = ready(controller)
@@ -247,3 +343,71 @@ def test_completion_listener_shutdown_fences_reentrant_new_operation(controller)
     controller.scan_outcome_ready.connect(lambda _report: controller.shutdown())
     assert not controller.refresh()
     assert controller._closed and controller._completion_dialog is None
+
+
+def test_manual_request_queues_behind_an_automatic_scan(controller, monkeypatch):
+    owner = controller
+    owner._busy = True
+    owner._snapshot.update(active_action="priority_scan", automatic=True)
+    owner._next_report_count_limit = 9
+    cancellations = []
+    monkeypatch.setattr(owner, "_cancel_current", lambda: cancellations.append(True))
+    try:
+        assert owner.priority_scan(mode="browser")
+        assert owner._pending_priority == {"mode": "browser"}
+        assert cancellations == [True]
+        assert owner._next_report_count_limit == 9
+    finally:
+        owner._busy = False
+        owner._pending_priority = None
+
+
+def test_schedule_probe_cannot_restore_a_revoked_one_run_allowance(controller):
+    controller._automatic_probe_snapshot = {"state": "idle", "next_report_count_limit": 9}
+    controller._next_report_count_limit = None
+    controller._apply_automatic_probe("result", ("automatic_probe", {"state": "cooldown"}))
+    assert "next_report_count_limit" not in controller.snapshot()
+    assert controller.snapshot()["automatic_schedule"]["state"] == "cooldown"
+
+
+def test_daily_scan_claim_uses_normal_priority_without_opening_a_report(controller, monkeypatch, tmp_path):
+    from angerona.core.spyware_scan_schedule import AutomaticSpywareScanSchedule
+
+    cfg = controller.manager.cfg
+    cfg.data_dir = tmp_path
+    cfg.spyware_scan_native_enabled = False
+    cfg.spyware_scan_auto_enabled = True
+    cfg.spyware_scan_auto_scope = "full"
+    service = ready(controller)
+    controller.manager.priority_scan_focus = lambda **_kwargs: pytest.fail("Daily scan throttled other defenses")
+    controller._next_report_count_limit = 9
+    controller._snapshot["next_report_count_limit"] = 9
+    worker_threads = []
+    check = AutomaticSpywareScanSchedule.check
+    claim = AutomaticSpywareScanSchedule.claim
+
+    def observed_check(schedule, **kwargs):
+        worker_threads.append(threading.get_ident())
+        return check(schedule, **kwargs)
+
+    def observed_claim(schedule, **kwargs):
+        worker_threads.append(threading.get_ident())
+        return claim(schedule, **kwargs)
+
+    monkeypatch.setattr(AutomaticSpywareScanSchedule, "check", observed_check)
+    monkeypatch.setattr(AutomaticSpywareScanSchedule, "claim", observed_claim)
+    outcomes = []
+    controller.scan_outcome_ready.connect(outcomes.append)
+    wait_until(lambda: not controller._worker.is_alive())
+    controller._automatic_tick()
+    wait_until(lambda: controller._automatic_due and not controller._worker.is_alive())
+    controller._automatic_tick()
+    wait_until(lambda: len(outcomes) == 1)
+
+    request, = service.requests
+    assert request.mode == "full" and request.priority == "normal" and request.max_cpu_percent == 25
+    assert len(worker_threads) == 2 and threading.get_ident() not in worker_threads
+    assert check(AutomaticSpywareScanSchedule(tmp_path)).status == "cooldown"
+    assert outcomes[0]["automatic"] is True and not report_visible(controller)
+    assert controller.retained_scan_attempt() == outcomes[0]["review_attempt"]
+    assert controller.snapshot()["next_report_count_limit"] == controller._next_report_count_limit == 9

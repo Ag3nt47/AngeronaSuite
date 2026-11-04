@@ -86,7 +86,7 @@ def test_cards_policy_io_is_bounded_and_does_not_block_qt(monkeypatch):
     cards = pages.DashboardCards(EventBus(), _Storage(), SimpleNamespace(modules={}))
     ticks, timer = _heartbeat(cards)
     try:
-        cards.c_threat.set("Critical")
+        cards._apply_threat_snapshot((1, ("Critical", "#ef4444")))
         cards.refresh()
         assert entered.wait(1)
         for _ in range(30):
@@ -103,7 +103,7 @@ def test_cards_policy_io_is_bounded_and_does_not_block_qt(monkeypatch):
         monkeypatch.setattr(pages, "active_threat_events", lambda _events: 1 / 0)
         cards.refresh()
         _until(lambda: not cards._threat_reader.busy)
-        assert cards.c_threat.value.text() == "High"
+        assert cards.c_threat.value.text() == "High · stale"
         assert "unavailable" in cards.c_threat.toolTip()
     finally:
         release.set()
@@ -180,10 +180,12 @@ class _SecurityHarness(QWidget):
     _check_threat_animation = MainWindow._check_threat_animation
     _prepare_security_snapshot = MainWindow._prepare_security_snapshot
     _apply_security_snapshot = MainWindow._apply_security_snapshot
+    _session_is_active = MainWindow._session_is_active
 
     def __init__(self, bus):
         super().__init__()
         self.bus = bus
+        self._simulation_session = None
         self._last_bus_revision = bus.revision()
         self._last_threat_ts = time.time()
         self.observed = []
@@ -231,7 +233,10 @@ def test_security_wake_delivers_high_arriving_during_busy_reader(monkeypatch):
         assert window._last_bus_revision == cursor
         assert len(calls) == 1
         release.set()
-        _until(lambda: not window._security_reader.busy)
+        _until(lambda: (
+            not window._security_reader.busy
+            and not window._security_wake_pending.is_set()
+        ))
         assert [event.message for event in window.observed] == ["first", "second"]
         assert len(calls) == 2
         assert window._last_bus_revision == bus.revision()

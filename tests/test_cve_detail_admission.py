@@ -69,6 +69,82 @@ def _start_current_detail(dashboard, cve, record, *args, **kwargs):
     dashboard._analysis_rows[cve] = (dashboard._row_recs[cve],)
     return dashboard._start_detail_analysis(cve, record, *args, **kwargs)
 
+
+def test_detail_local_progress_retires_with_exact_admission_owner(monkeypatch, isolated_dashboards):
+    create, releases = isolated_dashboards
+    dashboard = create()
+    enroll, _received = _blocking_advisor(monkeypatch, releases)
+    entered, release = enroll("CVE-2026-98701")
+    record = {"cve": "CVE-2026-98701", "name": "inert record"}
+    worker = _start_current_detail(dashboard, record["cve"], record, lambda _value: None)
+    assert worker is not None and entered.wait(2)
+    assert worker in dashboard._detail_activities
+    assert dashboard.progress_view.ring.percent is None
+    release.set()
+    _pump_until(lambda: worker not in dashboard._detail_activities)
+    assert not dashboard._activities.snapshot()
+
+
+def test_batch_local_percent_uses_actual_record_returns(monkeypatch, isolated_dashboards):
+    create, releases = isolated_dashboards
+    first = {"cve": "CVE-2026-98702", "name": "first inert record"}
+    second = {"cve": "CVE-2026-98703", "name": "second inert record"}
+    monkeypatch.setattr(page, "_load_threats", lambda: {"matches": [first, second]})
+    monkeypatch.setattr(cve_fix_advisor, "ollama_available", lambda: True)
+    dashboard = create()
+    enroll, _received = _blocking_advisor(monkeypatch, releases)
+    _first_entered, first_release = enroll(first["cve"])
+    second_entered, second_release = enroll(second["cve"])
+    first_release.set()
+    dashboard._analyze_all()
+    assert second_entered.wait(2)
+    _pump_until(lambda: dashboard.progress_view.ring.percent == 50)
+    worker = dashboard._worker
+    assert worker.isRunning() and dashboard._activities.snapshot()["done"] == 1
+    assert dashboard._activities.snapshot()["total"] == 2
+    second_release.set()
+    _pump_until(lambda: dashboard._worker is None and not dashboard._activities.snapshot())
+    assert dashboard._loading_token is None
+
+
+def test_inert_proposal_staging_is_background_and_captures_exact_plain_input(monkeypatch, isolated_dashboards):
+    from angerona.gui import action_worker
+    create, releases = isolated_dashboards
+    monkeypatch.setattr(action_worker, "_CLOSING", False)
+    assert not action_worker.active_finite_actions()
+    entered, release = threading.Event(), threading.Event()
+    releases.append(release)
+    received = []
+    gui_thread = threading.get_ident()
+
+    def stage(cve, analysis):
+        received.append((cve, analysis, threading.get_ident()))
+        entered.set()
+        assert release.wait(4)
+        return {"ok": True, "staged": True, "executed": False, "output": "inert fixture; no command ran"}
+
+    monkeypatch.setattr(cve_fix_advisor, "apply_fix", stage)
+    dashboard = create()
+    monkeypatch.setattr(dashboard, "_load_and_render", lambda: None)
+    analysis = {"fix_script": "inert original proposal", "summary": "fixture", "revert_script": "inert rollback"}
+    try:
+        assert dashboard._start_proposal_job("CVE-2026-98704", analysis)
+        assert entered.wait(2) and dashboard._proposal_jobs
+        assert dashboard.progress_view.ring.percent is None and getattr(dashboard, "_proposal_notice", None) is None
+        analysis["fix_script"] = "changed after admission"
+        assert not dashboard._start_proposal_job("CVE-2026-98704", analysis)
+        release.set()
+        _pump_until(lambda: not dashboard._proposal_jobs and not action_worker.active_finite_actions())
+        assert received[0][1]["fix_script"] == "inert original proposal"
+        assert received[0][2] != gui_thread
+        assert not dashboard._proposal_notice.isModal() and "not executed" in dashboard._proposal_notice.windowTitle().lower()
+        assert not dashboard._activities.snapshot()
+    finally:
+        release.set()
+        for worker in action_worker.active_finite_actions():
+            assert worker.wait(3000)
+        _pump_until(lambda: not action_worker.active_finite_actions())
+
 def _blocking_advisor(monkeypatch, releases):
     entered = {}
     release = {}
@@ -849,10 +925,12 @@ def test_failed_batch_start_restores_cache_and_keeps_live_or_unknown_owner(
     assert dashboard._analysis_requests == previous_requests
     assert dashboard._fix_cache == previous_cache
     assert dashboard._cached_analysis(record["cve"])["reason"] == "prior current result"
-    assert dashboard._loading_token is None
+    retained = failure in {"start-after-native", "unknown-live-state"}
+    assert dashboard._loading_token == ("inert startup token" if retained else None)
+    assert (worker in dashboard._batch_activities) is retained
     assert dashboard._batch_startup_cleanup_errors == ()
     assert "did not start successfully" in dashboard._footer.text()
-    expected_loading = [] if failure in {"loading", "connect"} else ["inert startup token"]
+    expected_loading = [] if retained or failure in {"loading", "connect"} else ["inert startup token"]
     assert loading_finished == expected_loading
 
     if failure in {"start-after-native", "unknown-live-state"}:
@@ -866,10 +944,13 @@ def test_failed_batch_start_restores_cache_and_keeps_live_or_unknown_owner(
         _pump_until(lambda: dashboard._worker is None)
     else:
         assert dashboard._worker is None and dashboard._batch_retiring is None
+        assert worker._batch_unused_disposable and not worker._batch_native_retirement_proven
     assert not dashboard._batch_retire_timer.isActive()
     assert dashboard._batch_retiring is None
     assert dashboard._fix_cache == previous_cache
-    assert loading_finished == expected_loading
+    assert dashboard._loading_token is None and worker not in dashboard._batch_activities
+    expected_final = [] if failure in {"loading", "connect"} else ["inert startup token"]
+    assert loading_finished == expected_final
     assert detail_analysis_admission().active_count == 0
 
 
@@ -1012,3 +1093,158 @@ def test_unknown_live_batch_survives_delete_on_close_and_former_parent_deletion(
     assert not isValid(retire_timer)
     assert worker is not None and not isValid(worker)
     assert loading_finished == ["inert close token"]
+
+
+def _batch_native_wait_fixture(monkeypatch, isolated_dashboards, *, failed_start=False):
+    """Real worker return plus a withheld wait(0) result, never a fake success."""
+    create, releases = isolated_dashboards
+    dashboard = create()
+    record = {"cve": "CVE-2026-7711", "name": "native wait proof fixture"}
+    _show_records(monkeypatch, dashboard, [record])
+    entered, leave_advisor, permit_wait = (threading.Event() for _ in range(3))
+    releases.extend((leave_advisor, permit_wait))
+    loading_finished, wait_probes, workers = [], [], []
+    monkeypatch.setattr(cve_fix_advisor, "ollama_available", lambda: True)
+    monkeypatch.setattr(page, "begin_loading", lambda _message: "inert native-wait batch token")
+    monkeypatch.setattr(page, "finish_loading", loading_finished.append)
+
+    def advisor(rec):
+        entered.set()
+        assert leave_advisor.wait(5.0)
+        return {"cve": rec["cve"], "fix_available": False, "reason": "inert returned"}
+
+    monkeypatch.setattr(cve_fix_advisor, "analyze", advisor)
+    original_worker = page._FixWorker
+
+    class HeldNativeWait(original_worker):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._query_unknown = False
+            workers.append(self)
+
+        def start(self, *args, **kwargs):
+            result = super().start(*args, **kwargs)
+            if failed_start:
+                assert entered.wait(2.0)
+                self._query_unknown = True
+                raise RuntimeError("inert failed batch after native start")
+            return result
+
+        def isRunning(self):
+            if self._query_unknown and not leave_advisor.is_set():
+                raise RuntimeError("inert unknown batch native state")
+            return super().isRunning()
+
+        def wait(self, msecs=None):
+            if msecs == 0 and not permit_wait.is_set():
+                wait_probes.append(msecs)
+                return False
+            return super().wait() if msecs is None else super().wait(msecs)
+
+    monkeypatch.setattr(page, "_FixWorker", HeldNativeWait)
+    if failed_start:
+        with pytest.raises(RuntimeError, match="inert failed batch"):
+            dashboard._analyze_all()
+    else:
+        dashboard._analyze_all()
+    assert entered.wait(2.0) and len(workers) == 1
+    worker = workers[0]
+    assert dashboard._worker is worker and worker._batch_retirement_retained
+    return {
+        "dashboard": dashboard, "worker": worker, "leave": leave_advisor,
+        "permit_wait": permit_wait, "loading_finished": loading_finished,
+        "wait_probes": wait_probes,
+    }
+
+
+@pytest.mark.parametrize("failed_start", [False, True])
+def test_batch_activity_and_failed_start_wait_for_actual_native_wait_proof(
+    monkeypatch, isolated_dashboards, failed_start,
+):
+    from angerona.gui.native_retirement import native_retirement_proven
+
+    state = _batch_native_wait_fixture(
+        monkeypatch, isolated_dashboards, failed_start=failed_start,
+    )
+    dashboard, worker = state["dashboard"], state["worker"]
+    try:
+        assert dashboard._loading_token == "inert native-wait batch token"
+        assert worker in dashboard._batch_activities and not state["loading_finished"]
+        if failed_start:
+            assert worker._startup_failed and worker.isInterruptionRequested()
+        state["leave"].set()
+        assert QThread.wait(worker, 3000)  # Actual owned native return, bypassing only the negative fixture gate.
+        assert QThread.isFinished(worker) is True
+        _pump_until(lambda: bool(state["wait_probes"]))
+        assert dashboard._worker is worker and dashboard._batch_retiring is worker
+        assert dashboard._batch_retire_timer.isActive()
+        assert dashboard._loading_token == "inert native-wait batch token"
+        assert worker in dashboard._batch_activities
+        assert not worker._batch_native_retirement_proven and not native_retirement_proven(worker)
+        assert state["loading_finished"] == []
+
+        state["permit_wait"].set()  # Later wait(0) calls the real Qt implementation.
+        _pump_until(lambda: dashboard._worker is None)
+        assert worker._batch_native_retirement_proven and native_retirement_proven(worker)
+        assert worker._batch_owner_settled and not worker._batch_unused_disposable
+        assert dashboard._loading_token is None and worker not in dashboard._batch_activities
+        assert state["loading_finished"] == ["inert native-wait batch token"]
+        dashboard._release_batch_worker(worker)
+        assert state["loading_finished"] == ["inert native-wait batch token"]
+    finally:
+        state["leave"].set()
+        state["permit_wait"].set()
+        _pump_until(lambda: dashboard._worker is None)
+
+
+def test_batch_close_detaches_parent_and_stays_responsive_until_native_wait_proof(
+    monkeypatch, isolated_dashboards,
+):
+    from PySide6.QtCore import QTimer
+
+    state = _batch_native_wait_fixture(monkeypatch, isolated_dashboards)
+    dashboard, worker = state["dashboard"], state["worker"]
+    former_parent = QWidget()
+    dashboard.setParent(former_parent, dashboard.windowFlags())
+    dashboard.show()
+    owner_key = id(dashboard)
+    responsive = []
+    try:
+        state["leave"].set()
+        assert QThread.wait(worker, 3000) and QThread.isFinished(worker)
+        _pump_until(lambda: bool(state["wait_probes"]))
+        assert dashboard.close() is False
+        assert dashboard._batch_close_pending and not dashboard.isVisible()
+        assert dashboard.parent() is None
+        assert page._BATCH_DEFERRED_OWNERS[owner_key] is dashboard
+        delete(former_parent)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        assert isValid(dashboard) and isValid(worker)
+        assert dashboard._worker is worker and not state["loading_finished"]
+        QTimer.singleShot(0, lambda: responsive.append(True))
+        _pump_until(lambda: bool(responsive))
+        assert dashboard._worker is worker and dashboard._batch_retire_timer.isActive()
+        assert not worker._batch_native_retirement_proven
+
+        state["permit_wait"].set()
+        _pump_until(lambda: dashboard._worker is None
+                    and owner_key not in page._BATCH_DEFERRED_OWNERS)
+        assert state["loading_finished"] == ["inert native-wait batch token"]
+        assert not dashboard._batch_close_pending
+    finally:
+        state["leave"].set()
+        state["permit_wait"].set()
+        _pump_until(lambda: dashboard._worker is None)
+        if isValid(former_parent):
+            delete(former_parent)
+        dashboard.close()
+
+
+def test_invalid_batch_wrapper_without_prior_native_proof_is_held(isolated_dashboards):
+    create, _releases = isolated_dashboards
+    dashboard = create()
+    worker = page._FixWorker([], dashboard)  # Never started: no real native resource exists in this negative fixture.
+    delete(worker)
+    assert not isValid(worker)
+    assert dashboard._batch_retirement_ready(worker) is False
+    assert not worker._batch_native_retirement_proven and not worker._batch_unused_disposable

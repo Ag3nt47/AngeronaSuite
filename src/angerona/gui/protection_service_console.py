@@ -1,23 +1,25 @@
 """Read-only desktop status for the separately installed protection service.
 
-This console never constructs a sensor graph, opens service storage or starts
-an engine. Every native exchange belongs to one retained background reader.
-Closing detaches only after that reader has actually returned.
+This console never constructs a sensor graph or opens service storage.
+Service status belongs to one retained background reader. An explicit
+administrator startup request has its own retained helper process.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import threading
 import time
 import sys
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QProcess, QProcessEnvironment, QTimer, Qt
 from PySide6.QtWidgets import (
-    QApplication, QFormLayout, QGridLayout, QHBoxLayout, QLabel, QMainWindow,
+    QApplication, QCheckBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QMainWindow,
     QPushButton, QScrollArea, QVBoxLayout, QWidget,
 )
 
 from angerona.core.engine_service_status import EngineServiceStatusClient, MAX_MODULES
+from angerona.core.startup_protocol import notify_dashboard_ready
 
 
 STALE_SECONDS = 10.0
@@ -78,6 +80,7 @@ class ReaderSnapshot:
     view: StatusView | None = None
     sampled_monotonic: float | None = None
     error: str = ""
+    request_ticket: int = 0
 
 
 class ServiceStatusReader:
@@ -88,6 +91,8 @@ class ServiceStatusReader:
         self._wake, self._stop, self._retired = threading.Event(), threading.Event(), threading.Event()
         self._snapshot = ReaderSnapshot()
         self._busy = False
+        self._request_lock = threading.Lock()
+        self._requested_ticket = 0
         self._cleanup_proven = True
         self._held_client = None
         self.thread: threading.Thread | None = None
@@ -99,6 +104,10 @@ class ServiceStatusReader:
     @property
     def busy(self):
         return self._busy
+
+    @property
+    def retired(self):
+        return self._retired.is_set()
 
     @property
     def cleanup_proven(self):
@@ -116,10 +125,17 @@ class ServiceStatusReader:
         self.request()
 
     def request(self):
-        if self._stop.is_set() or self._retired.is_set():
-            return False
-        self._wake.set()
-        return True
+        return self.request_ticket() is not None
+
+    def request_ticket(self):
+        """Exact coalesced read intent; no service or native work on the caller."""
+        with self._request_lock:
+            if self._stop.is_set() or self._retired.is_set():
+                return None
+            self._requested_ticket += 1
+            ticket = self._requested_ticket
+            self._wake.set()
+            return ticket
 
     def request_detach(self):
         # Cancels queued/future work. A native call already in progress keeps
@@ -166,6 +182,8 @@ class ServiceStatusReader:
                 if self._stop.is_set():
                     break
                 self._busy = True
+                with self._request_lock:
+                    request_ticket = self._requested_ticket
                 previous = self._snapshot
                 try:
                     if client is None:
@@ -174,14 +192,14 @@ class ServiceStatusReader:
                     if not self._client_retired(client):
                         break
                     view = StatusView.from_payload(value)
-                    result = ReaderSnapshot(previous.sequence + 1, view, self._clock())
+                    result = ReaderSnapshot(previous.sequence + 1, view, self._clock(), request_ticket=request_ticket)
                 except Exception as error:
                     if client is not None and not self._client_retired(client):
                         break
                     # Never paint arbitrary native error text, local paths or
                     # imported content. Prior data remains explicitly stale.
                     result = ReaderSnapshot(previous.sequence + 1, previous.view, previous.sampled_monotonic,
-                                            type(error).__name__[:64])
+                                            type(error).__name__[:64], request_ticket)
                 finally:
                     self._busy = False
                 if not self._stop.is_set():
@@ -206,12 +224,33 @@ def _label(text=""):
     return label
 
 
+def _operator_elevation_available():
+    """Check the presentation prerequisite without querying the package on Qt."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return False
+    from angerona.core.windows_package_identity import (
+        EXPECTED_PACKAGE_FAMILY_NAME, EXPECTED_PACKAGE_PUBLISHER_ID,
+    )
+    return bool(EXPECTED_PACKAGE_FAMILY_NAME and EXPECTED_PACKAGE_PUBLISHER_ID)
+
+
+def _operator_elevation_launch():
+    from angerona.core.privilege import operator_elevation_launch
+
+    return operator_elevation_launch()
+
+
 class ProtectionServiceConsole(QMainWindow):
-    """A status view with refresh and detach only; no protection controls."""
-    def __init__(self, *, reader=None, start_reader=True, clock=time.monotonic):
+    """Read-only service status and a separate, explicit startup request."""
+    def __init__(self, *, reader=None, start_reader=True, clock=time.monotonic,
+                 startup_endpoint=None):
         super().__init__()
         self.reader = reader or ServiceStatusReader()
         self._clock, self._closing = clock, False
+        self._startup_endpoint = startup_endpoint
+        self._startup_notice_scheduled = False
+        self._startup_notice_thread = None
+        self._elevation_process = None
         self.setWindowTitle("Angerona — Installed Service Status")
         self.setMinimumSize(360, 340)
         screen = QApplication.primaryScreen()
@@ -226,6 +265,12 @@ class ProtectionServiceConsole(QMainWindow):
         body = QWidget()
         scroll.setWidget(body)
         layout = QVBoxLayout(body)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._manual_activity = None
+        self._manual_ticket = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         title = _label("Installed protection service")
         title.setStyleSheet("font-size: 21px; font-weight: 600")
         layout.addWidget(title)
@@ -256,12 +301,13 @@ class ProtectionServiceConsole(QMainWindow):
         layout.addWidget(self.coverage)
         self.age = _label("No successful service status has been received.")
         layout.addWidget(self.age)
+        layout.addWidget(self._elevation_settings())
         layout.addStretch()
-        layout.addWidget(_label("If the service is unavailable or its identity cannot be verified, this window reports "
-                                "the gap. It does not install, start or repair a service, or launch a local engine."))
+        layout.addWidget(_label("Status polling reports service gaps. The administrator setting "
+                                "starts a separate dashboard only after Windows approval."))
         actions = QHBoxLayout()
         self.refresh = QPushButton("Refresh status")
-        self.refresh.clicked.connect(self._request)
+        self.refresh.clicked.connect(lambda: self._request(manual=True))
         actions.addWidget(self.refresh)
         actions.addStretch()
         self.detach = QPushButton("Close console")
@@ -276,13 +322,139 @@ class ProtectionServiceConsole(QMainWindow):
         if start_reader:
             self.reader.start()
 
-    def _request(self):
-        if not self._closing and self.reader.request():
+    def _elevation_settings(self):
+        from angerona.core.privilege import OPERATOR_ELEVATION_WARNING
+
+        settings = QGroupBox("Settings")
+        layout = QVBoxLayout(settings)
+        self.elevation_toggle = QCheckBox("Run Angerona with administrator privileges")
+        self.elevation_toggle.setChecked(False)
+        self.elevation_toggle.setEnabled(_operator_elevation_available())
+        self.elevation_toggle.clicked.connect(self._request_operator_elevation)
+        layout.addWidget(self.elevation_toggle)
+        self.elevation_warning = _label(OPERATOR_ELEVATION_WARNING)
+        layout.addWidget(self.elevation_warning)
+        self.elevation_status = _label(
+            "Administrator startup is held. An independently signed and approved "
+            "Windows package is required." if not self.elevation_toggle.isEnabled() else
+            "Administrator startup is off."
+        )
+        layout.addWidget(self.elevation_status)
+        return settings
+
+    def _request_operator_elevation(self, checked):
+        if (not checked or self._closing or not self.elevation_toggle.isEnabled()
+                or self._elevation_process is not None):
+            return
+        self.elevation_toggle.setEnabled(False)
+        try:
+            executable, environment = _operator_elevation_launch()
+            if (not isinstance(executable, Path) or not executable.is_absolute()
+                    or executable.name.casefold() != "angeronastartup.exe"
+                    or type(environment) is not dict
+                    or any(type(key) is not str or type(value) is not str
+                           for key, value in environment.items())):
+                raise ValueError("Invalid verified startup launch specification")
+        except Exception:
+            self.elevation_toggle.setChecked(False)
+            self.elevation_status.setText("Administrator startup is held. Package launch authority could not be verified.")
+            return
+
+        child_environment = QProcessEnvironment()
+        for name, value in environment.items():
+            child_environment.insert(name, value)
+        process = QProcess(self)
+        process.setProcessEnvironment(child_environment)
+        process.setProgram(str(executable))
+        process.setArguments(["--operator-elevation"])
+        process.setWorkingDirectory(str(executable.parent))
+        process.setStandardInputFile(QProcess.nullDevice())
+        process.setStandardOutputFile(QProcess.nullDevice())
+        process.setStandardErrorFile(QProcess.nullDevice())
+        process.errorOccurred.connect(lambda error: self._elevation_error(process, error))
+        process.finished.connect(lambda code, status: self._elevation_finished(process, code, status))
+        self._elevation_process = process
+        self.elevation_status.setText("Waiting for Windows consent and administrator dashboard readiness…")
+        try:
+            process.start()
+        except Exception:
+            if self._release_elevation_process(process):
+                self.elevation_status.setText("Administrator startup could not be verified.")
+            else:
+                self.elevation_status.setText("Waiting for the startup helper to retire.")
+
+    def _elevation_error(self, process, error):
+        if error != QProcess.ProcessError.FailedToStart:
+            return
+        if self._release_elevation_process(process):
+            self.elevation_status.setText("The verified startup helper could not start.")
+            self.elevation_toggle.setEnabled(not self._closing)
+
+    def _release_elevation_process(self, process):
+        if (self._elevation_process is not process
+                or process.state() != QProcess.ProcessState.NotRunning):
+            return False
+        self._elevation_process = None
+        process.deleteLater()
+        self.elevation_toggle.setChecked(False)
+        return True
+
+    def _elevation_finished(self, process, code, status):
+        if not self._release_elevation_process(process):
+            return
+        if status == QProcess.ExitStatus.NormalExit and code == 0:
+            self.elevation_status.setText("Administrator dashboard readiness verified. Closing this console…")
+            self.close()
+        else:
+            self.elevation_status.setText(
+                "Administrator dashboard readiness was not verified. This console remains available."
+            )
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._startup_endpoint is not None and not self._startup_notice_scheduled:
+            self._startup_notice_scheduled = True
+            QTimer.singleShot(0, self._publish_startup_ready)
+
+    def _publish_startup_ready(self):
+        self._startup_notice_scheduled = False
+        if self._closing or not self.isVisible() or self.isMinimized():
+            return
+        endpoint = self._startup_endpoint
+        if endpoint is None:
+            return
+        self._startup_endpoint = None
+        notifier = threading.Thread(
+            target=notify_dashboard_ready, args=(endpoint,),
+            name="ProtectionConsoleReadyNotifier", daemon=True,
+        )
+        self._startup_notice_thread = notifier
+        try:
+            notifier.start()
+        except RuntimeError:
+            # The startup listener retains its own bounded readiness deadline.
+            return
+
+    def _pending_window_work(self):
+        return self._elevation_process is not None or (
+            self._startup_notice_thread is not None and self._startup_notice_thread.is_alive()
+        )
+
+    def _request(self, *, manual=False):
+        if self._closing:
+            return
+        if manual and callable(getattr(self.reader, "request_ticket", None)):
+            ticket = self.reader.request_ticket()
+            if ticket is not None:
+                self._manual_ticket = ticket
+                self._manual_activity = self._activities.begin("service-status", "Refreshing authenticated service status…")
+                self._last_request = self._clock()
+        elif self.reader.request():
             self._last_request = self._clock()
 
     def _tick(self):
         if self._closing:
-            if self.reader.wait_retired():
+            if self.reader.wait_retired() and not self._pending_window_work():
                 self.close()
             elif not self.reader.cleanup_proven:
                 self.banner.setText("Client native cleanup remains unverified. This console retains its owner; "
@@ -292,6 +464,12 @@ class ProtectionServiceConsole(QMainWindow):
         if now - self._last_request >= 2.0:
             self._request()
         result = self.reader.snapshot
+        if (self._manual_activity is not None and
+                (getattr(result, "request_ticket", 0) >= self._manual_ticket
+                 or not self.reader.cleanup_proven or getattr(self.reader, "retired", False))):
+            self._activities.finish(self._manual_activity)
+            self._manual_activity = None
+            self._manual_ticket = None
         if result.view is not None:
             view = result.view
             self.version.setText(view.version)
@@ -321,10 +499,16 @@ class ProtectionServiceConsole(QMainWindow):
             self.refresh.setEnabled(False)
 
     def closeEvent(self, event):
+        self._activities.close()
         self._closing = True
         self.reader.request_detach()
         self.refresh.setEnabled(False)
-        if self.reader.wait_retired():
+        self.elevation_toggle.setEnabled(False)
+        if self._pending_window_work():
+            self.banner.setText("Waiting for the current startup request to retire before closing.")
+            self.detach.setEnabled(False)
+            event.ignore()
+        elif self.reader.wait_retired():
             self.timer.stop()
             event.accept()
         else:
@@ -337,14 +521,14 @@ class ProtectionServiceConsole(QMainWindow):
             event.ignore()
 
 
-def run_console():
+def run_console(*, startup_endpoint=None):
     """Called only after the main entry's ordinary-user client admission."""
     if _RETIREMENT_HOLD is not None:
         raise RuntimeError("A previous service status reader still owns its retirement")
     app = QApplication([])
     app.setApplicationName("Angerona Installed Service Status")
     app.setQuitOnLastWindowClosed(True)
-    window = ProtectionServiceConsole(start_reader=False)
+    window = ProtectionServiceConsole(start_reader=False, startup_endpoint=startup_endpoint)
     app.aboutToQuit.connect(window.reader.request_detach)
     try:
         window.show()
@@ -352,6 +536,11 @@ def run_console():
         return app.exec()
     finally:
         window.reader.request_detach()
+        if window._pending_window_work():
+            # Retain both Qt owners if an external event-loop exit bypasses closeEvent.
+            window._retained_application = app
+            _hold_reader(window)
+            raise RuntimeError("Service console startup work retirement remains unproven")
         if not window.reader.wait_retired():
             # Normal window close waits visibly. An external event-loop exit
             # must still retain the exact reader and must not report clean exit.

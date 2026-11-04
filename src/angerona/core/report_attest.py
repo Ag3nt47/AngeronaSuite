@@ -105,18 +105,28 @@ def attest(doc: dict) -> dict:
     return out
 
 
-def verify(doc: dict) -> str:
+def verify(doc: dict, *, key: Optional[bytes] = None) -> str:
     """Classify a loaded AAR document's authenticity.
 
     Returns one of: ``"ok"``, ``"bad"``, ``"unsigned"``, ``"no_key"``.
+
+    Omitted/None key retains install-key loading. A non-None explicit key must
+    be exactly 32 bytes and never reads or falls back to local key storage.
+    Invalid explicit types/lengths raise TypeError/ValueError even for an
+    unsigned document; verification cannot silently switch trust roots.
     """
+    if key is not None:
+        if type(key) is not bytes:
+            raise TypeError("Explicit report verification key must be exact bytes")
+        if len(key) != _KEY_BYTES:
+            raise ValueError("Explicit report verification key must contain 32 bytes")
     sig = doc.get(SIG_FIELD)
     if not sig:
         return "unsigned"
-    key = _load_key()
-    if not key:
+    verification_key = _load_key() if key is None else key
+    if not verification_key:
         return "no_key"
-    expected = hmac.new(key, _canonical(doc), hashlib.sha256).hexdigest()
+    expected = hmac.new(verification_key, _canonical(doc), hashlib.sha256).hexdigest()
     return "ok" if hmac.compare_digest(str(sig), expected) else "bad"
 
 

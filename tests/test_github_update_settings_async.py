@@ -7,6 +7,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QWidget
 from shiboken6 import delete
 
+from angerona.gui.action_progress import ActionActivities
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.pages import SettingsDialog
 
@@ -35,6 +36,8 @@ def test_manual_settings_check_runs_off_qt_and_displays_the_returned_status() ->
     owner._check_updates = check
     owner._shared_update_controller = None
     owner._accept_async_results = True
+    owner._update_activities = ActionActivities(owner, publish_global=False)
+    owner._update_activity = None
     owner._btn_check = QPushButton(owner)
     owner._update_status = QLabel(owner)
     owner._update_status.setTextFormat(Qt.PlainText)
@@ -54,6 +57,7 @@ def test_manual_settings_check_runs_off_qt_and_displays_the_returned_status() ->
         thread = owner._update_check_reader.thread
     finally:
         owner._update_check_reader.close()
+        owner._update_activities.close()
         thread = thread or owner._update_check_reader.thread
         if thread is not None:
             thread.join(2)

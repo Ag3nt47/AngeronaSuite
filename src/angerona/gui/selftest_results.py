@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QHBoxLayout, QLabel,
     QPlainTextEdit, QPushButton, QTabWidget, QVBoxLayout,
 )
+from angerona.gui.action_progress import ActionActivities, ActionProgressView
 
 
 def next_step(failure: dict) -> str:
@@ -24,6 +25,9 @@ def next_step(failure: dict) -> str:
         return ("Open the SpywareGuard dashboard and inspect source coverage, settings and recent "
                 "hits. Its offline sandbox checks detection policy; verified isolation requires "
                 "separate response receipts from Adversary Combat.")
+    if "the call finished after its deadline" in detail:
+        return ("The check returned after its deadline and remains failed. "
+                "Review module details and timing before retrying.")
     if "timed out" in detail or "still running" in detail:
         return "The check has not returned. Review module details; repeated tests will not restart it."
     if failure.get("repairable") is True:
@@ -48,6 +52,10 @@ class SelfTestResultsDialog(QDialog):
         self._can_restart = bool(repairable)
         self._report = str(report)[:200_000]
         layout = QVBoxLayout(self)
+        self._activities = ActionActivities(self)
+        self._activity_handle = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         self.summary = QLabel(
             f"Completed — {len(failures)} item(s) need attention."
             if failures else "Completed — no failures reported.")
@@ -118,12 +126,22 @@ class SelfTestResultsDialog(QDialog):
         self.restart_requested.emit()
 
     def set_busy(self, message: str):
+        self._activity_handle = self._activities.begin("selftest", message)
         self.summary.setText(message)
         self.retry_button.setEnabled(False)
         self.restart_button.setEnabled(False)
         self.approval.setEnabled(False)
 
+    def set_progress(self, done: int, total: int):
+        if self._activity_handle is not None:
+            self._activities.update(self._activity_handle, done=done, total=total)
+
+    def finish_activity(self):
+        self._activities.finish(self._activity_handle)
+        self._activity_handle = None
+
     def recovery_finished(self, restarted, errors):
+        self.finish_activity()
         message = f"Restart requested for {len(restarted)} module(s). Run self-test again to verify."
         if errors:
             message += "\n" + str(errors[0])[:180]

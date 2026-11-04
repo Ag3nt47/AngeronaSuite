@@ -1,6 +1,7 @@
 """Bounded after-action previews and complete explicit report exports."""
 from copy import deepcopy
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -235,6 +236,11 @@ def test_export_is_complete_atomic_and_limit_failure_preserves_existing_file(tmp
     dialog.action_requested.connect(requests.append)
     try:
         assert dialog.export_complete_report()
+        deadline = time.monotonic() + 5
+        while dialog._export_handles and time.monotonic() < deadline:
+            QApplication.instance().processEvents()
+            time.sleep(.005)
+        assert not dialog._export_handles
         original = target.read_bytes()
         assert _parse(original) == report
         monkeypatch.setattr(ui, "_REVIEW_EXPORT_LIMIT", 64)
@@ -279,3 +285,177 @@ def test_mixed_key_refusal_preserves_clipboard_prior_export_and_original(tmp_pat
     finally:
         dialog.close()
         dialog.deleteLater()
+
+
+def _scanner_review_fixture():
+    return dict(
+        state="incomplete", request_id="b" * 32,
+        native=dict(state="completed", coverage_incomplete=True,
+                    finding_counts=dict(advisory=2, omitted=1),
+                    findings=[dict(classification="advisory", evidence_type="chromium-hsts",
+                                   summary="Local browser record needs review.", response_authorized=False,
+                                   source="https://example.invalid/technical-only")],
+                    coverage=dict(processes=dict(complete=False),
+                                  artifact_checks=dict(browser=dict(state="partial", checked=1, skipped=1)))),
+        details=dict(zero_breach=dict(
+            state="findings", coverage_incomplete=True,
+            match_counts=dict(total=4, tool_findings=1, references=2, withdrawn=1, displayed=3, omitted=1),
+            findings=[dict(classification="reference", indicator="contextual-match"),
+                      dict(classification="tool-finding", indicator="reviewable-match"),
+                      dict(classification="withdrawn", indicator="retired-match")],
+            coverage=dict(not_checked=json.dumps([dict(check="Private browser profile", reason="Access denied")])))),
+        technical_only="retained-marker", sequence=1,
+    )
+
+
+def test_spyware_report_starts_in_plain_english_and_keyboard_opens_technical_details():
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QLabel
+
+    report = _scanner_review_fixture()
+    sample_path = r"C:\Users\Fixture\AppData\Local\Temp\review-only.exe"
+    report["native"]["finding_counts"]["advisory"] = 3
+    report["native"]["findings"].append(dict(
+        classification="advisory", evidence_type="windows-temp-file",
+        summary=f"Review {sample_path}", path=sample_path, response_authorized=False,
+    ))
+    report["native"]["coverage"]["artifact_checks"]["windows-temp"] = dict(
+        state="partial", checked=3, skipped=1, reason="directory-queue-limit",
+    )
+    dialog = ui.AfterActionReportDialog(report, scanner_review=True)
+    dialog.show()
+    QApplication.processEvents()
+    try:
+        summary = dialog.summary_text.toPlainText()
+        assert dialog.summary_text.isVisible() and dialog.summary_text.isReadOnly()
+        assert not dialog.text.isVisible()
+        assert "Native Angerona advisories" in summary and "This scan recorded 3 native advisories" in summary
+        assert "Browser security record" in summary and "Local browser record needs review" in summary
+        assert "Windows temporary-file advisory" in summary
+        assert summary.index("Zero-Breach toolkit findings and references") < summary.index("private scan folder")
+        assert "It may miss your configured Windows temporary folder" in summary
+        assert "1 finding, 2 contextual references, and 1 withdrawn entry." in summary
+        assert summary.index("Finding — reviewable-match") < summary.index("Reference — contextual-match")
+        assert "Withdrawn entry — retired-match" in summary
+        assert "Coverage gaps" in summary and "Private browser profile" in summary and "Access denied" in summary
+        assert "Process inventory was limited or unavailable" in summary
+        assert "Native browser records had limits. Checked 1 and skipped 1." in summary
+        assert ("Native Windows temporary-file sample was incomplete. Checked 3 files. "
+                "The sample reached its limit for folders it could queue.") in summary
+        assert "infection-free" in summary
+        assert "technical-only" not in summary and "retained-marker" not in summary
+        assert "review-only.exe" not in summary
+        assert dialog._report is report
+        assert not any(dialog.actions[name].isEnabled() for name in ("isolate", "patch", "kill", "lift_lockdown"))
+
+        button = dialog.technical_details_button
+        assert button.isCheckable() and button.accessibleName() == "Show technical details"
+        button.setFocus()
+        QTest.keyClick(button, Qt.Key.Key_Space)
+        assert button.isChecked() and dialog.text.isVisible()
+        assert button.accessibleName() == "Hide technical details"
+        assert any(label.isVisible() and "A coverage gap is" in label.text() for label in dialog.findChildren(QLabel))
+        assert _parse(dialog.text.toPlainText()) == report
+        QTest.keyClick(button, Qt.Key.Key_Space)
+        assert not button.isChecked() and not dialog.text.isVisible()
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_spyware_report_reuse_preserves_disclosure_and_original_copy(monkeypatch):
+    values = []
+    monkeypatch.setattr(ui.QApplication, "clipboard",
+                        lambda: SimpleNamespace(setText=lambda value: values.append(value)))
+    report = _scanner_review_fixture()
+    dialog = ui.AfterActionReportDialog(report, scanner_review=True)
+    dialog.show()
+    QApplication.processEvents()
+    try:
+        dialog.technical_details_button.click()
+        cursor = dialog.text.document().find("retained-marker")
+        assert cursor.hasSelection()
+        dialog.text.setTextCursor(cursor)
+
+        refreshed = dict(report, sequence=2)
+        dialog.update_report(refreshed, confirmed=False)
+        dialog.show_investigation()  # Same view as an ordinary controller reopen.
+        assert dialog.text.isVisible() and dialog.text.textCursor().selectedText() == "retained-marker"
+        assert _parse(dialog.text.toPlainText()) == refreshed
+        assert dialog.copy_complete_report() and _parse(values[-1]) == refreshed
+
+        dialog.technical_details_button.click()
+        assert not dialog.text.isVisible()
+        dialog.show_trace()
+        assert dialog.technical_details_button.isChecked() and dialog.text.isVisible()
+        assert "does not contact a remote target" in _parse(dialog.text.toPlainText())["review"]
+        dialog.update_report(dict(refreshed, sequence=3), confirmed=False)
+        assert dialog._view == "trace" and dialog.text.isVisible()
+        assert "does not contact a remote target" in _parse(dialog.text.toPlainText())["review"]
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
+def test_spyware_summary_bounds_literal_data_and_refuses_untyped_counts():
+    class Unsupported:
+        def __str__(self):
+            pytest.fail("Plain summary must not call an unsupported representation")
+
+        def __eq__(self, _other):
+            pytest.fail("Plain summary must not compare an unsupported state or classification")
+
+    bad = Unsupported()
+    report = dict(state=bad, error="literal <b>not markup</b>\x00\u202e " + "x" * 10000,
+                  native=dict(state=bad, finding_counts=dict(advisory=True, omitted=0),
+                              findings=[dict(classification=bad, summary=bad)]),
+                  details=dict(zero_breach=dict(
+                      state=bad, match_counts=dict(total=True), findings=[dict(classification=bad)] * 1000,
+                      coverage=dict(not_checked="[" * 8100))))
+    summary = ui._plain_scan_summary(report)
+    assert "Status was not recorded" in summary
+    assert "A count of native advisories was not recorded" in summary
+    assert "Toolkit classification counts were not recorded" in summary
+    assert "<b>not markup</b>" in summary and "\x00" not in summary and "\u202e" not in summary
+    assert "x" * 240 not in summary and len(summary) < 4096
+    assert "cannot establish" in summary
+
+
+@pytest.mark.parametrize(("sample", "count_text"), [
+    (dict(state="completed", checked=1, skipped=0), "checked 1 file."),
+    (dict(state="completed", checked=0, skipped=0), "checked 0 files."),
+    (dict(state="completed", checked=64, skipped=0), "checked 64 files."),
+    (dict(state="completed", checked=65, skipped=0), None),
+    (dict(state="completed", checked=True, skipped=0), None),
+    (dict(state="completed", checked=4, skipped=False), None),
+    (None, None),
+])
+def test_spyware_summary_shows_only_recorded_windows_temp_sample_counts(sample, count_text):
+    checks = {} if sample is None else {"windows-temp": sample}
+    report = dict(native=dict(state="completed", coverage_incomplete=False,
+                              coverage=dict(artifact_checks=checks)),
+                  details=dict(zero_breach=dict(state="disabled")))
+
+    summary = ui._plain_scan_summary(report)
+
+    if count_text is None:
+        assert "Windows temporary-file" not in summary
+    else:
+        assert f"The Windows temporary-file sample {count_text}" in summary
+    assert "private scan folder" not in summary
+
+
+@pytest.mark.parametrize(("checked", "count_text"), [(0, " Checked 0 files."), (True, ""), (65, "")])
+def test_spyware_summary_keeps_unknown_windows_temp_diagnostics_in_technical_details(checked, count_text):
+    report = _scanner_review_fixture()
+    checks = report["native"]["coverage"]["artifact_checks"]
+    checks["windows-temp"] = dict(state="partial", checked=checked, skipped=1, reason="C:/Private/Temp")
+    checks["browser"]["reason"] = "directory-queue-limit"
+
+    summary = ui._plain_scan_summary(report)
+
+    line = next(line for line in summary.splitlines() if "Native Windows temporary-file sample" in line)
+    assert line == f"• Native Windows temporary-file sample was incomplete.{count_text}"
+    assert "C:/Private/Temp" not in summary
+    assert "folders it could queue" not in summary

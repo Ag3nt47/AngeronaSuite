@@ -14,10 +14,22 @@ def test_final_outcome_survives_progress_drained_after_full(monkeypatch, tmp_pat
 
     class DeferredThread:
         def __init__(self, *, target, **_kwargs):
-            queued_workers.append(target)
+            self.target = target
+            self.running = False
+            queued_workers.append(self.run)
 
         def start(self):
             pass
+
+        def run(self):
+            self.running = True
+            try:
+                self.target()
+            finally:
+                self.running = False
+
+        def is_alive(self):
+            return self.running
 
     class ConsumerDrainRaceQueue(queue.Queue):
         def __init__(self):
@@ -62,10 +74,22 @@ def test_hostile_ai_or_tool_error_is_literal_text(monkeypatch, tmp_path):
 
     class DeferredThread:
         def __init__(self, *, target, **_kwargs):
-            queued_workers.append(target)
+            self.target = target
+            self.running = False
+            queued_workers.append(self.run)
 
         def start(self):
             pass
+
+        def run(self):
+            self.running = True
+            try:
+                self.target()
+            finally:
+                self.running = False
+
+        def is_alive(self):
+            return self.running
 
     panel = ui.AnalysisLabPanel(root=tmp_path)
     monkeypatch.setattr(ui.threading, "Thread", DeferredThread)

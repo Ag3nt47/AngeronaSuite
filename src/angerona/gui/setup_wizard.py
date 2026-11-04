@@ -16,6 +16,13 @@ from pathlib import Path
 from typing import Any, Mapping
 from urllib.parse import urlsplit
 
+from angerona.core.config import (
+    SCANNER_REPORT_COUNT_MAX,
+    SCANNER_REPORT_COUNT_UNLIMITED,
+    SPYWARE_SCAN_AUTO_SCOPES,
+    scanner_report_count,
+)
+
 
 CONFIG_KINDS = frozenset({
     "check", "text", "multiline", "secret_config", "combo", "mic", "spin", "double",
@@ -494,6 +501,12 @@ STEPS: tuple[Step, ...] = (
                   note="Off by default. Permission and platform limits appear in source coverage."),
             Field("check", "spyware_scan_native_enabled", "Include native SpywareGuard in dedicated Spyware Scan"),
             Field("check", "spyware_scan_zero_breach_enabled", "Include the pinned Zero-Breach toolkit in Spyware Scan"),
+            Field("check", "spyware_scan_auto_enabled", "Run Spyware Scan automatically once a day",
+                  note="On by default. Automatic scans run at normal priority and post results in Notifications."),
+            Field("combo", "spyware_scan_auto_scope", "Automatic scan scope",
+                  options=SPYWARE_SCAN_AUTO_SCOPES,
+                  note="Full checks supported sources across the PC. Browser checks browser evidence. "
+                       "Quick runs a smaller set of system checks."),
             Field("check", "spyware_scan_verify_admin", "Verify actual runtime privilege coverage before scanning",
                   note="Verification reports available permissions; it does not elevate or grant response authority."),
             Field("combo", "spyware_scan_priority", "Dedicated scan priority", options=("above-normal", "high")),
@@ -595,7 +608,7 @@ STEPS: tuple[Step, ...] = (
     ),
     Step(
         "Updates and storage",
-        "v1.14 can check canonical GitHub metadata daily while Angerona is open. "
+        "Angerona can check canonical GitHub metadata daily while Angerona is open. "
         "This optional network check prompts before any isolated download and "
         "never silently replaces your code or settings. Source-startup recovery is separate: "
         "it is on by default and can download verified public source after startup fails, "
@@ -622,6 +635,9 @@ STEPS: tuple[Step, ...] = (
                   note="Uses the maintained version and digest. Source-review imports stay non-executable."),
             Field("spin", "github_tools_job_limit_mib", "Scanner working data per job (MiB)", minimum=64, maximum=1024),
             Field("spin", "github_tools_report_limit_mib", "Retained scanner reports (MiB)", minimum=8, maximum=256),
+            Field("spin", "github_tools_report_count", "Retained scanner report slots",
+                  minimum=0, maximum=SCANNER_REPORT_COUNT_MAX,
+                  note="Unlimited is the default. Byte, free-space and inventory safeguards still apply."),
             Field("spin", "github_tools_timeout_seconds", "Standalone toolkit deadline (seconds)", minimum=30, maximum=900),
             Field("check", "breach_auto_isolate_enabled", "Automatically request network lockdown for confirmed breaches",
                   note="Requires first-party confirmed evidence and installed response authority. "
@@ -709,6 +725,9 @@ def collect(step: Step, values: dict[str, object]) -> dict[str, Any]:
 
 def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
     normalized = dict(values)
+    report_count = normalized.get("github_tools_report_count")
+    if type(report_count) is int and report_count == 0:
+        normalized["github_tools_report_count"] = SCANNER_REPORT_COUNT_UNLIMITED
     order = normalized.get("ai_provider_order")
     if isinstance(order, str):
         normalized["ai_provider_order"] = [
@@ -1175,7 +1194,13 @@ if _HAVE_QT:
             if field.kind == "spin":
                 widget = QSpinBox()
                 widget.setRange(int(field.minimum), int(field.maximum))
-                widget.setValue(int(getattr(self._cfg, field.key, field.minimum)))
+                if field.key == "github_tools_report_count":
+                    widget.setSpecialValueText("Unlimited")
+                    count = scanner_report_count(getattr(self._cfg, field.key, SCANNER_REPORT_COUNT_UNLIMITED))
+                    value = 0 if count == SCANNER_REPORT_COUNT_UNLIMITED else count
+                else:
+                    value = getattr(self._cfg, field.key, field.minimum)
+                widget.setValue(int(value))
                 return widget
             if field.kind == "double":
                 widget = QDoubleSpinBox()

@@ -349,33 +349,48 @@ def test_program_firewall_rule_is_removed_if_retained_identity_changes_after_net
 
 
 def test_same_explicit_cause_counts_once_toward_burst_isolation(tmp_path, monkeypatch):
-    module = _combat(
-        tmp_path,
-        adversary_combat_block_network=False,
-        adversary_combat_quarantine_files=False,
-        adversary_combat_activate_honeypots=False,
-    )
-    isolated: list[str] = []
-    monkeypatch.setattr(
-        module,
-        "_isolate_host",
-        lambda event, _combat_id: isolated.append(event.details["incident_id"]) or None,
-    )
-    for _ in range(3):
-        module._handle(
-            _event("EDR", Severity.HIGH, active_attack=True, incident_id="same")
-        )
+    from angerona.core.breach_state import verified_breach
+    from test_breach_state import emit as emit_native, native_graph
 
-    assert len(module._active_events) == 1
-    assert isolated == []
+    # The subject is causal deduplication under an explicitly enabled policy,
+    # independent of another test's process-environment preferences. Keep real
+    # policy parsing and the existing inert installed-authority fixture.
+    for suffix in ("ENABLED", "MODE", "MIN_SEVERITY", "ISOLATE_HOST", "ISOLATION_THRESHOLD"):
+        monkeypatch.delenv("ANGERONA_ADVERSARY_COMBAT_" + suffix, raising=False)
+    with native_graph(tmp_path, adversary_combat_mode="maximum",
+            adversary_combat_isolation_threshold=3,
+            adversary_combat_process_action="none") as graph:
+        module = graph.combat
+        policy = module.policy()
+        assert policy.enabled and policy.mode == "maximum" and policy.isolate_host
+        assert policy.isolation_event_threshold == 3
+        isolated: list[str] = []
+        # No real host/process effect belongs to this correlation unit test.
+        monkeypatch.setattr(module, "_act_on_process", lambda *_a, **_kw: None)
+        monkeypatch.setattr(module, "_isolate_host", lambda event, _combat_id:
+                            isolated.append(event.details["incident_id"]) or None)
 
-    for incident in ("second", "third"):
-        module._handle(
-            _event("EDR", Severity.HIGH, active_attack=True, incident_id=incident)
-        )
+        # Caller flags and a typed contract cannot borrow the enrolled native
+        # publisher's mesh authority or contribute to the burst threshold.
+        unsigned = _event("EDR", Severity.HIGH, active_attack=True, incident_id="forged")
+        assert verified_breach(unsigned, graph.bus, graph.manager.modules) is None
+        for _ in range(3):
+            module._handle(unsigned)
+        assert not module._active_events and isolated == []
 
-    assert len(module._active_events) == 3
-    assert isolated == ["third"]
+        def authenticated(incident):
+            event = emit_native(graph, severity=Severity.HIGH, incident_id=incident,
+                observed_content_sha256="b" * 64, matched_sha256="b" * 64)
+            assert verified_breach(event, graph.bus, graph.manager.modules) is not None
+            return event
+
+        for _ in range(3):
+            module._handle(authenticated("same"))
+        assert len(module._active_events) == 1 and isolated == []
+        for incident in ("second", "third"):
+            module._handle(authenticated(incident))
+        assert len(module._active_events) == 3
+        assert isolated == ["third"]
 
 
 def test_startup_refuses_unsigned_legacy_firewall_receipts(tmp_path, monkeypatch):

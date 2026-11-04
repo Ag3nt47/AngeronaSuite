@@ -20,6 +20,10 @@ SUSPICIOUS_CHILDREN = {"powershell.exe", "cmd.exe", "wscript.exe", "cscript.exe"
 OFFICE_PARENTS = {"winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe"}
 RISKY_PATH_TOKENS = ("\\temp\\", "\\downloads\\", "\\appdata\\local\\temp\\")
 _MAX_PARTIAL_IDENTITIES = 16_384
+_CYCLE_STAGES = (
+    "unobserved", "startup", "waiting", "collection", "normalization",
+    "receipts", "publication", "evaluation", "coverage", "completed", "stopped",
+)
 
 
 def _combat_enabled() -> bool:
@@ -130,6 +134,82 @@ class ProcessMonitorModule(BaseModule):
         self._observation_retry_offered: tuple[int, int] | None = None
         self._observation_retry_credit: tuple[int, int] | None = None
         self._observe_fresh_diagnostic("initialize")
+        self._cycle_diagnostic_lock = threading.Lock()
+        self._cycle_diagnostic_lost = False
+        self._cycle_diagnostic: dict[str, object] = {
+            "schema": 1, "state": "observed", "response_authorized": False,
+            "generation": 0, "cycle_serial": 0, "stage": "unobserved",
+            "stage_started_monotonic": None, "publication_active": False,
+            "rows_normalized": 0, "rows_processed": 0,
+            "creation_events_published": 0,
+            "stage_durations_ms": {stage: 0.0 for stage in _CYCLE_STAGES},
+        }
+
+    def _observe_cycle_stage(self, stage: str, generation: int, *,
+                             new_cycle: bool = False, normalized: int | None = None,
+                             processed: int | None = None, events: int | None = None) -> None:
+        """Best-effort memory-only attribution, never a work/heartbeat boundary."""
+        if not self._cycle_diagnostic_lock.acquire(blocking=False):
+            self._cycle_diagnostic_lost = True
+            return
+        try:
+            if stage not in _CYCLE_STAGES or generation != self._lifecycle_generation:
+                return
+            now = time.monotonic()
+            if not math.isfinite(now) or now < 0:
+                raise ValueError("diagnostic clock")
+            previous = self._cycle_diagnostic
+            reset = new_cycle or generation != previous["generation"]
+            durations = ({name: 0.0 for name in _CYCLE_STAGES} if reset
+                         else dict(previous["stage_durations_ms"]))
+            old_stage, stamp = previous["stage"], previous["stage_started_monotonic"]
+            if not reset and stamp is not None:
+                elapsed = (now - stamp) * 1000.0
+                if not 0 <= elapsed <= 2**53 - 1:
+                    raise ValueError("diagnostic duration")
+                durations[old_stage] += elapsed
+            result = {
+                **previous, "generation": generation,
+                "cycle_serial": previous["cycle_serial"] + int(new_cycle),
+                "stage": stage, "stage_started_monotonic": now,
+                "publication_active": stage == "publication",
+                "stage_durations_ms": durations,
+            }
+            for field, value in (("rows_normalized", normalized), ("rows_processed", processed),
+                                 ("creation_events_published", events)):
+                if reset:
+                    result[field] = 0
+                if value is not None:
+                    if type(value) is not int or not 0 <= value <= 2**31 - 1:
+                        raise ValueError("diagnostic count")
+                    result[field] = value
+            self._cycle_diagnostic = result
+        except Exception:
+            self._cycle_diagnostic_lost = True
+        finally:
+            self._cycle_diagnostic_lock.release()
+
+    def cycle_diagnostic_snapshot(self) -> dict[str, object]:
+        """Copy cached timings; no clock, native I/O, readiness or callback work."""
+        unavailable = {"schema": 1, "state": "unavailable", "response_authorized": False}
+        if not self._cycle_diagnostic_lock.acquire(blocking=False):
+            return unavailable
+        try:
+            result = dict(self._cycle_diagnostic)
+            result["stage_durations_ms"] = dict(result["stage_durations_ms"])
+            result["update_loss"] = self._cycle_diagnostic_lost
+            if self._cycle_diagnostic_lost:
+                result["state"] = "partial"
+            result["scope"] = (
+                "Worker-cycle attribution only; stamps are cached monotonic observations. "
+                "A stage does not attest completed work, current protection or authority. "
+                "Evaluation includes rule publication; durations are wall time, not CPU time."
+            )
+            return result
+        except Exception:
+            return unavailable
+        finally:
+            self._cycle_diagnostic_lock.release()
 
     def request_fresh_observation(
         self, *, expected_generation: int,
@@ -698,6 +778,7 @@ class ProcessMonitorModule(BaseModule):
         import psutil
 
         generation = int(getattr(self._run_context, "generation", self.lifecycle_generation))
+        self._observe_cycle_stage("startup", generation)
         with self._observation_request_lock:
             # No collection has failed yet in this newly entered generation.
             self._observation_retry_offered = None
@@ -721,11 +802,13 @@ class ProcessMonitorModule(BaseModule):
             "startup PID boundary captured; full birth/command identity enrichment pending",
         )
         self.mark_cycle_complete(interval_seconds=0.0)
+        self._observe_cycle_stage("publication", generation)
         self.emit("Process monitor active.", Severity.INFO)
 
         while not self.stopping:
             combat = _combat_enabled()
             interval = 1.0 if combat else 3.0
+            self._observe_cycle_stage("waiting", generation, new_cycle=True)
             self._observe_fresh_diagnostic("wait-begin", generation=generation, interval=interval)
             if self._consume_observation_retry_credit(generation):
                 self.sleep(
@@ -743,6 +826,7 @@ class ProcessMonitorModule(BaseModule):
                 break
             request = self._begin_fresh_observation(generation)
             max_age = 0.0 if request is not None else _snapshot_max_age()
+            self._observe_cycle_stage("collection", generation)
             snapshot = (
                 process_snapshot(max_age=max_age)
                 if max_age is not None
@@ -755,7 +839,9 @@ class ProcessMonitorModule(BaseModule):
                 self._observe_fresh_diagnostic("coverage", generation=generation)
                 self.mark_cycle_complete(interval_seconds=interval)
                 self._complete_fresh_observation(request)
+                self._observe_cycle_stage("completed", generation)
                 continue
+            self._observe_cycle_stage("normalization", generation)
             procs = snapshot.processes
             live: Set[tuple[int, str, str]] = set()
             names: Dict[int, str] = {}
@@ -774,6 +860,8 @@ class ProcessMonitorModule(BaseModule):
 
             # The complete name table is needed for parent-lineage rules, but
             # each immutable identity only needs normalizing once per snapshot.
+            processed = creation_events = 0
+            self._observe_cycle_stage("receipts", generation, normalized=len(observations))
             for p, identity in observations:
                 pid = identity[0]
                 is_new = bool(
@@ -806,6 +894,8 @@ class ProcessMonitorModule(BaseModule):
                         if isinstance(raw_command, (list, tuple))
                         else str(raw_command)
                     )
+                    self._observe_cycle_stage("publication", generation, processed=processed,
+                                              events=creation_events)
                     self.emit(
                         f"Process created: {p.get('name') or '?'} (pid {pid})",
                         Severity.INFO,
@@ -817,12 +907,20 @@ class ProcessMonitorModule(BaseModule):
                         process_create_time=p.get("create_time"),
                         **receipt,
                     )
+                    creation_events += 1
+                    self._observe_cycle_stage("receipts", generation, processed=processed,
+                                              events=creation_events)
                 if receipt:
                     self._redteam_receipted.add(identity)
                 if is_new:
+                    self._observe_cycle_stage("evaluation", generation, processed=processed)
                     self._evaluate(p, names)
+                    self._observe_cycle_stage("receipts", generation, processed=processed)
+                processed += 1
 
             self._identity_gaps = identity_gaps
+            self._observe_cycle_stage("coverage", generation, processed=processed,
+                                      events=creation_events)
             complete = self._set_process_health(snapshot, identity_gaps, len(live))
             self._observe_fresh_diagnostic("coverage", generation=generation)
             if complete:
@@ -842,6 +940,8 @@ class ProcessMonitorModule(BaseModule):
             self._redteam_receipted.intersection_update(self._seen)
             self.mark_cycle_complete(interval_seconds=interval)
             self._complete_fresh_observation(request)
+            self._observe_cycle_stage("completed", generation)
+        self._observe_cycle_stage("stopped", generation)
 
     def _set_process_health(self, snapshot: ProcessSnapshot, identity_gaps: int, tracked: int) -> bool:
         """Loss/freshness is part of collection, even when visible rows are valid."""

@@ -148,11 +148,11 @@ def test_actual_controller_and_report_views_separate_matches_without_response_au
         wait_until(lambda: controller._completion_dialog is not None
                    and not controller.snapshot()["busy"]
                    and "2 contextual references" in widget.status.text()
-                   and "2 contextual references" in widget.priority_controls.outcome.text())
+                   and "2 contextual references" in widget.priority_controls.hits.text())
         state = controller.snapshot()
         assert state["match_counts"] == result["match_counts"] and state["coverage_incomplete"] is True
         dialog = controller._completion_dialog
-        for text in (dialog.notice.text(), widget.status.text(), widget.priority_controls.outcome.text()):
+        for text in (dialog.notice.text(), widget.status.text(), widget.priority_controls.hits.text()):
             assert "1 tool finding" in text and "2 contextual references" in text
             assert "Coverage incomplete" in text and "unconfirmed" in text
             assert "contact does not establish infection" in text

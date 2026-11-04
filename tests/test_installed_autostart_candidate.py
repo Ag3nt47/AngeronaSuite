@@ -161,9 +161,6 @@ def configure(monkeypatch, *, enrolled=False, legacy=False, elevated=True):
             return {"sid": SID, "elevated": elevated}
         if operation == "inspect":
             return snapshot(**state)
-        if operation == "enroll":
-            state["present"] = True
-            return {"snapshot": snapshot(**state), "changed": True}
         assert operation == "revoke"
         assert request["expected_xml_sha256"] == hashlib.sha256(snapshot(**state)["xml"].encode("utf-8")).hexdigest()
         state["present"] = False
@@ -185,32 +182,37 @@ def test_unprovisioned_real_publisher_pins_remain_a_hard_hold(monkeypatch):
     monkeypatch.setattr("angerona.core.windows_package_identity.verify_current_msix_authority",
                         lambda: SimpleNamespace(trusted=False, identity=None))
     monkeypatch.setattr(ia, "_native", lambda *_: pytest.fail("untrusted package queried native task"))
-    assert ia.enroll_current_admin().code == "package-authority-held"
+    assert ia.inspect_enrollment().code == "package-authority-held"
 
 
 def test_initial_admin_is_required_but_status_remains_read_only(monkeypatch):
     calls, _state = configure(monkeypatch, elevated=False)
     assert ia.inspect_enrollment().code == "not-enrolled"
-    assert ia.enroll_current_admin().code == "initial-admin-required"
+    assert ia.enroll_current_admin().code == "session-consent-required"
     assert ia.revoke_current_admin().code == "initial-admin-required"
     assert not {call["operation"] for call in calls}.intersection({"enroll", "revoke"})
 
 
-def test_enrollment_and_revocation_report_only_verified_native_effect(monkeypatch):
-    calls, state = configure(monkeypatch)
-    created = ia.enroll_current_admin()
-    assert created.code == "enrolled-created" and created.enabled is True and created.changed is True
-    assert ia.enroll_current_admin().code == "enrolled"
-    assert sum(call["operation"] == "enroll" for call in calls) == 1
+@pytest.mark.parametrize("enrolled", [False, True])
+def test_admin_enrollment_is_held_without_query_or_mutation(monkeypatch, enrolled):
+    calls, state = configure(monkeypatch, enrolled=enrolled)
+    held = ia.enroll_current_admin()
+    assert held.code == "session-consent-required" and held.enabled is None and not held.changed
+    assert not calls and state["present"] is enrolled
+
+
+def test_revocation_reports_only_verified_native_effect(monkeypatch):
+    calls, state = configure(monkeypatch, enrolled=True)
+    assert ia.inspect_enrollment().code == "enrolled"
     revoked = ia.revoke_current_admin()
     assert revoked.code == "revoked" and revoked.enabled is False and revoked.changed is True
     assert state["present"] is False
-    assert set(call["operation"] for call in calls) <= {"identity", "inspect", "enroll", "revoke"}
+    assert set(call["operation"] for call in calls) == {"identity", "inspect", "revoke"}
 
 
 def test_foreign_legacy_task_is_preserved_and_conflict_is_visible(monkeypatch):
     calls, state = configure(monkeypatch, legacy=True)
-    result = ia.enroll_current_admin()
+    result = ia.inspect_enrollment()
     assert result.code == "legacy-conflict" and result.requires_review and result.enabled is False
     assert not any(call["operation"] == "enroll" for call in calls)
     assert state["legacy"] is True
@@ -219,7 +221,7 @@ def test_foreign_legacy_task_is_preserved_and_conflict_is_visible(monkeypatch):
 def test_native_failure_cannot_report_disabled_or_success(monkeypatch):
     configure(monkeypatch)
     monkeypatch.setattr(ia, "_native", lambda *_: (_ for _ in ()).throw(ia._Held("native-retirement-held")))
-    for operation in (ia.inspect_enrollment, ia.enroll_current_admin, ia.revoke_current_admin):
+    for operation in (ia.inspect_enrollment, ia.revoke_current_admin):
         result = operation()
         assert result.code == "native-retirement-held"
         assert result.enabled is None and not result.changed and result.requires_review
@@ -239,31 +241,36 @@ def test_package_path_drift_requires_review_and_never_deletes_task(monkeypatch):
     assert not any(call["operation"] == "revoke" for call in calls)
 
 
-def test_post_registration_security_failure_retains_unknown_effect(monkeypatch):
-    configure(monkeypatch)
+def test_unverified_task_security_holds_removal_without_native_mutation(monkeypatch):
+    calls, state = configure(monkeypatch, enrolled=True)
     native = ia._native
+
     def unverified(request):
         value = native(request)
-        if request["operation"] == "enroll":
-            value["snapshot"]["security"]["aces"][2]["mask"] = ia._FULL
+        if request["operation"] == "inspect":
+            value["security"]["aces"][2]["mask"] = ia._FULL
         return value
+
     monkeypatch.setattr(ia, "_native", unverified)
-    result = ia.enroll_current_admin()
+    result = ia.revoke_current_admin()
     assert result.code == "task-security-held"
     assert result.enabled is None and result.changed is False and result.requires_review
+    assert state["present"] and not any(call["operation"] == "revoke" for call in calls)
 
 
-def test_concurrent_creator_is_not_falsely_counted_as_our_registration(monkeypatch):
-    configure(monkeypatch)
+def test_concurrent_removal_is_not_falsely_counted_as_our_revocation(monkeypatch):
+    configure(monkeypatch, enrolled=True)
     native = ia._native
+
     def concurrent(request):
         value = native(request)
-        if request["operation"] == "enroll":
+        if request["operation"] == "revoke":
             value["changed"] = False
         return value
+
     monkeypatch.setattr(ia, "_native", concurrent)
-    result = ia.enroll_current_admin()
-    assert result.code == "enrolled" and result.enabled is True and result.changed is False
+    result = ia.revoke_current_admin()
+    assert result.code == "not-enrolled" and result.enabled is False and result.changed is False
 
 
 def test_exact_revocation_preserves_legacy_and_never_targets_live_process(monkeypatch):

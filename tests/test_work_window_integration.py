@@ -15,6 +15,7 @@ from shiboken6 import isValid
 from angerona.gui import main_window, pages, red_team_console
 from angerona.gui.main_window import MainWindow
 from angerona.gui.pages import AARDialog, _show_nonmodal
+from angerona.shark.simulation_session import SimulationSession
 
 
 @pytest.fixture(autouse=True)
@@ -35,6 +36,7 @@ def settle_until(predicate):
 
 
 class Owner(QWidget):
+    _session_is_active = MainWindow._session_is_active
     _admit_aar_work = MainWindow._admit_aar_work
     _release_aar_work = MainWindow._release_aar_work
     _show_aar_dialog = MainWindow._show_aar_dialog
@@ -46,6 +48,9 @@ class Owner(QWidget):
         super().__init__()
         self.config = SimpleNamespace(data_dir=directory)
         self.manager = SimpleNamespace(modules={})
+        self._simulation_session = None
+        self._simulation_plan = None
+        self._aar_work_owner = None
         self.shark_engine = SimpleNamespace(run_id="shark-test", is_running=False)
         self.red_team_engine = SimpleNamespace(run_id="redteam-test", is_running=False)
         self.process_baseline = None
@@ -72,7 +77,7 @@ def test_aar_close_retains_exact_worker_until_result_and_no_duplicate_job(tmp_pa
         entered.set()
         assert release.wait(3)
         if kind == "refresh":
-            return "Retained authenticated fixture", {}, ("shark-test", "", "", 0), False
+            return "Retained inert refresh fixture", {}, ("shark-test", "", "", 0), False
         return "Retained inert action result"
 
     monkeypatch.setattr(pages, "_read_aar_review", work)
@@ -82,7 +87,9 @@ def test_aar_close_retains_exact_worker_until_result_and_no_duplicate_job(tmp_pa
     dialog.finished.connect(lambda _result: finished.append(not worker.is_alive()))
     try:
         if kind == "fix":
-            dialog._attempt_fix()
+            # This case owns worker scheduling/custody, not report authority.
+            # Unverified button admission is exercised separately below.
+            assert dialog._start_work("fix", work)
         elif kind == "apply":
             assert dialog._start_work("apply", work)
         else:
@@ -251,4 +258,76 @@ def test_main_aar_reuses_only_authenticated_run_identity_and_holds_generic_apply
         for dialog in built:
             if isValid(dialog):
                 dialog.close()
+        owner.deleteLater()
+
+
+@pytest.mark.parametrize("binding", [
+    None,
+    {"run_id": "shark-test"},
+    {"run_id": "shark-test", "diagnostic_only": True, "coverage_score_eligible": False},
+])
+def test_unverified_fix_button_does_not_start_work_or_claim_owner(tmp_path, binding):
+    owner, called = Owner(tmp_path), []
+    dialog = AARDialog(tmp_path, owner, on_attempt_fix=lambda: called.append(True),
+                       report_binding=binding)
+    try:
+        dialog._attempt_fix()
+        assert called == [] and not dialog.has_active_work()
+        assert dialog._work_thread is None and owner._aar_work_owner is None
+        assert "exact authenticated complete report is required" in dialog.body.toPlainText()
+    finally:
+        dialog.close()
+        owner.deleteLater()
+
+
+def test_real_session_worker_and_retained_custody_deny_aar_admission(tmp_path):
+    owner = Owner(tmp_path)
+    session = SimulationSession(
+        manager=owner.manager, bus=None, recorder=None, data_root=tmp_path,
+        red_team_engine=owner.red_team_engine, shark_engine=owner.shark_engine,
+    )
+    # Freeze only the real inert plan; no Session start, engine, lease or
+    # provider runs. The actual retained Thread below owns this unit of work.
+    plan = session.prepare({"run_shark": True, "run_redteam": False,
+                            "complexity": 1, "auto_remediate": False},
+                           default_target=tmp_path / "inert-drill")
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+
+    def work():
+        try:
+            entered.set()
+            assert release.wait(3), "Exact inert Session worker was not released"
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            session.finished.set()
+
+    worker = threading.Thread(target=work, name="inert-aar-session-owner")
+    session.thread = worker
+    # Model a retained uncertain custody flag, not a fabricated release. The
+    # real cache/predicate must still hold after this exact Thread returns.
+    with session._lock:
+        session._retirement_held = True
+    owner._simulation_session, owner._simulation_plan = session, plan
+    report = SimpleNamespace(_redteam=True)
+    try:
+        assert owner._session_is_active()  # Never-started retained Thread is unknown.
+        assert not owner._admit_aar_work(report, "fix")
+        worker.start()
+        assert entered.wait(1) and worker.is_alive()
+        assert owner._session_is_active()
+        assert not owner._admit_aar_work(report, "fix")
+        assert owner._aar_work_owner is None and session.owned_workers() == (worker,)
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive() and errors == [] and session.finished.is_set()
+        assert session.retirement_snapshot()["retirement_held"] is True
+        assert owner._session_is_active()
+        assert not owner._admit_aar_work(report, "fix") and owner._aar_work_owner is None
+    finally:
+        release.set()
+        if worker.ident is not None:
+            worker.join(3)
+        assert not worker.is_alive()
         owner.deleteLater()

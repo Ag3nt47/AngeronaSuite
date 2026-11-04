@@ -19,6 +19,9 @@ from angerona.core import ollama_lifecycle as ai
 from angerona.core import process_exit
 from angerona.resilience import shutdown_token as token
 from angerona.resilience import supervisor
+from test_ollama_owned_retirement import (
+    inert_child_factory as inert_child_factory, owned as owned,
+)
 
 
 def test_operator_stop_survives_age_and_requires_signed_domain(tmp_path, monkeypatch):
@@ -298,17 +301,54 @@ def _inert_stop_window(calls):
     )
 
 
-def test_dashboard_stop_runs_app_owned_callback_before_own_exit(monkeypatch):
+def test_dashboard_stop_runs_app_owned_callback_before_own_exit(monkeypatch, tmp_path):
+    from types import MethodType
     from PySide6 import QtWidgets
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from angerona.gui import action_worker, breach_display, live_debug_panel, main_window
 
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     calls = []
-    window = _inert_stop_window(calls)
-    monkeypatch.setattr(QtWidgets, "QApplication", SimpleNamespace(
-        instance=lambda: SimpleNamespace(quit=lambda: calls.append("qt-quit")),
-    ))
+    window = QtWidgets.QWidget()
+    window.config = SimpleNamespace(data_dir=tmp_path)
+    for name, value in vars(_inert_stop_window(calls)).items():
+        setattr(window, name, value)
+    window._shutdown_critical = lambda: calls.append("critical-cleanup")
+    window._simulation_session = None
+    window.console = SimpleNamespace(_append=lambda _message: None)
+    for name in ("_shutdown_view_owners", "_hold_shutdown_views", "_retained_shutdown_workers",
+                 "_retained_shutdown_custody", "_operator_stop_cleanup",
+                 "_operator_stop_progress", "_operator_stop_finish"):
+        setattr(window, name, MethodType(getattr(main_window.MainWindow, name), window))
+    assert not action_worker.active_finite_actions()
+    assert not breach_display.active_report_exports()
+    assert not live_debug_panel.active_live_debug_streams()
+    monkeypatch.setattr(action_worker, "_CLOSING", action_worker._CLOSING)
+    monkeypatch.setattr(breach_display, "_REPORT_EXPORT_ADMISSION", breach_display._REPORT_EXPORT_ADMISSION)
+    monkeypatch.setattr(live_debug_panel, "_STREAM_ADMISSION", live_debug_panel._STREAM_ADMISSION)
+    monkeypatch.setattr(QtWidgets.QApplication, "quit", lambda *_: calls.append("qt-quit"))
     monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: calls.append(("exit", 0)))
-    window.method(window)
-    assert calls == ["persist", "owned-cleanup", "qt-quit", ("exit", 0)]
+    try:
+        window.method(window)
+        deadline = time.monotonic() + 5
+        while not window._operator_stop_retirement._done and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.005)
+        assert window._operator_stop_retirement._done
+        assert window._operator_stop_result["state"] == "retired"
+        assert window._operator_stop_result["diagnostic_persisted"] is True
+        assert calls == ["persist", "critical-cleanup", "owned-cleanup", "qt-quit", ("exit", 0)]
+    finally:
+        retirement = getattr(window, "_operator_stop_retirement", None)
+        if retirement is not None:
+            workers = [row.worker for row in retirement._retained.values()]
+            workers.append(retirement._diagnostic_thread)
+            for worker in workers:
+                if worker is not None and worker.ident is not None:
+                    worker.join(3)
+                    assert not worker.is_alive()
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_dashboard_does_not_exit_if_authenticated_stop_cannot_be_saved(monkeypatch):
@@ -339,14 +379,24 @@ def test_callback_free_dashboard_also_persists_before_ai_fence(monkeypatch):
 
 def test_red_stop_never_discovers_or_kills_unrelated_python(monkeypatch):
     import psutil
-    from PySide6.QtWidgets import QMessageBox
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
     from angerona.gui.main_window import MainWindow
 
+    app = QApplication.instance() or QApplication([])
     calls = []
-    monkeypatch.setattr(QMessageBox, "question", lambda *_a: QMessageBox.Yes)
+    window = QWidget()
+    for name, value in vars(_inert_stop_window(calls)).items():
+        setattr(window, name, value)
+    monkeypatch.setattr(QMessageBox, "exec", lambda *_a: QMessageBox.Yes)
     monkeypatch.setattr(psutil, "process_iter", lambda *_a: pytest.fail("broad process discovery"))
-    MainWindow._full_shutdown(_inert_stop_window(calls))
-    assert calls == ["terminate"]
+    try:
+        MainWindow._full_shutdown(window)
+        assert calls == ["terminate"]
+    finally:
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        app.processEvents()
 
 
 def test_shutdown_unloads_only_resident_configured_models_on_fake_server(monkeypatch):
@@ -399,25 +449,19 @@ def test_shutdown_unloads_only_resident_configured_models_on_fake_server(monkeyp
         assert not thread.is_alive()
 
 
-def test_ai_spawn_finishes_after_stop_and_is_retired(monkeypatch):
+def test_ai_spawn_finishes_after_stop_and_is_retired(monkeypatch, owned):
     host = "http://127.0.0.1:11434"
     entered, release = threading.Event(), threading.Event()
-    retired = []
+    # Exercise the actual OwnedWindowsChild/Job retirement protocol through
+    # the existing local inert kernel adapter, not a root-only Child claim.
+    # Separate native-OS cells still require real kernel signal0 and Job0.
+    sample = owned.make(register=False)
 
-    class Child:
-        def poll(self):
-            return 0 if retired else None
-
-        def terminate(self):
-            retired.append(True)
-
-        def wait(self, timeout=None):
-            return 0
-
-    def spawn(*_args, **_kwargs):
+    def spawn(_host, _deadline, *, verified):
+        verified()
         entered.set()
         assert release.wait(timeout=2)
-        return Child()
+        return sample.owner
 
     monkeypatch.setattr(ai, "_startup_port_present", lambda _host: False)
     monkeypatch.setattr(ai, "_spawn_ollama_service", spawn)
@@ -433,7 +477,12 @@ def test_ai_spawn_finishes_after_stop_and_is_retired(monkeypatch):
         release.set()
         worker.join(timeout=3)
         assert not worker.is_alive()
-        assert retired and ai._owned_services == {}
+        assert sample.model.termination_calls == [1] and ai._owned_services == {}
+        assert sample.root.closes == sample.job_lifetime.closes == 1
+        assert sample.owner._process is None and sample.job._handle is None
+        proof = sample.owner.tree_retirement_snapshot()
+        assert proof["signals_proven"] is True and proof["handles_closed"] is True
+        assert attempt.done.is_set()
         assert not attempt.status.daemon_ready
     finally:
         release.set()

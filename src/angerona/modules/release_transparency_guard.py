@@ -5,7 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
-import os
+import stat
 import sys
 import time
 from dataclasses import replace
@@ -24,6 +24,11 @@ from angerona.core.update_authority import (
 
 
 SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
+_RELEASE_FLOOR = Path("update-authority") / "release-floor.json"
+
+
+class _SourceReleaseEvidenceUnprovisioned(ValueError):
+    """A default source run has not observed any release sidecar or floor."""
 
 
 def _read_bounded(path: Path, maximum: int) -> bytes:
@@ -116,6 +121,53 @@ class ReleaseTransparencyGuardModule(BaseModule):
         )
         self._clock = clock
         self._last_state = ""
+        self._source_bundle_unseen = not getattr(sys, "frozen", False) and all(
+            value is None for value in (
+                authorization_path, trust_store_path, artifact_path, sbom_path,
+                payload_manifest_path, payload_catalog_path, payload_root,
+                provenance_path, floor_path, floor_key, trust_store,
+            )
+        )
+
+    def _source_bundle_unprovisioned(self) -> bool:
+        if not self._source_bundle_unseen:
+            return False
+        parent = self._authorization.parent
+        try:
+            info = parent.lstat()
+            if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                self._source_bundle_unseen = False
+                return False
+            for path in (
+                self._authorization, self._sbom, self._payload_manifest,
+                self._payload_catalog, self._provenance, parent / "release-trust.json",
+            ):
+                try:
+                    path.lstat()
+                except FileNotFoundError:
+                    continue
+                self._source_bundle_unseen = False
+                return False
+            from angerona.core.data_paths import resolve_data_dir
+
+            root = resolve_data_dir()
+            floor = root / _RELEASE_FLOOR
+            try:
+                for directory in (root, floor.parent):
+                    info = directory.lstat()
+                    if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+                        self._source_bundle_unseen = False
+                        return False
+                floor.lstat()
+            except FileNotFoundError:
+                return True
+            # Any object at the exact floor path is evidence of possible prior
+            # provisioning. Its contents do not grant source-run classification.
+            self._source_bundle_unseen = False
+            return False
+        except Exception:
+            self._source_bundle_unseen = False
+            raise
 
     def _floor_store(self) -> AuthenticatedReleaseFloor:
         from angerona.core.data_paths import data_dir
@@ -136,7 +188,7 @@ class ReleaseTransparencyGuardModule(BaseModule):
                 master, b"Angerona-Release-Floor-v1\x00", hashlib.sha256,
             ).digest()
         return AuthenticatedReleaseFloor(
-            self._floor_path or root / "update-authority" / "release-floor.json",
+            self._floor_path or root / _RELEASE_FLOOR,
             key,
         )
 
@@ -150,6 +202,8 @@ class ReleaseTransparencyGuardModule(BaseModule):
         )
 
     def observe_once(self):
+        if self._source_bundle_unprovisioned():
+            raise _SourceReleaseEvidenceUnprovisioned
         raw = _read_bounded(self._authorization, 256 * 1024)
         payload_manifest_raw = _read_bounded(
             self._payload_manifest, 2 * 1024 * 1024,
@@ -204,6 +258,22 @@ class ReleaseTransparencyGuardModule(BaseModule):
                         threshold=UpdateAuthorityPolicy().signature_threshold,
                         observation_only=True,
                         local_trust_root_replaceable_by_admin=True,
+                    )
+            except _SourceReleaseEvidenceUnprovisioned:
+                self.set_health(15, "installed release evidence is unprovisioned in this source run")
+                if self._last_state != "source-bundle-unprovisioned":
+                    self._last_state = "source-bundle-unprovisioned"
+                    self.emit(
+                        "Installed release evidence is unprovisioned in this source run.",
+                        Severity.HIGH,
+                        schema="angerona.release-transparency-status.v1",
+                        finding_code="release-transparency.source-bundle-unprovisioned",
+                        state="unavailable",
+                        runtime="source",
+                        observation_only=True,
+                        response_authority="observe-only",
+                        response_authorized=False,
+                        automatic_install_authorized=False,
                     )
             except Exception as exc:
                 self.set_health(15, "release authorization unavailable; update trust is unknown")

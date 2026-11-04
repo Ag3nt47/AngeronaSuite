@@ -7,6 +7,7 @@ produces privacy-minimized findings and guidance for an operator to review.
 from __future__ import annotations
 
 import hashlib
+import heapq
 import ipaddress
 import math
 import os
@@ -446,6 +447,7 @@ class SecurityScanCenter:
         max_directory_entries: int = MAX_SCAN_DIRECTORY_ENTRIES,
         max_directories: int = MAX_SCAN_DIRECTORIES,
         max_duration_seconds: float = MAX_SCAN_SECONDS,
+        sample_recent_root_directories: bool = False,
         defender_timeout_seconds: float = MAX_DEFENDER_SCAN_SECONDS,
         psutil_module: Any | None = None,
         yara_module: Any | None = None,
@@ -476,6 +478,7 @@ class SecurityScanCenter:
         if not 0 < defender_duration <= MAX_DEFENDER_SCAN_SECONDS:
             raise ValueError("defender_timeout_seconds is outside its allowed range")
         self.max_duration_seconds = duration
+        self._sample_recent_root_directories = sample_recent_root_directories is True
         self.defender_timeout_seconds = defender_duration
         self._psutil = psutil_module
         self._yara = yara_module
@@ -746,6 +749,8 @@ class SecurityScanCenter:
             return
         stack = [root]
         state.directories_discovered = 1
+        root_lookahead = self.max_directory_entries // 2
+        root_shortlist_limit = min(12, self.max_directories // 2)
         while stack:
             if should_stop():
                 return
@@ -755,6 +760,14 @@ class SecurityScanCenter:
                 return
             current = stack.pop()
             state.directories_seen += 1
+            root_shortlist: list[tuple[int, int, Path]] | None = None
+            if self._sample_recent_root_directories:
+                if current == root:
+                    root_shortlist = []
+                elif _is_reparse_or_link(current):
+                    state.unreadable_entries += 1
+                    state.limited = True
+                    continue
             try:
                 with os.scandir(current) as entries:
                     iterator = iter(entries)
@@ -765,6 +778,11 @@ class SecurityScanCenter:
                             state.limited = True
                             state.limit_reason = "directory-entry-limit"
                             return
+                        if root_shortlist is not None and state.entries_seen >= root_lookahead:
+                            # Reserve entries for the sampled child directories.
+                            state.limited = True
+                            state.limit_reason = "directory-entry-limit"
+                            break
                         try:
                             entry = next(iterator)
                         except StopIteration:
@@ -786,10 +804,28 @@ class SecurityScanCenter:
                             if entry.is_symlink() or _is_reparse_or_link(path):
                                 continue
                             if entry.is_dir(follow_symlinks=False):
+                                if root_shortlist is not None:
+                                    if len(root_shortlist) == root_shortlist_limit:
+                                        state.limited = True
+                                        state.limit_reason = "directory-queue-limit"
+                                    if root_shortlist_limit:
+                                        info = entry.stat(follow_symlinks=False)
+                                        if _stat_is_reparse_or_link(info) or not stat.S_ISDIR(info.st_mode):
+                                            continue
+                                        # Break timestamp ties by existing enumeration order.
+                                        sample = (info.st_mtime_ns, -state.entries_seen, path)
+                                        if len(root_shortlist) < root_shortlist_limit:
+                                            heapq.heappush(root_shortlist, sample)
+                                        else:
+                                            heapq.heappushpop(root_shortlist, sample)
+                                    continue
                                 if state.directories_discovered >= self.max_directories:
                                     state.limited = True
                                     state.limit_reason = "directory-queue-limit"
-                                    return
+                                    # Save the remaining entry budget for already-admitted directories.
+                                    if stack:
+                                        break
+                                    continue
                                 state.directories_discovered += 1
                                 stack.append(path)
                             elif entry.is_file(follow_symlinks=False):
@@ -801,7 +837,9 @@ class SecurityScanCenter:
             except OSError:
                 state.unreadable_entries += 1
                 state.limited = True
-                continue
+            if root_shortlist:
+                state.directories_discovered += len(root_shortlist)
+                stack.extend(path for _mtime, _ordinal, path in sorted(root_shortlist))
 
     def _cooperative_pause(
         self, cancellation, deadline, *, pacer: RoutineWorkPacer, completed: int, batch_size: int,

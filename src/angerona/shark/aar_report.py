@@ -23,6 +23,7 @@ import json
 import math
 import os
 import re
+import stat
 import time
 import uuid
 from dataclasses import dataclass
@@ -71,6 +72,8 @@ _DETECTION_BUDGET_S = _bounded_env_int("ANGERONA_AAR_DETECTION_BUDGET_S", 360)
 _HEAD_JOURNAL_MAX_BYTES = 64 * 1024 * 1024
 _HEAD_JOURNAL_MAX_RECORDS = 8192
 _REPORT_BUNDLE_MAX_BYTES = 16 * 1024 * 1024
+_READONLY_MEMBER_MAX_BYTES = 4 * 1024 * 1024
+_READONLY_JOURNAL_MAX_BYTES = 16 * 1024 * 1024
 
 # Not every Shark Attack stage is a "did a detector notice this" test. This
 # mapping is what stops the report from mislabeling structurally-expected
@@ -160,7 +163,95 @@ class AARReportResult:
     report_directory: Path
 
 
-def verified_aar_handoff_text(result: object) -> str:
+def _verify_saved_document(document: object, verification_key: bytes | None) -> str:
+    """Keep explicit-key readers independent of profile setup and key creation."""
+    from angerona.core import report_attest
+
+    if verification_key is None:
+        return report_attest.verify(document)
+    return report_attest.verify(document, key=verification_key)
+
+
+def _reader_key_options(verification_key: bytes | None) -> dict:
+    return {} if verification_key is None else {"verification_key": verification_key}
+
+
+def _report_reader_lease(path: Path, verification_key: bytes | None):
+    if verification_key is None:
+        return ExclusiveFileLease(path)
+    return ExclusiveFileLease(path, existing_only=True)
+
+
+def _read_bounded_report_member(path: Path, limit: int) -> bytes:
+    """Read one existing ordinary file through a retained bounded descriptor.
+
+    Explicit-key diagnostics use this seam; legacy readers keep their existing
+    call signatures and read behavior. A coordination lease does not stop a
+    non-cooperating writer, so preflight path size checks alone are insufficient.
+    """
+    if type(limit) is not int or not 0 < limit <= _READONLY_JOURNAL_MAX_BYTES:
+        raise ValueError("AAR read limit is invalid")
+    path = Path(path)
+
+    def parent_identity(info):
+        if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ValueError("AAR member parent is redirected or nonordinary")
+        # Other independent modules may create files in the same directory.
+        # Its own identity/type is relevant, not unrelated directory mtime.
+        return info.st_dev, info.st_ino, info.st_mode, getattr(info, "st_file_attributes", 0)
+
+    def member_identity(info):
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or getattr(info, "st_file_attributes", 0) & 0x400
+                or not 0 < info.st_size <= limit):
+            raise ValueError("AAR member is redirected, linked, nonordinary or outside its read bound")
+        return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink, info.st_size,
+                info.st_mtime_ns, getattr(info, "st_file_attributes", 0))
+
+    parent_before = parent_identity(path.parent.lstat())
+    named_before_info = path.lstat()
+    named_before = member_identity(named_before_info)
+    flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+             | getattr(os, "O_NONBLOCK", 0))
+    descriptor = os.open(path, flags)
+    try:
+        held_info = os.fstat(descriptor)
+        held_before = member_identity(held_info)
+        named_opened_info = path.lstat()
+        named_opened = member_identity(named_opened_info)
+        # CPython's Windows lstat/fstat can report different stable ctime
+        # semantics for the same file. Compare shared identity across planes,
+        # but require each plane's own ctime to remain continuous throughout.
+        if (held_before != named_before or named_opened != held_before
+                or named_opened_info.st_ctime_ns != named_before_info.st_ctime_ns
+                or parent_identity(path.parent.lstat()) != parent_before):
+            raise ValueError("AAR member identity changed before its bounded read")
+        raw = bytearray()
+        remaining = limit + 1
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            raw.extend(chunk)
+            remaining -= len(chunk)
+        held_after_info = os.fstat(descriptor)
+        held_after = member_identity(held_after_info)
+        named_after_info = path.lstat()
+        named_after = member_identity(named_after_info)
+        if (len(raw) > limit or len(raw) != held_info.st_size
+                or held_after != held_before or named_after != held_after
+                or held_after_info.st_ctime_ns != held_info.st_ctime_ns
+                or named_after_info.st_ctime_ns != named_before_info.st_ctime_ns
+                or parent_identity(path.parent.lstat()) != parent_before):
+            raise ValueError("AAR member changed or returned an incomplete bounded read")
+        return bytes(raw)
+    finally:
+        os.close(descriptor)
+
+
+def verified_aar_handoff_text(
+    result: object, *, verification_key: bytes | None = None
+) -> str:
     """Return display text only after verifying the exact signed byte bundle."""
     if type(result) is not AARReportResult:
         raise ValueError("AAR handoff has an unexpected type")
@@ -187,10 +278,8 @@ def verified_aar_handoff_text(result: object) -> str:
     text_sha256 = hashlib.sha256(result.text_bytes).hexdigest()
     head_sha256 = hashlib.sha256(result.head_bytes).hexdigest()
     try:
-        from angerona.core import report_attest
-
-        report_status = report_attest.verify(report)
-        head_status = report_attest.verify(head)
+        report_status = _verify_saved_document(report, verification_key)
+        head_status = _verify_saved_document(head, verification_key)
     except Exception as exc:
         raise ValueError("AAR handoff authentication is unavailable") from exc
     if (
@@ -222,11 +311,15 @@ def verified_aar_handoff_text(result: object) -> str:
         raise ValueError("AAR handoff report directory has an unsafe identity")
     lock_path = root / f"{result.report_basename}.writer.lock"
     journal_path = root / f"{result.report_basename}.heads.jsonl"
-    with ExclusiveFileLease(lock_path):
+    with _report_reader_lease(lock_path, verification_key):
         current_head, current_text, current_report, current_head_bytes = (
-            _read_bound_report_bundle(root, result.report_basename)
+            _read_bound_report_bundle(
+                root, result.report_basename, **_reader_key_options(verification_key)
+            )
         )
-        journal = _load_head_journal(journal_path, result.report_basename)
+        journal = _load_head_journal(
+            journal_path, result.report_basename, **_reader_key_options(verification_key)
+        )
         if not journal:
             raise ValueError("AAR handoff journal authority is missing")
         record, record_bytes, journal_text, journal_report, journal_head = journal[-1]
@@ -1240,7 +1333,82 @@ def _containment_metrics(history: dict, verdicts: List[StepVerdict]) -> dict:
     }
 
 
-def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTACK") -> str:
+def evaluate_live_redteam_step(step: dict, *, position: int, run_id: str,
+                              events: list[Event], manager, bus, recorder,
+                              validation_lease, data_root: Path) -> StepVerdict | None:
+    """Verify one immutable engine statement, without scoring a campaign/AAR.
+
+    The caller must bind it to the genuine owner-engine completion queue. No
+    signed history, closure, learning, action or final-score authority is issued.
+    """
+    from angerona.core.module_manager import ModuleManager
+    from angerona.modules.purple_guard import (
+        RedTeamValidationLease, validate_redteam_recorder, validation_authority_matches,
+        verify_validation_native_event, verify_validation_purple_event,
+    )
+    from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
+    from angerona.shark.run_manifest import _attack_ids, _digest
+
+    try:
+        verification_deadline = time.monotonic() + 2.0
+        if (type(step) is not dict or type(position) is not int or not 0 <= position < 96
+                or type(manager) is not ModuleManager or type(bus) is not EventBus
+                or type(recorder) is not FlightRecorder
+                or type(validation_lease) is not RedTeamValidationLease
+                or not validation_authority_matches(validation_lease, recorder=recorder, bus=bus, manager=manager)):
+            return None
+        validate_redteam_recorder(recorder, data_root, bus=bus)
+        RedTeamValidationLease.assert_live_producers(validation_lease, run_id=run_id)
+        row = copy.deepcopy(step)
+        row["run_id"] = run_id
+        row["attack_ids"] = _attack_ids(row)
+        row["step_id"] = "DSTEP-" + _digest({"run_id": run_id, "position": position,
+            "stage": str(row.get("stage", "")), "technique": str(row.get("technique", ""))})[:20].upper()
+
+        def original_event(event):
+            return (time.monotonic() <= verification_deadline
+                    and BusAuthority.verify(recorder.authority, event) is True
+                    and EventBus.verify(bus, event) is True)
+
+        combat_verifier = _live_combat_action_verifier(manager, bus, data_root, red_team=True)
+
+        def native(event, actual):
+            return bool(time.monotonic() <= verification_deadline
+                and verify_validation_native_event(validation_lease, event, manager, actual)
+                and time.monotonic() <= verification_deadline)
+
+        def purple(event, actual):
+            return bool(time.monotonic() <= verification_deadline
+                and verify_validation_purple_event(validation_lease, event, actual)
+                and time.monotonic() <= verification_deadline)
+
+        def committed(actual, catch, event, action):
+            return bool(time.monotonic() <= verification_deadline
+                and combat_verifier(actual, catch, event, action)
+                and time.monotonic() <= verification_deadline)
+
+        result = evaluate({"run_id": run_id, "kind": "red_team", "steps": [row]}, events,
+            REDTEAM_STAGE_CATEGORY, require_authenticated=True, event_verifier=original_event,
+            native_verifier=native, purple_verifier=purple, combat_verifier=committed)
+        if (len(result) != 1 or time.monotonic() > verification_deadline
+                or not combat_verifier.journal_unchanged() or time.monotonic() > verification_deadline):
+            return None
+        return result[0]
+    except (AttributeError, KeyError, OSError, RuntimeError, TypeError, ValueError, OverflowError):
+        return None
+
+
+def _latency_available(value: object) -> bool:
+    return (type(value) in (int, float) and 0 <= value <= 2**53 - 1
+            and math.isfinite(value))
+
+
+def _latency_text(value: object) -> str:
+    return f"{value:.2f}s" if _latency_available(value) else "unknown latency"
+
+
+def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTACK",
+           *, diagnostic: dict | None = None) -> str:
     lines = [_bar("="), f" ANGERONA — {title} AFTER-ACTION REPORT", _bar("=")]
     lines.append(f" Run ID     : {history.get('run_id', '?')}")
     lines.append(f" Generated  : {history.get('generated', '?')}")
@@ -1248,6 +1416,16 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     score_eligible = _score_eligible(history, verdicts)
     containment = _containment_metrics(history, verdicts)
     lines.append(f" Containment outcome: {containment['outcome'].upper()}")
+    if diagnostic is not None:
+        reason = diagnostic["diagnostic_reason"]
+        producer = reason.get("enrolled_producer")
+        lines.extend([
+            " AUTHENTICATED DIAGNOSTIC REPORT — coverage and response credit withheld.",
+            " History authenticity does not establish current sensor liveness or response authority.",
+            " Run diagnostic: " + reason["reason"] + (f" ({producer})" if producer else ""),
+            f" Executed/attempted steps: {len(history.get('steps') or [])}; "
+            f"planned mandatory steps: {len(verdicts)}.",
+        ])
     if not score_eligible:
         expected = int(campaign.get("expected_steps", 0) or 0)
         missing = len(campaign.get("missing_plan_step_ids") or ())
@@ -1276,7 +1454,8 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         1 for v in detection if v.finding_resolved and v.verification_catch)
     benign = [v for v in verdicts if v.category == "resilience"]
     unscored = [v for v in verdicts if v.category in {"informational", "unmonitored"}]
-    lines.append(f" Steps run  : {n}     Expected-positive: {len(detection)}     "
+    display_steps = len(history.get("steps") or []) if diagnostic is not None else n
+    lines.append(f" Steps run  : {display_steps}     Expected-positive: {len(detection)}     "
                  f"Benign checks: {len(benign)}     Informational: {len(unscored)}")
     lines.append(
         " Matched detection evidence (simulation validation or native analytics): "
@@ -1286,8 +1465,9 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     readiness = history.get("validation_readiness")
     if isinstance(readiness, dict) and readiness:
         lines.append(
-            " Simulation validation readiness: "
-            f"{readiness.get('policy_count', '?')} contracts, "
+            (" Historical launch readiness (not current health): " if diagnostic is not None else
+             " Simulation validation readiness: ")
+            + f"{readiness.get('policy_count', '?')} contracts, "
             f"sensor health {readiness.get('sensor_health', '?')}%, "
             f"recorder authenticated="
             f"{bool((readiness.get('recorder') or {}).get('authenticated'))}."
@@ -1338,12 +1518,12 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
             if v.native_catch:
                 lines.append(
                     f"           native analytic verdict by {v.native_catch.module} in "
-                    f"{v.native_latency:.2f}s — \"{v.native_catch.message}\""
+                    f"{_latency_text(v.native_latency)} — \"{v.native_catch.message}\""
                 )
             if v.simulation_validation:
                 lines.append(
                     "           simulation-only Purple validation in "
-                    f"{v.simulation_validation_latency:.2f}s — "
+                    f"{_latency_text(v.simulation_validation_latency)} — "
                     f"\"{v.simulation_validation.message}\""
                 )
             if (
@@ -1353,7 +1533,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
             ):
                 lines.append(
                     f"           raw sensor observation by {v.observation.module} in "
-                    f"{v.observation_latency:.2f}s; observation alone is not a "
+                    f"{_latency_text(v.observation_latency)}; observation alone is not a "
                     "native analytic verdict."
                 )
             if v.finding_resolved:
@@ -1363,7 +1543,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
                              f"evidence is bound to action contract {v.contract_id}.")
             if v.remediation:
                 lines.append(f"           action reported applied by {v.remediation.module} in "
-                             f"{v.remediation_latency:.2f}s — \"{v.remediation.message}\"")
+                             f"{_latency_text(v.remediation_latency)} — \"{v.remediation.message}\"")
                 if v.target_containment_verified:
                     lines.append(
                         "           TARGET CONTAINMENT VERIFIED: every exact recorded "
@@ -1378,7 +1558,7 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
         elif v.observation:
             lines.append(
                 f"           observed by {v.observation.module} in "
-                f"{v.observation_latency:.2f}s, but no positive analytic detector "
+                f"{_latency_text(v.observation_latency)}, but no positive analytic detector "
                 "verdict was recorded in the bounded evidence window."
             )
         elif v.finding_resolved:
@@ -1487,13 +1667,19 @@ def render(history: dict, verdicts: List[StepVerdict], title: str = "SHARK ATTAC
     unmon = [v for v in verdicts if v.category in {"unmonitored", "informational"}]
     if unmon:
         lines.append(f"   Unmonitored (info) : {', '.join(v.stage for v in unmon)} — no detector by design")
-    times = [v.catch_latency for v in detection if v.catch_latency is not None]
+    times = [v.catch_latency for v in detection if v.catch and _latency_available(v.catch_latency)]
     if times:
         lines.append(f"   Avg detect time    : {sum(times) / len(times):.2f}s   "
                      f"(fastest {min(times):.2f}s, slowest {max(times):.2f}s)")
-    rtimes = [v.remediation_latency for v in verdicts if v.remediation_latency is not None]
+    unknown_detection_times = sum(bool(v.catch) and not _latency_available(v.catch_latency) for v in detection)
+    if unknown_detection_times:
+        lines.append(f"   Detect timing      : unknown for {unknown_detection_times} recorded verdict(s)")
+    rtimes = [v.remediation_latency for v in verdicts if v.remediation and _latency_available(v.remediation_latency)]
     if rtimes:
         lines.append(f"   Avg mitigate time  : {sum(rtimes) / len(rtimes):.2f}s")
+    unknown_response_times = sum(bool(v.remediation) and not _latency_available(v.remediation_latency) for v in verdicts)
+    if unknown_response_times:
+        lines.append(f"   Response timing    : unknown for {unknown_response_times} recorded action(s)")
     lines.append(_bar("="))
     return "\n".join(lines)
 
@@ -1571,12 +1757,11 @@ def _validate_journal_record(
     previous_record_sha256: str,
     previous_head_sha256: str | None,
     expected_sequence: int,
+    verification_key: bytes | None = None,
 ) -> tuple[bytes, bytes, bytes]:
     if not isinstance(record, dict):
         raise ValueError("AAR head journal row is not an object")
-    from angerona.core import report_attest
-
-    if report_attest.verify(record) != "ok":
+    if _verify_saved_document(record, verification_key) != "ok":
         raise ValueError("AAR head journal row HMAC is invalid")
     text_bytes, report_bytes, head_bytes = _decode_journal_bundle(record)
     try:
@@ -1594,7 +1779,7 @@ def _validate_journal_record(
         or record.get("head_sha256") != head_sha256
         or int(record.get("sequence", 0)) != expected_sequence
         or not isinstance(head, dict)
-        or report_attest.verify(head) != "ok"
+        or _verify_saved_document(head, verification_key) != "ok"
         or head.get("report_basename") != basename
         or int(head.get("sequence", 0)) != expected_sequence
         or (
@@ -1611,7 +1796,7 @@ def _validate_journal_record(
         or not isinstance(report, dict)
         or (
             str(head.get("report_kind") or "") == "red_team"
-            and report_attest.verify(report) != "ok"
+            and _verify_saved_document(report, verification_key) != "ok"
         )
         or report.get("report_text_sha256") != text_sha256
         or str(report.get("run_id") or "") != str(head.get("run_id") or "")
@@ -1623,15 +1808,20 @@ def _validate_journal_record(
 def _load_head_journal(
     path: Path,
     basename: str,
+    *,
+    verification_key: bytes | None = None,
 ) -> list[tuple[dict, bytes, bytes, bytes, bytes]]:
-    if not path.exists():
-        return []
-    if path.is_symlink() or not path.is_file():
-        raise ValueError("AAR head journal has an unsafe identity")
-    info = path.stat(follow_symlinks=False)
-    if int(getattr(info, "st_nlink", 1)) != 1 or not 0 < info.st_size <= _HEAD_JOURNAL_MAX_BYTES:
-        raise ValueError("AAR head journal size or link identity is invalid")
-    raw = path.read_bytes()
+    if verification_key is not None:
+        raw = _read_bounded_report_member(path, _READONLY_JOURNAL_MAX_BYTES)
+    else:
+        if not path.exists():
+            return []
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("AAR head journal has an unsafe identity")
+        info = path.stat(follow_symlinks=False)
+        if int(getattr(info, "st_nlink", 1)) != 1 or not 0 < info.st_size <= _HEAD_JOURNAL_MAX_BYTES:
+            raise ValueError("AAR head journal size or link identity is invalid")
+        raw = path.read_bytes()
     lines = [line for line in raw.splitlines() if line]
     if len(lines) > _HEAD_JOURNAL_MAX_RECORDS:
         raise ValueError("AAR head journal record bound was exceeded")
@@ -1661,6 +1851,7 @@ def _load_head_journal(
             previous_record_sha256=previous_record_sha256,
             previous_head_sha256=previous_head_sha256,
             expected_sequence=expected_sequence,
+            **_reader_key_options(verification_key),
         )
         rows.append((record, line, text_bytes, report_bytes, head_bytes))
         previous_record_sha256 = hashlib.sha256(line).hexdigest()
@@ -1696,33 +1887,39 @@ def _append_head_journal(path: Path, encoded_record: bytes) -> None:
 def _read_bound_report_bundle(
     data_dir: Path,
     basename: str,
+    *,
+    verification_key: bytes | None = None,
 ) -> tuple[dict, bytes, bytes, bytes]:
     text_path = data_dir / f"{basename}.txt"
     report_path = data_dir / f"{basename}.json"
     head_path = data_dir / f"{basename}.head.json"
-    for path in (text_path, report_path, head_path):
-        if path.is_symlink() or not path.is_file():
-            raise ValueError("AAR fixed report bundle has an unsafe identity")
-        info = path.stat(follow_symlinks=False)
-        if (
-            int(getattr(info, "st_nlink", 1)) != 1
-            or not 0 < info.st_size <= _REPORT_BUNDLE_MAX_BYTES
-        ):
-            raise ValueError("AAR fixed report bundle size or links are invalid")
-    text_bytes = text_path.read_bytes()
-    report_bytes = report_path.read_bytes()
-    head_bytes = head_path.read_bytes()
+    if verification_key is not None:
+        text_bytes, report_bytes, head_bytes = (
+            _read_bounded_report_member(path, _READONLY_MEMBER_MAX_BYTES)
+            for path in (text_path, report_path, head_path)
+        )
+    else:
+        for path in (text_path, report_path, head_path):
+            if path.is_symlink() or not path.is_file():
+                raise ValueError("AAR fixed report bundle has an unsafe identity")
+            info = path.stat(follow_symlinks=False)
+            if (
+                int(getattr(info, "st_nlink", 1)) != 1
+                or not 0 < info.st_size <= _REPORT_BUNDLE_MAX_BYTES
+            ):
+                raise ValueError("AAR fixed report bundle size or links are invalid")
+        text_bytes = text_path.read_bytes()
+        report_bytes = report_path.read_bytes()
+        head_bytes = head_path.read_bytes()
     try:
         report = json.loads(report_bytes.decode("utf-8", errors="strict"))
         head = json.loads(head_bytes.decode("utf-8", errors="strict"))
     except (UnicodeDecodeError, ValueError, TypeError) as exc:
         raise ValueError("AAR fixed report bundle is malformed") from exc
-    from angerona.core import report_attest
-
     if (
         not isinstance(report, dict)
         or not isinstance(head, dict)
-        or report_attest.verify(head) != "ok"
+        or _verify_saved_document(head, verification_key) != "ok"
         or head.get("report_basename") != basename
         or head.get("report_json_sha256")
         != hashlib.sha256(report_bytes).hexdigest()
@@ -1733,7 +1930,7 @@ def _read_bound_report_bundle(
         or str(report.get("run_id") or "") != str(head.get("run_id") or "")
         or (
             str(head.get("report_kind") or "") == "red_team"
-            and report_attest.verify(report) != "ok"
+            and _verify_saved_document(report, verification_key) != "ok"
         )
     ):
         raise ValueError("AAR fixed report bundle binding is invalid")
@@ -1920,7 +2117,7 @@ def _publish_report_bundle(
 
 
 def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], text: str,
-                  basename: str = "shark_aar") -> AARReportResult:
+                  basename: str = "shark_aar", *, diagnostic: dict | None = None) -> AARReportResult:
     """Persist both a human-readable .txt (identical to what's printed/shown
     in the GUI) and a structured .json (easy to parse programmatically) —
     always overwritten with the latest evaluation, so the files on disk
@@ -2104,6 +2301,23 @@ def _write_report(data_dir: Path, history: dict, verdicts: List[StepVerdict], te
     }
     if native_opportunity is not None:
         payload["evidence_taxonomy"]["native_analytic_opportunity"] = native_opportunity
+    if diagnostic is not None:
+        # This branch never evaluates ledger detections/actions or learns fixes.
+        # Retain integer plan denominators, while every rate remains withheld.
+        if score_eligible or any((caught, remediated, findings_resolved, det_caught,
+                                  native_caught, simulation_validated)):
+            raise ValueError("Diagnostic reports cannot carry scored evidence")
+        if (set(diagnostic) != {"diagnostic_only", "coverage_score_eligible", "validation_status",
+                "diagnostic_history_authentication", "readiness_scope", "diagnostic_reason"}
+                or diagnostic.get("diagnostic_only") is not True
+                or diagnostic.get("coverage_score_eligible") is not False
+                or diagnostic.get("validation_status") != "not-currently-verified"
+                or diagnostic.get("diagnostic_history_authentication") != "verified"
+                or diagnostic.get("readiness_scope") != "historical-at-launch"):
+            raise ValueError("Diagnostic report metadata is invalid")
+        payload.update(copy.deepcopy(diagnostic))
+        payload["steps_run"] = len(history.get("steps") or [])
+        payload["planned_steps"] = n
     # Attest the structured payload with the per-install HMAC key so the
     # self-hardening loop can prove this AAR wasn't forged or tampered with
     # before it learns weaknesses from it (see core/report_attest.py). Signing
@@ -2172,6 +2386,77 @@ def _incomplete_redteam_verdicts(history: dict) -> List[StepVerdict]:
     return verdicts
 
 
+def _incomplete_shark_diagnostic(history: dict, *, data_root: Path) -> tuple[list[StepVerdict], dict]:
+    """Authenticate prepared Shark ground truth while withholding all credit."""
+    from angerona.shark.run_manifest import verify_run_history
+    from angerona.shark.simulation_session import prepared_history_matches
+
+    manifest = (history.get("campaign") or {}).get("prepared_run")
+    verified = verify_run_history(history, require_authenticity=True, allow_legacy=False)
+    if (not verified.valid or verified.legacy or history.get("kind") != "shark"
+            or history.get("status") not in {"incomplete", "cancelled"}
+            or not prepared_history_matches(history, manifest)
+            or Path(manifest["data_root"]).resolve(strict=False) != data_root.resolve(strict=False)):
+        raise DrillHistoryIntegrityError("Shark diagnostic lacks an authenticated prepared run binding")
+    actual = {row["planned_step_id"]: row for row in history["steps"]}
+    verdicts = []
+    for planned in manifest["steps"]:
+        row = actual.get(planned["planned_step_id"], {})
+        operation = planned["operation"]
+        category = ("detection" if planned["control_kinds"] or operation == "exfiltration"
+                    else "resilience" if operation == "noise_injection" else "unmonitored")
+        verdicts.append(StepVerdict(stage=str(row.get("stage") or operation.replace("_", " ")),
+            technique=str(row.get("technique") or planned["variant"]),
+            description="Interrupted prepared run; all detection/action/fix credit is withheld.",
+            ts_start=float(row.get("ts_start", 0.0)), ok=False, category=category,
+            verification_error="prepared run incomplete; diagnostic only"))
+    diagnostic = {"diagnostic_only": True, "coverage_score_eligible": False,
+        "validation_status": "not-currently-verified", "diagnostic_history_authentication": "verified",
+        "readiness_scope": "historical-at-launch", "diagnostic_reason": {
+            "schema": "angerona.shark-session-diagnostic.v1", "reason": "incomplete-or-cancelled-run",
+            "enrolled_producer": None}}
+    return verdicts, diagnostic
+
+
+def _incomplete_diagnostic_info(history: dict) -> dict:
+    """Describe authenticated incomplete ground truth; grant no detector credit."""
+    from angerona.modules.purple_guard import ValidationLivenessReason
+    from angerona.shark.run_manifest import verify_run_history
+
+    verified = verify_run_history(history, require_authenticity=True, allow_legacy=False)
+    if (not verified.valid or verified.legacy or history.get("kind") != "red_team"
+            or history.get("status") not in {"incomplete", "cancelled"}):
+        raise DrillHistoryIntegrityError("Diagnostic history is not authenticated incomplete ground truth")
+    reason = {"schema": "angerona.redteam-liveness.v1",
+              "reason": "incomplete-or-cancelled-run", "enrolled_producer": None}
+    prefix = "RedTeamValidationError: validation producers are no longer live; diagnostic="
+    allowed = {(row.code, row.enrolled_producer) for row in ValidationLivenessReason}
+    for step in history.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        detail = step.get("detail")
+        if (step.get("ok") is not False or type(detail) is not str
+                or len(detail) > 500 or not detail.startswith(prefix)):
+            continue
+        try:
+            candidate = json.loads(detail[len(prefix):])
+        except (TypeError, ValueError):
+            continue
+        if (type(candidate) is dict
+                and set(candidate) == {"schema", "reason", "enrolled_producer"}
+                and candidate.get("schema") == "angerona.redteam-liveness.v1"
+                and type(candidate.get("reason")) is str
+                and (candidate.get("enrolled_producer") is None
+                     or type(candidate.get("enrolled_producer")) is str)
+                and (candidate.get("reason"), candidate.get("enrolled_producer")) in allowed):
+            reason = candidate
+            break
+    return {"diagnostic_only": True, "coverage_score_eligible": False,
+            "validation_status": "not-currently-verified",
+            "diagnostic_history_authentication": "verified",
+            "readiness_scope": "historical-at-launch", "diagnostic_reason": reason}
+
+
 def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                  window: float = 3600.0, history_name: str = "shark_history.json",
                  stage_category: Optional[dict] = None, title: str = "SHARK ATTACK",
@@ -2208,7 +2493,10 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
             f"{exc}. AAR not generated."
         )
     red_team_history = str(history.get("kind") or "") == "red_team"
-    if not history.get("steps") and not red_team_history:
+    prepared_shark_diagnostic = bool(history.get("kind") == "shark"
+        and history.get("status") in {"incomplete", "cancelled"}
+        and type(history.get("campaign")) is dict and "prepared_run" in history["campaign"])
+    if not history.get("steps") and not red_team_history and not prepared_shark_diagnostic:
         return "Last run recorded zero steps — nothing to report."
 
     active_recorder = recorder
@@ -2234,7 +2522,30 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                 f"{exc}. AAR not generated."
             )
 
+        if prepared_shark_diagnostic:
+            try:
+                verdicts, diagnostic = _incomplete_shark_diagnostic(history, data_root=data_dir)
+            except DrillHistoryIntegrityError as exc:
+                return f"Drill history integrity check failed — {exc}. AAR not generated."
+            text = render(history, verdicts, title, diagnostic=diagnostic)
+            result = _write_report(data_dir, history, verdicts, text, report_basename, diagnostic=diagnostic)
+            return result if return_result else text
+
         if red_team_history:
+            # A genuine interrupted run must still produce an authenticated
+            # explanation after its producer generation has changed. This path
+            # authenticates history/plan + recorder root only, scores nothing,
+            # and never treats a stale lease as detection or mutation authority.
+            if history.get("status") in {"incomplete", "cancelled"}:
+                try:
+                    diagnostic = _incomplete_diagnostic_info(history)
+                except DrillHistoryIntegrityError as exc:
+                    return f"Drill history integrity check failed — {exc}. AAR not generated."
+                verdicts = _incomplete_redteam_verdicts(history)
+                text = render(history, verdicts, title, diagnostic=diagnostic)
+                result = _write_report(data_dir, history, verdicts, text,
+                                       report_basename, diagnostic=diagnostic)
+                return result if return_result else text
             if (
                 type(validation_lease) is not RedTeamValidationLease
                 or not validation_authority_matches(

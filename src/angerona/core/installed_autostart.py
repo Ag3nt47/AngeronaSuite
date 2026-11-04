@@ -1,8 +1,8 @@
-"""Explicit, installed-only admin-at-logon enrollment; never requests elevation.
+"""Verify or remove the former installed administrator sign-in task.
 
-This is an enrolled administrator's interactive logon task, not a boot service
-or PPL boundary. Source/legacy autostart never gains this task's authority.
-All public operations are worker operations; a GUI must cache their results.
+Administrator startup now requires consent for the current session. These
+operations never create a scheduled task or request elevation. A GUI must
+cache the results of task inspection or removal.
 """
 from __future__ import annotations
 
@@ -31,11 +31,11 @@ _READ_EXECUTE = 0x001200A9
 _BA = "S-1-5-32-544"
 _SY = "S-1-5-18"
 _CODES = frozenset({
-    "enrolled", "enrolled-legacy-conflict", "not-enrolled", "enrolled-created",
+    "enrolled", "enrolled-legacy-conflict", "not-enrolled",
     "revoked", "revoked-legacy-preserved", "source-or-platform-held", "package-authority-held",
     "modern-entry-held", "native-unavailable", "native-output-held", "native-retirement-held",
     "current-user-held", "initial-admin-required", "legacy-conflict", "task-definition-held",
-    "task-security-held", "reenrollment-review", "native-race-held", "registration-unverified",
+    "task-security-held", "reenrollment-review", "native-race-held", "session-consent-required",
 })
 
 
@@ -44,7 +44,7 @@ class InstalledAutostartStatus:
     """Diagnostic facts, never permission to elevate or mutate.
 
     ``enabled=None`` means unproved. ``changed=False`` means no verified change;
-    after a native failure it does not prove that registration had no effect.
+    after a native failure it does not prove that removal had no effect.
     """
 
     code: str
@@ -164,53 +164,20 @@ try {
     } finally { $identity.Dispose() }
     if ($request.operation -ceq 'identity') { Write-Result @{sid=$sid;elevated=[bool]$admin}; exit 0 }
     if ($request.sid -cne $sid -or $request.task -cne ('AngeronaInstalledAdminLogon-'+$sid)) { exit 20 }
-    if ($request.operation -notin @('inspect','enroll','revoke')) { exit 20 }
+    if ($request.operation -cne 'inspect' -and $request.operation -cne 'revoke') { exit 20 }
     $scheduler=New-Object -ComObject 'Schedule.Service'; $scheduler.Connect()
     $folder=$scheduler.GetFolder('\')
     if ($request.operation -ceq 'inspect') { Write-Result (Read-Snapshot $folder $request.task); exit 0 }
     if (-not $admin) { exit 21 }
     $before=Read-Snapshot $folder $request.task
-    if ($request.operation -ceq 'revoke') {
-        if (-not $before.present) { Write-Result @{snapshot=$before;changed=$false}; exit 0 }
-        # Re-read exactly the snapshot Python just verified. DeleteTask has no
-        # conditional-handle API; BA/SYSTEM races remain an administrator boundary.
-        if ($request.expected_xml_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
-            (Get-ExactXmlDigest $before.xml) -cne $request.expected_xml_sha256 -or
-            (ConvertTo-Json -InputObject $before.security -Depth 8 -Compress) -cne $request.expected_security) { exit 23 }
-        $folder.DeleteTask($request.task,0)
-        Write-Result @{snapshot=(Read-Snapshot $folder $request.task);changed=$true}; exit 0
-    }
-    if ($before.present -or $before.legacy) { Write-Result @{snapshot=$before;changed=$false}; exit 0 }
-    if ([IO.Path]::GetFileName($request.executable) -cne 'AngeronaSafeStart.exe' -or
-        $request.arguments -cne '--automatic-start' -or
-        [IO.Path]::GetDirectoryName($request.executable) -cne $request.cwd) { exit 20 }
-    $definition=$scheduler.NewTask(0)
-    $definition.RegistrationInfo.Source='Angerona.InstalledAdminLogon.v1'
-    $definition.RegistrationInfo.Author=$sid
-    $definition.RegistrationInfo.URI='\'+$request.task
-    $definition.RegistrationInfo.Description=$request.description
-    $definition.Principal.Id='AngeronaInstalled'
-    $definition.Principal.UserId=$sid
-    $definition.Principal.LogonType=3
-    $definition.Principal.RunLevel=1
-    $settings=$definition.Settings
-    $settings.Compatibility=2; $settings.Enabled=$true; $settings.Hidden=$false
-    $settings.MultipleInstances=2; $settings.AllowDemandStart=$false
-    $settings.DisallowStartIfOnBatteries=$false; $settings.StopIfGoingOnBatteries=$false
-    $settings.AllowHardTerminate=$false; $settings.StartWhenAvailable=$false
-    $settings.RunOnlyIfNetworkAvailable=$false; $settings.RunOnlyIfIdle=$false
-    $settings.WakeToRun=$false; $settings.ExecutionTimeLimit='PT0S'
-    $settings.RestartCount=0; $settings.Priority=7
-    $settings.IdleSettings.StopOnIdleEnd=$false; $settings.IdleSettings.RestartOnIdle=$false
-    $trigger=$definition.Triggers.Create(9); $trigger.Enabled=$true; $trigger.UserId=$sid
-    $definition.Actions.Context='AngeronaInstalled'
-    $action=$definition.Actions.Create(0)
-    $action.Path=$request.executable; $action.Arguments=$request.arguments; $action.WorkingDirectory=$request.cwd
-    $sddl='O:BAG:SYD:P(A;;0x001f01ff;;;SY)(A;;0x001f01ff;;;BA)(A;;0x001200a9;;;'+$sid+')'
-    # CREATE | DONT_ADD_PRINCIPAL_ACE | IGNORE_REGISTRATION_TRIGGERS.
-    # No UPDATE/CREATE_OR_UPDATE, password, arbitrary command or task Run().
-    $null=$folder.RegisterTaskDefinition($request.task,$definition,50,$sid,$null,3,$sddl)
-    Write-Result @{snapshot=(Read-Snapshot $folder $request.task);changed=$true}
+    if (-not $before.present) { Write-Result @{snapshot=$before;changed=$false}; exit 0 }
+    # Re-read exactly the snapshot Python just verified. DeleteTask has no
+    # conditional-handle API; BA/SYSTEM races remain an administrator boundary.
+    if ($request.expected_xml_sha256 -cnotmatch '\A[0-9a-f]{64}\z' -or
+        (Get-ExactXmlDigest $before.xml) -cne $request.expected_xml_sha256 -or
+        (ConvertTo-Json -InputObject $before.security -Depth 8 -Compress) -cne $request.expected_security) { exit 23 }
+    $folder.DeleteTask($request.task,0)
+    Write-Result @{snapshot=(Read-Snapshot $folder $request.task);changed=$true}; exit 0
 } catch { exit 24 }
 '''
 
@@ -436,26 +403,10 @@ def inspect_enrollment() -> InstalledAutostartStatus:
 
 
 def enroll_current_admin() -> InstalledAutostartStatus:
-    """Explicit enrollment under an already-admin token; never requests UAC."""
-    try:
-        binding = _binding(require_admin=True)
-        before = _verified_snapshot(_native(_request(binding, "inspect")), binding)
-        if before["present"] or before["legacy"]:
-            return _status(before)
-        # Re-prove package/helper/admin/SID after the query may have blocked.
-        if _binding(require_admin=True) != binding:
-            raise _Held("native-race-held")
-        after, changed = _operation_result(_native(_request(binding, "enroll")), binding)
-        if not after["present"]:
-            return _status(after) if after["legacy"] else InstalledAutostartStatus("registration-unverified", requires_review=True)
-        if not changed:
-            return _status(after)
-        return InstalledAutostartStatus("enrolled-created", enabled=True, changed=True,
-                                        requires_review=after["legacy"])
-    except _Held as error:
-        return InstalledAutostartStatus(error.code, requires_review=True)
-    except Exception:
-        return InstalledAutostartStatus("registration-unverified", requires_review=True)
+    """Report the session policy without querying or changing a task."""
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return InstalledAutostartStatus("source-or-platform-held", requires_review=True)
+    return InstalledAutostartStatus("session-consent-required")
 
 
 def revoke_current_admin() -> InstalledAutostartStatus:

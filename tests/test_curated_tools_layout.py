@@ -8,11 +8,11 @@ import sys
 import pytest
 from PySide6.QtCore import QObject, QPoint, QRect, QTimer, Signal
 from PySide6.QtGui import QFont, QFontDatabase
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QGridLayout, QHBoxLayout, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from angerona.gui.animations import GlobalLoadingIndicator, HeaderActivityLane, RunSpinner
 from angerona.gui.curated_tools import CuratedScannerWidget
-from angerona.gui.header_controls import HeaderActionButton
+from angerona.gui.header_controls import HeaderActionButton, NotificationHeaderButton
 from angerona.gui.theme import build_qss
 from test_dashboard_responsive_shell import _DashboardShell
 
@@ -96,29 +96,33 @@ class HeaderShell(_DashboardShell):
         for old in self._header_groups:
             old.deleteLater()
         left, brand, right = QWidget(), QWidget(), QWidget()
-        first, last = QHBoxLayout(left), QHBoxLayout(right)
+        first, last = QHBoxLayout(left), QGridLayout(right)
         for layout in (first, last):
             layout.setContentsMargins(0, 0, 0, 0)
+        last.setColumnStretch(0, 1)
         self._header_primary_buttons = []
         for label, kind in (("ADAPTATION", "adaptation"), ("SELF-TEST", "selftest"),
                             ("RED TEAM SIMULATION", "simulation"), ("CHILL MODE", "eco")):
             button = HeaderActionButton(label, kind, label, "Synthetic header")
             self._header_primary_buttons.append(button)
             first.addWidget(button)
+        first.addStretch(1)
         self._header_nav_buttons = []
         for label, kind in (("WORLD VIEW", "world"), ("ATT&CK MAP", "attack"), ("THREAT INTEL", "intel"),
                             ("SPYWAREGUARD", "spyware"), ("GITHUB TOOLS", "github"), ("FORENSICS", "forensics"),
                             ("LOCAL SOC", "operations"), ("CONSOLE", "console"), ("SETUP", "setup"),
-                            ("HELP", "help"), ("SETTINGS", "settings")):
-            button = HeaderActionButton(label, kind, label.title(), "Synthetic header")
+                            ("HELP", "help"), ("NOTIFICATIONS", "mail"), ("SETTINGS", "settings")):
+            button = (NotificationHeaderButton() if kind == "mail"
+                      else HeaderActionButton(label, kind, label.title(), "Synthetic header"))
             if kind == "spyware":
                 self._spyware_guard_btn = button
             if kind == "github":
                 self.github = button
             self._header_nav_buttons.append(button)
-            last.addWidget(button)
         self._header_stop_button = HeaderActionButton("STOP", "stop", "Stop", "Synthetic header")
-        last.addWidget(self._header_stop_button)
+        self._header_nav_columns = len(self._header_nav_buttons) + 1
+        for column, button in enumerate((*self._header_nav_buttons, self._header_stop_button), 1):
+            last.addWidget(button, 0, column)
         center = QVBoxLayout(brand)
         center.setContentsMargins(0, 0, 0, 0)
         center.addWidget(QLabel("A N G E R O N A"))

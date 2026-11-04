@@ -6,7 +6,9 @@ import ctypes
 from ctypes import wintypes
 import inspect
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
+import threading
+import time
 
 import pytest
 
@@ -149,51 +151,99 @@ def test_cold_module_loading_does_not_import_or_bind_a_native_backend(monkeypatc
 
 
 @pytest.mark.parametrize("cleanup_completes", [True, False])
-def test_dashboard_keeps_durable_stop_and_bounded_cleanup_before_final_self_exit(monkeypatch, cleanup_completes):
+def test_dashboard_keeps_durable_stop_and_bounded_cleanup_before_final_self_exit(
+    monkeypatch, tmp_path, cleanup_completes,
+):
     from PySide6 import QtWidgets
-    from angerona.gui import main_window
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from angerona.gui import action_worker, breach_display, live_debug_panel, main_window
+    from angerona.gui import shutdown_retirement
 
-    calls = []
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    calls, clock = [], [0.0]
+    cleanup_entered, release_cleanup = threading.Event(), threading.Event()
+    original_retirement = shutdown_retirement.ShutdownRetirement
 
-    class Event:
-        ready = False
+    def bounded_retirement(owner, **kwargs):
+        return original_retirement(owner, **kwargs, timeout=.1,
+                                   diagnostic_timeout=.1, clock=lambda: clock[0])
 
-        def set(self):
-            self.ready = True
-            calls.append("cleanup-complete")
+    def cleanup():
+        calls.append("owned-cleanup")
+        cleanup_entered.set()
+        assert release_cleanup.wait(5), "Test did not release its exact cleanup owner"
+        calls.append("cleanup-complete")
 
-        def wait(self, timeout):
-            calls.append(("cleanup-wait", timeout))
-            return self.ready
-
-    def thread(*, target, name, daemon):
-        assert calls == ["durable-stop"]
-        assert name == "OperatorStopCleanup" and daemon is True
-        return SimpleNamespace(start=lambda: target() if cleanup_completes else None)
-
-    owner = SimpleNamespace(
-        _termination_started=False,
-        _shutdown_prepare=lambda: calls.append("durable-stop"),
-        _shutdown_callback=lambda: calls.append("owned-cleanup"),
-        _close_flight_instructor=lambda: calls.append("close-flight"),
-        _close_spyware_guard_window=lambda: calls.append("close-spyware"),
-        _close_github_tools_window=lambda: calls.append("close-tools"),
-        red_team_engine=SimpleNamespace(stop_and_clean=lambda: calls.append("clean-red-team")),
-        shark_engine=SimpleNamespace(stop_and_clean=lambda: calls.append("clean-shark")),
-        _release_redteam_validation_lease=lambda: calls.append("release-validation"),
-        _holographic_orb=SimpleNamespace(shutdown=lambda: calls.append("close-orb")),
-        tray=SimpleNamespace(hide=lambda: calls.append("hide-tray")),
-    )
-    monkeypatch.setattr(main_window, "threading", SimpleNamespace(Event=Event, Thread=thread))
-    monkeypatch.setattr(QtWidgets, "QApplication", SimpleNamespace(
-        instance=lambda: SimpleNamespace(quit=lambda: calls.append("qt-quit"))))
+    owner = QtWidgets.QWidget()
+    owner._termination_started = False
+    owner._shutdown_prepare = lambda: calls.append("durable-stop")
+    owner._shutdown_critical = lambda: calls.append("critical-cleanup")
+    owner._shutdown_callback = cleanup
+    owner.config = SimpleNamespace(data_dir=tmp_path)
+    owner.console = SimpleNamespace(_append=lambda _message: None)
+    owner._simulation_session = None
+    owner._close_flight_instructor = lambda: calls.append("close-flight")
+    owner._close_spyware_guard_window = lambda: calls.append("close-spyware")
+    owner._close_github_tools_window = lambda: calls.append("close-tools")
+    owner.red_team_engine = SimpleNamespace(stop_and_clean=lambda: calls.append("clean-red-team"))
+    owner.shark_engine = SimpleNamespace(stop_and_clean=lambda: calls.append("clean-shark"))
+    owner._release_redteam_validation_lease = lambda: calls.append("release-validation")
+    owner._holographic_orb = SimpleNamespace(shutdown=lambda: calls.append("close-orb"))
+    owner.tray = SimpleNamespace(hide=lambda: calls.append("hide-tray"))
+    for name in ("_shutdown_view_owners", "_hold_shutdown_views", "_retained_shutdown_workers",
+                 "_retained_shutdown_custody", "_operator_stop_cleanup",
+                 "_operator_stop_progress", "_operator_stop_finish"):
+        setattr(owner, name, MethodType(getattr(main_window.MainWindow, name), owner))
+    assert not action_worker.active_finite_actions()
+    assert not breach_display.active_report_exports()
+    assert not live_debug_panel.active_live_debug_streams()
+    monkeypatch.setattr(action_worker, "_CLOSING", action_worker._CLOSING)
+    monkeypatch.setattr(breach_display, "_REPORT_EXPORT_ADMISSION", breach_display._REPORT_EXPORT_ADMISSION)
+    monkeypatch.setattr(live_debug_panel, "_STREAM_ADMISSION", live_debug_panel._STREAM_ADMISSION)
+    monkeypatch.setattr(shutdown_retirement, "ShutdownRetirement", bounded_retirement)
+    monkeypatch.setattr(QtWidgets.QApplication, "quit", lambda *_: calls.append("qt-quit"))
     monkeypatch.setattr(process_exit, "exit_after_operator_shutdown", lambda: calls.append("self-exit"))
 
-    main_window.MainWindow._terminate(owner)
+    def wait_for(predicate):
+        deadline = time.monotonic() + 5
+        while not predicate() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(.005)
+        assert predicate()
 
-    assert owner._termination_started and calls[0] == "durable-stop"
-    assert ("cleanup-wait", 30.0) in calls
-    assert calls[-4:] == ["close-orb", "hide-tray", "qt-quit", "self-exit"]
-    assert calls.count("self-exit") == 1
-    assert ("owned-cleanup" in calls) is cleanup_completes
-    assert ("cleanup-complete" in calls) is cleanup_completes
+    try:
+        main_window.MainWindow._terminate(owner)
+        assert owner._termination_started and calls[0] == "durable-stop"
+        wait_for(cleanup_entered.is_set)
+        assert "self-exit" not in calls  # No UI-thread blocking or early finalizer.
+        assert calls.index("critical-cleanup") < calls.index("owned-cleanup")
+        if cleanup_completes:
+            release_cleanup.set()
+        else:
+            clock[0] = 1.0  # Exercise the real owner deadline with an exact live worker.
+        wait_for(lambda: owner._operator_stop_retirement._done)
+        result = owner._operator_stop_result
+        assert calls.count("self-exit") == 1
+        assert result["forced"] is (not cleanup_completes)
+        assert result["diagnostic_persisted"] is True
+        if cleanup_completes:
+            assert result["state"] == "retired" and not result["pending_workers"]
+            assert calls[-4:] == ["close-orb", "hide-tray", "qt-quit", "self-exit"]
+            assert "cleanup-complete" in calls
+        else:
+            assert result["state"] == "forced-incomplete"
+            assert "owned-runtime-cleanup" in result["pending_workers"]
+            assert all(name not in calls for name in ("close-orb", "hide-tray", "qt-quit"))
+            assert "cleanup-complete" not in calls
+    finally:
+        release_cleanup.set()
+        retirement = getattr(owner, "_operator_stop_retirement", None)
+        if retirement is not None:
+            workers = [row.worker for row in retirement._retained.values()]
+            workers.append(retirement._diagnostic_thread)
+            for worker in workers:
+                if worker is not None and worker.ident is not None:
+                    worker.join(3)
+                    assert not worker.is_alive(), "Exact test-owned worker did not retire"
+        owner.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

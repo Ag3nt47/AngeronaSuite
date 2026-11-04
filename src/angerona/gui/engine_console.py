@@ -6,6 +6,7 @@ import queue
 import threading
 import time
 import os
+import uuid
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import (
@@ -31,17 +32,51 @@ class ConsoleWorker:
         self.pending: deque[str] = deque(maxlen=16)
         self.dropped_frames = 0
         self.force_chill = bool(force_chill)
+        self._progress_lock = threading.Lock()
+        self._requests = {}
+        self._operation_requests = {}
 
     def start(self):
         self.commands.put_nowait(("connect", None))
         self.thread.start()
 
-    def submit(self, operation, value=None):
+    def submit(self, operation, value=None, *, request_id=None):
+        if request_id is not None:
+            if type(request_id) is not str or len(request_id) != 32 or any(c not in "0123456789abcdef" for c in request_id):
+                return False
+            with self._progress_lock:
+                if request_id in self._requests or len(self._requests) >= 16:
+                    return False
+                self._requests[request_id] = dict(operation=operation, state="queued", reason="Waiting for the admitted console command")
         try:
-            self.commands.put_nowait((operation, value))
+            self.commands.put_nowait((operation, value) if request_id is None else (operation, value, request_id))
             return True
         except queue.Full:
+            with self._progress_lock:
+                self._requests.pop(request_id, None)
             return False
+
+    def operation_progress(self):
+        with self._progress_lock:
+            return {key: dict(value) for key, value in self._requests.items()}
+
+    def acknowledge(self, request_id):
+        with self._progress_lock:
+            value = self._requests.get(request_id)
+            if value is not None and value["state"] not in {"queued", "running"}:
+                self._requests.pop(request_id)
+
+    def _progress(self, request_id, state, reason=""):
+        with self._progress_lock:
+            if request_id in self._requests:
+                self._requests[request_id].update(state=state, reason=str(reason)[:500])
+
+    def _hold_pending_progress(self, reason):
+        for requests in self._operation_requests.values():
+            for request_id in requests:
+                self._progress(request_id, "unavailable", reason)
+        self._operation_requests.clear()
+        self.pending.clear()
 
     def _post(self, frame):
         if self.frames.full():
@@ -76,13 +111,26 @@ class ConsoleWorker:
     def run(self):
         while not self.stop.is_set():
             message = ""
+            request_id = None
             try:
                 try:
-                    operation, value = self.commands.get_nowait()
+                    command = self.commands.get_nowait()
+                    operation, value = command[:2]
+                    request_id = command[2] if len(command) == 3 else None
+                    if operation != "connect" and len(self.pending) >= 16:
+                        raise EngineError("Operation progress admission is full; the command was not dispatched")
+                    self._progress(request_id, "running", "Dispatching the requested command")
                     result = self._command(operation, value)
                     if result is not None:
-                        self.pending.append(result["id"])
+                        identity = result["id"]
+                        if identity not in self.pending:
+                            self.pending.append(identity)
+                        if request_id is not None:
+                            self._operation_requests.setdefault(identity, set()).add(request_id)
+                            self._progress(request_id, "queued", "Engine accepted the operation; waiting for its result")
                         message = "Operation queued"
+                    else:
+                        self._progress(request_id, "completed", "Connect command returned; inspect the actual engine status")
                 except queue.Empty:
                     pass
                 if self.client is None:
@@ -92,7 +140,7 @@ class ConsoleWorker:
                 if status["instance"] != self.instance:
                     self.cursor = -1
                     self.instance = status["instance"]
-                    self.pending.clear()
+                    self._hold_pending_progress("Engine instance changed; the previous action outcome is unknown")
                 events = self.client.events(self.cursor)
                 self.cursor = events["cursor"]
                 if self.pending:
@@ -100,13 +148,21 @@ class ConsoleWorker:
                     progress = self.client.operation_status(identity)
                     if progress["state"] in {"queued", "running"}:
                         self.pending.append(identity)
+                    for intent in self._operation_requests.get(identity, ()):
+                        self._progress(intent, progress["state"], "Observed engine operation state; inspect its response evidence")
+                    if progress["state"] not in {"queued", "running"}:
+                        self._operation_requests.pop(identity, None)
                     message = f"{progress['operation']}: {progress['state']}"
                     if "result" in progress:
                         message += " — " + str(progress["result"])[:500]
                 self._post({"status": status, "events": events, "message": message})
             except (EngineError, OSError) as exc:
+                self._progress(request_id, "unavailable", "Command outcome is unknown after a connection or dispatch error")
+                self._hold_pending_progress("Engine operation progress is unavailable; no completion is verified")
                 self._post({"error": str(exc), "message": message})
             except Exception as exc:
+                self._progress(request_id, "unavailable", "Console command progress could not be verified")
+                self._hold_pending_progress("Engine operation progress could not be verified")
                 self._post({"error": "Console connection failed: " + type(exc).__name__})
             self.stop.wait(2.0)
 
@@ -140,6 +196,11 @@ class EngineConsole(QMainWindow):
         container = QWidget()
         self.setCentralWidget(container)
         layout = QVBoxLayout(container)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._command_activities = {}
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         title = QLabel("Angerona protection engine")
         title.setStyleSheet("font-size: 24px; font-weight: 600; margin-bottom: 8px")
         layout.addWidget(title)
@@ -233,9 +294,11 @@ class EngineConsole(QMainWindow):
             button.setEnabled(ready)
 
     def _submit(self, operation, value=None):
-        if not self.worker.submit(operation, value):
+        request_id = uuid.uuid4().hex
+        if not self.worker.submit(operation, value, request_id=request_id):
             self.progress.setText("Control queue is busy. Wait for the current operation.")
         else:
+            self._command_activities[request_id] = self._activities.begin(request_id, "Engine: " + operation + " queued…")
             self.progress.setText("Request queued…")
 
     def _module_command(self, operation):
@@ -268,6 +331,18 @@ class EngineConsole(QMainWindow):
             except queue.Empty:
                 break
             self.render_frame(frame)
+        for request_id, progress in self.worker.operation_progress().items():
+            handle = self._command_activities.get(request_id)
+            if handle is None:
+                continue
+            state, operation = progress["state"], progress["operation"]
+            if state in {"queued", "running"}:
+                self._activities.update(handle, label=f"Engine: {operation} · {state}…")
+            else:
+                self._activities.finish(handle)
+                self._command_activities.pop(request_id, None)
+                self.worker.acknowledge(request_id)
+                self.progress.setText(f"{operation}: {state} — {progress['reason']}")
         if self.runtime_metrics is not None:
             self.runtime_metrics.record_tick((time.perf_counter() - started) * 1000)
 
@@ -331,6 +406,7 @@ class EngineConsole(QMainWindow):
                 "Engine protection continues.").strip())
 
     def closeEvent(self, event):
+        self._activities.close()
         self.timer.stop()
         self.worker.detach()
         if self.metrics_publisher is not None:

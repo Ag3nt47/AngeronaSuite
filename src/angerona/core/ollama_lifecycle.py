@@ -420,6 +420,11 @@ _owned_services: dict[tuple[str, int], Any] = {}
 _owned_stop_lock = threading.RLock()
 _chill_release = ContextVar("angerona_chill_model_release", default=False)
 _ai_shutdown = threading.Event()
+_owned_epoch = 0
+_retirement_registry = None
+_retirement_epoch = -1
+_retirement_publication = {"schema": 1, "state": "not-requested", "complete": False,
+    "pending_owned": 0, "launch_quiescent": False, "records": ()}
 
 CHILL_AI_MESSAGE = (
     "Local AI is off while Chill is enabled. Switch Chill off manually to enable Ollama."
@@ -483,58 +488,259 @@ def _blocked_startup_status(progress=None) -> OllamaStartupStatus:
     return status
 
 
-def _stop_owned_service(key: tuple[str, int], child) -> None:
-    """Use the retained launch handle; never discover/kill an unrelated daemon."""
-    with _owned_stop_lock:
+class OllamaRetirementIncomplete(RuntimeError):
+    """Exact owned service/Job custody remains pending or unsupported."""
+    def __init__(self, outcome):
+        super().__init__('Owned Ollama retirement is incomplete; retained custody was preserved')
+        self.outcome = outcome
+
+
+def _owned_state(child):
+    state = getattr(child, '_angerona_ollama_retirement', None)
+    if type(state) is not dict:
+        state = {'identities': (), 'service_exited': False, 'job_empty': False,
+                 'handles_closed': False, 'close_started': False, 'close_held': False,
+                 'wait_close_held': False, 'error_type': '', 'close_custody': ()}
+        setattr(child, '_angerona_ollama_retirement', state)
+    return state
+
+
+def _owned_row(child, state):
+    pid = getattr(child, 'pid', None)
+    try:
+        native_type = _native_owned_type(child)
+        signal_proof = native_type.tree_retirement_snapshot(child) if native_type is not None else None
+    except Exception as error:
+        signal_proof = {'scope': 'Current-member diagnostic unavailable', 'error_type': type(error).__name__}
+    return {'pid': pid if type(pid) is int and 0 < pid <= 0xffffffff else None,
+        'identities': tuple(dict(row) for row in state['identities']),
+        'service_exited': state['service_exited'] is True, 'job_empty': state['job_empty'] is True,
+        'handles_closed': state['handles_closed'] is True,
+        'close_held': state['close_held'] is True or state['wait_close_held'] is True,
+        'state': 'retired' if state['service_exited'] and state['job_empty'] and state['handles_closed'] else 'incomplete',
+        'error_type': state['error_type'], 'current_job_signal_proof': signal_proof,
+        'identity_scope': 'Historical native owned-Job observations, not a renewed response lease'}
+
+
+def _owned_incomplete_row(key, child, state):
+    with _startup_lock:
+        attempt = _startup_attempts.get(key[0])
+        if attempt is not None:
+            attempt.status = OllamaStartupStatus('held', 'Retirement incomplete', 0,
+                'Exact owned AI lifetime or descendant retirement is unproven; custody remains retained.')
+    return _owned_row(child, state)
+
+
+def _native_owned_type(child):
+    from angerona.core.windows_child_job import OwnedWindowsChild
+    return OwnedWindowsChild if type(child) is OwnedWindowsChild else None
+
+
+def _capture_owned_identity(child, state, timeout):
+    native_type = _native_owned_type(child)
+    if native_type is None or state['identities'] or timeout <= 0:
+        return
+    try:
+        rows = native_type.observe_owned_process_identities(child, role='local-ai', timeout=min(1.0, timeout))
+        state['identities'] = tuple({'pid': row.pid, 'birth_ticks': row.birth_ticks, 'image': row.image} for row in rows)
+    except Exception:
+        pass  # Unknown identity is explicit; exact retained handles still define stop custody.
+
+
+def _stop_owned_service(key: tuple[str, int], child, *, timeout=2.0):
+    deadline = time.monotonic() + max(0.0, min(float(timeout), 3.0))
+    if not _owned_stop_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        return None
+    try:
         with _startup_lock:
             if _owned_services.get(key) is not child:
-                return
-        _stop_owned_service_locked(key, child)
+                return None
+        row = _stop_owned_service_locked(key, child, deadline=deadline)
+        _publish_retirement([row], launch_quiescent=not _startup_launch_lock.locked())
+        return row
+    finally:
+        _owned_stop_lock.release()
 
 
-def _stop_owned_service_locked(key, child) -> None:
+def _stop_owned_service_locked(key, child, *, deadline=None):
+    global _owned_epoch
+    deadline = time.monotonic() + 2.0 if deadline is None else deadline
+    state = _owned_state(child)
+    if state['close_held'] or state['wait_close_held'] or state['close_started']:
+        return _owned_incomplete_row(key, child, state)
+    native_type = _native_owned_type(child)
+    _capture_owned_identity(child, state, max(0.0, deadline - time.monotonic()))
+    phase = 'terminate'
     try:
-        if child.poll() is None:
-            child.terminate()
-            wait = getattr(child, "wait", None)
-            if wait is not None:
-                try:
-                    wait(timeout=1.0)
-                except subprocess.TimeoutExpired:
-                    child.kill()
-                    wait(timeout=1.0)
-            else:
-                # Native medium-token launch handles expose poll/terminate.
-                # TerminateProcess is asynchronous: retain custody until exit.
-                deadline = time.monotonic() + 1.0
-                while child.poll() is None and time.monotonic() < deadline:
-                    threading.Event().wait(0.02)
-        if child.poll() is None:
-            return
-        # Closing the retained job also retires runners whose server exited.
-        close = getattr(child, "close", None)
-        if close is not None:
-            close()
-    except (OSError, AttributeError, subprocess.TimeoutExpired):
-        # Keep custody on failure so a later Chill release can retry.
-        return
+        if native_type is None:
+            if child.poll() is None:
+                child.terminate()
+                wait = getattr(child, 'wait', None)
+                if callable(wait):
+                    wait(timeout=max(0.0, deadline - time.monotonic()))
+            state['service_exited'] = child.poll() is not None
+            state['error_type'] = 'UnsupportedOwnedDescendantCoverage'
+            return _owned_incomplete_row(key, child, state)
+        # Pin the CURRENT native Job members before asynchronous termination.
+        # Capture failure never suppresses this exact owned Job's stop attempt.
+        capture_error = None
+        try:
+            native_type.prepare_tree_retirement(child, timeout=max(0.0, deadline - time.monotonic()))
+        except BaseException as error:
+            capture_error = error
+        native_type.terminate(child)
+        if capture_error is not None:
+            raise capture_error
+        phase = 'wait-server'
+        native_type.wait(child, timeout=max(0.0, deadline - time.monotonic()))
+        if type(native_type.poll(child)) is not int:
+            raise subprocess.TimeoutExpired('owned Ollama root', max(0.0, deadline - time.monotonic()))
+        state['service_exited'] = True
+        phase = 'wait-job'
+        native_type.wait_tree(child, timeout=max(0.0, deadline - time.monotonic()))
+        state['job_empty'] = True
+        phase = 'close'
+        state['close_started'] = True
+        state['close_custody'] = (child._process, child._job, child._job._handle)
+        native_type.close(child)
+        state['handles_closed'] = True
+        state['close_custody'] = ()
+        state['error_type'] = ''
+    except BaseException as error:
+        if phase == 'close':
+            state['close_held'] = True
+        elif phase == 'wait-server' and not isinstance(error, subprocess.TimeoutExpired):
+            state['wait_close_held'] = True
+        state['error_type'] = type(error).__name__
+        if not isinstance(error, Exception):
+            raise
+        return _owned_incomplete_row(key, child, state)
     with _startup_lock:
         if _owned_services.get(key) is child:
-            _owned_services.pop(key, None)
+            _owned_services.pop(key)
+            _owned_epoch += 1
             attempt = _startup_attempts.get(key[0])
             if attempt is not None and attempt.status.daemon_ready:
-                attempt.status = OllamaStartupStatus(
-                    "idle", "Service stopped", 0,
-                    "The Angerona-owned Ollama service was stopped; start it again from Full Mode.",
-                )
+                attempt.status = OllamaStartupStatus('idle', 'Service stopped', 0,
+                    'The retained Ollama root and complete owned Job were observed retired and closed.')
+    return _owned_row(child, state)
 
 
-def stop_owned_ollama_services() -> None:
-    """Stop only services this process started, from a release worker."""
+def _publish_retirement(records, *, launch_quiescent):
+    global _retirement_publication, _retirement_registry, _retirement_epoch
     with _startup_lock:
-        owned = list(_owned_services.items())
-    for key, child in owned:
-        _stop_owned_service(key, child)
+        if not records and _retirement_registry is _owned_services and _retirement_epoch == _owned_epoch:
+            records = _retirement_publication['records']
+        pending = len(_owned_services)
+        launch_quiescent = launch_quiescent is True and all(attempt.done.is_set() for attempt in _startup_attempts.values())
+        complete = pending == 0 and launch_quiescent
+        _retirement_publication = {'schema': 1, 'state': 'retired' if complete else 'incomplete',
+            'complete': complete, 'pending_owned': pending, 'launch_quiescent': launch_quiescent is True,
+            'records': tuple(dict(row) for row in records[:16]),
+            'core_pid': os.getpid(), 'observed_monotonic': time.monotonic(), 'shutdown_requested': _ai_shutdown.is_set()}
+        _retirement_registry, _retirement_epoch = _owned_services, _owned_epoch
+    return ollama_retirement_snapshot()
+
+
+def ollama_retirement_snapshot():
+    """Bounded memory only; no socket, filesystem or native discovery."""
+    value = _retirement_publication
+    return {**value, 'records': tuple({**row,
+        'identities': tuple(dict(identity) for identity in row['identities']),
+        **({'current_job_signal_proof': dict(row['current_job_signal_proof'])}
+           if type(row.get('current_job_signal_proof')) is dict else {})}
+        for row in value['records'])}
+
+
+def owned_ollama_retirement_proven():
+    """Memory-only exact registry/admission predicate, not an OS discovery."""
+    if not _startup_lock.acquire(blocking=False):
+        return False
+    try:
+        return (_ai_shutdown.is_set() and not _owned_services
+                and not _startup_launch_lock.locked()
+                and all(attempt.done.is_set() for attempt in _startup_attempts.values()))
+    finally:
+        _startup_lock.release()
+
+
+def stop_owned_ollama_services(*, timeout=2.0):
+    deadline = time.monotonic() + max(0.0, min(float(timeout), 3.0))
+    with _startup_lock:
+        owned = tuple(_owned_services.items())
+    rows = []
+    for key, child in owned[:16]:
+        try:
+            row = _stop_owned_service(key, child, timeout=max(0.0, deadline - time.monotonic()))
+        except Exception as error:
+            row = {'pid': None, 'identities': (), 'service_exited': False, 'job_empty': False,
+                'handles_closed': False, 'close_held': True, 'state': 'incomplete',
+                'error_type': type(error).__name__[:128], 'identity_scope': 'Owned metadata is unavailable; retained registry preserved'}
+        if row is not None:
+            rows.append(row)
+    return _publish_retirement(rows, launch_quiescent=not _startup_launch_lock.locked())
+
+
+def capture_owned_ollama_process_scope(*, timeout=1.0):
+    from angerona.telemetry.process_snapshot_worker import InventoryWorkerError
+    if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1.0:
+        raise InventoryWorkerError('Invalid owned AI scope deadline')
+    if not _startup_lock.acquire(timeout=timeout):
+        raise InventoryWorkerError('Owned AI registry is busy')
+    try:
+        attempts = tuple((key, attempt, attempt.done.is_set()) for key, attempt in _startup_attempts.items())
+        if _ai_shutdown.is_set() or _startup_launch_lock.locked() or any(not row[2] for row in attempts):
+            raise InventoryWorkerError('Owned AI launch/STOP admission is unsettled')
+        rows = tuple(_owned_services.items())
+        if len(rows) > 16 or any(_native_owned_type(child) is None for _key, child in rows):
+            raise InventoryWorkerError('Owned AI descendant coverage is unsupported')
+        if any(_owned_state(child)['close_started'] or _owned_state(child)['wait_close_held'] for _key, child in rows):
+            raise InventoryWorkerError('Owned AI query/lifetime close remains held')
+        states = []
+        for _key, child in rows:
+            try:
+                process, job = child._process, child._job
+                handle = job._handle
+                if (process is None or handle is None or not 0 < int(process) < 0xffffffffffffffff
+                        or not 0 < int(handle) < 0xffffffffffffffff
+                        or child._owned_observation_stopped is not False or child._owned_observation_close_holds):
+                    raise ValueError
+                states.append((process, job, handle, int(process), int(handle), child.pid,
+                               child._owned_observation_epoch))
+            except Exception:
+                raise InventoryWorkerError('Owned AI native lifetime custody is unavailable') from None
+        return (id(_owned_services), _owned_epoch, rows, attempts, tuple(states))
+    finally:
+        _startup_lock.release()
+
+
+def observe_owned_ollama_process_identities(*, captured=None, timeout=1.0):
+    from angerona.telemetry.process_snapshot_worker import InventoryWorkerError, on_gui_thread
+    if on_gui_thread() or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1.0:
+        raise InventoryWorkerError('Owned AI observations require a finite background owner')
+    started = time.monotonic()
+    def remaining():
+        left = started + timeout - time.monotonic()
+        if left <= 0:
+            raise InventoryWorkerError('Owned AI observation deadline')
+        return left
+    if not _owned_stop_lock.acquire(timeout=remaining()):
+        raise InventoryWorkerError('Owned AI stop custody is busy')
+    try:
+        scope = capture_owned_ollama_process_scope(timeout=remaining())
+        if captured is not None and scope != captured:
+            raise InventoryWorkerError('Owned AI registry changed before observation')
+        rows = []
+        for _key, child in scope[2]:
+            rows.extend(_native_owned_type(child).observe_owned_process_identities(child, role='local-ai', timeout=remaining()))
+            if len(rows) > 16:
+                raise InventoryWorkerError('Owned AI closure exceeds its bounded member cap')
+        if capture_owned_ollama_process_scope(timeout=remaining()) != scope:
+            raise InventoryWorkerError('Owned AI registry/admission changed during observation')
+        remaining()
+        return tuple(rows)
+    finally:
+        _owned_stop_lock.release()
 
 
 def _startup_key(host: str) -> str:
@@ -757,11 +963,17 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
                 if not exited:
                     raise ValueError("A previous owned Ollama service has not exited; retry after it stops.")
                 _stop_owned_service(owned_key, owned)
+                with _startup_lock:
+                    if _owned_services.get(owned_key) is owned:
+                        raise ValueError('A previous owned Ollama service has not exited; retry after it stops.')
             child = _spawn_ollama_service(
                 key, deadline, verified=verified,
             )
             with _startup_lock:
                 _owned_services[(key, id(child))] = child
+                global _owned_epoch
+                _owned_epoch += 1
+            _capture_owned_identity(child, _owned_state(child), max(0.0, deadline - time.monotonic()))
             _require_ollama_allowed()
             update("Service launched", 60, "Trusted local Ollama service was started; waiting for its listener.")
         while True:
@@ -1129,21 +1341,27 @@ def _unload_resident_models(host: str, configured_model: str, timeout: float) ->
 
 
 def shutdown_ollama(host="http://localhost:11434", configured_model="llama3", timeout=3.0):
-    """Cancel starts, unload resident configured models, retire owned jobs.
-
-    Existing shared Ollama services remain available to other applications.
-    A launch already in flight observes the terminal fence after creation and
-    retires its retained child; no incoming request can reopen AI admission.
-    """
+    """Preserve unloaded-model list API only after exact owned closure is proven."""
     begin_ollama_shutdown()
     deadline = time.monotonic() + max(0.05, min(float(timeout), 5.0))
     acquired = _startup_launch_lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
+    unloaded = []
+    unload_error = None
     try:
         remaining = deadline - time.monotonic()
-        if remaining > 0:
-            return unload_angerona_models(host, configured_model, timeout=remaining)
-        return []
+        if acquired and remaining > 0:
+            unloaded = unload_angerona_models(host, configured_model, timeout=remaining)
+    except Exception as error:
+        unload_error = error
     finally:
-        stop_owned_ollama_services()
-        if acquired:
-            _startup_launch_lock.release()
+        try:
+            outcome = stop_owned_ollama_services(timeout=max(0.0, deadline - time.monotonic()))
+        finally:
+            if acquired:
+                _startup_launch_lock.release()
+        outcome = _publish_retirement(outcome['records'], launch_quiescent=acquired and owned_ollama_retirement_proven())
+    if not outcome['complete']:
+        raise OllamaRetirementIncomplete(outcome) from unload_error
+    if unload_error is not None:
+        raise unload_error
+    return unloaded

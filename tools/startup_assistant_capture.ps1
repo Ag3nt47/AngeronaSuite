@@ -241,6 +241,15 @@ public sealed class StartupCaptureSession {
     }
     public static StartupCaptureSession Run(string python, string[] arguments, string workingDirectory,
         string stdoutPath, string stderrPath, int timeoutSeconds, IDictionary environment,SafeFileHandle scratchLease) {
+        return Run(python,arguments,workingDirectory,stdoutPath,stderrPath,timeoutSeconds,environment,scratchLease,null);
+    }
+    public int HeartbeatFailures {get;private set;}
+    static void ObservedHeartbeat(StartupCaptureSession session,Action heartbeat) {
+        if(heartbeat==null)return;
+        try{heartbeat();}catch(Exception){session.HeartbeatFailures++;}
+    }
+    public static StartupCaptureSession Run(string python, string[] arguments, string workingDirectory,
+        string stdoutPath, string stderrPath, int timeoutSeconds, IDictionary environment,SafeFileHandle scratchLease,Action heartbeat) {
         if (timeoutSeconds < 1 || timeoutSeconds > 900) throw new ArgumentOutOfRangeException("timeoutSeconds");
         if (arguments == null || arguments.Length > 64) throw new ArgumentException("Capture argument count is invalid.");
         StartupCaptureSession session = new StartupCaptureSession();
@@ -305,13 +314,17 @@ public sealed class StartupCaptureSession {
             Stopwatch clock = Stopwatch.StartNew();
             bool done = false;
             while (clock.ElapsedMilliseconds < timeoutSeconds * 1000L) {
-                if (session.Process.WaitForExit(50)) { done = true; break; }
+                bool processExited=session.Process.WaitForExit(50);
+                ObservedHeartbeat(session,heartbeat); // Actual same-thread capture progress.
+                if (processExited) { done = true; break; }
             }
             session.TimedOut = !done;
             session.ExitCode = done ? session.Process.ExitCode : 124;
             // No unbounded WaitForExit() or pipe join: a descendant may own a write end.
             long readerDeadline = Math.Min(timeoutSeconds * 1000L, clock.ElapsedMilliseconds + 1000);
-            while (!session.ReadersComplete && clock.ElapsedMilliseconds < readerDeadline) Thread.Sleep(20);
+            while (!session.ReadersComplete && clock.ElapsedMilliseconds < readerDeadline) {
+                ObservedHeartbeat(session,heartbeat);Thread.Sleep(20);
+            }
             return session;
         } catch (Exception exception) {
             if (!started) {
@@ -367,7 +380,8 @@ function Invoke-SourceStartupCapturedAssistant {
         [Parameter(Mandatory=$true)][string]$StderrPath,
         [ValidateRange(1,900)][int]$TimeoutSeconds = 240,
         [Collections.IDictionary]$Environment,
-        [IO.FileStream]$ScratchLease
+        [IO.FileStream]$ScratchLease,
+        [Action]$Heartbeat
     )
     # Command/function-produced strings can remain PSObject-wrapped inside an
     # IDictionary. Normalize only string bases, without inheriting ambient keys.
@@ -400,9 +414,14 @@ function Invoke-SourceStartupCapturedAssistant {
         }
     }
     Initialize-SourceStartupCapture
+    if($Heartbeat){
+        $capture=[Angerona.StartupCaptureSession]::Run($Python,$Arguments,$WorkingDirectory,$StdoutPath,$StderrPath,
+            $TimeoutSeconds,$normalizedEnvironment,$(if($ScratchLease){$ScratchLease.SafeFileHandle}else{$null}),$Heartbeat)
+    }else{
     $capture = [Angerona.StartupCaptureSession]::Run($Python, $Arguments, $WorkingDirectory,
         $StdoutPath, $StderrPath, $TimeoutSeconds, $normalizedEnvironment,
         $(if ($ScratchLease) { $ScratchLease.SafeFileHandle } else { $null }))
+    }
     # Return one typed owner, never intermixed child stdout and an exit code.
     return $capture
 }

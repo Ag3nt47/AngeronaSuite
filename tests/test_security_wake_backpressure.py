@@ -44,10 +44,12 @@ class _Harness(QWidget):
     _check_threat_animation = MainWindow._check_threat_animation
     _prepare_security_snapshot = MainWindow._prepare_security_snapshot
     _apply_security_snapshot = MainWindow._apply_security_snapshot
+    _session_is_active = MainWindow._session_is_active
 
     def __init__(self, bus):
         super().__init__()
         self.bus = bus
+        self._simulation_session = None
         self._last_bus_revision = bus.revision()
         self._last_threat_ts = 0.0
         self.observed, self.messages = [], []

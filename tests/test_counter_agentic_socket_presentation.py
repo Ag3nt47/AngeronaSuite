@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
-from angerona.core import breach_state, module_base, threat
+from angerona.core import breach_state, enclave_mesh, module_base, threat
 from angerona.core.eventbus import BusAuthority, Event, EventBus
 from angerona.core.module_base import Severity
-from angerona.modules import counter_agentic, soar
+from angerona.modules import counter_agentic, soar, sysmon_listener
 
 
 @pytest.fixture
@@ -285,26 +286,28 @@ def test_socket_burst_keeps_high_evidence_without_active_or_breach_state(
     assert review.breach.snapshot() == breach_state.BreachDisplaySnapshot()
 
 
-def test_cadence_and_active_signals_keep_burst_latch_without_aggregate_authority(review):
+def test_cadence_stays_advisory_and_real_active_signals_keep_burst_latch(review):
     producer = review.watch.module
     for stamp, command in ((100.0, "whoami"), (102.0, "echo fixture"),
-                           (104.0, "schtasks /query")):
-        producer._record(4242, command, stamp)
+                           (104.0, "schtasks /create private-command-fixture")):
+        producer._record_child(("fixture", "", "", 4242), (stamp,), stamp, counter_agentic._phase_tags(command))
     [cadence] = review.bus.recent(10)
-    assert cadence.module == producer.name and cadence.severity == Severity.HIGH
-    assert "Agentic loop fingerprint" in cadence.message
-    assert threat.is_active_threat(cadence)
-    assert review.soar.process_pending_once() == 1
+    assert cadence.module == producer.name and cadence.severity == Severity.MEDIUM
+    assert "Discovery and action launches" in cadence.message
+    assert cadence.details["disposition"] == "observation" and cadence.details["response_authorized"] is False
+    assert "private-command-fixture" not in str(cadence.details) and "chain" not in cadence.details
+    assert not threat.is_active_threat(cadence)
+    assert review.soar.process_pending_once() == 0
 
-    originals = [cadence]
-    for pid in (4242, 4343, 4242):
+    originals = []
+    for pid in (4242, 4343, 4242, 4343):
         review.bus.publish(Event(
             "Exact Detector", "inert explicit active evidence", Severity.HIGH,
             review.watch.clock[0],
             {"pid": pid, "active_attack": True, "response_authorized": False},
         ))
         originals.append(review.bus.recent(1)[0])
-    assert review.soar.process_pending_once() == 3
+    assert review.soar.process_pending_once() == 4
     [aggregate] = [event for event in review.bus.recent(30)
                    if event.module == review.soar.name and event.severity == Severity.CRITICAL]
     assert len(review.soar._high_events) == 4
@@ -323,3 +326,116 @@ def test_cadence_and_active_signals_keep_burst_latch_without_aggregate_authority
     assert review.breach._events.empty()
     review.breach.process_once()
     assert review.breach.snapshot() == breach_state.BreachDisplaySnapshot()
+
+
+def _guid(number):
+    return f"{{00000000-0000-0000-0000-{number:012x}}}"
+
+
+def _sysmon_event(stamp, eid, **details):
+    utc = datetime.fromtimestamp(stamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S.000")
+    return Event("Sysmon Event Bridge", "Inert Sysmon record", Severity.INFO, stamp,
+                 dict(eid=eid, sensor_source="sysmon-native", raw_sensor_evidence=True,
+                      source_utc_time=utc, collection_generation="a" * 64, **details))
+
+
+def test_exact_mesh_sysmon_join_keeps_network_and_dns_advisory_without_raw_data(review, monkeypatch, request):
+    producer, bus, clock = review.watch.module, review.bus, review.watch.clock
+    monkeypatch.setattr(enclave_mesh.MeshAuthority, "start_rotator", lambda _self: None)
+    request.addfinalizer(bus.close_mesh)
+    bus.activate_mesh()
+    publish = bus.enroll_mesh_publisher("Sysmon Event Bridge", "b" * 64)
+    producer._mesh_publishers = {producer.name: bus.enroll_mesh_publisher(producer.name, "c" * 64)}
+    sensor = sysmon_listener.SysmonListenerModule()
+    monkeypatch.setattr(sensor, "collection_snapshot", lambda: dict(
+        mode="native", live=True, source_module=sensor.name, generation="a" * 64))
+    producer.bind_manager(SimpleNamespace(modules={sensor.name: sensor}))
+
+    for offset, command in enumerate(("whoami", "echo safe marker", "iwr private-command-fixture")):
+        publish(_sysmon_event(clock[0] - 6 + 2 * offset, 1, pid=700 + offset, parent_pid=650,
+                              process_guid=_guid(700 + offset), parent_process_guid=_guid(650),
+                              command_line=command))
+    publish(_sysmon_event(clock[0] - 1, 22, pid=702, process_guid=_guid(702),
+                          query_name="private-dns-fixture.invalid"))
+    connection = dict(dest_ip="9.9.9.9", dest_port="443", protocol="TCP", initiated=True)
+    # A reused PID with a different GUID, inbound-only traffic, and a remote
+    # observation all remain outside the exact process-linked correlation.
+    publish(_sysmon_event(clock[0], 3, pid=702, process_guid=_guid(900), **connection))
+    publish(_sysmon_event(clock[0], 3, pid=702, process_guid=_guid(702), **dict(connection, initiated=False)))
+    publish(_sysmon_event(clock[0], 3, pid=702, process_guid=_guid(702), node_origin="fixture-peer", **connection))
+    bus.publish(_sysmon_event(clock[0], 3, pid=702, process_guid=_guid(702), **connection))
+    producer._ingest_bus()
+    before = producer.behavior_snapshot()
+    [cadence] = before["observations"]
+    assert before["sysmon_identity_available"] is True
+    assert cadence["observation_kind"] == "discovery-action-cadence"
+
+    publish(_sysmon_event(clock[0], 3, pid=702, process_guid=_guid(702), **connection))
+    producer._ingest_bus()
+    snapshot = producer.behavior_snapshot()
+    cadence, outbound = snapshot["observations"]
+    assert outbound["observation_kind"] == "process-linked-outbound"
+    assert outbound["identity_strength"] == "sysmon-process-guid"
+    assert outbound["pid"] == 702 and outbound["process_guid"] == _guid(702)[1:-1]
+    assert outbound["parent_process_guid"] == _guid(650)[1:-1]
+    assert outbound["destination_port"] == 443 and outbound["transport"] == "tcp"
+    assert outbound["prior_dns_observed"] is True
+    serialized = str(snapshot)
+    assert all(secret not in serialized for secret in ("private-command-fixture", "private-dns-fixture.invalid", "9.9.9.9"))
+    observations = [event for event in bus.recent(20) if event.module == producer.name]
+    assert len(observations) == 2 and all(bus.verify(event) for event in observations)
+    assert all(event.details["response_authorized"] is False and not threat.is_active_threat(event)
+               for event in observations)
+    outbound["destination_port"] = 99
+    assert producer.behavior_snapshot()["observations"][-1]["destination_port"] == 443
+
+
+def test_unarmed_and_remote_process_events_cannot_supply_cadence(watch):
+    producer, now = watch.module, watch.clock[0]
+    events = [
+        Event("Process Monitor", "Inert process record", Severity.INFO, now - 4 + 2 * index,
+              {"event_type": "process_creation", "pid": 701 + index, "ppid": 650,
+               "cmdline": cmd, "process_create_time": now - 4 + 2 * index})
+        for index, cmd in enumerate(("whoami", "echo safe", "iwr private-command-fixture"))
+    ]
+    unarmed = EventBus()
+    producer.bind(unarmed)
+    for event in events:
+        unarmed.publish(event)
+    producer._ingest_bus()
+    assert producer.behavior_snapshot()["observations"] == ()
+
+    armed = EventBus()
+    armed.arm(BusAuthority(b"a" * 32))
+    producer.bind(armed)
+    for event in events:
+        remote = dict(event.details, node_origin="fixture-peer")
+        armed.publish(Event(event.module, event.message, event.severity, event.ts, remote))
+    producer._ingest_bus()
+    assert producer.behavior_snapshot()["observations"] == ()
+    for event in events:
+        armed.publish(event)
+    producer._ingest_bus()
+    [cadence] = producer.behavior_snapshot()["observations"]
+    assert cadence["identity_strength"] == "pid-only" and cadence["response_authorized"] is False
+    assert "private-command-fixture" not in str(cadence)
+
+
+def test_bus_overflow_prevents_cadence_across_missing_event_history(watch):
+    producer, now = watch.module, watch.clock[0]
+    bus = EventBus(ring_size=2)
+    bus.arm(BusAuthority(b"a" * 32))
+    producer.bind(bus)
+
+    def publish(pid, stamp, command):
+        bus.publish(Event("Process Monitor", "Inert process record", Severity.INFO, stamp,
+                          dict(event_type="process_creation", pid=pid, ppid=650, cmdline=command)))
+
+    publish(701, now - 4, "whoami")
+    producer._ingest_bus()
+    publish(900, now - 3, "echo overwritten")
+    publish(702, now - 2, "echo fixture")
+    publish(703, now, "iwr fixture")
+    producer._ingest_bus()
+    snapshot = producer.behavior_snapshot()
+    assert snapshot["bus_coverage_gap"] is True and snapshot["observations"] == ()

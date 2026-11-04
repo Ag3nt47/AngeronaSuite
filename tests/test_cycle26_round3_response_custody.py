@@ -268,6 +268,7 @@ def test_two_reconciliation_callers_execute_exactly_one_compensation(
             super().__init__(store)
             self.block_reconciliation = False
             self.rollback_calls = 0
+            self.prior_restored = threading.Event()
 
         def rollback(self, record: dict) -> dict:
             del record
@@ -275,7 +276,12 @@ def test_two_reconciliation_callers_execute_exactly_one_compensation(
             if self.block_reconciliation:
                 rollback_started.set()
                 assert release_rollback.wait(timeout=5)
+            if self.recovery_can_close:
+                self.prior_restored.set()
             return {"ok": self.recovery_can_close}
+
+        def verify_rollback(self, record: dict) -> bool:
+            return self.prior_restored.is_set() and super().verify_rollback(record)
 
     action = BlockingRecovery()
     monkeypatch.setattr(remediation_log, "get_log", lambda: store)
@@ -292,6 +298,7 @@ def test_two_reconciliation_callers_execute_exactly_one_compensation(
     action.rollback_calls = 0
     action.recovery_can_close = True
     action.block_reconciliation = True
+    assert not action.prior_restored.is_set()
     with ThreadPoolExecutor(max_workers=2) as pool:
         winner_future = pool.submit(
             actions.reconcile_remediation_transaction,
@@ -299,6 +306,7 @@ def test_two_reconciliation_callers_execute_exactly_one_compensation(
             authorized=True,
         )
         assert rollback_started.wait(timeout=5)
+        assert not action.prior_restored.is_set()
         loser_future = pool.submit(
             actions.reconcile_remediation_transaction,
             transaction_id,
@@ -317,6 +325,7 @@ def test_two_reconciliation_callers_execute_exactly_one_compensation(
     assert winner["state"] == "ROLLED_BACK"
     assert winner["proof_receipt"]["receipt_hash"]
     assert action.rollback_calls == 1
+    assert action.prior_restored.is_set()
     assert store.transaction(transaction_id)["state"] == "ROLLED_BACK"
     store.close()
 

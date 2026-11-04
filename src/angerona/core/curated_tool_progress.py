@@ -385,27 +385,28 @@ class ScannerProgress:
 
 class ObservedReader:
     """Report bytes actually read from the current binary evidence file."""
-    def __init__(self, real, observer, path, *, binary=False):
+    def __init__(self, real, observer, path, *, binary=False, size=None):
         self.real, self.observer = real, observer
         self.binary, self.sequential, self.completed = binary, True, 0
-        size = None
-        if binary:
+        if binary and size is None:
             try:
                 size = os.fstat(real.fileno()).st_size
             except (OSError, AttributeError):
                 pass
-        self.token = observer.observe_file(path, size)
+        self.token = observer.observe_file(path, size if binary else None)
 
     def __getattr__(self, name):
         return getattr(self.real, name)
 
     def read(self, *args):
+        if not self.binary or self.token is None:
+            return self.real.read(*args)
         try:
             before = self.real.tell()
         except (OSError, AttributeError):
             before = None
         value = self.real.read(*args)
-        if self.binary and type(value) is bytes:
+        if type(value) is bytes:
             self.sequential = self.sequential and before == self.completed
             self.completed += len(value)
             if self.sequential:

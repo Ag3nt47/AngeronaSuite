@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 import socket
@@ -125,6 +126,126 @@ def test_scan_path_runs_yara_and_metadata_without_exposing_selected_root(
     assert "private-user-root" not in rendered
     assert "harmless test" not in rendered
     assert progress[-1].phase == "completed"
+
+
+@pytest.mark.parametrize("child_count, root_sample", [(4, True), (32, False)], ids=["root-file", "wide-root"])
+def test_directory_queue_limit_preserves_already_admitted_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, child_count: int, root_sample: bool,
+) -> None:
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    for index in range(child_count):
+        directory = selected / f"child-{index:02d}"
+        directory.mkdir()
+        (directory / "fixture.txt").write_bytes(b"inert sample")
+    if root_sample:
+        (selected / "00-root.txt").write_bytes(b"inert root sample")
+    excess = selected / "child-00" / "00-excess"
+    excess.mkdir()
+    (excess / "unvisited.txt").write_bytes(b"out of scope")
+    center = _center(max_directories=3, max_directory_entries=16, max_duration_seconds=12,
+                     usb_authorizer=lambda _target: (None, "untracked"))
+    monkeypatch.setattr(center, "_make_yara_scanner", lambda: (_FakeYaraScanner(None), "active"))
+    visited = []
+    scandir = os.scandir
+
+    @contextmanager
+    def observe_scandir(path):
+        with scandir(path) as entries:
+            directory = Path(path)
+            visited.append(directory)
+            yield iter(sorted(entries, key=lambda entry: entry.name))
+
+    with monkeypatch.context() as patch:
+        patch.setattr(scan_module.os, "scandir", observe_scandir)
+        result = center.scan_path(selected)
+
+    assert result.status == "limited"
+    assert result.metrics["traversal_limit_reason"] == "directory-queue-limit"
+    assert result.metrics["files_scanned"] == 2 + int(root_sample)
+    assert result.metrics["directories_discovered"] == result.metrics["directories_seen"] == 3
+    assert result.metrics["directory_entries_seen"] == 6 + int(root_sample)
+    assert result.metrics["directory_entry_limit"] == 16
+    assert result.metrics["duration_limit_seconds"] == 12
+    assert result.metrics["timed_out"] is False
+    assert visited == [selected, selected / "child-01", selected / "child-00"]
+
+
+def test_recent_root_sampling_reaches_newer_nested_file_beyond_empty_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    folders = [selected / f"child-{index:02d}" for index in range(48)]
+    for folder in folders:
+        folder.mkdir()
+    newest, changed, outside_lookahead = folders[32], folders[33], folders[44]
+    nested = newest / "nested"
+    nested.mkdir()
+    (nested / "fixture.exe").write_bytes(b"MZ inert sample")
+    old_ns = 1_700_000_000_000_000_000
+    for folder in folders:
+        timestamp = old_ns + (folders.index(folder) + 1) * 1_000_000_000 if folder in (
+            newest, changed, outside_lookahead,
+        ) else old_ns
+        os.utime(folder, ns=(timestamp, timestamp))
+
+    scandir = os.scandir
+    path_is_link = scan_module._is_reparse_or_link
+    visited = []
+    open_iterators = changed_checks = 0
+
+    @contextmanager
+    def observe_scandir(path):
+        nonlocal open_iterators
+        directory = Path(path)
+        assert directory.is_relative_to(selected)
+        assert open_iterators == 0
+        visited.append(directory)
+        with scandir(path) as entries:
+            open_iterators += 1
+            try:
+                yield iter(sorted(entries, key=lambda entry: entry.name))
+            finally:
+                open_iterators -= 1
+
+    def is_link(path):
+        nonlocal changed_checks
+        if path == changed:
+            changed_checks += 1
+            return changed_checks > 1  # Simulate a link appearing after root admission.
+        return path_is_link(path)
+
+    def scan(*, recent):
+        center = _center(
+            max_directories=32, max_directory_entries=80, max_duration_seconds=12,
+            sample_recent_root_directories=recent, usb_authorizer=lambda _target: (None, "untracked"),
+        )
+        monkeypatch.setattr(center, "_make_yara_scanner", lambda: (_FakeYaraScanner(None), "active"))
+        with monkeypatch.context() as patch:
+            patch.setattr(scan_module.os, "scandir", observe_scandir)
+            patch.setattr(scan_module, "_is_reparse_or_link", is_link)
+            return center.scan_path(selected)
+
+    original = scan(recent=False)
+    assert original.status == "limited" and original.metrics["files_scanned"] == 0
+    assert original.metrics["directory_entries_seen"] == 32
+    assert newest not in visited
+    visited.clear()
+
+    result = scan(recent=True)
+    assert result.status == "limited"
+    assert result.metrics["traversal_limit_reason"] == "directory-entry-limit"
+    assert result.metrics["files_scanned"] == 1
+    assert result.metrics["directories_discovered"] == 14
+    assert result.metrics["directory_entries_seen"] == 42
+    assert result.metrics["unreadable_traversal_entries"] == 1
+    assert result.metrics["directory_entry_limit"] == 80
+    assert result.metrics["duration_limit_seconds"] == 12
+    assert result.metrics["timed_out"] is False and open_iterators == 0
+    assert visited[:3] == [selected, newest, nested]
+    assert changed_checks == 2 and changed not in visited and outside_lookahead not in visited
+    assert any(finding.category == "Malware signatures" for finding in result.findings)
 
 
 def test_scan_path_never_follows_a_symlink(

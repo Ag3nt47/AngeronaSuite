@@ -42,7 +42,9 @@ def _verdict(
 
 
 def _report(run_id: str, *verdicts: dict) -> dict:
-    return {"run_id": run_id, "verdicts": list(verdicts)}
+    # Synthetic complete-envelope fixture; no host coverage is inferred here.
+    return {"run_id": run_id, "report_kind": "red_team",
+            "coverage_score_eligible": True, "verdicts": list(verdicts)}
 
 
 def _verified_verdict(root: Path, run_id: str, *, ts_start: float) -> dict:
@@ -451,3 +453,29 @@ def test_manual_resolution_dedupes_candidates_and_surfaces_unsupported(strict_mo
         "T9999",
         "T9999",
     ]
+
+
+@pytest.mark.parametrize("scope", ["missing-eligibility", "false-eligibility",
+                                    "diagnostic", "missing-kind", "wrong-kind"])
+def test_authentic_but_ineligible_report_never_learns_or_installs(strict_module, scope):
+    module, root, _emitted = strict_module
+    report = _report("held-" + scope, _verdict("T1003", caught=False, ts_start=80.0))
+    if scope == "missing-eligibility":
+        report.pop("coverage_score_eligible")
+    elif scope == "false-eligibility":
+        report["coverage_score_eligible"] = False
+    elif scope == "diagnostic":
+        report["diagnostic_only"] = True
+    elif scope == "missing-kind":
+        report.pop("report_kind")
+    else:
+        report["report_kind"] = "shark"
+    report_path = _write(root / "redteam_aar.json", report)
+    assert report_attest.verify(json.loads(report_path.read_text(encoding="utf-8"))) == "ok"
+    assert module.ingest_redteam_report(report_path) == []
+    result = module.resolve_redteam_report(report_path)
+    assert result["ok"] is False and result["fail_closed"] is True
+    assert result["candidates"] == 0 and result["policy_changed"] is False
+    assert module.weaknesses() == []
+    assert drill_resolution.resolution_snapshot(root) == {}
+    assert not policy_path(root).exists()

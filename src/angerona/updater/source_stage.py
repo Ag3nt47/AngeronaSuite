@@ -350,6 +350,27 @@ def _edits(base: list[str], changed: list[str]) -> list[tuple[int, int, list[str
             if tag != "equal"]
 
 
+def _merge_window(base: list[str], changed: list[str], *, cancelled: Callable[[], bool]):
+    """Trim exact unchanged edges; retain the original base coordinate origin."""
+    start, end, cend = 0, len(base), len(changed)
+    while start < min(end, cend):
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        if base[start] != changed[start]:
+            break
+        start += 1
+    while end > start and cend > start:
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        if base[end - 1] != changed[cend - 1]:
+            break
+        end -= 1
+        cend -= 1
+    if cancelled():
+        raise SourceStageError("source staging was cancelled")
+    return start, base[start:end], changed[start:cend]
+
+
 def merge_file(base: bytes | None, local: bytes | None, incoming: bytes | None,
                *, cancelled: Callable[[], bool] = lambda: False) -> MergeDecision:
     """Merge only disjoint text edits; preserve ambiguous/binary changes as conflicts."""
@@ -369,11 +390,20 @@ def merge_file(base: bytes | None, local: bytes | None, incoming: bytes | None,
         return MergeDecision("conflict", None, "non-UTF-8 conflict")
     if any(len(lines) > MAX_TEXT_LINES for lines in texts):
         return MergeDecision("conflict", None, "text line limit exceeded")
-    if len(texts[0]) * (len(texts[1]) + len(texts[2])) > MAX_MERGE_COMPARISONS:
-        return MergeDecision("conflict", None, "automatic merge work limit exceeded")
     if cancelled():
         raise SourceStageError("source staging was cancelled")
-    ours, theirs = _edits(texts[0], texts[1]), _edits(texts[0], texts[2])
+    windows = [_merge_window(texts[0], changed, cancelled=cancelled) for changed in texts[1:]]
+    if sum(len(before) * len(changed) for _offset, before, changed in windows) > MAX_MERGE_COMPARISONS:
+        return MergeDecision("conflict", None, "automatic merge work limit exceeded")
+    edits = []
+    for offset, before, changed in windows:
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        edits.append([(offset + start, offset + end, replacement)
+                      for start, end, replacement in _edits(before, changed)])
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+    ours, theirs = edits
     merged = list(ours)
     for edit in theirs:
         if edit in ours:
@@ -390,6 +420,45 @@ def merge_file(base: bytes | None, local: bytes | None, incoming: bytes | None,
         result[start:end] = replacement
     return MergeDecision("merged", "".join(result).encode("utf-8"))
 
+
+
+def _merge_recovery_source_file(name, before, user, after, *, cancelled):
+    """Separate generated hash drift from genuine custom code conflicts."""
+    from angerona.core.startup_recovery import (
+        RECOVERY_BATCH_PATH, RECOVERY_MANIFEST_PATH, RecoveryCoherenceError,
+        mask_recovery_batch_pins, restore_recovery_batch_pins,
+        validate_recovery_manifest_profile,
+    )
+    if name == RECOVERY_MANIFEST_PATH:
+        try:
+            for raw in (before, user, after):
+                validate_recovery_manifest_profile(raw)
+        except RecoveryCoherenceError:
+            return MergeDecision("conflict", None, "unsupported generated recovery manifest profile")
+        return MergeDecision("merged", after, "generated recovery hashes are derived from merged controls")
+    if name == RECOVERY_BATCH_PATH:
+        try:
+            sides = tuple(mask_recovery_batch_pins(raw) for raw in (before, user, after))
+        except RecoveryCoherenceError:
+            return MergeDecision("conflict", None, "unsupported recovery batch pin format")
+        decision = merge_file(*sides, cancelled=cancelled)
+        if decision.content is None:
+            return decision
+        return MergeDecision(decision.action, restore_recovery_batch_pins(decision.content, after),
+                             decision.reason)
+    return merge_file(before, user, after, cancelled=cancelled)
+
+
+def _effective_recovery_candidate(candidate):
+    from angerona.core.startup_recovery import (
+        RecoveryCoherenceError, derive_recovery_coherent_tree, verify_recovery_coherence,
+    )
+    try:
+        effective, proof = derive_recovery_coherent_tree(candidate)
+        verify_recovery_coherence(effective)
+    except RecoveryCoherenceError as error:
+        raise SourceStageError("Supported merged recovery coherence could not be established") from error
+    return effective, proof
 
 def _git(root: Path, args: list[str]) -> bytes:
     try:
@@ -537,6 +606,18 @@ def _physical_staging_path(path: Path) -> Path:
     return final.joinpath(*reversed(missing))
 
 
+def _installed_source_paths(root: Path, applied: dict | None) -> tuple[str, ...]:
+    # The Git index remains untouched. A previously approved upstream addition
+    # can therefore still be ignored by that old index/user .gitignore.
+    return tuple(sorted(set(source_inventory(root)) | set(
+        applied['effective_paths'] if applied is not None else ())))
+
+
+def _source_root_identity(root: Path) -> dict:
+    from angerona.core.source_activation_file import directory_identity
+    return directory_identity(root)
+
+
 def prepare_source_update(source_root: Path, staging_root: Path, target_revision: str,
                           *, base_revision: str = "", cancelled: Callable[[], bool] = lambda: False,
                           fetch: Callable[[str], dict] = github_json,
@@ -555,6 +636,11 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
     # Containment rejection must not create even an empty directory in the
     # installed checkout, launch Git, or make a network request.
     root = _safe_state_root(root)
+    if root.name == "stages" and root.parent.name == "github-updates":
+        from angerona.core.source_activation_storage import require_source_update_storage
+        require_source_update_storage(source_root, root.parent,
+            additional_bytes=MAX_TRANSACTION_BYTES + MAX_STAGE_METADATA_BYTES,
+            new_completed_backup=True, cancelled=cancelled)
     with (ExclusiveFileLease(root / "stage.lock"),
           _stage_storage_budget(root, additional_bytes=MAX_TRANSACTION_BYTES + MAX_STAGE_METADATA_BYTES,
                                 new_stage=True, cancelled=cancelled) as retained,
@@ -562,11 +648,18 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
         local = local_source_revision(source_root)
         if not local:
             raise SourceStageError(f"source checkout must have exact origin {CANONICAL_ORIGIN}")
+        from angerona.core.source_activation import applied_source_base
+        applied = applied_source_base(source_root, root.parent)
+        if applied is not None:
+            if base_revision and base_revision != applied['target_revision']:
+                raise SourceStageError("requested base differs from the verified applied source lineage")
+            base_revision = applied['target_revision']
         if not base_revision:
             base_revision = _git(source_root, ["rev-parse", "--verify", "refs/remotes/origin/main"]).decode("ascii").strip()
         if not _SHA.fullmatch(base_revision):
             raise SourceStageError("known canonical base revision is required")
-        _git(source_root, ["merge-base", "--is-ancestor", base_revision, local])
+        if applied is None:
+            _git(source_root, ["merge-base", "--is-ancestor", base_revision, local])
         if cancelled():
             raise SourceStageError("source staging was cancelled")
         comparison = fetch(f"compare/{base_revision}...{target_revision}")
@@ -577,7 +670,7 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                 raise SourceStageError("canonical ancestry identity mismatch")
         if comparison.get("status") == "identical" and base_revision != target_revision:
             raise SourceStageError("canonical ancestry contradicts requested target")
-        paths = source_inventory(source_root)
+        paths = _installed_source_paths(source_root, applied)
         original = snapshot_local(source_root, paths, cancelled=cancelled)
         original_digest = hashlib.sha256(json.dumps({name: _digest(data) for name, data in original.items()}, sort_keys=True).encode()).hexdigest()
         stage_id = "source-" + uuid.uuid4().hex
@@ -595,14 +688,26 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                 raise SourceStageError("source staging was cancelled")
             captured_bytes = sum(map(len, original.values()))
             _require_stage_free(root, MAX_STAGE_METADATA_BYTES)
-            base = read_source_archive(download(base_revision), base_revision,
+            base_archive = download(base_revision)
+            if not isinstance(base_archive, bytes) or not 1 <= len(base_archive) <= MAX_ARCHIVE_BYTES:
+                raise SourceStageError("invalid source archive identity or size")
+            base_archive_sha = hashlib.sha256(base_archive).hexdigest()
+            base = read_source_archive(base_archive, base_revision,
                                        remaining_bytes=MAX_TRANSACTION_BYTES - captured_bytes, cancelled=cancelled)
+            del base_archive
+            if applied is not None and {name: _digest(raw) for name, raw in base.items()} != applied["upstream"]:
+                raise SourceStageError("downloaded canonical base differs from applied upstream lineage")
             captured_bytes += sum(map(len, base.values()))
             if cancelled():
                 raise SourceStageError("source staging was cancelled")
             _require_stage_free(root, MAX_STAGE_METADATA_BYTES)
-            incoming = read_source_archive(download(target_revision), target_revision,
+            target_archive = download(target_revision)
+            if not isinstance(target_archive, bytes) or not 1 <= len(target_archive) <= MAX_ARCHIVE_BYTES:
+                raise SourceStageError("invalid source archive identity or size")
+            target_archive_sha = hashlib.sha256(target_archive).hexdigest()
+            incoming = read_source_archive(target_archive, target_revision,
                                            remaining_bytes=MAX_TRANSACTION_BYTES - captured_bytes, cancelled=cancelled)
+            del target_archive
             captured_bytes += sum(map(len, incoming.values()))
             records = []
             conflicts = []
@@ -620,7 +725,7 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                 if cancelled():
                     raise SourceStageError("source staging was cancelled")
                 before, user, after = base.get(name), original.get(name), incoming.get(name)
-                decision = merge_file(before, user, after, cancelled=cancelled)
+                decision = _merge_recovery_source_file(name, before, user, after, cancelled=cancelled)
                 if decision.content is not None:
                     candidate_bytes += len(decision.content)
                     if candidate_bytes > MAX_TREE_BYTES or captured_bytes + candidate_bytes > MAX_TRANSACTION_BYTES:
@@ -637,6 +742,22 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                     output_paths.update(parts[:count] for count in range(1, len(parts) + 1))
                 if len(output_paths) + len(blob_names) + 8 > MAX_STAGE_OUTPUT_ENTRIES:
                     raise SourceStageError("source-stage output entry budget would be exceeded")
+            if not any(item[4].action == "conflict" for item in plan):
+                raw_candidate = {name: decision.content for name, _before, _user, _after, decision in plan
+                                 if decision.content is not None}
+                effective, _coherence = _effective_recovery_candidate(raw_candidate)
+                from angerona.core.startup_recovery import RECOVERY_BATCH_PATH, RECOVERY_MANIFEST_PATH
+                generated = {RECOVERY_BATCH_PATH, RECOVERY_MANIFEST_PATH}
+                for index, (name, before, user, after, decision) in enumerate(plan):
+                    if name in generated:
+                        decision = MergeDecision(decision.action, effective[name],
+                            "generated recovery metadata/pins derived from merged source controls")
+                        plan[index] = (name, before, user, after, decision)
+                        records[index]["candidate"] = _digest(decision.content)
+                        records[index]["reason"] = decision.reason
+                candidate_bytes = sum(len(item[4].content) for item in plan if item[4].content is not None)
+                if candidate_bytes > MAX_TREE_BYTES or captured_bytes + candidate_bytes > MAX_TRANSACTION_BYTES:
+                    raise SourceStageError("derived candidate bytes exceed preparation budget")
             required_space = captured_bytes + candidate_bytes + MAX_STAGE_METADATA_BYTES
             if retained.logical_bytes + required_space > MAX_RETAINED_STAGE_BYTES:
                 raise SourceStageError("preserved copies and candidate exceed the aggregate source-stage budget")
@@ -659,11 +780,17 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
                     target.parent.mkdir(parents=True, exist_ok=True)
                     _write_capture(target, decision.content, cancelled)
                     candidate_count += 1
-            if source_inventory(source_root) != paths or local_source_revision(source_root) != local:
+            if _installed_source_paths(source_root, applied) != paths or local_source_revision(source_root) != local:
                 raise SourceStageError("local installation changed during preparation; staged candidate is held")
             snapshot_local(source_root, paths, cancelled=cancelled, verify_against=original)
             manifest = dict(intent, status="conflicts" if conflicts else "prepared", files=records,
-                            conflicts=conflicts, validation="not_run", activation="not_authorized")
+                            conflicts=conflicts, validation="not_run", activation="not_authorized",
+                            activation_provenance={
+                                "schema": 1, "origin": CANONICAL_ORIGIN,
+                                "source_root": str(source_root),
+                                "root_identity": _source_root_identity(source_root),
+                                "base_archive_sha256": base_archive_sha,
+                                "target_archive_sha256": target_archive_sha})
             encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
             result = StageResult(stage_id, manifest["status"], base_revision, target_revision, local,
                                  candidate_count, changes, tuple(conflicts), hashlib.sha256(encoded).hexdigest())
@@ -1046,14 +1173,24 @@ def validate_source_candidate(stage: Path, manifest_digest: str) -> dict:
                     ast.parse(raw, filename=name)
                 except (SyntaxError, ValueError, RecursionError) as exc:
                     syntax_errors.append({"path": name, "error_type": type(exc).__name__})
+        recovery_coherence = {"state": "held", "reason": "Resolve all source conflicts before effective recovery validation"}
+        recovery_held = True
+        if not unresolved and not syntax_errors:
+            try:
+                _effective, proof = _effective_recovery_candidate(actual)
+                recovery_coherence = dict(proof, state="verified", scope="Derived effective candidate; raw staged provenance remains unchanged")
+                recovery_held = False
+            except SourceStageError:
+                recovery_coherence = {"state": "held", "reason": "Supported merged recovery coherence could not be established"}
         missing_components = [name for name in ("pyproject.toml", "src/angerona/__init__.py", "src/angerona/__main__.py") if name not in actual]
         dependencies_changed = any(row.get("base") != row.get("upstream") for row in manifest["files"]
                                    if row.get("path") in {"pyproject.toml", "requirements.txt", "requirements.lock", "uv.lock"})
         result = {"schema": "angerona.source-static-validation/v1", "manifest_sha256": manifest_digest,
-                  "static_checks": "failed" if syntax_errors or unresolved or missing_components else "passed",
+                  "static_checks": "failed" if syntax_errors or unresolved or missing_components or recovery_held else "passed",
                   "syntax_errors": syntax_errors, "unresolved_conflicts": unresolved,
                   "missing_components": missing_components,
                   "dependency_changes": dependencies_changed, "activation": "held",
+                  "recovery_coherence": recovery_coherence,
                   "required_follow_up": ["isolated application and dependency validation", "stop the suite before activation",
                                          "privileged-service compatibility", "executable permission and launch-environment validation",
                                          "explicit UGCAP baseline review if enabled"],

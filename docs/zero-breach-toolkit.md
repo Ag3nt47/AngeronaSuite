@@ -83,7 +83,10 @@ delete old matching-prefix temporary folders and can create complete browser
 database snapshots or temporary plaintext phone databases. Its temporary path
 must therefore never be Angerona's general temp directory or the user's system
 temp directory. Interrupted sensitive snapshots need controlled retention and
-cleanup; deletion is not secure erasure.
+cleanup. Removing a snapshot does not securely erase its bytes. The toolkit
+uses the private scan folder for its Temp alias. Checks that rely on that
+alias can miss a configured user Temp folder outside the toolkit’s other
+checked locations.
 
 Managed jobs apply their own deadlines, output/workspace budgets and
 cancellation. Dashboard STOP cancels owned scanner work; hiding a tool view
@@ -105,7 +108,12 @@ report cleanup is separate from Revert and cannot erase source evidence.
 | --- | --- |
 | Prepared engine | 16 MiB aggregate allowance and at most two managed versions; unknown or edited originals remain preserved. |
 | Job working data | Default 256 MiB, configurable from 64 to 1024 MiB; native growth is monitored rather than filesystem-quota enforced. |
-| Retained reports | At most eight report sets; default 64 MiB aggregate, configurable from 8 to 256 MiB. Cleanup must verify the exact managed artifacts. |
+| Retained reports | Unlimited by default, with an optional report-count limit from 1 to 32. The separate aggregate budget defaults to 64 MiB and can be set from 8 to 256 MiB. |
+
+An existing finite count stays in effect until the operator chooses Unlimited in
+toolkit settings. Free-space, output, and inventory checks still apply. Storage
+review displays up to 32 sets per page and verifies the selected report before
+export or deletion. Reaching a storage limit preserves retained evidence.
 
 Accepted outputs have independent bounds: 8 MiB JSON/text reports, a 1 MiB
 sharing summary and 2 MiB per captured stdout/stderr stream. Oversized or
@@ -132,13 +140,12 @@ quarantine or other response authority.
 
 ## Priority Spyware Scan
 
-**Spyware Scan** schedules the selected native SpywareGuard checks and curated
-toolkit checks through their existing owners. The red **SpywareScan** button
-uses separate **Scope**, **Included checks**, **Progress**, **What's happening
-now** and **Resource and privilege details** sections. Native and Zero Breach
-selections have independent toggles. Resource details show the latest available
-toolkit-process CPU, RAM and I/O samples, process liveness and current privilege
-coverage; unavailable measurements stay unavailable.
+**Research Wire** leads, followed by **Progress**, **What’s happening now**
+and **Computer specs**. Progress shows the current task, file, timing and
+**Hits**. Open **Scan setup** below to change the scope, scanners and resource
+choices. Hits separates native advisories from toolkit findings, references
+and withdrawn entries when counts are available. Computer specs separates
+cached host CPU and memory readings from toolkit usage and privilege coverage.
 
 **Entire PC** is the initial scope. Click the scope control to choose browser
 checks or selected local evidence. Entire PC requests the toolkit's supported
@@ -176,11 +183,12 @@ and toolkit activity text are untrusted display data; they cannot grant trust,
 change a baseline or authorize response. The pinned upstream engine and license
 bytes remain unchanged.
 
-After the requested scan finishes and both selected scanners have stopped, one
-after-action report opens automatically. It includes completed, cancelled,
-failed and incomplete outcomes with their retained findings and coverage gaps.
-Investigate and Trace reopen the same review; dismissing it does not repeat the
-scan. External-tool findings remain leads and do not authorize containment.
+A requested manual scan opens one after-action report when its owned work has
+retired. Automatic results appear in the dashboard **Notifications** inbox
+for review. Use **Open After-action**, **Investigate** or **Trace** to return
+to the retained result. The plain-English summary describes findings,
+advisories, references and coverage gaps. Expand **Show technical details**
+for definitions and the bounded JSON preview.
 
 Settings retain the priority and resource choices. Above normal is the default;
 High is the supported operating-system ceiling. REALTIME priority is not used.
@@ -193,6 +201,73 @@ platform support and the scan's native process custody.
 Privilege verification reports current coverage; it does not silently grant
 Administrator rights. A tool report or resource graph is not a detection-rate
 benchmark, proof of full collection or permission to terminate a process.
+
+### Automatic scan
+
+Open **SpywareGuard → Scan setup → Automatic scan**. **Run once a day** starts
+on with **Entire PC** selected. Choose **Entire PC**, **Browser checks** or
+**Quick system checks**, then click **Save automatic scan settings**. The
+saved switch and scope apply to later automatic attempts.
+
+The running dashboard checks eligibility after startup and waits for the
+scanner to be available. Workstation use can continue. An active scan,
+pending scanner work, a modal dialog or a security pause can delay the next
+attempt. The saved attempt record spaces automatic attempts at least 24 hours
+apart for this data profile. The automatic job requests normal priority and
+a reduced toolkit CPU target where supported.
+
+### Native checks and coverage
+
+With native checks selected, **Entire PC** includes supported Chromium
+HTTP Strict Transport Security (HSTS) records and local hosts-file overrides.
+**Browser checks** includes the HSTS reader. HSTS records describe secure
+connection settings. A hosts-file entry describes a local address override,
+which can include a local blocking address. A selected-evidence run uses the
+bounded Scan Center reader for explicitly selected paths. These native readers
+run independently of the toolkit and report advisories and any coverage gaps.
+
+On Windows, Entire PC also samples the current user’s configured Temp folder
+when Angerona can verify it as a plain directory on a fixed local drive. This
+native reader uses the bounded Scan Center budget of 64 files, 32 MiB total,
+4 MiB per file and 12 seconds of work. Missing access, signatures or budget
+produce an explicit coverage gap. Results stay advisory and the report
+keeps this sample separate from Zero-Breach coverage.
+
+The toolkit retains its separate supported mobile inputs. Managed Android
+acquisition, encrypted backups and other advanced toolkit options keep their
+separate adapter and dependency holds. Bounded Windows launch checks include
+Image File Execution Options (IFEO) and Silent Process Exit. Signed report bytes,
+advisories and contextual matches are available for review. Response still
+requires current original proof, an authorized target and policy approval.
+
+### Attached devices and automation
+
+For supported Windows storage, the existing PIN approval admits one bounded
+file review per approved insertion. The monitor checks the exact drive root
+and volume GUID and rechecks the approval during the review. The budget allows
+up to 64 files, 16 MiB total, 2 MiB per file and ten seconds of scan work.
+Unsupported scopes or unavailable proof-backed handoff stay held. The
+retained result appears in **Notifications** for advisory review. File
+changes and OS isolation require separate authorized actions.
+
+When available, an Entire PC scan with native checks includes cached
+host-visible accessory functions, such as input, storage and network
+combinations, and OS-reported Kernel DMA Protection posture. Counter-Agentic
+Detection can contribute observations of repeated discovery and action
+launches or process-linked outbound activity. The report preserves identity
+strength and missing coverage. Device internals, bot or operator identity,
+and authority to respond remain separate from these observations.
+
+### Research and dashboard review
+
+Click a **Research Wire** headline to open its brief, source and date. Use
+**Feed details** for source status. Bundled briefs remain available offline.
+The **Policy / Beacon** setting controls optional research network access.
+The dashboard mail icon opens **Notifications**. Hover over a row to preview
+its description. Click the row or select **Review** to open that notification’s
+original prompt and controls. For removable media, check the mount shown in the
+prompt before choosing whether to approve scanning or keep that device blocked.
+**Current Assessment** opens the relevant case, coverage, settings or inbox view.
 
 ## Analysis and sandbox controls
 

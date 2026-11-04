@@ -81,6 +81,8 @@ function Assert-NoActiveVenv { param($VenvPath) if($script:Lease -ne 1) {throw '
 function Test-Path { param($LiteralPath,$PathType) return $true }
 function New-SourceStartupTemporary { param($Root,$Storage) return 'D:\fixture\scratch' }
 function New-RepairChildEnvironment { param($Scratch) return @{TEMP=$Scratch;TMP=$Scratch;QT_QPA_PLATFORM='offscreen'} }
+function Test-SourceStartupFreshCacheRequired { return $false } # No applied source update in these scenarios.
+function New-SourceActivationLaunch { param($Root) throw 'Optional activation ownership is unavailable in this fixture' }
 function Initialize-OwnedRepairProcess {}
 function Invoke-OwnedRepairProcess {
     param($FilePath,$Arguments,$WorkingDirectory,$Environment,$TimeoutSeconds,$LogPath)
@@ -98,7 +100,9 @@ function Invoke-OwnedRepairProcess {
     return 0
 }
 function Invoke-SourceStartupAssistant {
-    param($Python,$Root,$Environment,$Scratch,[switch]$SoftwareRenderer)
+    param($Python,$Root,$Environment,$Scratch,[switch]$SoftwareRenderer,[switch]$NoStartupWindow,[string]$FreshCachePrefix)
+    if($NoStartupWindow -or $FreshCachePrefix) {throw 'unexpected renderer or cache strategy'}
+    if($env:ANGERONA_TEST_CASE -eq 'gui' -and [bool]$SoftwareRenderer -ne ($script:Passes -gt 1)) {throw 'software renderer retry did not follow the failed pass'}
     if($script:Lease -ne 1) {throw 'helper escaped lease'}
     if($Environment.ContainsKey('QT_QPA_PLATFORM')) {throw 'offscreen leaked to dashboard'}
     $script:Events.Add('helper')
@@ -159,6 +163,13 @@ def test_actual_source_supervisor_rechecks_and_launches_at_most_once(
     assert result["failure"] == ""
     assert result["critical_mode"] is None
     assert result["events"].count("workspace-close") == 1
+    if case == "source-trust":
+        assert result["events"].count("source-trust") == 1
+        assert "helper" not in result["events"]
+    elif case in {"unknown", "timeout-live", "cancel-live", "live-dashboard"}:
+        events = result["events"]
+        assert events.count("source-trust") == events.count("helper") == 1
+        assert events.index("source-trust") < events.index("helper") < events.index("release")
     if repairs:
         repair = next(i for i, event in enumerate(result["events"]) if event.startswith("repair:"))
         assert result["events"][repair - 1] == "release"

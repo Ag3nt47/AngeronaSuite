@@ -26,8 +26,9 @@ from typing import List
 from angerona import __version__
 from angerona.core.atomic_io import replace_with_retry
 from angerona.core.crashlog_status import normal_log_status
-from angerona.core.eventbus import Severity
+from angerona.core.eventbus import EventBus, Severity
 from angerona.core.privilege import is_admin
+from angerona.core.subscriber_diagnostics import project_subscribers
 from angerona.core.telemetry_storage_policy import STORAGE_REASONS, STORAGE_STATES
 
 _THREAT = {Severity.INFO: "SECURE", Severity.LOW: "LOW", Severity.MEDIUM: "ELEVATED",
@@ -714,7 +715,7 @@ class StatusReporter:
                 self._refresh.wait(self._effective_interval())
 
     # ── Snapshot ─────────────────────────────────────────────────────────────
-    def _bus_snapshot(self) -> dict:
+    def _bus_snapshot(self, *, with_details: bool = False):
         """Report actual inline-delivery evidence, without inventing a heartbeat.
 
         The bus has no dispatcher thread: a quiet revision is normal. Counters
@@ -722,7 +723,7 @@ class StatusReporter:
         blocked or that all security sensors are healthy.
         """
         rows = self.bus.subscriber_metrics()
-        return {
+        aggregate = {
             "delivery_mode": "inline",
             "revision": self.bus.revision(),
             "subscriber_count": len(rows),
@@ -730,6 +731,21 @@ class StatusReporter:
             "failures": sum(row.failures for row in rows),
             "budget_violations": sum(row.budget_violations for row in rows),
         }
+        if not with_details:
+            return aggregate
+        try:
+            activity = EventBus.subscriber_activity(self.bus) if type(self.bus) is EventBus else None
+        except Exception:
+            activity = None
+        try:
+            details = project_subscribers(rows, activity)
+        except Exception:
+            details = {
+                "schema": 1, "state": "unavailable", "advisory_only": True,
+                "response_authorized": False, "reason_codes": ["projection_unavailable"],
+                "completed": None, "active": None,
+            }
+        return aggregate, details
 
     def _snapshot(self) -> dict:
         from angerona.core.threat import (
@@ -803,6 +819,14 @@ class StatusReporter:
         from dataclasses import asdict
         from angerona.core.ollama_lifecycle import startup_snapshot
         ollama_startup = asdict(startup_snapshot(self.config.ollama_host))
+        event_bus, event_bus_subscribers = self._bus_snapshot(with_details=True)
+        process_cycle = {"schema": 1, "state": "unavailable", "response_authorized": False}
+        # Exact built-in cache getter only: no collection, callback execution,
+        # SQLite, native I/O or module-defined custom accessor is admitted here.
+        from angerona.modules.process_monitor import ProcessMonitorModule
+        process_monitor = self.manager.modules.get("Process Monitor")
+        if type(process_monitor) is ProcessMonitorModule:
+            process_cycle = ProcessMonitorModule.cycle_diagnostic_snapshot(process_monitor)
         return {
             "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
             "generated_ts": time.time(),
@@ -812,7 +836,9 @@ class StatusReporter:
                 self._effective_interval(),
                 60.0 if getattr(self.config, "runtime_chill_active", False) else 30.0,
             ),
-            "event_bus": self._bus_snapshot(),
+            "event_bus": event_bus,
+            "event_bus_subscribers": event_bus_subscribers,
+            "process_monitor_cycle": process_cycle,
             "process_inventory": _process_inventory_snapshot(self.process_snapshot_lifecycle),
             "wer_observation": _wer_observation_snapshot(self.manager),
             "ai_request": _ai_request_snapshot(self.manager),
@@ -1031,6 +1057,23 @@ class StatusReporter:
         material = dict(snap)
         material.pop("generated", None)
         material.pop("generated_ts", None)
+        cycle = material.get("process_monitor_cycle")
+        if type(cycle) is dict:
+            # Routine work continuously changes stage stamps/counts/durations.
+            # Keep that fresh detail when another change or the existing quiet
+            # heartbeat warrants a write; it must not itself become a new timer.
+            # Loss, source generation and terminal/startup transitions remain
+            # material. This fingerprint never changes the snapshot we persist.
+            stage = cycle.get("stage")
+            execution_state = (
+                stage if type(stage) is str and stage in {"unobserved", "startup", "stopped"}
+                else "cycling"
+            )
+            material["process_monitor_cycle"] = {
+                key: cycle.get(key) for key in
+                ("schema", "state", "generation", "update_loss", "response_authorized")
+            }
+            material["process_monitor_cycle"]["execution_state"] = execution_state
         now = time.monotonic()
         heartbeat = 60.0 if snap.get("chill_mode") else 30.0
         if (

@@ -1,12 +1,52 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.15.0
-Date: 2026-11-02
+Date: 2026-11-03
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
 
+- Spyware Scan shows current work, progress and hits above collapsible setup.
+  Its daily Entire PC schedule starts after dashboard readiness and uses the
+  existing scanner worker with normal priority. Saved off and scope preferences
+  are honored. Native readers cover bounded Chromium HSTS, hosts-file overrides,
+  selected-file signatures, Windows launch configuration and a bounded sample
+  of a verified configured Windows Temp folder in Entire PC mode. Native
+  coverage stays separate from the toolkit’s private Temp alias.
+- Windows approved removable storage can receive a bounded file review after
+  exact identity and PIN checks. Results route to Notifications. Host-visible
+  accessory functions and process-linked automation observations stay advisory.
+  Notifications open the exact prompt on row click. Current Assessment and
+  Research Wire rotate separately, and scanner reports place plain language
+  ahead of technical details.
+- Scanner report count defaults to Unlimited. Saved finite limits are honored.
+  The separate byte, free-space, output and inventory checks still hold unsafe
+  admissions. Report review pages and selected export/deletion recheck custody.
+  In a live source session, the scanner admitted a ninth job with the first
+  eight reports preserved. Toolkit progress appeared for the ninth job.
+- The dashboard mail icon counts pending USB, setup, storage and automatic
+  update prompts. USB approval uses one entry for each live policy request.
+  PIN review opens only on request. Manual update checks retain their direct
+  review workflow. The focused Windows run passed 403 tests with a matching
+  source fence and normal native retirement. Core, watchdog, scanner and Black
+  Box counters advanced across two authenticated live heartbeat samples.
+  See analysis/hardening-v1.15-2026-11-03-validation-and-runtime.md.
+- Assessment availability: GUI-only None detected wording means no unresolved
+  active HIGH/CRITICAL detections in the last ten minutes. Failed clean/initial
+  reads show Unavailable and an unknown critical count; failed warning results
+  remain visibly stale. Only successful snapshot delivery clears failed-read
+  state. Typed confirmed cases override normal results; case resolution cannot
+  revalidate an old snapshot. Core classification, policy and authority unchanged.
+  Eight-file Qt/core cohort: 78 passes, zero failures/errors/skips in 10.12 seconds;
+  source and selected preferences unchanged during the gate. Final static,
+  startup, changed-revision observation and publication remain separate.
+  Supplementary retained role-archive review establishes four increasing native-
+  bound heartbeat series, with initial companion gaps retained. Raw projections
+  cannot independently reproduce capture-time HMAC checks. Corrected first STOP:
+  18 waits across 14 unique identities including Core; exported generations
+  previously counted only 13 children. Follow-up:
+  analysis/hardening-v1.15-2026-11-02-threat-status.md.
 - CI/response follow-up: published 380dc7b ended with 10 successes and five
   cancellations, including four one-hour Python expirations after five failures
   and an opaque 39% stall; macOS
@@ -37,10 +77,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   compile 1,384 files/zero failures; real dependency preflight PASS. Ordinary
   Full60 reached 75 running/Chill off. Retained critical recovery exposure and
   spyware heuristics grant no response authority; 721 events omit 5,330 details,
-  initial retention gap 4,596. Transport heartbeats advance; component counters
-  and independent raw-event authentication are not established by this capture.
+  initial retention gap 4,596. Transport heartbeats advance. The initial three-
+  file review omitted the separate role archive; the supplement above verifies
+  counter advancement and retained native bindings. Raw HMAC revalidation remains
+  outside that supplementary scope.
   Inventory bounds (two) keep strict observation acceptance false. Normal STOP
-  Core exit zero; all 18 retained waits across 13 observed generations signaled;
+  Core exit zero; all 18 retained waits across 14 unique observed generations signaled;
   no replacement observed for five seconds; source/selected preferences unchanged.
   One inventory bound and unavailable short-phase role samples retain false
   strict STOP acceptance; not complete history or historical crash closure.

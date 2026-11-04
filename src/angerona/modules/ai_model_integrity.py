@@ -34,6 +34,7 @@ module-level register().
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import hmac
 import json
@@ -66,6 +67,17 @@ _ATTESTATION_TTL_SECONDS = 60.0
 
 class ModelIntegrityError(RuntimeError):
     """Raised when a local Ollama model cannot be verified from disk."""
+
+
+class ModelInventoryUnavailable(ModelIntegrityError):
+    """Collection supplied no inventory proof; inference remains blocked."""
+
+
+def _inventory_collection_error(message: str, cause: OSError) -> ModelIntegrityError:
+    # These OS refusals identify an unsafe path/object, not a pure read gap.
+    if cause.errno in {errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.EMLINK}:
+        return ModelIntegrityError(message)
+    return ModelInventoryUnavailable(message)
 
 
 class ModelAttestationCancelled(ModelIntegrityError):
@@ -177,7 +189,7 @@ def _hash_file(
     except ModelIntegrityError:
         raise
     except OSError as exc:
-        raise ModelIntegrityError("model inventory object could not be hashed") from exc
+        raise _inventory_collection_error("model inventory object could not be hashed", exc) from exc
     finally:
         if descriptor is not None:
             try:
@@ -276,7 +288,7 @@ def _read_verified_file(path: Path, root: Path, *, maximum: int) -> bytes:
             payload = stream.read(before.st_size + 1)
             after = os.fstat(stream.fileno())
     except OSError as exc:
-        raise ModelIntegrityError("Ollama manifest could not be read") from exc
+        raise _inventory_collection_error("Ollama manifest could not be read", exc) from exc
     if len(payload) != before.st_size or len(payload) > maximum:
         raise ModelIntegrityError("Ollama manifest changed during verification")
     if (after.st_dev, after.st_ino, after.st_size) != (
@@ -318,7 +330,7 @@ def _hash_verified_blob(
                 digest.update(block)
             after = os.fstat(stream.fileno())
     except OSError as exc:
-        raise ModelIntegrityError("Ollama blob could not be read") from exc
+        raise _inventory_collection_error("Ollama blob could not be read", exc) from exc
     if (after.st_dev, after.st_ino, after.st_size) != (
         opened.st_dev,
         opened.st_ino,
@@ -483,13 +495,13 @@ class AIModelIntegrityGuardModule(BaseModule):
     def _validated_root(self) -> tuple[Path, dict[str, object]]:
         candidate = self._models_root()
         if candidate is None:
-            raise ModelIntegrityError("Ollama model directory is unavailable")
+            raise ModelInventoryUnavailable("Ollama model directory is unavailable")
         try:
             before = candidate.stat(follow_symlinks=False)
             root = candidate.resolve(strict=True)
             after = root.stat(follow_symlinks=False)
         except OSError as exc:
-            raise ModelIntegrityError("Ollama model directory is unavailable") from exc
+            raise _inventory_collection_error("Ollama model directory is unavailable", exc) from exc
         if (
             candidate.is_symlink()
             or root.is_symlink()
@@ -552,7 +564,7 @@ class AIModelIntegrityGuardModule(BaseModule):
             except ModelIntegrityError:
                 raise
             except OSError as exc:
-                raise ModelIntegrityError("model inventory traversal failed") from exc
+                raise _inventory_collection_error("model inventory traversal failed", exc) from exc
         for directory, expected in directories.items():
             try:
                 current = directory.stat(follow_symlinks=False)
@@ -571,7 +583,7 @@ class AIModelIntegrityGuardModule(BaseModule):
         files, identity = self._discover_files()
         _raise_if_attestation_cancelled(stop_event)
         if not files:
-            raise ModelIntegrityError("model inventory is empty")
+            raise ModelInventoryUnavailable("model inventory is empty")
         hashes: dict[str, str] = {}
         for relative, path in files.items():
             _raise_if_attestation_cancelled(stop_event)
@@ -942,6 +954,15 @@ class AIModelIntegrityGuardModule(BaseModule):
                         Severity.MEDIUM if baseline_failure else Severity.CRITICAL,
                         baseline_status=self._baseline_status,
                         error=str(exc),
+                        **(
+                            {
+                                "disposition": "exposure",
+                                "active_attack": False,
+                                "response_authorized": False,
+                            }
+                            if not baseline_failure and isinstance(exc, ModelInventoryUnavailable)
+                            else {}
+                        ),
                     )
             if stop_event.is_set():
                 return

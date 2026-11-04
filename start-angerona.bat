@@ -76,6 +76,7 @@ set "ANGERONA_WD_DATADIR="
 set "ANGERONA_AGENT_SHA256="
 set "ANGERONA_EXTERNAL_MODULES="
 set "ANGERONA_BOOTSTRAP_RESTORED="
+set "ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID="
 
 REM Rebuild the remaining launch paths from trusted registry/system locations,
 REM not from the caller's environment. Per-user CPython remains supported, but
@@ -150,6 +151,8 @@ set "ANGERONA_BATCH_FILE=%~f0"
 "%ANGERONA_POWERSHELL%" -NoProfile -NonInteractive -STA -Command "$s=[IO.File]::ReadAllText($env:ANGERONA_BATCH_FILE);$p=$s -split '(?m)^:__ANGERONA_PINNED_BOOTSTRAP__\r?$',2;if($p.Count -ne 2){exit 1};& ([scriptblock]::Create($p[1]))"
 :source_finished
 set "ANGERONA_SOURCE_RC=%errorlevel%"
+REM Reserved original-capsule handoff leaves before stale batch continuation.
+if "%ANGERONA_SOURCE_RC%"=="88" exit /b 0
 if "%ANGERONA_SOURCE_RC%"=="10" goto source_retry
 if "%ANGERONA_SOURCE_RC%"=="1223" exit /b %ANGERONA_SOURCE_RC%
 if not "%ANGERONA_SOURCE_RC%"=="0" (
@@ -168,10 +171,10 @@ exit /b %ANGERONA_SOURCE_RC%
 # This readable payload is embedded in start-angerona.bat by the manifest builder
 # companion. The editable source batch file is its trust anchor, not an enclave.
 $ErrorActionPreference='Stop'
-$manifestSha='f3a5792a245f5f78b7031d7bfcc8f842d8420a642028b682b458e34891b11b29'
-$manifestBlob='202a49e2fb64e2b3530a898009b3eae2963bad04'
-$verifierSha='49e169d2ed7a27dfbcf9bf97fa6e673cc1e10df823bdfdacea21adf019b19230'
-$verifierBlob='7ff691075c15f8a5e7775ff2d6f739fc77efe491'
+$manifestSha='7568ff73de352d7d7152ed10a8bdad67e21abde78641818a8187ee5cdf1003fc'
+$manifestBlob='f4da7019e7eb52529ec2ec1fbc33bab87a599d46'
+$verifierSha='30614b5bf8c85d87c26096a8af297c7c2353375cae3af386988a57f29f4002b0'
+$verifierBlob='daee2d866cc1da3b10ef2ef9e90e6c535505c688'
 $root=[IO.Path]::GetFullPath($env:ANGERONA_INSTALL_ROOT).TrimEnd('\')
 $storage=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona\SourceData'
 $script:BootstrapCanonicalStorage=$storage
@@ -477,8 +480,197 @@ function Show-BootstrapRecovery([string]$Message) {
     } catch { Write-Host '[startup] Recovery display unavailable; retain this console.'; return 1 }
 }
 
+
+# Pending source activation is checked using only this launcher anchor and
+# fixed system APIs BEFORE any mutable verifier/supervisor/common is imported.
+function Assert-ActivationBootstrapCustody([string]$Path) {
+    Assert-BootstrapPlainPath $Path
+    $item=Get-Item -LiteralPath $Path -Force
+    $acl=if($item.PSIsContainer){[IO.Directory]::GetAccessControl($Path)}else{[IO.File]::GetAccessControl($Path)}
+    $user=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -cne $user){throw 'Original activation custody owner differs.'}
+    $raw=[Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(),0)
+    if(!$raw.DiscretionaryAcl -or $raw.DiscretionaryAcl.Count -ne 3){throw 'Original activation DACL count differs.'}
+    if($item.PSIsContainer -and !$acl.AreAccessRulesProtected){throw 'Original activation directory is unprotected.'}
+    $seen=@{}
+    foreach($ace in $raw.DiscretionaryAcl){
+        $sid=$ace.SecurityIdentifier.Value
+        if($ace.AceType -ne [Security.AccessControl.AceType]::AccessAllowed -or $ace.AccessMask -ne 2032127 -or
+            ($item.PSIsContainer -and [int]$ace.AceFlags -ne 3) -or
+            (!$item.PSIsContainer -and [int]$ace.AceFlags -notin @(0,16)) -or
+            $sid -cnotin @($user,'S-1-3-4','S-1-5-18','S-1-5-32-544') -or $seen.ContainsKey($sid)){
+            throw 'Original activation custody has an unknown access rule.'
+        }
+        $seen[$sid]=$true
+    }
+    if(!$seen.ContainsKey('S-1-5-18') -or !$seen.ContainsKey('S-1-5-32-544') -or
+        ($seen.ContainsKey($user) -eq $seen.ContainsKey('S-1-3-4'))){throw 'Original activation custody principals differ.'}
+    if(!$item.PSIsContainer){Assert-ActivationBootstrapCustody ([IO.Path]::GetDirectoryName($Path))}
+}
+function Read-ActivationBootstrapRecord([string]$Path,[int]$Limit,$Holds,[switch]$BytesOnly) {
+    Assert-ActivationBootstrapCustody $Path
+    $lease=[Angerona.StartupBundleFile]::new($Path,$false,$false)
+    $Holds.Add($lease)
+    $raw=$lease.Read($Limit)
+    $value=$null
+    if(!$BytesOnly){
+        try{$value=[Text.UTF8Encoding]::new($false,$true).GetString($raw)|ConvertFrom-Json -ErrorAction Stop}
+        catch{throw 'Original source-activation metadata is invalid.'}
+        if(!$value -or $value -is [Array] -or $value -is [string]){throw 'Original activation record is not an object.'}
+    }
+    return [pscustomobject]@{Value=$value;Sha256=(Get-BootstrapHash $raw);Bytes=$raw.Length;Lease=$lease}
+}
+function Assert-ActivationBootstrapFields($Value,[string[]]$Keys){
+    $actual=@($Value.PSObject.Properties.Name)
+    if($actual.Count -ne $Keys.Count -or @($actual|Where-Object{$_ -cnotin $Keys}).Count){throw 'Original activation record has unknown fields.'}
+}
+function Get-OriginalSourceActivationCapsule($Holds) {
+    $state=Join-Path $storage 'github-updates';$path=Join-Path $state 'activation-pending.json'
+    Assert-BootstrapPlainPath $path
+    if(!(Test-Path -LiteralPath $path)){return $null}
+    if($env:ANGERONA_SETUP_ONLY -eq '1'){throw 'Setup-only mode cannot reconcile an interrupted source update.'}
+    $pending=Read-ActivationBootstrapRecord $path 65536 $Holds;$q=$pending.Value
+    Assert-ActivationBootstrapFields $q @('schema','activation_id','plan_sha256','request_sha256','transaction_sha256','source_root')
+    if($q.schema -cne 'angerona.source-activation-pending/v1' -or $q.source_root -cne $root -or
+        $q.activation_id -isnot [string] -or $q.activation_id -cnotmatch '^[0-9a-f]{32}$' -or
+        @($q.plan_sha256,$q.request_sha256,$q.transaction_sha256|Where-Object{$_ -isnot [string] -or $_ -cnotmatch '^[0-9a-f]{64}$'}).Count){
+        throw 'Interrupted source update identity is malformed or foreign.'
+    }
+    $operation=Join-Path $state ('activations\apply-'+$q.activation_id)
+    $plan=Read-ActivationBootstrapRecord (Join-Path $operation 'plan.json') 16777216 $Holds
+    if($plan.Sha256 -cne $q.plan_sha256 -or $plan.Value.schema -cne 'angerona.source-activation-plan/v1' -or
+        $plan.Value.activation_id -cne $q.activation_id -or $plan.Value.source_root -cne $root -or
+        $plan.Value.state_root -cne $state -or $plan.Value.origin -cne 'https://github.com/Ag3nt47/AngeronaSuite.git'){
+        throw 'Original approved plan is unavailable.'
+    }
+    $transaction=Read-ActivationBootstrapRecord (Join-Path $operation 'transaction.json') 16777216 $Holds
+    if($transaction.Sha256 -cne $q.transaction_sha256 -or $transaction.Value.source_root -cne $root -or
+        $transaction.Value.activation_id -cne $q.activation_id){throw 'Original interrupted transaction is unavailable.'}
+    $request=Read-ActivationBootstrapRecord (Join-Path $operation ('requests\'+$q.request_sha256+'.json')) 65536 $Holds
+    $r=$request.Value
+    if($request.Sha256 -cne $q.request_sha256 -or $r.schema -cne 'angerona.source-activation-request/v1' -or
+        $r.activation_id -cne $q.activation_id -or $r.plan_sha256 -cne $q.plan_sha256 -or $r.source_root -cne $root -or
+        $r.state_root -cne $state -or $r.accepted -isnot [bool] -or !$r.accepted){throw 'Original explicit approval is unavailable.'}
+    $owner=Read-ActivationBootstrapRecord (Join-Path $state 'activation-owner.json') 65536 $Holds;$c=$owner.Value
+    Assert-ActivationBootstrapFields $c @('schema','launch_id','source_root','state_root','supervisor_pid','supervisor_birth','supervisor_image','token',
+        'broker_pid','broker_birth','broker_image','core_pid','core_birth','core_image','owner_state')
+    if($owner.Sha256 -cne $r.owner_sha256 -or $c.owner_state -cne 'bound' -or $c.source_root -cne $root -or
+        $c.state_root -cne $state -or $c.launch_id -cne $r.launch_id -or $c.core_pid -ne $r.core_pid -or
+        $c.core_birth -cne $r.core_birth -or $c.broker_pid -ne $r.broker_pid -or $c.broker_birth -cne $r.broker_birth -or
+        $c.launch_id -isnot [string] -or $c.launch_id -cnotmatch '^[0-9a-f]{32}$') {throw 'Original native-controller approval lineage differs.'}
+    $launch=Join-Path $state ('launches\'+$c.launch_id)
+    $descriptor=Read-ActivationBootstrapRecord (Join-Path $launch 'descriptor.json') 8192 $Holds
+    $ready=Read-ActivationBootstrapRecord (Join-Path $launch 'ready.json') 8192 $Holds
+    if($descriptor.Value.token -cne $c.token -or $descriptor.Value.launch_id -cne $c.launch_id -or
+        $descriptor.Value.source_root -cne $root -or $descriptor.Value.state_root -cne $state -or
+        $descriptor.Value.supervisor_pid -ne $c.supervisor_pid -or $descriptor.Value.supervisor_birth -cne $c.supervisor_birth -or
+        $ready.Value.descriptor_sha256 -cne $descriptor.Sha256 -or $ready.Value.core_pid -ne $c.core_pid -or
+        $ready.Value.core_birth -cne $c.core_birth -or $ready.Value.core_image -cne $c.core_image){throw 'Original dashboard/launch lineage differs.'}
+    $retired=Read-ActivationBootstrapRecord (Join-Path $launch 'core-retired.json') 8192 $Holds;$n=$retired.Value
+    Assert-ActivationBootstrapFields $n @('schema','launch_id','core_pid','core_birth','core_exit_code','native_wait0','owner_sha256')
+    if($n.schema -cne 'angerona.source-activation-core-retired/v1' -or $n.launch_id -cne $c.launch_id -or
+        $n.core_pid -ne $c.core_pid -or $n.core_birth -cne $c.core_birth -or $n.core_exit_code -isnot [int] -or $n.core_exit_code -ne 0 -or
+        $n.native_wait0 -isnot [bool] -or !$n.native_wait0 -or $n.owner_sha256 -cne $owner.Sha256){throw 'Original actual Core exit observation is unavailable.'}
+    $stop=Read-ActivationBootstrapRecord (Join-Path $storage 'diagnostics\operator-stop.json') 65536 $Holds;$t=$stop.Value
+    if($t.schema -isnot [int] -or $t.schema -ne 1 -or $t.state -cne 'retired' -or
+        $t.forced -isnot [bool] -or $t.forced -or $t.operator_stop_recorded -isnot [bool] -or !$t.operator_stop_recorded -or
+        @($t.pending_workers).Count -or @($t.pending_custody).Count -or $t.before_cleanup_pending -ne 0 -or
+        $t.cleanup_error -cne '' -or $t.discovery_error -cne ''){throw 'Original managed STOP is incomplete.'}
+    Assert-ActivationBootstrapFields $t.source_activation @('launch_id','activation_id','request_sha256','core_pid','core_birth')
+    if($t.source_activation.launch_id -cne $c.launch_id -or $t.source_activation.activation_id -cne $q.activation_id -or
+        $t.source_activation.request_sha256 -cne $q.request_sha256 -or $t.source_activation.core_pid -ne $c.core_pid -or
+        $t.source_activation.core_birth -cne $c.core_birth){throw 'Managed STOP belongs to another source request.'}
+    $capsule=Join-Path $operation 'broker'
+    $snapshot=Read-ActivationBootstrapRecord (Join-Path $capsule 'snapshot.json') 65536 $Holds
+    $names=@('tools/activate_source_update.py','src/angerona/core/source_activation_broker.py','src/angerona/core/source_activation_file.py',
+        'src/angerona/core/startup_recovery.py','src/angerona/updater/source_git.py','tools/publication_transport.py',
+        'tools/windows_publication_runtime.py','tools/publication_git_runtime_profile.json','tools/Resume-AngeronaSourceActivation.ps1','tools/startup_repair_common.ps1','src/angerona/core/source_activation_storage.py','src/angerona/resilience/heartbeat.py',
+        'src/angerona/core/_source_tomli/__init__.py','src/angerona/core/_source_tomli/_parser.py','src/angerona/core/_source_tomli/_re.py','src/angerona/core/_source_tomli/_types.py','src/angerona/core/_source_tomli/LICENSE','src/angerona/core/source_activation_workspace.py')
+    Assert-ActivationBootstrapFields $snapshot.Value @('schema','files')
+    Assert-ActivationBootstrapFields $snapshot.Value.files $names
+    Assert-ActivationBootstrapFields $plan.Value.broker_snapshot.files $names
+    if($snapshot.Value.schema -cne 'angerona.source-activation-broker-snapshot/v1' -or
+        $plan.Value.broker_snapshot.schema -cne $snapshot.Value.schema){throw 'Original capsule schema differs.'}
+    $total=0L
+    foreach($name in $names){
+        $row=$snapshot.Value.files.PSObject.Properties[$name].Value
+        $declared=$plan.Value.broker_snapshot.files.PSObject.Properties[$name].Value
+        Assert-ActivationBootstrapFields $row @('bytes','sha256')
+        if($row.bytes -isnot [int] -or $row.bytes -lt 1 -or $row.bytes -gt 4194304 -or
+            $row.sha256 -isnot [string] -or $row.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $declared.bytes -ne $row.bytes -or $declared.sha256 -cne $row.sha256){throw 'Original capsule member declaration differs.'}
+        $file=Read-ActivationBootstrapRecord (Join-Path $capsule ($name.Replace('/','\'))) 4194304 $Holds -BytesOnly
+        if($file.Bytes -ne $row.bytes -or $file.Sha256 -cne $row.sha256){throw 'Original capsule member changed.'}
+        $total+=$file.Bytes;if($total -gt 4194304){throw 'Original capsule exceeds its aggregate budget.'}
+    }
+    # Pending itself must be movable by the original transaction after all
+    # immutable inputs/capsule members are sealed and independently rechecked.
+    $pending.Lease.Dispose();[void]$Holds.Remove($pending.Lease)
+    return [pscustomobject]@{Id=$q.activation_id;PlanSha=$q.plan_sha256;RequestSha=$q.request_sha256
+        Resume=(Join-Path $capsule 'tools\Resume-AngeronaSourceActivation.ps1');Capsule=$capsule;State=$state;Operation=$operation}
+}
+
+function Invoke-OriginalSourceActivationHandoff($Bound,$Holds,[switch]$ConfirmReconciliation) {
+    # Only exact already-sealed ORIGINAL code can define these helpers.
+    . (Join-Path $Bound.Capsule 'tools\startup_repair_common.ps1')
+    . $Bound.Resume
+    Initialize-SourceActivationProcessOwner
+    $gateOwner=$null;$cmdOwner=$null;$nextOwner=$null;$process=$null;$transferred=$false
+    try {
+        $gateOwner=[Angerona.SourceActivationProcessOwner]::new([uint32]$PID)
+        $gateOwner.AssertLive($gateOwner.Birth,$fixedPS)
+        if($gateOwner.InAnyJob()){throw 'Automatic recovery owner cannot prove survival outside the invoking host Job. Close this launcher and use the verified fixed Resume helper separately.'}
+        $cmdOwner=[Angerona.SourceActivationProcessOwner]::new($gateOwner.ParentProcessId())
+        Assert-SourceActivationBatchParent $cmdOwner $root
+        $nonce=[Guid]::NewGuid().ToString('N')
+        $handoffs=Join-Path $Bound.Operation 'handoffs'
+        if(!(Test-Path -LiteralPath $handoffs)){New-PrivateRepairDirectory $handoffs}
+        Assert-SourceActivationCustody $handoffs
+        $count=0;foreach($entry in [IO.Directory]::EnumerateFileSystemEntries($handoffs)){if(++$count -ge 32){throw 'Recovery handoff history requires review; nothing was deleted.'}}
+        $directory=Join-Path $handoffs $nonce;New-PrivateRepairDirectory $directory
+        $args=@('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$Bound.Resume,
+            '-RepositoryRoot',$root,'-ActivationId',$Bound.Id,'-PlanSha256',$Bound.PlanSha,'-RequestSha256',$Bound.RequestSha,
+            '-GatePid',[string]$PID,'-GateBirth',[string]$gateOwner.Birth,'-CmdPid',[string]$cmdOwner.ProcessId,
+            '-CmdBirth',[string]$cmdOwner.Birth,'-HandoffNonce',$nonce)
+        if($ConfirmReconciliation){$args+='-ConfirmReconciliation'}
+        $info=[Diagnostics.ProcessStartInfo]::new();$info.FileName=$fixedPS
+        $info.Arguments=($args|ForEach-Object{ConvertTo-SourceActivationArgument ([string]$_)}) -join ' '
+        $info.WorkingDirectory=$Bound.Capsule;$info.UseShellExecute=$false;$info.CreateNoWindow=$true
+        $info.WindowStyle=[Diagnostics.ProcessWindowStyle]::Hidden;$info.EnvironmentVariables.Clear()
+        foreach($entry in (New-RepairChildEnvironment $directory).GetEnumerator()){$info.EnvironmentVariables[$entry.Key]=[string]$entry.Value}
+        $process=[Diagnostics.Process]::Start($info)
+        if(!$process){throw 'The one fixed original recovery owner did not start.'}
+        $nextOwner=[Angerona.SourceActivationProcessOwner]::new([uint32]$process.Id)
+        $nextOwner.AssertLive($nextOwner.Birth,$fixedPS)
+        if($nextOwner.InAnyJob() -or $nextOwner.ParentProcessId() -ne $PID){throw 'Independent original recovery owner ancestry/lifetime is unavailable.'}
+        $ackPath=Join-Path $directory 'ready.json';$deadline=[DateTime]::UtcNow.AddSeconds(10)
+        while(!(Test-Path -LiteralPath $ackPath) -and [DateTime]::UtcNow -lt $deadline){
+            if($nextOwner.WaitForExit(0) -eq 0){throw 'Original recovery owner exited before handoff.'};Start-Sleep -Milliseconds 50
+        }
+        $ack=Read-ActivationBootstrapRecord $ackPath 8192 $Holds;$v=$ack.Value
+        Assert-ActivationBootstrapFields $v @('schema','handoff_nonce','activation_id','plan_sha256','request_sha256',
+            'gate_pid','gate_birth','cmd_pid','cmd_birth','resume_pid','resume_birth','resume_image')
+        if($v.schema -cne 'angerona.source-activation-resume-ready/v1' -or $v.handoff_nonce -cne $nonce -or
+            $v.activation_id -cne $Bound.Id -or $v.plan_sha256 -cne $Bound.PlanSha -or $v.request_sha256 -cne $Bound.RequestSha -or
+            $v.gate_pid -ne $PID -or $v.gate_birth -cne [string]$gateOwner.Birth -or $v.cmd_pid -ne $cmdOwner.ProcessId -or
+            $v.cmd_birth -cne [string]$cmdOwner.Birth -or $v.resume_pid -ne $process.Id -or
+            $v.resume_birth -cne [string]$nextOwner.Birth -or $v.resume_image -cne $nextOwner.Image){throw 'Original recovery owner acknowledgement belongs to another generation.'}
+        $nextOwner.AssertLive($nextOwner.Birth,$fixedPS)
+        $transferred=$true
+        return $true # ACK is NOT retirement; Resume independently waits both actual handles.
+    } finally {
+        if($nextOwner -and !$transferred -and $nextOwner.WaitForExit(35000) -ne 0){
+            throw 'Original recovery handoff remains unproved; no source mutation was admitted.'
+        }
+        Close-SourceActivationQueries @($nextOwner,$cmdOwner,$gateOwner)
+        if($process){$process.Dispose()}
+    }
+}
+
+
 $verifierLease=$null
 $bootstrapMutation=@()
+$activationCapsuleHolds=[Collections.Generic.List[object]]::new()
 try {
     Assert-BootstrapPlainPath $root
     $drive=[IO.DriveInfo]::new([IO.Path]::GetPathRoot($root))
@@ -489,6 +681,17 @@ try {
     $archive=Join-Path $storage 'logs\startup-recovery\bootstrap-preserved'
     New-BootstrapPrivateDirectory $archive
     Initialize-BundleNative $archive
+    $activation=Get-OriginalSourceActivationCapsule $activationCapsuleHolds
+    if($activation){
+        if(!$prefs.Enabled){Write-Host '[startup] Automatic recovery is disabled. The verified original owner will require a separate default-No one-shot confirmation after actual launcher retirement.'}
+        try {
+            if(Invoke-OriginalSourceActivationHandoff $activation $activationCapsuleHolds -ConfirmReconciliation:(!$prefs.Enabled)){exit 88}
+        } catch {
+            throw ('No source action was admitted. A recorded original noninteractive /c handoff is required. Close this unsupported launcher and open start-angerona.bat through the verified canonical route; manual Resume without that record remains held. '+$_.Exception.Message)
+        }
+        throw 'The original recovery owner handoff was not proven; source remains held.'
+    }
+
     $raw=$null;$valid=$false
     if(Test-Path -LiteralPath $path) {
         $verifierLease=[Angerona.StartupBundleFile]::new($path,$false,$false)
@@ -569,6 +772,7 @@ try {
     if($env:ANGERONA_SETUP_ONLY -eq '1') {Write-Host ('[startup] '+$_.Exception.Message);exit 1}
     exit (Show-BootstrapRecovery $_.Exception.Message)
 } finally {
+    if($activationCapsuleHolds){foreach($held in $activationCapsuleHolds){$held.Dispose()}}
     if($verifierLease) {$verifierLease.Dispose()}
     Close-BundleMutationLocks $bootstrapMutation
 }

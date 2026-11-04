@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 pytest.importorskip("PySide6")
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QProcess, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QPushButton
 
 from angerona import __main__ as entry
@@ -347,7 +347,197 @@ def test_external_event_loop_exit_retains_unretired_reader_and_does_not_claim_cl
                           aboutToQuit=SimpleNamespace(connect=lambda *_a: None), exec=lambda: 0)
     monkeypatch.setattr(console, "_RETIREMENT_HOLD", None)
     monkeypatch.setattr(console, "QApplication", lambda *_a: app)
-    monkeypatch.setattr(console, "ProtectionServiceConsole", lambda **_k: SimpleNamespace(reader=reader, show=lambda: None))
+    monkeypatch.setattr(
+        console, "ProtectionServiceConsole",
+        lambda **_k: SimpleNamespace(reader=reader, show=lambda: None, _pending_window_work=lambda: False),
+    )
     with pytest.raises(RuntimeError, match="retirement remains unproven"):
         console.run_console()
     assert console._RETIREMENT_HOLD is reader
+
+
+class InertElevationProcess(QProcess):
+    """Configure an actual QProcess wrapper while keeping execution inert."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.test_state = QProcess.ProcessState.NotRunning
+
+    def start(self):
+        assert self.test_state == QProcess.ProcessState.NotRunning
+        self.test_state = QProcess.ProcessState.Running
+
+    def state(self):
+        return self.test_state
+
+    def complete(self, code, status=QProcess.ExitStatus.NormalExit):
+        assert self.test_state == QProcess.ProcessState.Running
+        self.test_state = QProcess.ProcessState.NotRunning
+        self.finished.emit(code, status)
+
+
+@pytest.fixture
+def inert_elevation(tmp_path, monkeypatch):
+    calls = []
+    executable = tmp_path / "AngeronaStartup.exe"
+
+    def prepare():
+        calls.append(executable)
+        return executable, {"SystemRoot": r"C:Windows"}
+
+    monkeypatch.setattr(console, "_operator_elevation_available", lambda: True)
+    monkeypatch.setattr(console, "_operator_elevation_launch", prepare)
+    monkeypatch.setattr(console, "QProcess", InertElevationProcess)
+    return calls
+
+
+def test_elevation_defaults_off_and_shows_warning_directly_below_held_source(monkeypatch):
+    monkeypatch.setattr(console.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(console, "_operator_elevation_launch", lambda: pytest.fail("held source requested UAC"))
+    window = console.ProtectionServiceConsole(reader=InertReader(), start_reader=False)
+    try:
+        toggle = window.elevation_toggle
+        assert not toggle.isChecked() and not toggle.isEnabled()
+        settings = toggle.parentWidget()
+        assert settings.title() == "Settings"
+        assert settings.layout().itemAt(0).widget() is toggle
+        assert settings.layout().itemAt(1).widget() is window.elevation_warning
+        assert window.elevation_warning.wordWrap()
+        assert "protected files and system settings" in window.elevation_warning.text()
+        assert "held" in window.elevation_status.text()
+        toggle.click()
+        assert window._elevation_process is None
+    finally:
+        window.close()
+
+
+def test_elevation_rechecks_authority_before_constructing_a_process(monkeypatch):
+    def refuse():
+        raise PermissionError("Private native diagnostic details")
+
+    monkeypatch.setattr(console, "_operator_elevation_available", lambda: True)
+    monkeypatch.setattr(console, "_operator_elevation_launch", refuse)
+    monkeypatch.setattr(console, "QProcess", lambda *_: pytest.fail("held spec created a helper"))
+    window = console.ProtectionServiceConsole(reader=InertReader(), start_reader=False)
+    try:
+        window.elevation_toggle.click()
+        assert window._elevation_process is None
+        assert not window.elevation_toggle.isChecked() and not window.elevation_toggle.isEnabled()
+        assert "authority could not be verified" in window.elevation_status.text()
+        assert "Private" not in window.elevation_status.text()
+    finally:
+        window.close()
+
+
+@pytest.mark.parametrize("exit_code,exit_status", [
+    (1223, QProcess.ExitStatus.NormalExit),
+    (0, QProcess.ExitStatus.CrashExit),
+])
+def test_elevation_passes_only_fixed_argument_and_retains_console_if_unverified(
+    inert_elevation, monkeypatch, exit_code, exit_status,
+):
+    monkeypatch.setenv("ANGERONA_TEST_INHERITED_SENTINEL", "must not propagate")
+    window = console.ProtectionServiceConsole(reader=InertReader(), start_reader=False)
+    try:
+        window.show()
+        window.elevation_toggle.click()
+        process = window._elevation_process
+        assert process.state() == QProcess.ProcessState.Running
+        assert process.program() == str(inert_elevation[0])
+        assert process.workingDirectory() == str(inert_elevation[0].parent)
+        assert process.arguments() == ["--operator-elevation"]
+        assert process.processEnvironment().keys() == ["SystemRoot"]
+        assert process.processEnvironment().value("SystemRoot") == r"C:Windows"
+        window.elevation_toggle.click()
+        assert len(inert_elevation) == 1 and window._elevation_process is process
+        process.complete(exit_code, exit_status)
+        assert window.isVisible()
+        assert "readiness was not verified" in window.elevation_status.text()
+        assert not window.elevation_toggle.isChecked() and not window.elevation_toggle.isEnabled()
+    finally:
+        process = window._elevation_process
+        if process is not None:
+            process.complete(1223)
+        window.close()
+
+
+def test_explicit_close_waits_for_the_exact_running_elevation_helper(inert_elevation):
+    window = console.ProtectionServiceConsole(reader=InertReader(), start_reader=False)
+    try:
+        window.show()
+        window.elevation_toggle.click()
+        process = window._elevation_process
+        assert window.close() is False
+        assert window.isVisible() and window._elevation_process is process
+        assert "Waiting" in window.banner.text()
+        process.complete(1223)
+        spin_until(lambda: not window.isVisible())
+    finally:
+        process = window._elevation_process
+        if process is not None:
+            process.complete(1223)
+        window.close()
+
+
+def test_verified_elevation_waits_for_status_reader_retirement(inert_elevation):
+    reader = InertReader()
+    retired = threading.Event()
+    reader.wait_retired = retired.is_set
+    window = console.ProtectionServiceConsole(reader=reader, start_reader=False)
+    try:
+        window.show()
+        window.elevation_toggle.click()
+        window._elevation_process.complete(0)
+        assert reader.detached and window.isVisible()
+        assert "readiness verified" in window.elevation_status.text()
+        retired.set()
+        spin_until(lambda: not window.isVisible())
+    finally:
+        retired.set()
+        process = window._elevation_process
+        if process is not None:
+            process.complete(1223)
+        window.close()
+
+
+def test_elevation_failed_to_start_releases_the_exact_process(inert_elevation):
+    window = console.ProtectionServiceConsole(reader=InertReader(), start_reader=False)
+    try:
+        window.elevation_toggle.click()
+        process = window._elevation_process
+        process.test_state = QProcess.ProcessState.NotRunning
+        process.errorOccurred.emit(QProcess.ProcessError.FailedToStart)
+        assert window._elevation_process is None
+        assert not window.elevation_toggle.isChecked() and window.elevation_toggle.isEnabled()
+        assert "could not start" in window.elevation_status.text()
+    finally:
+        window.close()
+
+
+def test_console_sends_one_bounded_startup_notice_after_visible_paint(monkeypatch):
+    sent = []
+    paints = []
+
+    class ObservedConsole(console.ProtectionServiceConsole):
+        def paintEvent(self, event):
+            paints.append(True)
+            super().paintEvent(event)
+
+    def notify(endpoint):
+        sent.append((endpoint, bool(paints), threading.get_ident()))
+
+    monkeypatch.setattr(console, "notify_dashboard_ready", notify)
+    endpoint = "49152:" + "a" * 64
+    qt_thread = threading.get_ident()
+    window = ObservedConsole(reader=InertReader(), start_reader=False, startup_endpoint=endpoint)
+    try:
+        QApplication.processEvents()
+        assert not paints and not sent
+        window.show()
+        spin_until(lambda: len(sent) == 1 and not window._pending_window_work())
+        assert sent[0][0] == endpoint and sent[0][1] is True and sent[0][2] != qt_thread
+        prior_paints = len(paints)
+        window.update()
+        spin_until(lambda: len(paints) > prior_paints)
+        assert len(sent) == 1
+    finally:
+        window.close()

@@ -97,6 +97,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from angerona.core.archive_safety import read_bounded_member, validate_zip_members
+from angerona.shark.progress import SimulationProgress
 from angerona.core.practice_scope import (
     register_artifact, register_run, unregister_artifact, unregister_run,
 )
@@ -227,6 +228,8 @@ class SharkStep:
     remote_ports: List[int] = field(default_factory=list)
     detail: str = ""
     ok: bool = True
+    planned_step_id: str = ""
+    settlement: dict = field(default_factory=dict)
 
 
 class SharkAttackEngine:
@@ -259,9 +262,13 @@ class SharkAttackEngine:
         self._cancel = threading.Event()
         self.run_id = ""
         self.steps: List[SharkStep] = []
+        self._progress = SimulationProgress()
         # Only a successful exclusive create grants this run cleanup custody.
         self._owned_artifacts: dict[Path, tuple[int, int, int, int]] = {}
         self._artifact_lock = threading.RLock()
+        self._prepared_run = None
+        self._step_session = None
+        self._active_planned_step = None
 
     def _narrate(self, msg: str) -> None:
         if self._on_event:
@@ -274,9 +281,37 @@ class SharkAttackEngine:
     def is_running(self) -> bool:
         return self._running.is_set()
 
+    def progress_snapshot(self) -> dict:
+        """Copy cached workflow counts; no files, native probes or scoring."""
+        return self._progress.snapshot()
+
+    def _run_with_progress(self, jitter_range, noise_chance, generation) -> None:
+        failed = False
+        with self._progress.worker(generation):
+            try:
+                self._run_playbook(jitter_range, noise_chance)
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                if self._progress.finish(generation, cancelled=self._cancel.is_set(), failed=failed):
+                    self._running.clear()
+
     # ── Public control ──────────────────────────────────────────────────
+    def start_prepared(self, prepared, *, validation_lease, step_session) -> bool:
+        from angerona.shark.simulation_session import SharkRunSession, validate_prepared_run
+        if (not validate_prepared_run(prepared, kind="shark")
+                or type(step_session) is not SharkRunSession
+                or not step_session.matches(prepared, validation_lease, self)):
+            return False
+        import json
+        decision = json.loads(prepared.preflight_json)
+        return self.start(jitter_range=decision["jitter"], noise_chance=decision["noise_chance"],
+            complexity=decision["cycles"], target_dir=prepared.target, custom=decision["custom"],
+            _prepared=prepared, _step_session=step_session)
+
     def start(self, jitter_range=(2.0, 9.0), noise_chance=0.25,
-              complexity=1, target_dir=None, custom=None) -> bool:
+              complexity=1, target_dir=None, custom=None, *, _prepared=None, _step_session=None) -> bool:
         """Kick off one randomized run on a background thread.
 
         complexity = number of recursive phases (Low=1, Medium=2, High=3).
@@ -301,6 +336,14 @@ class SharkAttackEngine:
                 + "; ".join(preflight.violations)
             )
             return False
+        if _prepared is not None:
+            from angerona.shark.simulation_session import validate_prepared_run
+            if (not validate_prepared_run(_prepared, kind="shark")
+                    or _prepared.request_digest != preflight.request_digest
+                    or Path(_prepared.data_root) != self.data_dir.resolve(strict=False)):
+                return False
+        self._prepared_run, self._step_session = _prepared, _step_session
+        self._active_planned_step = None
         self.documents_dir = Path(candidate_target)
         self._run_contract = preflight
         self._complexity = preflight.cycles
@@ -313,19 +356,23 @@ class SharkAttackEngine:
             }
             if preflight.custom is not None else None
         )
-        self.run_id = f"shark-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+        self.run_id = _prepared.run_id if _prepared is not None else f"shark-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         register_run(self.run_id, kind="shark")
         self.steps = []
         with self._artifact_lock:
             self._owned_artifacts.clear()
         self._running.set()
+        progress_generation = self._progress.begin(
+            self.run_id, len(_prepared.steps) if _prepared is not None
+            else self._complexity * (6 + int(bool(self._custom))))
         try:
             self._thread = threading.Thread(
-                target=self._run_playbook, args=(jitter_range, noise_chance),
+                target=self._run_with_progress, args=(jitter_range, noise_chance, progress_generation),
                 name="SharkAttackEngine", daemon=True,
             )
             self._thread.start()
         except (RuntimeError, OSError) as exc:
+            self._progress.finish(progress_generation, failed=True)
             self._running.clear()
             self._cancel.set()
             self._thread = None
@@ -339,6 +386,7 @@ class SharkAttackEngine:
 
     def stop_and_clean(self) -> None:
         """Remove only files whose exact identity this run created."""
+        self._progress.request_stop(self.run_id)
         self._cancel.set()
         self._running.clear()
         worker = self._thread
@@ -348,6 +396,8 @@ class SharkAttackEngine:
                 # The worker will call this from its finally block. Never
                 # clean a pathname while that worker may still be writing it.
                 return
+        if self._step_session is not None and not self._step_session.cleanup_allowed:
+            return  # The session reports/settles before releasing exact leftovers.
         with self._artifact_lock:
             owned = tuple(self._owned_artifacts.items())
         for path, identity in owned:
@@ -617,21 +667,25 @@ class SharkAttackEngine:
             raise _DrillCancelled()
 
     def _run_playbook(self, jitter_range, noise_chance) -> None:
-        self._narrate(
-            f"\U0001F988 Shark Attack {self.run_id} starting — unannounced, "
-            "non-destructive. The running modules get no advance notice. Watch "
-            "the main dashboard's Alerts panel and Modules table for the "
-            "DEFENSE side reacting in real time — this window only narrates "
-            "the OFFENSE side.")
-        self._cleanup_stale_artifacts()
         cancelled = False
+        run_failed = False
         try:
+            self._narrate(
+                f"\U0001F988 Shark Attack {self.run_id} starting — unannounced, "
+                "non-destructive. The running modules get no advance notice. Watch "
+                "the main dashboard's Alerts panel and Modules table for the "
+                "DEFENSE side reacting in real time — this window only narrates "
+                "the OFFENSE side.")
+            self._cleanup_stale_artifacts()
             # VARIETY ENGINE, axis 2: shuffle the stage order every run.
             # Angerona's detection is purely event-reactive, so it should
             # never matter what order things happen in — shuffling is
             # itself a test of that. Noise Injection's inclusion is still
             # an independent coin flip, same as before.
-            cycles = getattr(self, "_complexity", 1)
+            prepared = self._prepared_run
+            if prepared is not None:
+                self._run_prepared_steps(jitter_range)
+            cycles = 0 if prepared is not None else getattr(self, "_complexity", 1)
             custom = getattr(self, "_custom", None)
             if cycles > 1 or custom:
                 self._narrate(f"\U0001F39B️ Complexity: {cycles} phase(s)"
@@ -654,6 +708,8 @@ class SharkAttackEngine:
                     stage_fns.append(self._step_noise_injection)
                 else:
                     self._narrate("\U0001F3B2 Noise Injection — skipped this phase (random chance).")
+                    self._progress.start_unit(f"Phase {cycle + 1}: optional noise decision (skipped)")
+                    self._progress.finish_unit()
                 random.shuffle(stage_fns)
                 order = " → ".join(
                     fn.__name__.replace("_step_", "").replace("_", " ").title() for fn in stage_fns)
@@ -661,21 +717,42 @@ class SharkAttackEngine:
                 for fn in stage_fns:
                     if self._cancel.is_set():
                         raise _DrillCancelled()
-                    fn(jitter_range)
+                    before = len(self.steps)
+                    self._progress.start_unit(
+                        f"Phase {cycle + 1}: " + fn.__name__.removeprefix("_step_").replace("_", " ").title())
+                    failed = False
+                    try:
+                        fn(jitter_range)
+                    except BaseException:
+                        failed = True
+                        raise
+                    finally:
+                        self._progress.finish_unit(
+                            failed=failed or any(not step.ok for step in self.steps[before:]))
                     if self._cancel.is_set():
                         raise _DrillCancelled()
         except _DrillCancelled:
             cancelled = True
+        except BaseException:
+            run_failed = True
+            raise
         finally:
             run_cancelled = cancelled or self._cancel.is_set()
             self._write_history(
-                status="cancelled" if run_cancelled else "completed"
+                status="incomplete" if run_failed else "cancelled" if run_cancelled else "completed"
             )
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
-            if run_cancelled:
+            if run_failed:
+                self._running.clear()
+                self._narrate(
+                    f"Shark Attack interrupted by a worker failure — {ok}/{n} "
+                    "recorded steps succeeded. Incomplete history and owned "
+                    "artifacts are retained for diagnosis; completion is not claimed.")
+            elif run_cancelled:
                 self._running.clear()
                 self._narrate(f"Shark Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
-                self.stop_and_clean()
+                if self._step_session is None:
+                    self.stop_and_clean()
             else:
                 self._narrate(
                     f"\U0001F3C1 Shark Attack complete — {ok}/{n} steps executed successfully. "
@@ -688,7 +765,63 @@ class SharkAttackEngine:
                     except Exception:
                         pass
 
+    def _run_prepared_steps(self, jitter_range) -> None:
+        from dataclasses import asdict
+        from angerona.shark.simulation_session import SessionHeld
+
+        labels = {"initial_access": ("Initial Access", "T1204-style fixed inert file"),
+                  "simulated_persistence": ("Persistence (simulated)", "T1547-style fixed marker only"),
+                  "simulated_byovd": ("BYOVD (simulated)", "T1068 / T1543.003-style never-loaded marker")}
+        for planned in self._prepared_run.steps:
+            if self._cancel.is_set():
+                raise _DrillCancelled()
+            self._step_session.check_current()
+            self._active_planned_step = planned
+            self._progress.start_unit(f"Phase {planned.cycle}: {planned.operation.replace('_', ' ')}")
+            before, failed = len(self.steps), False
+            try:
+                if planned.control_kinds:
+                    self._jitter(*jitter_range, note="Issuer-owned inert native-signature probe")
+                    ts = time.time()
+                    declarations = self._step_session.create_controls(planned)
+                    paths = []
+                    for declaration in declarations:
+                        path = Path(declaration["path"])
+                        identity = declaration["identity"]
+                        with self._artifact_lock:
+                            self._owned_artifacts[path] = tuple(identity[field] for field in
+                                ("device", "inode", "size", "mtime_ns"))
+                        paths.append(str(path))
+                    stage, technique = labels[planned.operation]
+                    self._narrate(
+                        f"Native-signature probe: {planned.variant}; {len(paths)} fixed inert artifact(s). "
+                        "Waiting for real detector evidence and exact automatic containment. "
+                        "A .pdf.txt lure is text coverage; .sys markers are never loaded.")
+                    self._record(stage, technique, "Fixed issuer-created benign bytes; no payload executed.",
+                                 ts, artifact_paths=paths)
+                else:
+                    getattr(type(self), "_step_" + planned.operation)(self, jitter_range)
+                if len(self.steps) != before + 1:
+                    raise SessionHeld("Prepared work did not record exactly its planned step")
+                step = self.steps[-1]
+                step.settlement = self._step_session.settle_step(planned, asdict(step))
+                failed = not step.ok or step.settlement.get("state") not in {"settled", "not-applicable"}
+                self._step_session.check_current()
+            except SessionHeld:
+                failed = True
+                if self._cancel.is_set():
+                    raise _DrillCancelled()
+                raise
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                self._active_planned_step = None
+                self._progress.finish_unit(failed=failed)
+
     def _record(self, stage, technique, description, ts_start, **kw) -> SharkStep:
+        if self._active_planned_step is not None:
+            kw["planned_step_id"] = self._active_planned_step.planned_step_id
         step = SharkStep(stage=stage, technique=technique, description=description,
                           ts_start=ts_start, ts_end=time.time(), **kw)
         self.steps.append(step)
@@ -1106,7 +1239,10 @@ class SharkAttackEngine:
                 steps=self.steps,
                 preflight=self._run_contract,
                 status=status,
+                prepared_run=self._prepared_run.manifest() if self._prepared_run is not None else None,
             )
+            if self._step_session is not None:
+                payload["validation_readiness"] = self._step_session.readiness_snapshot()
             signed = write_run_history(self.history_path, payload)
             if not signed:
                 self._narrate(

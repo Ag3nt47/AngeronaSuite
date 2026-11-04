@@ -469,6 +469,31 @@ def test_news_rotation_marquee_pause_hidden_and_reduced_motion(monkeypatch):
         page.close()
 
 
+def test_research_wire_keeps_feed_details_disclosure_during_rotation():
+    page, module = make_page(show=True)
+    try:
+        module.snapshot["news"] = news_rows(time.time())
+        page.refresh()
+        assert page.layout().indexOf(page.news_strip) < page.layout().indexOf(page.priority_scan)
+        assert page.news_strip.isAncestorOf(page.action_progress_view)
+        assert page.news_masthead.text() == "RESEARCH WIRE"
+        assert "Citizen Lab" in page.news_source_button.text()
+        assert not page.news_checks.isVisible()
+        assert not page.news_sources.isVisible()
+        page.news_feed_details.click()
+        assert page.news_checks.isVisible()
+        assert page.news_sources.isVisible()
+        page._rotate_news()
+        assert "Project Zero" in page.news_source_button.text()
+        assert page.news_headline.accessibleName() == module.snapshot["news"][1]["title"]
+        assert page.news_feed_details.isChecked() and page.news_sources.isVisible()
+        page.news_feed_details.click()
+        assert not page.news_sources.isVisible()
+        assert module.calls == []
+    finally:
+        page.close()
+
+
 def test_news_headline_and_source_date_link_map_to_current_validated_article(monkeypatch):
     from angerona.gui import spyware_guard_page as ui
     opened = []

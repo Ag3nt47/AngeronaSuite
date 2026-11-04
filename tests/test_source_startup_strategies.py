@@ -14,7 +14,7 @@ PS = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/WindowsPowerS
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows source startup")
 
 
-def run(tmp_path, body):
+def run(tmp_path, body, *, native_stage_diagnostic=False):
     script = tmp_path / "strategy.ps1"
     script.write_text(r"""$ErrorActionPreference='Stop'
 $ast=[Management.Automation.Language.Parser]::ParseFile(
@@ -22,12 +22,57 @@ $ast=[Management.Automation.Language.Parser]::ParseFile(
 foreach($node in $ast.FindAll({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst]},$false)) {
     . ([scriptblock]::Create($node.Extent.Text))
 }
+# The extracted supervisor now reads applied-base presence before probes.
+# Keep that observation in this fixture, never the operator SourceData.
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 """ + body, encoding="utf-8")
-    result = subprocess.run([str(PS), "-NoProfile", "-NonInteractive", "-File", str(script)],
-        cwd=ROOT, env=dict(os.environ, ANGERONA_TEST_ROOT=str(ROOT), ANGERONA_TEST_SCRATCH=str(tmp_path),
-                           TEMP=str(tmp_path), TMP=str(tmp_path)),
-        text=True, capture_output=True, timeout=50, check=False,
-        creationflags=subprocess.CREATE_NO_WINDOW)
+    result = None
+    failure = None
+    stack_dump_scheduled = False
+    if native_stage_diagnostic:
+        try:
+            import faulthandler
+            import sys
+            # One observation after the unchanged 50s subprocess deadline; no exit.
+            faulthandler.dump_traceback_later(60, repeat=False, file=sys.__stderr__, exit=False)
+            stack_dump_scheduled = True
+        except Exception:
+            pass
+    try:
+        result = subprocess.run([str(PS), "-NoProfile", "-NonInteractive", "-File", str(script)],
+            cwd=ROOT, env=dict(os.environ, ANGERONA_TEST_ROOT=str(ROOT), ANGERONA_TEST_SCRATCH=str(tmp_path),
+                               TEMP=str(tmp_path), TMP=str(tmp_path)),
+            text=True, capture_output=True, timeout=50, check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        if native_stage_diagnostic:
+            if stack_dump_scheduled:
+                try:
+                    faulthandler.cancel_dump_traceback_later()
+                except Exception:
+                    pass
+            try:
+                with (tmp_path / "native-owner-stages.log").open("rb") as stream:
+                    stages = stream.read(8193)
+                def tail(value):
+                    if isinstance(value, bytes):
+                        return value[-4096:].decode("utf-8", "replace")
+                    return value[-4096:] if isinstance(value, str) else None
+                captured = result if result is not None else failure
+                print("NATIVE-OWNER-STAGES:" + json.dumps({
+                    "schema": 1, "stage_log": stages[:8192].decode("ascii", "replace"),
+                    "stage_log_over_bound": len(stages) > 8192,
+                    "failure_type": type(failure).__name__ if failure is not None else None,
+                    "stdout_tail": tail(getattr(captured, "stdout", None)),
+                    "stderr_tail": tail(getattr(captured, "stderr", None)),
+                    "timing_perturbed_by_diagnostic_io": True,
+                }, ensure_ascii=True, sort_keys=True), flush=True)
+            except Exception:
+                # Optional evidence must not replace the original result/error.
+                pass
     assert result.returncode == 0, result.stdout + result.stderr
     return json.loads(next(line[7:] for line in result.stdout.splitlines() if line.startswith("RESULT:")))
 
@@ -51,6 +96,50 @@ function Invoke-SourceStartupPass {
 }
 function Invoke-SourceStartupRepair { param($Root,$Category);$script:Calls.Add('repair:'+$Category);return 0 }
 function Invoke-SourceRecoveryWindow { $script:Calls.Add('recovery-window');return $script:Choices.Dequeue() }
+"""
+
+
+PREFLIGHT_CACHE_FIXTURE = r"""
+# Real private scratch/cache admission; only executable availability and the
+# read-only probe/assistant bodies below are inert orchestration seams.
+. (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
+$fixtureStorage=Get-CanonicalSourceStartupStorage
+New-PrivateRepairDirectory $fixtureStorage
+$FreshSourceCache=$true
+$script:FixtureCacheChecks=0;$script:FixtureCachePrefix=''
+function Initialize-SourceStartupStorage {return (Get-CanonicalSourceStartupStorage)}
+function Test-Path {
+    param([string]$LiteralPath,[string]$PathType)
+    $python=Join-Path $env:ANGERONA_TEST_SCRATCH 'venv\Scripts\python.exe'
+    if($LiteralPath -ceq $python){return $true} # No executable is launched.
+    $actual=@{LiteralPath=$LiteralPath}
+    if($PSBoundParameters.ContainsKey('PathType')){$actual['PathType']=$PathType}
+    return Microsoft.PowerShell.Management\Test-Path @actual
+}
+function Assert-FixtureFreshCacheCall {
+    param([string[]]$Arguments,[string]$Root,[Collections.IDictionary]$Environment)
+    if($Arguments.Count -lt 3 -or $Arguments[0] -cne '-B' -or $Arguments[1] -cne '-X' -or
+       !$Arguments[2].StartsWith('pycache_prefix=',[StringComparison]::Ordinal)){
+        throw 'The read-only probe lost its fresh-cache interpreter options.'
+    }
+    $scratch=[string]$Environment['TEMP']
+    if($Environment['TMP'] -cne $scratch){throw 'The read-only probe scratch environment diverged.'}
+    $prefix=$Arguments[2].Substring('pycache_prefix='.Length)
+    # Keep the real canonical path, protected custody and nonexistent-prefix
+    # checks. A broad Test-Path=True used to manufacture unsafe presence here.
+    Assert-SourceStartupCachePrefix $prefix $Root $scratch
+    $key=[IO.Path]::GetFullPath($Root)+'|'+[IO.Path]::GetFullPath((Get-CanonicalSourceStartupStorage))+'|preflight'
+    $context=$script:SourceStartupCriticalWorkspaces[$key]
+    if(!$context -or $context.Path -cne $scratch -or !$context.Guard.CanRead -or $context.Guard.CanWrite -or
+       ![Object]::ReferenceEquals($context.Guard,$script:SourceStartupScratchLease)){
+        throw 'The read-only probe lacks the actual retained preflight scratch lease.'
+    }
+    if($script:FixtureCachePrefix -and $script:FixtureCachePrefix -cne $prefix){
+        throw 'A single source-startup pass changed its fresh-cache prefix.'
+    }
+    $script:FixtureCachePrefix=$prefix;$script:FixtureCacheChecks++
+}
 """
 
 
@@ -368,25 +457,27 @@ Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Co
 
 @pytest.mark.parametrize("failed_probe", [1, 2, 3], ids=["abi", "pip", "source-trust"])
 def test_unclassified_native_admission_probe_is_infrastructure_hold(tmp_path, failed_probe):
-    body = r"""
+    body = PREFLIGHT_CACHE_FIXTURE + r"""
 $script:ProbeStep=0;$script:Releases=0
 function Assert-SourceStartupBoundary {}
-function Initialize-SourceStartupStorage {return $env:ANGERONA_TEST_SCRATCH}
 function Enter-RepairLease {return 'inert-lease'}
 function Exit-RepairLease {$script:Releases++}
 function Assert-NoPendingRepair {}
 function Assert-NoActiveVenv {}
-function Test-Path {return $true}
-function New-SourceStartupTemporary {return $env:ANGERONA_TEST_SCRATCH}
-function New-RepairChildEnvironment {return @{TEMP=$env:ANGERONA_TEST_SCRATCH;TMP=$env:ANGERONA_TEST_SCRATCH}}
 function Initialize-OwnedRepairProcess {}
 function Invoke-OwnedRepairProcess {
+    param($FilePath,$Arguments,$WorkingDirectory,$Environment)
+    Assert-FixtureFreshCacheCall $Arguments $WorkingDirectory $Environment
     $script:ProbeStep++
     if($script:ProbeStep -eq FAILED_PROBE) {return 1}
     return 0
 }
 function Invoke-SourceStartupAssistant {throw 'An infrastructure probe failure must not start the assistant.'}
-$code=Invoke-SourceStartupPass $env:ANGERONA_TEST_SCRATCH
+try {
+    $code=Invoke-SourceStartupPass $env:ANGERONA_TEST_SCRATCH
+    if($script:FixtureCacheChecks -ne FAILED_PROBE){throw 'The intended failing read-only probe was not reached.'}
+} finally {Close-SourceStartupCriticalWorkspaces}
+if($script:SourceStartupCriticalWorkspaces.Count -ne 0){throw 'The exact fixture scratch owner did not close.'}
 Write-Output ('RESULT:'+(@{code=$code;probes=$script:ProbeStep;released=$script:Releases}|ConvertTo-Json -Compress))
 """
     assert run(tmp_path, body.replace("FAILED_PROBE", str(failed_probe))) == {
@@ -394,21 +485,30 @@ Write-Output ('RESULT:'+(@{code=$code;probes=$script:ProbeStep;released=$script:
 
 
 def test_read_only_startup_does_not_require_shared_python_jobs_to_exit(tmp_path):
-    outcome = run(tmp_path, r"""
+    outcome = run(tmp_path, PREFLIGHT_CACHE_FIXTURE + r"""
 $script:Calls=[Collections.Generic.List[string]]::new()
 function Assert-SourceStartupBoundary {}
-function Initialize-SourceStartupStorage {return $env:ANGERONA_TEST_SCRATCH}
 function Enter-RepairLease {return 'repair-coordination'}
 function Exit-RepairLease {$script:Calls.Add('lease-released')}
 function Assert-NoPendingRepair {}
 function Assert-NoActiveVenv {throw 'An unrelated review is using shared Python; mutation is held.'}
-function Test-Path {return $true}
-function New-SourceStartupTemporary {return $env:ANGERONA_TEST_SCRATCH}
-function New-RepairChildEnvironment {return @{TEMP=$env:ANGERONA_TEST_SCRATCH;TMP=$env:ANGERONA_TEST_SCRATCH}}
 function Initialize-OwnedRepairProcess {}
-function Invoke-OwnedRepairProcess {$script:Calls.Add('read-only-probe');return 0}
-function Invoke-SourceStartupAssistant {$script:Calls.Add('leased-startup-helper');return 0}
-$code=Invoke-SourceStartupPass $env:ANGERONA_TEST_SCRATCH
+function Invoke-OwnedRepairProcess {
+    param($FilePath,$Arguments,$WorkingDirectory,$Environment)
+    Assert-FixtureFreshCacheCall $Arguments $WorkingDirectory $Environment
+    $script:Calls.Add('read-only-probe');return 0
+}
+function Invoke-SourceStartupAssistant {
+    param($Python,$Root,$Environment,$Scratch,$SoftwareRenderer,$NoStartupWindow,$FreshCachePrefix)
+    if($Scratch -cne $Environment['TEMP']){throw 'The helper lost the actual preflight scratch.'}
+    Assert-FixtureFreshCacheCall @('-B','-X',('pycache_prefix='+$FreshCachePrefix)) $Root $Environment
+    $script:Calls.Add('leased-startup-helper');return 0
+}
+try {
+    $code=Invoke-SourceStartupPass $env:ANGERONA_TEST_SCRATCH
+    if($script:FixtureCacheChecks -ne 4){throw 'The three probes and helper did not share actual fresh-cache admission.'}
+} finally {Close-SourceStartupCriticalWorkspaces}
+if($script:SourceStartupCriticalWorkspaces.Count -ne 0){throw 'The exact fixture scratch owner did not close.'}
 Write-Output ('RESULT:'+(@{code=$code;calls=@($script:Calls)}|ConvertTo-Json -Compress))
 """)
     assert outcome == {"code": 0, "calls": ["read-only-probe"] * 3 + ["leased-startup-helper", "lease-released"]}
@@ -719,6 +819,74 @@ Write-Output ('RESULT:'+(@{checking=$true;allowlist=$true;no_receipt=$true;bound
 def test_native_gui_owner_requests_visible_startup_while_commands_stay_hidden(tmp_path):
     outcome = run(tmp_path, r"""
 . (Join-Path $env:ANGERONA_TEST_ROOT 'tools\startup_repair_common.ps1')
+# This one test instruments a private in-memory copy of the actual initializer.
+# Every native call/argument/wait and original proof remains below unchanged.
+$fixtureStageLog=Join-Path $env:ANGERONA_TEST_SCRATCH 'native-owner-stages.log'
+$script:FixtureNativeStageAdmitted=$false;$script:FixtureNativeEarlyStages=0
+try {
+    $stageStream=[IO.File]::Open($fixtureStageLog,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+    try {
+        $raw=[Text.Encoding]::ASCII.GetBytes("powershell:fixture-entered"+[char]10)
+        $stageStream.Write($raw,0,$raw.Length);$stageStream.Flush()
+        $script:FixtureNativeStageAdmitted=$true
+    } finally {$stageStream.Dispose()}
+} catch {} # A collision/failed diagnostic never adopts or rewrites that file.
+if($script:FixtureNativeStageAdmitted){$env:ANGERONA_TEST_NATIVE_STAGE_LOG=$fixtureStageLog}
+else{Remove-Item Env:ANGERONA_TEST_NATIVE_STAGE_LOG -ErrorAction SilentlyContinue}
+function Write-FixtureNativeStage([string]$Stage) {
+    try {
+        if(!$script:FixtureNativeStageAdmitted -or $Stage.Length -gt 64){return}
+        if('Angerona.StartupRepairProcess' -as [type]){
+            [Angerona.StartupRepairProcess]::FixtureStage('powershell',$Stage);return
+        }
+        if($script:FixtureNativeEarlyStages -ge 8){return};$script:FixtureNativeEarlyStages++
+        $raw=[Text.Encoding]::ASCII.GetBytes('powershell:'+$Stage+[char]10)
+        $stream=[IO.File]::Open($fixtureStageLog,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::Read)
+        try{
+            if($stream.Length -gt (8192-$raw.Length)){return}
+            [void]$stream.Seek(0,[IO.SeekOrigin]::End);$stream.Write($raw,0,$raw.Length);$stream.Flush()
+        }finally{$stream.Dispose()}
+    }catch{} # Fixed, optional, admission-bounded metadata only.
+}
+$fixtureNativeClass=@'
+public static class StartupRepairProcess {
+    static readonly object fixtureStageGuard=new object();
+    static int fixtureStageRecords;
+    static readonly string fixtureStagePath=Environment.GetEnvironmentVariable("ANGERONA_TEST_NATIVE_STAGE_LOG");
+    public static void FixtureStage(string role,string stage) {
+        try {
+            if(fixtureStagePath==null || role==null || stage==null || role.Length>16 || stage.Length>64)return;
+            lock(fixtureStageGuard) {
+                if(fixtureStageRecords>=64)return;fixtureStageRecords++;
+                byte[] raw=Encoding.ASCII.GetBytes(role+":"+stage+"\n");
+                using(var stream=new FileStream(fixtureStagePath,FileMode.Open,FileAccess.Write,FileShare.Read)) {
+                    if(stream.Length>8192-raw.Length)return;
+                    stream.Seek(0,SeekOrigin.End);stream.Write(raw,0,raw.Length);stream.Flush();
+                }
+            }
+        } catch(Exception) {} // Evidence cannot replace native failure or custody.
+    }
+'@
+$fixtureNativeHooks=[ordered]@{
+    'public static class StartupRepairProcess {'=$fixtureNativeClass
+    'object closeOwner=strictClose ? new object() : null;'='object closeOwner=strictClose ? new object() : null;FixtureStage(owner==null?"command":"gui","run-core-entered");'
+    'Check(input!=new IntPtr(-1));'='Check(input!=new IntPtr(-1));FixtureStage(owner==null?"command":"gui","stdio-opened");'
+    'Check(CreateProcessW(file,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref startup,out pi));'='FixtureStage(owner==null?"command":"gui","create-process-before");Check(CreateProcessW(file,command,IntPtr.Zero,IntPtr.Zero,true,0x08080404,env,directory,ref startup,out pi));FixtureStage(owner==null?"command":"gui","create-process-returned");'
+    'Check(ResumeThread(pi.thread)!=0xFFFFFFFF);'='FixtureStage(owner==null?"command":"gui","resume-before");Check(ResumeThread(pi.thread)!=0xFFFFFFFF);FixtureStage(owner==null?"command":"gui","resume-returned");'
+    'uint waited=258;'='uint waited=258;FixtureStage(owner==null?"command":"gui","native-wait-loop-before");'
+    'Check(waited==0); uint code; Check(GetExitCodeProcess(pi.process,out code));'='Check(waited==0); uint code; Check(GetExitCodeProcess(pi.process,out code));FixtureStage(owner==null?"command":"gui","native-wait-loop-returned");'
+    'if(job!=IntPtr.Zero && pi.process!=IntPtr.Zero)RetireJob(job,pi.process,retained,strictClose,closeOwner);'='FixtureStage(owner==null?"command":"gui","retire-job-before");if(job!=IntPtr.Zero && pi.process!=IntPtr.Zero)RetireJob(job,pi.process,retained,strictClose,closeOwner);FixtureStage(owner==null?"command":"gui","retire-job-returned");'
+    'if(outputRetirementError!=null)throw outputRetirementError;'='FixtureStage(owner==null?"command":"gui","native-close-block-returned");if(outputRetirementError!=null)throw outputRetirementError;'
+}
+try {
+    $fixtureNativeSource=(Get-Command Initialize-OwnedRepairProcess).ScriptBlock.ToString()
+    foreach($hook in $fixtureNativeHooks.GetEnumerator()){
+        if(([regex]::Matches($fixtureNativeSource,[regex]::Escape($hook.Key))).Count -ne 1){throw 'Native fixture diagnostic hook is not unique.'}
+        $fixtureNativeSource=$fixtureNativeSource.Replace($hook.Key,$hook.Value)
+    }
+    Set-Item Function:Initialize-OwnedRepairProcess -Value ([scriptblock]::Create($fixtureNativeSource))
+    Write-FixtureNativeStage 'native-initializer-prepared'
+} catch {Write-FixtureNativeStage 'native-instrumentation-unavailable'}
 function Get-CanonicalSourceStartupStorage {return (Join-Path $env:ANGERONA_TEST_SCRATCH 'private-canonical-source')}
 $storage=Join-Path $env:ANGERONA_TEST_SCRATCH 'state';New-PrivateRepairDirectory $storage
 $probe=Join-Path $storage 'kernel-startup-info.ps1'
@@ -726,6 +894,7 @@ $library=Join-Path $storage 'kernel-startup-info.dll'
 # Compile the fixed read-only probe once in the parent, before either native
 # launch/deadline. Child-side compiler/module discovery is not the subject of
 # this STARTUPINFO role test and must not consume its ten-second execution wait.
+Write-FixtureNativeStage 'probe-compile-before'
 Add-Type -OutputAssembly $library -OutputType Library -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -742,28 +911,37 @@ public static class FixtureKernelStartup {
     }
 }
 '@
+Write-FixtureNativeStage 'probe-compile-returned'
 [IO.File]::WriteAllText($probe,@'
 param([string]$Library,[string]$Receipt)
 $ErrorActionPreference='Stop'
+try{[Console]::Error.WriteLine('FIXTURE-NATIVE-CHILD:entered')}catch{}
 $assembly=[Reflection.Assembly]::LoadFrom($Library)
+try{[Console]::Error.WriteLine('FIXTURE-NATIVE-CHILD:assembly-loaded')}catch{}
 $reader=$assembly.GetType('FixtureKernelStartup',$true).GetMethod('Read')
+try{[Console]::Error.WriteLine('FIXTURE-NATIVE-CHILD:read-and-receipt-before')}catch{}
 [IO.File]::WriteAllText($Receipt,[string]$reader.Invoke($null,[object[]]@()))
+try{[Console]::Error.WriteLine('FIXTURE-NATIVE-CHILD:receipt-written')}catch{}
 '@)
 $powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
 $environment=New-RepairChildEnvironment $storage
 $guiReceipt=Join-Path $storage 'gui.json';$commandReceipt=Join-Path $storage 'command.json'
 $guiLog=Join-Path $storage 'gui.log'
+Write-FixtureNativeStage 'gui-dispatch-before'
 $window=Start-OwnedRepairWindow -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$library,$guiReceipt) -WorkingDirectory $storage -Environment $environment -LogPath $guiLog
+Write-FixtureNativeStage 'gui-dispatch-returned'
 $failure=$null;$retirementFailure=$null;$waitCompleted=$false;$nativeExit=$null;$disposed=$false
 $failureKind='owner-completion-fault'
 try {
+    Write-FixtureNativeStage 'gui-wait-for-exit-before'
     $waitCompleted=$window.WaitForExit(10000)
+    Write-FixtureNativeStage 'gui-wait-for-exit-returned'
     if(!$waitCompleted){$failureKind='execution-wait-timeout';throw 'Owned kernel startup-info probe exceeded its ten-second execution wait.'}
     $nativeExit=$window.ExitCode
     if($nativeExit -ne 0){$failureKind='native-nonzero';throw "Owned kernel startup-info probe returned nonzero exit $nativeExit."}
 }catch{$failure=$_}
 finally{
-    try{$window.Dispose();$disposed=$true}catch{$retirementFailure=$_}
+    try{Write-FixtureNativeStage 'gui-dispose-before';$window.Dispose();$disposed=$true;Write-FixtureNativeStage 'gui-dispose-returned'}catch{$retirementFailure=$_}
     finally{
         if($failure -or $retirementFailure){
             try{
@@ -782,7 +960,9 @@ finally{
 if($retirementFailure){throw $retirementFailure}
 if($failure){throw $failure}
 $commandLog=Join-Path $storage 'command.log'
+Write-FixtureNativeStage 'command-dispatch-before'
 $code=Invoke-OwnedRepairProcess -FilePath $powershell -Arguments @('-NoProfile','-NonInteractive','-File',$probe,$library,$commandReceipt) -WorkingDirectory $storage -Environment $environment -TimeoutSeconds 10 -LogPath $commandLog
+Write-FixtureNativeStage 'command-dispatch-returned'
 if($code -ne 0){
     # Invoke-OwnedRepairProcess returns only after its owned retirement proof.
     Write-Output ('FIXTURE-DIAGNOSTIC:'+(@{outcome='kernel-startup-info-fixture-failed';role='command';exit_code=$code;log=(Read-SourceStartupLogTail $commandLog)}|ConvertTo-Json -Depth 3 -Compress))
@@ -793,7 +973,7 @@ $command=[IO.File]::ReadAllText($commandReceipt)|ConvertFrom-Json
 if(($gui.flags -band 0x101) -ne 0x101 -or $gui.show -ne 1 -or
     ($command.flags -band 0x101) -ne 0x101 -or $command.show -ne 0){throw 'Kernel-visible startup flags did not preserve GUI/command roles.'}
 Write-Output ('RESULT:'+(@{gui_show=$gui.show;command_show=$command.show;standard_handles=$true}|ConvertTo-Json -Compress))
-""")
+""", native_stage_diagnostic=True)
     assert outcome == {"gui_show": 1, "command_show": 0, "standard_handles": True}
 
 

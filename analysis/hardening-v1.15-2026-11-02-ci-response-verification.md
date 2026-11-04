@@ -106,19 +106,27 @@ running modules. Its 60-second capture retained an earlier critical recovery
 assurance exposure, spyware exposure heuristics and their missing
 details; these records did not establish a confirmed breach or response grant.
 The exporter omitted 5,330 detail fields across 721 events and reported an
-initial retention gap of 4,596. Transport heartbeats advanced; this capture does
-not establish component-heartbeat counter advancement or independent raw event
-authentication. Two process-inventory bounds keep strict observation acceptance
+initial retention gap of 4,596. The initial three-file review established
+transport heartbeat advancement but omitted the separate retained role archive.
+A supplementary review of that archive found increasing Core, Watchdog, Scanner
+and Black Box counters across 60 samples over 133.60 seconds. Scanner and Black
+Box each had one unavailable initial sample. Authentication and native bindings
+were checked by the monitor during capture; retained projections cannot
+independently reproduce raw heartbeat HMAC checks. Raw event authentication is
+also outside this review. Two process-inventory bounds keep strict observation acceptance
 false. Native diagnostic retirement and cleanup were verified separately.
 
 Normal STOP then exited the exact Core with code zero. All 18 retained native
-waits across 13 observed generations signaled, with no replacement observed for
+waits across 14 unique observed generations signaled, with no replacement observed for
 five seconds. Source and selected saved preferences remained unchanged; the
 harness made no process-termination calls. One inventory bound and unavailable
 short-phase role samples keep strict STOP acceptance false. The finite check
 does not attest complete child history, every service or every AI model's
 residency. The normal notice preserves shared Ollama servers and downloaded
 model files. This successful exit does not resolve the historical native crash.
+The corrected generation total includes the Core: the monitor's exported
+`generations` list contains 13 children, while four role-query handles alias
+already counted identities. Earlier reporting counted only that child list.
 Guarded publication and exact-commit hosted checks remain separate requirements.
 
 The test reports retain zero overall native-analytics credit and zero installed

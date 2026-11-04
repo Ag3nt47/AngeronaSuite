@@ -7,12 +7,13 @@ import threading
 import pytest
 
 
-@pytest.mark.parametrize("quiet,blocked,expected_chill", [
-    (False, True, True),  # CHILL:ALERT retains the operator AI lock
-    (True, False, True),  # legacy quiet-only startup intent
-    (False, False, True),  # automatic recovery also defaults safely from Full
+@pytest.mark.parametrize("quiet,blocked,operator_elevation", [
+    (False, True, False),  # CHILL:ALERT retains the operator AI lock
+    (True, False, False),  # legacy quiet-only startup intent
+    (False, False, False),  # automatic recovery also defaults safely from Full
+    (True, False, True),  # installed administrator startup requires fresh consent
 ])
-def test_recovery_command_preserves_chill_during_alert(monkeypatch, quiet, blocked, expected_chill):
+def test_recovery_command_preserves_chill_and_session_consent(monkeypatch, quiet, blocked, operator_elevation):
     from angerona.resilience import manager as resilience
 
     class Supervisor:
@@ -45,14 +46,18 @@ def test_recovery_command_preserves_chill_during_alert(monkeypatch, quiet, block
         monkeypatch.setenv("ANGERONA_CHILL_ACTIVE", "1")
     if blocked:
         monkeypatch.setenv("ANGERONA_CHILL_AI_BLOCKED", "1")
+    if operator_elevation:
+        monkeypatch.setattr(resilience.sys, "frozen", True, raising=False)
+        monkeypatch.setattr(resilience.sys, "argv", ["Angerona.exe", "--operator-elevation"])
     runtime = resilience.ResilienceManager(None, start_watchdog=False, with_ui=False)
     monkeypatch.setattr(runtime, "_spawn_thread", lambda *_args: None)
     try:
         runtime.start()
-        command = resilience.os.environ["ANGERONA_CORE_CMD"]
-        assert (" --chill" in command) is expected_chill
-        assert command.endswith("-m angerona --chill" if expected_chill else "-m angerona")
-        assert command != "stale pre-Chill command"
+        command = resilience.os.environ.get("ANGERONA_CORE_CMD")
+        if operator_elevation:
+            assert command is None
+        else:
+            assert command.endswith("-m angerona --chill")
     finally:
         runtime.stop()
 

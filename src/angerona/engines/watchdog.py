@@ -4,7 +4,7 @@ watchdog.py — Dual-Process Cross-Monitoring Defensive Watchdog Script
 import sys
 import time
 import os
-import subprocess
+from angerona.core.win import popen_hidden
 
 def run_standalone_watchdog(parent_pid: int):
     """Independent infinite checking routine monitoring main agent process handles via native execution wrappers."""
@@ -40,9 +40,9 @@ def _trigger_emergency_agent_recovery():
     except Exception:
         pass
 
-    # Respawn agent process lines cleanly inside separate isolated terminals
+    # Recovery is background work; it must not open a separate terminal.
     agent_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agent.py")
-    subprocess.Popen([sys.executable, agent_script], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    popen_hidden([sys.executable, agent_script])
     sys.exit(0)
 
 if __name__ == "__main__":

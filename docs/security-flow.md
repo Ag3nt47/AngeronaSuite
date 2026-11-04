@@ -227,24 +227,28 @@ validation barriers. A report field cannot manufacture custody. Retained
 executable custody does not prove the original mapped image, kernel integrity
 or packet-level enforcement.
 
-### Installed administrator startup at sign-in
+### Administrator access per session
 
-The explicit installed-only enrollment/removal control requires the current
-frozen Windows installation, accepted OS-verified MSIX authority and initial
-effective administrator approval. It does not silently elevate source startup.
-The SID-qualified task launches the exact modern Safe Start entry at that
-user's interactive sign-in with **HighestAvailable**. It stores no password,
-has no on-demand start or restart policy, and requires exact task/security
-readback. Removal compares the current enrolled definition before deleting it;
-unrelated and legacy entries are preserved. Settings work runs through its owned
-background operation rather than blocking the view.
+Verified signed Windows Safe Startup opens the Protection Service Console under
+an ordinary Windows token. In its **Settings**, the **Run Angerona with
+administrator privileges** checkbox starts off. Its warning explains the effect
+of granting administrator access. Checking it invokes the fixed signed startup
+helper and Windows asks for consent. The elevated dashboard rechecks installed
+package authority and its effective administrator token before reporting
+readiness. The ordinary console closes on verified readiness and stays open when
+consent is declined or cancelled. Each new elevated session requires fresh consent.
 
-Source Observe remains held. Production publisher/package pins and independent
-release signing are unprovisioned; actual task enrollment, UAC, installed-release
-and clean-machine acceptance are not established. This is not a boot service,
-pre-sign-in protection, PPL or a kernel boundary, and it cannot override an
-authenticated STOP. See
-[installed enrollment](../src/angerona/core/installed_autostart.py).
+New HighestAvailable sign-in task enrollment is unavailable. A matching existing
+task can still be inspected and explicitly removed after its task definition,
+security descriptor and current administrator authority are verified. Automatic
+startup under a high token is held. Separate legacy entries and ordinary source
+autostart remain available under their existing controls. The unsigned source
+dashboard explains the hold under **Settings → General → Integrity & Performance**.
+
+In an explicitly elevated session, the watchdog holds Core relaunch pending new
+operator consent. Companion supervision remains available under its existing
+gates. Production signing and publisher authority provisioning remain pending,
+along with actual installed startup, UAC and clean-machine acceptance.
 
 ### Verified breach review and lockdown
 

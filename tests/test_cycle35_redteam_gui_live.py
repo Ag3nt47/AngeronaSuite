@@ -111,106 +111,13 @@ def _app() -> QApplication:
 
 @pytest.fixture
 def live_process_inventory(isolate_process_inventory_provider, request):
-    """Use the runtime's owned rich collector instead of a GUI-local fallback.
+    """Keep genuine Core/inventory ownership through GUI response retirement."""
+    from native_companion_context import native_companion_context
 
-    This fixture tests collection/response, not the separate application-entry
-    privilege gate. Calling the fixed worker API directly lets elevated hosted
-    runners exercise the same real collector and authenticated private protocol
-    without changing the production source-entry refusal or supplying fake rows.
-    """
-    from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
-    from angerona.core.werfault_guard import read_owned_process_snapshot
-    from angerona.resilience.component_status import ComponentHeartbeatCache, ROLES
-    from angerona.telemetry.process_snapshot_worker import InventoryWorkerError, ProcessSnapshotProvider
-
-    provider = ProcessSnapshotProvider(command=[
-        sys.executable, "-c",
-        "from angerona.telemetry.process_snapshot_worker import worker_main; "
-        "raise SystemExit(worker_main())",
-    ])
-    owner = ProcessSnapshotLifecycle(provider)
-    core = ComponentHeartbeatCache(
-        {role: None for role in ROLES},
-        enabled={role: role == "core" for role in ROLES}, owned_core_pid=os.getpid(),
-    )
-    stopped, ready = threading.Event(), threading.Event()
-    publication = ((), "not-ready")
-    close_errors = []
-
-    def owned_process_identities():
-        # This supplier is deliberately memory-only, as in normal App startup.
-        rows, error = publication
-        if stopped.is_set() or error is not None:
-            raise InventoryWorkerError("Cached GUI fixture companion ownership is unavailable")
-        return rows
-
-    def refresh_context():
-        nonlocal publication
-        try:
-            while not stopped.is_set():
-                sampled = time.monotonic()
-                try:
-                    core.refresh_owned_processes()
-                    core_rows = core.owned_process_identities()
-                    if (len(core_rows) != 1 or core_rows[0].role != "core"
-                            or core_rows[0].pid != os.getpid()):
-                        raise InventoryWorkerError("Native fixture Core ownership is unavailable")
-                    rows = core_rows + provider.observe_owned_process_identities()
-                    # Validate the combined sample without renewing either
-                    # producer's leases or dropping an unavailable companion.
-                    rows = read_owned_process_snapshot(
-                        lambda: rows, not_before=sampled, clock=time.monotonic,
-                    ).rows
-                    if not stopped.is_set():
-                        publication = (rows, None)
-                        ready.set()
-                except Exception as exc:
-                    publication = ((), type(exc).__name__)
-                stopped.wait(max(0.0, 1.0 - (time.monotonic() - sampled)))
-        finally:
-            publication = ((), "stopped")
-            try:
-                core.close()
-            except Exception as exc:
-                close_errors.append(type(exc).__name__)
-
-    context_worker = threading.Thread(target=refresh_context, name="GuiLiveNativeCompanionContext", daemon=False)
-    context_start_proven = False
-    assert owner.start()
-    try:
-        context_worker.start()
-        context_start_proven = True
-        deadline = time.monotonic() + 10.0
-        while not ready.is_set() and context_worker.is_alive() and time.monotonic() < deadline:
-            _app().processEvents()
-            time.sleep(0.01)
-        assert ready.is_set(), "Native Core/inventory companion context was not established"
-        yield owned_process_identities
-    finally:
-        # The test's producer/combat cleanup runs before fixture teardown. Keep
-        # exact native context available through that retirement, then revoke.
-        stopped.set()
-        publication = ((), "stopped")
-        if context_worker.ident is not None:
-            context_worker.join(timeout=3.0)
-        context_retired = context_start_proven and not context_worker.is_alive() and not close_errors
-        if not context_retired:
-            # Preserve uncertain observer owners; never close its handles from
-            # a competing thread or claim that missing references prove exit.
-            request.node._inventory_context_retirement_hold = (context_worker, core, owner, close_errors)
-        owner.request_stop()
-        retired = []
-        waiter = threading.Thread(
-            target=lambda: retired.append(owner.wait_retired(timeout=30.0)),
-            name="GuiLiveInventoryRetirement",
-        )
-        waiter.start()
-        waiter.join(timeout=31.0)
-        if waiter.is_alive() or retired != [True]:
-            request.node._inventory_retirement_hold = (waiter, owner, provider, retired)
-        assert context_retired, "Native companion context retirement or handle closure is unproven"
-        assert not waiter.is_alive(), "Inventory retirement waiter did not finish"
-        assert retired == [True], "The exact owned inventory process did not retire"
+    with native_companion_context(
+        retirement_owner=request.node, pump_events=lambda: _app().processEvents(),
+    ) as supplier:
+        yield supplier
 
 
 def _os_witness_accepts(
@@ -658,6 +565,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.core.module_manager import ModuleManager
     from angerona.core.storage import AsyncFlightRecorder, FlightRecorder
     from angerona.gui.main_window import MainWindow
+    from angerona.gui.simulation_launch import session_custody_released
+    from angerona.shark.simulation_session import SimulationSession
     from angerona.gui.pages import AARDialog, SettingsDialog
     from angerona.modules.adversary_combat import AdversaryCombat, HostMutationHeld
     from angerona.modules.process_monitor import ProcessMonitorModule
@@ -667,6 +576,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.shark.aar_report import AARReportResult, verified_aar_handoff_text
     from angerona.shark.red_team import INTENSITY_LEVELS, RedTeamEngine
     from gui_response_hold_diagnostic import ResponseHoldDiagnostic
+    from gui_response_cost_diagnostic import ResponseCostDiagnostic
 
     # Each pytest case already owns a unique retained root. Keep every
     # trace, AAR alias and independent witness below that root as well.
@@ -693,6 +603,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     except OSError:
         process_trace = None
     response_holds = ResponseHoldDiagnostic(process_trace, lock=process_trace_lock)
+    response_cost = ResponseCostDiagnostic()
 
     def close_process_trace() -> None:
         try:
@@ -821,8 +732,19 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
     monkeypatch.setattr(Path, "stat", diagnostic_stat)
 
+    lease_timing_stages = {
+        "_target_identity_matches": "issuer.target_identity",
+        "_validation_target_markers_safe": "issuer.marker_scope",
+        "_marker_path_identity": "issuer.marker_identity",
+        "_policy_identity": "issuer.policy_identity",
+        "validate_redteam_recorder": "issuer.recorder",
+    }
+
     def wrap_lease_helper(name: str) -> None:
         original = getattr(purple_module, name)
+        if name in lease_timing_stages:
+            # Measure the actual original, preserving the existing diagnostic wrapper.
+            original = response_cost.wrap(original, lease_timing_stages[name], child_only=True)
 
         def observed(*args: object, **kwargs: object):
             try:
@@ -967,6 +889,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     cleanup_started = cleanup_complete = fixture_closing = False
     cleanup_errors: list[str] = []
     aar_threads: list[threading.Thread] = []
+    retained_sessions: list[SimulationSession] = []
     aar_lock = threading.Lock()
 
     def perform_cleanup() -> None:
@@ -1039,6 +962,15 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             if preparing is not None:
                 capture(preparing, "thread")
                 owners_known = attempt("Simulation preparation cancel", preparing.cancel) and owners_known
+            for session in (getattr(window, "_simulation_session", None),
+                            getattr(preparing, "session", None)):
+                if session is not None:
+                    if type(session) is not SimulationSession:
+                        owners_known = False
+                        continue
+                    if session not in retained_sessions:
+                        retained_sessions.append(session)
+                    owners_known = attempt("Session cancellation", session.cancel) and owners_known
             capture(window, "_sim_stop_thread")
             engines = (window.red_team_engine, window.shark_engine)
             for engine in engines:
@@ -1052,13 +984,21 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             # One failure must not skip the other admitted producers. Run
             # potentially blocking stop APIs in this exact retained owner so
             # they cannot extend the shared caller-side cleanup deadline.
+            # The detached session owns reports, watches and lease release. Let
+            # its exact workers settle before retiring recorder-dependent sensors.
+            for session in retained_sessions:
+                for worker in session.owned_workers():
+                    if worker.ident is not None:
+                        attempt("Session owner join", lambda worker=worker: worker.join(
+                            timeout=max(0.0, deadline - time.monotonic()),
+                        ))
             for module in modules:
                 attempt(f"{module.name} stop", module.stop)
             if manager is not None:
                 attempt("Module manager stop", manager.stop_all)
             # A live preparation worker owns its lease and engine cleanup.
             # Do not race a second cleanup against that generation.
-            if preparing is None or not preparing.thread.is_alive():
+            if not retained_sessions and (preparing is None or not preparing.thread.is_alive()):
                 for engine in engines:
                     attempt("Simulation engine stop", engine.stop_and_clean)
                 if window is not None and not any(worker.is_alive() for worker in aar_threads):
@@ -1085,10 +1025,17 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 manager._shutdown is True
                 and not getattr(manager, "_settings_combat_activation_pending", False)
             ))
-            and (preparing is None or preparing.finished.is_set())
+            and (preparing is None or (preparing.finished.is_set()
+                 and all(not worker.is_alive() for worker in preparing.owned_workers())))
+            and all((not session.owned_workers() or session.finished.is_set())
+                    and all(worker.ident is not None and not worker.is_alive()
+                            for worker in session.owned_workers())
+                    and session_custody_released(session) for session in retained_sessions)
             and (window is None or (
                 getattr(window, "_redteam_validation_lease", None) is None
-                and int(getattr(window, "_sim_aar_pending", 0)) == 0
+                # A stopped Qt poll may leave its presentation sentinel set.
+                # Exact detached custody above, never that flag, proves release.
+                and (bool(retained_sessions) or int(getattr(window, "_sim_aar_pending", 0)) == 0)
                 and (getattr(window, "_sim_stop_complete", None) is None
                      or window._sim_stop_complete.is_set())
                 and not getattr(window, "_sim_stop_errors", [])
@@ -1114,9 +1061,21 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 cleanup_complete = attempt("Raw recorder close", recorder.close)
             else:
                 cleanup_errors.append("Recorder has failed/unconfirmed writes; raw recorder retained")
+        # No timing output occurs in a producer or before exact retirement.
+        # A diagnostic write failure cannot replace a native/test outcome.
+        cost_published = False
+        if users_retired and writer_retired:
+            try:
+                cost_published = response_cost.write_after_retirement(
+                    case_evidence / "bug_audit_gui_response_cost.json",
+                    producers_retired=users_retired, recorder_retired=writer_retired,
+                )
+            except Exception:
+                pass
         # Diagnostics must not bypass safe cleanup or mask the original body
         # failure. The registered teardown assertion reports cleanup separately.
         attempt("Cleanup trace", lambda: trace("cleanup_done", users_retired=users_retired,
+            response_cost_published=cost_published,
             recorder_before=recorder_before_stop, recorder_after=recorder_retired,
             recorder_drained=recorder_drained, raw_closed=cleanup_complete,
             errors=list(cleanup_errors)))
@@ -1126,6 +1085,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         if cleanup_started:
             return
         cleanup_started = True
+        response_cost.set_phase("cleanup")
         try:
             perform_cleanup()
         except Exception as exc:
@@ -1156,6 +1116,92 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         )
         manager.modules[module.name] = module
     combat.bind_manager(manager)
+    response_cost.set_response_thread(lambda: combat._thread)
+    # Fixed labels only; wrappers return/raise the original result unchanged and
+    # never inspect paths, record contents, keys or arbitrary object reprs.
+    original_host_code = AdversaryCombat._require_host_mutation_authority.__code__
+    for name, stage in (
+        ("_handle", "combat.handle"), ("_quarantine_file", "combat.file_action"),
+        ("_act_on_process", "combat.process_action"),
+        ("_practice_mutation", "combat.practice_binding"),
+        ("_canary_mutation_valid", "combat.canary_proof"),
+        ("_require_host_mutation_authority", "combat.host_authority"),
+        ("_require_current_response_event", "combat.current_event"),
+        ("_require_not_owned_identity", "combat.owned_inventory"),
+        ("_require_process_not_owned", "combat.process_identity"),
+        ("_append_journal", "journal.append"),
+        ("_append_pinned_journal_bytes", "journal.append_bytes"),
+        ("_validated_active_journal_cache", "journal.cache_verify"),
+        ("_journal_cache_graph_digest", "journal.graph_digest"),
+        ("_commit_after_mutation", "journal.commit"),
+        ("_read_recovery_anchor_value", "anchor.read"),
+        ("_write_recovery_anchor_value", "anchor.write"),
+        ("_advance_recovery_anchor", "anchor.advance"),
+        ("_read_recovery_witness", "witness.read"),
+        ("_write_recovery_witness", "witness.write"),
+    ):
+        monkeypatch.setattr(combat, name, response_cost.wrap(getattr(combat, name), stage,
+            host_code=original_host_code if name == "_require_current_response_event" else None,
+            boolean_result=name == "_canary_mutation_valid"))
+
+    def fixture_lease(args, _kwargs):
+        lease = args[0] if args else None
+        # Public compatibility identity is a diagnostic filter only. It is never
+        # substituted for the original issuer-owned authority check or its result.
+        return (type(lease) is RedTeamValidationLease
+                and object.__getattribute__(lease, "__dict__").get("manager") is manager)
+
+    monkeypatch.setattr(RedTeamValidationLease, "_state_matches", response_cost.wrap(
+        RedTeamValidationLease._state_matches, "issuer.scope", gate=fixture_lease,
+        boolean_result=True))
+    monkeypatch.setattr(RedTeamValidationLease, "_validated_artifact_identity", staticmethod(
+        response_cost.wrap(RedTeamValidationLease._validated_artifact_identity,
+                           "issuer.artifact_identity", child_only=True)))
+    from angerona.modules import adversary_combat as combat_module
+    from angerona.core import atomic_io, secure_store, windows_process_lease
+    for owner, stages in (
+        (secure_store, (("read_secret_values", "credential.read"),
+                       ("write_secret_map", "credential.write"),
+                       ("_protect_bytes", "credential.protect"),
+                       ("_unprotect_bytes", "credential.unprotect"),
+                       ("_replace_credential_file", "credential.replace"),
+                       ("_credential_file_state", "credential.file_state"),
+                       ("_credential_security_state", "credential.security_state"),
+                       ("_credential_parent_security_state", "credential.parent_security"),
+                       ("_private_acl", "credential.private_acl"),
+                       ("_native_private_acl", "credential.native_acl"),
+                       ("_assert_transaction", "credential.transaction_assert"),
+                       ("_backing_store_identity", "credential.store_identity"))),
+        (combat_module._PinnedFileMove, (("__init__", "native.file_pin"),
+                       ("sha256", "native.file_hash"),
+                       ("require_single_link", "native.file_links"),
+                       ("duplicate_custody_descriptor", "native.file_descriptor"),
+                       ("rename_to", "native.file_rename"))),
+        (windows_process_lease.WindowsProcessLease, (("__init__", "native.process_pin"),
+                       ("validate", "native.process_validate"),
+                       ("terminate", "native.process_terminate"),
+                       ("wait_terminated", "native.process_wait"),
+                       ("terminal_proof", "native.process_proof"))),
+    ):
+        for name, stage in stages:
+            monkeypatch.setattr(owner, name, response_cost.wrap(
+                getattr(owner, name), stage, child_only=True))
+
+    # Only these modules' namespace references change, never the shared os
+    # module or any native implementation/default callback. Original call
+    # arguments, results, exceptions and durability operations remain intact.
+    monkeypatch.setattr(secure_store, "os", response_cost.os_view(
+        secure_store.os,
+        fsync_scopes=(("credential.write", "credential.fsync"),),
+        replace_scopes=(("credential.replace", "credential.os_replace"),)))
+    monkeypatch.setattr(combat_module, "os", response_cost.os_view(
+        combat_module.os, fsync_scopes=(("journal.append_bytes", "journal.fsync"),
+                                      ("witness.write", "witness.fsync"))))
+    # replace_with_retry captures its native callback as a default argument.
+    # Measure that real helper inclusively rather than injecting a callback.
+    monkeypatch.setattr(atomic_io, "replace_with_retry", response_cost.wrap_scoped(
+        atomic_io.replace_with_retry, (("witness.write", "witness.replace"),)))
+
     monkeypatch.setattr(combat, "_require_current_response_event", response_holds.wrap_guard(
         combat._require_current_response_event, hold_type=HostMutationHeld, event_type=Event,
         dispatch_context=lambda: getattr(combat._response_dispatch_local, "context", None),
@@ -1242,20 +1288,6 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     window_construction_started = True
     window = MainWindow(bus, recorder, manager, config)
 
-    def retain_aar_user(name: str) -> None:
-        original = getattr(window, name)
-
-        def tracked(*args, **kwargs):
-            with aar_lock:
-                if fixture_closing:
-                    return  # Teardown fences new work; admitted calls are joined.
-                aar_threads.append(threading.current_thread())
-            return original(*args, **kwargs)
-
-        monkeypatch.setattr(window, name, tracked)
-
-    for aar_method in ("_red_team_build_aar", "_shark_build_aar"):
-        retain_aar_user(aar_method)
     pulse_worker = window.system_pulse._sample_worker
     trace("mainwindow_constructed")
     window.show()
@@ -1273,7 +1305,16 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     witness_paths: dict[str, tuple[Path, Path]] = {}
     settlement_evidence: dict[str, tuple[dict, dict]] = {}
     settlement_runtime: dict[str, dict] = {}
-    window._aar_ready.connect(delivered.append)
+    original_show_aar = window._show_aar_dialog
+
+    def capture_displayed_report(handoff):
+        result = original_show_aar(handoff)
+        if type(handoff) is AARReportResult:
+            # Observe the current GUI delivery seam after its unchanged verifier.
+            delivered.append(handoff)
+        return result
+
+    monkeypatch.setattr(window, "_show_aar_dialog", capture_displayed_report)
     window._settings_combat_status.connect(
         lambda state, _message: activation_states.append(state)
     )
@@ -1395,17 +1436,26 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
         assert assess_drill_response(manager, require_process=True)["ready"]
         trace("readiness_passed", process=process.operational_snapshot())
 
-        original_settlement = window._wait_for_redteam_response_settlement
+        original_settlement = SimulationSession._settle_admitted_responses
 
-        def settle_then_witness(*, started_at: float, **kwargs: object) -> dict:
-            trace("settlement_start", steps=len(window.red_team_engine.steps),
+        def settle_then_witness(session):
+            # Preserve the current detached owner and the original settlement
+            # result. This observer does not mint receipts or relax any gate.
+            if (session.manager is not manager or session.bus is not bus
+                    or session.recorder is not recorder):
+                return original_settlement(session)
+            with aar_lock:
+                aar_threads.append(threading.current_thread())
+            trace("settlement_start", steps=len(session.red_team_engine.steps),
                   combat=combat.response_snapshot())
-            settled = original_settlement(started_at=started_at, **kwargs)
+            drained = original_settlement(session)
             combat_settled = combat.response_snapshot()
+            settled = {"pending": combat_settled.get("queue_pending"),
+                       "timed_out": drained is False, "responses_drained": drained}
             runtime_settled = _witness_runtime_snapshot(combat, bus)
             trace("settlement_done", settled=settled,
                   combat=combat_settled, runtime=runtime_settled)
-            engine = window.red_team_engine
+            engine = session.red_team_engine
             run_id = str(engine.run_id)
             settlement_evidence[run_id] = settled, combat_settled
             settlement_runtime[run_id] = runtime_settled
@@ -1451,10 +1501,10 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             witness_paths[run_id] = witness_input, witness_output
             trace("pre_witness_done", run_id=run_id,
                   markers=len(expected_markers), processes=len(expected_processes))
-            return settled
+            return drained
 
         monkeypatch.setattr(
-            window, "_wait_for_redteam_response_settlement", settle_then_witness,
+            SimulationSession, "_settle_admitted_responses", settle_then_witness,
         )
 
         def close_report_dialogs() -> None:
@@ -1687,6 +1737,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     accepted_before = len(accepted_run_ids)
                     started = time.monotonic()
                     deadline = started + 180.0
+                    response_cost.set_phase("run1" if run_index == 1 else "run2")
                     QTest.mouseClick(console.launch_btn, Qt.MouseButton.LeftButton)
                     trace("launch_clicked", run_index=run_index, attempt=attempt,
                           run_id=window.red_team_engine.run_id)
@@ -1727,9 +1778,18 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     "preparing": console._launch_preparing,
                 }
                 assert not console._launch_preparing
-                assert console._report_runs["red_team"] == window.red_team_engine.run_id
-                assert window.red_team_engine.run_id not in accepted_run_ids
-                accepted_run_ids.append(window.red_team_engine.run_id)
+                session, plan = window._simulation_session, window._simulation_plan
+                assert type(session) is SimulationSession
+                planned = [run for run in plan.runs if run.kind == "red_team"]
+                assert len(planned) == 1
+                run_id = planned[0].run_id
+                assert console._report_runs["red_team"] == run_id
+                assert session.snapshot()["session_id"] == plan.session_id
+                assert session.snapshot()["session_generation"] == plan.generation
+                assert run_id not in accepted_run_ids
+                accepted_run_ids.append(run_id)
+                if session not in retained_sessions:
+                    retained_sessions.append(session)
                 assert not console._report_runs.get("shark")
                 trace("launch_accepted", run_index=run_index,
                       run_id=console._report_runs["red_team"])
@@ -1756,7 +1816,8 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 report = json.loads(handoff.report_bytes.decode("utf-8"))
                 trace("signed_aar", run_index=run_index, run_id=handoff.run_id,
                       outcome=report.get("outcome"))
-                assert report["run_id"] == handoff.run_id
+                assert report["run_id"] == handoff.run_id == run_id
+                assert window.red_team_engine.run_id == run_id
                 shutil.copyfile(
                     isolated_root / "redteam_aar.json",
                     case_evidence / f"bug_audit_gui_aar_{run_index}.json",
@@ -1845,14 +1906,31 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 assert report["outcome"] == "verified"
                 assert console._report_results["red_team"] == {
                     "count": 37, "eligible": 37, "outcome": "verified",
+                    "coverage_held": False, "diagnostic_only": False,
+                    "planned_steps": None, "steps_run": None,
                 }
                 assert "Verified simulation containment" in console.live_status.text()
                 assert (
                     "native analytics: 0/37 overall; 36 file-marker opportunities"
                     in console.live_status.text()
                 )
+                # Delivery can precede lease/watch release. The native witness
+                # subprocess also blocks Qt: raw owner retirement can therefore
+                # precede the next real lifecycle projection to the console.
+                # Wait for that projection under the same launch deadline.
+                while (window._session_is_active()
+                       or window._session_release_delivered is not True
+                       or not console.launch_btn.isEnabled()) and time.monotonic() < deadline:
+                    app.processEvents()
+                    time.sleep(0.05)
+                assert not window._session_is_active(), session.retirement_snapshot()
+                assert session_custody_released(session)
+                assert session.snapshot()["phase"] == "completed", session.launch_diagnostics()
+                assert window._session_release_delivered is True, console._session_lifecycle
+                assert console.launch_btn.isEnabled()
                 assert shown_aar and "RED TEAM ATTACK" in shown_aar[-1]
                 assert not modal_errors
+                response_cost.set_phase("between")
         finally:
             modal_timer.stop()
     finally:

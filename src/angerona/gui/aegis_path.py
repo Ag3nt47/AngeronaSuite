@@ -149,6 +149,30 @@ class _AnalysisTask(QRunnable):
         )
 
 
+class _ComparisonSignals(QObject):
+    finished = Signal(object, object, int, str)
+
+
+class _ComparisonTask(QRunnable):
+    def __init__(self, snapshot, candidate, limits, token):
+        super().__init__()
+        self.snapshot, self.candidate, self.limits, self.token = snapshot, candidate, limits, token
+        self.signals = _ComparisonSignals()
+
+    def run(self):
+        snapshot, candidate = self.snapshot, self.candidate
+        try:
+            result = simulate_breakpoints(snapshot, expected_generation=snapshot.generation,
+                expected_digest=snapshot.digest, expected_scope_id=snapshot.scope_id,
+                expected_policy_digest=snapshot.policy_digest,
+                breakpoint_edge_ids=(candidate.graph_id,) if candidate.kind.value == "edge" else (),
+                breakpoint_node_ids=(candidate.graph_id,) if candidate.kind.value == "node" else (), limits=self.limits)
+        except Exception as error:
+            self.signals.finished.emit(snapshot, None, self.token, type(error).__name__)
+        else:
+            self.signals.finished.emit(snapshot, result, self.token, "")
+
+
 class AegisPathWidget(QWidget):
     """Sortable/clickable evidence, route, target, and breakpoint explorer."""
 
@@ -177,8 +201,17 @@ class AegisPathWidget(QWidget):
         self._thread_pool = QThreadPool(self)
         self._thread_pool.setMaxThreadCount(1)
         self._active_task: _AnalysisTask | None = None
+        self._comparison_pending = False
+        self._comparison_token = 0
+        self._active_comparison = None
+        self._comparison_activity = None
+        self._analysis_activities = {}
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         title = QLabel("AegisPath · Evidence-bound Exposure Paths")
         title.setStyleSheet("font-size: 18px; font-weight: 700;")
         self.status_label = QLabel("UNKNOWN · no immutable graph snapshot")
@@ -249,7 +282,7 @@ class AegisPathWidget(QWidget):
         )
         self.what_if_button.clicked.connect(self._run_what_if)
         if snapshot is not None:
-            self.set_snapshot(snapshot)
+            self.set_snapshot(snapshot, user_requested=True)
         else:
             self.clear_snapshot("no immutable graph snapshot")
 
@@ -294,7 +327,7 @@ class AegisPathWidget(QWidget):
             "No comparison available; missing data never proves the route is closed."
         )
 
-    def set_snapshot(self, snapshot: ExposureSnapshot) -> None:
+    def set_snapshot(self, snapshot: ExposureSnapshot, *, user_requested=False) -> None:
         if (
             isinstance(snapshot, ExposureSnapshot)
             and (
@@ -322,6 +355,9 @@ class AegisPathWidget(QWidget):
             self.clear_snapshot("bounded background verification in progress")
             self._analysis_token += 1
             token = self._analysis_token
+            if user_requested:
+                self._analysis_activities[token] = self._activities.begin(
+                    "graph-analysis", "Verifying the selected exposure graph…", replace=True)
             self._analysis_pending = True
             task = _AnalysisTask(snapshot, self._limits, token)
             task.signals.finished.connect(self._accept_background_analysis)
@@ -330,7 +366,13 @@ class AegisPathWidget(QWidget):
                 "VERIFYING · bounded analysis is running off the UI thread"
             )
             self.status_label.setStyleSheet("color: #f59e0b; font-weight: 600;")
-            self._thread_pool.start(task)
+            try:
+                self._thread_pool.start(task)
+            except Exception:
+                self._activities.finish(self._analysis_activities.pop(token, None))
+                self._analysis_pending = False
+                self._active_task = None
+                raise
             return
         try:
             analysis, priority = _analyze_snapshot(snapshot, self._limits)
@@ -350,6 +392,7 @@ class AegisPathWidget(QWidget):
         token: int,
         error: str,
     ) -> None:
+        self._activities.finish(self._analysis_activities.pop(token, None))
         if token != self._analysis_token or not self._analysis_pending:
             return
         self._analysis_pending = False
@@ -652,7 +695,7 @@ class AegisPathWidget(QWidget):
             and len(snapshot.edges) <= _GUI_SYNC_MAX_EDGES
         )
         self.what_if_button.setEnabled(
-            candidate is not None and synchronous_comparison_safe
+            candidate is not None and synchronous_comparison_safe and not self._comparison_pending
         )
         if candidate is None:
             return
@@ -672,24 +715,34 @@ class AegisPathWidget(QWidget):
 
     def _run_what_if(self) -> None:
         snapshot, candidate = self._snapshot, self._selected_breakpoint()
-        if snapshot is None or candidate is None:
+        if snapshot is None or candidate is None or self._comparison_pending:
             return
-        edge_ids = (candidate.graph_id,) if candidate.kind.value == "edge" else ()
-        node_ids = (candidate.graph_id,) if candidate.kind.value == "node" else ()
+        self._comparison_pending = True
+        self._comparison_token += 1
+        token = self._comparison_token
+        task = self._active_comparison = _ComparisonTask(snapshot, candidate, self._limits, token)
+        self._comparison_activity = self._activities.begin("what-if", "Computing the selected inert what-if analysis…", replace=True)
+        self.what_if_button.setEnabled(False)
+        task.signals.finished.connect(self._accept_comparison)
         try:
-            comparison = simulate_breakpoints(
-                snapshot,
-                expected_generation=snapshot.generation,
-                expected_digest=snapshot.digest,
-                expected_scope_id=snapshot.scope_id,
-                expected_policy_digest=snapshot.policy_digest,
-                breakpoint_edge_ids=edge_ids,
-                breakpoint_node_ids=node_ids,
-                limits=self._limits,
-            )
-        except Exception as exc:
+            self._thread_pool.start(task)
+        except Exception as error:
+            self._accept_comparison(snapshot, None, token, type(error).__name__)
+
+    def _accept_comparison(self, snapshot, comparison, token, error):
+        if token != self._comparison_token:
+            return
+        self._comparison_pending = False
+        self._active_comparison = None
+        self._activities.finish(self._comparison_activity)
+        self._comparison_activity = None
+        self._show_selected_breakpoint()
+        if self._snapshot is not snapshot:
+            self.comparison_label.setText("UNKNOWN · the graph changed during comparison; select a current breakpoint and run again.")
+            return
+        if error or comparison is None:
             self.comparison_label.setText(
-                f"UNKNOWN · inert comparison failed: {type(exc).__name__}"
+                f"UNKNOWN · inert comparison failed: {error or 'invalid-result'}"
             )
             self.comparison_label.setStyleSheet("color: #ef4444;")
             return

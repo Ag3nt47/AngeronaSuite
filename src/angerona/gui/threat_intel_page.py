@@ -35,7 +35,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 from angerona.gui.cve_analysis_window import CveAnalysisWindow
-from angerona.gui.animations import begin_loading, finish_loading
+from angerona.gui.animations import begin_loading, finish_loading, update_loading
 
 # ── tunables ──────────────────────────────────────────────────────────────────
 _AUTO_REFRESH_MS = 60_000   # re-read upstream_threats.json every 60 s
@@ -44,6 +44,8 @@ _NOT_APPLICABLE_TTL_SECONDS = 30 * 24 * 60 * 60
 _MAX_ANALYSIS_RECORD_BYTES = 256 * 1024
 _MAX_ANALYSIS_RECORD_NODES = 4096
 _MAX_ANALYSIS_RECORD_DEPTH = 16
+# A batch whose native wait is unresolved must survive parent destruction.
+_BATCH_DEFERRED_OWNERS: dict[int, object] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +171,20 @@ class _FixWorker(QThread):
         self._items = items
         self._requests: tuple[_AnalysisRequest, ...] | None = None
         self._startup_failed = False
+        self._native_start_invoked = False
+        self._batch_owned_generation = False
+        self._batch_retirement_retained = False
+        self._batch_native_retirement_proven = False
+        self._batch_unused_disposable = False
+        self._batch_owner_settled = False
+
+    def start(self, *args, **kwargs):
+        # Detail-worker admission is unchanged. Batch ownership admits one
+        # native generation and records whether QThread.start was reached.
+        if self._batch_owned_generation and self._native_start_invoked:
+            raise RuntimeError("A batch analysis generation cannot restart")
+        self._native_start_invoked = True
+        return super().start(*args, **kwargs)
 
     def run(self) -> None:
         from angerona.core import cve_fix_advisor
@@ -231,6 +247,7 @@ class ThreatIntelDashboard(QDialog):
         self._detail_workers: dict[str, _FixWorker] = {}
         self._loading_token: str | None = None
         self._batch_retiring: _FixWorker | None = None
+        self._batch_close_pending = False
         self._batch_startup_cleanup_errors: tuple[str, ...] = ()
         self._batch_retire_timer = QTimer(self)
         self._batch_retire_timer.setSingleShot(True)
@@ -242,6 +259,13 @@ class ThreatIntelDashboard(QDialog):
         self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
 
         lay = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self, publish_global=False)
+        self._batch_activities = {}
+        self._detail_activities = {}
+        self._proposal_jobs = {}
+        self.progress_view = ActionProgressView(self._activities, self)
+        lay.addWidget(self.progress_view)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(10)
 
@@ -599,14 +623,18 @@ class ThreatIntelDashboard(QDialog):
         ) for (cve, _record), identity in zip(items, identities)}
         worker = _FixWorker(items, self)
         self._worker = worker
+        worker._batch_owned_generation = True
+        worker._measured_returns = set()
         requests = []
         loading_token = None
         previous_loading = self._loading_token
         start_attempted = False
         try:
+            self._batch_activities[worker] = self._activities.begin("cve-batch", "Analyzing vulnerability records…", done=0, total=len(items), replace=True)
             # Install exact ownership cleanup before any fallible UI/start work.
             worker.finished.connect(lambda: self._release_batch_worker(worker))
             worker.result_for_request.connect(self._on_fix_result)
+            worker.result_for_request.connect(lambda request, _cve, _analysis, owner=worker: self._measure_batch(owner, request), Qt.ConnectionType.QueuedConnection)
             for (cve, _record), identity in zip(items, identities):
                 requests.append(self._accept_analysis_request(cve, identity))
             accepted = tuple(requests)
@@ -621,14 +649,21 @@ class ThreatIntelDashboard(QDialog):
                 f"Analyzing {len(items)} vulnerability record(s)…"
             )
             self._loading_token = loading_token
+            worker._progress_loading_token = loading_token
             start_attempted = True
             worker.start()
+            self._retain_batch_native_owner(worker)
         except BaseException:
             worker._startup_failed = True
             cleanup_errors = []
-            if loading_token is not None:
+            try:
+                self._retain_batch_native_owner(worker)
+            except BaseException as cleanup_error:
+                cleanup_errors.append(type(cleanup_error).__name__)
+            if loading_token is not None and self._batch_retirement_ready(worker):
                 try:
                     finish_loading(loading_token)
+                    worker._progress_loading_token = None
                 except BaseException as cleanup_error:
                     cleanup_errors.append(type(cleanup_error).__name__)
                 if self._loading_token == loading_token:
@@ -678,13 +713,45 @@ class ThreatIntelDashboard(QDialog):
         for request in refresh:
             self._refresh_analysis_cell(request)
 
+    def _retain_batch_native_owner(self, worker: _FixWorker) -> None:
+        """Register only an attempted native generation with the existing reaper."""
+        if getattr(worker, "_native_start_invoked", None) is not True:
+            return  # Known pre-native failures remain distinct from native proof.
+        if not getattr(worker, "_batch_retirement_retained", False):
+            from angerona.gui.native_retirement import retain_native_retirement
+            retain_native_retirement(worker, self._batch_native_retired)
+            worker._batch_retirement_retained = True
+        if worker._startup_failed:
+            from angerona.gui.native_retirement import native_start_failed
+            native_start_failed(worker)
+
+    def _batch_native_retired(self, worker: _FixWorker) -> None:
+        # The existing native owner calls this only after isFinished + wait(0).
+        # Record that exact fact before settling presentation or deferred close.
+        worker._batch_native_retirement_proven = True
+        self._release_batch_worker(worker)
+
+    def _batch_retirement_ready(self, worker: _FixWorker) -> bool:
+        if getattr(worker, "_batch_native_retirement_proven", False) is True:
+            return True
+        if not isValid(worker):
+            return False  # An invalid wrapper is not prior native retirement proof.
+        if (worker._startup_failed
+                and getattr(worker, "_native_start_invoked", None) is False):
+            worker._batch_unused_disposable = True
+            return True  # No native start was called; no wait proof is asserted.
+        return False
+
     def _release_batch_worker(self, worker: _FixWorker) -> None:
-        if isValid(worker):
-            try:
-                running = worker.isRunning()
-            except Exception:
-                running = True  # State is unknown; keep its exact owner.
-            if running:
+        if getattr(worker, "_batch_owner_settled", False):
+            return
+        if not self._batch_retirement_ready(worker):
+            if getattr(worker, "_batch_retirement_retained", False):
+                from angerona.gui.native_retirement import poll_native_retirement
+                poll_native_retirement(worker)  # GUI-only, exact owner, nonblocking.
+                if getattr(worker, "_batch_owner_settled", False):
+                    return  # The proof callback already settled this same owner.
+            if not self._batch_retirement_ready(worker):
                 self._batch_retiring = worker
                 if not self._batch_retire_timer.isActive():
                     self._batch_retire_timer.start()
@@ -692,16 +759,35 @@ class ThreatIntelDashboard(QDialog):
         if self._batch_retiring is worker:
             self._batch_retiring = None
             self._batch_retire_timer.stop()
+        self._activities.finish(self._batch_activities.pop(worker, None))
+        loading = getattr(worker, "_progress_loading_token", None)
+        if loading is not None:
+            finish_loading(loading)
+            worker._progress_loading_token = None
+            if self._loading_token == loading:
+                self._loading_token = None
         if self._worker is worker:
             self._worker = None
+        worker._batch_owner_settled = True
         if isValid(worker):
             worker.deleteLater()
+        if self._batch_close_pending:
+            QTimer.singleShot(0, self.close)
 
     def _retry_batch_retirement(self) -> None:
         # Observe retirement only; this never retries analysis or starts work.
         worker = self._batch_retiring
         if worker is not None:
             self._release_batch_worker(worker)
+
+    def _measure_batch(self, worker, request):
+        if self._worker is not worker or request not in (worker._requests or ()):
+            return
+        worker._measured_returns.add(id(request))
+        self._activities.update(self._batch_activities.get(worker), done=len(worker._measured_returns), total=len(worker._requests))
+        loading = getattr(worker, "_progress_loading_token", None)
+        if loading is not None:
+            update_loading(loading, "Analyzing vulnerability records…", done=len(worker._measured_returns), total=len(worker._requests))
 
     def _start_detail_analysis(
         self,
@@ -758,6 +844,14 @@ class ThreatIntelDashboard(QDialog):
             admission.abandon(reservation)
             raise
         self._detail_workers[cve] = worker
+        self._detail_activities[worker] = self._activities.begin("cve-detail-" + str(id(worker)), "Analyzing selected vulnerability details…")
+        if callback_owner is not None and callback_owner.layout() is not None:
+            from angerona.gui.action_progress import ActionProgressView
+            local_progress = getattr(callback_owner, "_angerona_action_progress", None)
+            if local_progress is None:
+                local_progress = ActionProgressView(self._activities, callback_owner)
+                callback_owner.layout().addWidget(local_progress)
+                callback_owner._angerona_action_progress = local_progress
         request = self._accept_analysis_request(cve, identity)
 
         def handle_result(returned_cve: str, analysis: dict) -> None:
@@ -785,10 +879,14 @@ class ThreatIntelDashboard(QDialog):
             # A start implementation can fail after the worker began. The
             # admission owner checks that exact worker before returning its slot.
             admission.abandon(reservation)
+            from angerona.gui.thread_lifecycle import _is_running
+            if not _is_running(worker):
+                self._activities.finish(self._detail_activities.pop(worker, None))
             raise
         return worker
 
     def _release_detail_worker(self, cve: str, worker: _FixWorker) -> None:
+        self._activities.finish(self._detail_activities.pop(worker, None))
         if self._detail_workers.get(cve) is worker:
             self._detail_workers.pop(cve, None)
         if isValid(worker):
@@ -882,8 +980,8 @@ class ThreatIntelDashboard(QDialog):
         if (not isValid(self) or self._worker is not worker
                 or worker._startup_failed):
             return
-        finish_loading(self._loading_token)
-        self._loading_token = None
+        # The result can arrive before native exit. The existing retirement
+        # owner ends both progress presentations in _release_batch_worker.
         current = [analysis for request in requests
                    if self._request_is_current(request)
                    and (analysis := self._cached_analysis(
@@ -905,6 +1003,26 @@ class ThreatIntelDashboard(QDialog):
         workers = (self._worker, *tuple(self._detail_workers.values()))
         if defer_close_until_threads(self, event, workers):
             return
+        batch = self._worker
+        if batch is not None:
+            self._release_batch_worker(batch)
+            if self._worker is batch:
+                # The generic helper owns running detail semantics. This local
+                # extra hold covers batch native TLS/wait uncertainty only.
+                event.ignore()
+                self._batch_close_pending = True
+                _BATCH_DEFERRED_OWNERS[id(self)] = self
+                self.hide()
+                if self.parent() is not None:
+                    self.setParent(None, self.windowFlags())
+                try:
+                    batch.requestInterruption()
+                except RuntimeError:
+                    pass
+                return
+        self._batch_close_pending = False
+        _BATCH_DEFERRED_OWNERS.pop(id(self), None)
+        self._activities.close()
         super().closeEvent(event)
 
     def _mass_flag_ignore(self) -> None:
@@ -918,7 +1036,6 @@ class ThreatIntelDashboard(QDialog):
 
     # ── Stage AI remediation proposals (never execute model output) ──────
     def _apply_fix(self, cve: str, analysis: dict) -> None:
-        from angerona.core import cve_fix_advisor
         script = (analysis or {}).get("fix_script", "").strip()
         revert = (analysis or {}).get("revert_script", "").strip()
         if not script:
@@ -952,32 +1069,83 @@ class ThreatIntelDashboard(QDialog):
         row.addWidget(run); row.addWidget(cancel); v.addLayout(row)
 
         def _run():
-            res = cve_fix_advisor.apply_fix(cve, analysis)
-            title, message, informational = _proposal_result_copy(cve, res)
-            if informational:
-                QMessageBox.information(self, title, message)
-            else:
-                QMessageBox.warning(self, title, message)
-            dlg.accept(); self._load_and_render()
+            self._start_proposal_job(cve, analysis, dlg, run)
         run.clicked.connect(_run); cancel.clicked.connect(dlg.reject)
-        dlg.exec()
+        from angerona.gui.action_progress import ActionProgressView
+        v.addWidget(ActionProgressView(self._activities, dlg))
+        dlg.setModal(False)
+        dlg.show()
+
+    def _start_proposal_job(self, cve, analysis=None, dialog=None, button=None):
+        from angerona.core import cve_fix_advisor
+        from angerona.gui.action_worker import start_finite_action
+        if any(value[1] == cve for value in self._proposal_jobs.values()):
+            self._footer.setText("A proposal for this CVE is still being saved; no duplicate was started.")
+            return False
+        selected = None if analysis is None else {key: analysis.get(key, "") for key in ("fix_script", "summary", "revert_script")}
+        if selected is not None and any(type(value) is not str for value in selected.values()):
+            self._footer.setText("Proposal input is not exact plain text; nothing was staged.")
+            return False
+        handle = self._activities.begin("proposal-" + cve, "Staging an inert proposal for " + cve + "…", replace=True)
+        try:
+            worker = start_finite_action(lambda _owner: cve_fix_advisor.revert_fix(cve) if selected is None else cve_fix_advisor.apply_fix(cve, selected),
+                name="CVEProposalStage", finished=self._proposal_retired)
+        except Exception:
+            worker = None
+        if worker is None:
+            self._activities.finish(handle)
+            self._footer.setText("Proposal worker admission is held or unavailable; no staging completion is verified.")
+            return False
+        self._proposal_jobs[worker] = (handle, cve, dialog, button, selected is None)
+        if button is not None:
+            button.setEnabled(False)
+        if getattr(worker, "admission_error", ""):
+            self._activities.finish(handle)
+            self._footer.setText("Proposal launch failed; its exact native owner is retained because retirement is unproved.")
+            return False
+        return True
+
+    def _proposal_retired(self):
+        worker = self.sender()
+        record = self._proposal_jobs.pop(worker, None)
+        if record is None:
+            return
+        handle, cve, dialog, button, rollback = record
+        self._activities.finish(handle)
+        if button is not None and isValid(button):
+            button.setEnabled(True)
+        result, error = worker.outcome
+        result = {"ok": False, "output": error} if error else result
+        if type(result) is not dict:
+            result = {"ok": False, "output": "The proposal producer did not return a bounded result object."}
+        if rollback:
+            title = "Rollback proposal staged — not executed" if result.get("ok") else "Rollback proposal was not staged"
+            message = "No rollback command ran.\n\n" + str(result.get("output", ""))[:1200]
+            informational = bool(result.get("ok"))
+        else:
+            title, message, informational = _proposal_result_copy(cve, result)
+        notice = getattr(self, "_proposal_notice", None)
+        if notice is None:
+            notice = self._proposal_notice = QMessageBox(self)
+            notice.setStandardButtons(QMessageBox.StandardButton.Close)
+            notice.setWindowModality(Qt.WindowModality.NonModal)
+            notice.setTextFormat(Qt.TextFormat.PlainText)
+        notice.setIcon(QMessageBox.Icon.Information if informational else QMessageBox.Icon.Warning)
+        notice.setWindowTitle(title)
+        notice.setText(message)
+        notice.show()
+        if dialog is not None and isValid(dialog):
+            dialog.accept()
+        self._load_and_render()
 
     def _revert_fix(self, cve: str) -> None:
-        from angerona.core import cve_fix_advisor
         if QMessageBox.question(
                 self, "Stage rollback proposal",
                 f"Stage the captured rollback text for {cve}? It will not be executed.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 ) != QMessageBox.StandardButton.Yes:
             return
-        res = cve_fix_advisor.revert_fix(cve)
-        if res.get("ok"):
-            QMessageBox.information(self, "Rollback proposal staged — not executed",
-                f"No rollback command ran.\n\nDetails:\n{res.get('output','')[:1200] or '(none)'}")
-        else:
-            QMessageBox.warning(self, "Revert failed",
-                f"Could not stage rollback for {cve}.\n\nOutput:\n{res.get('output','')[:1200]}")
-        self._load_and_render()
+        self._start_proposal_job(cve)
 
     # ── Row detail dialog (adds Ignore/Revert, History, Analyze fix) ─────
     def _on_row_double(self, row: int, _col: int) -> None:

@@ -27,7 +27,14 @@ import urllib.parse
 import urllib.request
 import unicodedata
 import uuid
+import zipfile
 
+from angerona.core.config import (
+    SCANNER_REPORT_COUNT_FALLBACK,
+    SCANNER_REPORT_COUNT_MAX,
+    SCANNER_REPORT_COUNT_UNLIMITED,
+    scanner_report_count,
+)
 from angerona.core.data_paths import data_dir, resource_root
 from angerona.core.curated_tool_progress import MAX_RUN_SECONDS
 from angerona.core.executable_trust import _open_sealed
@@ -76,7 +83,10 @@ MAX_JSON_BYTES = 8 * 1024**2
 MAX_TEXT_BYTES = 8 * 1024**2
 MAX_SUMMARY_BYTES = 1024**2
 MAX_ENTRIES = 4096
-MAX_REPORTS = 8
+MAX_REPORTS = SCANNER_REPORT_COUNT_FALLBACK  # Legacy finite fallback.
+MAX_REPORTS_LIMIT = SCANNER_REPORT_COUNT_MAX  # Finite choices and one-run consent only.
+REPORT_REVIEW_PAGE_SIZE = 32
+_JOB_DIRECTORIES = ("", "scratch", "cache", "profile", "profile/local", "profile/roaming", "profile/config")
 _REPORT_NAMES = frozenset(("report.json", "report.txt", "summary.json", "stdout.log", "stderr.log", "receipt.json", "request.json"))
 _SINGLE_JOB = threading.Lock()
 _HELD_CUSTODY = []
@@ -93,8 +103,22 @@ class ToolCancelled(ToolError):
     pass
 
 
+class ToolStorageHeld(ToolError):
+    """A bounded storage admission hold, with advisory facts for review UI."""
+
+    def __init__(self, message, *, kind, reports, used_bytes, limit_bytes, report_limit=MAX_REPORTS):
+        super().__init__(message)
+        self.storage_hold = {"kind": kind, "retained_reports": reports,
+            "report_limit": report_limit, "used_bytes": used_bytes, "limit_bytes": limit_bytes,
+            "automatic_deletion": False}
+
+
 class ToolOperation:
-    def __init__(self, timeout: float = 300) -> None:
+    def __init__(self, timeout: float = 300, *, report_count_limit: int | None = None) -> None:
+        if report_count_limit is not None and (type(report_count_limit) is not int
+                or not 1 <= report_count_limit <= MAX_REPORTS_LIMIT):
+            raise ValueError("Choose a report count between 1 and 32 for this operation.")
+        self.report_count_limit = report_count_limit
         self.cancelled = threading.Event()
         self.started_monotonic = time.monotonic()
         self.timeout_seconds = min(float(MAX_RUN_SECONDS), max(1.0, float(timeout)))
@@ -260,6 +284,7 @@ class _JobState:
     directories: dict = field(default_factory=dict)
     files: dict = field(default_factory=dict)
     outcome: dict = field(default_factory=dict)
+    report_storage: dict = field(default_factory=dict)
 
 
 def _unique_object(pairs):
@@ -302,6 +327,28 @@ def _inventory(root: Path, *, limit=MAX_ENTRIES, byte_limit=None) -> tuple[list,
                     if byte_limit is not None and total > byte_limit:
                         raise ToolError("Optional tool storage reached its byte budget; existing data was preserved.")
     return rows, total
+
+
+def _review_job_roots(jobs: Path) -> tuple[list[Path], bool]:
+    """Index bounded direct children without walking unrelated jobs."""
+    try:
+        jobs.lstat()
+    except FileNotFoundError:
+        return [], False
+    roots = []
+    unknown = False
+    with _hold_plain_directories(jobs), os.scandir(jobs) as children:
+        for index, entry in enumerate(children):
+            if index >= MAX_ENTRIES:
+                raise ToolError("Scanner review reached its managed job directory limit.")
+            path = Path(entry.path)
+            info = path.lstat()
+            if (not _HEX.fullmatch(path.name) or not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                unknown = True
+                continue
+            roots.append(path)
+    return sorted(roots, key=lambda path: path.name), unknown
 
 
 def _live_job_inventory(job: Path, state: _JobState, *, limit=MAX_ENTRIES, byte_limit=None) -> tuple[list, int]:
@@ -851,6 +898,10 @@ class CuratedToolService:
         value = getattr(self.cfg, "github_tools_" + name, default)
         return min(maximum, max(minimum, value)) if type(value) is int else default
 
+    def _report_count(self):
+        value = getattr(self.cfg, "github_tools_report_count", SCANNER_REPORT_COUNT_UNLIMITED)
+        return scanner_report_count(value)
+
     def _enabled(self):
         return getattr(self.cfg, "github_tools_enabled", True) is True
 
@@ -945,8 +996,14 @@ class CuratedToolService:
         root = self._root()
         state = {"installed": False, "verified": False, "state": "not-installed", "message": "Optional scanner has not been prepared.",
                  "version": ZERO_BREACH["version"], "disk_bytes": 0, "latest_report": None,
-                 "resource_usage": self.resource_snapshot(), "admin_state": _admin_state()}
+                 "storage_inventory_error": None, "resource_usage": self.resource_snapshot(), "admin_state": _admin_state()}
         admin = state["admin_state"]
+        report_count = self._report_count()
+        state["report_storage_policy"] = {"report_count": report_count,
+            "finite_report_limit": MAX_REPORTS_LIMIT, "inventory_entry_limit": MAX_ENTRIES,
+            "count_kind": "unlimited" if report_count == SCANNER_REPORT_COUNT_UNLIMITED else "soft-admission",
+            "limit_bytes": self._limit("report_limit_mib", 64, 8, 256) * 1024**2,
+            "automatic_deletion": False}
         state["enabled"] = self._enabled()
         state["execution_available"] = bool(state["enabled"] and admin["verified"] and not admin["elevated"])
         state["execution_hold_reason"] = "" if state["execution_available"] else "A verified ordinary-user worker is required; elevated execution is held."
@@ -961,7 +1018,6 @@ class CuratedToolService:
             return state
         try:
             _validate_chain(root)
-            _rows, state["disk_bytes"] = _inventory(root, byte_limit=self._limit("job_limit_mib", 256, 64, 1024) * 1024**2 + MAX_ENGINE_BYTES)
             engine = self._engine(root)
             state["installed"] = engine.exists()
             if state["installed"]:
@@ -974,6 +1030,15 @@ class CuratedToolService:
                 state["latest_report"] = _json(_read(receipt, 256 * 1024, private=True))
         except (OSError, ValueError, ToolError) as exc:
             state.update(state="needs-review", message=_plain(str(exc), 512))
+        try:
+            tally_mib = max(self._limit("job_limit_mib", 256, 64, 1024), self._limit("report_limit_mib", 64, 8, 256))
+            _rows, state["disk_bytes"] = _inventory(root, limit=MAX_ENTRIES, byte_limit=tally_mib * 1024**2 + MAX_ENGINE_BYTES)
+        except (OSError, ValueError, ToolError) as exc:
+            detail = _plain(str(exc), 512)
+            state.update(disk_bytes=None, storage_inventory_error=detail,
+                         message=f"{state['message']} Scanner storage tally unavailable: {detail}")
+            if state["state"] == "ready":
+                state["state"] = "needs-review"
         return state
 
     def prepare(self, operation: ToolOperation, progress=lambda _message: None, allow_download=True) -> dict:
@@ -1047,25 +1112,48 @@ class CuratedToolService:
             _atomic_bytes_write(destination / "prepared.json", marker, root=root)
             return self.status()
 
-    def _new_job(self, root):
+    def _new_job(self, root, *, report_count_limit=None):
+        if report_count_limit is not None and (type(report_count_limit) is not int
+                or not 1 <= report_count_limit <= MAX_REPORTS_LIMIT):
+            raise ToolError("The per-run report count must be an integer from 1 to 32.")
+        report_limit = self._report_count() if report_count_limit is None else report_count_limit
         jobs = root / "jobs"
         _private(jobs)
-        rows, total = _inventory(jobs, byte_limit=self._limit("report_limit_mib", 64, 8, 256) * 1024**2)
+        limit_bytes = self._limit("report_limit_mib", 64, 8, 256) * 1024**2
+        rows, total = _inventory(jobs, limit=MAX_ENTRIES, byte_limit=limit_bytes)
         roots = [path for path, _info in rows if path.parent == jobs]
-        if len(roots) >= MAX_REPORTS or any(not _HEX.fullmatch(path.name) or not path.is_dir() for path in roots):
-            raise ToolError("Retained scanner jobs reached their limit. Review or export them before another scan; nothing was deleted.")
-        if total + 1024**2 > self._limit("report_limit_mib", 64, 8, 256) * 1024**2:
-            raise ToolError("Retained scanner reports reached their aggregate storage limit.")
-        remaining = self._limit("report_limit_mib", 64, 8, 256) * 1024**2 - total
+        if any(not _HEX.fullmatch(path.name) or not path.is_dir() for path in roots):
+            raise ToolStorageHeld("Unknown scanner entries require review; existing files were preserved.",
+                kind="unknown-entries", reports=len(roots), used_bytes=total, limit_bytes=limit_bytes, report_limit=report_limit)
+        if type(report_limit) is int and len(roots) >= report_limit:
+            extra = "allow one extra report for the next scan, " if len(roots) < MAX_REPORTS_LIMIT else ""
+            raise ToolStorageHeld("Retained scanner jobs reached their selected count limit. Review retained evidence, "
+                + extra + "change the saved count or select Unlimited, or delete eligible report sets. "
+                "Export alone does not free slots; nothing was deleted.",
+                kind="report-count", reports=len(roots), used_bytes=total, limit_bytes=limit_bytes, report_limit=report_limit)
+        if len(rows) + len(_JOB_DIRECTORIES) + len(_REPORT_NAMES) > MAX_ENTRIES:
+            raise ToolStorageHeld("The managed scanner inventory has no room for another job's directories and records. "
+                "Review retained evidence; nothing was deleted.",
+                kind="inventory-entries", reports=len(roots), used_bytes=total, limit_bytes=limit_bytes, report_limit=report_limit)
+        if total + 1024**2 > limit_bytes:
+            raise ToolStorageHeld("Retained scanner reports reached their aggregate storage limit; explicit review is required.",
+                kind="report-bytes", reports=len(roots), used_bytes=total, limit_bytes=limit_bytes, report_limit=report_limit)
+        remaining = limit_bytes - total
         if remaining < 5 * 1024**2:
-            raise ToolError("Retained scanner reports need review before another bounded output set can be admitted.")
+            raise ToolStorageHeld("Retained scanner reports need review before another bounded output set can be admitted.",
+                kind="output-reserve", reports=len(roots), used_bytes=total, limit_bytes=limit_bytes, report_limit=report_limit)
         job = jobs / uuid.uuid4().hex
         _validate_chain(job.parent)
         if not private_directory(job, create=True):
             raise ToolError("A fresh private scanner job could not be created exclusively.")
-        state = self._job_states[job.name] = _JobState()
+        state = self._job_states[job.name] = _JobState(report_storage={
+            "report_count": report_limit, "finite_report_limit": MAX_REPORTS_LIMIT,
+            "inventory_entry_limit": MAX_ENTRIES,
+            "count_kind": "unlimited" if report_limit == SCANNER_REPORT_COUNT_UNLIMITED else "soft-admission",
+            "selection": "saved" if report_count_limit is None else "one-run",
+            "retained_before": len(roots), "limit_bytes": limit_bytes, "automatic_deletion": False})
         try:
-            for name in ("", "scratch", "cache", "profile", "profile/local", "profile/roaming", "profile/config"):
+            for name in _JOB_DIRECTORIES:
                 path = job / name
                 if name:
                     _private(path)
@@ -1085,7 +1173,9 @@ class CuratedToolService:
         operation.check()
         self._verify_installed(root)
         operation.check()
-        job = self._new_job(root)
+        report_count_limit = operation.report_count_limit
+        operation.report_count_limit = None  # A slot attempt consumes explicit one-run consent, even on refusal.
+        job = self._new_job(root, report_count_limit=report_count_limit)
         try:
             yield job
         except BaseException as exc:
@@ -1137,6 +1227,7 @@ class CuratedToolService:
                       findings=[], native_started=state.native_started,
                       native_retired=state.native_state in {"not-started", "retired"},
                       job_id=job.name, tool=dict(ZERO_BREACH), created_at=time.time(),
+                      report_storage=dict(state.report_storage),
                       authority="External scanner leads only; no automatic trust, response or baseline changes.")
         if state.native_state == "retired":
             try:
@@ -1154,7 +1245,7 @@ class CuratedToolService:
             result.update(state="held", coverage="Incomplete; native launch or retirement is unresolved.",
                           message="Scanner native retirement is unresolved; all job data and custody are preserved.")
         # A removed never-started job leaves one bounded last-attempt record,
-        # rather than consuming one of the eight retained scan report slots.
+        # rather than consuming one of the selected retained scan report slots.
         raw = json.dumps(result, ensure_ascii=True, separators=(",", ":")).encode()
         try:
             if job.exists():
@@ -1224,7 +1315,7 @@ class CuratedToolService:
                 os.close(descriptor)
             state.files[progress_path] = {"bytes": 0, "sha256": hashlib.sha256(b"").hexdigest()}
         document = dict(schema=1, job_id=job.name, operation_id=operation.operation_id,
-                        progress_identity=progress_identity,
+                        progress_identity=progress_identity, report_storage=dict(state.report_storage),
                         version=ZERO_BREACH["version"], engine_sha256=ZERO_BREACH["sha256"],
                         nonce=nonce, parent_pid=os.getpid(), parent_birth=_windows_birth(None) if os.name == "nt" else "",
                         kind="interactive" if interactive else "describe" if metadata_only else "scan",
@@ -1445,6 +1536,7 @@ class CuratedToolService:
                 result = dict(result, state="incomplete", message="Scanner output requires storage review; its existing data was preserved.")
         result = dict(result, job_id=job.name, tool=dict(ZERO_BREACH), created_at=time.time(),
                       retained_files=retained_files, cleanup=cleanup,
+                      report_storage=dict(self._job_states[job.name].report_storage),
                       authority="External scanner leads only; no automatic trust, response or baseline changes.")
         raw = json.dumps(result, ensure_ascii=True, separators=(",", ":")).encode()
         if len(raw) > 256 * 1024:
@@ -1454,38 +1546,165 @@ class CuratedToolService:
         self._retained_allowances.pop(job.name, None)
         return result
 
-    def clear_reports(self, operation: ToolOperation, progress=lambda _message: None):
+    def _recorded_report_set(self, root, job_id, *, expected_receipt=None):
+        if type(job_id) is not str or not _HEX.fullmatch(job_id):
+            raise ToolError("Select an exact managed scanner report.")
+        job = root / "jobs" / job_id
+        with _hold_plain_directories(job):
+            receipt_raw = _read(job / "receipt.json", 256 * 1024, private=True)
+            digest = hashlib.sha256(receipt_raw).hexdigest()
+            if expected_receipt is not None and expected_receipt != digest:
+                raise ToolError("The selected receipt changed; refresh the storage review.")
+            receipt = _json(receipt_raw)
+            if type(receipt) is not dict:
+                raise ToolError("The scanner receipt is not a bounded object.")
+            expected = receipt.get("retained_files")
+            if (receipt.get("job_id") != job_id or receipt.get("native_retired") is not True
+                    or type(expected) is not dict or len(expected) > len(_REPORT_NAMES) - 1):
+                raise ToolError("The report lacks complete recorded native retirement and output custody.")
+            rows, _total = _inventory(job, byte_limit=256 * 1024**2)
+            top = {path.name for path, _info in rows if path.parent == job}
+            if top - (set(expected) | {"receipt.json", "scratch", "cache", "profile"}):
+                raise ToolError("Unknown scanner outputs require manual review and were preserved.")
+            outputs = {"receipt.json": receipt_raw}
+            for name, record in expected.items():
+                if (name not in _REPORT_NAMES or name == "receipt.json" or type(record) is not dict
+                        or type(record.get("bytes")) is not int or not 0 <= record["bytes"] <= MAX_TEXT_BYTES
+                        or type(record.get("sha256")) is not str or not _SHA.fullmatch(record["sha256"])):
+                    raise ToolError("The recorded output inventory is invalid.")
+                raw = _read(job / name, record["bytes"], private=True)
+                if len(raw) != record["bytes"] or hashlib.sha256(raw).hexdigest() != record["sha256"]:
+                    raise ToolError("A recorded output changed; refresh and review it before export or deletion.")
+                outputs[name] = raw
+            return receipt, digest, outputs
+
+    def review_reports(self, operation: ToolOperation, progress=lambda _message: None, *, page=0):
+        """Verify one bounded page from the complete managed inventory off Qt."""
+        if type(page) is not int or not 0 <= page < MAX_ENTRIES:
+            raise ToolError("Choose a valid scanner report review page.")
+        with self._transaction(operation) as root:
+            jobs = root / "jobs"
+            roots, unknown = _review_job_roots(jobs)
+            used = None
+            inventory_gap = None
+            if unknown:
+                inventory_gap = "Unknown scanner job entries were preserved."
+            else:
+                try:
+                    _rows, used = _inventory(jobs, limit=MAX_ENTRIES, byte_limit=256 * 1024**2) if jobs.exists() else ([], 0)
+                except (OSError, ValueError, ToolError) as exc:
+                    inventory_gap = _plain(str(exc), 512)
+            page_count = max(1, (len(roots) + REPORT_REVIEW_PAGE_SIZE - 1) // REPORT_REVIEW_PAGE_SIZE)
+            page = min(page, page_count - 1)
+            start = page * REPORT_REVIEW_PAGE_SIZE
+            reports = []
+            for job in roots[start:start + REPORT_REVIEW_PAGE_SIZE]:
+                operation.check()
+                progress("Reviewing retained scanner receipts and recorded output hashes…")
+                row = {"job_id": job.name, "can_export": False, "can_delete": False}
+                try:
+                    receipt, digest, outputs = self._recorded_report_set(root, job.name)
+                    preview = json.dumps(receipt, indent=2, ensure_ascii=True)
+                    row.update(receipt_sha256=digest, state=_plain(receipt.get("state"), 80),
+                        created_at=receipt.get("created_at"), bytes=sum(len(raw) for raw in outputs.values()),
+                        can_export=True, can_delete=not unknown,
+                        preview=preview[:16000], preview_omitted_characters=max(0, len(preview) - 16000),
+                         message="Recorded report outputs verified for this review. Export preserves the originals.")
+                except (OSError, ValueError, TypeError, ToolError) as exc:
+                    row.update(state="needs-review", message=_plain(str(exc), 700))
+                reports.append(row)
+            return {"state": "storage-review", "message": "Review, export or explicitly delete selected completed reports. Nothing was deleted.",
+                "storage_reports": reports, "storage": {"retained_reports": len(roots),
+                    "report_limit": self._report_count(), "finite_report_limit": MAX_REPORTS_LIMIT,
+                    "inventory_entry_limit": MAX_ENTRIES, "page": page, "page_count": page_count,
+                    "used_bytes": used, "limit_bytes": self._limit("report_limit_mib", 64, 8, 256) * 1024**2,
+                    "unknown_entries": unknown, "inventory_gap": inventory_gap}}
+
+    def export_report(self, operation: ToolOperation, progress=lambda _message: None, *, job_id, expected_receipt, destination):
+        """Copy one unchanged recorded set into a fresh private user-selected folder."""
+        if type(expected_receipt) is not str or not _SHA.fullmatch(expected_receipt):
+            raise ToolError("Refresh the selected scanner receipt before export.")
+        chosen = _absolute(Path(destination))
+        with self._transaction(operation) as root, _hold_plain_directories(chosen):
+            if (not chosen.is_dir() or chosen.is_relative_to(root)
+                    or chosen.is_relative_to(_absolute(resource_root()))):
+                raise ToolError("Choose an existing export directory outside managed scanner and installed source files.")
+            _receipt, digest, outputs = self._recorded_report_set(root, job_id, expected_receipt=expected_receipt)
+            operation.check()
+            folder = chosen / ("Angerona-scanner-export-" + uuid.uuid4().hex)
+            if not private_directory(folder, create=True):
+                raise ToolError("A fresh private export folder could not be created.")
+            from angerona.core.engine_transport import create_private_file
+            target = folder / "scanner-report.zip"
+            try:
+                with _hold_plain_directories(folder):
+                    descriptor = create_private_file(target)
+                    with os.fdopen(descriptor, "wb") as stream:
+                        with zipfile.ZipFile(stream, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+                            archive.writestr("export-manifest.json", json.dumps({"schema": 1, "job_id": job_id,
+                                "receipt_sha256": digest, "scope": "Recorded reports only; generated scratch is excluded; originals preserved",
+                                "files": {name: {"bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()}
+                                          for name, raw in outputs.items()}}, ensure_ascii=True))
+                            for name, raw in sorted(outputs.items()):
+                                operation.check()
+                                progress("Copying verified recorded output to the private export archive…")
+                                archive.writestr(name, raw)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+            except Exception as error:
+                # The exclusive new folder belongs to this export. Keep a
+                # bounded partial copy visible instead of deleting evidence
+                # or reporting an archive that did not finish.
+                raise ToolError("Export did not complete; originals were preserved. "
+                                f"A partial private export may remain at {folder}: {_plain(str(error), 500)}") from error
+            return {"state": "exported", "export_directory": str(folder), "export_file": str(target),
+                    "message": "Exported the unchanged recorded output set. Originals were preserved; export does not free storage slots."}
+
+    def clear_reports(self, operation: ToolOperation, progress=lambda _message: None, *, expected=None):
         """Explicit cleanup of unchanged recorded outputs, never source inputs."""
         with self._transaction(operation) as root:
             jobs = root / "jobs"
             if not jobs.exists():
                 return {"state": "complete", "message": "No managed scanner reports to delete."}
-            rows, _total = _inventory(jobs, byte_limit=1024**3)
-            candidates = [path for path, _info in rows if path.parent == jobs]
-            if len(candidates) > MAX_REPORTS or any(not _HEX.fullmatch(path.name) or not path.is_dir() for path in candidates):
+            candidates, unknown = _review_job_roots(jobs)
+            if unknown:
                 raise ToolError("Unknown scanner directories were preserved for review.")
             removed, retained = 0, 0
+            if expected is None:
+                if len(candidates) > MAX_REPORTS_LIMIT:
+                    raise ToolError("Review and select exact scanner reports to delete from a collection larger than 32.")
+                _inventory(jobs, limit=MAX_ENTRIES, byte_limit=1024**3)
+            else:
+                if (type(expected) is not dict or not 1 <= len(expected) <= REPORT_REVIEW_PAGE_SIZE
+                        or any(type(key) is not str or not _HEX.fullmatch(key)
+                               or type(value) is not str or not _SHA.fullmatch(value) for key, value in expected.items())):
+                    raise ToolError("Select exact reviewed report receipts before deletion.")
+                retained = len(set(expected) - {job.name for job in candidates})
+                candidates = [job for job in candidates if job.name in expected]
             for job in candidates:
                 operation.check()
                 progress("Checking recorded scanner report identities before deletion…")
                 try:
+                    if expected is not None:
+                        # A failed aggregate tally must not strand unrelated verified
+                        # reports. Recheck this exact target before changing its files.
+                        self._recorded_report_set(root, job.name, expected_receipt=expected[job.name])
                     with ExitStack() as seals:
                         receipt_file = seals.enter_context(_ReportDeletion(job / "receipt.json", 256 * 1024))
                         receipt_raw = receipt_file.raw
+                        if expected is not None and hashlib.sha256(receipt_raw).hexdigest() != expected[job.name]:
+                            raise ToolError("The selected receipt changed; existing files were preserved.")
                         receipt = _json(receipt_raw)
-                        if receipt.get("job_id") != job.name or receipt.get("native_retired") is not True or type(receipt.get("retained_files")) is not dict:
+                        if (type(receipt) is not dict or receipt.get("job_id") != job.name
+                                or receipt.get("native_retired") is not True or type(receipt.get("retained_files")) is not dict):
                             raise ToolError("Scanner retirement record is incomplete.")
-                        for name in ("scratch", "cache", "profile"):
-                            if (job / name).exists():
-                                result = _retire_owned_tree(job / name, job=job)
-                                if result["retained_entries"]:
-                                    raise ToolError("Generated scratch has retained entries.")
-                        files = list(job.iterdir())
-                        expected = receipt["retained_files"]
-                        if any(path.name not in _REPORT_NAMES for path in files) or set(path.name for path in files) != set(expected) | {"receipt.json"}:
+                        generated = ("scratch", "cache", "profile")
+                        files = [path for path in job.iterdir() if path.name not in generated]
+                        expected_files = receipt["retained_files"]
+                        if any(path.name not in _REPORT_NAMES for path in files) or set(path.name for path in files) != set(expected_files) | {"receipt.json"}:
                             raise ToolError("Unknown scanner outputs were preserved.")
                         planned = []
-                        for name, record in sorted(expected.items()):
+                        for name, record in sorted(expected_files.items()):
                             if name not in _REPORT_NAMES or name == "receipt.json" or type(record) is not dict or type(record.get("bytes")) is not int or not 0 <= record["bytes"] <= MAX_TEXT_BYTES:
                                 raise ToolError("Scanner output inventory is invalid.")
                             held = seals.enter_context(_ReportDeletion(job / name, record["bytes"]))
@@ -1500,6 +1719,11 @@ class CuratedToolService:
                                 latest_file = None
                         for held in [*planned, receipt_file]:
                             held.check()
+                        for name in generated:
+                            if (job / name).exists():
+                                result = _retire_owned_tree(job / name, job=job)
+                                if result["retained_entries"]:
+                                    raise ToolError("Generated scratch has retained entries.")
                         for held in planned:
                             held.delete()
                         receipt_file.delete()
@@ -1514,24 +1738,37 @@ class CuratedToolService:
 
     def scan(self, request: ToolScanRequest, operation: ToolOperation, progress=lambda _message: None):
         self._progress_start(operation)
-        with self._transaction(operation) as root:
-            self._preflight_scan(root)
-            _request_arguments(request, root / "jobs" / ("0" * 32))
-            with self._owned_job(root, operation) as job:
-                args = _request_arguments(request, job)
-                progress("Running the pinned scanner against the selected local evidence…")
-                outcome = self._run(self._engine(root), args, job, operation, request)
-                if request.preview:
-                    raw = _read(job / "stdout.log", MAX_LOG_BYTES, private=True)
-                    try:
-                        preview = _json(raw)
-                        details = json.dumps(preview, ensure_ascii=True)[:32000]
-                    except (ValueError, TypeError):
-                        details = "The scanner did not return a valid bounded preview."
-                    return self._save(root, job, dict(outcome, message="Scope preview only; no scan verdict.", details=details,
-                                                      coverage="Not scanned.", findings=[], report=None, state="preview"))
-                result = _validate_report(job, outcome)
-                return self._save(root, job, result)
+        try:
+            with self._transaction(operation) as root:
+                self._preflight_scan(root)
+                _request_arguments(request, root / "jobs" / ("0" * 32))
+                with self._owned_job(root, operation) as job:
+                    args = _request_arguments(request, job)
+                    progress("Running the pinned scanner against the selected local evidence…")
+                    outcome = self._run(self._engine(root), args, job, operation, request)
+                    if request.preview:
+                        raw = _read(job / "stdout.log", MAX_LOG_BYTES, private=True)
+                        try:
+                            preview = _json(raw)
+                            details = json.dumps(preview, ensure_ascii=True)[:32000]
+                        except (ValueError, TypeError):
+                            details = "The scanner did not return a valid bounded preview."
+                        return self._save(root, job, dict(outcome, message="Scope preview only; no scan verdict.", details=details,
+                                                          coverage="Not scanned.", findings=[], report=None, state="preview"))
+                    result = _validate_report(job, outcome)
+                    return self._save(root, job, result)
+        except Exception as exc:
+            with self._lock:
+                if (self._progress.get("operation_id") == operation.operation_id
+                        and not self._progress.get("job_id")):
+                    # _run binds job_id before any native creation. This exact
+                    # admission never reached it; no native retirement is inferred.
+                    self._progress.update(state="not-started", native_started=False,
+                        owner_retired=True, current_task="Toolkit did not launch: " + _plain(str(exc), 500),
+                        current_file="", remaining_s=None, remaining_budget_s=None,
+                        elapsed_s=max(0.0, time.monotonic() - operation.started_monotonic),
+                        estimate_basis="No scanner work started; no completion estimate applies")
+            raise
 
     def self_test(self, operation: ToolOperation, progress=lambda _message: None):
         with self._transaction(operation) as root:

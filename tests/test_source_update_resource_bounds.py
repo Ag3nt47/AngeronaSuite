@@ -6,7 +6,6 @@ import stat
 import ctypes
 import subprocess
 import zipfile
-import threading
 from pathlib import Path
 from types import SimpleNamespace
 from contextlib import contextmanager, nullcontext
@@ -15,6 +14,10 @@ import pytest
 
 from angerona.core import file_lease
 from angerona.updater import source_stage as stage
+from angerona.core.startup_recovery import (
+    RECOVERY_COHERENCE_FILES, RECOVERY_MANIFEST_PATH, RECOVERY_VERIFIER_PATH,
+    RECOVERY_BATCH_PATH, derive_recovery_coherent_tree,
+)
 
 TARGET = "b" * 40
 
@@ -66,8 +69,10 @@ def test_case_aliased_parent_directories_are_refused_before_writes() -> None:
 
 def test_repetitive_merge_work_is_refused_at_a_lowered_work_limit(monkeypatch) -> None:
     monkeypatch.setattr(stage, "MAX_MERGE_COMPARISONS", 10)
-    base = b"x\n" * 20
-    result = stage.merge_file(base, b"local\n" + base, base + b"upstream\n")
+    base = b"base-head\n" + b"x\n" * 20 + b"base-tail\n"
+    local = b"local-head\n" + b"x\n" * 20 + b"local-tail\n"
+    incoming = b"remote-head\n" + b"x\n" * 20 + b"remote-tail\n"
+    result = stage.merge_file(base, local, incoming)
     assert result.action == "conflict" and "work limit" in result.reason
 
 
@@ -110,11 +115,21 @@ def test_descriptor_hardlink_recheck_precedes_the_first_write(tmp_path, monkeypa
 
 
 def _budget_fixture(tmp_path, monkeypatch):
-    base, user, incoming = {"a": b"base"}, {"a": b"user", "custom": b"xx"}, {"a": b"base", "new": b"n"}
+    repo = Path(__file__).resolve().parents[1]
+    names = (*RECOVERY_COHERENCE_FILES, RECOVERY_MANIFEST_PATH,
+             RECOVERY_VERIFIER_PATH, RECOVERY_BATCH_PATH)
+    raw_controls = {name: (repo / name).read_bytes() for name in names}
+    raw_controls["src/angerona/__init__.py"] = (repo / "src/angerona/__init__.py").read_bytes()
+    controls, _proof = derive_recovery_coherent_tree(raw_controls)
+    base = dict(controls, a=b"base")
+    user = dict(controls, a=b"user", custom=b"xx")
+    incoming = dict(controls, a=b"base", new=b"n")
     source, state = tmp_path / "source", tmp_path / "state"
     source.mkdir()
     for name, data in user.items():
-        (source / name).write_bytes(data)
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
     archives = {}
     for revision, tree in (("a" * 40, base), (TARGET, incoming)):
         stream = io.BytesIO()
@@ -125,7 +140,7 @@ def _budget_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(stage, "source_git_session", nullcontext)
     monkeypatch.setattr(stage, "local_source_revision", lambda root: "c" * 40)
     monkeypatch.setattr(stage, "_git", lambda root, args: ("a" * 40).encode() if args[0] == "rev-parse" else b"")
-    monkeypatch.setattr(stage, "source_inventory", lambda root: ("a", "custom"))
+    monkeypatch.setattr(stage, "source_inventory", lambda root: tuple(sorted(user)))
     compare = {"status": "ahead", "base_commit": {"sha": "a" * 40}, "merge_base_commit": {"sha": "a" * 40}}
     return source, state, archives, compare
 
@@ -133,10 +148,14 @@ def _budget_fixture(tmp_path, monkeypatch):
 @pytest.mark.parametrize("limit_kind", ["candidate", "transaction", "disk"])
 def test_combined_candidate_and_exact_disk_budget_hold_before_any_blob_or_candidate_write(tmp_path, monkeypatch, limit_kind) -> None:
     source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
+    original = stage.snapshot_local(source, stage.source_inventory(source))
+    controls = sum(len(raw) for name, raw in original.items() if name not in {"a", "custom"})
     if limit_kind == "candidate":
-        monkeypatch.setattr(stage, "MAX_TREE_BYTES", 6)  # U=6,T=5,B=4 each fit, C=7 does not.
+        # Fixed controls cost H; U=H+6,T=H+5,B=H+4 fit, C=H+7 does not.
+        monkeypatch.setattr(stage, "MAX_TREE_BYTES", controls + 6)
     elif limit_kind == "transaction":
-        monkeypatch.setattr(stage, "MAX_TRANSACTION_BYTES", 21)  # B+U+T+C=22.
+        # The same four controlled copies cost4H; custom payload sum remains22.
+        monkeypatch.setattr(stage, "MAX_TRANSACTION_BYTES", 4 * controls + 21)
     else:
         monkeypatch.setattr(stage.shutil, "disk_usage", lambda root: SimpleNamespace(free=16 * 1024 * 1024 + 21))
     with pytest.raises(stage.SourceStageError, match="budget|space"):
@@ -319,8 +338,12 @@ def test_capture_rechecks_reserve_between_bounded_chunks_and_keeps_partial_bytes
 def _prepared_conflict(tmp_path, monkeypatch):
     source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
     raw = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(archives[TARGET])) as before:
+        incoming = {name: before.read(name) for name in before.namelist()}
+    incoming[f"AngeronaSuite-{TARGET}/a"] = b"remote"
     with zipfile.ZipFile(raw, "w") as output:
-        output.writestr(f"AngeronaSuite-{TARGET}/a", b"remote")
+        for name, content in incoming.items():
+            output.writestr(name, content)
     archives[TARGET] = raw.getvalue()
     result = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
                                          download=archives.__getitem__)
@@ -372,11 +395,65 @@ def test_static_review_never_recreates_a_missing_namespace_under_storage_pressur
         digest = "a" * 64
     else:
         _source, _state, existing, result = _prepared_conflict(tmp_path, monkeypatch)
-        # Remove only exact, small owned fixture files and empty directories.
-        for path in (existing / "candidate").iterdir():
-            assert path.is_file() and not path.is_symlink()
-            path.unlink()
-        (existing / "candidate").rmdir()
+        from contextlib import ExitStack
+        import hashlib
+        import json
+        from angerona.core import source_activation_file as file_api
+        from angerona.core import source_activation_storage as storage
+        from angerona.core.source_sandbox import _hold_plain_directories
+
+        # Retire only the complete authenticated synthetic candidate. Never
+        # discover unknown descendants or recursively remove a directory tree.
+        candidate = existing / "candidate"
+        owner = tmp_path.resolve(strict=True)
+        assert candidate.is_absolute() and candidate.resolve(strict=True) == candidate
+        assert candidate.is_relative_to(owner) and candidate.parent == existing
+        file_api.plain_path(candidate, directory=True)
+        raw = (existing / "manifest.json").read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == result.manifest_sha256
+        manifest = json.loads(raw)
+        expected = {row["path"]: row["candidate"] for row in manifest["files"] if row["candidate"] is not None}
+        assert 1 <= len(expected) <= stage.MAX_FILES and "a" not in expected
+        assert all(stage.safe_relative(name) == name and type(digest) is str and len(digest) == 64
+                   and all(char in "0123456789abcdef" for char in digest) for name, digest in expected.items())
+        files = {candidate / name: digest for name, digest in expected.items()}
+        directories = {candidate}
+        for path in files:
+            directories.update(parent for parent in path.parents if parent.is_relative_to(candidate))
+        assert len(directories) <= 512
+        identities = {path: file_api.directory_identity(path) for path in directories}
+        file_identities = {path: file_api.identity(path.lstat()) for path in files}
+        known = set(files) | directories
+        # Check exact immediate children of every known directory before the
+        # first deletion; a new or unexpected entry is preserved by refusal.
+        for directory in directories:
+            assert {path.name for path in directory.iterdir()} == {path.name for path in known if path.parent == directory}
+        with _hold_plain_directories(*directories), ExitStack() as held:
+            retained = []
+            for path, digest in sorted(files.items()):
+                record = held.enter_context(file_api.RetainedFile(path, mutation=True))
+                assert record.initial == file_identities[path]
+                assert record.digest(stage.MAX_FILE_BYTES)[0] == digest
+                retained.append(record)
+            for path in directories:
+                assert file_api.directory_identity(path) == identities[path]
+            for record in retained:
+                record.check()
+            for record in retained:
+                record.delete()
+                record.close()
+        for path in sorted(directories, key=lambda item: len(item.parts), reverse=True):
+            with _hold_plain_directories(path.parent):
+                stamp = storage._stamp(path)
+                identity = identities[path]
+                assert stamp[:2] == (identity["device"], identity["inode"])
+                if os.name == "nt":
+                    with storage._OwnedDirectory(path, stamp) as retained_directory:
+                        retained_directory.delete_empty()  # Actual kernel empty-only deletion.
+                else:
+                    file_api.plain_path(path, directory=True)
+                    assert file_api.directory_identity(path) == identity
+                    path.rmdir()  # Empty-only; raced or unknown children refuse.
         digest = result.manifest_sha256
     monkeypatch.setattr(stage.shutil, "disk_usage", lambda _path: SimpleNamespace(free=stage.MIN_STAGE_FREE_BYTES - 1))
     with pytest.raises(stage.SourceStageError, match="physical|missing|existing"):
@@ -387,37 +464,31 @@ def test_static_review_never_recreates_a_missing_namespace_under_storage_pressur
 
 def test_competing_preparation_cannot_reserve_the_last_slot_twice(tmp_path, monkeypatch):
     source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
-    _retained_stage(state, 1)
-    entered, release = threading.Event(), threading.Event()
-    results, errors = [], []
+    retained = _retained_stage(state, 1)
+    entered = False
+
+    def refused_producer(_target):
+        pytest.fail("a competing preparation reached a producer while the lease was held")
 
     @contextmanager
     def retained_git():
-        entered.set()
-        assert release.wait(10), "owned fixture wait exceeded its budget"
+        nonlocal entered
+        # The first preparation already holds the real file lease and storage
+        # admission here. A second descriptor must refuse the overlapping call.
+        assert not entered, "a competing preparation acquired the staging lease"
+        entered = True
+        with pytest.raises(file_lease.ExclusiveFileLeaseError):
+            stage.prepare_source_update(source, state, TARGET, fetch=refused_producer, download=refused_producer)
         yield
 
     monkeypatch.setattr(stage, "source_git_session", retained_git)
+    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+                                         download=archives.__getitem__)
 
-    def prepare():
-        try:
-            results.append(stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
-                                                        download=archives.__getitem__))
-        except BaseException as exc:
-            errors.append(exc)
-
-    owner = threading.Thread(target=prepare)
-    owner.start()
-    try:
-        assert entered.wait(10)
-        with pytest.raises(file_lease.ExclusiveFileLeaseError):
-            stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
-                                        download=archives.__getitem__)
-    finally:
-        release.set()
-        owner.join(10)
-    assert not owner.is_alive() and not errors and len(results) == 1
-    assert len(list(state.glob("source-*"))) == 2 and (source / "a").read_bytes() == b"user"
+    assert entered and result.status == "prepared"
+    assert {path.name for path in state.glob("source-*")} == {retained.name, result.stage_id}
+    assert (retained / "custom.py").read_bytes() == b"USER_EDIT=True\n"
+    assert (source / "a").read_bytes() == b"user"
 
 
 def _owned_directory_link(owned: Path, link: Path, target: Path) -> None:
@@ -525,3 +596,65 @@ def test_native_windows_short_directory_alias_cannot_hide_source_containment(tmp
                                     fetch=lambda path: pytest.fail("metadata must not be fetched"),
                                     download=lambda sha: pytest.fail("archives must not be fetched"))
     assert (tuple(physical.iterdir()), physical.stat().st_mtime_ns) == before
+
+
+def test_trimmed_window_work_is_sum_of_both_sides_and_exact_cap_is_admitted(monkeypatch):
+    base = b"0\n1\n2\n3\n4\n5\n6\n7\n"
+    local = b"L0\nL1\n2\n3\n4\n5\n6\n7\n"
+    incoming = b"0\n1\n2\n3\n4\n5\nR6\nR7\n"
+    real_matcher = stage.difflib.SequenceMatcher
+    calls = []
+
+    def actual_matcher(_junk, left, right, *, autojunk):
+        calls.append((len(left), len(right), autojunk))
+        return real_matcher(_junk, left, right, autojunk=autojunk)
+
+    monkeypatch.setattr(stage.difflib, "SequenceMatcher", actual_matcher)
+    monkeypatch.setattr(stage, "MAX_MERGE_COMPARISONS", 7)  # 2*2 + 2*2 is one comparison above cap.
+    refused = stage.merge_file(base, local, incoming)
+    assert refused.action == "conflict" and "work limit" in refused.reason
+    assert calls == []
+    monkeypatch.setattr(stage, "MAX_MERGE_COMPARISONS", 8)
+    accepted = stage.merge_file(base, local, incoming)
+    assert accepted.action == "merged"
+    assert accepted.content == b"L0\nL1\n2\n3\n4\n5\nR6\nR7\n"
+    assert calls == [(2, 2, False), (2, 2, False)]
+
+
+def test_unchanged_production_work_cap_still_holds_large_unmatched_repetitive_windows(monkeypatch):
+    base = b"base-head\n" + b"x\n" * 1500 + b"base-tail\n"
+    local = b"local-head\n" + b"x\n" * 1500 + b"local-tail\n"
+    incoming = b"remote-head\n" + b"x\n" * 1500 + b"remote-tail\n"
+    assert stage.MAX_MERGE_COMPARISONS == 2_000_000
+    monkeypatch.setattr(stage.difflib, "SequenceMatcher", lambda *_args, **_kwargs: pytest.fail("Over-budget windows must not be matched"))
+    result = stage.merge_file(base, local, incoming)
+    assert result.action == "conflict" and result.content is None
+    assert result.reason == "automatic merge work limit exceeded"
+
+
+@pytest.mark.parametrize("guard,reason", [
+    ("bytes", "binary or large-file conflict"),
+    ("binary", "binary or large-file conflict"),
+    ("lines", "text line limit exceeded"),
+    ("encoding", "non-UTF-8 conflict"),
+])
+def test_existing_text_guards_remain_before_window_trimming(monkeypatch, guard, reason):
+    base, local, incoming = b"a\nb\nc\n", b"A\nb\nc\n", b"a\nb\nC\n"
+    if guard == "bytes":
+        monkeypatch.setattr(stage, "MAX_TEXT_BYTES", len(base) - 1)
+    elif guard == "binary":
+        base, local, incoming = base + b"\x00", local + b"\x00", incoming + b"\x00"
+    elif guard == "lines":
+        monkeypatch.setattr(stage, "MAX_TEXT_LINES", 2)
+    else:
+        base, local, incoming = base + b"\xff", local + b"\xfe", incoming + b"\xfd"
+    monkeypatch.setattr(stage, "_merge_window", lambda *_args, **_kwargs: pytest.fail("Existing text guard must precede trimming"))
+    result = stage.merge_file(base, local, incoming)
+    assert result.action == "conflict" and result.content is None and result.reason == reason
+
+
+def test_cancelled_nontrivial_merge_raises_before_even_over_budget_matching(monkeypatch):
+    monkeypatch.setattr(stage, "MAX_MERGE_COMPARISONS", 1)
+    with pytest.raises(stage.SourceStageError, match="cancelled"):
+        stage.merge_file(b"base\nx\nend\n", b"local\nx\nend-local\n", b"remote\nx\nend-remote\n",
+                         cancelled=lambda: True)

@@ -7,7 +7,7 @@ No country, vendor name, CVE, feed mention or sandbox probe is response authorit
 from __future__ import annotations
 
 from collections import OrderedDict, deque
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 import hashlib
 import ipaddress
@@ -27,12 +27,16 @@ from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.response_contract import authorize_response
 from angerona.core.response_proof import ProducerResponseProofs
+from angerona.core.spyware_artifact_scan import (
+    scan_chromium_hsts, scan_hosts_overrides, scan_selected_paths, scan_windows_user_temp,
+)
 from angerona.core.spyware_behavior import SpywareBehaviorEngine
 from angerona.core.spyware_definitions import DefinitionError, DefinitionStore, parse_definition_review
 from angerona.core.spyware_intel import (
     OFFICIAL_SOURCES, IndicatorReviewIdentity, ThreatIntelStore, normalize_indicator,
     parse_indicator_review_identity,
 )
+from angerona.core.spyware_native_windows import scan_windows_launch_configuration
 from angerona.core.spyware_sensors import collect_persistence, inspect_process_memory, parse_memory_identity
 from angerona.telemetry.sensors import connection_snapshot, process_snapshot
 
@@ -71,16 +75,16 @@ def _progress_text(value, limit=512):
     return "".join(character for character in value[:limit] if ord(character) >= 32)
 
 
-def _priority_progress(request_id, generation):
+def _priority_progress(request_id, generation, steps=_PRIORITY_STEPS):
     return {"schema": 1, "request_id": request_id, "operation_id": request_id,
             "lifecycle_generation": generation, "sequence": 0, "state": "queued",
             "elapsed_s": 0.0, "current_step": "", "current_task": "Waiting for the native worker",
-            "current_file": "", "completed_steps": 0, "total_steps": len(_PRIORITY_STEPS),
+            "current_file": "", "completed_steps": 0, "total_steps": len(steps),
             "overall_percent": 0.0, "remaining_s": None, "estimate_basis": "unavailable",
             "steps": [{"id": key, "label": label, "state": "pending", "completed": 0,
                        "total": None, "unit": "items", "percent": None, "checked": 0,
                        "skipped": 0, "elapsed_s": 0.0, "remaining_s": None}
-                      for key, label in _PRIORITY_STEPS]}
+                      for key, label in steps]}
 
 
 @contextmanager
@@ -201,6 +205,8 @@ class SpywareGuardModule(BaseModule):
         self._sources = deque(maxlen=32)
         self._news: list[dict] = []
         self._news_pending: set[str] = set()
+        self._news_jobs: dict[str, tuple[int, str]] = {}
+        self._news_command_pending: tuple[int, str] | None = None
         self._news_status: dict = {"state": "disabled", "refreshing": False, "sources": {}}
         self._last_news = None
         self._review_session = secrets.token_hex(16)
@@ -208,7 +214,9 @@ class SpywareGuardModule(BaseModule):
             tuple[str, str], tuple[str, int, IndicatorReviewIdentity]
         ] = OrderedDict()
         self._dedup: OrderedDict[str, float] = OrderedDict()
-        self._coverage: dict = {"host": "not-yet-scanned", "memory": "disabled"}
+        self._coverage: dict = {"host": "not-yet-scanned", "memory": "disabled",
+                                "responses": {"status": "not-collected", "current": False,
+                                              "last_verified_at": None, "retained_rows": 0}}
         self._engine = SpywareBehaviorEngine(clock=clock)
         self._advisory_engine = SpywareBehaviorEngine(clock=clock)
         self._last_scan = None
@@ -256,6 +264,21 @@ class SpywareGuardModule(BaseModule):
 
     def request_priority_scan(self, request_id: str) -> bool:
         """Wake the existing generation; never create an overlapping scanner."""
+        return self._queue_priority_scan(request_id, None, (), False)
+
+    def request_scoped_priority_scan(self, request_id: str, *, mode: str, targets: tuple = (),
+                                     background: bool = False) -> bool:
+        """Admit a closed operator scope on the same native worker."""
+        if (type(mode) is not str or mode not in {"default", "full", "browser", "targeted"}
+                or type(background) is not bool or type(targets) is not tuple
+                or len(targets) > 16 or bool(targets) != (mode == "targeted")
+                or any(type(path) is not str or not 1 <= len(path) <= 4096 or "\x00" in path
+                       or not Path(path).is_absolute() or Path(path).anchor.startswith(("\\\\", "//"))
+                       or ".." in Path(path).parts for path in targets)):
+            return False
+        return self._queue_priority_scan(request_id, mode, targets, background)
+
+    def _queue_priority_scan(self, request_id, mode, targets, background):
         if type(request_id) is not str or re.fullmatch(r"[a-f0-9]{32}", request_id) is None:
             return False
         with self._lifecycle_lock:
@@ -270,15 +293,26 @@ class SpywareGuardModule(BaseModule):
                     return False
                 level = getattr(self._config, "spyware_scan_priority", "above-normal")
                 level = level if type(level) is str and level in {"above-normal", "high"} else "above-normal"
+                steps = _PRIORITY_STEPS if mode not in {"browser", "targeted"} else ()
+                if mode in {"full", "browser"}:
+                    steps += (("browser", "Browser contact evidence"),)
+                if mode == "full":
+                    steps += (("hosts", "Local name overrides"),)
+                    if os.name == "nt":
+                        steps += (("windows-launch", "Windows launch configuration"),
+                                  ("windows-temp", "Configured Windows Temp files"))
+                if mode == "targeted":
+                    steps += (("selected", "Selected file evidence"),)
                 self._priority_scan_job = {"request_id": request_id, "generation": generation,
-                                           "cancel": threading.Event(), "priority": level, "worker": thread}
+                                           "cancel": threading.Event(), "priority": level, "worker": thread,
+                                           "scope": mode, "targets": targets, "background": background}
                 self._priority_scan_status = {
                     "request_id": request_id, "state": "queued", "started_at": None,
                     "finished_at": None, "coverage": {}, "error": "",
                     "lifecycle_generation": generation,
                     "request_finished": False, "collector_finished": False,
                     "cancellation_requested": False,
-                    "progress": _priority_progress(request_id, generation),
+                    "progress": _priority_progress(request_id, generation, steps),
                 }
                 self._priority_scan_wake.set()
                 return True
@@ -442,11 +476,16 @@ class SpywareGuardModule(BaseModule):
                     or job["generation"] != self.lifecycle_generation)
 
         state, error, native = "completed", "", {}
+        artifact_checks, findings, advisory_total = {}, [], 0
+        host_scope = job.get("scope") not in {"browser", "targeted"}
+        priority = nullcontext({}) if job.get("background") else _priority_worker_thread(job["priority"])
         try:
-            with _priority_worker_thread(job["priority"]) as native:
+            with priority as native:
                 with self._lock:
                     self._priority_scan_status["native_priority"] = dict(native)
-                completed = self._scan_once(cancelled=cancelled)
+                completed = self._scan_once(cancelled=cancelled) if host_scope else True
+                if not cancelled() and completed is not False:
+                    artifact_checks, findings, advisory_total = self._scan_priority_artifacts(job, cancelled)
                 if cancelled() or completed is False:
                     state = "cancelled"
         except Exception as exc:
@@ -461,14 +500,55 @@ class SpywareGuardModule(BaseModule):
                 self.set_health(0, "Native worker priority restoration failed; worker retired.")
             with self._lock:
                 if self._priority_scan_job is job:
+                    coverage = json.loads(json.dumps(self._coverage, default=str)) if host_scope else {}
+                    if artifact_checks:
+                        coverage["artifact_checks"] = artifact_checks
                     self._priority_scan_status.update(
                         state=state, error=error, finished_at=self._clock(),
                         request_finished=True, collector_finished=True,
-                        native_priority=dict(native),
-                        coverage=json.loads(json.dumps(self._coverage, default=str)),
+                        native_priority=dict(native), coverage=coverage,
                     )
+                    if job.get("scope") is not None:
+                        self._priority_scan_status.update(
+                            findings=findings,
+                            finding_counts={"advisory": advisory_total, "omitted": advisory_total - len(findings)},
+                            coverage_incomplete=state != "completed" or any(
+                                result["state"] != "completed" for result in artifact_checks.values()),
+                        )
                     self._finish_scan_progress(job, state, error)
         return True
+
+    def _scan_priority_artifacts(self, job, cancelled):
+        mode = job.get("scope")
+        readers = []
+        if mode in {"full", "browser"}:
+            readers.append(("browser", "Reading browser contact evidence", scan_chromium_hsts))
+        if mode == "full":
+            readers.append(("hosts", "Reading local name overrides", scan_hosts_overrides))
+            if os.name == "nt":
+                readers.extend((
+                    ("windows-launch", "Checking Windows launch configuration", scan_windows_launch_configuration),
+                    ("windows-temp", "Sampling configured Windows Temp files", scan_windows_user_temp),
+                ))
+        if mode == "targeted":
+            readers.append(("selected", "Checking selected evidence files",
+                            lambda **options: scan_selected_paths(job["targets"], **options)))
+        coverage, findings, total_hits = {}, [], 0
+        for key, task, reader in readers:
+            if cancelled():
+                break
+            self._scan_progress(key, total=1, unit="collectors", task=task)
+            outcome = reader(cancelled=cancelled)
+            rows = outcome.pop("findings")
+            total_hits += len(rows)
+            findings.extend(rows[:max(0, 128 - len(findings))])
+            coverage[key] = outcome
+            self._scan_progress(
+                key, state="completed" if outcome["state"] == "completed" else "incomplete",
+                completed=1, total=1, unit="collectors", task=task,
+                checked=outcome["checked"], skipped=outcome["skipped"],
+            )
+        return coverage, findings, total_hits
 
     def _queue_definition_command(self, command, value, *, module_session=None, module_generation=None):
         payload = {"module_session": self._review_session if module_session is None else module_session,
@@ -623,7 +703,26 @@ class SpywareGuardModule(BaseModule):
         return self._enqueue("export_rules")
 
     def request_news_refresh(self) -> bool:
-        return self._enqueue("news")
+        # Admission records only queued work. It never refreshes a cache date
+        # or performs network I/O on the requesting (possibly GUI) thread.
+        with self._lifecycle_lock:
+            thread = self._thread
+            if self.stopping or thread is None or not thread.is_alive():
+                return False
+            with self._lock:
+                if not self._settings["spyware_network_enabled"]:
+                    return False
+                if self._news_command_pending is not None or self._news_pending:
+                    return True  # Coalesce with already admitted research work.
+                request = (self.lifecycle_generation, secrets.token_hex(16))
+                if not self._enqueue("news", request):
+                    self._news_status.update(state="retry-required", refreshing=False,
+                                             error="QueueFull", queued_reason="")
+                    return False
+                self._news_command_pending = request
+                self._news_status.update(state="queued", refreshing=True, error="",
+                    queued_reason="Waiting for module dispatch; a priority Spyware Scan can delay research work.")
+                return True
 
     def submit_telemetry(self, record: dict) -> bool:
         """Adapter inputs are advisory until an authenticated EventBus producer supplies them."""
@@ -672,6 +771,14 @@ class SpywareGuardModule(BaseModule):
                             raise
                     with self._lock:
                         self._settings.update(payload)
+                        if not self._settings["spyware_network_enabled"]:
+                            self._news_command_pending = None
+                            for source in self._news_jobs:
+                                self._news_status.setdefault("sources", {})[source] = {
+                                    "state": "cancelled", "reason": "Research permission disabled; late results are held"}
+                            self._news_jobs.clear()
+                            self._news_pending.clear()
+                            self._news_status.update(state="disabled", refreshing=False, queued_reason="")
                     self._intel.network_enabled = self._settings["spyware_network_enabled"]
                 elif command == "report":
                     if not self._settings["spyware_network_enabled"]:
@@ -720,13 +827,17 @@ class SpywareGuardModule(BaseModule):
                 elif command == "export_rules":
                     self._export_rules()
                 elif command == "news":
-                    self._schedule_news()
+                    self._schedule_news(request=payload)
             except Exception as exc:
                 with self._lock:
                     self._coverage["last_command_error"] = type(exc).__name__
                     if command == "report":
                         self._sources.appendleft({"url": payload, "status": "failed",
                             "error": type(exc).__name__, "ts": self._clock()})
+                    elif command == "news" and self._news_command_pending == payload:
+                        self._news_command_pending = None
+                        self._news_status.update(state="failed", refreshing=False,
+                            error=type(exc).__name__, queued_reason="")
                 self.emit("SpywareGuard operation could not complete.", Severity.LOW,
                           operation=command, error_type=type(exc).__name__, response_authorized=False)
             finally:
@@ -750,28 +861,51 @@ class SpywareGuardModule(BaseModule):
                 name="SpywareGuardResearch", daemon=True)
             self._report_thread.start()
 
-    def _schedule_news(self) -> None:
-        if not self._settings["spyware_network_enabled"]:
-            with self._lock:
-                self._news_status.update(state="disabled", refreshing=False)
-            return
+    def _schedule_news(self, *, request=None) -> None:
         from angerona.core.spyware_news import NEWS_SOURCES
-        self._last_news = self._clock()
         with self._lock:
+            if request is not None:
+                if request != self._news_command_pending or request[0] != self.lifecycle_generation:
+                    return  # An old command cannot consume a newer admission.
+                self._news_command_pending = None
+            if not self._settings["spyware_network_enabled"] or self.stopping:
+                self._news_command_pending = None
+                for source in self._news_jobs:
+                    self._news_status.setdefault("sources", {})[source] = {
+                        "state": "cancelled", "reason": "Research request retired; late results are held"}
+                self._news_jobs.clear()
+                self._news_pending.clear()
+                self._news_status.update(state="disabled" if not self._settings["spyware_network_enabled"]
+                                         else "stopped", refreshing=False, queued_reason="")
+                return
             sources = [source for source in NEWS_SOURCES if source not in self._news_pending]
             if not sources:
+                self._finish_news_status()
                 return
+            self._last_news = self._clock()
+            job = (self.lifecycle_generation, secrets.token_hex(16))
             self._news_pending.update(sources)
-            self._news_status.update(state="refreshing", refreshing=True, last_attempt=self._clock(), error="")
+            self._news_jobs.update({source: job for source in sources})
+            self._news_status.update(state="refreshing", refreshing=True, last_attempt=self._clock(),
+                                     error="", queued_reason="")
             statuses = self._news_status.setdefault("sources", {})
             for source in sources:
                 statuses[source] = {"state": "queued"}
         for source in sources:
-            if not self._schedule_report("news", source):
+            error = "QueueFull"
+            try:
+                accepted = self._schedule_report("news", (source, *job))
+            except Exception as exc:
+                # A failed worker start can occur after its queue put. Revoke
+                # that exact token so a later worker cannot install its result.
+                accepted, error = False, type(exc).__name__
+            if not accepted:
                 with self._lock:
-                    self._news_pending.discard(source)
-                    self._news_status["error"] = "QueueFull"
-                    self._news_status["sources"][source] = {"state": "failed", "error": "QueueFull"}
+                    if self._news_jobs.get(source) == job:
+                        self._news_jobs.pop(source, None)
+                        self._news_pending.discard(source)
+                        self._news_status["error"] = error
+                        self._news_status["sources"][source] = {"state": "failed", "error": error}
         with self._lock:
             self._finish_news_status()
 
@@ -781,13 +915,18 @@ class SpywareGuardModule(BaseModule):
         failed = [row for row in statuses if row.get("state") == "failed"]
         successful = [row for row in statuses if row.get("state") == "available"]
         state = ("disabled" if not self._settings["spyware_network_enabled"] else
+                 "stopped" if self.stopping else
+                 "queued" if self._news_command_pending is not None else
                  "refreshing" if self._news_pending else
                  "partial" if failed and successful else
                  "retry-required" if failed and all(row.get("error") == "QueueFull" for row in failed) else
                  "failed" if failed else
                  "current" if any(row.get("items", 0) for row in successful) else "empty")
-        self._news_status.update(state=state, refreshing=bool(self._news_pending)
+        self._news_status.update(state=state, refreshing=bool(self._news_pending or self._news_command_pending)
+                                 and not self.stopping
                                  and self._settings["spyware_network_enabled"])
+        if self._news_command_pending is None:
+            self._news_status["queued_reason"] = ""
 
     def _report_worker(self, stopped) -> None:
         # A slow research publisher must not delay single-rule host containment
@@ -798,19 +937,38 @@ class SpywareGuardModule(BaseModule):
             except queue.Empty:
                 continue
             url = OFFICIAL_SOURCES[value].url if kind == "source" else value
+            news_source, news_job = None, None
             try:
+                if kind == "news":
+                    if (type(value) is not tuple or len(value) != 3
+                            or type(value[0]) is not str or type(value[1]) is not int
+                            or type(value[2]) is not str):
+                        continue
+                    news_source, news_job = value[0], value[1:]
+                    url = news_source
                 if not self._settings["spyware_network_enabled"]:
                     continue
                 if kind == "news":
+                    with self._lock:
+                        if (news_job[0] != self.lifecycle_generation
+                                or self._news_jobs.get(news_source) != news_job
+                                or stopped.is_set() or self.stopping
+                                or not self._settings["spyware_network_enabled"]):
+                            continue
+                        self._news_status.setdefault("sources", {})[news_source] = {"state": "fetching"}
                     from angerona.core.spyware_news import fetch_news_source
-                    items = fetch_news_source(value, network_enabled=True, now=self._clock())
+                    items = fetch_news_source(news_source, network_enabled=True, now=self._clock())
                     if not stopped.is_set() and self._settings["spyware_network_enabled"]:
                         with self._lock:
-                            merged = {item["url"]: item for item in self._news + items}
-                            self._news = sorted(merged.values(), key=lambda row: row["published"], reverse=True)[:30]
-                            self._news_status.update(last_refresh=self._clock())
-                            self._news_status.setdefault("sources", {})[value] = {
-                                "state": "available", "items": len(items), "checked_at": self._clock()}
+                            if (news_job[0] == self.lifecycle_generation
+                                    and self._news_jobs.get(news_source) == news_job
+                                    and not stopped.is_set() and not self.stopping
+                                    and self._settings["spyware_network_enabled"]):
+                                merged = {item["url"]: item for item in self._news + items}
+                                self._news = sorted(merged.values(), key=lambda row: row["published"], reverse=True)[:30]
+                                self._news_status.update(last_refresh=self._clock())
+                                self._news_status.setdefault("sources", {})[news_source] = {
+                                    "state": "available", "items": len(items), "checked_at": self._clock()}
                     continue
                 result = (self._intel.refresh(value, now=self._clock()) if kind == "source"
                           else self._intel.refresh_url(value, now=self._clock()))
@@ -827,15 +985,19 @@ class SpywareGuardModule(BaseModule):
                 if not stopped.is_set():
                     with self._lock:
                         if kind == "news":
-                            self._news_status["error"] = type(exc).__name__
-                            self._news_status.setdefault("sources", {})[value] = {
-                                "state": "failed", "error": type(exc).__name__, "checked_at": self._clock()}
+                            if (news_job is not None and news_job[0] == self.lifecycle_generation
+                                    and self._news_jobs.get(news_source) == news_job):
+                                self._news_status["error"] = type(exc).__name__
+                                self._news_status.setdefault("sources", {})[news_source] = {
+                                    "state": "failed", "error": type(exc).__name__, "checked_at": self._clock()}
                         self._sources.appendleft({"url": url, "status": "failed",
                             "error": type(exc).__name__, "ts": self._clock()})
             finally:
                 if kind == "news":
                     with self._lock:
-                        self._news_pending.discard(value)
+                        if news_job is not None and self._news_jobs.get(news_source) == news_job:
+                            self._news_jobs.pop(news_source, None)
+                            self._news_pending.discard(news_source)
                         self._finish_news_status()
                 self._reports.task_done()
 
@@ -1560,18 +1722,62 @@ class SpywareGuardModule(BaseModule):
             self._coverage["rule_export"] = {"status": "staged", "path": str(path),
                 "review_required": True, "active": False, "ts": self._clock()}
 
+    def _hold_response_coverage(self, state: str, reason: str) -> None:
+        # Retained receipt rows are history, never substitute current proof for a
+        # journal view whose custody or integrity could not be established.
+        with self._lock:
+            previous = self._coverage.get("responses", {})
+            self._coverage["responses"] = {
+                "status": "partial", "state": state, "current": False,
+                "reason": reason, "last_attempt_at": self._clock(),
+                "last_verified_at": previous.get("last_verified_at"),
+                "retained_rows": len(self._response_rows),
+            }
+        if not self.stopping and self.status != "error":
+            self.set_health(50, "Preview; response receipt coverage is held; retained rows are historical")
+
     def _collect_responses(self) -> None:
+        from angerona.modules.adversary_combat import JournalIntegrityError
+
         modules = getattr(self._manager, "modules", {})
         combat = modules.get("Adversary Combat") if isinstance(modules, dict) else None
         if combat is None or not callable(getattr(combat, "list_actions", None)):
+            self._hold_response_coverage("unavailable", "Combat receipt provider is unavailable.")
             return
-        rows = [row for row in combat.list_actions(limit=200)
+        try:
+            listed = combat.list_actions(limit=200)
+        except JournalIntegrityError as exc:
+            busy = type(exc) is JournalIntegrityError and str(exc) in {
+                "combat journal snapshot is busy",
+                "combat journal writer lease is already held",
+            }
+            self._hold_response_coverage(
+                "busy" if busy else "integrity-held",
+                "Combat journal custody is busy; retry occurs on the ordinary worker cadence."
+                if busy else "Combat journal integrity or custody is held; no current receipt view is available.",
+            )
+            return
+        # list_actions intentionally supports forensic prefixes on a non-strict
+        # read. Its latched journal error or recovery circuit cannot become an
+        # empty/current response view, nor trigger new archival work here.
+        if getattr(combat, "_journal_error", "") or getattr(combat, "_mutation_blocked", False):
+            self._hold_response_coverage(
+                "integrity-held", "Combat journal integrity or recovery is held; retained rows are historical.",
+            )
+            return
+        rows = [row for row in listed
                 if (row.get("trigger_module") == self.name or
                     (row.get("trigger_module"), row.get("trigger_ts")) in self._upstream_events)
                 and row.get("integrity_status") == "verified"
                 and row.get("record_type") in {"commit", "recovery_required"}]
         with self._lock:
             self._response_rows = rows[:200]
+            self._coverage["responses"] = {
+                "status": "complete", "state": "current", "current": True,
+                "reason": "Authenticated receipt lookup completed; rows remain historical action records.",
+                "last_attempt_at": self._clock(), "last_verified_at": self._clock(),
+                "retained_rows": len(self._response_rows),
+            }
         for row in rows:
             receipt_id = row.get("action_id")
             if not isinstance(receipt_id, str):
@@ -1658,6 +1864,7 @@ class SpywareGuardModule(BaseModule):
             # work. Existing intake remains serviced after its bounded stage.
             self._consume_events()
             self._collect_responses()
+            self._update_coverage_health()
             return
         self._process_commands()
         if self._definitions is not None:
@@ -1697,9 +1904,18 @@ class SpywareGuardModule(BaseModule):
             else:
                 beacon.close(graceful=True)
                 self._beacon = None
+        self._update_coverage_health()
+
+    def _update_coverage_health(self) -> None:
+        if self.stopping or self.status == "error":
+            return  # A real native retirement/restoration failure keeps its own diagnosis.
         with self._lock:
-            gaps = self._coverage.get("event_bus") == "loss-detected" or str(self._coverage.get("host", "")).startswith("error:")
-        self.set_health(50 if gaps else 85, "Preview; consult per-source coverage and adapter requirements")
+            responses_held = self._coverage.get("responses", {}).get("current") is not True
+            gaps = (responses_held or self._coverage.get("event_bus") == "loss-detected"
+                    or str(self._coverage.get("host", "")).startswith("error:"))
+        detail = ("Preview; response receipt coverage is held; retained rows are historical"
+                  if responses_held else "Preview; consult per-source coverage and adapter requirements")
+        self.set_health(50 if gaps else 85, detail)
 
     def dashboard_snapshot(self) -> dict:
         with self._lock:
@@ -1748,6 +1964,13 @@ class SpywareGuardModule(BaseModule):
                 self.sleep(5, _wake_event=self._priority_scan_wake)
         finally:
             with self._lock:
+                self._news_command_pending = None
+                for source in self._news_jobs:
+                    self._news_status.setdefault("sources", {})[source] = {
+                        "state": "cancelled", "reason": "Module generation stopped; late results are held"}
+                self._news_jobs.clear()
+                self._news_pending.clear()
+                self._news_status.update(state="stopped", refreshing=False, queued_reason="")
                 job = self._priority_scan_job
                 if (job is not None and job["generation"] == self.lifecycle_generation
                         and self._priority_scan_status["state"] in {"queued", "running"}):

@@ -246,6 +246,11 @@ class SentinelLensDialog(QDialog):
             self.setStyleSheet(parent.styleSheet())
 
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._snapshot_activity = None
+        self.progress_view = ActionProgressView(self._activities, self, config=self.config)
+        root.addWidget(self.progress_view)
         title = QLabel("SentinelLens — Autonomous Threat Hunting & Log-Anomaly Graph")
         title.setObjectName("PageTitle")
         root.addWidget(title)
@@ -266,7 +271,7 @@ class SentinelLensDialog(QDialog):
         self.import_button = QPushButton("Import local logs…")
         self.import_button.clicked.connect(self._import_logs)
         refresh = QPushButton("Refresh graph")
-        refresh.clicked.connect(lambda: self.refresh(force=True))
+        refresh.clicked.connect(lambda: self.refresh(force=True, user_requested=True))
         fit = QPushButton("Fit graph")
         fit.clicked.connect(self._fit)
         self.kind_filter = QComboBox()
@@ -408,9 +413,11 @@ class SentinelLensDialog(QDialog):
         )
         return bus_revision, len(events), fingerprint, self._import_generation
 
-    def refresh(self, *, force: bool = False) -> None:
+    def refresh(self, *, force: bool = False, user_requested: bool = False) -> None:
         if getattr(self, "_closing", False):
             return
+        if user_requested:
+            self._snapshot_activity = self._activities.begin("snapshot", "Refreshing Sentinel snapshot…")
         active = self._snapshot_worker
         if active is not None and active.isRunning():
             self._refresh_pending = True
@@ -431,13 +438,16 @@ class SentinelLensDialog(QDialog):
                     and self._snapshot
                     and source_key == self._last_source_key
                 ):
+                    self._finish_snapshot_activity()
                     return
                 self._last_source_key = source_key
                 self._apply_snapshot(snapshot)
+                self._finish_snapshot_activity()
                 return
             events = self._live_events()
             source_key = self._source_key(events)
             if not force and self._snapshot and source_key == self._last_source_key:
+                self._finish_snapshot_activity()
                 return
             self._last_source_key = source_key
             self.status.setText(
@@ -450,6 +460,8 @@ class SentinelLensDialog(QDialog):
             worker.finished.connect(self._snapshot_finished)
             worker.start()
         except Exception as exc:
+            if self._snapshot_worker is None or not self._snapshot_worker.isRunning():
+                self._finish_snapshot_activity()
             self.status.setText(f"Snapshot unavailable: {type(exc).__name__}")
             self.detail.setPlainText(str(exc)[:2_000])
 
@@ -498,6 +510,12 @@ class SentinelLensDialog(QDialog):
             and not getattr(self, "_closing", False)
         ):
             self._pending_refresh_timer.start(0)
+        else:
+            self._finish_snapshot_activity()
+
+    def _finish_snapshot_activity(self) -> None:
+        self._activities.finish(self._snapshot_activity)
+        self._snapshot_activity = None
 
     def _run_pending_refresh(self) -> None:
         if getattr(self, "_closing", False):
@@ -661,7 +679,16 @@ class SentinelLensDialog(QDialog):
         self.local_ai.setText("Local AI is reasoning…")
         self._worker = _NarrativeWorker(self._ask_loopback_ai, deterministic[:8_000])
         self._worker.result.connect(self._on_ai_result)
-        self._worker.start()
+        handle = self._activities.begin("narrative", "Generating local Sentinel narrative…", replace=True)
+        self._worker.finished.connect(lambda captured=handle: self._activities.finish(captured))
+        try:
+            self._worker.start()
+        except Exception as error:
+            if not self._worker.isRunning():
+                self._activities.finish(handle)
+                self.local_ai.setEnabled(True)
+                self.local_ai.setText("Explain selection with strict loopback local AI")
+            self.status.setText(f"Narrative worker startup unavailable: {type(error).__name__}")
 
     def _ask_loopback_ai(self, prompt: str) -> str:
         """Consult Ollama only when its configured URL is provably loopback."""
@@ -822,8 +849,13 @@ class SentinelLensDialog(QDialog):
             worker.result.connect(self._import_complete)
             worker.failed.connect(self._import_failed)
             worker.finished.connect(lambda: self.import_button.setEnabled(True))
+            handle = self._activities.begin("import", "Reading and validating selected security logs…", replace=True)
+            worker.finished.connect(lambda captured=handle: self._activities.finish(captured))
             worker.start()
         except Exception as exc:
+            if self._import_worker is None or not self._import_worker.isRunning():
+                self._activities.finish(locals().get("handle"))
+                self.import_button.setEnabled(True)
             self.status.setText(f"Import rejected: {type(exc).__name__}: {str(exc)[:240]}")
 
     def _import_complete(self, records: list, name: str) -> None:
@@ -835,7 +867,7 @@ class SentinelLensDialog(QDialog):
         self.status.setText(
             f"Imported {len(records)} bounded record(s) from {name}; memory-only."
         )
-        self.refresh(force=True)
+        self.refresh(force=True, user_requested=True)
 
     def _import_failed(self, reason: str) -> None:
         if not getattr(self, "_closing", False):

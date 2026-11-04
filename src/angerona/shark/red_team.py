@@ -51,6 +51,7 @@ from angerona.shark.run_manifest import (
     preflight_run,
     write_run_history,
 )
+from angerona.shark.progress import SimulationProgress
 
 # Every marker this drill drops starts with this prefix, so a glob sweep can
 # reliably find and remove ALL of them — including orphans from a prior run that
@@ -160,6 +161,7 @@ class RedTeamEngine:
         self._validation_lease: RedTeamValidationLease | None = None
         self.run_id = ""
         self.steps: List[RedTeamStep] = []
+        self._progress = SimulationProgress()
         self._active_plan_entry: dict[str, object] | None = None
 
     # ── helpers ──────────────────────────────────────────────────────────────
@@ -173,6 +175,22 @@ class RedTeamEngine:
     @property
     def is_running(self) -> bool:
         return self._running.is_set()
+
+    def progress_snapshot(self) -> dict:
+        """Copy cached workflow counts; no files, native probes or scoring."""
+        return self._progress.snapshot()
+
+    def _run_with_progress(self, jitter_range, noise_chance, generation) -> None:
+        failed = False
+        with self._progress.worker(generation):
+            try:
+                self._run_playbook(jitter_range, noise_chance)
+            except BaseException:
+                failed = True
+                raise
+            finally:
+                if self._progress.finish(generation, cancelled=self._cancel.is_set(), failed=failed):
+                    self._running.clear()
 
     def _jitter(self, lo: float, hi: float, note: str = "") -> None:
         d = round(random.uniform(lo, hi), 1)
@@ -411,12 +429,30 @@ class RedTeamEngine:
         failed ``start()`` has no new ownership and therefore must not operate
         on evidence left by a prior run.
         """
+        if self._prepared_evidence_is_held():
+            return False
         with self._cleanup_lock:
             worker = self._thread
             if self.is_running or (worker is not None and worker.is_alive()):
                 return False
             self._evidence_lease = False
             return True
+
+    def _prepared_evidence_is_held(self) -> bool:
+        """Only the exact admitted session may defer cancelled-run cleanup.
+
+        Cancellation or a producer-generation loss does not release that
+        session's evidence ownership. This predicate grants no scan, mutation
+        or detection authority and intentionally does not renew its lease.
+        """
+        from angerona.shark.simulation_session import RedTeamRunObserver
+        with self._cleanup_lock:
+            held = self._evidence_lease
+        prepared = getattr(self, "_prepared_run", None)
+        observer = getattr(self, "_live_observer", None)
+        return bool(held and prepared is not None and type(observer) is RedTeamRunObserver
+            and self.run_id == prepared.run_id
+            and observer.matches(prepared, self._validation_lease, self))
 
     def evidence_cleanup_scope(self) -> dict:
         """Capture immutable cleanup ownership for the currently completed run."""
@@ -495,11 +531,25 @@ class RedTeamEngine:
             timer.start()
 
     # ── control ────────────────────────────────────────────────────────────
+    def start_prepared(self, prepared, *, validation_lease, intensity=None, live_observer=None) -> bool:
+        from angerona.shark.simulation_session import RedTeamRunObserver, validate_prepared_run
+        if (not validate_prepared_run(prepared, kind="red_team")
+                or Path(prepared.data_root) != self.data_dir.resolve(strict=False)
+                or type(live_observer) is not RedTeamRunObserver
+                or not live_observer.matches(prepared, validation_lease, self)):
+            return False
+        import json
+        decision = json.loads(prepared.preflight_json)
+        return self.start(jitter_range=decision["jitter"], noise_chance=decision["noise_chance"],
+            complexity=decision["cycles"], target_dir=prepared.target, custom=decision["custom"],
+            campaign=decision["campaign"], comprehensive=decision["comprehensive"], intensity=intensity,
+            validation_lease=validation_lease, _prepared=prepared, _live_observer=live_observer)
+
     def start(self, jitter_range=(2.0, 7.0), noise_chance=0.25,
               complexity=1, target_dir=None, custom=None,
               intensity=None, campaign=False, comprehensive=False,
               readiness_receipt: Optional[dict] = None,
-              validation_lease: object | None = None) -> bool:
+              validation_lease: object | None = None, _prepared=None, _live_observer=None) -> bool:
         """Run a randomized Red Team playbook.
 
         intensity — one of Low/Medium/High/Extreme. When given it drives cycles,
@@ -554,7 +604,16 @@ class RedTeamEngine:
             )
             return False
         resolved_target = Path(candidate_target).resolve(strict=False)
-        proposed_run_id = f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+        if _prepared is not None:
+            from angerona.shark.simulation_session import validate_prepared_run
+            if (not validate_prepared_run(_prepared, kind="red_team")
+                    or _prepared.request_digest != preflight.request_digest
+                    or Path(_prepared.target) != resolved_target
+                    or Path(_prepared.data_root) != self.data_dir.resolve(strict=False)):
+                return False
+        self._prepared_run = _prepared
+        self._live_observer = _live_observer
+        proposed_run_id = _prepared.run_id if _prepared is not None else f"redteam-{int(time.time())}-{uuid.uuid4().hex[:6]}"
         if readiness_receipt is not None:
             self._narrate(
                 "Red Team drill refused: legacy caller-supplied readiness receipts "
@@ -619,12 +678,15 @@ class RedTeamEngine:
         if prior_run_id:
             unregister_run(prior_run_id)
         self._running.set()
+        progress_generation = self._progress.begin(
+            self.run_id, len(self._expected_plan) + self._complexity)
         self._thread = threading.Thread(
-            target=self._run_playbook, args=(jitter_range, noise_chance),
+            target=self._run_with_progress, args=(jitter_range, noise_chance, progress_generation),
             name="RedTeamEngine", daemon=True)
         try:
             self._thread.start()
         except (RuntimeError, OSError) as exc:
+            self._progress.finish(progress_generation, failed=True)
             self._running.clear()
             unregister_run(self.run_id)
             self.documents_dir = self.default_documents_dir
@@ -641,12 +703,15 @@ class RedTeamEngine:
         return True
 
     def stop_and_clean(self) -> None:
+        self._progress.request_stop(self.run_id)
         self._cancel_pending_cleanup()
         self._cancel.set()
         self._running.clear()
         worker = self._thread
         if worker is not None and worker.is_alive() and worker is not threading.current_thread():
             worker.join(timeout=0.25)
+        if self._prepared_evidence_is_held():
+            return
         self._sweep_markers(
             target_dir=self._last_run_target,
             artifact_paths=self._artifact_paths_snapshot(),
@@ -733,6 +798,8 @@ class RedTeamEngine:
                     stage_fns.append(self._step_noise)
                 else:
                     self._narrate("\U0001F3B2 Noise Injection — skipped this phase (random chance).")
+                    self._progress.start_unit(f"Phase {cycle + 1}: optional noise decision (skipped)")
+                    self._progress.finish_unit()
                 if campaign:
                     # chained kill-chain order (coherent operation), not shuffled
                     rank = {n: i for i, n in enumerate(_CAMPAIGN_ORDER)}
@@ -758,6 +825,8 @@ class RedTeamEngine:
                             (cycle + 1, plan_key)
                         )
                     before = len(self.steps)
+                    self._progress.start_unit(
+                        f"Phase {cycle + 1}: " + fn.__name__.removeprefix("_step_").replace("_", " ").title())
                     stage_started = time.perf_counter()
                     try:
                         RedTeamValidationLease.assert_target_identity(
@@ -814,7 +883,14 @@ class RedTeamEngine:
                         duration_ms = (time.perf_counter() - stage_started) * 1000
                         for step in self.steps[before:]:
                             step.duration_ms = duration_ms
+                        observer = getattr(self, "_live_observer", None)
+                        if observer is not None:
+                            from angerona.shark.simulation_session import RedTeamRunObserver
+                            if type(observer) is RedTeamRunObserver:
+                                RedTeamRunObserver.capture_completed_steps(observer, self,
+                                    tuple(self.steps[before:]), before)
                         self._active_plan_entry = None
+                        self._progress.finish_unit(failed=any(not step.ok for step in self.steps[before:]))
                     if self._cancel.is_set():
                         raise _DrillCancelled()
         except _DrillCancelled:
@@ -833,13 +909,17 @@ class RedTeamEngine:
             n, ok = len(self.steps), sum(1 for s in self.steps if s.ok)
             if run_cancelled:
                 self._running.clear()
-                self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
-                self._sweep_markers(
-                    target_dir=run_target,
-                    artifact_paths=run_artifacts,
-                )
-                self._cleanup_probe_processes()
-                unregister_run(self.run_id)
+                if self._prepared_evidence_is_held():
+                    self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; "
+                                  "the owning session retains evidence for settlement and its report.")
+                else:
+                    self._narrate(f"Red Team Attack cancelled - {ok}/{n} steps executed; cleaning markers.")
+                    self._sweep_markers(
+                        target_dir=run_target,
+                        artifact_paths=run_artifacts,
+                    )
+                    self._cleanup_probe_processes()
+                    unregister_run(self.run_id)
             else:
                 if authority_failure:
                     self._narrate(
@@ -1255,6 +1335,8 @@ class RedTeamEngine:
                 steps=self.steps,
                 preflight=self._run_contract,
                 status=status,
+                prepared_run=(self._prepared_run.manifest()
+                              if getattr(self, "_prepared_run", None) is not None else None),
             )
             if self._validation_readiness:
                 payload["validation_readiness"] = copy.deepcopy(
@@ -1326,3 +1408,6 @@ def self_test() -> tuple[bool, str]:
     return ok, (f"intensity presets ok, {len(_CAMPAIGN_ORDER)} chained techniques, "
                 f"{len(_COMPREHENSIVE_PROBES)} comprehensive inert probes, kill-chain order verified"
                 if ok else f"failed: presets={presets_ok} escalate={escalating} missing={missing} order={order_ok}")
+
+
+_COMPLETED_STEP_SITE_CODE = RedTeamEngine._run_playbook.__code__

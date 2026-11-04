@@ -1,6 +1,7 @@
 """Read-only peripheral, Kernel DMA, IOMMU, Thunderbolt, and USB4 guard."""
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from angerona.core.module_base import BaseModule, Severity
@@ -41,6 +42,8 @@ class PeripheralDMAGuardModule(BaseModule):
         super().__init__()
         self._observer = observer or observe_system_peripheral_posture
         self._last_state = ""
+        self._last_usb_combinations: tuple[str, ...] = ()
+        self._scan_observation = None
 
     @property
     def state(self) -> str:
@@ -49,6 +52,15 @@ class PeripheralDMAGuardModule(BaseModule):
     @property
     def health_pct(self) -> int:
         return self.health
+
+    def accessory_scan_snapshot(self):
+        """Return the recent host-visible attachment sample without new I/O."""
+        value = self._scan_observation
+        if value is None or not 0 <= time.time() - value[0] <= 600:
+            return {"state": "unavailable", "response_authorized": False}
+        observed_at, coverage, combinations, dma = value
+        return {"state": coverage, "observed_at": observed_at, "function_combinations": combinations,
+                "kernel_dma_protection": dma, "response_authorized": False}
 
     def observe_once(self) -> tuple[PeripheralPostureSnapshot, object]:
         snapshot = self._observer()
@@ -60,6 +72,7 @@ class PeripheralDMAGuardModule(BaseModule):
         try:
             snapshot, assessment = self.observe_once()
         except Exception as exc:
+            self._scan_observation = None
             self.set_health(10, "peripheral/DMA posture unavailable")
             native_error = getattr(exc, "winerror", None)
             if native_error is not None and type(native_error) is not int:
@@ -88,10 +101,13 @@ class PeripheralDMAGuardModule(BaseModule):
                     response_authority="observe-only",
                 )
             return
+        self._scan_observation = (snapshot.observed_at, snapshot.usb_accessory_coverage,
+                                  tuple(snapshot.usb_accessory_combinations), snapshot.kernel_dma_protection)
         self.set_health(assessment.health, assessment.state)
         state = (
             f"{assessment.state}:{','.join(assessment.risks)}:"
-            f"{','.join(assessment.unknown)}"
+            f"{','.join(assessment.unknown)}:{snapshot.usb_accessory_coverage}:"
+            f"{','.join(snapshot.usb_accessory_combinations)}"
         )
         if state == self._last_state:
             return
@@ -111,6 +127,26 @@ class PeripheralDMAGuardModule(BaseModule):
             severity,
             **assessment.event_details(snapshot),
         )
+        combinations = snapshot.usb_accessory_combinations
+        if combinations and combinations != self._last_usb_combinations:
+            self.emit(
+                "Windows reported USB accessory containers exposing multiple function families.",
+                Severity.LOW,
+                schema="angerona.usb-accessory-observation.v1",
+                finding_code="peripheral.usb.multifunction",
+                disposition="observation",
+                active_attack=False,
+                usb_accessory_coverage=snapshot.usb_accessory_coverage,
+                usb_accessory_combinations=list(combinations),
+                observation_only=True,
+                raw_device_identifiers_omitted=True,
+                device_control_performed=False,
+                malicious_firmware_protection_claimed=False,
+                response_authorized=False,
+                response_authority="observe-only",
+            )
+        if combinations or snapshot.usb_accessory_coverage == "sampled":
+            self._last_usb_combinations = combinations
 
     def run(self) -> None:
         while not self.stopping:

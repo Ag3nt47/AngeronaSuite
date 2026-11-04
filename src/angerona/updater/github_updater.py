@@ -115,7 +115,7 @@ class UpdateReport:
         }[self.release_status]
         source = {
             "different": "GitHub main differs from this checkout; ancestry and preservation checks are required before updating.",
-            "same": "This checkout matches the observed GitHub main revision.",
+            "same": "The observed source base matches GitHub main; local edits remain separate.",
             "unknown": "The installed source revision is unknown; source currency cannot be established.",
             "unavailable": "GitHub main could not be checked.",
         }[self.source_status]
@@ -139,7 +139,11 @@ def local_source_revision(root: Path) -> str:
 
 def check_installed_updates(state_dir: Path, source_root: Path, *, force: bool = False) -> UpdateReport:
     """Plain Qt-free reader; inputs may safely be captured by an AsyncSnapshot."""
-    return daily_update_check(state_dir, force=force, revision_reader=lambda: local_source_revision(source_root))
+    def current_base():
+        from angerona.core.source_activation import applied_source_base
+        receipt = applied_source_base(source_root, state_dir)
+        return receipt['target_revision'] if receipt is not None else local_source_revision(source_root)
+    return daily_update_check(state_dir, force=force, revision_reader=current_base)
 
 
 def discover_updates(*, local_revision: str = "", version: str = __version__,

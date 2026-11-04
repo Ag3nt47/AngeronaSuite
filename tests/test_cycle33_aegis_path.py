@@ -628,6 +628,12 @@ def test_embeddable_ui_is_sortable_clickable_red_for_unknown_and_inert() -> None
     widget.breakpoint_table.selectRow(0)
     assert widget.what_if_button.isEnabled()
     widget.what_if_button.click()
+    from PySide6.QtWidgets import QApplication
+    deadline = time.monotonic() + 5
+    while widget._comparison_pending and time.monotonic() < deadline:
+        QApplication.instance().processEvents()
+        time.sleep(.005)
+    assert not widget._comparison_pending
     assert "What if:" in widget.comparison_label.text()
     assert "inert" in widget.comparison_label.text().casefold()
     dialog = AegisPathDialog(snapshot)
@@ -675,6 +681,48 @@ def test_ui_missing_snapshot_is_red_unknown_and_does_not_infer_safety() -> None:
     assert "#ef4444" in widget.status_label.styleSheet()
     assert "never proves" in widget.comparison_label.text()
     widget.close()
+
+
+def test_what_if_runs_off_qt_and_rejects_result_for_replaced_graph(monkeypatch):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtWidgets import QApplication
+    from angerona.gui import aegis_path as gui
+    entered, release = threading.Event(), threading.Event()
+    original = gui.simulate_breakpoints
+    gui_thread = threading.get_ident()
+    threads = []
+
+    def blocked(*args, **kwargs):
+        threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(gui, "simulate_breakpoints", blocked)
+    widget = gui.AegisPathWidget(_cve_graph(stale_route=True))
+    try:
+        widget.breakpoint_table.selectRow(0)
+        widget._run_what_if()
+        assert entered.wait(2) and widget._comparison_pending
+        assert widget._activities.snapshot() and widget.progress_view.ring.percent is None
+        marker = []
+        QTimer.singleShot(0, lambda: marker.append(True))
+        deadline = time.monotonic() + 2
+        while not marker and time.monotonic() < deadline:
+            QApplication.instance().processEvents()
+        assert marker and len(threads) == 1 and threads[0] != gui_thread
+        widget.clear_snapshot("newer graph is unavailable")
+        release.set()
+        deadline = time.monotonic() + 5
+        while widget._comparison_pending and time.monotonic() < deadline:
+            QApplication.instance().processEvents()
+            time.sleep(.005)
+        assert not widget._comparison_pending and not widget._activities.snapshot()
+        assert "graph changed" in widget.comparison_label.text()
+    finally:
+        release.set()
+        assert widget._thread_pool.waitForDone(3000)
+        widget.close()
 
 
 def test_ui_renders_prompt_injection_label_as_plain_text() -> None:

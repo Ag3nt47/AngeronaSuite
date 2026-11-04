@@ -7,6 +7,7 @@ can run a different colour/glyph for other events (e.g. a scan sweep).
 from __future__ import annotations
 
 from angerona.gui.presentation_timer import PresentationTimer
+from angerona.gui.progress_ring import ProgressRing, color_for_pct
 
 import itertools
 import threading
@@ -19,21 +20,6 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 # ── Live progress spinner: a smooth ring + a red→yellow→green percentage ──────
 _C_RED = (255, 77, 77)
-_C_YEL = (255, 176, 32)
-_C_GRN = (47, 227, 138)
-
-
-def _mix(a, b, t: float) -> QColor:
-    t = max(0.0, min(1.0, t))
-    return QColor(int(a[0] + (b[0] - a[0]) * t),
-                  int(a[1] + (b[1] - a[1]) * t),
-                  int(a[2] + (b[2] - a[2]) * t))
-
-
-def color_for_pct(pct: float) -> QColor:
-    """Red at 0%, warming through amber at the midpoint, to green near 100%."""
-    p = max(0.0, min(100.0, float(pct))) / 100.0
-    return _mix(_C_RED, _C_YEL, p / 0.5) if p < 0.5 else _mix(_C_YEL, _C_GRN, (p - 0.5) / 0.5)
 
 
 class _SpinRing(QWidget):
@@ -300,6 +286,13 @@ _loading_ids = itertools.count(1)
 _loading_id_lock = threading.Lock()
 
 
+def _loading_counts(done, total):
+    if (type(done) is int and type(total) is int
+            and 0 < total <= 1_000_000 and 0 <= done <= total):
+        return done, total
+    return 0, 0
+
+
 def begin_loading(label: str, *, done: int = 0, total: int = 0) -> str:
     """Start one globally visible activity and return its opaque token.
 
@@ -308,7 +301,8 @@ def begin_loading(label: str, *, done: int = 0, total: int = 0) -> str:
     """
     with _loading_id_lock:
         token = f"loading-{next(_loading_ids)}"
-    _loading_bus.started.emit(token, str(label or "Loading"), int(done), int(total))
+    done, total = _loading_counts(done, total)
+    _loading_bus.started.emit(token, str(label or "Loading"), done, total)
     return token
 
 
@@ -316,12 +310,18 @@ def update_loading(
     token: str,
     label: str | None = None,
     *,
-    done: int = 0,
-    total: int = 0,
+    done: int | None = None,
+    total: int | None = None,
 ) -> None:
-    """Update a live activity without touching a widget from a worker thread."""
+    """Update a live activity without touching a widget from a worker thread.
+
+    Omitted counts preserve the previous measured units. Explicit zero or
+    malformed totals clear them, so a new unknown phase cannot reuse old %.
+    """
+    done, total = ((-1, -1) if done is None and total is None
+                   else _loading_counts(done, total))
     _loading_bus.updated.emit(
-        str(token), str(label or ""), int(done), int(total)
+        str(token), str(label or ""), done, total
     )
 
 
@@ -353,8 +353,7 @@ class GlobalLoadingIndicator(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._ring = _SpinRing(self)
-        self._ring.set_color(QColor(56, 189, 248))
+        self._ring = ProgressRing(parent=self, diameter=32, scope="current task")
         self._label = _ActivityLabel()
         self._label.setStyleSheet(
             "color:#7dd3fc;font-weight:700;letter-spacing:0.3px;"
@@ -389,11 +388,14 @@ class GlobalLoadingIndicator(QWidget):
         self._label.setVisible(not self._compact)
         if self._compact:
             width = max(28, int(extent))
-            self.layout().setContentsMargins(4, 0, 4, 0)
+            self._ring.set_diameter(26)
+            margin = min(4, max(0, (width - 26) // 2))
+            self.layout().setContentsMargins(margin, 0, margin, 0)
             self.layout().setSpacing(0)
             self.setMinimumWidth(width)
             self.setMaximumWidth(width)
         else:
+            self._ring.set_diameter(32)
             self.layout().setContentsMargins(8, 0, 8, 0)
             self.layout().setSpacing(8)
             self.setMinimumWidth(0)
@@ -423,10 +425,11 @@ class GlobalLoadingIndicator(QWidget):
         if previous is None:
             return
         old_label, old_done, old_total = previous
+        counts = ((old_done, old_total) if (done, total) == (-1, -1)
+                  else _loading_counts(done, total))
         self._activities[token] = (
             label or old_label,
-            done if total > 0 else old_done,
-            total if total > 0 else old_total,
+            *counts,
         )
         self._render_latest()
 
@@ -441,13 +444,12 @@ class GlobalLoadingIndicator(QWidget):
             self._render_latest()
             return
         self._reveal_timer.stop()
-        self._ring.stop()
+        self._ring.set_state(None, None, False)
         self.hide()
 
     def _reveal_if_active(self) -> None:
         if not self._activities:
             return
-        self._ring.start()
         self.show()
         self._render_latest()
 
@@ -457,6 +459,7 @@ class GlobalLoadingIndicator(QWidget):
             return
         token = self._order[-1]
         label, done, total = self._activities[token]
+        self._ring.set_state(done, total, True)
         progress = f"  {done}/{total}" if total > 0 else ""
         overlap = (
             f"  (+{len(self._activities) - 1})"

@@ -217,6 +217,10 @@ class SandboxEditor(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         root.setContentsMargins(8, 8, 8, 8)
 
         banner = QLabel(
@@ -405,7 +409,16 @@ class SandboxEditor(QMainWindow):
         self._test_worker = IsolatedTestWorker(mod, workspace, relative, self)
         self._test_worker.done.connect(self._on_test_done)
         self._test_worker.finished.connect(self._on_test_finished)
-        self._test_worker.start()
+        token = self._activities.begin("isolated-test", "Running isolated module self-test…", replace=True)
+        self._test_worker.finished.connect(lambda handle=token: self._activities.finish(handle))
+        try:
+            self._test_worker.start()
+        except Exception as error:
+            if not _is_running(self._test_worker):
+                self._activities.finish(token)
+                self._test_worker.deleteLater()
+                self._test_worker = None
+            self._log(f"[!] isolated test worker startup failed: {type(error).__name__}")
 
     @Slot()
     def _on_test_finished(self) -> None:

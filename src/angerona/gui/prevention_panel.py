@@ -65,6 +65,8 @@ class PreventionPanel(QWidget):
         self._client = client if client is not None else getattr(manager, "windows_prevention_client", None)
         self._plan = None
         self._job = None
+        self._worker = None
+        self._activity = None
         self._task = ""
         self._cancel_owner = [None]
         self.destroyed.connect(lambda _object=None, owner=self._cancel_owner:
@@ -73,6 +75,10 @@ class PreventionPanel(QWidget):
         self._poll_timer.setInterval(50)
         self._poll_timer.timeout.connect(self._poll)
         root = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self.progress_view = ActionProgressView(self._activities, self)
+        root.addWidget(self.progress_view)
         title = QLabel("WINDOWS PREVENTION · staged plans and native readback")
         title.setStyleSheet("font-weight:700; color:#67e8f9;")
         root.addWidget(title)
@@ -144,14 +150,27 @@ class PreventionPanel(QWidget):
         self.restore_button.setEnabled(not busy and self._client is not None)
 
     def _start(self, task, action):
-        if self._job is not None and not self._job.done.is_set():
+        if (self._job is not None and not self._job.done.is_set()
+                or self._worker is not None and self._worker.is_alive()):
             return False
         job = _PreventionJob(action)
         self._job, self._task = job, task
         self._cancel_owner[0] = job.cancel
         self.status.setText("Working off the GUI thread · " + task)
         self._buttons()
-        threading.Thread(target=job.run, name="Windows Prevention " + task, daemon=True).start()
+        self._activity = self._activities.begin("prevention", "Windows Prevention: " + task + "…", replace=True)
+        try:
+            self._worker = threading.Thread(target=job.run, name="Windows Prevention " + task, daemon=True)
+            self._worker.start()
+        except Exception:
+            if self._worker is None or not self._worker.is_alive():
+                self._activities.finish(self._activity)
+                self._activity = None
+                self._job = None
+                self._cancel_owner[0] = None
+                self.status.setText("Worker could not start; no host-change completion is verified.")
+                self._buttons()
+                return False
         self._poll_timer.start()
         return True
 
@@ -199,9 +218,13 @@ class PreventionPanel(QWidget):
 
     def _poll(self):
         job = self._job
-        if job is None or not job.done.is_set():
+        if (job is None or not job.done.is_set()
+                or self._worker is not None and self._worker.is_alive()):
             return
         self._poll_timer.stop()
+        self._activities.finish(self._activity)
+        self._activity = None
+        self._worker = None
         self._job = None
         self._cancel_owner[0] = None
         if job.cancel.is_set():
@@ -227,6 +250,8 @@ class PreventionPanel(QWidget):
         self._buttons()
 
     def hideEvent(self, event):  # noqa: N802
+        self._activities.close()
+        self._activity = None
         self._poll_timer.stop()
         self._plan = None
         if self._job is not None:
@@ -236,5 +261,6 @@ class PreventionPanel(QWidget):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         if self._job is not None:
+            self._activity = self._activities.begin("prevention", "Retiring the existing prevention request…")
             self._poll_timer.start()
         self._buttons()

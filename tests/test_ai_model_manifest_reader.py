@@ -1,13 +1,15 @@
 """Inert custody regressions for the actual Ollama manifest reader.
 
-Only _read_verified_file's AST executes. The module is never imported; its
-admission seam, path, stream, and fstat are explicit in-memory doubles. These
-controls prove reader semantics, not OS confinement or hostile-Python isolation.
+Only the reader and its pure exception/errno-selector AST definitions execute.
+The module is never imported; admission, path, stream, and fstat are explicit
+in-memory doubles. These controls prove reader semantics, not OS confinement
+or hostile-Python isolation.
 """
 from __future__ import annotations
 
 import ast
 import copy
+import errno
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,7 +22,7 @@ _SOURCE = Path(__file__).resolve().parents[1] / "src/angerona/modules/ai_model_i
 
 
 class ModelIntegrityError(RuntimeError):
-    """The extracted reader's typed failure, without product import side effects."""
+    """The admission seam's typed failure, without product import side effects."""
 
 
 def _reader_node():
@@ -47,13 +49,23 @@ def _read_call(node):
 
 
 def _compile_reader(node, fixture):
+    tree = ast.parse(_SOURCE.read_text(encoding="utf-8"), filename=str(_SOURCE))
+    names = ("ModelIntegrityError", "ModelInventoryUnavailable", "_inventory_collection_error")
+    dependencies = [
+        dependency for dependency in tree.body
+        if isinstance(dependency, (ast.ClassDef, ast.FunctionDef))
+        and dependency.name in names
+    ]
+    assert tuple(dependency.name for dependency in dependencies) == names
     namespace = {
         "Path": object,
-        "ModelIntegrityError": ModelIntegrityError,
+        "errno": errno,
         "_require_confined_regular_file": fixture.admit,
         "os": SimpleNamespace(fstat=fixture.fstat),
     }
-    unit = ast.Module(body=[copy.deepcopy(node)], type_ignores=[])
+    unit = ast.Module(
+        body=[*copy.deepcopy(dependencies), copy.deepcopy(node)], type_ignores=[],
+    )
     exec(compile(ast.fix_missing_locations(unit), "<inert-model-reader>", "exec"), namespace)
     return namespace["_read_verified_file"]
 
@@ -63,7 +75,8 @@ def _identical_trace_except_requested_count(trace):
 
 
 class _Fixture:
-    def __init__(self, *, size=8, body=b"manifest", drift=None, admission=None, fault=None):
+    def __init__(self, *, size=8, body=b"manifest", drift=None, admission=None, fault=None,
+                 fault_errno=None):
         self.before = SimpleNamespace(st_dev=11, st_ino=22, st_size=size)
         self.opened = copy.copy(self.before)
         self.after = copy.copy(self.before)
@@ -74,6 +87,7 @@ class _Fixture:
         self.body = body
         self.admission = admission
         self.fault = fault
+        self.fault_errno = fault_errno
         self.trace = []
         self.requested = []
         self.closed = False
@@ -84,6 +98,8 @@ class _Fixture:
 
     def _fail(self, stage):
         if self.fault == stage:
+            if self.fault_errno is not None:
+                raise OSError(self.fault_errno, "inert " + stage)
             raise OSError("inert " + stage)
         if self.fault == "runtime_" + stage:
             raise RuntimeError("inert " + stage)
@@ -248,7 +264,7 @@ def test_admission_failure_remains_authoritative_and_never_opens_a_stream(messag
 def test_os_errors_keep_typed_chaining_and_existing_context_cleanup_semantics(stage):
     actual, _baseline, outcome = _pair(fault=stage)
     assert outcome == (
-        "error", "ModelIntegrityError", "Ollama manifest could not be read",
+        "error", "ModelInventoryUnavailable", "Ollama manifest could not be read",
         ("OSError", "inert " + stage),
     )
     assert actual.closed is (stage not in {"open", "enter"})
@@ -263,3 +279,20 @@ def test_non_os_stream_failures_propagate_without_returning_bytes_or_retry(stage
     assert actual.closed
     assert sum(entry[0] == "open" for entry in actual.trace) == 1
     assert len(actual.requested) == 1
+
+
+@pytest.mark.parametrize(
+    "error_number,cause_name",
+    [(errno.ELOOP, "OSError"), (errno.ENOTDIR, "NotADirectoryError"),
+     (errno.EISDIR, "IsADirectoryError"), (errno.EMLINK, "OSError")],
+)
+def test_unsafe_object_os_refusals_keep_integrity_type_and_never_open_or_retry(
+    error_number, cause_name,
+):
+    actual, _baseline, outcome = _pair(fault="open", fault_errno=error_number)
+    assert outcome == (
+        "error", "ModelIntegrityError", "Ollama manifest could not be read",
+        (cause_name, str(OSError(error_number, "inert open"))),
+    )
+    assert actual.trace == [("admit",), ("open", "rb")]
+    assert not actual.closed and actual.requested == []

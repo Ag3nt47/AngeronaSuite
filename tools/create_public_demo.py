@@ -30,6 +30,8 @@ SCREENSHOTS = (
     "github-tools-demo", "zero-breach-demo", "spyware-scan-demo",
     "breach-lockdown-demo", "after-action-demo",
     "github-tools-settings-demo", "github-tools-credits-demo", "auto-adapt-demo",
+    "red-team-progress-demo", "red-team-passing-demo", "red-team-diagnostics-demo",
+    "component-heartbeats-demo", "heartbeat-details-demo",
 )
 CAPTURE_SOURCES = (
     "tools/create_public_demo.py", "tools/capture_public_dashboard.py",
@@ -43,6 +45,16 @@ CAPTURE_SOURCES = (
     "src/angerona/gui/adaptation_workbench.py", "src/angerona/core/host_adaptation.py",
     "src/angerona/gui/window_controls.py", "src/angerona/gui/recovery_panel.py",
     "src/angerona/gui/prevention_panel.py", "src/angerona/core/windows_prevention.py",
+    "src/angerona/gui/red_team_console.py", "src/angerona/gui/simulation_diagnostics.py",
+    "src/angerona/gui/progress_ring.py", "src/angerona/gui/animations.py",
+    "src/angerona/gui/action_progress.py", "src/angerona/gui/action_worker.py",
+    "src/angerona/gui/async_snapshot.py", "src/angerona/gui/presentation_timer.py",
+    "src/angerona/gui/component_heartbeat.py", "src/angerona/gui/github_tools.py",
+    "src/angerona/gui/context_info.py", "src/angerona/shark/simulation_session.py",
+    "src/angerona/shark/run_manifest.py",
+    "src/angerona/gui/notification_inbox.py", "src/angerona/core/spyware_news.py",
+    "src/angerona/core/spyware_scan_schedule.py", "src/angerona/core/spyware_artifact_scan.py",
+    "src/angerona/core/spyware_native_windows.py", "src/angerona/core/threat.py",
 )
 
 
@@ -203,6 +215,9 @@ def _curated_fixture(manager, forbidden):
 
         prepare = scan = priority_scan = cancel = self_test = open_tool = revert = forbidden
         save_options = clear_reports = refresh = auto_prepare = forbidden
+        show_storage_review = show_after_action = forbidden
+        review_reports = export_report = allow_next_report = forbidden
+        open_retained_scan_report = forbidden
 
     controller = MemoryController()
     manager._curated_tools_controller = controller
@@ -297,6 +312,15 @@ def _scan_progress_fixture(step):
                     finished=len(done), total=4, planned_stages=("preflight", "native", "toolkit", "aggregation"),
                     finished_stages=done, state="finished" if ended else "running")
     fraction = (len(done) + native["overall_percent"] / 100 + toolkit["overall_percent"] / 100) / 4
+    native_completion = None
+    partial_result = None
+    if ended:
+        native_completion = dict(request_id=progress["request_id"], lifecycle_generation=1,
+                                 request_finished=True, collector_finished=True,
+                                 finding_counts=dict(advisory=2, omitted=0), coverage_incomplete=True)
+        partial_result = dict(match_counts=dict(total=2, tool_findings=1, references=1,
+                                               withdrawn=0, displayed=2, omitted=0),
+                              coverage_incomplete=True)
     return dict(state="timed-out" if ended else "stopping" if stopping else "running",
                 busy=not ended, lifecycle="terminal" if ended else "draining" if stopping else "running",
                 message=("DEMO - the synthetic time budget expired; partial evidence is retained. Native work is still stopping."
@@ -304,6 +328,9 @@ def _scan_progress_fixture(step):
                          if ended else "DEMO - fixed synthetic reader and current-item observations; no scanner or host file exists."),
                 elapsed_seconds=elapsed, timeout_seconds=300, scan_progress=progress,
                 scanner_progress={"native": native, "toolkit": toolkit},
+                native_scan_completion=native_completion, partial_result=partial_result,
+                review_available=ended,
+                review_gap="DEMO · partial report ready for review. No host scan ran." if ended else "",
                 resource_usage=dict(cpu_percent=round(18.0 + (step % 4) * 7.5, 1) if step < 6 else 0.0,
                                     rss_mib=42.0 + step if step < 6 else 0.0,
                                     read_bytes=(step + 1) * 1048576, write_bytes=(step + 1) * 4096,
@@ -533,6 +560,214 @@ def _adaptation_fixture(forbidden):
     return dialog
 
 
+
+def _red_team_fixture(parent, forbidden):
+    """Actual presenters with inert providers and explicitly synthetic DTOs.
+
+    No session, engine, authenticated handoff, history reader, device service,
+    source loader or patch provider is connected to these public-demo views.
+    """
+    from PySide6.QtWidgets import QDialog
+    from angerona.gui.red_team_console import RedTeamConsole
+    from angerona.gui.simulation_diagnostics import (
+        SimulationDiagnosticsPanel, _prepare_snapshot,
+    )
+
+    class DemoRedTeamConsole(RedTeamConsole):
+        def _load_history(self):
+            self._hist_list.clear()
+            self._hist_view.setPlainText(
+                "DEMO - no saved report, key or signed history was read.")
+
+        def _refresh_device_enrollments(self, _select_id=""):
+            self.device_enrollments.clear()
+            self.device_lab_log.setPlainText(
+                "DEMO - no device enrollment, inspection or service exists.")
+
+        def _refresh_response_readiness(self, *_unused):
+            self.response_readiness.setText(
+                "DEMO - synthetic presentation only. No host response provider "
+                "or readiness inspection is connected.")
+            self.response_readiness.setStyleSheet("color:#fbbf24;")
+
+        def _on_tab_changed(self, index):
+            if index != 0:
+                forbidden()
+
+        def _launch(self):
+            forbidden()
+
+        def _stop(self):
+            forbidden()
+
+        def _cancel_preparing_launch(self, *_unused):
+            return None  # No real launch owner exists in this fixture.
+
+    console = DemoRedTeamConsole(parent, default_target="D:/DEMO/not-created")
+    console.loc_edit.setText("DEMO - no marker directory is created or scanned")
+    console.cb_shark.setChecked(False)
+    console.cb_comprehensive.setChecked(False)
+    console.github_tools._loaded = True
+    console.github_tools.analysis_lab._loaded = True
+    console.github_tools.status.setText("DEMO - no source library or worker loaded.")
+    console.github_tools.analysis_lab.status.setText(
+        "DEMO - no analysis runtime or process loaded.")
+    console._run_splitter.setSizes([230, 430])
+    console.log.setPlainText(
+        "DEMO - fixed modeled outcomes; no simulation, detector or response ran. "
+        "The two illustrated runs are independent synthetic presentations. "
+        "A green example is not a host result or an efficacy benchmark.")
+    if (console._hist_listing or console._hist_reading
+            or console._history_pool.activeThreadCount()
+            or console._editor_reader.thread is not None
+            or console.github_tools._worker is not None
+            or console.github_tools._busy):
+        raise RuntimeError("a Red Team demo provider unexpectedly started work")
+
+    class DemoDiagnosticsPanel(SimulationDiagnosticsPanel):
+        def _update_buttons(self):
+            super()._update_buttons()
+            for button in (self.copy_button, self.export_button,
+                           self.refresh_button, self.patch_button):
+                button.setEnabled(False)
+                button.setToolTip(
+                    "DEMO - synthetic projection; no authentication, export or "
+                    "patch provider is connected.")
+
+        def refresh_diagnostics(self):
+            return forbidden()
+
+        def copy_json(self):
+            return forbidden()
+
+        def export_json(self):
+            return forbidden()
+
+        def review_selected_fix(self):
+            return forbidden()
+
+    rows = []
+    samples = (
+        ("Initial Access", "T1204", "pass", "pass", "pass", "illustrated-match",
+         "DEMO - modeled analytic match and containment postcondition.",
+         "none", []),
+        ("Discovery", "T1046", "fail", "unscored", "fail", "illustrated-miss",
+         "DEMO - expected telemetry did not arrive in this modeled case.",
+         "sensor-review", ["DEMO - inspect the exact provider's availability.",
+                           "DEMO - repair the collector and rerun its regression."]),
+        ("Defense Evasion", "T1562", "inconclusive", "unscored", "inconclusive",
+         "illustrated-unavailable",
+         "DEMO - required kernel telemetry is unavailable; coverage is held.",
+         "deployment-review", ["DEMO - review the platform and installed authority.",
+                               "DEMO - preserve the gap until a fresh canary returns."]),
+    )
+    for index, (stage, technique, detected, response, status, reason_code,
+                reason, fix_kind, next_steps) in enumerate(samples):
+        rows.append(dict(index=index, stage=stage, technique=technique,
+            category="synthetic-demo", detection_status=detected,
+            response_status=response, status=status, reason_code=reason_code,
+            reason=reason, evidence=["DEMO - fixed display example; no host event."],
+            next_steps=next_steps,
+            source_areas=["DEMO - relevant collector and regression tests"]
+                         if next_steps else [],
+            fix_kind=fix_kind, fix_status="not-applied" if next_steps else "none"))
+    diagnostics = DemoDiagnosticsPanel(parent, config=getattr(parent, "config", None),
+                                      auto_load=False)
+    diagnostics._snapshot = _prepare_snapshot(dict(
+        schema="angerona.simulation-diagnostics.v1",
+        run_id="DEMO-NOT-AN-AUTHENTICATED-RUN", report_kind="red_team",
+        report_sha256="1" * 64, head_sha256="2" * 64, sequence=0,
+        report_state="complete", coverage_score_eligible=True,
+        overall_status="failing", omitted_rows=0, omitted_text_characters=0,
+        synthetic=True, host_actions=False, rows=rows))
+    diagnostics._snapshot_version = diagnostics._source_version
+    diagnostics._render_summary()
+    diagnostics._apply_filter()
+    diagnostics.table.selectRow(0)
+    diagnostics.message.setText(
+        "DEMO - synthetic report projection, not authenticated evidence. "
+        "Filters and next-step explanations are real UI; no patch or export runs.")
+    if (not isinstance(console, QDialog) or diagnostics._jobs
+            or diagnostics._worker is not None or diagnostics._source is not None):
+        raise RuntimeError("the Red Team demo unexpectedly connected a provider")
+    return console, diagnostics
+
+
+def _red_team_progress_fixture(console, step):
+    """Feed real count/badge presenters; never execute or authenticate a run."""
+    from angerona.gui.red_team_console import SessionLifecycleProjection
+    from angerona.shark.simulation_session import RunPerformanceSnapshot
+
+    clean = step >= 4
+    run_id = "DEMO-CLEAN-ILLUSTRATION" if clean else "DEMO-GAP-ILLUSTRATION"
+    session_id = "DEMO-SESSION-CLEAN" if clean else "DEMO-SESSION-GAP"
+    digest = ("b" if clean else "a") * 64
+    if step in (0, 4):
+        console.set_launch_status(dict(status="accepted", runs={"red_team": run_id}),
+                                  {"auto_remediate": True})
+        if not console.bind_performance_session(session_id, 1, {run_id: digest}):
+            raise RuntimeError("the synthetic current-session presentation was refused")
+    finished = (1, 4, 7, 8, 7, 8)[step]
+    final = step in (3, 5)
+    if not final:
+        evaluated, detected, contained, gaps = (
+            (0, 0, 0, 0) if step == 0 else
+            (4, 4, 4, 0) if step == 1 else
+            (7, 6, 5, 2) if step == 2 else
+            (7, 7, 7, 0))
+        publication = RunPerformanceSnapshot(
+            session_id=session_id, session_generation=1, run_id=run_id,
+            plan_sha256=digest, state="provisional", eligible_planned=8,
+            evaluated_steps=evaluated, detection_verified_steps=detected,
+            native_verified_steps=min(detected, 4),
+            simulation_verified_steps=max(0, detected - 4),
+            containment_verified_steps=contained, provisional_failures=gaps,
+            containment_required=True, unsettled_steps=8 - evaluated,
+            unavailable_steps=0,
+            verification_scope="DEMO - fixed synthetic presentation; no verification ran")
+        if not console.record_performance_snapshot(publication):
+            raise RuntimeError("the typed synthetic performance publication was refused")
+    lifecycle = SessionLifecycleProjection(session_id=session_id, generation=1,
+        plans_by_run=((run_id, digest),), phase="DEMO-retired" if final else "DEMO-running",
+        source_available=True, owner_finished=final, workers_retired=final,
+        custody_released=final)
+    if not console.record_session_lifecycle(lifecycle):
+        raise RuntimeError("the synthetic lifecycle publication was refused")
+    console.update_execution_progress({"red_team": dict(schema=1, run_id=run_id,
+        state="completed" if final else "running", finished=finished, total=8,
+        failed_units=0, current_task="DEMO - modeled step and evidence review")})
+    if final:
+        caught = 8 if clean else 6
+        console.record_verified_report("red_team", run_id, dict(
+            run_id=run_id, outcome="verified" if clean else "partial",
+            coverage_score_eligible=True, detection_steps=8, detection_caught=caught,
+            epistemic_metrics={"verified_containment": dict(count=caught, eligible=8)},
+            evidence_taxonomy={"denominator": 8,
+                "compatible_analytic_union": {"count": caught},
+                "native_analytic_detection": {"count": min(caught, 4)},
+                "native_analytic_opportunity": dict(file_marker_steps=4,
+                    process_observation_only_steps=4, unclassified_steps=0,
+                    total_expected_positive_steps=8)},
+            synthetic=True, host_actions=False))
+    # Only the cosmetic arc angle is replayed; it never advances a work count.
+    console.overall_progress._angle = step * 45
+    console.overall_progress.update()
+    console.log.append(
+        f"DEMO frame {step + 1}: {console.performance_badge.text()} · "
+        "fixed modeled outcomes; no detector or host action.")
+    return dict(synthetic=True, host_actions=False, run_id=run_id,
+        expected_percent=100 if final else finished * 100 // 9,
+        displayed_percent=console.overall_progress.percent,
+        badge_state=console.performance_badge.property("performanceState"),
+        badge_text=console.performance_badge.text(),
+        caught=console.catch_comparison._caught, missed=console.catch_comparison._missed,
+        provisional=console.catch_comparison._provisional,
+        provider_started=bool(console._hist_listing or console._hist_reading
+            or console._history_pool.activeThreadCount()
+            or console._editor_reader.thread is not None
+            or console.github_tools._worker is not None))
+
+
 def _help_fixture(window):
     """Retain the actual owner's modeless Help window without changing Qt APIs."""
     from PySide6.QtWidgets import QDialog
@@ -640,7 +875,30 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                                 else "DEMO - fixed synthetic heartbeat publication; no real process inspected"}
                      for index, role in enumerate(("core", "watchdog", "scanner", "blackbox")))
     window.set_component_heartbeat_source(heartbeat_publication)
+    # The published capture replays one fixed demo day. Freeze the normal
+    # wall-clock readers and use the same replay rows shown in Live Alerts.
+    window.cards._count_reader.close()
+    window.cards._threat_reader.close()
+    window.cards._apply_count(storage.revision(), window.alerts_panel.table.rowCount())
+    window.cards._apply_threat_snapshot((0, ("Secure", "#2fe38a")))
+    # Both dashboard coverage summaries read these same inert module objects.
+    for name in ("Telemetry Canary Drills", "YARA Scanner"):
+        module = window.manager.modules[name]
+        module.health = 65
+        module.health_note = "DEMO - modeled coverage gap. No sensor ran."
+    window.status_strip.refresh()
+    window.modules_panel.refresh()
+    window.live_defense_activity.refresh()
     window._update_module_ribbon_summary()
+    window._last_posture["factors"]["degraded_modules"] = window._assessment_coverage[1]
+    window._notifications.upsert(
+        "public-demo-review", "DEMO · Review the sample evidence",
+        "This pending notification is a fixed demonstration record.", forbidden)
+    if (window._assessment_coverage != (0, 2)
+            or not window.live_defense_activity.summary.text().endswith(" · 2 degraded")
+            or window.cards.c_alerts.value.text() != str(len(demo.SYNTHETIC_EVENTS))
+            or window.cards.c_threat.value.text() != "None detected"):
+        raise RuntimeError("the synthetic dashboard summaries disagree with their source records")
     # Scan Center starts with the user's Downloads path even before any scan.
     # Replace that default input before inspecting/capturing any scene, including
     # scenes where the real Scan Center tab is currently hidden.
@@ -654,12 +912,16 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                     "settings_tabs": [], "attack_tabs": [], "attack_horizontal_positions": [],
                     "heartbeats": [], "heartbeat_details_steps": [],
                     "curated_views": [], "priority_resources": [], "priority_progress": [], "breach_colors": [],
-                    "after_action_scroll": [], "auto_adapt": []}
+                    "after_action_scroll": [], "auto_adapt": [],
+                    "red_team_progress": [], "red_team_diagnostics": [],
+                    "current_assessment": [], "research_wire": [], "compact_scan": [],
+                    "reader_waypoints": []}
     captured_bytes = 0
     detail = None
     settings = spyware = spyware_host = attack = None
     heartbeat_details = None
     hub = credits_dialog = after_action = adaptation = None
+    help_dialog = red_team = red_team_diagnostics = None
 
     def chapter(number, heading, description, widget, navigate=None, screenshot_at=None):
         nonlocal captured_bytes
@@ -711,8 +973,31 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         if any(control.is_collapsed() for control in panel_controls.values()) or ribbons.is_expanded():
             raise RuntimeError("the demo requires panels open by default with only module health folded")
 
+        def scroll_top(widget, scroll):
+            return widget.mapTo(scroll.viewport(), widget.rect().topLeft()).y()
+
+        def in_scroll_view(widget, scroll):
+            top = scroll_top(widget, scroll)
+            return widget.isVisible() and top >= 0 and top + widget.height() <= scroll.viewport().height()
+
         def browse_dashboard(step):
             nonlocal heartbeat_details
+            if step == 0:
+                window._refresh_current_assessment()
+            elif step in (2, 4):
+                # Exercise the production dwell rule without waiting nine wall-clock
+                # seconds or enabling motion for any processed Qt event.
+                window._assessment_banner.clearFocus()
+                previous_motion = window.config.ui_motion_enabled
+                window.config.ui_motion_enabled = True
+                try:
+                    window._refresh_current_assessment(
+                        now=window._assessment_since + window._ASSESSMENT_DWELL_SECONDS + .1)
+                finally:
+                    window.config.ui_motion_enabled = previous_motion
+            if step in (0, 2, 4):
+                interactions["current_assessment"].append(
+                    (window._assessment_key, window._assessment_banner.accessibleDescription()))
             fixture_missing_blackbox[0] = step >= 4
             heartbeat_strip.refresh_snapshot()
             interactions["heartbeats"].append([
@@ -740,8 +1025,9 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 stack.setCurrentWidget(window)
 
         chapter(1, "One workbench for local security evidence",
-                "Panels start open except module health. Synthetic EKG beats turn red when evidence is missing; click details for generations and reasons. No protection result is claimed.",
-                window, browse_dashboard)
+                "Current assessment rotates between simulated coverage gaps and a pending notification. Heartbeat details explain a red EKG when a synthetic publication is missing.",
+                window, browse_dashboard,
+                screenshot_at={1: "component-heartbeats-demo", 7: "heartbeat-details-demo"})
         selected = next(event for event in window.bus.recent(12) if event.module == "C2 Beacon Detector")
 
         # Extra rows are fixed inert observations, not simulated host collection.
@@ -758,6 +1044,7 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         alerts._accept_async_results = False
         if alerts.table.rowCount() < 72:
             raise RuntimeError("synthetic live-alert rows did not reach their bounded replay count")
+        window.cards._apply_count(storage.revision(), alerts.table.rowCount())
         interactions["alerts"]["row_count"] = alerts.table.rowCount()
         alerts.setParent(stack)
         alerts.setWindowFlags(Qt.Widget)
@@ -776,17 +1063,42 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         detail.setParent(stack)
         detail.setWindowFlags(Qt.Widget)
         stack.addWidget(detail)
-        chapter(3, "Read the original alert and its limits",
-                "Inspect record evidence and authenticity. An alert, fingerprint or AI explanation alone does not authorize containment.", detail)
+        help_dialog = _help_fixture(window)
+        help_dialog.setParent(stack)
+        help_dialog.setWindowFlags(Qt.Widget)
+        stack.addWidget(help_dialog)
+        def browse_alert_and_help(step):
+            stack.setCurrentWidget(help_dialog if step >= 7 else detail)
+        chapter(3, "Read alert evidence and the operating guide",
+                "Inspect original records, then Help & Info. An alert or AI explanation alone cannot authorize containment; the guide explains source Observe and Ring 3 limits.",
+                detail, browse_alert_and_help)
 
         from types import SimpleNamespace
         from capture_spywareguard import DEMO_NOW, _SyntheticModule
         from angerona.gui import spyware_guard_page
         spyware_guard_page.time = SimpleNamespace(time=lambda: DEMO_NOW)
-        spy_module = _SyntheticModule()
-        # The real page probes this optional import capability during setup.
-        # A public replay has no definition-import or mutation provider.
-        spy_module.queue_definition_import = None
+
+        class ResearchFixture(_SyntheticModule):
+            queue_definition_import = None
+            request_news_refresh = staticmethod(forbidden)
+
+            def dashboard_snapshot(self):
+                snapshot = super().dashboard_snapshot()
+                snapshot["settings"]["spyware_network_enabled"] = False
+                snapshot["news"][0].update(
+                    title="DEMO · Spyware research brief and its evidence",
+                    summary="Fixed cached preview. Read research context alongside local scan coverage.",
+                )
+                snapshot["news"].append({
+                    "title": "DEMO · Emergency patching and exploit research",
+                    "source": "project_zero",
+                    "url": "https://projectzero.google/2026/10/emergency-patching.html",
+                    "published": DEMO_NOW - 2 * 86400, "verified_at": DEMO_NOW - 120,
+                    "summary": "Fixed cached preview. The source and publication date stay visible as the headline rotates.",
+                })
+                return snapshot
+
+        spy_module = ResearchFixture()
         spy_config = SimpleNamespace(**spy_module.dashboard_snapshot()["settings"], ui_motion_enabled=False)
         # Use the production page's actual dialog-owned scrolling layout before
         # embedding that host as a fixed-viewport presentation widget.
@@ -794,17 +1106,43 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         spyware_layout = QVBoxLayout(spyware_host)
         spyware = spyware_guard_page.SpywareGuardPage(
             SimpleNamespace(modules={"SpywareGuard": spy_module}), spy_config, None, spyware_host)
+        spyware.priority_scan.update_computer_specs({
+            "cpu": 25.0, "ram": 43.75, "memory_total": 16 * 1024**3, "available": 9 * 1024**3,
+        })
         spyware_layout.addWidget(spyware)
         spyware_host.setParent(stack)
         spyware_host.setWindowFlags(Qt.Widget)
         stack.addWidget(spyware_host)
-        spyware.refresh()
-        spyware._timer.stop()
-        spyware._news_rotation_timer.stop()
-        spyware._news_scroll_timer.stop()
-        spyware.hits_table.selectRow(0)
+        def browse_research_wire(step):
+            if step == 0:
+                spyware.refresh()
+                spyware._timer.stop()
+                spyware._news_rotation_timer.stop()
+                spyware._news_scroll_timer.stop()
+                spyware.hits_table.selectRow(0)
+            elif step in (2, 7):
+                # Use the timer's callback with fixed slots under reduced motion.
+                spyware._rotate_news()
+            if step in (4, 7):
+                spyware.news_feed_details.click()
+            if step in (5, 6):
+                spyware.news_pause_button.click()
+            if step in (0, 2, 4, 5, 6, 7):
+                demo._settle(app, .05)
+                scroll = spyware._window_fit.scroll_area
+                scroll.ensureWidgetVisible(spyware.news_strip, 0, 8)
+                interactions["research_wire"].append({
+                    "publisher": spyware.news_source_button.text(),
+                    "headline": spyware.news_headline.accessibleName(),
+                    "details": spyware.news_feed_details.isChecked(),
+                    "paused": spyware.news_pause_button.isChecked(),
+                    "visible": in_scroll_view(spyware.news_strip, scroll),
+                    "refresh_enabled": spyware.news_refresh_button.isEnabled(),
+                })
+
         chapter(4, "Inspect SpywareGuard's dedicated workspace",
-                "Real SpywareGuard UI with fixed synthetic findings and explicit coverage. No scan, research fetch, beacon or containment is run.", spyware_host)
+                "The Research Wire rotates through fixed cached examples with publisher dates, pause and feed details. No research fetch, scan or containment runs.",
+                spyware_host, browse_research_wire)
 
         settings_config = Config(data_dir=runtime_root, autostart_enabled=False,
                                  aria_enabled=False, aria_voice_enabled=False, ui_motion_enabled=False)
@@ -867,12 +1205,38 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
         chapter(8, "Investigate findings with clear provenance",
                 "Scan Center displays sample findings only. Real collection depends on platform, permissions and available providers.", window.scan_center)
 
-        help_dialog = _help_fixture(window)
-        help_dialog.setParent(stack)
-        help_dialog.setWindowFlags(Qt.Widget)
-        stack.addWidget(help_dialog)
-        chapter(9, "Find the implementation and honest operating limits",
-                f"Angerona {__version__}: Help & Info documents source Observe mode, Ring 3 boundaries, evidence versus authority, storage choices and optional services.", help_dialog)
+        red_team, red_team_diagnostics = _red_team_fixture(window, forbidden)
+        for view in (red_team, red_team_diagnostics):
+            view.setParent(stack)
+            view.setWindowFlags(Qt.Widget)
+            stack.addWidget(view)
+
+        def browse_red_team(step):
+            if step < 6:
+                stack.setCurrentWidget(red_team)
+                interactions["red_team_progress"].append(
+                    _red_team_progress_fixture(red_team, step))
+            else:
+                stack.setCurrentWidget(red_team_diagnostics)
+                group = {6: 0, 7: 2, 8: 3, 9: 0}[step]
+                red_team_diagnostics.filter.setCurrentIndex(group)
+                red_team_diagnostics.table.selectRow(1 if step == 9 else 0)
+                selected_row = red_team_diagnostics._selected_row()
+                interactions["red_team_diagnostics"].append(dict(
+                    filter=group, rows=red_team_diagnostics.model.rowCount(),
+                    selected=selected_row["index"] if selected_row is not None else None,
+                    has_detail=bool(red_team_diagnostics.detail.toPlainText()),
+                    worker_started=bool(red_team_diagnostics._jobs
+                        or red_team_diagnostics._worker is not None),
+                    provider_connected=red_team_diagnostics._source is not None,
+                    action_enabled=any(button.isEnabled() for button in (
+                        red_team_diagnostics.copy_button, red_team_diagnostics.export_button,
+                        red_team_diagnostics.refresh_button, red_team_diagnostics.patch_button))))
+        chapter(9, "Track Red Team outcomes and inspect exact step diagnostics",
+                "DEMO - two independent synthetic runs show progress, provisional gaps, final misses and a green passing illustration. Read-only step review separates facts, gaps and proposed fixes. No simulation, verification or patch runs.",
+                red_team, browse_red_team,
+                screenshot_at={2: "red-team-progress-demo", 5: "red-team-passing-demo",
+                               7: "red-team-diagnostics-demo"})
 
         from angerona.gui.curated_tools import GitHubToolsDialog
         hub = GitHubToolsDialog(window.manager, window)
@@ -935,8 +1299,9 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                                                   7: "github-tools-settings-demo", 8: "github-tools-credits-demo"})
 
         spyware.tabs.setCurrentIndex(0)
-        spyware._window_fit.scroll_area.verticalScrollBar().setValue(0)
-        spyware.priority_scan.toggle.setChecked(False)
+        scan = spyware.priority_scan
+        scan_scroll = spyware._window_fit.scroll_area
+        scan_scroll.verticalScrollBar().setValue(0)
         def replay_priority(step):
             publication = _scan_progress_fixture(step)
             expected = publication.pop("demo_expected_overall")
@@ -944,13 +1309,26 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
             curated.update(**publication)
             if any(spyware.priority_scan.step_rows.get(key) is not row for key, row in prior_rows.items()):
                 raise RuntimeError("the real progress presenter replaced its stable reader widgets")
-            spyware.priority_scan.toggle.setChecked(step in (6, 7))
-            spyware.priority_scan.explanation_toggle.setChecked(step in (6, 7))
+            scan.setup_toggle.setChecked(step in (6, 7))
+            scan.toggle.setChecked(step in (6, 7))
+            scan.explanation_toggle.setChecked(step == 7)
+            if step == 7:
+                demo._settle(app, .05)
+                scan_scroll.ensureWidgetVisible(scan.options, 0, 8)
+            elif step in (0, 3, 6, 8):
+                scan_scroll.verticalScrollBar().setValue(0)
             # Purposeful navigation happens only at chapter waypoints; copied
             # status updates retain the current reader scroll position.
             target = {2: "native:hashes", 4: "toolkit:browser", 5: "toolkit:hash"}.get(step)
-            if target in spyware.priority_scan.step_rows:
-                spyware.priority_scan.steps_scroll.ensureWidgetVisible(spyware.priority_scan.step_rows[target], 0, 0)
+            if target is not None:
+                row = scan.step_rows[target]
+                demo._settle(app, .05)
+                scan.steps_scroll.ensureWidgetVisible(row, 0, 0)
+                scan_scroll.ensureWidgetVisible(scan.steps_scroll, 0, 8)
+                interactions["reader_waypoints"].append({
+                    "reader": target,
+                    "visible": in_scroll_view(row, scan.steps_scroll) and in_scroll_view(row, scan_scroll),
+                })
             interactions["priority_resources"].append(publication["resource_usage"])
             interactions["priority_progress"].append({"publication": publication["scan_progress"],
                 "reader_publications": {source: {key: value.get(key) for key in (
@@ -972,8 +1350,24 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 "scope": spyware.priority_scan._scope_mode,
                 "resource_limits_open": spyware.priority_scan.toggle.isChecked(),
                 "coverage_details_open": spyware.priority_scan.explanation_toggle.isChecked()})
+            if step in (3, 7, 8):
+                demo._settle(app, .05)
+                overview = (spyware.news_strip, scan.progress_group, scan.explanation_group, scan.resource_group)
+                tops = [scroll_top(widget, scan_scroll) for widget in overview]
+                interactions["compact_scan"].append({
+                    "setup_visible": scan.setup_body.isVisible(),
+                    "resources_visible": scan.options.isVisible(),
+                    "review_visible": scan.review_button.isVisible(),
+                    "hits": scan.hits.text(),
+                    "hits_before_setup": scan.layout().indexOf(scan.hits) < scan.layout().indexOf(scan.setup_toggle),
+                    "overview_order": all(a < b for a, b in zip(tops, tops[1:])),
+                    "overview_titles_in_view": all(0 <= y < scan_scroll.viewport().height() - 28 for y in tops),
+                    "progress_and_hits_in_view": (in_scroll_view(scan.progress_group, scan_scroll)
+                                                   and in_scroll_view(scan.hits, scan_scroll)),
+                    "review_in_view": in_scroll_view(scan.review_button, scan_scroll),
+                })
         chapter(11, "Follow measured reader and current-item progress",
-                "DEMO - fixed synthetic counts and timing. Overall, reader and current query/file percentages are separate; unknown ETA stays Calculating. A modeled timeout waits for native stopping and retains partial results. No scan runs.",
+                "DEMO · Research Wire, progress, current status and Computer specs precede setup. Reader close-ups show measured work. The modeled timeout retains partial hits for review.",
                 spyware_host, replay_priority, screenshot_at={3: "spyware-scan-demo"})
         curated.update(message="DEMO - the modeled timeout and partial progress remain available; no host-clean verdict is claimed.")
 
@@ -1002,6 +1396,10 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
             breach_bridge.flash_timer.stop()
             breach_bridge._orange = bool((step // 2) % 2)
             breach_bridge._paint_warning()
+            window._refresh_current_assessment()
+            if step == 0:
+                interactions["current_assessment"].append(
+                    (window._assessment_key, window._assessment_banner.accessibleDescription()))
             interactions["breach_colors"].append("orange" if breach_bridge._orange else "red")
             if window.posture_lbl.text() != "⚠️Breached⚠️":
                 raise RuntimeError("the real dashboard did not retain its confirmed-breach badge")
@@ -1070,6 +1468,45 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
             raise RuntimeError("synthetic EKG beat, flatline or actual details interaction was not captured")
         if forbidden_attempts:
             raise RuntimeError("a demo callback attempted an external effect; inspect the private failure")
+        assessment = interactions["current_assessment"]
+        wire = interactions["research_wire"]
+        compact, expanded, retained = interactions["compact_scan"]
+        reader_waypoints = interactions["reader_waypoints"]
+        if ([key for key, _ in assessment] != ["coverage", "inbox", "coverage", "case"]
+                or "Open the case report." not in assessment[-1][1]
+                or len(wire) != 6
+                or len({row["headline"] for row in wire}) != 2
+                or not wire[0]["publisher"].startswith("Citizen Lab · ")
+                or not wire[1]["publisher"].startswith("Project Zero · ")
+                or wire[-1]["publisher"] != wire[0]["publisher"]
+                or [row["details"] for row in wire] != [False, False, True, True, True, False]
+                or [row["paused"] for row in wire] != [False, False, False, True, False, False]
+                or any(not row["visible"] or row["refresh_enabled"] for row in wire)
+                or any(not row["hits_before_setup"] for row in (compact, expanded, retained))
+                or not compact["overview_order"] or not compact["overview_titles_in_view"]
+                or not compact["progress_and_hits_in_view"] or not retained["progress_and_hits_in_view"]
+                or not retained["review_in_view"]
+                or [row["reader"] for row in reader_waypoints] != ["native:hashes", "toolkit:browser", "toolkit:hash"]
+                or any(not row["visible"] for row in reader_waypoints)
+                or compact["setup_visible"] or compact["review_visible"]
+                or not expanded["setup_visible"] or not expanded["resources_visible"]
+                or retained["setup_visible"] or not retained["review_visible"]
+                or "2 advisory hits" not in retained["hits"] or "1 tool finding" not in retained["hits"]):
+            raise RuntimeError("the current assessment, Research Wire or compact scan views differ from the inert plan")
+        red_progress, red_diagnostics = (interactions["red_team_progress"],
+                                          interactions["red_team_diagnostics"])
+        if (len(red_progress) != 6
+                or [row["badge_state"] for row in red_progress]
+                    != ["pending", "partial", "failing", "failing", "partial", "passing"]
+                or any(row["displayed_percent"] != row["expected_percent"]
+                       or row["provider_started"] or row["host_actions"] for row in red_progress)
+                or (red_progress[3]["caught"], red_progress[3]["missed"]) != (6, 2)
+                or (red_progress[5]["caught"], red_progress[5]["missed"]) != (8, 0)
+                or [row["rows"] for row in red_diagnostics] != [3, 1, 1, 3]
+                or [row["selected"] for row in red_diagnostics] != [0, 1, 2, 1]
+                or any(not row["has_detail"] or row["worker_started"]
+                       or row["provider_connected"] or row["action_enabled"] for row in red_diagnostics)):
+            raise RuntimeError("real Red Team progress, badge or diagnostic controls differ from the inert plan")
         positions = interactions["alerts"]["positions"]
         if (positions[0]["value"] != 0 or positions[-1]["maximum"] <= 0
                 or positions[-1]["value"] != positions[-1]["maximum"]
@@ -1100,7 +1537,10 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                   "interactions": interactions, "capture": identity(), "source_sha256": captured_sources,
                   "screenshots": {name: hashlib.sha256(path.read_bytes()).hexdigest()
                                   for name, path in staged_screenshots.items()}}
-        (frames_root / "frames.json").write_text(json.dumps(report), encoding="ascii")
+        serialized_report = json.dumps(report)
+        if len(serialized_report.encode("ascii")) > 65536:
+            raise RuntimeError("frame manifest exceeds its unchanged 64 KiB encode admission bound")
+        (frames_root / "frames.json").write_text(serialized_report, encoding="ascii")
         staged_poster = frames_root / "poster.png"
         with (frames_root / frames[0]).open("rb") as source, staged_poster.open("xb") as target:
             target.write(source.read())
@@ -1126,7 +1566,9 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
     finally:
         if detail is not None:
             detail.hide()
-        for widget in (settings, spyware, spyware_host, attack, heartbeat_details, hub, credits_dialog, after_action, adaptation):
+        for widget in (settings, spyware, spyware_host, attack, heartbeat_details, hub,
+                       credits_dialog, after_action, adaptation, help_dialog,
+                       red_team, red_team_diagnostics):
             if widget is not None:
                 widget.close()
         wrapper.hide()
@@ -1180,14 +1622,15 @@ def encode(frames_root: Path, output: Path, *, replace: bool = False) -> None:
             sample.thumbnail((800, 530))
             palette_sample.paste(sample, (0, index * 530))
             sample.close()
-    palette = palette_sample.quantize(colors=248)
+    # Preserve the UI status colors when the sampled palette favors dashboard blues.
+    # The last reserved color is the Red Team caught bar (#15803d).
+    status_colors = [40, 223, 148, 255, 83, 99, 47, 227, 138, 251, 191, 36,
+                     239, 68, 68, 251, 146, 60, 31, 156, 255, 248, 250, 252,
+                     21, 128, 61]
+    sampled_color_count = 256 - len(status_colors) // 3
+    palette = palette_sample.quantize(colors=sampled_color_count)
     palette_sample.close()
-    # Preserve the UI's liveness/absence colors; tiny EKG lanes must not lose
-    # their meaning when a global chapter palette favors the blue dashboard.
-    colors = palette.getpalette()[:248 * 3]
-    colors.extend((40, 223, 148, 255, 83, 99, 47, 227, 138, 251, 191, 36,
-                   239, 68, 68, 251, 146, 60, 31, 156, 255, 248, 250, 252))
-    palette.putpalette(colors)
+    palette.putpalette(palette.getpalette()[:sampled_color_count * 3] + status_colors)
     quantized = []
     for path in paths:
         with Image.open(path) as original:

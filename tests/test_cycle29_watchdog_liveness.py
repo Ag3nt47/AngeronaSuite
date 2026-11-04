@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from angerona.core import module_base
 from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule
+from angerona.core.module_manager import ModuleManager
 from angerona.modules import watchdog_monitor
 from angerona.modules.watchdog_monitor import WatchdogMonitor
 
@@ -24,6 +26,15 @@ class _CadenceProbe(BaseModule):
 
     def run(self) -> None:
         return None
+
+
+class _WaitingProbe(BaseModule):
+    name = "Watchdog Worker Fixture"
+    description = "Inert generation-bound worker."
+    category = "Test"
+
+    def run(self) -> None:
+        self.sleep(60.0)
 
 
 class _FaultProbe:
@@ -83,6 +94,142 @@ def test_base_module_publishes_bounded_cadence_deadline(monkeypatch) -> None:
     expired = module.operational_snapshot()
     assert expired["watchdog_deadline_missed"] is True
     assert float(expired["last_cycle_age_seconds"]) > 42.0
+
+
+def test_watchdog_skips_half_started_worker_without_claiming_stability(monkeypatch) -> None:
+    probe = _WaitingProbe()
+    watchdog = WatchdogMonitor()
+    watchdog.bind(EventBus())
+    watchdog.bind_manager(SimpleNamespace(modules={probe.name: probe}))
+    state = watchdog_monitor._RestartState(id(probe), attempts=1, stable_since=1.0)
+    watchdog._restart_state[probe.name] = state
+    published = threading.Event()
+    release = threading.Event()
+    real_start = threading.Thread.start
+
+    def hold_worker_start(thread):
+        if thread.name == probe.name:
+            published.set()
+            if not release.wait(5.0):
+                raise TimeoutError("worker start barrier was not released")
+        return real_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", hold_worker_start)
+    starter = threading.Thread(target=probe.start, name="Watchdog Fixture Starter")
+    sweep = threading.Thread(target=watchdog._sweep, name="Watchdog Fixture Sweep")
+    starter.start()
+    try:
+        assert published.wait(2.0)
+        assert WatchdogMonitor._module_fault(probe.operational_snapshot()) == (
+            "running lifecycle has no live worker thread"
+        )
+        sweep.start()
+        sweep.join(1.0)
+        assert not sweep.is_alive(), "sampling blocked on the worker lifecycle lock"
+        assert state.attempts == 1 and state.stable_since == 0.0
+        assert watchdog.health == 60
+        assert "lifecycle sample(s) unavailable" in watchdog.health_note
+        assert not watchdog._bus.recent(10)
+
+        release.set()
+        starter.join(2.0)
+        assert not starter.is_alive()
+        assert probe.wait_for_first_cycle(2.0)
+        watchdog._sweep()
+        assert probe.lifecycle_generation == 1
+        assert state.attempts == 1 and state.stable_since > 0.0
+        assert watchdog.health == 85
+    finally:
+        release.set()
+        starter.join(2.0)
+        if sweep.ident is not None:
+            sweep.join(2.0)
+        probe.stop()
+        if probe._thread is not None and probe._thread.ident is not None:
+            probe._thread.join(2.0)
+
+
+@pytest.mark.parametrize("with_manager", [False, True])
+def test_watchdog_rechecks_fault_before_stopping_live_worker(monkeypatch, with_manager) -> None:
+    probe = _WaitingProbe()
+    watchdog = WatchdogMonitor()
+    bus = EventBus()
+    watchdog.bind(bus)
+    if with_manager:
+        manager = ModuleManager.__new__(ModuleManager)
+        manager._module_control_lock = threading.RLock()
+        manager._shutdown = False
+        manager.modules = {probe.name: probe}
+        manager.is_enabled = lambda _name: True
+        manager._ugcap_allows = lambda _module: True
+    else:
+        manager = SimpleNamespace(modules={probe.name: probe})
+    watchdog.bind_manager(manager)
+    probe.start()
+    try:
+        assert probe.wait_for_first_cycle(2.0)
+        generation = probe.lifecycle_generation
+        stop = probe.generation_stop_event()
+        with probe._cycle_lock:
+            probe._watchdog_deadline_at = 1.0
+        assert probe.try_watchdog_snapshot()["watchdog_deadline_missed"] is True
+
+        # A competing operation may acquire lifecycle custody after the sweep.
+        held = threading.Event()
+        release = threading.Event()
+
+        def hold_lifecycle():
+            with probe._lifecycle_lock:
+                held.set()
+                release.wait(5.0)
+
+        owner = threading.Thread(target=hold_lifecycle)
+        decisions = []
+        admit = threading.Thread(target=lambda: decisions.append(
+            watchdog._restart_exact_generation(probe.name, probe, generation),
+        ))
+        owner.start()
+        try:
+            assert held.wait(2.0)
+            admit.start()
+            admit.join(1.0)
+            assert not admit.is_alive(), "watchdog admission waited for lifecycle custody"
+            assert decisions == [False] and not stop.is_set()
+        finally:
+            release.set()
+            owner.join(2.0)
+            if admit.ident is not None:
+                admit.join(2.0)
+
+        # Reproduce a real same-generation heartbeat between sweep and custody.
+        restart = watchdog._restart_exact_generation
+
+        def progress_then_restart(*args):
+            probe.mark_cycle_complete(interval_seconds=60.0)
+            return restart(*args)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(watchdog, "_restart_exact_generation", progress_then_restart)
+            watchdog._sweep()
+        assert probe.lifecycle_generation == generation
+        assert not stop.is_set()
+        assert [event.details["finding_code"] for event in bus.recent(10)] == [
+            "watchdog.restart.rejected",
+        ]
+
+        with probe._cycle_lock:
+            probe._watchdog_deadline_at = 1.0
+        assert watchdog._restart_exact_generation(probe.name, probe, generation)
+        assert stop.is_set()
+        assert probe.lifecycle_generation == generation + 1
+        assert probe.wait_for_first_cycle(2.0)
+        if with_manager:
+            # Explicit authorized restarts do not require a watchdog fault.
+            assert manager.restart_module_generation(probe.name, probe, generation + 1)
+            assert probe.lifecycle_generation == generation + 2
+    finally:
+        probe.stop()
+        probe._thread.join(2.0)
 
 
 def test_watchdog_recovers_alive_but_stale_exact_generation() -> None:

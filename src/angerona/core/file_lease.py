@@ -31,8 +31,14 @@ class ExclusiveFileLease:
     authoritative.
     """
 
-    def __init__(self, path: str | Path, *, opener: Callable | None = None) -> None:
+    def __init__(
+        self, path: str | Path, *, opener: Callable | None = None,
+        existing_only: bool = False,
+    ) -> None:
+        if type(existing_only) is not bool:
+            raise TypeError("existing_only must be a literal boolean")
         self.path = Path(path)
+        self._existing_only = existing_only
         self._private_opener = opener
         self._private_candidate = Path(os.path.abspath(self.path)) if opener is not None else None
         self._descriptor = -1
@@ -43,7 +49,8 @@ class ExclusiveFileLease:
 
     def _acquire(self) -> None:
         candidate = self.path if self._private_opener is None else self._private_candidate
-        candidate.parent.mkdir(parents=True, exist_ok=True)
+        if not self._existing_only:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
         if candidate.is_symlink() or candidate.parent.is_symlink():
             raise ExclusiveFileLeaseError("authority lease path is an alias")
         if os.name == "nt":
@@ -69,7 +76,7 @@ class ExclusiveFileLease:
             or getattr(named, "st_file_attributes", 0) & 0x400
         ):
             raise ExclusiveFileLeaseError("authority lease is not a single-link regular file")
-        flags = os.O_RDWR | os.O_CREAT
+        flags = os.O_RDWR | (0 if self._existing_only else os.O_CREAT)
         if hasattr(os, "O_BINARY"):
             flags |= os.O_BINARY
         if hasattr(os, "O_NOFOLLOW"):
@@ -96,6 +103,8 @@ class ExclusiveFileLease:
                     or (info.st_dev, info.st_ino) != (current.st_dev, current.st_ino)):
                 raise ExclusiveFileLeaseError("authority lease is not the named single-link regular file")
             if info.st_size == 0:
+                if self._existing_only:
+                    raise ExclusiveFileLeaseError("existing authority lease has no lock byte")
                 os.write(descriptor, b"\x00")
                 os.fsync(descriptor)
             os.lseek(descriptor, 0, os.SEEK_SET)

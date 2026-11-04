@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from angerona.core import remediation_log, report_attest
+from angerona.core.patch_recovery import verify_recovery_handoff
 from angerona.modules import remediation_actions as actions
 
 
@@ -433,6 +434,7 @@ class _PausedRecoveryAction(actions.RemediationAction):
         self.pause_recovery = False
         self.rollback_calls = 0
         self.dispatches = 0
+        self.prior_restored = threading.Event()
 
     def matches(self, weakness: dict) -> bool:
         return weakness.get("kind") == "paused-recovery"
@@ -451,6 +453,7 @@ class _PausedRecoveryAction(actions.RemediationAction):
     ) -> dict:
         del weakness, quarantine_dir
         self.dispatches += 1
+        self.prior_restored.clear()
         transaction.update({"mutation_started": True, "ok": False})
         return transaction
 
@@ -464,11 +467,12 @@ class _PausedRecoveryAction(actions.RemediationAction):
         if self.pause_recovery:
             self.rollback_started.set()
             assert self.release.wait(timeout=5)
+            self.prior_restored.set()
             return {"ok": True}
         return {"ok": False}
 
     def verify_rollback(self, record: dict) -> bool:
-        return self.pause_recovery and record.get("prior_state") == "inert-prior"
+        return self.prior_restored.is_set() and record.get("prior_state") == "inert-prior"
 
 
 class _SuccessfulTerminalAction(actions.RemediationAction):
@@ -478,8 +482,10 @@ class _SuccessfulTerminalAction(actions.RemediationAction):
     reversible = True
     durable_transaction = True
 
-    def __init__(self) -> None:
+    def __init__(self, store: remediation_log.RemediationLog) -> None:
+        self.store = store
         self.dispatches = 0
+        self.dispatched_owner_digest = None
 
     def matches(self, weakness: dict) -> bool:
         return weakness.get("kind") == "successful-terminal"
@@ -497,6 +503,14 @@ class _SuccessfulTerminalAction(actions.RemediationAction):
         self, weakness: dict, quarantine_dir: Path, transaction: dict
     ) -> dict:
         del weakness, quarantine_dir
+        retained = self.store.transaction(transaction["transaction_id"])
+        assert retained is not None and retained["state"] == "MUTATING"
+        self.dispatched_owner_digest = self.store._db.execute(
+            "SELECT owner_capability_sha256 FROM remediation_transactions WHERE id = ?",
+            (transaction["transaction_id"],),
+        ).fetchone()[0]
+        assert type(self.dispatched_owner_digest) is str
+        assert len(self.dispatched_owner_digest) == 64
         self.dispatches += 1
         transaction.update({"mutation_started": True, "ok": True})
         return transaction
@@ -506,20 +520,26 @@ class _SuccessfulTerminalAction(actions.RemediationAction):
         return True
 
 
-def test_apply_path_receipt_failure_keeps_mutating_circuit_and_blocks_dispatch(
-    monkeypatch, tmp_path: Path
+@pytest.mark.parametrize(
+    "reject_handoff", [False, True], ids=["applied-only", "terminal-and-handoff"]
+)
+def test_apply_path_receipt_failure_preserves_recovery_circuit_and_blocks_dispatch(
+    monkeypatch, tmp_path: Path, reject_handoff: bool
 ) -> None:
+    monkeypatch.setattr(report_attest, "_load_key", lambda: b"k" * 32)
     store = remediation_log.RemediationLog(tmp_path / "apply-receipt-failure.db")
-    action = _SuccessfulTerminalAction()
+    action = _SuccessfulTerminalAction(store)
     monkeypatch.setattr(remediation_log, "get_log", lambda: store)
     monkeypatch.setattr(actions, "ACTIONS", [action])
     monkeypatch.setattr(actions, "PROPOSAL_ONLY_ACTIONS", ())
     monkeypatch.setattr(actions, "DOMINANT_PROPOSAL_ACTIONS", ())
+    # Both outcomes are fixed fixture values, never caller or report text.
+    rejected_outcomes = "'applied', 'recovery_required'" if reject_handoff else "'applied'"
     store._db.execute(
-        """
+        f"""
         CREATE TRIGGER reject_apply_receipt
         BEFORE INSERT ON remediation_log
-        WHEN NEW.outcome = 'applied'
+        WHEN NEW.outcome IN ({rejected_outcomes})
         BEGIN
             SELECT RAISE(ABORT, 'injected apply receipt failure');
         END
@@ -527,34 +547,78 @@ def test_apply_path_receipt_failure_keeps_mutating_circuit_and_blocks_dispatch(
     )
     store._db.commit()
 
+    weakness = {"kind": "successful-terminal", "mitre_id": "T0002"}
     first = actions.apply_remediation(
-        [{"kind": "successful-terminal"}],
-        tmp_path,
-        apply=True,
-        allow_host=True,
+        [weakness], tmp_path, apply=True, allow_host=True
     )
     assert first["applied"] == 0
     assert first["skipped"] == 1
     assert action.dispatches == 1
-    assert first["records"][0]["recovery_required"] is True
-    assert "injected apply receipt failure" in first["records"][0]["journal_error"]
-    transaction_id = first["records"][0]["transaction_id"]
+    record = first["records"][0]
+    assert record["recovery_required"] is True
+    assert record["native_postcondition_before_commit"] is True
+    assert "injected apply receipt failure" in record["journal_error"]
+    assert not record.get("proof_receipt")
+    transaction_id = record["transaction_id"]
     retained = store.transaction(transaction_id)
-    assert retained is not None and retained["state"] == "MUTATING"
-    assert store.recent(100) == []
+    expected_state = "MUTATING" if reject_handoff else "RECOVERY_REQUIRED"
+    assert retained is not None and retained["state"] == expected_state
+    owner_digest = store._db.execute(
+        "SELECT owner_capability_sha256 FROM remediation_transactions WHERE id = ?",
+        (transaction_id,),
+    ).fetchone()[0]
+    audit = store.recent(100)
+    if reject_handoff:
+        # Loss of every terminal write retains the exact live ordinary owner.
+        assert audit == []
+        assert type(owner_digest) is str and len(owner_digest) == 64
+        assert owner_digest == action.dispatched_owner_digest
+        assert record["recovery_handoff_verified"] is False
+    else:
+        # The separate authenticated handoff is failed-outcome custody, not APPLIED proof.
+        proof = record["recovery_handoff_receipt"]
+        assert owner_digest is None
+        assert record["verified"] is False
+        assert record["recovery_handoff_verified"] is True
+        assert proof["receipt_authenticated"] is True
+        assert verify_recovery_handoff(
+            store, transaction_id, proof,
+            expected_mitre="T0002", expected_action=action.key,
+        ) is True
+        assert store.verify_committed_application(
+            transaction_id, proof["receipt_hash"], proof["receipt_id"],
+            expected_mitre="T0002", expected_action=action.key,
+        ) is False
+        assert len(audit) == 1
+        assert audit[0]["receipt_hash"] == proof["receipt_hash"]
+        assert audit[0]["receipt_authenticity"] is True
+        assert audit[0]["outcome"] == "recovery_required"
+        assert audit[0]["verified"] is False
+        assert audit[0]["record"]["transaction_id"] == transaction_id
+        assert store.verify_receipt_chain()["valid"] is True
 
     second = actions.apply_remediation(
-        [{"kind": "successful-terminal"}],
-        tmp_path,
-        apply=True,
-        allow_host=True,
+        [weakness], tmp_path, apply=True, allow_host=True
     )
     assert second["applied"] == 0
     assert second["skipped"] == 1
     assert second["records"][0]["mutation_started"] is False
     assert second["records"][0]["recovery_required"] is True
     assert action.dispatches == 1
-    assert store.transaction(transaction_id)["state"] == "MUTATING"
+    assert store.transaction(transaction_id)["state"] == expected_state
+    assert store._db.execute(
+        "SELECT owner_capability_sha256 FROM remediation_transactions WHERE id = ?",
+        (transaction_id,),
+    ).fetchone()[0] == owner_digest
+    assert all(row["outcome"] != "applied" and row["verified"] is False
+               for row in store.recent(100))
+    if reject_handoff:
+        assert store.recent(100) == []
+    else:
+        assert verify_recovery_handoff(
+            store, transaction_id, proof,
+            expected_mitre="T0002", expected_action=action.key,
+        ) is True
     store.close()
 
 
@@ -577,6 +641,7 @@ def test_synchronized_public_inspection_cannot_forge_recovery_finish(
     assert store.transaction(transaction_id)["state"] == "RECOVERY_REQUIRED"
     action.rollback_calls = 0
     action.pause_recovery = True
+    assert not action.prior_restored.is_set()
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         winner_future = pool.submit(
@@ -585,6 +650,7 @@ def test_synchronized_public_inspection_cannot_forge_recovery_finish(
             authorized=True,
         )
         assert rollback_started.wait(timeout=5)
+        assert not action.prior_restored.is_set()
         public = store.transaction(transaction_id)
         assert public is not None and public["state"] == "RECONCILING"
         assert "reconciliation_claim_id" not in public
@@ -613,6 +679,7 @@ def test_synchronized_public_inspection_cannot_forge_recovery_finish(
     assert winner["proof_receipt"]["receipt_hash"]
     assert action.rollback_calls == 1
     assert action.dispatches == 1
+    assert action.prior_restored.is_set()
     store.close()
 
 
@@ -626,15 +693,18 @@ class _VerifierFailureAction(actions.RemediationAction):
     def __init__(self) -> None:
         self.rollback_calls = 0
         self.verify_calls = 0
+        self.operations = []
 
     def rollback(self, record: dict) -> dict:
         del record
         self.rollback_calls += 1
+        self.operations.append("rollback")
         return {"ok": True, "fixture": "inert"}
 
     def verify_rollback(self, record: dict) -> bool:
         del record
         self.verify_calls += 1
+        self.operations.append("verify")
         return False
 
 
@@ -662,6 +732,7 @@ def test_failed_recovery_verifier_keeps_one_durable_claim_locked(
     transaction_id = _prepare_recovery(store, action_key=action.key)
     monkeypatch.setattr(remediation_log, "get_log", lambda: store)
     monkeypatch.setattr(actions, "ACTIONS", [action])
+    receipts_before = store.recent(100)
 
     first = actions.reconcile_remediation_transaction(
         transaction_id, authorized=True
@@ -673,7 +744,10 @@ def test_failed_recovery_verifier_keeps_one_durable_claim_locked(
     assert first["ok"] is False and first["state"] == "RECONCILING"
     assert second["ok"] is False and second["state"] == "RECONCILING"
     assert action.rollback_calls == 1
-    assert action.verify_calls == 1
+    assert action.verify_calls == 2
+    assert action.operations == ["verify", "rollback", "verify"]
+    assert not first.get("proof_receipt") and not second.get("proof_receipt")
+    assert store.recent(100) == receipts_before
     assert store.transaction(transaction_id)["state"] == "RECONCILING"
     assert store._db.execute(
         "SELECT COUNT(*) FROM remediation_reconciliation_claims "

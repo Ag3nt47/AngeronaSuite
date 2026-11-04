@@ -8,6 +8,7 @@ using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -246,6 +247,12 @@ internal static class Program {
     [STAThread] internal static int Main(string[] arguments) {
         string root=Path.GetDirectoryName(Application.ExecutablePath);
         if(arguments.Length==1 && arguments[0]=="--automatic-start") {
+            // Legacy highest-privilege tasks cannot supply fresh Windows consent.
+            try {
+                using(var identity=WindowsIdentity.GetCurrent()) {
+                    if(new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator))return 86;
+                }
+            }catch(Exception error){Console.Error.WriteLine(Describe(error));return 85;}
             AutomaticStart=true;
         } else if(arguments.Length!=0) {
             if(arguments.Length!=1||arguments[0]!="--verify-bootstrap")return 2;

@@ -1,6 +1,6 @@
-"""Explicit installed sign-in enrollment UI; one bounded worker, cached render.
+"""Review or remove an installed sign-in task using one bounded worker.
 
-This surface displays task enrollment, never detector or protection health.
+This surface displays cached task facts. Administrator startup is session-only.
 Backend authority remains installed/native and is rechecked by every operation.
 """
 from __future__ import annotations
@@ -19,32 +19,31 @@ _REASONS = {
     "not-checked": "Installed startup has not been checked. Choose Check status to read the current task.",
     "status-unproved": "Startup status is unproved. Choose Check status when you are ready to review it.",
     "operation-unproved": "The startup change is unproved and may have taken effect. Check status before another change. No cleanup or retry runs automatically.",
-    "enrolled": "The installed administrator sign-in task was verified at the last check.",
-    "enrolled-created": "Your administrator sign-in task was created and its definition and access controls were verified.",
-    "enrolled-legacy-conflict": "The administrator task was verified, and a separate legacy startup entry also exists. The legacy entry is preserved and needs review.",
+    "enrolled": "The existing administrator sign-in task was verified. This version holds its automatic administrator launch.",
+    "enrolled-legacy-conflict": "The administrator task was verified. This version holds its automatic administrator launch. A separate legacy startup entry is preserved and needs review.",
     "not-enrolled": "No installed administrator sign-in task was found for the current account.",
     "revoked": "The exact administrator sign-in task was removed. The running application stays open.",
     "revoked-legacy-preserved": "The administrator task was removed. A separate legacy startup entry remains and needs review; the running application stays open.",
-    "source-or-platform-held": "Unavailable in Source Observe or on this platform. Administrator sign-in startup requires the verified installed Windows package.",
-    "package-authority-held": "The independently trusted installed package could not be verified. Review the signed installation before enrolling startup.",
+    "source-or-platform-held": "Unavailable in Source Observe or on this platform. Task review requires the verified installed Windows package.",
+    "package-authority-held": "The independently trusted installed package could not be verified. Review the signed installation before checking or removing the task.",
     "modern-entry-held": "The verified installed startup entry could not be established. Review or repair the signed installation.",
-    "native-unavailable": "Windows task status is unavailable. Enrollment and any attempted change remain unproved.",
+    "native-unavailable": "Windows task status is unavailable. The task state and any attempted removal remain unproved.",
     "native-output-held": "Windows returned an unavailable or unrecognized task result. Review status before another change.",
     "native-retirement-held": "The Windows verification worker has not proved retirement. The task state and any attempted change remain unproved.",
-    "current-user-held": "The current Windows account identity could not be verified. Startup enrollment is held.",
-    "initial-admin-required": "Initial Windows administrator approval is required. Reopen the verified installation with administrator approval, then explicitly enable sign-in startup.",
-    "legacy-conflict": "A separate legacy startup entry exists. It is preserved. Review that entry before creating an administrator sign-in task.",
+    "current-user-held": "The current Windows account identity could not be verified. Task review is held.",
+    "initial-admin-required": "To remove this task, first approve administrator access for this session in the signed installation.",
+    "legacy-conflict": "A separate legacy startup entry exists. It is preserved for review.",
     "task-definition-held": "The existing task does not match the reviewed sign-in contract. It is preserved for review.",
     "task-security-held": "The task access controls do not match the reviewed administrator-only write policy. Its enrollment is unproved and needs review.",
-    "reenrollment-review": "The enrolled package version or startup target differs from this installation. Review reenrollment; the existing task is preserved.",
+    "reenrollment-review": "The task belongs to a different package version or startup target. The existing task is preserved for review.",
     "native-race-held": "Windows task or account facts changed during verification. The result is unproved; check status before another change.",
-    "registration-unverified": "Task registration could not be verified and may have taken effect. Check status; no cleanup or retry runs automatically.",
+    "session-consent-required": "Administrator access requires your approval for each session.",
 }
-_PRESENT = frozenset({"enrolled", "enrolled-created", "enrolled-legacy-conflict"})
+_PRESENT = frozenset({"enrolled", "enrolled-legacy-conflict"})
 _ABSENT = frozenset({"not-enrolled", "revoked", "revoked-legacy-preserved", "legacy-conflict"})
-_CHANGED = frozenset({"enrolled-created", "revoked", "revoked-legacy-preserved"})
+_CHANGED = frozenset({"revoked", "revoked-legacy-preserved"})
 _CONFLICT = frozenset({"enrolled-legacy-conflict", "revoked-legacy-preserved", "legacy-conflict"})
-_VERBS = frozenset({"status", "enroll", "revoke"})
+_VERBS = frozenset({"status", "revoke"})
 
 
 @dataclass(frozen=True)
@@ -114,7 +113,6 @@ def _run_backend(job: _Job) -> _Result:
         from angerona.core import autostart
 
         operation = {"status": autostart.installed_admin_status,
-                     "enroll": autostart.enroll_installed_admin_autostart,
                      "revoke": autostart.revoke_installed_admin_autostart}[job.verb]
         view = copy_installed_status(operation())
         if view.code == "status-unproved" and job.verb != "status":
@@ -134,7 +132,7 @@ class InstalledStartupControls(QGroupBox):
 
     def __init__(self, retirement_owner, parent=None):
         super().__init__("Startup", parent)
-        full_title = "Administrator startup at Windows sign-in"
+        full_title = "Existing administrator sign-in task"
         self.setToolTip(full_title)
         self.setAccessibleName(full_title)
         self.setMinimumWidth(0)
@@ -152,10 +150,14 @@ class InstalledStartupControls(QGroupBox):
         self._eligible = sys.platform == "win32" and getattr(sys, "frozen", False) is True
         self._view = _View("not-checked" if self._eligible else "source-or-platform-held")
         layout = QVBoxLayout(self)
+        from angerona.gui.action_progress import ActionActivities, ActionProgressView
+        self._activities = ActionActivities(self)
+        self._activity = None
+        self.progress_view = ActionProgressView(self._activities, self)
+        layout.addWidget(self.progress_view)
         description = QLabel(
-            "Enable startup for this administrator account at future Windows sign-ins. Initial setup "
-            "requires Windows-approved administrator authority in the verified installation. "
-            "Later sign-ins use that enrolled task without another enrollment prompt.")
+            "Starting Angerona with administrator privileges requires your approval each session. "
+            "You can check or remove an existing administrator sign-in task here.")
         description.setWordWrap(True)
         description.setTextFormat(Qt.PlainText)
         layout.addWidget(description)
@@ -172,23 +174,32 @@ class InstalledStartupControls(QGroupBox):
         self._actions_parent = None
         self._actions_viewport = None
         self.check_button = QPushButton("Check")
-        self.enroll_button = QPushButton("Enable…")
+        self.enrollment_info_button = QPushButton("Info")
+        self.enrollment_info_button.setCheckable(True)
         self.revoke_button = QPushButton("Remove…")
         self.check_button.clicked.connect(self.request_status)
-        self.enroll_button.clicked.connect(partial(self._confirm, "enroll"))
         self.revoke_button.clicked.connect(partial(self._confirm, "revoke"))
-        self._action_buttons = (self.check_button, self.enroll_button, self.revoke_button)
+        self._action_buttons = (self.check_button, self.enrollment_info_button, self.revoke_button)
         for button, full_label in zip(self._action_buttons, (
                 "Check administrator sign-in startup status",
-                "Enable administrator sign-in startup…",
+                "Administrator sign-in enrollment information",
                 "Remove administrator sign-in task…")):
             button.setToolTip(full_label)
             button.setAccessibleName(full_label)
         layout.addLayout(self._actions_grid)
+        self._enrollment_info = QLabel(
+            "Automatic administrator sign-in enrollment is unavailable. The verified Windows "
+            "installation can request administrator access for the current session. Windows asks "
+            "for your approval each time.")
+        self._enrollment_info.setWordWrap(True)
+        self._enrollment_info.setTextFormat(Qt.PlainText)
+        self._enrollment_info.hide()
+        self.enrollment_info_button.clicked.connect(
+            lambda: self._enrollment_info.setVisible(self.enrollment_info_button.isChecked()))
+        layout.addWidget(self._enrollment_info)
         scope = QLabel(
-            "Task enrollment does not establish protection health. This runs at your sign-in; "
-            "it does not provide a boot service or protection before sign-in. "
-            "These explicit actions are separate from ordinary startup preferences and Settings Save.")
+            "Task status is separate from protection health. Checking or removing this task "
+            "is separate from ordinary startup preferences and Settings Save.")
         scope.setWordWrap(True)
         scope.setTextFormat(Qt.PlainText)
         layout.addWidget(scope)
@@ -197,7 +208,7 @@ class InstalledStartupControls(QGroupBox):
         retirement_owner.finished.connect(self.shutdown)
         retirement_owner.destroyed.connect(self.shutdown)
         self.destroyed.connect(self.shutdown)
-        for label in (description, self.status_label, self.detail_label, scope):
+        for label in (description, self.status_label, self.detail_label, self._enrollment_info, scope):
             policy = label.sizePolicy()
             policy.setHorizontalPolicy(QSizePolicy.Ignored)
             policy.setHeightForWidth(True)
@@ -299,8 +310,6 @@ class InstalledStartupControls(QGroupBox):
     def _allowed(self, verb):
         if not self._eligible or self._closed:
             return False
-        if verb == "enroll":
-            return self._view.enabled is False and self._view.code in {"not-enrolled", "revoked"}
         if verb == "revoke":
             return self._view.enabled is True and self._view.code in _PRESENT
         return verb == "status"
@@ -311,10 +320,9 @@ class InstalledStartupControls(QGroupBox):
             return
         idle = not self._busy and not self._reader.busy and self._confirmation is None
         self.check_button.setEnabled(idle and self._allowed("status"))
-        self.enroll_button.setEnabled(idle and self._allowed("enroll"))
         self.revoke_button.setEnabled(idle and self._allowed("revoke"))
         if self._busy and self._active_job is not None:
-            self.status_label.setText({"status": "Checking installed startup…", "enroll": "Enabling administrator sign-in startup…",
+            self.status_label.setText({"status": "Checking installed startup…",
                                        "revoke": "Removing the verified administrator sign-in task…"}[self._active_job.verb])
         elif self._view.enabled is True:
             self.status_label.setText("Administrator sign-in task: verified at the last check")
@@ -325,8 +333,6 @@ class InstalledStartupControls(QGroupBox):
         detail = _REASONS[self._view.code]
         if self._view.requires_review:
             detail = "Review required. " + detail
-            if self._view.code == "enrolled-created":
-                detail += " A separate legacy startup entry was also found. It was preserved and needs review."
         self.detail_label.setText(detail)
 
     @Slot()
@@ -339,6 +345,7 @@ class InstalledStartupControls(QGroupBox):
             return False
         self._sequence += 1
         self._active_job = _Job(verb, self._sequence, self._generation, self._stop)
+        self._activity = self._activities.begin("startup-authority", "Installed startup: " + verb + "…", replace=True)
         self._busy = True
         self._render()
         self._reader.request()
@@ -367,12 +374,16 @@ class InstalledStartupControls(QGroupBox):
             self._finish_unproved(job)
             return
         self._active_job = None
+        self._activities.finish(self._activity)
+        self._activity = None
         self._busy = False
         self._revision += 1
         self._view = result.view
         self._render()
 
     def _finish_unproved(self, job):
+        self._activities.finish(self._activity)
+        self._activity = None
         self._active_job = None
         self._busy = False
         self._revision += 1
@@ -388,18 +399,15 @@ class InstalledStartupControls(QGroupBox):
             self._render()
 
     def _confirm(self, verb, *_args):
-        if (verb not in {"enroll", "revoke"} or self._closed or self._busy or self._reader.busy
+        if (verb != "revoke" or self._closed or self._busy or self._reader.busy
                 or self._confirmation is not None or not self._allowed(verb)):
             return
         self._consent_sequence += 1
         consent = _Consent(verb, self._generation, self._revision, self._consent_sequence)
-        title, message = (("Enable administrator sign-in startup?",
-            "Create the verified installed task for this administrator account? Initial Windows "
-            "administrator approval must already apply to this session. Future sign-ins launch "
-            "the installed package automatically. This does not establish protection before sign-in.")
-            if verb == "enroll" else ("Remove administrator sign-in task?",
+        title = "Remove administrator sign-in task?"
+        message = (
             "Remove only this verified installed sign-in task? The running application stays open. "
-            "Any separate legacy startup entry is preserved and can still start Angerona."))
+            "Any separate legacy startup entry is preserved and can still start Angerona.")
         dialog = QMessageBox(QMessageBox.Warning, title, message,
                             QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel, self)
         dialog.setTextFormat(Qt.PlainText)
@@ -435,6 +443,8 @@ class InstalledStartupControls(QGroupBox):
         if self._closed:
             return
         self._closed = True
+        self._activities.close()
+        self._activity = None
         self._generation += 1
         self._stop.set()
         self._reader.close()

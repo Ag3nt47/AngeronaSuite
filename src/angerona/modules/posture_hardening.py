@@ -98,8 +98,25 @@ CREATE TABLE IF NOT EXISTS posture_evidence (
     source TEXT NOT NULL,
     verdict_count INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS posture_report_imports (
+    source TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    imported_epoch INTEGER NOT NULL,
+    PRIMARY KEY(source,run_id)
+);
 """
 _TECHNIQUE_ID = re.compile(r"^(?:T\d{4}(?:\.\d{3})?|RT-[A-Z0-9][A-Z0-9_.-]{0,63})$")
+
+
+def _load_patch_report(path):
+    with Path(path).open("rb") as stream:
+        raw = stream.read(2 * 1024 * 1024 + 1)
+    if len(raw) > 2 * 1024 * 1024:
+        raise ValueError("after-action report exceeds the ingest budget")
+    report = json.loads(raw.decode("utf-8"))
+    if type(report) is not dict:
+        raise ValueError("after-action report is not a document")
+    return raw, report
 
 
 def _safe_technique_id(value: object) -> str:
@@ -172,11 +189,57 @@ class PostureHardening(BaseModule):
         self._judgment_receipt_lock = threading.RLock()
         self._judgment_receipts: dict[str, tuple[str, str, float]] = {}
         self._init_db()
+        self._patch_memory = None
+        self._patch_memory_error = ""
+        self._patch_watch_at = 0.0
+        try:
+            from angerona.core.patch_memory import PatchMemory
+            self._patch_memory = PatchMemory(self.data_dir)
+        except Exception as exc:
+            # A held advisory index must not block sensors or startup. Original
+            # signed reports and remediation journals retain their own custody.
+            self._patch_memory_error = type(exc).__name__
         self._recompute_health()
 
     def bind_manager(self, manager) -> None:
         """Receive sibling-module access for bounded practice verification."""
         self._manager = manager
+
+    def patch_memory_snapshot(self) -> dict:
+        """Worker-only database view; this index grants no mutation authority."""
+        if self._patch_memory is None:
+            return {"available": False, "reason": self._patch_memory_error or "Patch memory unavailable",
+                    "gaps": [], "attempts": [], "incidents": [], "response_authorized": False}
+        try:
+            return {"available": True, **self._patch_memory.snapshot()}
+        except Exception as exc:
+            return {"available": False, "reason": type(exc).__name__,
+                    "gaps": [], "attempts": [], "incidents": [], "response_authorized": False}
+
+    def _remember_patch_report(self, report):
+        from angerona.core.patch_memory import report_classification
+        classification, reason = report_classification(report)
+        if self._patch_memory is not None:
+            try:
+                status = self._patch_memory.remember_report(report)
+                self._patch_memory_error = str(status.get("reason") or "") if status.get("held") else ""
+            except Exception as exc:
+                self._patch_memory_error = type(exc).__name__
+        return classification, reason
+
+    def _claim_learning_run(self, source: str, run_id: object) -> bool:
+        """Persist bounded per-run deduplication; refresh is not a recurrence."""
+        if type(run_id) is not str or not run_id or len(run_id) > 160:
+            return False
+        with closing(sqlite3.connect(self.db_path)) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            if db.execute("SELECT 1 FROM posture_report_imports WHERE source=? AND run_id=?", (source, run_id)).fetchone():
+                return False
+            if db.execute("SELECT count(*) FROM posture_report_imports").fetchone()[0] >= 1024:
+                self._patch_memory_error = "posture-learning-index-capacity"
+                return False
+            db.execute("INSERT INTO posture_report_imports VALUES(?,?,?)", (source, run_id, int(time.time())))
+        return True
 
     def _issue_judgment_bypass_receipt(self, technique_id: str) -> tuple[str, str]:
         """Create a bounded, short-lived receipt for one verified bypass."""
@@ -223,11 +286,12 @@ class PostureHardening(BaseModule):
                 c.execute("ALTER TABLE system_weaknesses ADD COLUMN source TEXT DEFAULT 'host'")
 
     def _locate_aar(self) -> Path:
-        for cand in (self.data_dir / "shared_logs" / "after_action_report.json",
+        for cand in (self.data_dir / "shark_aar.json",
+                     self.data_dir / "shared_logs" / "after_action_report.json",
                      self.data_dir / "after_action_report.json"):
             if cand.exists():
                 return cand
-        return self.data_dir / "shared_logs" / "after_action_report.json"
+        return self.data_dir / "shark_aar.json"
 
     def record_weakness(self, mitre_id, name, severity, remediation_path=None,
                         source="host") -> None:
@@ -254,6 +318,22 @@ class PostureHardening(BaseModule):
                 "verdict_count=excluded.verdict_count",
                 (int(time.time()), bounded_source, count),
             )
+
+    def _record_practice_weakness(self, mitre, name, severity, *, source):
+        """A practice row cannot overwrite a host or another source's finding.
+
+        The signed patch index preserves all separate gap classes. The legacy
+        table has one row per technique and therefore cannot merge scopes.
+        """
+        with closing(sqlite3.connect(self.db_path)) as db, db:
+            changed = db.execute(
+                "INSERT INTO system_weaknesses(mitre_technique_id,technique_name,severity,"
+                "last_tested_epoch,status,remediation_script_path,source) VALUES(?,?,?,?,?,?,?) "
+                "ON CONFLICT(mitre_technique_id) DO UPDATE SET technique_name=excluded.technique_name,"
+                "severity=excluded.severity,last_tested_epoch=excluded.last_tested_epoch,status='VULNERABLE' "
+                "WHERE system_weaknesses.source=excluded.source",
+                (_safe_technique_id(mitre), name, severity, int(time.time()), "VULNERABLE", None, source)).rowcount
+        return changed == 1
 
     def _trusted_evidence(self) -> tuple[int, str, int] | None:
         with closing(sqlite3.connect(self.db_path)) as c:
@@ -399,8 +479,13 @@ class PostureHardening(BaseModule):
         mtimes: dict = {}
         while not self.stopping:
             # Tail BOTH the shark after-action report and the Red Team AAR.
+            visited_paths = set()
             for path, ingest in ((self.aar_path, self.ingest_report),
+                                 (self.data_dir / "shark_aar.json", self.ingest_report),
                                  (self.redteam_aar_path, self.ingest_redteam_report)):
+                if str(path) in visited_paths:
+                    continue
+                visited_paths.add(str(path))
                 try:
                     if path.exists():
                         m = path.stat().st_mtime
@@ -409,15 +494,35 @@ class PostureHardening(BaseModule):
                             ingest(path)
                 except Exception as exc:
                     self.last_error = str(exc)
+            now = time.monotonic()
+            if now - self._patch_watch_at >= 60.0:
+                self._patch_watch_at = now
+                try:
+                    from angerona.core.patch_center import refresh_patch_controls
+                    refresh_patch_controls(self)
+                except Exception as exc:
+                    self._patch_memory_error = type(exc).__name__
             self.sleep(2.0)
 
     def ingest_report(self, path: Path) -> list[dict]:
         try:
-            session = json.loads(Path(path).read_text(encoding="utf-8"))
+            _raw, session = _load_patch_report(path)
         except Exception:
             return []
+        if type(session) is not dict:
+            return []
+        if "verdicts" in session:
+            return self._ingest_current_shark_report(session, path)
+        self._remember_patch_report(session)
         # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
         if not self._aar_trusted(session, path):
+            return []
+        from angerona.core import report_attest
+        if (report_attest.verify(session) != "ok"
+                or session.get("diagnostic_only") is True
+                or session.get("coverage_score_eligible") is not True):
+            return []
+        if not self._claim_learning_run("legacy-shark-practice", session.get("run_id")):
             return []
         self._record_trusted_evidence("shark", len(session.get("rounds", [])))
         new = []
@@ -438,12 +543,11 @@ class PostureHardening(BaseModule):
             self._seen.add(key)
             name = r.get("name", r.get("technique", "unknown"))
             sev = r.get("severity", "High")
-            self._ctx[mitre] = r                       # remember for on-demand fix
-            rpath = self._stage_placeholder(mitre, name)   # instant — NO Ollama at drill time
-            self.record_weakness(mitre, name, sev, rpath, source="shark")
+            if self._record_practice_weakness(mitre, name, sev, source="shark-practice"):
+                self._ctx[mitre] = r
             new.append({"mitre": mitre, "name": name})
-            self.emit(f"NEW WEAKNESS: {name} ({mitre}) exploited — staged remediation for review",
-                      Severity.HIGH, mitre=mitre, remediation=rpath,
+            self.emit(f"Legacy Shark practice gap: {name} ({mitre}); host vulnerability status remains unverified.",
+                      Severity.HIGH, mitre=mitre, response_authorized=False,
                       source="shark", finding_kind="practice_gap",
                       practice_run_id=str(session.get("run_id") or ""))
         self._recompute_health()
@@ -459,6 +563,37 @@ class PostureHardening(BaseModule):
                 pass
         return new
 
+    def _ingest_current_shark_report(self, report: dict, path: Path) -> list[dict]:
+        """Learn current signed Shark verdicts without turning practice into host trust."""
+        from angerona.core.patch_memory import reported_gaps
+
+        classification, _reason = self._remember_patch_report(report)
+        if (classification != "verified-practice" or report.get("report_kind") != "shark"
+                or not self._aar_trusted(report, path)):
+            return []
+        if not self._claim_learning_run("shark-practice", report.get("run_id")):
+            return []
+        self._record_trusted_evidence("shark-practice", len(report["verdicts"]))
+        run_id = str(report.get("run_id") or "")[:160]
+        new = []
+        for gap in reported_gaps(report):
+            key = ("shark-practice", run_id, gap["gap_id"])
+            if key in self._seen:
+                continue
+            self._seen.add(key)
+            mitre = _safe_technique_id(gap["technique"] if gap["technique"] != "unmapped" else gap["name"])
+            if self._record_practice_weakness(mitre, gap["name"], "High", source="shark-practice"):
+                self._ctx[mitre] = {"objective": gap["name"], "target": "Shark practice",
+                                    "evidence_scope": "practice", "run_id": run_id}
+            self.emit(f"Shark practice {gap['gap_kind']} gap: {gap['name']} ({mitre}); host vulnerability status remains unverified.",
+                      Severity.HIGH, mitre=mitre, source="shark-practice", finding_kind="practice_gap",
+                      gap_kind=gap["gap_kind"], practice_run_id=run_id,
+                      sensor_observations=gap["sensor_observations"], native_analytics=gap["native_analytics"],
+                      simulation_validations=gap["simulation_validations"], response_authorized=False)
+            new.append({"mitre": mitre, "name": gap["name"], "gap_kind": gap["gap_kind"]})
+        self._recompute_health()
+        return new
+
     def ingest_redteam_report(self, path: Path) -> list[dict]:
         """Learn from a Red Team drill's AAR (redteam_aar.json): any
         'detection'-category step the defenders did NOT catch becomes a tracked
@@ -466,11 +601,22 @@ class PostureHardening(BaseModule):
         covers Red Team findings too. The Red Team report uses the aar_report
         'verdicts' schema (stage/technique/category/caught), not 'rounds'."""
         try:
-            report = json.loads(Path(path).read_text(encoding="utf-8"))
+            _raw, report = _load_patch_report(path)
         except Exception:
             return []
+        classification, scope_reason = self._remember_patch_report(report)
         # Anti-poisoning: prove the AAR is authentic before trusting its verdicts.
         if not self._aar_trusted(report, path):
+            return []
+        if classification != "verified-practice" or report.get("report_kind") != "red_team":
+            # A signed incomplete diagnostic preserves a plan, not eighty
+            # performed attacks. It must never manufacture misses/candidates,
+            # close findings or trigger automatic host remediation.
+            self._log_attempt("report_learning_held", "-", reason=scope_reason,
+                              diagnostic_only=report.get("diagnostic_only") is True,
+                              run_id=str(report.get("run_id") or "")[:160])
+            return []
+        if not self._claim_learning_run("redteam-practice", report.get("run_id")):
             return []
         self._record_trusted_evidence("redteam", len(report.get("verdicts", [])))
         from angerona.core import drill_resolution
@@ -571,8 +717,8 @@ class PostureHardening(BaseModule):
                 continue
             self._seen.add(key)
             name = v.get("stage") or tech or "Red Team finding"
-            self._ctx[mitre] = {"objective": v.get("description", ""), "target": "Red Team"}
-            self.record_weakness(mitre, name, "High", None, source="redteam")
+            if self._record_practice_weakness(mitre, name, "High", source="redteam"):
+                self._ctx[mitre] = {"objective": v.get("description", ""), "target": "Red Team"}
             try:
                 drill_resolution.record_findings(
                     [{"mitre": mitre, "name": name}],
@@ -627,9 +773,8 @@ class PostureHardening(BaseModule):
         """
         report_path = Path(path or self.redteam_aar_path)
         try:
-            raw_report = report_path.read_bytes()
+            raw_report, report = _load_patch_report(report_path)
             actual_digest = hashlib.sha256(raw_report).hexdigest()
-            report = json.loads(raw_report.decode("utf-8"))
         except Exception as exc:
             return {"ok": False, "error": f"could not read drill report: {exc}"}
         # Bind the authorization click to the exact signed report shown to the
@@ -661,6 +806,11 @@ class PostureHardening(BaseModule):
                 "authentication_failed": True,
                 "fail_closed": True,
             }
+        classification, scope_reason = self._remember_patch_report(report)
+        if classification != "verified-practice" or report.get("report_kind") != "red_team":
+            return {"ok": False, "error": "This report is diagnostic or lacks verified complete coverage; no detector/host fix is authorized.",
+                    "reason": scope_reason, "diagnostic_only": report.get("diagnostic_only") is True,
+                    "candidates": 0, "policy_changed": False, "fail_closed": True}
         findings = []
         for verdict in report.get("verdicts", []):
             if verdict.get("category") != "detection":
@@ -762,6 +912,28 @@ class PostureHardening(BaseModule):
         signed recorder path, real Active Response playbook, and cleanup
         postcondition, then issues the authenticated closure receipt.
         """
+        try:
+            if type(resolution) is not dict or resolution.get("ok") is not True:
+                raise ValueError("No reviewed eligible resolution")
+            expected_run = resolution.get("run_id")
+            expected_digest = resolution.get("report_sha256")
+            if (type(expected_run) is not str or not expected_run or len(expected_run) > 160
+                    or type(expected_digest) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None):
+                raise ValueError("Resolution has no exact source-report binding")
+            if not 0 < self.redteam_aar_path.stat().st_size <= 2 * 1024 * 1024:
+                raise ValueError("Source report exceeds verification budget")
+            raw_report, report = _load_patch_report(self.redteam_aar_path)
+            from angerona.core.patch_memory import report_classification
+            if (len(raw_report) > 2 * 1024 * 1024
+                    or hashlib.sha256(raw_report).hexdigest() != expected_digest
+                    or type(report) is not dict or report.get("run_id") != expected_run
+                    or report.get("report_kind") != "red_team"
+                    or report_classification(report)[0] != "verified-practice"):
+                raise ValueError("Source report changed, is diagnostic or is not currently eligible")
+        except (OSError, ValueError, TypeError, UnicodeDecodeError):
+            return {"ok": False, "error": "Practice verification requires the exact authenticated complete source report; diagnostic/incomplete results grant no fix or closure.",
+                    "results": [], "verified": 0, "fail_closed": True}
         manager = self._manager
         if manager is None:
             return {"ok": False, "error": "module manager unavailable", "results": []}
@@ -899,7 +1071,7 @@ class PostureHardening(BaseModule):
         w = next((x for x in self.weaknesses() if x["mitre_id"] == mitre_id), None)
         if not w:
             return {"ok": False, "error": "unknown weakness"}
-        if w.get("source") == "redteam":
+        if w.get("source") in {"redteam", "shark-practice"}:
             return {"ok": False, "error": ("simulated detection gaps use deterministic report "
                                              "resolution, not host PowerShell")}
         r = self._ctx.get(mitre_id, {"objective": "", "target": ""})
@@ -919,6 +1091,27 @@ class PostureHardening(BaseModule):
                 "review_required": True, "advisory_only": True, "executable": False}
 
     # ── VETTED ACTIVE REMEDIATION (real, reversible fixes; not model-authored) ─
+    @staticmethod
+    def committed_patch_record(ledger, rec: dict, *, expected_mitre: str, expected_action: str) -> bool:
+        """Share the exact retained-commit gate; never trust native booleans alone."""
+        if type(rec) is not dict:
+            return False
+        if expected_action == "registry_hardening":
+            from angerona.modules.remediation_actions import RegistryHardeningAction
+            if expected_mitre == "T1055" or RegistryHardeningAction._unsupported_record(rec):
+                return False
+        proof = rec.get("proof_receipt")
+        if (rec.get("verified") is not True or rec.get("transaction_state") != "applied"
+                or rec.get("recovery_required") is not False or rec.get("journal_error")
+                or rec.get("mitre") != expected_mitre or rec.get("action") != expected_action
+                or type(proof) is not dict or ledger is None):
+            return False
+        try:
+            return ledger.verify_committed_application(rec.get("transaction_id"), proof.get("receipt_hash"),
+                proof.get("receipt_id"), expected_mitre=expected_mitre, expected_action=expected_action) is True
+        except Exception:
+            return False
+
     def apply_vetted_remediation(self, apply: bool = False) -> dict:
         """Run the vetted, reversible remediation library over the current open
         weaknesses — REAL active patching (quarantine files, disable a BYOVD
@@ -930,7 +1123,7 @@ class PostureHardening(BaseModule):
         from angerona.modules import remediation_actions as ra
         from angerona.core.remediation_log import get_log
         weaknesses = [w for w in self.weaknesses(status="VULNERABLE")
-                      if w.get("source") != "redteam"]
+                      if w.get("source") not in {"redteam", "shark-practice"}]
         if not apply:
             plan = ra.plan_remediation(weaknesses)
             self._log_attempt("vetted_plan", "-", plan=plan)
@@ -965,14 +1158,8 @@ class PostureHardening(BaseModule):
                 or ledger is None
             ):
                 continue
-            try:
-                committed = ledger.verify_committed_application(
-                    rec.get("transaction_id"), proof.get("receipt_hash"),
-                    proof.get("receipt_id"), expected_mitre=mitre,
-                    expected_action=action,
-                ) is True
-            except Exception:
-                committed = False
+            committed = self.committed_patch_record(ledger, rec,
+                expected_mitre=mitre, expected_action=action)
             if not committed:
                 continue
             self.mark_patched(mitre)
@@ -995,7 +1182,7 @@ class PostureHardening(BaseModule):
         match = next((w for w in rows if w["mitre_id"] == mitre_id), None)
         if not match or not match["remediation_script_path"]:
             return {"ok": False, "error": "no staged remediation"}
-        if match.get("source") == "redteam":
+        if match.get("source") in {"redteam", "shark-practice"}:
             return {"ok": False, "error": ("simulated detection gaps cannot be repaired by "
                                              "executing host PowerShell")}
         script_path = match["remediation_script_path"]

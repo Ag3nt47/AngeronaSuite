@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import subprocess
+import hashlib
 import threading
 import time
 import os
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from angerona.core import report_attest
 from angerona.core import practice_verification as practice
 from angerona.core.eventbus import BusAuthority, EventBus
 from angerona.core.storage import FlightRecorder
@@ -236,8 +238,23 @@ def test_posture_hands_its_existing_manager_and_recorder_to_verifier(tmp_path, m
         observed.append((techniques, kwargs))
         return {"ok": False, "results": []}
     monkeypatch.setattr(practice, "verify_practice_fixes", verify)
+    monkeypatch.setattr(report_attest, "_key_path", lambda: tmp_path / "bus.key")
+    report_attest.write_signed_json(module.redteam_aar_path, {
+        "run_id": "prior-run", "report_kind": "red_team",
+        "coverage_score_eligible": True, "verdicts": [],
+    })
+    resolution = {
+        "ok": True, "run_id": "prior-run",
+        "report_sha256": hashlib.sha256(module.redteam_aar_path.read_bytes()).hexdigest(),
+        "contracts": [{"mitre": "T1003"}],
+    }
     try:
-        module.verify_redteam_practice({"run_id": "prior-run", "contracts": [{"mitre": "T1003"}]})
+        held = module.verify_redteam_practice({
+            "run_id": "prior-run", "contracts": [{"mitre": "T1003"}],
+        })
+        assert held["ok"] is False and held["fail_closed"] is True
+        assert observed == []
+        module.verify_redteam_practice(resolution)
         assert len(observed) == 1
         techniques, passed = observed[0]
         assert techniques == ["T1003"]
@@ -245,5 +262,8 @@ def test_posture_hands_its_existing_manager_and_recorder_to_verifier(tmp_path, m
         assert passed["recorder"] is values["recorder"]
         assert passed["db_path"] == values["db_path"]
         assert passed["bus"] is values["bus"]
+        held = module.verify_redteam_practice(dict(resolution, report_sha256="0" * 64))
+        assert held["ok"] is False and held["fail_closed"] is True
+        assert len(observed) == 1
     finally:
         values["recorder"].close()

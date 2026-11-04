@@ -287,6 +287,7 @@ def test_real_guard_worker_queue_stays_off_qt_and_ugcap_stop_cancels_owned_work(
     entered, release = threading.Event(), threading.Event()
     original = workflow.restore
     captured = []
+    tracked_ticket = None
     def blocked(*args, **kwargs):
         captured.extend(kwargs.get("keys") or ())
         entered.set()
@@ -309,8 +310,13 @@ def test_real_guard_worker_queue_stays_off_qt_and_ugcap_stop_cancels_owned_work(
         panel.encryption_key.setText(ENCRYPTION.hex())
         panel.audit_key.setText(AUDIT.hex())
         panel.restore_button.click()
+        assert len(panel._command_requests) == 1
+        tracked_ticket = next(iter(panel._command_requests.values()))["ticket"]
         assert not panel.encryption_key.text() and not panel.audit_key.text()
         assert entered.wait(3)
+        tracked = guard.command_request_snapshot(tracked_ticket)
+        assert tracked["state"] == "running" and not tracked["operation_settled"]
+        assert panel.progress_view.ring.percent is None
         timer.start()
         deadline = time.monotonic() + .15
         while time.monotonic() < deadline:
@@ -333,6 +339,9 @@ def test_real_guard_worker_queue_stays_off_qt_and_ugcap_stop_cancels_owned_work(
     assert captured and all(not any(key) for key in captured)
     assert not list(workflow.drills.iterdir())
     assert workflow.snapshot()["status"] == "held"
+    tracked = guard.command_request_snapshot(tracked_ticket)
+    assert tracked["state"] == "cancelled" and tracked["operation_settled"] is True
+    assert tracked["action_returned"] is False and tracked["workflow_status"] == "held"
 
 
 def test_recovery_panel_cached_only_and_missing_module_controls(tmp_path, monkeypatch):

@@ -235,7 +235,7 @@ def test_collector_preserves_metrics_order_rate_floor_and_fifth_sample_wifi(monk
 
     def memory():
         calls.append("memory")
-        return SimpleNamespace(percent=25, available=1024)
+        return SimpleNamespace(percent=25, available=1024, total=4096)
 
     def network():
         calls.append("network")
@@ -258,7 +258,7 @@ def test_collector_preserves_metrics_order_rate_floor_and_fifth_sample_wifi(monk
     monkeypatch.setattr(system_pulse, "_wifi_signal_windows", wifi)
     collector = _SystemPulseCollector()
     results = [collector() for _ in range(6)]
-    assert results[0] == {"cpu": 12.0, "ram": 25.0, "available": 1024.0,
+    assert results[0] == {"cpu": 12.0, "ram": 25.0, "available": 1024.0, "memory_total": 4096.0,
                           "down": 0.0, "up": 0.0, "wifi": 80}
     assert results[1]["down"] == 400.0 and results[1]["up"] == 200.0
     assert [row["wifi"] for row in results] == [80] * 5 + [70]

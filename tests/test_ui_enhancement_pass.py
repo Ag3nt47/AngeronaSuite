@@ -146,7 +146,8 @@ def test_red_team_aar_reload_failure_disables_practice_fix(
         on_attempt_fix=lambda _progress: "unused",
     )
     try:
-        assert "Report text delivered" in dialog._report_status.text()
+        assert "Report scope is incomplete or unverified; fixes remain held" in dialog._report_status.text()
+        assert not dialog._fix_btn.isEnabled()
 
         def refuse(*_args, **_kwargs):
             raise ValueError("signed pair changed")

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import json
 from html import unescape
 import re
 import struct
@@ -20,7 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 MANUAL = ROOT / "Angerona_Master_Manual.docx"
 DOCS = (ROOT / "docs/security-flow.md", ROOT / "docs/safe-startup-recovery.md",
         ROOT / "docs/zero-breach-toolkit.md", ROOT / "docs/recorder-integrity.md",
-        ROOT / "docs/managed-driver-policy.md")
+        ROOT / "docs/managed-driver-policy.md", ROOT / "docs/github-updates.md")
 ASSETS = ("security-flow-overview.png", "security-flow-startup.png", "security-flow-response.png",
           "security-flow-tools.png", "security-flow-breach.png", "security-flow-hardening.png",
           "security-flow-auto-adapt.png")
@@ -39,9 +41,10 @@ HISTORY_HEADINGS = (
     "1 November persistence baseline classification",
 )
 TITLE = "Security flow integrations and recovery"
-REVISION_DATE = "2 November 2026"
-REVISION_UTC = b"2026-11-02T00:00:00Z"
-CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md"
+REVISION_DATE = "3 November 2026"
+REVISION_UTC = b"2026-11-03T00:00:00Z"
+CURRENT_EVIDENCE = "analysis/hardening-v1.15-2026-11-03-validation-and-runtime.md"
+NOVEMBER_2_EVIDENCE = "analysis/hardening-v1.15-2026-11-02-workspaces-and-scan-review.md"
 NOVEMBER_1_EVIDENCE = "analysis/hardening-v1.15-2026-11-01-advisory-bursts.md"
 LIST_RESTART_START = b"<!-- ANGERONA_LIST_RESTARTS_START -->"
 LIST_RESTART_END = b"<!-- ANGERONA_LIST_RESTARTS_END -->"
@@ -51,6 +54,91 @@ LIST_FORMAT_V3 = b"<!-- ANGERONA_LIST_FORMAT_V3 -->"
 W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 CONTENT = "http://schemas.openxmlformats.org/package/2006/content-types"
+
+
+def validation_record_lines(path=None, expected_sha256=None):
+    """Format only an optional pinned, maintainer-sanitized status record."""
+    if path is None and expected_sha256 is None:
+        return ("Current-revision acceptance is pending: no sanitized validation record was supplied. Earlier dated cohorts below are historical and do not establish acceptance of the current source.",)
+    if path is None or not isinstance(expected_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise ValueError("validation input requires its exact SHA256")
+    with Path(path).open("rb") as stream:
+        raw = stream.read(65537)
+    if len(raw) > 65536 or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("sanitized validation input size or digest differs")
+
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate validation field")
+            result[key] = value
+        return result
+
+    def finite(_value):
+        raise ValueError("nonfinite validation value")
+
+    body = json.loads(raw.decode("utf-8"), object_pairs_hook=unique, parse_constant=finite)
+    if (type(body) is not dict or set(body) != {"schema", "revision", "source_manifest_sha256", "checks", "limitations"}
+            or type(body["schema"]) is not int or body["schema"] != 1
+            or type(body["revision"]) is not str or not re.fullmatch(r"[0-9a-f]{40}|reviewed-worktree", body["revision"])
+            or type(body["source_manifest_sha256"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", body["source_manifest_sha256"])
+            or type(body["checks"]) is not list or not 1 <= len(body["checks"]) <= 12
+            or type(body["limitations"]) is not list or not 1 <= len(body["limitations"]) <= 12):
+        raise ValueError("sanitized validation record shape differs")
+    scopes = {"lint", "syntax", "focused-tests", "full-suite", "native-response", "startup", "hosted", "live-observation"}
+    states = {"pending", "held", "incomplete", "failed", "passed"}
+    test_keys = {"passed", "failed", "errors", "skipped"}
+    native_keys = {"expected", "detected", "remediated", "remaining", "runs_requested", "runs_completed", "witness_verified", "native_retirement_verified"}
+    seen = set()
+    lines = ["Current validation record: revision " + body["revision"] + "; reviewed source manifest SHA256 " + body["source_manifest_sha256"] + ". Sanitized input SHA256 " + expected_sha256 + "."]
+    for check in body["checks"]:
+        if (type(check) is not dict or set(check) != {"scope", "state", "receipt_sha256", "counts"}
+                or type(check["scope"]) is not str or check["scope"] not in scopes or check["scope"] in seen
+                or type(check["state"]) is not str or check["state"] not in states
+                or not (check["receipt_sha256"] is None and check["state"] == "pending"
+                        or type(check["receipt_sha256"]) is str and re.fullmatch(r"[0-9a-f]{64}", check["receipt_sha256"]))):
+            raise ValueError("scoped validation check shape differs")
+        if check["scope"] == "hosted" and check["state"] == "passed" and body["revision"] == "reviewed-worktree":
+            raise ValueError("hosted success requires the exact published commit")
+        seen.add(check["scope"])
+        counts, suffix = check["counts"], ""
+        if counts is not None:
+            expected_keys = native_keys if check["scope"] == "native-response" else test_keys
+            if type(counts) is not dict or set(counts) != expected_keys:
+                raise ValueError("scoped validation counts differ")
+            for key, value in counts.items():
+                if key in {"witness_verified", "native_retirement_verified"}:
+                    valid = type(value) is bool
+                else:
+                    valid = type(value) is int and 0 <= value <= 1000000
+                if not valid:
+                    raise ValueError("scoped validation count is invalid")
+            if check["scope"] == "native-response":
+                if (counts["expected"] < 1 or counts["runs_requested"] < 1
+                        or any(counts[key] > counts["expected"] for key in ("detected", "remediated", "remaining"))
+                        or counts["runs_completed"] > counts["runs_requested"]):
+                    raise ValueError("native validation counts are inconsistent")
+                native_complete = (counts["detected"] == counts["remediated"] == counts["expected"] and counts["remaining"] == 0
+                    and counts["runs_completed"] == counts["runs_requested"] and counts["witness_verified"] and counts["native_retirement_verified"])
+                if check["state"] == "passed" and not native_complete:
+                    raise ValueError("partial native evidence cannot be passed")
+                suffix = (f"; detected {counts['detected']}/{counts['expected']}; remediated {counts['remediated']}/{counts['expected']}; remaining source artifacts {counts['remaining']}; completed runs {counts['runs_completed']}/{counts['runs_requested']}; independent OS witness {'verified' if counts['witness_verified'] else 'unverified'}; native retirement {'verified' if counts['native_retirement_verified'] else 'unverified'}")
+            else:
+                if check["state"] == "passed" and (counts["failed"] or counts["errors"]):
+                    raise ValueError("failed test evidence cannot be passed")
+                if check["state"] == "passed" and check["scope"] in {"focused-tests", "full-suite"} and counts["passed"] == 0:
+                    raise ValueError("empty test coverage cannot be passed")
+                suffix = "; " + ", ".join(f"{key} {counts[key]}" for key in ("passed", "failed", "errors", "skipped"))
+        elif check["state"] == "passed" and check["scope"] in {"native-response", "focused-tests", "full-suite"}:
+            raise ValueError("passed test/native scope requires actual counts")
+        lines.append(check["scope"] + ": " + check["state"] + suffix + "; receipt SHA256 " + (check["receipt_sha256"] or "not supplied") + ".")
+    for limitation in body["limitations"]:
+        if type(limitation) is not str or not 1 <= len(limitation) <= 500 or any(ord(char) < 32 for char in limitation):
+            raise ValueError("sanitized limitation text is invalid")
+        lines.append("Remaining limit: " + limitation)
+    lines.append("Only the listed scopes are recorded; overlapping cohorts are not added. Missing or partial records do not establish final acceptance, and skips remain coverage gaps. Signed/service/hardware deployment, complete sensor coverage, hosted checks for the exact published commit and all-page document QA require their own evidence.")
+    return tuple(lines)
 
 
 def capability_rows():
@@ -505,10 +593,17 @@ def retained_history(document):
     return history
 
 
-def chapter(history):
+def chapter(history, validation=None):
+    if validation is None:
+        validation = validation_record_lines()
     result = paragraph(TITLE, "Heading1", first=True)
     result += paragraph("Current operating guidance " + REVISION_DATE)
     result += paragraph("This chapter explains the suite from launch to evidence, governed response, retention and recovery. Source Observe and signed installed Protect have distinct authority. A visible dashboard does not attest working sensors or protection. The current security flow and Safe Startup sections below apply to the maintained source profile; earlier dated validation results remain historical evidence.")
+    result += paragraph("Current validation record", "Heading2")
+    for line in validation:
+        result += paragraph(line)
+    result += paragraph("Current validation and runtime evidence: " + CURRENT_EVIDENCE + ". Acceptance requires the exact pinned sanitized record above; a date or link alone does not establish a pass.")
+    result += paragraph("Optional driver-policy, TPM/witness and isolated-service controls are source implementations requiring their own enrollment, trusted materials, privileged provisioning and native/hardware acceptance. Ordinary source startup supplies no kernel driver, certified PPL, PID-bound socket enforcement or independent hardware freshness floor.")
     result += markdown_parts(DOCS[0].read_text(encoding="utf-8"))
     result += paragraph("Complete built in capability inventory", "Heading2")
     result += paragraph("The repository guide docs/security-flow.md lists every built-in BaseModule source declaration with its explicit mode and response authority, where declared. Capability Center provides the validated live contract, platform, freshness, loss, dependencies and actual coverage for each capability. Catalog membership or a compatibility declaration is not independent efficacy evidence.")
@@ -517,6 +612,7 @@ def chapter(history):
     ])
     result += markdown_parts(DOCS[2].read_text(encoding="utf-8"))
     result += markdown_parts(DOCS[1].read_text(encoding="utf-8"))
+    result += markdown_parts(DOCS[5].read_text(encoding="utf-8"))
     result += markdown_parts(DOCS[3].read_text(encoding="utf-8"))
     result += markdown_parts(DOCS[4].read_text(encoding="utf-8"))
     result += paragraph("1 November runtime and shutdown follow up", "Heading2")
@@ -524,7 +620,8 @@ def chapter(history):
     result += paragraph("A fixed 180-second readiness window applies only to an exact retained owned launch, not adopted PIDs or the cross-peer claim. Expiry is held, not healthy or permission to kill/duplicate. Recovery-copy confirmation is nonmodal; only Yes queues cleanup. Final Windows self-exit follows durable STOP and bounded cleanup but does not prove the native fault repaired or all I/O/children retired.")
     result += paragraph("Mixed historical reports retain dates and gaps; earlier modal-held and lifecycle results stay separate. Port-only CAGT leads and SOAR burst counts are advisory without response authority; severity/thresholds remain. Full Setup maps existing normal-log controls. Combined Full60/STOP retired 40 observed generations with source/preferences unchanged, not all-detector acceptance. SOAR aggregate wording has offline coverage only. Historical evidence: " + NOVEMBER_1_EVIDENCE + ". Five exploit classes, native P0, unknown coverage and independent deployment requirements remain; no Optimus actor is established.")
     result += paragraph("2 November workspaces and scan review", "Heading2")
-    result += paragraph("The current guide above describes concurrent workspaces, readable scan and after-action progress, installed sign-in enrollment, original producer proof, bounded crash capture, and Auto Adapt review, adjustments and firewall Undo. Settings failure recovery restores only its owned nonsecret environment keys; unrelated concurrent changes and scrubbed credentials remain preserved. Focused validation and the preceding incomplete combined scan retain separate scopes. Current evidence and pending deployment gates: " + CURRENT_EVIDENCE + ".")
+    result += paragraph("The 2 November review covered concurrent workspaces, scan and after-action progress, the earlier installed sign-in workflow, original producer proof, bounded crash capture, and Auto Adapt review, adjustments and firewall Undo. The maintained guide above describes the current per-session administrator policy. Settings failure recovery restores only its owned nonsecret environment keys; unrelated concurrent changes and scrubbed credentials remain preserved. Focused validation and the preceding incomplete combined scan retain separate scopes. Current evidence and pending deployment gates: " + NOVEMBER_2_EVIDENCE + ".")
+    result += paragraph("The Red Team overall wheel measures workflow completion separately from caught and missed evidence. Provisional live counts omit unrun stages; the final badge requires accepted current reports and any requested containment outcomes. Verified step diagnostics and the read-only tools/redteam_diagnostics.py harness preserve incomplete reports without assigning coverage or response credit. A suggested fix is not applied by opening diagnostics and needs separate review, implementation and a fresh validation run.")
     result += HISTORY_START + history + HISTORY_END
     result += paragraph("Primary platform and toolkit references", "Heading2", first=True)
     for url in (
@@ -608,14 +705,14 @@ def current_version_parts(mapping):
                 counts[index] += 1
                 if index == 1:
                     return replace_single_run_text(raw,
-                        f'v{version_text} source maintenance. Current validation: '
-                        f'{CURRENT_EVIDENCE}. '
+                        f'v{version_text} source maintenance. Current validation: see the Current validation record section. '
+                        f'Earlier workspace and scan evidence: {CURRENT_EVIDENCE}. '
                         'Signed-package and clean-VM acceptance remain separate.')
                 return re.sub(rb'(?<=v)\d+\.\d+\.\d+', lambda _: version, raw, count=1)
         if text.startswith('Current repository code, the 86-capability inventory and '):
             return replace_single_run_text(raw,
-                'Current repository code, the 86-capability inventory and '
-                f'{CURRENT_EVIDENCE}; '
+                'Current repository code, the 86-capability inventory and the Current validation record section. '
+                f'Dated workspace and scan evidence: {CURRENT_EVIDENCE}; '
                 'October 22 validation and historical chapters retain their dated scope.')
         if follows_version_label and re.fullmatch(r'\d+\.\d+\.\d+', text):
             counts[3] += 1
@@ -918,7 +1015,8 @@ def keep_table_headers(document):
     return re.sub(rb'<w:tbl(?:\s[^>]*)?>.*?</w:tbl>', patch, document, flags=re.DOTALL)
 
 
-def update(check=False):
+def update(check=False, *, validation_status=None, validation_sha256=None):
+    validation = validation_record_lines(validation_status, validation_sha256)
     refresh_inventory(check)
     with ZipFile(MANUAL) as archive:
         entries = [(info, archive.read(info.filename)) for info in archive.infolist()]
@@ -949,7 +1047,7 @@ def update(check=False):
     insertion = document.rfind(b'<w:sectPr')
     if insertion < 0:
         raise ValueError("manual has no final section properties")
-    updated = document[:insertion] + chapter(history) + document[insertion:]
+    updated = document[:insertion] + chapter(history, validation) + document[insertion:]
     updated, mapping['word/numbering.xml'] = current_list_format(updated, mapping['word/numbering.xml'], mapping['word/styles.xml'])
     updated = keep_table_headers(updated)
     if retained_history(updated) != history:
@@ -1004,12 +1102,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
     parser.add_argument('--build-assets', action='store_true')
+    parser.add_argument('--validation-status', type=Path, help='Optional private maintainer-sanitized validation JSON')
+    parser.add_argument('--validation-sha256', help='Required exact SHA256 when --validation-status is supplied')
     options = parser.parse_args()
     if options.check and options.build_assets:
         parser.error('--check cannot rebuild assets')
     if options.build_assets:
         build_assets()
-    update(options.check)
+    update(options.check, validation_status=options.validation_status,
+           validation_sha256=options.validation_sha256)
 
 
 if __name__ == '__main__':

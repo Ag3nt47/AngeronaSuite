@@ -13,6 +13,7 @@ contention, host suspension, or a deadlock.
 """
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -32,6 +33,7 @@ class UiWatchdog:
         self._logged_for = None      # dedupe: one dump per distinct stall
         self._last_dump_at = 0.0
         self._thread = None
+        self._process_context: tuple[int, str] | None = None
 
     def beat(self) -> None:
         """Call on the GUI thread (from a QTimer) to prove it is alive."""
@@ -74,21 +76,43 @@ class UiWatchdog:
         tmp.replace(rotated)
 
     def _run(self) -> None:
+        previous_sample = None
         while not self._stop.wait(1.0):
             last_beat = self._last_beat
             now = time.monotonic()
+            # This includes the watcher wait, prior observer work and scheduling.
+            sample_gap = None if previous_sample is None else now - previous_sample
+            previous_sample = now
             age = now - last_beat
             if (age >= self.stall_seconds
                     and last_beat != self._logged_for
                     and now - self._last_dump_at >= self._MIN_DUMP_INTERVAL):
-                if self._dump(age, expected_beat=last_beat):
+                if self._dump(age, expected_beat=last_beat, watchdog_sample_gap=sample_gap):
                     self._logged_for = last_beat      # don't spam the same stall
                     self._last_dump_at = now
 
-    def _dump(self, age: float, *, expected_beat: float | None = None) -> bool:
+    def _dump(self, age: float, *, expected_beat: float | None = None,
+              watchdog_sample_gap: float | None = None) -> bool:
         try:
             if expected_beat is not None and self._last_beat != expected_beat:
                 return False
+            pid = os.getpid()
+            if self._process_context is None or self._process_context[0] != pid:
+                # Look up native birth once on the diagnostic path, away from beat().
+                birth = "unavailable"
+                try:
+                    from angerona.core.startup_diagnostics import process_identity
+
+                    observed = process_identity().get("birth_filetime")
+                    if (isinstance(observed, str) and 0 < len(observed) <= 20
+                            and observed.isascii() and observed.isdecimal() and observed[0] != "0"):
+                        birth = observed
+                except Exception:
+                    pass
+                self._process_context = (pid, birth)
+            _, birth = self._process_context
+            main = threading.main_thread()
+            gap = "unavailable" if watchdog_sample_gap is None else f"{watchdog_sample_gap:.3f}"
             names = {t.ident: t.name for t in threading.enumerate()}
             frames = sys._current_frames()
             # The GUI can recover between the age check and frame sampling.
@@ -107,13 +131,14 @@ class UiWatchdog:
                 f.write("\n" + "=" * 72 + "\n")
                 f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] UI NOT RESPONDING — GUI "
                         f"heartbeat delayed ~{age:.1f}s (threshold {self.stall_seconds:.0f}s)\n")
+                f.write(f"Sample context: pid={pid} birth_filetime={birth} "
+                        f"main_native_tid={main.native_id or 'unavailable'} watchdog_sample_gap_s={gap}\n")
                 f.write("Sampled MainThread stack: a slow Python/native call, CPU contention, "
                         "or system sleep can delay the heartbeat. This sample alone does "
                         "not identify the blocking call or establish a lock cycle.\n")
                 f.write("-" * 72 + "\n")
                 # Dump only the actionable GUI stack. Writing every sleeping
                 # module stack held the GIL and amplified the stall being observed.
-                main = threading.main_thread()
                 frame = frames.get(main.ident)
                 f.write(f"\n--- Thread MainThread (id={main.ident}) ---\n")
                 if frame is not None:

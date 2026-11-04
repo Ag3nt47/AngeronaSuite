@@ -39,6 +39,7 @@ except Exception:
     _CACHE_TTL = 1.5
 
 _proc_cache_lock = threading.Lock()
+_PROCESS_CACHE_ADMISSION_SECONDS = 0.250
 _conn_cache_lock = threading.Lock()
 # Cache lifetimes use monotonic time; evidence receipts retain wall-clock time.
 # An NTP/manual clock correction must neither freeze a stale sensor snapshot
@@ -199,7 +200,26 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
         from angerona.telemetry.process_snapshot_worker import unavailable
         return unavailable("GUI-thread admission refused")
     ttl = _CACHE_TTL if max_age is None else max_age
-    with _proc_cache_lock:
+    # A collector owns this mutex across its bounded provider request. Other
+    # sensors must not inherit an unbounded queue of those requests and miss
+    # their own cycle deadlines. The immutable cache reference may be reused
+    # after refused admission only when this caller permits its actual age.
+    acquired = _proc_cache_lock.acquire(timeout=_PROCESS_CACHE_ADMISSION_SECONDS)
+    if not acquired:
+        from angerona.telemetry.process_snapshot_worker import unavailable
+        ts, cached = _proc_cache
+        now = time.monotonic()
+        if (provider is _process_snapshot_provider
+                and generation == _process_snapshot_provider_generation
+                and ttl > 0 and ts > 0.0 and type(cached) is ProcessSnapshot
+                and 0.0 <= (now - ts) < ttl):
+            return cached
+        return unavailable("process cache admission deadline")
+    try:
+        if (provider is not _process_snapshot_provider
+                or generation != _process_snapshot_provider_generation):
+            from angerona.telemetry.process_snapshot_worker import unavailable
+            return unavailable("provider lifecycle changed")
         now = time.monotonic()
         if ttl > 0:
             ts, cached = _proc_cache
@@ -224,6 +244,8 @@ def process_snapshot(max_age: float | None = None) -> ProcessSnapshot:
         # Anchor before dispatch; provider duration never extends evidence TTL.
         _proc_cache = (now, receipt)
         return receipt
+    finally:
+        _proc_cache_lock.release()
 
 
 def _collect_process_snapshot() -> ProcessSnapshot:

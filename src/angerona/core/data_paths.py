@@ -417,15 +417,8 @@ def _canonical_data_path(
     return path.resolve()
 
 
-def data_dir(create: bool = True) -> Path:
-    """Return the sole persistent runtime root.
-
-    Unelevated Windows source installs use ``LocalAppData\\Angerona\\SourceData``;
-    elevated source custody remains the canonical sibling ``AngeronaData`` root.
-    Frozen Windows releases prefer protected ``D:\\AngeronaData``. Linux follows
-    ``XDG_STATE_HOME`` and macOS uses the current user's Application Support
-    directory. ``ANGERONA_DATA`` remains an explicit override on every platform.
-    """
+def _data_dir_selection() -> tuple[Path, bool, bool, bool]:
+    """Select path/frozen/elevated/service once without storage or env writes."""
     from .windows_engine_custody import active_engine_custody
 
     service = active_engine_custody()
@@ -433,7 +426,7 @@ def data_dir(create: bool = True) -> Path:
         # Only completed native admission installs this in-process profile.
         # Installer provisioning already established the root; never create or
         # migrate a machine service root from desktop/environment preferences.
-        return service.root
+        return service.root, False, False, True
     frozen = getattr(sys, "frozen", False)
     elevated_source = _elevated_source_runtime()
     # An elevated source process derives its key-custody root from the loaded
@@ -455,6 +448,33 @@ def data_dir(create: bool = True) -> Path:
         os.environ.get("XDG_STATE_HOME", ""),
         str(Path.home()),
     )
+    return path, frozen, elevated_source, False
+
+
+def resolve_data_dir() -> Path:
+    """Select the runtime root without creating, hardening or configuring it.
+
+    This uses the same active service custody, effective elevated-source token,
+    frozen platform defaults and permitted environment overrides as data_dir().
+    Existing read-only path, token, Shell and fixed-volume discovery remains;
+    no directory, permission, ACL or environment variable is changed. Selection
+    alone does not verify the root's existence or grant storage trust.
+    """
+    return _data_dir_selection()[0]
+
+
+def data_dir(create: bool = True) -> Path:
+    """Return the sole persistent runtime root.
+
+    Unelevated Windows source installs use ``LocalAppData\\Angerona\\SourceData``;
+    elevated source custody remains the canonical sibling ``AngeronaData`` root.
+    Frozen Windows releases prefer protected ``D:\\AngeronaData``. Linux follows
+    ``XDG_STATE_HOME`` and macOS uses the current user's Application Support
+    directory. ``ANGERONA_DATA`` remains an explicit override on every platform.
+    """
+    path, frozen, elevated_source, service_custody = _data_dir_selection()
+    if service_custody:
+        return path
     if frozen and str(path).casefold().startswith("d:\\"):
         # Relocate any legacy per-user C: spill into the canonical fixed data
         # drive on the Storage Hygiene module's first pass (collision-safe).

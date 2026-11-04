@@ -381,3 +381,197 @@ def self_test() -> tuple[bool, str]:
 
 if __name__ == "__main__":
     print(self_test())
+
+
+# Optional fixed processes keep the original four-role deployment unchanged.
+OPTIONAL_ROLES = ("source_startup", "source_update_owner", "activation_broker")
+_OPTIONAL_CLOSE_HOLDS = []
+
+
+def optional_component(role: str, launch_id: str, birth_ticks: str, *,
+                       guard_nonce: str | None = None) -> str:
+    """Bind the existing v2 component MAC to one exact external generation."""
+    import re
+    if (role not in OPTIONAL_ROLES or type(role) is not str
+            or type(launch_id) is not str or re.fullmatch(r"[0-9a-f]{32}", launch_id) is None
+            or type(birth_ticks) is not str or re.fullmatch(r"[0-9]{1,40}", birth_ticks) is None
+            or int(birth_ticks) <= 116444736000000000):
+        raise ValueError("Optional heartbeat generation binding is invalid")
+    if role == "activation_broker":
+        if type(guard_nonce) is not str or re.fullmatch(r"[0-9a-f]{32}", guard_nonce) is None:
+            raise ValueError("Publisher heartbeat requires its exact guard nonce")
+        return role + ":" + launch_id + ":" + guard_nonce + ":" + birth_ticks
+    if guard_nonce is not None:
+        raise ValueError("A source-owner heartbeat cannot claim a publisher nonce")
+    return role + ":" + launch_id + ":" + birth_ticks
+
+
+def read_existing_optional_authority(data_root: Path) -> bytes:
+    """Read only the existing protected shutdown key; never create or harden it."""
+    from angerona.core.source_activation_file import RetainedFile, plain_path
+    from angerona.core.startup_recovery import private_repair_file
+    root = Path(data_root)
+    if (not root.is_absolute() or ".." in root.parts
+            or str(root).startswith(("\\\\", "//"))):
+        raise ValueError("Optional heartbeat data root is not explicit and local")
+    root = plain_path(root, directory=True)
+    path = root / "shutdown.key"
+    if not private_repair_file(path):
+        raise ValueError("Existing optional heartbeat authority is not private")
+    with RetainedFile(path) as held:
+        raw = held.read(128)
+        if not private_repair_file(path):
+            raise ValueError("Existing optional heartbeat authority changed custody")
+    try:
+        encoded = raw.decode("ascii", "strict").strip()
+        if len(encoded) != 64 or any(c not in "0123456789abcdefABCDEF" for c in encoded):
+            raise ValueError
+        key = bytes.fromhex(encoded)
+    except (UnicodeError, ValueError) as error:
+        raise ValueError("Existing optional heartbeat authority is malformed") from error
+    if len(key) != 32:
+        raise ValueError("Existing optional heartbeat authority is malformed")
+    return key
+
+
+def _own_optional_birth() -> str:
+    if os.name != "nt":
+        raise ValueError("Optional source heartbeat requires native Windows self identity")
+    import ctypes
+    from ctypes import wintypes as w
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = ()
+    kernel.GetCurrentProcess.restype = w.HANDLE
+    kernel.GetProcessTimes.argtypes = (w.HANDLE, ctypes.POINTER(w.FILETIME),
+        ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME), ctypes.POINTER(w.FILETIME))
+    kernel.GetProcessTimes.restype = w.BOOL
+    fields = [w.FILETIME() for _ in range(4)]
+    # GetCurrentProcess returns a pseudo handle: it is never owned or closed.
+    if not kernel.GetProcessTimes(kernel.GetCurrentProcess(), *(ctypes.byref(x) for x in fields)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return str((fields[0].dwHighDateTime << 32) | fields[0].dwLowDateTime)
+
+
+class OptionalHeartbeatWriter(HeartbeatWriter):
+    """Own-process progress only, using the existing codec and one fixed slot.
+
+    No thread, process, token creation, implicit key loader, fsync-per-tick,
+    response authority, or caller-selected producer PID is introduced.
+    """
+    def __init__(self, role: str, data_root: Path, launch_id: str, *,
+                 guard_nonce: str | None = None):
+        if _OPTIONAL_CLOSE_HOLDS:
+            raise ValueError("Prior optional heartbeat close custody remains held")
+        from angerona.core.source_activation_file import (
+            RetainedFile, plain_path, private_owner_rights_directory, write_new,
+        )
+        from angerona.core.startup_recovery import (
+            private_directory, private_repair_file, _windows_security,
+        )
+        self.role, self.birth_ticks = role, _own_optional_birth()
+        self.component = optional_component(role, launch_id, self.birth_ticks,
+                                            guard_nonce=guard_nonce)
+        self.name = self.component
+        self.token_raw = read_existing_optional_authority(data_root)
+        self._key = _component_key(self.name, self.token_raw)
+        self._counter, self._closed, self.close_held = 0, False, False
+        self._f = self._mm = None
+        root = plain_path(Path(data_root), directory=True)
+        if (not private_directory(root, create=False)
+                and not private_owner_rights_directory(root)):
+            raise ValueError("Optional heartbeat DATA parent is not private")
+        directory = root / "heartbeats"
+        if not directory.exists():
+            try:
+                if not private_directory(directory, create=True):
+                    raise ValueError("Optional heartbeat directory creation was not private")
+            except FileExistsError:
+                # Another real suite loop may have created it. Only the exact
+                # plain/private verification below can admit that raced object.
+                pass
+        plain_path(directory, directory=True)
+        if (not private_directory(directory, create=False)
+                and not private_owner_rights_directory(directory)
+                and not (os.name == "nt" and _windows_security(
+                    directory, create=False, allow_inherited=True))):
+            raise ValueError("Optional heartbeat directory is not private")
+        self.path = directory / (role + ".hb")
+        if not os.path.lexists(self.path):
+            # Exclusive creation only: an existing slot is never truncated.
+            try:
+                write_new(self.path, b"\0" * RECORD_SIZE)
+            except FileExistsError:
+                pass
+        if not private_repair_file(self.path):
+            raise ValueError("Optional heartbeat slot is not private")
+        held = RetainedFile(self.path, writable=True)
+        try:
+            if held.initial["bytes"] != RECORD_SIZE:
+                raise ValueError("Optional heartbeat slot must be exactly 32 bytes")
+            self._slot_identity = (held.initial["device"], held.initial["inode"])
+            descriptor = held.fd
+            try:
+                self._f = os.fdopen(descriptor, "r+b", buffering=0)
+            except BaseException:
+                # Stream adoption may have occurred. Preserve the exact owner;
+                # never retry an ambiguous numeric descriptor close.
+                held.close_held = True
+                _OPTIONAL_CLOSE_HOLDS.append((self, held, descriptor))
+                raise
+            held.fd = -1  # Ownership transferred to this exact retained stream.
+            self._mm = mmap.mmap(self._f.fileno(), RECORD_SIZE)
+            self.beat()
+        except BaseException:
+            if not held.close_held:
+                held.close()
+                self.close()
+            raise
+
+    def _check_slot(self):
+        import stat
+        if self._closed or self.close_held or self._f is None or self._mm is None:
+            raise ValueError("Optional heartbeat slot custody is unavailable")
+        info = os.fstat(self._f.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != RECORD_SIZE
+                or getattr(info, "st_file_attributes", 0) & 0x400
+                or (str(info.st_dev), str(info.st_ino)) != self._slot_identity):
+            raise ValueError("Optional heartbeat slot identity or fixed size changed")
+
+    def beat(self, running: bool = True) -> int:
+        self._check_slot()
+        result = super().beat(running=running)
+        self._check_slot()
+        return result
+
+    def close(self) -> None:
+        if self.close_held:
+            raise ValueError("Optional heartbeat close custody remains held")
+        if self._closed:
+            return
+        errors = []
+        retained = (self._mm, self._f)
+        try:
+            if self._mm is not None:
+                self._check_slot()
+                super().stop()
+                reader = HeartbeatReader(self.component, path=self.path, key_raw=self.token_raw)
+                record = reader.read()
+                if (record is None or record.get("pid") != os.getpid()
+                        or record.get("flags") != 0 or record.get("counter") != self._counter
+                        or reader.authentication_status(record=record) != "authenticated"):
+                    raise ValueError("Optional heartbeat clean-stop publication was not verified")
+        except BaseException as error:
+            errors.append(error)
+        self._closed = True
+        for name in ("_mm", "_f"):
+            obj = getattr(self, name)
+            setattr(self, name, None)
+            if obj is not None:
+                try:
+                    obj.close()
+                except BaseException as error:
+                    errors.append(error)
+        if errors:
+            self.close_held = True
+            _OPTIONAL_CLOSE_HOLDS.append((self, retained))
+            raise ValueError("Optional heartbeat close custody remains held") from errors[0]

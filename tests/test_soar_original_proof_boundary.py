@@ -18,23 +18,34 @@ def event(module, **details):
                  dict(disposition="active", response_authorized=True, **details))
 
 
+@pytest.fixture
+def proof_boundary_combat(tmp_path, monkeypatch):
+    combat = AdversaryCombat(tmp_path / "combat", rollback_anchor={})
+    combat.bind_manager(SimpleNamespace(modules={combat.name: combat}))
+    # Preserve only the original transport-authentication seam. All queued-file
+    # authority, original-producer and lifecycle methods/state remain actual.
+    monkeypatch.setattr(combat, "_integrity_ok", lambda _event: True)
+    return combat
+
+
 @pytest.mark.parametrize("admission", [False, True])
 @pytest.mark.parametrize("origin", ["SpywareGuard", "YARA Scanner", "Legacy Detector"])
 @pytest.mark.parametrize("revocation", ["expired", "review-revoked"])
-def test_fresh_signed_soar_wrapper_cannot_replace_original_proof(admission, origin, revocation):
+def test_fresh_signed_soar_wrapper_cannot_replace_original_proof(
+    admission, origin, revocation, proof_boundary_combat,
+):
     request = event("Active Response SOAR Request", origin_module=origin,
                     origin_event_digest="a" * 64, origin_ts=time.time() - 3600,
                     original_proof_status=revocation,
                     queue_request_id="b" * 32)
     # The signature/integrity seam deliberately succeeds: transport
     # authentication must not supply the missing original detector receipt.
-    combat = SimpleNamespace(_integrity_ok=lambda _event: True,
-                             _manager=SimpleNamespace(modules={}))
+    combat = proof_boundary_combat
     with pytest.raises(HostMutationHeld, match="exact original producer proof"):
         AdversaryCombat._require_current_response_event(combat, request, admission=admission)
 
 
-def test_direct_original_spyware_proof_still_rechecks_the_actual_producer():
+def test_direct_original_spyware_proof_still_rechecks_the_actual_producer(proof_boundary_combat):
     class Producer(BaseModule):
         __module__ = "angerona.modules.spyware_guard"
         name = "SpywareGuard"
@@ -49,8 +60,8 @@ def test_direct_original_spyware_proof_still_rechecks_the_actual_producer():
 
     producer = Producer()
     original = event("SpywareGuard")
-    combat = SimpleNamespace(_integrity_ok=lambda _event: True,
-                             _manager=SimpleNamespace(modules={"SpywareGuard": producer}))
+    combat = proof_boundary_combat
+    combat._manager.modules[producer.name] = producer
     AdversaryCombat._require_current_response_event(combat, original)
     producer.current = False
     with pytest.raises(HostMutationHeld, match="expired or was revoked"):
@@ -58,19 +69,17 @@ def test_direct_original_spyware_proof_still_rechecks_the_actual_producer():
     assert producer.seen == [original, original]
 
 
-def test_practice_markers_cannot_bypass_synthetic_envelope_hold():
+def test_practice_markers_cannot_bypass_synthetic_envelope_hold(proof_boundary_combat):
     request = Event("Active Response SOAR Request", "Inert wrapper", Severity.HIGH,
                     time.time(), {"disposition": "practice", "response_authorized": True,
                                   "receipt_type": "purple_simulation_validation"})
-    combat = SimpleNamespace(_integrity_ok=lambda _event: True,
-                             _manager=SimpleNamespace(modules={}))
+    combat = proof_boundary_combat
     with pytest.raises(HostMutationHeld, match="exact original producer proof"):
         AdversaryCombat._require_current_response_event(combat, request, admission=True)
 
 
-def test_direct_legacy_family_keeps_existing_non_synthetic_boundary():
-    combat = SimpleNamespace(_integrity_ok=lambda _event: True,
-                             _manager=SimpleNamespace(modules={}))
+def test_direct_legacy_family_keeps_existing_non_synthetic_boundary(proof_boundary_combat):
+    combat = proof_boundary_combat
     AdversaryCombat._require_current_response_event(combat, event("Legacy Detector"))
 
 

@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, Qt
@@ -181,6 +182,31 @@ def test_nonmodal_warning_leaves_parent_stop_usable_and_change_routes_to_system(
     assert owner._warning is dialog
     click(dialog, "change targets")
     assert scene.opened == ["System"] and not scene.recorder.calls
+
+
+def test_inbox_telemetry_refuses_review_actions_from_old_policy_generation(scene):
+    inbox = Mock()
+    owner = gui.TelemetryStorageWarningController(
+        scene.config, scene.manager, scene.parent, scene.opened.append, notifications=inbox)
+    scene.objects.append(owner)
+    scene.config._telemetry_storage_policy_pending = True
+    owner.poll()
+    review = inbox.upsert.call_args.args[3]
+    assert inbox.upsert.call_args.args[0] == "storage:telemetry"
+    assert owner._warning is None and not scene.recorder.calls
+    review()
+    dialog = owner._warning
+    assert dialog is not None and not dialog.isModal()
+    review()
+    assert owner._warning is dialog
+    scene.recorder.state["policy_generation"] += 1
+    click(dialog, "Retry saved")
+    assert owner._warning is None and not scene.recorder.calls
+    inbox.upsert.call_args.args[3]()
+    click(owner._warning, "Block")
+    assert len(scene.recorder.calls) == 1 and scene.recorder.calls[0]["blocked"] is True
+    assert scene.config.telemetry_storage_blocked is False
+    inbox.remove.assert_called_with("storage:telemetry")
 
 
 def test_warning_block_preserves_latest_active_targets_without_saving(scene):

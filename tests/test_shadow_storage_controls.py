@@ -6,6 +6,7 @@ from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from PySide6.QtCore import Qt
@@ -130,6 +131,45 @@ def test_warning_holds_writes_without_changing_saved_preference_and_deduplicates
     assert module.deletions == 0
     controller._apply(result)
     assert controller._warning is None
+
+
+def test_inbox_recovery_hold_rechecks_on_review_and_refuses_stale_cleanup(setup, monkeypatch):
+    config, module, manager, old, opened, parent = setup
+    old.close()
+    inbox = Mock()
+    owner = gui.StorageWarningController(config, manager, parent, opened.append, notifications=inbox)
+    request = Mock()
+    monkeypatch.setattr(owner._reader, "request", request)
+    reserve = 2 * gui.MIB
+    try:
+        owner._apply((module.storage_status(), 2 * reserve, reserve))
+        assert owner._warning is None and module.policies[-1]["review_pending"]
+        review = inbox.upsert.call_args.args[3]
+        assert inbox.upsert.call_args.args[0] == "storage:recovery"
+        assert config.shadow_cache_enabled is True and module.deletions == 0
+        review()
+        request.assert_called_once_with(invalidate=True)
+        assert owner._warning is None
+
+        held = dict(module.storage_status(), held=True, cache_enabled=False, reason=owner._REVIEW_HOLD)
+        owner._apply((held, 2 * reserve, reserve))
+        dialog = owner._warning
+        assert dialog is not None and not dialog.isModal()
+        assert len(module.policies) == 1
+        inbox.upsert.call_args.args[3]()
+        owner._apply((held, 2 * reserve, reserve))
+        assert owner._warning is dialog
+        _click(dialog, "Delete")
+        confirmation = owner._confirmation
+        assert confirmation is not None
+        assert confirmation.defaultButton() is confirmation.button(QMessageBox.No)
+        manager.modules["Shadow Shield"] = Module()
+        confirmation.button(QMessageBox.Yes).click()
+        assert module.deletions == 0
+        assert manager.modules["Shadow Shield"].deletions == 0
+    finally:
+        owner.close()
+    inbox.remove.assert_called_with("storage:recovery")
 
 
 def test_delete_requires_second_explicit_confirmation_and_never_runs_on_warning(setup):

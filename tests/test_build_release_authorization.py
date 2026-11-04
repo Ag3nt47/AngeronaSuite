@@ -3,16 +3,22 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
+from angerona.core import data_paths
+from angerona.core.eventbus import BusAuthority, EventBus, Severity
+from angerona.core.threat import event_disposition, is_active_threat
 from angerona.core.update_authority import (
     UpdateAuthorityPolicy,
     file_sha256,
     verify_payload_manifest,
     verify_release_authorization,
 )
+from angerona.modules import release_transparency_guard
 from angerona.modules.release_transparency_guard import (
     ReleaseTransparencyGuardModule,
 )
@@ -140,7 +146,85 @@ def _trust(path):
     }
 
 
-def test_split_builder_emits_verifiable_complete_payload_authorization(tmp_path):
+def _run_release_guard_once(monkeypatch, module):
+    bus = EventBus()
+    bus.arm(BusAuthority(b"r" * 32))
+    module.bind(bus)
+    monkeypatch.setattr(module, "sleep", lambda _seconds: module.stop())
+    module.run()
+    event, = bus.recent()
+    assert bus.verify(event)
+    return bus, event
+
+
+@pytest.mark.parametrize("case", [
+    "source", "installed", "explicit", "partial", "unsafe", "removed",
+    "malformed-floor", "unsafe-floor", "unsafe-floor-parent", "unknown-floor",
+])
+def test_release_guard_distinguishes_unprovisioned_source_from_evidence_failure(tmp_path, monkeypatch, case):
+    executable = tmp_path / "python.exe"
+    executable.write_bytes(b"inert executable fixture")
+    monkeypatch.setattr(release_transparency_guard.sys, "executable", str(executable))
+    monkeypatch.setattr(release_transparency_guard.sys, "frozen", case == "installed", raising=False)
+    root = tmp_path / "state"
+    floor = root / "update-authority" / "release-floor.json"
+    monkeypatch.setattr(data_paths, "resolve_data_dir", lambda: root)
+    if case in {"malformed-floor", "unsafe-floor", "unknown-floor"}:
+        floor.parent.mkdir(parents=True)
+    if case == "malformed-floor":
+        floor.write_bytes(b"invalid floor")
+    if case == "unsafe-floor":
+        floor.mkdir()
+    if case == "unsafe-floor-parent":
+        root.mkdir()
+        floor.parent.write_bytes(b"not an authority directory")
+    if case == "unknown-floor":
+        lstat = Path.lstat
+
+        def inaccessible(path):
+            if path == floor:
+                raise PermissionError("inert floor lookup fault")
+            return lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", inaccessible)
+    authorization = tmp_path / "release-authorization.json"
+    module = ReleaseTransparencyGuardModule(
+        **({"authorization_path": authorization} if case == "explicit" else {})
+    )
+    if case == "partial":
+        (tmp_path / "release-trust.json").write_bytes(b"{}")
+    if case in {"unsafe", "removed"}:
+        authorization.mkdir()
+    if case == "removed":
+        with pytest.raises(ValueError, match="bounded regular file"):
+            module.observe_once()
+        authorization.rmdir()
+
+    bus, event = _run_release_guard_once(monkeypatch, module)
+    assert event.severity is Severity.HIGH
+    assert event.details["observation_only"] is True
+    assert event.details["automatic_install_authorized"] is False
+    if case == "source":
+        assert event_disposition(event) == "exposure"
+        assert not is_active_threat(event)
+        assert event.details["response_authorized"] is False
+        for changed in (
+            {"runtime": "installed"}, {"response_authorized": 0},
+            {"active_attack": True}, {"unknown_field": True},
+        ):
+            edited = replace(event, details={**event.details, **changed})
+            assert not bus.verify(edited)
+            assert is_active_threat(edited)
+        assert is_active_threat(replace(event, message="Release transparency evidence is unavailable."))
+        assert is_active_threat(replace(event, severity=Severity.CRITICAL))
+    else:
+        # Includes the older broad ValueError envelope. Missing installed or
+        # configured evidence, partial evidence and unsafe objects stay active.
+        assert event.details["error_type"] == ("PermissionError" if case == "unknown-floor" else "ValueError")
+        assert is_active_threat(event)
+
+
+def test_split_builder_emits_verifiable_complete_payload_authorization(tmp_path, monkeypatch):
     built = _build(tmp_path)
     result = verify_release_authorization(
         built["authorization"].read_bytes(),
@@ -176,6 +260,8 @@ def test_split_builder_emits_verifiable_complete_payload_authorization(tmp_path)
     assert "SIGNER_A" not in combined and "SIGNER_B" not in combined
     assert all("public_key" not in json.loads(path.read_text()) for path in built["responses"])
 
+    root = tmp_path / "state"
+    floor = root / "update-authority" / "release-floor.json"
     module = ReleaseTransparencyGuardModule(
         authorization_path=built["authorization"],
         artifact_path=built["artifact"],
@@ -185,14 +271,38 @@ def test_split_builder_emits_verifiable_complete_payload_authorization(tmp_path)
         payload_root=built["package"],
         provenance_path=built["provenance"],
         trust_store=_trust(built["trust"]),
-        floor_path=tmp_path / "release-floor.json",
+        floor_path=floor,
         floor_key=b"f" * 32,
         platform="windows-x64",
         clock=lambda: 1_000_100,
     )
     assert module.observe_once().valid
-    assert (tmp_path / "release-floor.json").is_file()
+    assert floor.is_file()
     assert module.observe_once().valid
+
+    floor_before = floor.read_bytes()
+    built["artifact"].write_bytes(b"edited after signed release authorization")
+    _bus, event = _run_release_guard_once(monkeypatch, module)
+    assert event.severity is Severity.CRITICAL
+    assert "release artifact digest does not match the target" in event.details["error_codes"]
+    assert is_active_threat(event)
+    assert floor.read_bytes() == floor_before
+
+    # A new default guard has no memory of the earlier observation. The
+    # authenticated floor persists while this source executable has no sidecars.
+    source = tmp_path / "source"
+    source.mkdir()
+    executable = source / "python.exe"
+    executable.write_bytes(b"inert executable fixture")
+    monkeypatch.setattr(release_transparency_guard.sys, "executable", str(executable))
+    monkeypatch.setattr(release_transparency_guard.sys, "frozen", False, raising=False)
+    monkeypatch.setattr(data_paths, "resolve_data_dir", lambda: root)
+    _bus, event = _run_release_guard_once(monkeypatch, ReleaseTransparencyGuardModule())
+    assert event.severity is Severity.HIGH
+    assert event.details["automatic_install_authorized"] is False
+    assert event.details["error_type"] == "ValueError"
+    assert is_active_threat(event)
+    assert floor.read_bytes() == floor_before
 
 
 def test_signer_jobs_fail_closed_on_missing_or_aliased_seeds(tmp_path):

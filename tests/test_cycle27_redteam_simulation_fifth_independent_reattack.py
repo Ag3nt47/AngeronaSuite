@@ -761,10 +761,10 @@ def test_cleanup_disposes_original_if_replacement_lands_after_delete_handle_open
         original_identity = purple_guard._marker_path_identity
         raced = False
 
-        def replace_after_open(path, *, hold, delete_access=False):
+        def replace_after_open(path, *, hold, delete_access=False, scope_only=False):
             nonlocal raced
             descriptor, identity = original_identity(
-                path, hold=hold, delete_access=delete_access
+                path, hold=hold, delete_access=delete_access, scope_only=scope_only
             )
             if delete_access and descriptor is not None and not raced:
                 raced = True

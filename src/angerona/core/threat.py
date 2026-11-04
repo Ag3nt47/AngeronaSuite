@@ -460,6 +460,88 @@ def _legacy_persistence_baseline(event, details: dict, module: str) -> bool:
     )
 
 
+
+_PLATFORM_POSTURE_RISKS = frozenset({
+    "secure-boot-disabled", "vbs-not-running", "hvci-not-running",
+    "code-integrity-disabled", "test-signing-enabled", "boot-debug-enabled",
+    "kernel-dma-protection-unavailable", "external-dma-policy-permissive",
+})
+_PLATFORM_UNKNOWN_FIELDS = frozenset({
+    "secure_boot", "vbs_running", "hvci_running", "code_integrity_enabled",
+    "test_signing", "boot_debug", "dma_protection_available",
+    "external_dma_policy_restrictive", "tpm.present", "tpm.quote.verifier",
+})
+
+
+def _platform_posture_only(event, details: dict, module: str) -> bool:
+    """Recognize this producer's exact OS posture envelope, including history.
+
+    Disabled DMA/HVCI is an exposure, not an observed malicious process to kill.
+    Quote-integrity failures, explicit attacks and unknown future fields retain
+    ordinary active classification. Stored severity, bytes and trust are intact.
+    """
+    fixed = {
+        "schema": "angerona.measured-boot-assessment.v1",
+        "state": "insecure-posture", "posture_consistent": False,
+        "raw_quote_omitted": True, "response_authorized": False,
+        "response_authority": "observe-only", "user_mode_observation": True,
+        "attribution": "not-assessed",
+    }
+    if (module != "platform attestation guard"
+            or type(getattr(event, "severity", None)) is not Severity
+            or event.severity is not Severity.HIGH
+            or type(details) is not dict
+            or set(details) != set(fixed) | {
+                "hardware_attested", "quote_state", "evidence_sha256",
+                "risk_codes", "unknown_fields", "mitre_tags",
+            }
+            or any(type(details[key]) is not type(value) or details[key] != value
+                   for key, value in fixed.items())):
+        return False
+    risks, unknown = details["risk_codes"], details["unknown_fields"]
+    digest = details["evidence_sha256"]
+    quote = details["quote_state"]
+    hardware = details["hardware_attested"]
+    return (
+        type(risks) is list and 0 < len(risks) <= len(_PLATFORM_POSTURE_RISKS)
+        and all(type(code) is str and code in _PLATFORM_POSTURE_RISKS for code in risks)
+        and risks == sorted(set(risks))
+        and type(unknown) is list and len(unknown) <= len(_PLATFORM_UNKNOWN_FIELDS)
+        and all(type(name) is str and name in _PLATFORM_UNKNOWN_FIELDS for name in unknown)
+        and unknown == sorted(set(unknown))
+        and type(digest) is str and len(digest) == 64
+        and all(char in "0123456789abcdef" for char in digest)
+        and type(quote) is str and quote in {"absent", "unverified", "verified"}
+        and type(hardware) is bool and hardware is (quote == "verified")
+        and type(details["mitre_tags"]) is list
+        and all(type(tag) is str for tag in details["mitre_tags"])
+        and details["mitre_tags"] == ["T1547", "T1562.001"]
+    )
+
+
+def _release_source_posture_only(event, details: dict, module: str) -> bool:
+    """Recognize only the producer's exact unprovisioned source observation."""
+    expected = {
+        "schema": "angerona.release-transparency-status.v1",
+        "finding_code": "release-transparency.source-bundle-unprovisioned",
+        "state": "unavailable",
+        "runtime": "source",
+        "observation_only": True,
+        "response_authority": "observe-only",
+        "response_authorized": False,
+        "automatic_install_authorized": False,
+    }
+    return (
+        module == "release transparency / anti-rollback guard"
+        and getattr(event, "severity", None) is Severity.HIGH
+        and getattr(event, "message", None) == "Installed release evidence is unprovisioned in this source run."
+        and type(details) is dict
+        and details.keys() == expected.keys()
+        and all(type(details[key]) is type(value) and details[key] == value
+                for key, value in expected.items())
+    )
+
+
 def event_disposition(event) -> str:
     """Classify an event without rewriting its evidentiary severity.
 
@@ -549,6 +631,9 @@ def event_disposition(event) -> str:
         or event_type in _EXPOSURE_EVENT_TYPES
         or source in {"cisa_kev", "cisa-kev", "vulnerability_assessment"}
     ):
+        return "exposure"
+    if (_platform_posture_only(event, details, module)
+            or _release_source_posture_only(event, details, module)):
         return "exposure"
     if _legacy_persistence_baseline(event, details, module):
         return "observation"

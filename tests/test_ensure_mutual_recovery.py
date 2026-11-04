@@ -210,11 +210,23 @@ while True:
     receipt = {"schema": 1, "synthetic": True, "protection_verified": False, "generations": []}
     try:
         deadline = time.monotonic() + 15
-        while not (root / "heartbeats/core.hb").exists() and time.monotonic() < deadline:
+        reader = heartbeat.HeartbeatReader(
+            "core", path=root / "heartbeats/core.hb", key_raw=bytes(range(32)),
+        )
+        record = None
+        while time.monotonic() < deadline:
             if child.poll() is not None:
                 pytest.fail("Isolated native supervisor fixture exited before its first heartbeat")
+            candidate = reader.read()
+            # The writer creates a zero-filled mmap backing file before its
+            # initial beat. Existence alone cannot prove a published heartbeat.
+            if (candidate is not None
+                    and reader.authentication_status(record=candidate) == "authenticated"
+                    and candidate["flags"] == 1):
+                record = candidate
+                break
             time.sleep(.05)
-        record = heartbeat.HeartbeatReader("core", path=root / "heartbeats/core.hb", key_raw=bytes(range(32))).read()
+        assert record is not None, "No authenticated running core beat within the fixture deadline"
         retained.append(helper.ReadOnlyGeneration(int(record["pid"]), "core"))
         before = helper.ensure(check_only=True)
         assert before["outcome"] == "needs-attention" and before["missing"] == ["watchdog", "scanner", "blackbox"], before
