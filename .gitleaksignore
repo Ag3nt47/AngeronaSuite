@@ -71,3 +71,8 @@ a5d9905b6bca9ebe12806535a3271249aaf9b0ab:src/angerona/core/tool_analysis_jobs.py
 # Only these commit/path/rule/line findings are suppressed.
 dca1dacebb940f50a31d989f75ac59ffb9ce1532:tests/test_cycle4_round2_cloud_privacy.py:stripe-access-token:55
 a2f99747395ef315898ff1f7d26b10c752837736:tests/test_cycle4_round2_cloud_privacy.py:generic-api-key:55
+
+# Exact historical false positives for public Windows registry view constants
+# used together in two synthetic test assignments.
+af05fdf28585824563532c2cd7298f3c7dfb0c95:tests/test_spyware_native_windows.py:generic-api-key:142
+af05fdf28585824563532c2cd7298f3c7dfb0c95:tests/test_spyware_native_windows.py:generic-api-key:167

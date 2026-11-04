@@ -139,7 +139,8 @@ def test_both_exact_logical_views_group_debugger_advisories_without_raw_commands
 
 def test_silent_launch_requires_all_three_fields_from_the_same_view():
     reg = _Winreg()
-    x86, x64 = reg.KEY_WOW64_32KEY, reg.KEY_WOW64_64KEY
+    x86 = reg.KEY_WOW64_32KEY
+    x64 = reg.KEY_WOW64_64KEY
     reg.put(x86, reader._IFEO, "joined.exe", GlobalFlag=_text("0x00000200"))
     reg.put(x86, reader._SILENT_EXIT, "JOINED.EXE", ReportingMode=_number(3), MonitorProcess=_text("fixture-local"))
     reg.put(x64, reader._IFEO, "cross.exe", GlobalFlag=_number(0x200))
@@ -164,7 +165,8 @@ def test_silent_launch_requires_all_three_fields_from_the_same_view():
 
 def test_partial_coverage_for_filter_global_fallback_denial_and_invalid_typed_values():
     reg = _Winreg()
-    x86, x64 = reg.KEY_WOW64_32KEY, reg.KEY_WOW64_64KEY
+    x86 = reg.KEY_WOW64_32KEY
+    x64 = reg.KEY_WOW64_64KEY
     reg.put(x86, reader._IFEO, "filtered.exe", UseFilter=_number(1), Debugger=_text("fixture-filtered"))
     reg.put(x86, reader._IFEO, "badtype.exe", Debugger=_number(8))
     reg.put(x86, reader._IFEO, "big.exe", Debugger=_text("x" * 3000))
