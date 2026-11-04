@@ -307,7 +307,7 @@ def _():
         return f"not started by headless harness / optional prerequisite: {detail}"
 
     runner = module_runner = SelfTestRunner(manager, bus)
-    report = runner.run(timeout=12.0, expected_failure_cb=_expected_reason)
+    report = runner.run(timeout=config.selftest_timeout_seconds, expected_failure_cb=_expected_reason)
     print(report, flush=True)
     if runner.last_failures:
         raise AssertionError(

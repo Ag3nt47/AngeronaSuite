@@ -49,6 +49,7 @@ def test_full_setup_maps_every_supported_end_user_config_option() -> None:
     internal_or_runtime = {
         "data_dir",
         "module_states",
+        "selftest_auto_recover_modules",  # Selected per discovered module in Settings.
         "teams_bot_skip_auth",
         "holographic_orb_x",
         "holographic_orb_y",
@@ -60,6 +61,15 @@ def test_full_setup_maps_every_supported_end_user_config_option() -> None:
     assert configurable == mapped
     assert len(STEPS) >= 15
     assert self_test()[0]
+
+
+def test_setup_selects_an_exact_selftest_budget():
+    values = _default_values()
+    values["selftest_timeout_seconds"] = "45"
+    assert normalize_setup_values(values)["selftest_timeout_seconds"] == 45
+    assert validate_setup(values) == []
+    values["selftest_timeout_seconds"] = 50
+    assert any("Self-Test time allowance" in error for error in validate_setup(values))
 
 
 def test_setup_profiles_never_enable_egress_or_local_listeners() -> None:

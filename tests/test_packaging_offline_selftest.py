@@ -44,7 +44,7 @@ def test_runtime_unhealthy_sensor_cannot_borrow_offline_diagnostic_success():
     module.status = "running"
     module.set_health(0, "fixture: runtime observation failed")
     ok, detail = SelfTestRunner._test_module(module, 1.0)
-    assert ok is False and "lifecycle/health reports failure" in detail
+    assert ok is False and "worker lifecycle fault (thread_exit)" in detail
 
 
 def test_runtime_assessment_still_uses_real_observation_providers(monkeypatch, tmp_path):

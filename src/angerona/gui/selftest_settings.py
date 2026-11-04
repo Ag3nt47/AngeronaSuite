@@ -126,8 +126,11 @@ class SelfTestSettingsPanel(QWidget):
             "Save to apply. Recovery can briefly interrupt this module while Self-Test verifies its replacement."
             if key else "Automatic worker recovery is unavailable for this module. Review its specific guidance.")
         self.source.clear()
+        description = getattr(module, "description", "")
+        if not isinstance(description, str) or not description.strip():
+            description = "No module description is available."
         self.description.setText(
-            f"{module.description}\n\n{module_guidance(module)}" if module is not None else
+            f"{description[:4096]}\n\n{module_guidance(module)}" if module is not None else
             "No registered modules are available in this Settings session.")
         self.status.setText("Edits are kept in the sandbox. Tests run the installed module.")
         self.run_selected.setEnabled(module is not None and callable(self._run_check))

@@ -108,6 +108,7 @@ def test_module_filters_stay_visible_as_summary_state_and_contract_values_remain
     panel._render_rows({"Synthetic module": (
         True, "Synthetic module with a complete descriptive name", "running 100%", "#22c55e",
         100, "Synthetic assurance", "Synthetic category", "observe", "1.14.0", "Synthetic state",
+        "Synthetic worker status", True,
     )})
     panel.resize(620, 380)
     panel.show()
@@ -161,7 +162,7 @@ def test_enter_opens_only_the_focused_table_and_leaves_child_action_buttons_alon
     layout.addWidget(alerts)
     modules._render_rows({"Synthetic": (
         True, "Synthetic", "running 100%", "#22c55e", 100, "Synthetic assurance",
-        "Synthetic", "observe", "1.14.0", "Synthetic state",
+        "Synthetic", "observe", "1.14.0", "Synthetic state", "Synthetic worker status", True,
     )})
     selected = events()[0]
     alerts._rebuild_event_rows([selected])
@@ -233,7 +234,7 @@ def test_styled_summary_cells_and_complete_headers_fit_their_columns(scale):
     alerts = AlertsPanel(SimpleNamespace())
     modules._render_rows({"Synthetic": (
         True, "Synthetic module", "running 100%", "#22c55e", 100, "Synthetic assurance",
-        "Synthetic", "observe", "1.14.0", "Synthetic state",
+        "Synthetic", "observe", "1.14.0", "Synthetic state", "Synthetic worker status", True,
     )})
     alerts._rebuild_event_rows([Event("Synthetic", "Synthetic evidence", Severity.CRITICAL, ts=1000)])
     alerts.table.item(0, 0).setText("23:59:59")
@@ -268,7 +269,7 @@ def test_panels_start_open_and_minimize_only_their_body_without_losing_state(sca
     layout.addWidget(alerts)
     modules._render_rows({"Synthetic": (
         True, "Synthetic", "running 100%", "#22c55e", 100, "Synthetic assurance",
-        "Synthetic", "observe", "1.14.0", "Synthetic state",
+        "Synthetic", "observe", "1.14.0", "Synthetic state", "Synthetic worker status", True,
     )})
     alerts._rebuild_event_rows(events())
     shell.resize(1100, 760)

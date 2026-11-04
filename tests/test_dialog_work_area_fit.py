@@ -285,11 +285,11 @@ def test_actual_settings_preserves_tabs_search_values_and_reachable_footer(tmp_p
     controller = dialog._window_fit_controller
     expected = ["Overview", "Information", "General", "System", "Adversary Combat",
                 "Enterprise", "Integrations", "ARIA", "Trusted Processes",
-                "Mobile Integration", "API Keys", "Info"]
+                "Mobile Integration", "API Keys", "Self-Test", "Info"]
     try:
         assert dialog.minimumWidth() >= 720
         assert [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())] == expected
-        assert all(isinstance(dialog.tabs.widget(i), QScrollArea) for i in range(11))
+        assert all(isinstance(dialog.tabs.widget(i), QScrollArea) for i in range(len(expected) - 1))
         assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "Adversary Combat"
         dialog.resize(1200, 950)
         dialog.show()
@@ -316,6 +316,9 @@ def test_actual_settings_preserves_tabs_search_values_and_reachable_footer(tmp_p
         dialog._settings_search.setText("microphone")
         _settle()
         assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "ARIA"
+        dialog._settings_search.setText("self-test")
+        _settle()
+        assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "Self-Test"
         controller.fit_now(QRect(0, 0, 1536, 816))
         assert dialog.minimumWidth() == 720
         assert vars(config) == before

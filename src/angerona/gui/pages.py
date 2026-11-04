@@ -9409,7 +9409,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
         from angerona.gui.selftest_settings import SelfTestSettingsPanel
         self._selftest_settings = SelfTestSettingsPanel(parent, config, _read_trusted_source, self)
-        tabs.addTab(self._selftest_settings, "Self-Test")
+        tabs.addTab(_scroll(self._selftest_settings), "Self-Test")
         from angerona.gui.context_info import attach_context_info
         self._context_info = attach_context_info(tabs, "settings")
         self._settings_sandbox_dialogs: dict[str, QDialog] = {}

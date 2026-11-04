@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from angerona.core.config import (
     SCANNER_REPORT_COUNT_MAX,
     SCANNER_REPORT_COUNT_UNLIMITED,
+    SELFTEST_TIMEOUTS,
     SPYWARE_SCAN_AUTO_SCOPES,
     scanner_report_count,
 )
@@ -444,6 +445,8 @@ STEPS: tuple[Step, ...] = (
                   note="Do not run the desktop GUI as root; deploy the sensor separately."),
             Field("check", "process_baseline_enabled", "Learn normal signed processes for operator-reviewed trust suggestions"),
             Field("check", "require_signed_aar", "Require authenticated After-Action Reports"),
+            Field("combo", "selftest_timeout_seconds", "Self-Test time allowed per module (seconds)",
+                  options=SELFTEST_TIMEOUTS, note="Per-module automatic recovery can be reviewed in Settings after setup."),
             Field(
                 "check",
                 "deception_user_folders",
@@ -728,6 +731,9 @@ def normalize_setup_values(values: dict[str, object]) -> dict[str, object]:
     report_count = normalized.get("github_tools_report_count")
     if type(report_count) is int and report_count == 0:
         normalized["github_tools_report_count"] = SCANNER_REPORT_COUNT_UNLIMITED
+    test_timeout = normalized.get("selftest_timeout_seconds")
+    if type(test_timeout) is str and test_timeout in map(str, SELFTEST_TIMEOUTS):
+        normalized["selftest_timeout_seconds"] = int(test_timeout)
     order = normalized.get("ai_provider_order")
     if isinstance(order, str):
         normalized["ai_provider_order"] = [
@@ -765,6 +771,10 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     """Validate the complete staged setup without touching disk or the network."""
     values = normalize_setup_values(values)
     errors: list[str] = []
+    if "selftest_timeout_seconds" in values and (
+        type(values["selftest_timeout_seconds"]) is not int or values["selftest_timeout_seconds"] not in SELFTEST_TIMEOUTS
+    ):
+        errors.append("Self-Test time allowance must be 15, 30 or 45 seconds per module.")
     from types import SimpleNamespace
     from angerona.core.config import TELEMETRY_STORAGE_DEFAULTS, telemetry_storage_policy_values
     try:

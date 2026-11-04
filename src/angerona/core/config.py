@@ -38,6 +38,7 @@ SCANNER_REPORT_COUNT_UNLIMITED = "unlimited"
 SCANNER_REPORT_COUNT_MAX = 32
 SCANNER_REPORT_COUNT_FALLBACK = 8
 SPYWARE_SCAN_AUTO_SCOPES = ("full", "browser", "quick")
+SELFTEST_TIMEOUTS = (15, 30, 45)
 
 
 def valid_scanner_report_count(value: object) -> bool:
@@ -716,7 +717,7 @@ class Config:
                 cfg.accent = data.get("accent", cfg.accent)
                 cfg.module_states = data.get("module_states", {})
                 test_timeout = data.get("selftest_timeout_seconds")
-                if type(test_timeout) is int and test_timeout in (15, 30, 45):
+                if type(test_timeout) is int and test_timeout in SELFTEST_TIMEOUTS:
                     cfg.selftest_timeout_seconds = test_timeout
                 recover_modules = data.get("selftest_auto_recover_modules")
                 if type(recover_modules) is list:

@@ -101,6 +101,7 @@ def _dialog(
 def test_arm_selects_disabled_module_and_uses_manager_start(tmp_path, monkeypatch):
     dialog, parent, config, combat, manager = _dialog(tmp_path, monkeypatch)
     try:
+        assert "No module description is available." in dialog._selftest_settings.description.text()
         assert not dialog._combat_enabled_chk.isChecked()
         dialog._combat_enabled_chk.setChecked(True)
         dialog._save()

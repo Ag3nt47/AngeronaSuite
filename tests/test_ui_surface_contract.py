@@ -204,7 +204,7 @@ def test_every_declared_menu_action_has_signal_or_exact_menu_dispatch() -> None:
 
 
 def test_contextual_info_catalog_covers_each_registered_tab_exactly_once() -> None:
-    assert sum(len(topics) for topics in MENU_INFO.values()) == 33
+    assert sum(len(topics) for topics in MENU_INFO.values()) == 34
     for surface, topics in MENU_INFO.items():
         labels = [normalize_tab_label(topic.title) for topic in topics]
         assert len(labels) == len(set(labels)), surface
@@ -228,6 +228,7 @@ def test_settings_tabs_buttons_and_close_behavior_offscreen(tmp_path: Path) -> N
         "Trusted Processes",
         "Mobile Integration",
         "API Keys",
+        "Self-Test",
         "Info",
     ]
     try:
