@@ -4668,18 +4668,19 @@ class AdversaryCombat(BaseModule):
                             },
                         })
 
-                        if handoff_started:
-                            descriptor = pinned.duplicate_custody_descriptor()
-                            RedTeamValidationLease.complete_marker_containment(
-                                handoff_lease, self, source, descriptor
-                            )
-
                         def terminal_object_proof() -> dict[str, Any]:
                             link_count = pinned.require_single_link()
                             terminal_digest = pinned.sha256()
                             if terminal_digest != digest:
                                 raise OSError(
                                     "quarantine terminal object digest drifted"
+                                )
+                            if handoff_started:
+                                # Windows duplicates share a file cursor. Publish
+                                # the witness only after Combat's last digest read.
+                                descriptor = pinned.duplicate_custody_descriptor()
+                                RedTeamValidationLease.complete_marker_containment(
+                                    handoff_lease, self, source, descriptor
                                 )
                             return {
                                 "destination_link_count": link_count,

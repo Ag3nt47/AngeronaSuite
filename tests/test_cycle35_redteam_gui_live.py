@@ -543,6 +543,17 @@ def test_response_failure_diagnostic_bounds_cache_and_never_waits_for_receipt_lo
 
 
 
+def test_aar_refusal_reason_preserves_legacy_text(tmp_path):
+    from angerona.shark.aar_report import AARFailureReason, generate_aar
+
+    assert type(generate_aar(tmp_path, return_result=True)) is str
+    assert generate_aar(tmp_path, return_result=True, return_failure_reason=True) is AARFailureReason.HISTORY_MISSING
+    (tmp_path / "shark_history.json").write_bytes(b"invalid fixture history")
+    legacy = generate_aar(tmp_path, return_result=True)
+    assert type(legacy) is str and "integrity check failed" in legacy
+    assert generate_aar(tmp_path, return_result=True, return_failure_reason=True) is AARFailureReason.HISTORY_INTEGRITY
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows response clickthrough")
 def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     isolated_root: Path, monkeypatch: pytest.MonkeyPatch, live_process_inventory,
@@ -573,7 +584,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     from angerona.modules import purple_guard as purple_module
     from angerona.modules.purple_guard import PurpleGuard
     from angerona.modules.purple_guard import RedTeamValidationError, RedTeamValidationLease
-    from angerona.shark.aar_report import AARReportResult, verified_aar_handoff_text
+    from angerona.shark.aar_report import AARFailureReason, AARReportResult, verified_aar_handoff_text
     from angerona.shark.red_team import INTENSITY_LEVELS, RedTeamEngine
     from gui_response_hold_diagnostic import ResponseHoldDiagnostic
     from gui_response_cost_diagnostic import ResponseCostDiagnostic
@@ -1797,6 +1808,9 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 next_trace = time.monotonic() + 10.0
                 while len(delivered) == previous_deliveries and time.monotonic() < deadline:
                     app.processEvents()
+                    phase = session.snapshot().get("phase")
+                    if phase in {"held", "cancelled", "completed"} and not session.completed_reports():
+                        break
                     if time.monotonic() >= next_trace:
                         trace("waiting_for_aar", run_index=run_index,
                               steps=len(window.red_team_engine.steps),
@@ -1806,11 +1820,27 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                     time.sleep(0.05)
                 trace("aar_signal_observed", run_index=run_index,
                       deliveries=len(delivered), steps=len(window.red_team_engine.steps))
-                assert len(delivered) == previous_deliveries + 1, {
-                    "console": console.live_status.text(),
-                    "modal_errors": modal_errors,
-                    "steps": len(window.red_team_engine.steps),
-                }
+                if len(delivered) != previous_deliveries + 1:
+                    state = session.snapshot()
+                    phase = state.get("phase")
+                    refusal_codes = {reason.value for reason in AARFailureReason}
+                    report_refusals = [
+                        row.reason_code for row in session.launch_diagnostics()
+                        if row.session_id == plan.session_id and row.run_id == run_id
+                        and row.reason_code in refusal_codes
+                    ][:8]
+                    failure = {
+                        "phase": phase if phase in {"preflight", "running", "settling", "reporting",
+                                                    "releasing", "held", "cancelled", "completed"} else "other",
+                        "owner_finished": session.finished.is_set(),
+                        "settlement_drained": state.get("workflow_settlement_drained") is True,
+                        "steps": len(window.red_team_engine.steps),
+                        "report_refusals": report_refusals,
+                        "delivered": len(delivered) - previous_deliveries,
+                        "modal_count": len(modal_errors),
+                    }
+                    trace("aar_delivery_failed", run_index=run_index, summary=failure)
+                    pytest.fail("Signed AAR delivery failed: " + json.dumps(failure, sort_keys=True))
                 handoff = delivered[-1]
                 assert type(handoff) is AARReportResult, handoff
                 assert "RED TEAM ATTACK" in verified_aar_handoff_text(handoff)

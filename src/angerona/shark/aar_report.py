@@ -27,6 +27,7 @@ import stat
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, List, Optional
 
@@ -161,6 +162,21 @@ class AARReportResult:
     journal_record_sha256: str
     journal_record_bytes: bytes
     report_directory: Path
+
+
+class AARFailureReason(Enum):
+    """Stable report refusal codes with no host details or authority."""
+
+    HISTORY_MISSING = "aar-history-missing"
+    HISTORY_INTEGRITY = "aar-history-integrity"
+    NO_STEPS = "aar-no-steps"
+    RECORDER_INTEGRITY = "aar-recorder-integrity"
+    VALIDATION_AUTHORITY = "aar-validation-authority"
+    VALIDATION_HISTORY = "aar-validation-history"
+    EVIDENCE_HORIZON = "aar-evidence-horizon"
+    JOURNAL_UNVERIFIED = "aar-combat-journal-unverified"
+    RESULT_UNAVAILABLE = "aar-result-unavailable"
+    RESULT_BINDING = "aar-result-binding"
 
 
 def _verify_saved_document(document: object, verification_key: bytes | None) -> str:
@@ -2465,7 +2481,8 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                  bus: object | None = None,
                  manager: object | None = None,
                  validation_lease: object | None = None,
-                 return_result: bool = False) -> str | AARReportResult:
+                 return_result: bool = False, *,
+                 return_failure_reason: bool = False) -> str | AARReportResult | AARFailureReason:
     """Build the report text, and persist it to shark_aar.txt / shark_aar.json
     (see _write_report) so it's readable straight off disk afterward.
 
@@ -2475,7 +2492,12 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
     bounded ledger window are credited.  A later refresh does not manufacture
     coverage after the originating run's artifacts have been cleaned; use a
     fresh drill when testing a slower scheduled detector.
+
+    Session owners can request a bounded refusal code instead of legacy error text.
     """
+    def failure(reason: AARFailureReason, message: str) -> str | AARFailureReason:
+        return reason if return_failure_reason else message
+
     if settle_seconds > 0:
         time.sleep(settle_seconds)
     # An explicit run root owns both ground truth and ledger evidence.  The old
@@ -2484,11 +2506,11 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
     data_dir = Path(data_dir or Config.load().data_dir).resolve(strict=False)
     history_path = data_dir / history_name
     if not history_path.exists():
-        return f"No {history_name} found — run a drill first."
+        return failure(AARFailureReason.HISTORY_MISSING, f"No {history_name} found — run a drill first.")
     try:
         history = _load_history(history_path)
     except DrillHistoryIntegrityError as exc:
-        return (
+        return failure(AARFailureReason.HISTORY_INTEGRITY,
             "Drill history integrity check failed — "
             f"{exc}. AAR not generated."
         )
@@ -2497,7 +2519,7 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         and history.get("status") in {"incomplete", "cancelled"}
         and type(history.get("campaign")) is dict and "prepared_run" in history["campaign"])
     if not history.get("steps") and not red_team_history and not prepared_shark_diagnostic:
-        return "Last run recorded zero steps — nothing to report."
+        return failure(AARFailureReason.NO_STEPS, "Last run recorded zero steps — nothing to report.")
 
     active_recorder = recorder
     owns_recorder = active_recorder is None
@@ -2517,7 +2539,7 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         try:
             validate_redteam_recorder(active_recorder, data_dir, bus=bus)
         except RedTeamValidationError as exc:
-            return (
+            return failure(AARFailureReason.RECORDER_INTEGRITY,
                 "AAR recorder integrity check failed — "
                 f"{exc}. AAR not generated."
             )
@@ -2526,7 +2548,8 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
             try:
                 verdicts, diagnostic = _incomplete_shark_diagnostic(history, data_root=data_dir)
             except DrillHistoryIntegrityError as exc:
-                return f"Drill history integrity check failed — {exc}. AAR not generated."
+                return failure(AARFailureReason.HISTORY_INTEGRITY,
+                               f"Drill history integrity check failed — {exc}. AAR not generated.")
             text = render(history, verdicts, title, diagnostic=diagnostic)
             result = _write_report(data_dir, history, verdicts, text, report_basename, diagnostic=diagnostic)
             return result if return_result else text
@@ -2540,12 +2563,19 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                 try:
                     diagnostic = _incomplete_diagnostic_info(history)
                 except DrillHistoryIntegrityError as exc:
-                    return f"Drill history integrity check failed — {exc}. AAR not generated."
+                    return failure(AARFailureReason.HISTORY_INTEGRITY,
+                                   f"Drill history integrity check failed — {exc}. AAR not generated.")
                 verdicts = _incomplete_redteam_verdicts(history)
                 text = render(history, verdicts, title, diagnostic=diagnostic)
                 result = _write_report(data_dir, history, verdicts, text,
                                        report_basename, diagnostic=diagnostic)
                 return result if return_result else text
+            validation_message = (
+                "Red Team validation integrity check failed — the signed run "
+                "history is not bound to the exact live, unreleased validation "
+                "lease, recorder, bus, manager, target, and sensor generation. "
+                "AAR not generated."
+            )
             if (
                 type(validation_lease) is not RedTeamValidationLease
                 or not validation_authority_matches(
@@ -2554,14 +2584,10 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                     bus=bus,
                     manager=manager,
                 )
-                or not verify_validation_run_history(validation_lease, history)
             ):
-                return (
-                    "Red Team validation integrity check failed — the signed run "
-                    "history is not bound to the exact live, unreleased validation "
-                    "lease, recorder, bus, manager, target, and sensor generation. "
-                    "AAR not generated."
-                )
+                return failure(AARFailureReason.VALIDATION_AUTHORITY, validation_message)
+            if not verify_validation_run_history(validation_lease, history):
+                return failure(AARFailureReason.VALIDATION_HISTORY, validation_message)
             campaign = history.get("campaign") or {}
             if (
                 history.get("status") != "completed"
@@ -2589,7 +2615,7 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
             if (
                 not 60.0 <= admitted_horizon <= MAX_ADMITTED_DRILL_SECONDS
             ):
-                return (
+                return failure(AARFailureReason.EVIDENCE_HORIZON,
                     "Red Team evidence horizon is invalid — AAR not generated."
                 )
             # Caller/default windows may widen ordinary reports, but can never
@@ -2651,7 +2677,8 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         combat_verifier=combat_verifier,
     )
     if not combat_verifier.journal_unchanged():
-        return "Combat journal changed during AAR verification — AAR not generated."
+        return failure(AARFailureReason.JOURNAL_UNVERIFIED,
+                       "Combat journal changed during AAR verification — AAR not generated.")
     # Reconcile proof, never invent or execute a fix: misses become
     # OPEN/REOPENED and only a fresh, exact Purple Guard echo can close an
     # already-applied deterministic action contract.

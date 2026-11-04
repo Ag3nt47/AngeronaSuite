@@ -40,6 +40,12 @@ class SessionHeld(RuntimeError):
     """A missing invariant holds subsequent probe admission; no success implied."""
 
 
+class _ReportHeld(SessionHeld):
+    def __init__(self, reason):
+        super().__init__("An authenticated immutable report was unavailable")
+        self.reason = reason
+
+
 def _json(value) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                       allow_nan=False)
@@ -1245,13 +1251,18 @@ class SimulationSession:
             self._active_binding.check_current()
         kwargs = dict(history_name=name, recorder=self.recorder, bus=self.bus,
             manager=self.manager, validation_lease=self._active_lease, return_result=True,
-            report_basename="shark_aar" if prepared.kind == "shark" else "redteam_aar")
+            report_basename="shark_aar" if prepared.kind == "shark" else "redteam_aar",
+            return_failure_reason=True)
         if prepared.kind == "red_team":
             from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
             kwargs.update(stage_category=REDTEAM_STAGE_CATEGORY, title="RED TEAM ATTACK")
         result = aar_report.generate_aar(self.data_root, **kwargs)
-        if type(result) is not aar_report.AARReportResult or result.run_id != prepared.run_id:
-            raise SessionHeld("An authenticated immutable report was unavailable")
+        if type(result) is aar_report.AARFailureReason:
+            raise _ReportHeld(result)
+        if type(result) is not aar_report.AARReportResult:
+            raise _ReportHeld(aar_report.AARFailureReason.RESULT_UNAVAILABLE)
+        if result.run_id != prepared.run_id:
+            raise _ReportHeld(aar_report.AARFailureReason.RESULT_BINDING)
         aar_report.verified_aar_handoff_text(result)
         payload = json.loads(result.report_bytes)
         if (prepared.kind == "shark"
@@ -1373,9 +1384,10 @@ class SimulationSession:
             if self._active_lease is not None and self._lease_release_attempted:
                 self._retirement_held = True
             run_id = current.run_id if current is not None else ""
+            reason_code = error.reason.value if type(error) is _ReportHeld else type(error).__name__
             with self._lock:
                 self._diagnostics.append(LaunchDiagnostic(
-                    self._prepared.session_id, run_id, self._cache["phase"], type(error).__name__,
+                    self._prepared.session_id, run_id, self._cache["phase"], reason_code,
                     str(error)[:1000]))
             self._phase("held", reason_code="simulation-session-needs-review")
         finally:

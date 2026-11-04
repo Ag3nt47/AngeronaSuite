@@ -175,7 +175,6 @@ def test_observer_rechecks_exact_proof_when_marker_handoff_completes_between_rea
     issuer = response._issuer_original_combat
     at_handoff = threading.Event()
     release_handoff = threading.Event()
-    completed = threading.Event()
     crossed = False
 
     def complete_when_observed(lease, combat, path, descriptor):
@@ -184,7 +183,6 @@ def test_observer_rechecks_exact_proof_when_marker_handoff_completes_between_rea
             os.close(descriptor)
             raise AssertionError("observer did not release the marker handoff")
         complete(lease, combat, path, descriptor)
-        completed.set()
 
     def cross_handoff_after_first_read(event, *, pending_handoff=False):
         nonlocal crossed
@@ -192,7 +190,9 @@ def test_observer_rechecks_exact_proof_when_marker_handoff_completes_between_rea
         if not pending_handoff and not crossed:
             assert actor is None
             release_handoff.set()
-            assert completed.wait(5)
+            # Let the genuine handoff, journal commit, and signed receipt finish
+            # before either follow-up proof read. Keep the first snapshot stale.
+            handled.result(timeout=5)
             crossed = True
         return actor
 
@@ -219,6 +219,42 @@ def test_observer_rechecks_exact_proof_when_marker_handoff_completes_between_rea
                 and event.details.get("origin_event_digest") == graph.event.hmac_sig]
     assert len(matching) == 1 and graph.bus.verify(matching[0])
     assert matching[0].details["receipt_status"] == "verified-applied"
+
+
+def test_marker_handoff_publishes_shared_cursor_only_after_final_digest(source_canary, monkeypatch):
+    from angerona.modules.adversary_combat import _PinnedFileMove
+    from angerona.modules.purple_guard import RedTeamValidationLease
+
+    graph = source_canary
+    digest = _PinnedFileMove.sha256
+    complete = RedTeamValidationLease.complete_marker_containment
+    cursor_operations = []
+
+    def record_digest(pinned):
+        result = digest(pinned)
+        cursor_operations.append("digest")
+        return result
+
+    def record_handoff(lease, combat, path, descriptor):
+        complete(lease, combat, path, descriptor)
+        cursor_operations.append("handoff")
+
+    monkeypatch.setattr(_PinnedFileMove, "sha256", record_digest)
+    monkeypatch.setattr(RedTeamValidationLease, "complete_marker_containment", record_handoff)
+    graph.combat._handle(graph.event)
+
+    assert cursor_operations.count("handoff") == 1
+    assert cursor_operations[-2:] == ["digest", "handoff"]
+    assert not graph.marker.exists()
+    receipt = next(event for event in graph.bus.recent(100)
+                   if event.module == graph.combat.name
+                   and event.details.get("trigger_event_digest") == graph.event.hmac_sig)
+    assert graph.bus.verify(receipt) and receipt.details["action_succeeded"] is True
+    assert receipt.details["postcondition_verified"] is True
+    row = next(item for item in graph.combat.list_actions(limit=10)
+               if item["action_id"] in receipt.details["action_ids"])
+    assert row["integrity_status"] == "verified" and row["status"] == "applied"
+    assert row["details"]["terminal_object_sha256"] == graph.event.details["observed_content_sha256"]
 
 
 @pytest.mark.parametrize("change", ["expired", "released", "replaced", "foreign-manager", "raw-practice", "foreign-target"])
