@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import builtins
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +16,24 @@ from tools import check_github_updates as cli
 BASE, TARGET = "a" * 40, "b" * 40
 STAGE_ID, MANIFEST = "source-" + "c" * 32, "d" * 64
 REVIEW = ["--stage-id", STAGE_ID, "--manifest-sha256", MANIFEST]
+
+
+def test_direct_script_finds_the_checkout_git_transport(tmp_path):
+    script = Path(cli.__file__).resolve()
+    probe = """
+import runpy
+import sys
+from pathlib import Path
+
+script = Path(sys.argv[1])
+runpy.run_path(str(script))
+from tools import publication_transport
+
+assert Path(publication_transport.__file__).resolve() == script.with_name('publication_transport.py')
+"""
+    result = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(script)],
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.fixture

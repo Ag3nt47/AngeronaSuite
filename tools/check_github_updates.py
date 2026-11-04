@@ -8,8 +8,12 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from dataclasses import asdict
 from pathlib import Path
+
+if __package__ in {None, ""}:  # Direct execution needs the checkout's trusted Git tools.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def main(argv: list[str] | None = None) -> int:
