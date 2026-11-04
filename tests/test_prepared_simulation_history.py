@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, replace
 import json
+import threading
 import time
 from types import SimpleNamespace
 
@@ -147,3 +148,62 @@ def test_signed_shark_history_cannot_borrow_another_open_recorder_root(signed_sh
         assert not (ctx.root / "shark_aar.json").exists()
     finally:
         other.close()
+
+
+@pytest.mark.parametrize("scenario,expected_attempts", [
+    ("stable-second-snapshot", 2),
+    ("second-change", 2),
+    ("other-refusal", 1),
+    ("cancelled", 1),
+    ("expired", 1),
+    ("foreign-owner", 1),
+])
+def test_session_report_retries_only_one_changed_journal_while_owned(
+    signed_shark, monkeypatch, scenario, expected_attempts,
+):
+    ctx = signed_shark
+    ctx.write("completed", len(ctx.plan.steps))
+    session = sessions.SimulationSession(manager=None, bus=ctx.bus, recorder=ctx.recorder,
+        data_root=ctx.root, red_team_engine=None, shark_engine=None)
+    session.thread = threading.Thread() if scenario == "foreign-owner" else threading.current_thread()
+    session._run_deadline = time.monotonic() + 30
+    original_verifier = aar_report._live_combat_action_verifier
+    attempts = []
+    reason = (aar_report.AARFailureReason.JOURNAL_BUSY if scenario == "other-refusal"
+              else aar_report.AARFailureReason.JOURNAL_CHANGED)
+
+    def final_snapshot_refused():
+        if scenario == "cancelled":
+            session.cancel()
+        elif scenario == "expired":
+            session._run_deadline = time.monotonic()
+        return False
+
+    def observe_verifier(*args, **kwargs):
+        verifier = original_verifier(*args, **kwargs)
+        assert kwargs["wait_for_report_worker"] is (scenario != "foreign-owner")
+        # A refused generation must leave no report or partial publication.
+        assert not list(ctx.root.glob("shark_aar*"))
+        attempts.append(verifier)
+        if len(attempts) == 1 or scenario == "second-change":
+            verifier.journal_unchanged = final_snapshot_refused
+            verifier.journal_failure_reason = lambda: reason
+        return verifier
+
+    monkeypatch.setattr(aar_report, "_live_combat_action_verifier", observe_verifier)
+    if scenario == "stable-second-snapshot":
+        report = session._build_report(ctx.plan)
+        assert type(report) is aar_report.AARReportResult
+        assert aar_report.verified_aar_handoff_text(report) == report.text
+        payload = json.loads(report.report_bytes)
+        assert report_attest.verify(payload) == "ok"
+        assert payload["run_id"] == ctx.plan.run_id
+        assert payload["steps_run"] == len(ctx.plan.steps)
+        assert "diagnostic_only" not in payload
+        assert payload["campaign_completeness"]["prepared_run"] == ctx.plan.manifest()
+    else:
+        with pytest.raises(sessions.SessionHeld) as held:
+            session._build_report(ctx.plan)
+        assert held.value.reason is reason
+        assert not list(ctx.root.glob("shark_aar*"))
+    assert len(set(attempts)) == len(attempts) == expected_attempts

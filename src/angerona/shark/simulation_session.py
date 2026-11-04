@@ -1249,14 +1249,20 @@ class SimulationSession:
         if (prepared.kind == "shark" and history.get("status") == "completed"
                 and self._active_binding is not None):
             self._active_binding.check_current()
+        owns_report = self.thread is threading.current_thread()
         kwargs = dict(history_name=name, recorder=self.recorder, bus=self.bus,
             manager=self.manager, validation_lease=self._active_lease, return_result=True,
             report_basename="shark_aar" if prepared.kind == "shark" else "redteam_aar",
-            return_failure_reason=True, wait_for_report_worker=self.thread is threading.current_thread())
+            return_failure_reason=True, wait_for_report_worker=owns_report)
         if prepared.kind == "red_team":
             from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
             kwargs.update(stage_category=REDTEAM_STAGE_CATEGORY, title="RED TEAM ATTACK")
         result = aar_report.generate_aar(self.data_root, **kwargs)
+        if (result is aar_report.AARFailureReason.JOURNAL_CHANGED and owns_report
+                and not self.cancelled.is_set() and time.monotonic() < self._run_deadline):
+            # No report was written. Reauthenticate a fresh history, recorder
+            # window and complete journal snapshot through the same verifier.
+            result = aar_report.generate_aar(self.data_root, **kwargs)
         if type(result) is aar_report.AARFailureReason:
             raise _ReportHeld(result)
         if type(result) is not aar_report.AARReportResult:

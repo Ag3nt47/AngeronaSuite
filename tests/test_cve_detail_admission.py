@@ -145,7 +145,7 @@ def test_inert_proposal_staging_is_background_and_captures_exact_plain_input(mon
             assert worker.wait(3000)
         _pump_until(lambda: not action_worker.active_finite_actions())
 
-def _blocking_advisor(monkeypatch, releases):
+def _blocking_advisor(monkeypatch, releases, *, release_timeout=5.0):
     entered = {}
     release = {}
     received = {}
@@ -156,7 +156,7 @@ def _blocking_advisor(monkeypatch, releases):
         with lock:
             received[cve] = record
         entered[cve].set()
-        assert release[cve].wait(5.0)
+        assert release[cve].wait(release_timeout), "test did not release its owned CVE worker"
         return {"cve": cve, "fix_available": False, "reason": "inert test"}
 
     monkeypatch.setattr(cve_fix_advisor, "analyze", advisor)
@@ -396,16 +396,21 @@ def test_hide_show_restarts_single_refresh_timer_with_all_detail_slots_busy(
 
     monkeypatch.setattr(page.ThreatIntelDashboard, "_load_and_render", render)
     dashboard = create()
-    enroll, _received = _blocking_advisor(monkeypatch, releases)
-    workers = []
+    # Keep both workers blocked until the test releases them. The watchdog
+    # only bounds cleanup if a loaded Qt runner stalls during a show/hide.
+    enroll, _received = _blocking_advisor(monkeypatch, releases, release_timeout=30.0)
+    pool = detail_analysis_admission()
+    workers = {}
+    delivered = []
     for index in range(2):
         cve = f"CVE-2026-{4000 + index}"
         entered, _release = enroll(cve)
-        worker = _start_current_detail(dashboard, cve, {"cve": cve}, lambda _r: None)
+        worker = _start_current_detail(dashboard, cve, {"cve": cve},
+            lambda result, expected=cve: delivered.append((expected, result["cve"])))
         assert worker is not None
-        workers.append(worker)
+        workers[cve] = worker
         assert entered.wait(2.0)
-    assert all(worker.isRunning() for worker in workers)
+    assert all(worker.isRunning() for worker in workers.values())
     timer = dashboard._timer
     assert timer.isActive()
     dashboard.show()
@@ -418,7 +423,13 @@ def test_hide_show_restarts_single_refresh_timer_with_all_detail_slots_busy(
         QApplication.instance().processEvents()
         assert dashboard._timer is timer and timer.isActive()
         assert renders[id(dashboard)] == before + 1
-        assert all(worker.isRunning() for worker in workers)
+        assert pool.active_count == 2 and dashboard._detail_workers == workers
+        assert all(worker.isRunning() for worker in workers.values()) and not delivered
+    for release in releases:
+        release.set()
+    _pump_until(lambda: pool.active_count == 0)
+    assert not dashboard._detail_workers
+    assert sorted(delivered) == [(cve, cve) for cve in sorted(workers)]
 
 
 @pytest.mark.parametrize("shutdown_before_callbacks", [False, True])
