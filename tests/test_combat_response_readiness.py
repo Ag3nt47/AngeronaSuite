@@ -4,6 +4,8 @@ import queue
 import hashlib
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -11,7 +13,7 @@ import pytest
 from test_breach_lockdown import installed_protect_for_inert_combat
 
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
-from angerona.modules.adversary_combat import AdversaryCombat
+from angerona.modules.adversary_combat import AdversaryCombat, JournalSnapshotBusy
 
 
 def _combat(tmp_path, monkeypatch):
@@ -168,8 +170,53 @@ def test_worker_rechecks_policy_and_evidence_before_host_action(tmp_path, monkey
     assert not module.receipt_path.exists()
 
 
-@pytest.mark.parametrize("delegated", [False, True])
-def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_path, monkeypatch, delegated):
+@contextmanager
+def _journal_read_contention(module, monkeypatch, lock_kind):
+    held, release, retired = threading.Event(), threading.Event(), threading.Event()
+    denials = []
+    lock = (module._receipt_lock if lock_kind == "receipt"
+            else AdversaryCombat(module.data_root)._journal_writer_lease())
+    original_read = AdversaryCombat._read_journal
+
+    def hold():
+        with lock:
+            held.set()
+            assert release.wait(5), "Reader did not release the test-owned journal lock"
+        retired.set()
+
+    def read(reader, **options):
+        try:
+            return original_read(reader, **options)
+        except JournalSnapshotBusy as error:
+            assert reader is module and options.get("strict") is True
+            denials.append(str(error))
+            release.set()
+            assert retired.wait(2), "Test-owned lock did not retire after actual denial"
+            raise
+
+    with ThreadPoolExecutor(max_workers=1) as worker, monkeypatch.context() as patch:
+        owner = worker.submit(hold)
+        try:
+            assert held.wait(2), "Test-owned reader did not acquire the journal lock"
+            patch.setattr(AdversaryCombat, "_read_journal", read)
+            yield denials
+        finally:
+            release.set()
+            owner.result(timeout=5)
+
+
+@pytest.mark.parametrize("delegated,stage,lock_kind", [
+    pytest.param(False, None, None, id="False"),
+    pytest.param(True, None, None, id="True"),
+    pytest.param(False, "initial", "receipt", id="initial-receipt-lock"),
+    pytest.param(False, "initial", "writer", id="initial-writer-lock"),
+    pytest.param(False, "final", "receipt", id="final-receipt-lock"),
+    pytest.param(False, "final", "writer", id="final-writer-lock"),
+    pytest.param(False, "changed", None, id="actual-journal-change"),
+])
+def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(
+    tmp_path, monkeypatch, delegated, stage, lock_kind,
+):
     module = _combat(tmp_path, monkeypatch)
     module.status = "running"
     module._bus.arm(BusAuthority(b"s" * 32))
@@ -223,20 +270,45 @@ def test_queued_inert_artifact_has_verified_receipt_and_reversible_restore(tmp_p
     }
     # Exercise production summary -> authenticated evaluator without launching
     # any campaign. The file is disposable and restored below.
-    from angerona.shark.aar_report import evaluate, _live_combat_action_verifier
+    from angerona.shark.aar_report import AARFailureReason, evaluate, _live_combat_action_verifier
 
-    verdict = evaluate({"run_id": "inert-proof-run", "steps": [{
+    verifier = _live_combat_action_verifier(
+        module._manager, module._bus, tmp_path.resolve(), red_team=False,
+        wait_for_report_worker=stage is not None,
+    )
+    history = {"run_id": "inert-proof-run", "steps": [{
         "step_id": "inert-proof-step", "stage": "Initial Access",
         "technique": "inert local file", "description": "harmless fixture",
         "ts_start": event.ts - 0.1, "ts_end": receipt.ts,
         "artifact_paths": [str(artifact)],
-    }]}, module._bus.recent(20), require_authenticated=True,
-        event_verifier=module._bus.verify, native_verifier=lambda ev, step: ev.module == "Detector",
-        combat_verifier=_live_combat_action_verifier(
-            module._manager, module._bus, tmp_path.resolve(), red_team=False,
-        ),
-    )[0]
+    }]}
+    journal_before = module.receipt_path.read_bytes()
+    witness_before = module.recovery_witness_path.read_bytes()
+    with (_journal_read_contention(module, monkeypatch, lock_kind)
+          if stage == "initial" else nullcontext()) as initial_denials:
+        verdict = evaluate(
+            history, module._bus.recent(20), require_authenticated=True,
+            event_verifier=module._bus.verify, native_verifier=lambda ev, step: ev.module == "Detector",
+            combat_verifier=verifier,
+        )[0]
     assert verdict.target_containment_verified
+    with (_journal_read_contention(module, monkeypatch, lock_kind)
+          if stage == "final" else nullcontext()) as final_denials:
+        assert verifier.journal_unchanged()
+    if lock_kind is not None:
+        expected = ("combat journal snapshot is busy" if lock_kind == "receipt"
+                    else "combat journal writer lease is already held")
+        assert (initial_denials if stage == "initial" else final_denials) == [expected]
+    assert module.receipt_path.read_bytes() == journal_before
+    assert module.recovery_witness_path.read_bytes() == witness_before
+    if stage == "changed":
+        unrelated = module._action("activate_honeypots", "Smart Deception", _event(),
+                                   "inert-journal-change", reversible=True,
+                                   details={"module": "Smart Deception"})
+        module._journal_intent(unrelated)
+        assert not verifier.journal_unchanged()
+        assert verifier.journal_failure_reason() is AARFailureReason.JOURNAL_CHANGED
+        module._journal_failure(unrelated, "Inert journal fixture dispatched no action")
     assert module.undo_action(action["action_id"])["ok"] is True
     assert artifact.read_text(encoding="utf-8") == "harmless test data"
 

@@ -1737,7 +1737,7 @@ class SpywareGuardModule(BaseModule):
             self.set_health(50, "Preview; response receipt coverage is held; retained rows are historical")
 
     def _collect_responses(self) -> None:
-        from angerona.modules.adversary_combat import JournalIntegrityError
+        from angerona.modules.adversary_combat import JournalIntegrityError, JournalSnapshotBusy
 
         modules = getattr(self._manager, "modules", {})
         combat = modules.get("Adversary Combat") if isinstance(modules, dict) else None
@@ -1747,10 +1747,7 @@ class SpywareGuardModule(BaseModule):
         try:
             listed = combat.list_actions(limit=200)
         except JournalIntegrityError as exc:
-            busy = type(exc) is JournalIntegrityError and str(exc) in {
-                "combat journal snapshot is busy",
-                "combat journal writer lease is already held",
-            }
+            busy = type(exc) is JournalSnapshotBusy
             self._hold_response_coverage(
                 "busy" if busy else "integrity-held",
                 "Combat journal custody is busy; retry occurs on the ordinary worker cadence."

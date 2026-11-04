@@ -239,7 +239,7 @@ def _exclusive_combat_writer_lease(path: Path) -> Iterator[None]:
     key = os.path.normcase(str(path.resolve(strict=False)))
     lock = _shared_combat_writer_lock(path)
     if not lock.acquire(blocking=False):
-        raise JournalIntegrityError("combat journal writer lease is already held")
+        raise JournalSnapshotBusy("combat journal writer lease is already held")
     depths = getattr(_COMBAT_WRITER_LEASE_LOCAL, "depths", None)
     if depths is None:
         depths = {}
@@ -335,6 +335,10 @@ def _exclusive_combat_writer_lease(path: Path) -> Iterator[None]:
 
 class JournalIntegrityError(RuntimeError):
     """The combat journal cannot safely authorize another host mutation."""
+
+
+class JournalSnapshotBusy(JournalIntegrityError):
+    """An in-process journal owner currently holds the exact read boundary."""
 
 
 class HostMutationHeld(JournalIntegrityError):
@@ -3853,7 +3857,7 @@ class AdversaryCombat(BaseModule):
         acquired = (self._receipt_lock.acquire(timeout=_REOBSERVATION_JOURNAL_WAIT_S)
                     if response_wait else self._receipt_lock.acquire(blocking=False))
         if not acquired:
-            raise JournalIntegrityError("combat journal snapshot is busy")
+            raise JournalSnapshotBusy("combat journal snapshot is busy")
         try:
             if response_wait and self.generation_stop_event().is_set():
                 raise JournalIntegrityError("combat journal snapshot was cancelled")

@@ -174,6 +174,8 @@ class AARFailureReason(Enum):
     VALIDATION_AUTHORITY = "aar-validation-authority"
     VALIDATION_HISTORY = "aar-validation-history"
     EVIDENCE_HORIZON = "aar-evidence-horizon"
+    JOURNAL_BUSY = "aar-combat-journal-busy"
+    JOURNAL_CHANGED = "aar-combat-journal-changed"
     JOURNAL_UNVERIFIED = "aar-combat-journal-unverified"
     RESULT_UNAVAILABLE = "aar-result-unavailable"
     RESULT_BINDING = "aar-result-binding"
@@ -839,11 +841,27 @@ def _verified_containment_targets(
 
 def _live_combat_action_verifier(
     manager: object, bus: object, data_dir: Path, *, red_team: bool,
+    wait_for_report_worker: bool = False,
 ) -> Callable[[dict, Event, Event, dict], bool]:
     """Require an exact live Combat producer and its signed, active commit."""
-    from angerona.modules.adversary_combat import AdversaryCombat
+    from angerona.modules.adversary_combat import AdversaryCombat, JournalSnapshotBusy
 
     journal: dict[str, Any] = {}
+
+    def read_journal(combat):
+        deadline = time.monotonic() + 0.25 if wait_for_report_worker else None
+        while True:
+            try:
+                return AdversaryCombat._read_journal(combat, strict=True)
+            except JournalSnapshotBusy:
+                if deadline is None:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(0.01, remaining))
+                if time.monotonic() >= deadline:
+                    raise
 
     def verify(step: dict, catch: Event, response: Event, row: dict) -> bool:
         try:
@@ -861,15 +879,16 @@ def _live_combat_action_verifier(
             action_id = row.get("action_id")
             if not isinstance(action_id, str) or not action_id:
                 return False
-            if journal.get("unavailable"):
+            if journal.get("failure_reason"):
                 return False
             if not journal:
                 try:
-                    signed, _legacy = AdversaryCombat._read_journal(
-                        combat, strict=True,
-                    )
+                    signed, _legacy = read_journal(combat)
+                except JournalSnapshotBusy:
+                    journal["failure_reason"] = AARFailureReason.JOURNAL_BUSY
+                    return False
                 except Exception:
-                    journal["unavailable"] = True
+                    journal["failure_reason"] = AARFailureReason.JOURNAL_UNVERIFIED
                     return False
                 commits = {
                     item["action_id"]: item for item in signed
@@ -968,7 +987,7 @@ def _live_combat_action_verifier(
     def journal_unchanged() -> bool:
         if not journal:
             return True
-        if journal.get("unavailable"):
+        if journal.get("failure_reason"):
             return False
         try:
             modules = getattr(manager, "modules", None)
@@ -979,14 +998,19 @@ def _live_combat_action_verifier(
                     or getattr(journal["combat"], "_manager", None) is not manager
                     or journal["combat"].data_root.resolve(strict=False) != data_dir):
                 return False
-            signed, _legacy = AdversaryCombat._read_journal(
-                journal["combat"], strict=True,
-            )
-            return signed == journal["signed"]
+            signed, _legacy = read_journal(journal["combat"])
+            if signed != journal["signed"]:
+                journal["failure_reason"] = AARFailureReason.JOURNAL_CHANGED
+                return False
+            return True
+        except JournalSnapshotBusy:
+            journal["failure_reason"] = AARFailureReason.JOURNAL_BUSY
+            return False
         except Exception:
             return False
 
     verify.journal_unchanged = journal_unchanged
+    verify.journal_failure_reason = lambda: journal.get("failure_reason", AARFailureReason.JOURNAL_UNVERIFIED)
     return verify
 
 
@@ -2482,7 +2506,8 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
                  manager: object | None = None,
                  validation_lease: object | None = None,
                  return_result: bool = False, *,
-                 return_failure_reason: bool = False) -> str | AARReportResult | AARFailureReason:
+                 return_failure_reason: bool = False,
+                 wait_for_report_worker: bool = False) -> str | AARReportResult | AARFailureReason:
     """Build the report text, and persist it to shark_aar.txt / shark_aar.json
     (see _write_report) so it's readable straight off disk afterward.
 
@@ -2664,7 +2689,7 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
             active_recorder.close()
 
     combat_verifier = _live_combat_action_verifier(
-        manager, bus, data_dir, red_team=red_team_history,
+        manager, bus, data_dir, red_team=red_team_history, wait_for_report_worker=wait_for_report_worker,
     )
     verdicts = evaluate(
         history,
@@ -2677,7 +2702,7 @@ def generate_aar(data_dir: Optional[Path] = None, settle_seconds: float = 0.0,
         combat_verifier=combat_verifier,
     )
     if not combat_verifier.journal_unchanged():
-        return failure(AARFailureReason.JOURNAL_UNVERIFIED,
+        return failure(combat_verifier.journal_failure_reason(),
                        "Combat journal changed during AAR verification — AAR not generated.")
     # Reconcile proof, never invent or execute a fix: misses become
     # OPEN/REOPENED and only a fresh, exact Purple Guard echo can close an

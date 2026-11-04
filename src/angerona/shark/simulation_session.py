@@ -1252,7 +1252,7 @@ class SimulationSession:
         kwargs = dict(history_name=name, recorder=self.recorder, bus=self.bus,
             manager=self.manager, validation_lease=self._active_lease, return_result=True,
             report_basename="shark_aar" if prepared.kind == "shark" else "redteam_aar",
-            return_failure_reason=True)
+            return_failure_reason=True, wait_for_report_worker=self.thread is threading.current_thread())
         if prepared.kind == "red_team":
             from angerona.shark.red_team import REDTEAM_STAGE_CATEGORY
             kwargs.update(stage_category=REDTEAM_STAGE_CATEGORY, title="RED TEAM ATTACK")

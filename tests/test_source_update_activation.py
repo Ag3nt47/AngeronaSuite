@@ -948,10 +948,35 @@ def test_storage_hold_precedes_any_request_stop_or_source_effect(
 
 
 def test_default_two_real_completed_backups_hold_third_before_stop(activation):
+    from angerona.core.werfault_guard import OwnedProcessReadError
+
     sample = activation
-    for target in (_FIRST, _SECOND):
+    for attempt, target in enumerate((_FIRST, _SECOND), 1):
         plan = _plan(sample, target)
-        request = _approve(sample, plan)
+        try:
+            request = _approve(sample, plan)
+        except OwnedProcessReadError as error:
+            if error.reason_code == "supplier_failed":
+                # The production exception hides the supplier context. Report
+                # only a fixed test gate, never the original message or paths.
+                try:
+                    args = getattr(error.__context__, "args", ())
+                    message = args[0] if len(args) == 1 and type(args[0]) is str else None
+                    gate = {
+                        "Owned AI observation deadline": "ai-observation-deadline",
+                        "Owned AI stop custody is busy": "ai-stop-custody-busy",
+                        "Owned AI registry is busy": "ai-registry-busy",
+                        "Owned AI launch/STOP admission is unsettled": "ai-admission-unsettled",
+                        "Configured ownership lifetime or inventory routing changed": "inventory-routing-changed",
+                        "Configured inventory native custody is unavailable": "inventory-custody-unavailable",
+                        "Complete companion ownership observation deadline": "companion-observation-deadline",
+                        "Source controller native query handle is unavailable": "source-controller-query-unavailable",
+                        "Expected external source controller is not bound": "source-controller-unbound",
+                    }.get(message, "unclassified")
+                    print(f"SOURCE_ACTIVATION_FIXTURE_OWNERSHIP attempt={attempt} gate={gate}", flush=True)
+                except Exception:
+                    pass  # Preserve the same production failure and traceback.
+            raise
         assert _run(sample, plan, request)["status"] == "committed"
     review = storage.review_source_update_storage(sample.root, sample.state)
     assert review["budget"]["completed_backups"] == 2

@@ -670,18 +670,22 @@ def _native_registry(monkeypatch):
     monkeypatch.setattr(ollama, "unload_angerona_models", lambda *_a, **_k: [])
 
 
-def _wait_native_report(path, child):
+def _wait_native_report(path, runner_report, child):
     deadline = time.monotonic() + 8.0
     while time.monotonic() < deadline:
-        if path.exists():
-            try:
-                value = json.loads(path.read_bytes())
-            except (UnicodeError, ValueError):
-                pass
-            else:
-                assert set(value) == {"runtime_pid", "runner_pid"}
-                assert all(type(pid) is int and pid > 0 for pid in value.values())
-                return value
+        try:
+            value = json.loads(path.read_bytes())
+            ready = runner_report.read_text(encoding="ascii")
+            if not ready.endswith("\n"):
+                raise ValueError("Runner readiness record is incomplete")
+            runner_pid = int(ready)
+        except (FileNotFoundError, UnicodeError, ValueError):
+            pass
+        else:
+            assert set(value) == {"runtime_pid", "runner_pid"}
+            assert all(type(pid) is int and pid > 0 for pid in value.values())
+            assert runner_pid > 0
+            return value, runner_pid
         assert child.poll() is None, "Harmless native fixture exited before its identity report"
         threading.Event().wait(0.01)
     pytest.fail("Harmless native fixture did not publish its bounded identity report")
@@ -703,10 +707,16 @@ def test_native_os_lifecycle_retires_harmless_server_runner_and_preserves_unrela
     environment.update(TEMP=str(tmp_path), TMP=str(tmp_path))
     assert not any(name.upper().startswith("ANGERONA_") for name in environment)
     report, release = tmp_path / "server-report.json", tmp_path / "exit-server"
+    runner_report = tmp_path / "runner-ready.pid"
+    runner_code = (
+        "import os,pathlib,time\n"
+        f"pathlib.Path({str(runner_report)!r}).write_text(str(os.getpid())+'\\n', encoding='ascii')\n"
+        "time.sleep(30)"
+    )
     script = tmp_path / "harmless-owned-server.py"
     script.write_text(
         "import json,os,pathlib,subprocess,time\n"
-        f"runner=subprocess.Popen([{str(executable)!r},'-I','-B','-c','import time;time.sleep(30)'],"
+        f"runner=subprocess.Popen([{str(executable)!r},'-I','-B','-c',{runner_code!r}],"
         "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,"
         "creationflags=subprocess.CREATE_NO_WINDOW)\n"
         f"pathlib.Path({str(report)!r}).write_text(json.dumps({{'runtime_pid':os.getpid(),'runner_pid':runner.pid}}))\n"
@@ -729,16 +739,24 @@ def test_native_os_lifecycle_retires_harmless_server_runner_and_preserves_unrela
             [str(executable), "-I", "-B", str(script)], environment,
             cwd=str(tmp_path), deadline=time.monotonic() + 10.0,
         )
-        identity = _wait_native_report(report, server)
+        identity, runner_pid = _wait_native_report(report, runner_report, server)
         key = (_HOST, id(server))
         with ollama._startup_lock:
             ollama._owned_services[key] = server
-        rows = _background(lambda: ollama.observe_owned_ollama_process_identities(timeout=1.0))
+        try:
+            rows = _background(lambda: ollama.observe_owned_ollama_process_identities(timeout=1.0))
+        except child_jobs.NativeOwnershipObservationError as error:
+            if str(error) != "Child Job membership changed":
+                raise
+            # A native membership transition supplies no rows. Re-observe
+            # the same retained Job once before setting retirement expectations.
+            rows = _background(lambda: ollama.observe_owned_ollama_process_identities(timeout=1.0))
         native_pids = {row.pid for row in rows}
-        assert {server.pid, identity["runtime_pid"], identity["runner_pid"]}.issubset(native_pids)
+        expected_pids = (server.pid, identity["runner_pid"], runner_pid, identity["runtime_pid"])
+        assert set(expected_pids).issubset(native_pids)
         assert unrelated.pid not in native_pids
         assert all(int(row.birth_ticks) > 0 and Path(row.image).is_absolute() for row in rows)
-        for pid in (server.pid, identity["runner_pid"]):
+        for pid in dict.fromkeys(expected_pids):
             handle = win32api.OpenProcess(0x00101000, False, pid)
             observed_handles.append(handle)
             assert win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
