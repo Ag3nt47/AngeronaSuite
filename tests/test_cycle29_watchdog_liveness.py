@@ -156,12 +156,8 @@ def test_watchdog_rechecks_fault_before_stopping_live_worker(monkeypatch, with_m
     bus = EventBus()
     watchdog.bind(bus)
     if with_manager:
-        manager = ModuleManager.__new__(ModuleManager)
-        manager._module_control_lock = threading.RLock()
-        manager._shutdown = False
+        manager = ModuleManager(bus, SimpleNamespace(module_states={}), target_platform="windows")
         manager.modules = {probe.name: probe}
-        manager.is_enabled = lambda _name: True
-        manager._ugcap_allows = lambda _module: True
     else:
         manager = SimpleNamespace(modules={probe.name: probe})
     watchdog.bind_manager(manager)

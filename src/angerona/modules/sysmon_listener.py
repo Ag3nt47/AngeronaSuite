@@ -1336,25 +1336,42 @@ class SysmonListenerModule(BaseModule):
 
     # ── Health check ─────────────────────────────────────────────────────────
     def self_test(self) -> tuple[bool, str]:
+        from types import SimpleNamespace
+
+        from angerona.core.eventbus import EventBus
+
+        first = self._generation("observed", 1, "a" * 64)
+        second = self._generation("observed", 1, "b" * 64)
+        if (_CURSOR_SCHEMA != 3 or not self._valid_generation(first)
+                or not self._valid_generation(second) or first["generation_id"] == second["generation_id"]):
+            return False, "Sysmon generation-bound cursor sample failed"
+        payload = (f'<Event xmlns="{_NS}"><EventData><Data Name="SourceProcessId">701</Data>'
+                   '<Data Name="TargetProcessId">702</Data>'
+                   '<Data Name="StartAddress">0x1000</Data></EventData></Event>')
+        probe = SysmonListenerModule()
+        bus = EventBus()
+        probe.bind(bus)
+        probe._channel_generation = first
+        probe._process_record(SimpleNamespace(EventID=8, SourceName=_SYSMON_PROVIDER, StringInserts=[payload]))
+        probe._process_record(SimpleNamespace(EventID=8, SourceName="Untrusted.Fixture", StringInserts=[payload]))
+        events = bus.recent(3)
+        if len(events) != 2:
+            return False, "Sysmon sample did not deliver both observation and rejected-provider health evidence"
+        rejected, observed = events
+        if (observed.severity is not Severity.CRITICAL or observed.details.get("target_pid") != "702"
+                or not observed.details.get("collection_generation")
+                or observed.details.get("response_authorized") is not False
+                or rejected.details.get("error_type") != "ProviderMismatch"
+                or rejected.details.get("disposition") != "health"):
+            return False, "Sysmon remote-thread sample or provider isolation control failed"
+        detail = "Offline Sysmon sample: remote-thread observation decoded; wrong provider rejected. "
         if self.status != "running":
-            first = self._generation("observed", 1, "a" * 64)
-            second = self._generation("observed", 1, "b" * 64)
-            ok = (
-                _CURSOR_SCHEMA == 3
-                and self._valid_generation(first)
-                and self._valid_generation(second)
-                and first["generation_id"] != second["generation_id"]
-            )
-            return (
-                ok,
-                "offline generation-bound cursor/anchor contract verified"
-                if ok else "generation-bound cursor contract failed",
-            )
+            return True, detail + "Live Sysmon channel was not exercised."
         if self._using_fallback:
-            return True, "Running process-diff fallback; Sysmon telemetry unavailable"
+            return True, detail + "Running process-diff fallback; Sysmon telemetry unavailable."
         if self._evtlog_handle is not None:
-            return True, f"Sysmon channel open: {_SYSMON_CHANNEL}"
-        return False, "Not yet initialised"
+            return True, detail + f"Sysmon channel open: {_SYSMON_CHANNEL}"
+        return False, detail + "Live Sysmon channel not yet initialised."
 
 
 def register() -> SysmonListenerModule:

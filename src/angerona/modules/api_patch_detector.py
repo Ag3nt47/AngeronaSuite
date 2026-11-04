@@ -561,14 +561,20 @@ class ApiPatchDetectorModule(BaseModule):
         }
 
     def self_test(self) -> tuple[bool, str]:
-        """Verify the parser resolves real exports from the on-disk ntdll."""
-        disk = self._disk_prologues("ntdll.dll")
+        """Verify the hook classifier and separately inspect local PE exports."""
+        if (_looks_hooked(b"\xe9\x00\x00\x00\x00") != "E9 rel-JMP"
+                or _looks_hooked(b"\xff\x25\x00\x00\x00\x00") != "FF25 indirect-JMP"
+                or _looks_hooked(b"\x4c\x8b\xd1\xb8\x00\x00\x00\x00") is not None):
+            return False, "API prologue sample failed known hook or clean control classification"
+        detail = "Offline API prologue sample: direct and indirect hooks flagged; clean bytes ignored. "
         if os.name != "nt":
-            return True, "non-Windows: parser path only (skipped live compare)"
+            return True, detail + "Windows PE export availability was not tested."
+        probe = ApiPatchDetectorModule()
+        disk = probe._disk_prologues("ntdll.dll")
         expected = len(_WATCH["ntdll.dll"])
         if len(disk) == expected:
-            return True, f"parsed all {expected} required ntdll export prologue(s) from disk"
-        return False, f"could not parse ntdll exports ({self.last_error})"
+            return True, detail + f"Parsed all {expected} required ntdll export prologues from disk."
+        return False, detail + f"Could not parse ntdll exports ({probe.last_error})"
 
 
 def register() -> ApiPatchDetectorModule:

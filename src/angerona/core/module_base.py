@@ -794,9 +794,8 @@ class BaseModule:
     supported_platforms = frozenset({"windows"})
     capability_mode: str = "unknown"
     platform_requirements: tuple[str, ...] = ()
-    # Automatic restart is opt-in for overridden self-tests. The central
-    # runner separately recognizes this base class's own lifecycle/readiness
-    # result as restartable; dependency/provisioning checks stay manual-only.
+    # A subclass may explicitly decline operator-approved Self-Test recovery.
+    # The runner still requires a faulted generation and managed lifecycle.
     selftest_auto_repair: bool = False
     _RESTART_JOIN_TIMEOUT: float = _RESTART_JOIN_TIMEOUT
     # Every managed worker receives a supervisor-owned cadence contract.  The

@@ -1458,6 +1458,20 @@ class AdversaryCombat(BaseModule):
         )
 
     def self_test(self) -> tuple[bool, str]:
+        fixture = {
+            "pid": 45001, "process_create_time": 100.25, "response_authorized": True,
+            "response_contract": {
+                "version": 1, "actions": ["terminate_process"],
+                "targets": {"pid": 45001, "process_create_time": 100.25},
+            },
+        }
+        allowed = self._response_actions(Event("Self-test fixture", "Inert contract", Severity.HIGH, details=fixture))
+        refused = self._response_actions(Event("Self-test fixture", "Reused PID", Severity.HIGH,
+                                               details={**fixture, "process_create_time": 101.25}))
+        advisory = self._response_actions(Event("Self-test fixture", "Advisory", Severity.HIGH,
+                                                details={**fixture, "response_authorized": False}))
+        if allowed != frozenset({"terminate_process"}) or refused is not None or advisory is not None:
+            return False, "Response contract fixture failed exact process identity or advisory refusal"
         policy = self.policy()
         snapshot = self.response_snapshot()
         ok = snapshot["ready"]
@@ -1468,7 +1482,7 @@ class AdversaryCombat(BaseModule):
         )
         if not ok:
             detail += f"; {snapshot['reason']}"
-        return ok, detail
+        return ok, f"{detail}; inert contract binding and refusal passed"
 
     def response_snapshot(self) -> dict[str, Any]:
         """Read worker readiness without touching keys, journals or the host.

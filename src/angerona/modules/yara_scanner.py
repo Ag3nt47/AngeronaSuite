@@ -1061,10 +1061,12 @@ class YaraScannerModule(BaseModule):
             matches = scanner.scan(sample).matching_rules
             if not any(str(m.identifier) == "EICAR_Min" for m in matches):
                 return False, "FAIL - in-process YARA did not detect the EICAR marker"
+            if scanner.scan(b"ordinary Angerona diagnostic text").matching_rules:
+                return False, "FAIL - in-process YARA matched the benign comparison sample"
             active = self._find_rules()
             if active:
                 self._compile_rules(Path(active))
-            return True, "PASS - in-process YARA compiled rules and detected EICAR"
+            return True, "PASS - in-process YARA detected the test marker and ignored benign bytes"
         except Exception as exc:
             return False, f"FAIL - {exc}"
         finally:

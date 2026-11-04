@@ -395,15 +395,23 @@ class PacketSnifferModule(BaseModule):
             reap()
 
     def self_test(self) -> tuple[bool, str]:
-        isolated = "subprocess"
+        from angerona.modules.packet_sniffer_worker import _token_kind
+
+        sample = "password=angerona-inert-sample"
+        kind = _token_kind(sample.encode("ascii"))
+        if kind != "password" or _token_kind(b"GET /status HTTP/1.1"):
+            return False, "Packet sample credential classification or clean control failed"
+        records = _decode_records(json.dumps({"type": "detection", "src": "192.0.2.1",
+                                              "dst": "192.0.2.2", "token_kind": kind,
+                                              "payload": sample}) + '\n{"type":"unknown"}')
+        if records != ({"type": "detection", "src": "192.0.2.1", "dst": "192.0.2.2", "token_kind": kind},):
+            return False, "Packet worker sample decoding or secret redaction failed"
+        detail = "Offline packet sample: credential marker classified and value discarded; clean sample ignored. "
         if self.status == "running" and self.health >= 40:
-            return True, f"running, capture isolation={isolated}, health {self.health}%"
+            return True, detail + f"Capture worker running; health {self.health}%."
         if self.status == "stopped":
-            return True, f"ready, capture isolation={isolated}"
-        return False, (
-            f"status={self.status}, capture isolation={isolated}, "
-            f"health {self.health}%"
-        )
+            return True, detail + "Native capture was not exercised."
+        return False, detail + f"Capture worker status={self.status}; health {self.health}%."
 
 
 def register() -> PacketSnifferModule:

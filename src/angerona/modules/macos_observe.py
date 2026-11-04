@@ -11,6 +11,7 @@ import sys
 
 from angerona.core.eventbus import Severity
 from angerona.core.module_base import BaseModule
+from angerona.core.sensor_events import SensorEvent
 from angerona.platforms.macos.observe import MacOSObserveCollector
 
 SUPPORTED_PLATFORMS = ("macos",)
@@ -41,16 +42,35 @@ class MacOSObserveModule(BaseModule):
         self._interval = max(2.0, min(60.0, raw))
 
     def self_test(self) -> tuple[bool, str]:
-        if sys.platform != "darwin":
-            return False, "macOS Observe is available only on macOS"
-        try:
-            self._collector.poll()
-        except Exception as exc:
-            return False, f"observe snapshot failed: {exc}"
-        return True, (
-            "observe snapshot succeeded; native Endpoint Security enforcement "
-            "is not part of this preview"
+        processes = [{"pid": 11, "create_time": 1.0, "command_line_collected": False}]
+        connections: list[dict] = []
+        native: list[object] = []
+        collector = MacOSObserveCollector(
+            process_provider=lambda: processes, network_provider=lambda: connections,
+            native_provider=lambda: native, network_every=1, clock=lambda: 10.0,
         )
+        if collector.poll():
+            return False, "macOS Observe fixture reported the initial baseline as new activity"
+        processes.append({"pid": 12, "create_time": 2.0, "command_line_collected": False})
+        connections.append({"pid": 12, "local": "127.0.0.1:1234", "remote": "192.0.2.8:443"})
+        native.extend([SensorEvent("linux", "fixture", "security", "wrong_platform"), {"untrusted": True}])
+        observations = collector.poll()
+        normalized = [item.to_event(self.name).details["sensor_event"] for item in observations]
+        if (
+            [(item["platform"], item["kind"], item["action"]) for item in normalized]
+            != [("macos", "process", "start"), ("macos", "network", "connect")]
+            or normalized[0]["process"] != processes[1] or collector.poll()
+        ):
+            return False, "macOS Observe fixture failed normalization, privacy fields or baseline suppression"
+        detail = "isolated macOS process and flow fixtures passed; native enforcement coverage is separate"
+        if sys.platform != "darwin":
+            return True, detail + "; live observation requires macOS"
+        degraded = getattr(self._collector, "degraded_reasons", ())
+        if degraded:
+            return False, detail + "; current collector reports: " + "; ".join(degraded)[:500]
+        if self.status != "running" or not self._first_cycle_complete.is_set():
+            return True, detail + "; live collection completion was not observed"
+        return True, detail + "; worker reports no collector degradation"
 
     def run(self) -> None:
         self.set_health(

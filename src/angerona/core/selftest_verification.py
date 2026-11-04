@@ -70,7 +70,7 @@ def module_contract_checks(mod, *, include_health: bool = True) -> list[dict]:
 
 
 def verify_accounting(results: list[dict], expected_modules: list[str],
-                      passed: int, failed: int, skipped: int) -> tuple[bool, str]:
+                      passed: int, failed: int, skipped: int, deferred: int = 0) -> tuple[bool, str]:
     """Reconcile independently assembled evidence against public counters."""
     if len(expected_modules) != len(set(expected_modules)):
         return False, "duplicate module identities in selection"
@@ -78,8 +78,8 @@ def verify_accounting(results: list[dict], expected_modules: list[str],
     if sorted(modules) != sorted(expected_modules):
         return False, "module result coverage differs from requested inventory"
     observed = {status: sum(row["status"] == status for row in results)
-                for status in ("PASS", "FAIL", "SKIP")}
-    if (observed["PASS"], observed["FAIL"], observed["SKIP"]) != (passed, failed, skipped):
+                for status in ("PASS", "FAIL", "SKIP", "DEFERRED")}
+    if tuple(observed.values()) != (passed, failed, skipped, deferred):
         return False, "result totals do not reconcile with individual evidence"
     if sum(observed.values()) != len(results):
         return False, "unknown result status"
@@ -88,10 +88,10 @@ def verify_accounting(results: list[dict], expected_modules: list[str],
         if not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0:
             return False, "missing or invalid timing evidence"
         checks = row.get("checks", ())
-        if row["status"] in {"PASS", "SKIP"} and any(
+        if row["status"] in {"PASS", "SKIP", "DEFERRED"} and any(
             check.get("status") == "FAIL" for check in checks
         ):
-            return False, "failed subcheck was hidden by a successful or skipped result"
+            return False, "failed subcheck was hidden by a successful, skipped or deferred result"
     return True, f"{len(modules)}/{len(expected_modules)} modules accounted for; totals and subchecks reconcile"
 
 

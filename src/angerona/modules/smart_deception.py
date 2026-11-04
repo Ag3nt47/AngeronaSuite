@@ -3018,6 +3018,10 @@ class SmartDeception(BaseModule):
                     pass
 
     # ── Monitoring ────────────────────────────────────────────────────────────
+    @staticmethod
+    def _matches_decoy_anchor(size: int, data: bytes) -> bool:
+        return size == len(_ANCHOR_BYTES) and data == _ANCHOR_BYTES
+
     def _inspect_decoy(self, path: str) -> tuple[Optional[str], tuple[int, int] | None]:
         """Read at most anchor-length+1 bytes from one stable no-follow object."""
         candidate = Path(path)
@@ -3035,7 +3039,7 @@ class SmartDeception(BaseModule):
                 return "object identity replaced", identity
             info = os.fstat(descriptor)
             data = os.read(descriptor, _MAX_ANCHOR_READ)
-            if int(info.st_size) != len(_ANCHOR_BYTES) or data != _ANCHOR_BYTES:
+            if not self._matches_decoy_anchor(int(info.st_size), data):
                 return "anchor token missing (encrypted/overwritten)", identity
             return None, identity
         except OSError as exc:
@@ -3322,6 +3326,11 @@ class SmartDeception(BaseModule):
             and _CUSTODY_TERMINAL_RESERVE < _CUSTODY_LEDGER_MAX_EVENTS
         ):
             return False, "bounded quarantine contract is invalid"
+        anchor_size = len(_ANCHOR_BYTES)
+        if (not self._matches_decoy_anchor(anchor_size, _ANCHOR_BYTES)
+                or self._matches_decoy_anchor(anchor_size, b"x" * anchor_size)
+                or self._matches_decoy_anchor(anchor_size + 1, _ANCHOR_BYTES)):
+            return False, "offline honeytoken sample failed intact or overwritten anchor controls"
         if os.name == "nt":
             try:
                 _custody_api()
@@ -3329,7 +3338,8 @@ class SmartDeception(BaseModule):
                 return False, f"exact-object custody API unavailable: {exc}"
         return (
             True,
-            f"{len(self._decoys)} honeytokens; {_MAX_ANCHOR_READ}-byte read cap; "
+            f"offline honeytoken samples passed; {len(self._decoys)} honeytokens; "
+            f"{_MAX_ANCHOR_READ}-byte read cap; "
             f"{len(self._unresolved_trips)} unresolved trips; "
             f"authenticated custody ledger sequence={self._custody_ledger_sequence}; "
             f"remaining={self._custody_remaining_events}; external-local-witness="

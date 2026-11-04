@@ -35,6 +35,28 @@ def test_pipeline_receipt_survives_eviction_without_reading_history():
     assert bus.subscriber_metrics() == ()
 
 
+def test_pipeline_verifies_archival_advisory_without_mesh_enrollment():
+    bus = EventBus()
+    bus.arm(BusAuthority(b"x" * 32))
+    bus.require_mesh()
+    rotator = bus._control_mesh._rotator
+    try:
+        runner = selftest.SelfTestRunner(_manager(), bus)
+        ok, detail = runner._pipeline_check()
+        assert ok and "verified archival HMAC" in detail
+        assert "authenticated mesh producer coverage is outside this check" in detail
+        advisory = bus.recent(1)[0]
+        assert advisory.module == "Unattributed local producer"
+        assert advisory.details["unattributed_module"] == "Self-Test"
+        assert advisory.details["response_authorized"] is False
+        assert bus.verify_archived(advisory) and not bus.verify(advisory)
+        assert bus.subscriber_metrics() == ()
+    finally:
+        bus.close_mesh()
+        rotator.join(2.0)
+        assert not rotator.is_alive()
+
+
 def test_pipeline_detaches_diagnostic_subscriber_after_publish_failure():
     class FailedBus(EventBus):
         def publish(self, _event):
@@ -108,7 +130,10 @@ def test_selftest_button_preserves_chill_and_never_prepares_model_service(monkey
     )
     MainWindow._self_test_worker(host)
     assert progress[-1] == (2, 2)
-    assert len(finished) == 1 and finished[0][1] == []
+    assert len(finished) == 1
+    failures, results, plans = finished[0][1]
+    assert failures == [] and plans == {}
+    assert any(row["module"] == ai.name and row["status"] == "SKIP" for row in results)
     assert "[SKIP] AI Triage (Ollama)" in finished[0][0]
     assert "1 passed, 0 failed, 1 skipped" in finished[0][0]
 

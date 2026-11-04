@@ -1818,7 +1818,7 @@ class SpywareGuardModule(BaseModule):
         self._vault = EncryptedQuarantine(root / "spyware_guard" / "encrypted_evidence", key)
         return self._vault
 
-    def _sandbox(self, scenario: str) -> None:
+    def _sandbox(self, scenario: str) -> list[dict]:
         now = [self._clock()]
         engine = SpywareBehaviorEngine(clock=lambda: now[0])
         base = {"pid": 45001, "process_create_time": now[0] - 20}
@@ -1847,6 +1847,7 @@ class SpywareGuardModule(BaseModule):
         self.emit("SpywareGuard inert sandbox scenario completed.", Severity.INFO,
                   drill=True, scenario=scenario, detections=len(findings),
                   response_authorized=False, containment_performed=False)
+        return findings
 
     def _tick(self) -> None:
         if not self._definitions_initialized:
@@ -1987,11 +1988,20 @@ class SpywareGuardModule(BaseModule):
         probe = SpywareGuardModule(clock=lambda: 1800000000.0)
         probe._settings["spyware_auto_contain"] = True
         finding = {"pid": 45001, "process_create_time": 1799999900.0}
-        assert probe._response(finding, True) == {}  # No retained native proof.
-        assert not probe._response(finding, False)
-        assert probe._response({"pid": 45001}, True) == {}
-        for scenario in ("dns_tunnel", "exfiltration", "renderer_escape"):
-            probe._sandbox(scenario)
-        assert probe.dashboard_snapshot()["stats"]["sandbox_runs"] == 3
-        assert not probe.queue_report_url("http://127.0.0.1/")
-        return True, "Offline exact-target policy, inert sandbox and ingestion gates passed"
+        if (probe._response(finding, True) or probe._response(finding, False)
+                or probe._response({"pid": 45001}, True)):
+            return False, "An inert spyware sample was incorrectly admitted for response"
+        for scenario, expected in (("dns_tunnel", "dns_tunneling_candidate"),
+                                   ("exfiltration", "encrypted_egress_spike"),
+                                   ("renderer_escape", "renderer_shell_child")):
+            results = probe._sandbox(scenario)
+            if not any(row["kind"] == expected and row["response_authorized"] is False for row in results):
+                return False, f"Inert spyware fixture did not produce its expected advisory detection ({scenario})"
+        clock = 1800000000.0
+        benign = SpywareBehaviorEngine(clock=lambda: clock)
+        if benign.observe({"event_type": "dns_query", "ts": clock, "pid": 45001,
+                           "process_create_time": clock - 10, "domain": "static.example.net"}):
+            return False, "Ordinary DNS triggered an unexpected spyware finding"
+        if probe.dashboard_snapshot()["stats"]["sandbox_runs"] != 3 or probe.queue_report_url("http://127.0.0.1/"):
+            return False, "Spyware sandbox accounting or report ingestion fixture failed"
+        return True, "Inert DNS tunnel, encrypted egress spike and renderer-shell samples detected; benign DNS ignored"

@@ -40,6 +40,7 @@ import time
 from collections import deque
 from typing import Deque
 
+from angerona.core.eventbus import Event, EventBus
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.threat import is_active_threat
 
@@ -124,20 +125,27 @@ class DynamicResourceModule(BaseModule):
             return
         now = time.monotonic()
         self._drain_bus(now)
-        rate = self._current_rate(now)
-
-        if not self._elevated and rate >= HIGH_EVENT_RATE:
+        transition = self._priority_transition(now, self._current_rate(now))
+        if transition == "escalate":
             self._escalate()
+        elif transition == "restore":
+            self._restore()
+
+    def _priority_transition(self, now: float, rate: int) -> str:
+        """Select a transition and update the calm clock without touching OS priority."""
+        if not self._elevated and rate >= HIGH_EVENT_RATE:
             self._calm_since = 0.0   # reset calm timer
+            return "escalate"
         elif self._elevated:
             if rate <= LOW_EVENT_RATE:
                 if self._calm_since == 0.0:
                     self._calm_since = now
                 elif now - self._calm_since >= COOLDOWN_S:
-                    self._restore()
                     self._calm_since = now
+                    return "restore"
             else:
                 self._calm_since = 0.0   # still elevated — reset calm
+        return ""
 
     def _drain_bus(self, now: float) -> None:
         """Count active HIGH/CRITICAL incidents by local arrival time."""
@@ -202,10 +210,37 @@ class DynamicResourceModule(BaseModule):
             )
 
     def self_test(self) -> tuple[bool, str]:
+        fixture = DynamicResourceModule()
+        bus = EventBus()
+        fixture.bind(bus)
+        incident = Event("Fixture Detector", "inert incident", Severity.HIGH, details={"active_attack": True})
+        for _ in range(HIGH_EVENT_RATE - 1):
+            bus.publish(incident)
+        bus.publish(Event("Self-Test", "inert health notice", Severity.CRITICAL))
+        fixture._drain_bus(100.0)
+        if fixture._current_rate(100.0) != HIGH_EVENT_RATE - 1:
+            return False, "priority fixture miscounted active incidents or counted a health notice"
+        if fixture._priority_transition(100.0, fixture._current_rate(100.0)):
+            return False, "priority fixture escalated below the incident threshold"
+        bus.publish(incident)
+        fixture._drain_bus(100.0)
+        if fixture._priority_transition(100.0, fixture._current_rate(100.0)) != "escalate":
+            return False, "priority fixture missed the incident threshold"
+        fixture._elevated = True
+        calm = 100.0 + RATE_WINDOW_S + 1.0
+        fixture._priority_transition(calm - 2.0, 0)
+        fixture._priority_transition(calm - 1.0, LOW_EVENT_RATE + 1)
+        if fixture._calm_since != 0.0:
+            return False, "priority fixture did not reset the calm window when incidents returned"
+        if (fixture._priority_transition(calm, fixture._current_rate(calm))
+                or fixture._priority_transition(calm + COOLDOWN_S - 1.0, 0)
+                or fixture._priority_transition(calm + COOLDOWN_S, 0) != "restore"):
+            return False, "priority fixture restored before the complete calm window or failed to restore"
+        detail = "isolated incident-rate, escalation and cooldown fixtures passed"
         if self.status != "running":
-            return super().self_test()   # not started yet — graceful "stopped" status
+            return True, detail + "; live process priority was not exercised"
         if self._proc is None:
-            return False, "psutil not initialised"
+            return False, detail + "; live priority handle unavailable"
         try:
             import psutil
             current = self._proc.nice()
@@ -214,7 +249,7 @@ class DynamicResourceModule(BaseModule):
                 "NORMAL"  if current == psutil.NORMAL_PRIORITY_CLASS else
                 f"other({current})"
             )
-            return True, f"Process priority={label}, elevated={self._elevated}"
+            return True, f"{detail}; process priority={label}, elevated={self._elevated}"
         except Exception as exc:
             return False, str(exc)
 

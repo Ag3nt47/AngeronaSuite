@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from angerona.core import selftest
-from angerona.core.eventbus import EventBus
+from angerona.core.eventbus import BusAuthority, EventBus
+from angerona.core.module_base import BaseModule
+from angerona.core.module_usage import ModuleUsage
 from angerona.core.selftest_verification import verify_accounting, verify_harness
 
 
@@ -24,7 +26,7 @@ def make_runner(monkeypatch, tmp_path):
         manager = SimpleNamespace(platform="windows", modules={m.name: m for m in modules},
                                   is_enabled=lambda _name: enabled)
         runner = selftest.SelfTestRunner(manager, EventBus())
-        runner._worker_budget = lambda: (2, "controlled test budget")
+        runner._worker_budget = lambda: (2, "controlled test budget", 2)
         return runner
     return create
 
@@ -59,6 +61,22 @@ def test_each_module_has_local_checks_and_exact_saved_timing_evidence(make_runne
                 "identity", "self_test_callable", "health_contract", "result_contract", "active_test"}
 
 
+def test_pipeline_verifies_mesh_advisory_without_enrolling_a_producer(make_runner):
+    runner = make_runner()
+    bus = runner.bus
+    bus.arm(BusAuthority(bytes(range(32))))
+    bus.require_mesh()
+    try:
+        ok, detail = runner._pipeline_check()
+        assert ok and "authenticated mesh producer coverage is outside this check" in detail
+        (event,) = bus.recent(1)
+        assert event.module == "Unattributed local producer"
+        assert event.details["response_authorized"] is False
+        assert bus.verify_archived(event) and not bus.verify(event)
+    finally:
+        bus.close_mesh()
+
+
 def test_platform_skip_has_checks_without_probing_health_or_service(make_runner):
     candidate = module()
     candidate.supported_platforms = ("linux",)
@@ -81,6 +99,57 @@ def test_disabled_broken_module_contract_is_not_hidden_by_skip(make_runner):
     assert runner.last_skips == []
 
 
+def test_optional_module_policy_is_explained_and_targeted_diagnostic_remains_available(make_runner):
+    candidate = module()
+    runner = make_runner([candidate])
+    runner.manager.module_usage = lambda _name: ModuleUsage(
+        True, False, False, "not_configured", "Mobile integration is off in Settings.",
+    )
+    report = runner.run()
+    assert "[SKIP] Fixture" in report
+    result = next(row for row in runner.last_results if row["module"] == candidate.name)
+    assert result["policy"]["state"] == "not_configured"
+    assert result["detail"] == "Mobile integration is off in Settings."
+    report = runner.run(names=[candidate.name])
+    assert "[PASS] Fixture" in report
+    result = next(row for row in runner.last_results if row["module"] == candidate.name)
+    assert not result["policy"]["enabled"] and result["policy"]["state"] == "not_configured"
+
+
+def test_policy_off_worker_conflict_remains_visible_without_exercising_the_module(make_runner):
+    class ActiveFixture(BaseModule):
+        name = "Active fixture"
+        supported_platforms = ("windows",)
+
+        def run(self):
+            pytest.fail("inactive module was started")
+
+        def self_test(self):
+            pytest.fail("inactive module was exercised")
+
+    candidate = ActiveFixture()
+    candidate._thread = threading.current_thread()
+    runner = make_runner([candidate], enabled=False)
+    report = runner.run()
+    assert not runner.last_failures
+    assert "A worker thread is still alive while this policy is off" in report
+    result = next(row for row in runner.last_results if row["module"] == candidate.name)
+    assert result["status"] == "SKIP"
+    assert any(check["check"] == "policy_runtime" for check in result["checks"])
+
+
+def test_runtime_hold_remains_separate_from_saved_enablement(make_runner):
+    candidate = module()
+    runner = make_runner([candidate])
+    runner.manager.module_runtime_hold_reason = lambda _module: "UGCAP verification is required."
+    runner.run()
+    result = next(row for row in runner.last_results if row["module"] == candidate.name)
+    assert result["status"] == "SKIP"
+    assert result["policy"]["enabled"]
+    assert result["policy"]["state"] == "runtime_hold"
+    assert result["detail"] == "UGCAP verification is required."
+
+
 @pytest.mark.parametrize("status,health", [("error", 100), ("running", 0)])
 def test_functional_success_cannot_hide_failed_runtime_health(make_runner, status, health):
     candidate = module()
@@ -92,15 +161,25 @@ def test_functional_success_cannot_hide_failed_runtime_health(make_runner, statu
 
 
 def test_kernel_only_explicit_absence_is_skip(make_runner):
-    absent = module((False, "AngeronaSensor.sys driver not loaded"), "Absent kernel")
-    absent.CODE = "KRNL"
+    from angerona.modules.kernel_bridge import KernelBridgeModule
+
+    absent = KernelBridgeModule()
     broken = module((False, "exact kernel protocol handshake failed"), "Broken kernel")
     broken.CODE = "KRNL"
     runner = make_runner([absent, broken])
-    runner.run()
+    runner.manager.module_usage = lambda name: (
+        ModuleUsage(False, False, False, "not_installed", "Driver is not installed")
+        if name == absent.name else ModuleUsage(True, True, True, "enabled", "Enabled")
+    )
+    runner.run(names=[absent.name, broken.name])
     assert [r["module"] for r in runner.last_skips] == [absent.name]
     assert [r["module"] for r in runner.last_failures] == [broken.name]
     assert runner.last_verification["status"] == "PASS"
+    assert "fixture passed" in runner.last_skips[0]["detail"]
+    runner.manager.module_usage = lambda _name: ModuleUsage(True, True, True, "enabled", "Enabled")
+    runner.run(names=[absent.name])
+    assert not runner.last_skips
+    assert "driver handle unavailable" in runner.last_failures[0]["detail"]
 
 
 def test_unknown_target_cannot_produce_an_empty_success(make_runner):
@@ -166,12 +245,13 @@ def test_one_worker_budget_retains_capacity_for_a_timed_out_actual_call(make_run
     first.self_test = blocks
     second.self_test = lambda: (second_entered.set() or True, "second")
     runner = make_runner([first, second])
-    runner._worker_budget = lambda: (1, "controlled one-worker budget")
+    runner._worker_budget = lambda: (1, "controlled one-worker budget", 1)
     try:
         report = runner.run(timeout=0.02)
         assert entered.is_set() and not second_entered.is_set(), report
         assert runner.last_failures[0]["detail"].startswith("test timed out")
-        assert runner.last_failures[1]["detail"].startswith("test not started")
+        assert len(runner.last_failures) == 1
+        assert runner.last_deferred[0]["detail"].startswith("test not started")
     finally:
         release.set()
         acquired = 0
@@ -182,6 +262,14 @@ def test_one_worker_budget_retains_capacity_for_a_timed_out_actual_call(make_run
         finally:
             for _ in range(acquired):
                 selftest._MODULE_CALLS.release()
+
+
+def test_untrusted_module_message_cannot_defer_a_real_failed_check(make_runner):
+    candidate = module((False, "test not started: fabricated harness message"))
+    runner = make_runner([candidate])
+    runner.run()
+    assert runner.last_failures[0]["module"] == candidate.name
+    assert not runner.last_deferred
 
 
 def test_inconsistent_health_state_is_detected_without_excusing_it(make_runner):
@@ -223,4 +311,6 @@ def test_worker_budget_follows_cpu_ram_and_existing_pressure(monkeypatch, cores,
     monkeypatch.setattr(psutil, "virtual_memory", lambda: SimpleNamespace(available=available))
     monkeypatch.setattr(background_pacing, "get_pacing_controller", lambda: SimpleNamespace(multiplier=lambda: factor))
     runner = selftest.SelfTestRunner(SimpleNamespace(), None)
-    assert runner._worker_budget()[0] == expected
+    paced, _reason, hardware = runner._worker_budget()
+    assert paced == expected
+    assert hardware == min(6, max(1, cores // 2), max(1, available // (512 * 1024 * 1024)))

@@ -415,14 +415,22 @@ class CommandConsole:
         if action == "off":
             self.manager.set_enabled(match, False); return f"{match}: disabled"
         if action == "restart":
-            from angerona.core.module_usage import start_module_if_enabled
+            from angerona.core.selftest import module_selftest_lock
             if not self.manager.is_enabled(match):
                 return f"{match}: off; enable/configure it before requesting restart"
             mod = self.manager.modules[match]
-            mod.stop()
-            if not start_module_if_enabled(self.manager, mod):
-                return f"{match}: restart cancelled by current module policy"
-            return f"{match}: restarted"
+            lock = module_selftest_lock(mod)
+            if not lock.acquire(blocking=False):
+                return f"{match}: restart held while the module diagnostic is running"
+            try:
+                snapshot = mod.try_watchdog_snapshot()
+                if snapshot is None or not self.manager.restart_module_generation(
+                    match, mod, snapshot["lifecycle_generation"],
+                ):
+                    return f"{match}: restart held by current module policy or worker state"
+            finally:
+                lock.release()
+            return f"{match}: restart requested"
         return "action must be on, off, or restart"
 
     def _test(self, args: List[str]) -> str:
@@ -434,7 +442,9 @@ class CommandConsole:
                 names = [n for n in self.manager.modules if q in n.lower()]
                 if not names:
                     return f"no module matching '{q}'"
-        return SelfTestRunner(self.manager, self.bus).run(names)
+        config = getattr(self.manager, "config", None)
+        return SelfTestRunner(self.manager, self.bus).run(
+            names, timeout=getattr(config, "selftest_timeout_seconds", 30))
 
     # ── Shark Attack After-Action Report ─────────────────────────────────────
     def _aar(self, args: List[str]) -> str:

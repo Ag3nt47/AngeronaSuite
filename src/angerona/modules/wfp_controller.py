@@ -492,8 +492,9 @@ class WFPController:
             value = value.lower()
         return ContainmentTarget(kind, value, direction)
 
+    @classmethod
     def plan_containment(
-        self,
+        cls,
         targets: Sequence[ContainmentTarget],
         *,
         ttl_seconds: int = 15 * 60,
@@ -509,14 +510,14 @@ class WFPController:
         """
         if not targets:
             raise ValueError("at least one scoped containment target is required")
-        if not 30 <= int(ttl_seconds) <= self._MAX_CONTAINMENT_SECONDS:
+        if not 30 <= int(ttl_seconds) <= cls._MAX_CONTAINMENT_SECONDS:
             raise ValueError("containment TTL must be between 30 seconds and 24 hours")
         validated = tuple(sorted(
-            (self._validate_target(target) for target in targets),
+            (cls._validate_target(target) for target in targets),
             key=lambda item: (item.kind, item.value, item.direction),
         ))
         exclusions = tuple(sorted({
-            *(item.lower().strip() for item in self._RECOVERY_BASELINE),
+            *(item.lower().strip() for item in cls._RECOVERY_BASELINE),
             *(item.lower().strip() for item in recovery_exclusions if item.strip()),
         }))
         created = _as_utc(now or _utc_now())
@@ -762,6 +763,18 @@ class WFPControllerModule(BaseModule):
             }
 
     def self_test(self) -> tuple[bool, str]:
+        target = ContainmentTarget("ip", "2001:0db8::2", "outbound")
+        plan = WFPController.plan_containment([target])
+        if (not plan.dry_run or plan.targets != (ContainmentTarget("ip", "2001:db8::2", "outbound"),)
+                or not {"loopback", "dns", "dhcp"}.issubset(plan.recovery_exclusions)):
+            return False, "offline containment preview sample lost its scope or recovery exclusions"
+        try:
+            WFPController.plan_containment([ContainmentTarget("process", "../fixture.exe")])
+        except ValueError:
+            pass
+        else:
+            return False, "offline containment preview admitted an out-of-scope process path"
+
         if self.status != "running":
             return super().self_test()   # not started yet — graceful "stopped" status
         if self._ctrl is None:
@@ -771,7 +784,7 @@ class WFPControllerModule(BaseModule):
             return False, f"IP Helper collection failed: {coverage.error}"
         return True, (
             f"IP Helper full-tuple table has {coverage.rows} rows; "
-            "WFP net-event telemetry is explicitly unavailable"
+            "WFP net-event telemetry is explicitly unavailable; offline containment preview samples passed"
         )
 
     def _netsh_fallback(self) -> str:

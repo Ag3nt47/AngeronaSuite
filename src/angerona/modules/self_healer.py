@@ -54,6 +54,7 @@ from angerona.core.atomic_io import replace_with_retry
 from angerona.core.module_base import (
     BaseModule,
     Severity,
+    sign_crash_snapshot_bundle,
     verify_crash_snapshot_bundle,
 )
 from angerona.core.url_policy import (
@@ -1184,11 +1185,39 @@ class SelfHealer(BaseModule):
             return None
 
     def self_test(self) -> tuple[bool, str]:
+        from angerona.core.data_paths import data_dir
+
         try:
-            _ = _snapshot_dir(); _ = _staged_dir()
-            return True, f"watching crash snapshots; {self._staged} staged this session"
+            sample_key = bytes(range(32))
+            sample = sign_crash_snapshot_bundle({
+                "module": "self-test fixture", "crashed_at": 1.0,
+                "error": "fixture error", "traceback": "fixture traceback",
+                "memory": {}, "last_50_events": [],
+            }, key=sample_key)
+            if (not verify_crash_snapshot_bundle(sample, key=sample_key)
+                    or verify_crash_snapshot_bundle(dict(sample, error="changed"), key=sample_key)
+                    or _capture_refusal(dict(sample, memory={"capture": {}}), 1) is None):
+                return False, "offline crash snapshot sample failed authentication or capture refusal"
+
+            root = data_dir(create=False)
+            missing = []
+            for path in (root / "diagnostics" / "crash_snapshots", root / "staged_patches"):
+                try:
+                    info = path.lstat()
+                except FileNotFoundError:
+                    missing.append(path.name)
+                    continue
+                if (not stat.S_ISDIR(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0)
+                        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                    return False, f"{path.name} is not a plain directory"
+            if self.status == "running" and self.first_cycle_complete and "crash_snapshots" in missing:
+                return False, "live crash snapshot directory is missing"
+            pending = f"; not initialized: {', '.join(missing)}" if missing else ""
+            return True, (f"offline signed and tampered crash samples verified; "
+                          f"{self._staged} staged this session{pending}")
         except Exception as exc:
-            return False, f"path setup failed: {exc}"
+            return False, f"crash snapshot diagnostic failed: {exc}"
 
 
 def register() -> BaseModule:

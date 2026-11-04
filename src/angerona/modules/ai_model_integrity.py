@@ -460,10 +460,12 @@ class AIModelIntegrityGuardModule(BaseModule):
     startup_cycle_timeout = 300.0
     watchdog_work_budget_seconds = 300.0
 
-    def __init__(self) -> None:
+    def __init__(self, *, read_only_root: Path | None = None) -> None:
         super().__init__()
         self.state_lock = threading.Lock()
-        self._baseline_path = _repo_root() / "shared_logs" / "model_baselines.json"
+        self._read_only_root = read_only_root
+        root = _repo_root() if read_only_root is None else read_only_root
+        self._baseline_path = root / "shared_logs" / "model_baselines.json"
         self._baseline: dict[str, str] = {}
         self._baseline_root: dict[str, object] = {}
         self._baseline_sha256 = ""
@@ -684,9 +686,14 @@ class AIModelIntegrityGuardModule(BaseModule):
         master = self._baseline_key_override
         if master is None:
             try:
-                master = bytes.fromhex(
-                    (_repo_root() / "bus.key").read_text(encoding="ascii").strip()
-                )
+                root = self._read_only_root
+                if root is None:
+                    root = _repo_root()
+                with (root / "bus.key").open("rb") as stream:
+                    raw = stream.read(1025)
+                if len(raw) > 1024:
+                    return None
+                master = bytes.fromhex(raw.decode("ascii").strip())
             except (OSError, ValueError):
                 return None
         if len(master) != 32:
@@ -711,7 +718,8 @@ class AIModelIntegrityGuardModule(BaseModule):
             self._baseline_status = "key-unavailable"
             return False
         try:
-            raw = self._baseline_path.read_bytes()
+            with self._baseline_path.open("rb") as stream:
+                raw = stream.read(_MAX_BASELINE_BYTES + 1)
         except FileNotFoundError:
             self._baseline_status = "approval-required"
             return False
@@ -822,6 +830,8 @@ class AIModelIntegrityGuardModule(BaseModule):
 
     def rebaseline(self, *, approved: bool = False) -> int:
         """Explicitly approve one complete, stable local model inventory."""
+        if self._read_only_root is not None:
+            raise PermissionError("read-only model inspection cannot approve a baseline")
         if not approved:
             raise PermissionError("explicit model baseline approval is required")
         if self._baseline_path.exists() and not self._load_baseline():
@@ -1014,8 +1024,15 @@ def _model_manifest_reference(model_ref: str) -> tuple[str, str]:
 
 def _approved_model_context(
     manifest_relative: str,
+    *,
+    read_only: bool = False,
 ) -> tuple[AIModelIntegrityGuardModule, Path]:
-    guard = AIModelIntegrityGuardModule()
+    if read_only:
+        from angerona.core.data_paths import resolve_data_dir
+
+        guard = AIModelIntegrityGuardModule(read_only_root=resolve_data_dir())
+    else:
+        guard = AIModelIntegrityGuardModule()
     if not guard._load_baseline():
         raise ModelIntegrityError(
             f"approved model baseline unavailable ({guard._baseline_status})"
@@ -1035,10 +1052,33 @@ def check_model_readiness(model_ref: str) -> None:
 
     Idle health checks authenticate the small baseline, exact configured tag,
     and root identity. Full byte verification remains mandatory in
-    ``require_fresh_model_attestation`` before inference and explicit self-tests.
+    ``require_fresh_model_attestation`` before inference.
     """
     _normalized, manifest_relative = _model_manifest_reference(model_ref)
     _approved_model_context(manifest_relative)
+
+
+def observe_model_attestation(model_ref: str, installed_digest: str) -> bool:
+    """Observe exact current approval and an existing byte receipt without hashing.
+
+    The immutable cache entry is only advisory here. This reader does not wait
+    for the scan lock, update the cache, or provide an inference receipt.
+    """
+    normalized, manifest_relative = _model_manifest_reference(model_ref)
+    guard, _root = _approved_model_context(manifest_relative, read_only=True)
+    manifest_digest = "sha256:" + guard._baseline[manifest_relative]
+    if not hmac.compare_digest(manifest_digest, installed_digest):
+        raise ModelIntegrityError("Ollama's installed manifest digest differs from the approved model")
+    cached = _ATTESTATION_CACHE.get(normalized)
+    now = time.monotonic()
+    return (
+        cached is not None
+        and cached.model_ref == normalized
+        and cached.manifest_digest == manifest_digest
+        and cached.baseline_sha256 == guard._baseline_sha256
+        and cached.issued_monotonic <= now <= cached.expires_monotonic
+        and now - cached.issued_monotonic <= _ATTESTATION_TTL_SECONDS
+    )
 
 
 def require_fresh_model_attestation(

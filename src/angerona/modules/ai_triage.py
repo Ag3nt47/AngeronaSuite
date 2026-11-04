@@ -15,6 +15,7 @@ SUPPORTED_PLATFORMS = ("windows", "macos", "linux")
 import json
 import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -42,6 +43,11 @@ SYSTEM_PROMPT = (
     "You are a local SOC analyst. Given a security event, respond with a single "
     "short sentence: a plain-language explanation and whether it looks benign or "
     "malicious. Be concise."
+)
+
+AITRIAGE_ATTESTATION_DEFERRED = (
+    "Ollama is ready and the installed model matches its approved manifest. "
+    "Disk byte attestation is pending or stale; fresh verification is required before inference."
 )
 
 _REQUEST_PHASES = ("service-check", "model-check", "request")
@@ -144,6 +150,7 @@ class AITriageModule(BaseModule):
         self._recovery_lock = threading.Lock()
         self._recovery_thread: Optional[threading.Thread] = None
         self._attestation_error = ""
+        self._attestation_failure: tuple[int, str, str] | None = None
         self._attestation_receipt = None
         self._ollama_readiness_error = ""
         self._model_readiness_error = ""
@@ -293,11 +300,11 @@ class AITriageModule(BaseModule):
             return False
         return bool(frame)
 
-    def _sync_config(self) -> None:
-        """Apply live Settings values without requiring a suite restart."""
+    def _configured_endpoint(self) -> tuple[str, str]:
+        """Read the current service origin and model without changing worker state."""
         config = self._config
         if config is None:
-            return
+            return self._host, self._model
         host = str(getattr(config, "ollama_host", self._host) or "").strip()
         # Preserve the deployment override read during __init__; Settings is
         # the fallback when no environment override is present.
@@ -307,10 +314,11 @@ class AITriageModule(BaseModule):
             or getattr(config, "ollama_model", self._model)
             or ""
         ).strip()
-        if host:
-            self._host = host.rstrip("/")
-        if model:
-            self._model = model
+        return (host.rstrip("/") if host else self._host), (model or self._model)
+
+    def _sync_config(self) -> None:
+        """Apply live Settings values without requiring a suite restart."""
+        self._host, self._model = self._configured_endpoint()
 
     def _ask(self, prompt: str) -> Optional[str]:
         """Send a prompt to Ollama, respecting the circuit breaker.
@@ -437,6 +445,7 @@ class AITriageModule(BaseModule):
             self._attestation_receipt = None
             return False
         stop_event = self.generation_stop_event()
+        generation = self.lifecycle_generation
         if stop_event.is_set():
             self._attestation_receipt = None
             return False
@@ -455,6 +464,7 @@ class AITriageModule(BaseModule):
                 self._attestation_receipt = None
                 return False
             rendered = str(exc)[:500]
+            self._attestation_failure = generation, model, rendered
             self.last_error = rendered
             self.set_health(
                 20,
@@ -476,6 +486,7 @@ class AITriageModule(BaseModule):
             self._attestation_receipt = None
             return False
         self._attestation_error = ""
+        self._attestation_failure = None
         self._attestation_receipt = receipt
         self.set_health(100, "exact configured model attested for local inference")
         return True
@@ -483,8 +494,21 @@ class AITriageModule(BaseModule):
     def _ping_ollama(self) -> bool:
         """Check daemon/model availability without loading the model into RAM."""
         self._sync_config()
+        model_record, detail = self._probe_model(self._host, self._model)
+        if model_record is not None:
+            if self.last_error == self._ollama_readiness_error:
+                self.last_error = ""
+            self._ollama_readiness_error = ""
+            return True
+        self._ollama_readiness_error = detail
+        self.last_error = detail
+        return False
+
+    @staticmethod
+    def _probe_model(host: str, model: str) -> tuple[dict | None, str]:
+        """Read the attested listener's existing exact-tag inventory."""
         try:
-            req = urllib.request.Request(local_service_url(self._host, "/api/tags"))
+            req = urllib.request.Request(local_service_url(host, "/api/tags"))
             with safe_urlopen(
                 req, policy=OLLAMA_SERVICE_POLICY, timeout=3.0,
             ) as resp:
@@ -495,35 +519,29 @@ class AITriageModule(BaseModule):
                 not isinstance(item, dict) for item in data["models"]
             ):
                 raise ValueError("invalid Ollama model descriptors")
-            installed = [
-                str(item.get("name") or item.get("model") or "")
-                for item in data.get("models", [])
-                if isinstance(item, dict)
+            matches = [
+                item for item in data["models"]
+                if AITriageModule._model_is_installed(model, [item.get("name") or item.get("model") or ""])
             ]
-            if self._model_is_installed(self._model, installed):
-                if self.last_error == self._ollama_readiness_error:
-                    self.last_error = ""
-                self._ollama_readiness_error = ""
-                return True
+            if len(matches) == 1:
+                return matches[0], ""
+            if matches:
+                return None, "Ollama inventory contains ambiguous descriptors for the configured model"
             detail = (
-                f"Ollama is reachable, but configured model '{self._model}' is not installed"
+                f"Ollama is reachable, but configured model '{model}' is not installed"
             )
         except OllamaAttestationError as exc:
             detail = f"Ollama listener attestation failed: {str(exc)[:500]}"
         except Exception as exc:
             detail = f"Ollama readiness check failed ({type(exc).__name__}): {str(exc)[:500]}"
-        self._ollama_readiness_error = detail
-        self.last_error = detail
-        return False
+        return None, detail
 
-    def _ensure_ollama(self, *, for_selftest: bool = False) -> bool:
+    def _ensure_ollama(self) -> bool:
         """Prepare the daemon only on explicit lifecycle operations, not idle health."""
         from angerona.core.ollama_lifecycle import ensure_ollama_service
 
         self._sync_config()
-        # An explicit test is allowed for a parked/stopped module; its retired
-        # worker token must not cancel this separately bounded user operation.
-        stop = threading.Event() if for_selftest else self.generation_stop_event()
+        stop = self.generation_stop_event()
 
         def progress(status):
             if not stop.is_set():
@@ -714,7 +732,7 @@ class AITriageModule(BaseModule):
         else:
             # A 64-second idle timer must not expire the 60-second receipt and
             # repeatedly read every multi-gigabyte model. This check grants no
-            # inference authority: _ask and self_test still require fresh bytes.
+            # inference authority: _ask still requires fresh bytes.
             try:
                 from angerona.modules.ai_model_integrity import check_model_readiness
 
@@ -747,23 +765,47 @@ class AITriageModule(BaseModule):
                 self.emit(f"AI triage ready ({self._model}); attestation runs before inference.", Severity.INFO)
 
     def self_test(self) -> tuple[bool, str]:
-        # Testing cannot override the operator's Chill lock or start services.
-        self._sync_config()
+        """Check the existing listener, exact model, and current proof without mutation."""
         if ollama_blocked() or bool(getattr(self, "_chill_paused", False)):
             return False, "SKIP: local AI is off in Chill Mode; switch Chill off manually for an active check"
-        if not self._ping_ollama():
-            if self._ensure_ollama(for_selftest=True) and self._ping_ollama():
-                return self._selftest_attested_model()
-            return False, self._ollama_readiness_error or (
-                f"Ollama daemon unreachable or configured model "
-                f"'{self._model}' is not installed"
-            )
-        return self._selftest_attested_model()
+        if (not self._model_is_installed("selftest:stable", ["selftest:stable"])
+                or self._model_is_installed("selftest:stable", ["selftest:preview", "unrelated:stable"])):
+            return False, "The exact-model diagnostic fixture failed installed-tag selection"
+        host, model = self._configured_endpoint()
+        generation = self.lifecycle_generation
+        stop = self.generation_stop_event()
+        stopped_at_start = stop.is_set()
 
-    def _selftest_attested_model(self) -> tuple[bool, str]:
-        if not self._attest_model():
-            return False, (
-                f"Ollama ready, but model {self._model} has no fresh approved "
-                f"local attestation: {self.last_error}"
+        def interrupted() -> bool:
+            return (
+                generation != self.lifecycle_generation
+                or (not stopped_at_start and stop.is_set())
+                or ollama_blocked() or bool(getattr(self, "_chill_paused", False))
+                or (host, model) != self._configured_endpoint()
             )
-        return True, f"Ollama ready; model {self._model} installed and attested"
+
+        entry, error = self._probe_model(host, model)
+        if interrupted():
+            return False, "Ollama check interrupted by a configuration, lifecycle or Chill Mode change"
+        if entry is None:
+            return False, error
+        digest = entry.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", digest):
+            return False, "Ollama is reachable, but its configured model manifest digest is unavailable or malformed"
+        digest = "sha256:" + digest.removeprefix("sha256:")
+        from angerona.modules.ai_model_integrity import observe_model_attestation
+
+        try:
+            attested = observe_model_attestation(model, digest)
+        except Exception as exc:
+            if interrupted():
+                return False, "Ollama check interrupted by a configuration, lifecycle or Chill Mode change"
+            return False, f"Ollama ready, but approved model verification is unavailable: {str(exc)[:500]}"
+        if interrupted():
+            return False, "Ollama check interrupted by a configuration, lifecycle or Chill Mode change"
+        failure = self._attestation_failure
+        if failure is not None and failure[:2] == (generation, model):
+            return False, f"Ollama ready, but the last disk byte attestation failed: {failure[2]}"
+        if not attested:
+            return False, AITRIAGE_ATTESTATION_DEFERRED
+        return True, f"Ollama ready; model {model} matches its approved manifest and current disk attestation"

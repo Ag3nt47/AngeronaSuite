@@ -24,9 +24,8 @@ def module(monkeypatch):
     instance._host = "http://127.0.0.1:14184"
     instance._model = "llama3"
     monkeypatch.setattr(ai_triage, "attest_ollama_service", lambda *_args: None)
-    # These tests isolate the existing inventory/attestation diagnosis. Startup
-    # integration has separate tests and must never launch the host daemon here.
-    monkeypatch.setattr(instance, "_ensure_ollama", lambda **_kwargs: False)
+    monkeypatch.setattr(instance, "_ensure_ollama", lambda: pytest.fail("self-test attempted service startup"))
+    monkeypatch.setattr(instance, "_attest_model", lambda: pytest.fail("self-test attempted a disk scan"))
     return instance
 
 
@@ -49,7 +48,7 @@ def test_self_test_preserves_connection_or_attestation_failure(module, monkeypat
     ok, detail = module.self_test()
     assert not ok
     assert expected in detail and str(error) in detail
-    assert detail == module.last_error
+    assert module.last_error == module._ollama_readiness_error == ""
     assert "not installed" not in detail
 
 
@@ -136,19 +135,77 @@ def test_failed_telemetry_protection_never_sends_raw_evidence(module, monkeypatc
 
 
 def test_ready_daemon_keeps_model_baseline_failure_specific(module, monkeypatch):
-    monkeypatch.setattr(module, "_ping_ollama", lambda: True)
-    monkeypatch.setattr(module, "emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "_probe_model", lambda *_args: ({"digest": "a" * 64}, ""))
 
-    def unavailable(_model, *, stop_event):
-        assert stop_event is module.generation_stop_event()
+    def unavailable(model, digest):
+        assert model == "llama3" and digest == "sha256:" + "a" * 64
         raise ai_model_integrity.ModelIntegrityError("approved model baseline unavailable (missing)")
 
-    monkeypatch.setattr(ai_model_integrity, "require_fresh_model_attestation", unavailable)
+    monkeypatch.setattr(ai_model_integrity, "observe_model_attestation", unavailable)
     ok, detail = module.self_test()
     assert not ok
     assert "Ollama ready" in detail
     assert "approved model baseline unavailable (missing)" in detail
     assert "daemon unreachable" not in detail
+
+
+def test_self_test_uses_exact_digest_and_does_not_update_worker_state(module, monkeypatch):
+    module._config = SimpleNamespace(ollama_host="127.0.0.1:17114", ollama_model="llama3:8b")
+    module.last_error = "runtime observation must remain intact"
+    before = module._host, module._model, module.last_error, module.health
+    observed = []
+
+    def probe(request, **kwargs):
+        assert request.full_url == "http://127.0.0.1:17114/api/tags"
+        assert request.get_method() == "GET" and kwargs["timeout"] == 3.0
+        return _Response(json.dumps({"models": [
+            {"name": "llama3:latest", "digest": "a" * 64},
+            {"name": "llama3:8b", "digest": "b" * 64},
+        ]}).encode())
+
+    monkeypatch.setattr(ai_triage, "safe_urlopen", probe)
+    monkeypatch.setattr(ai_model_integrity, "observe_model_attestation",
+                        lambda *args: observed.append(args) or False)
+    assert module.self_test() == (False, ai_triage.AITRIAGE_ATTESTATION_DEFERRED)
+    assert observed == [("llama3:8b", "sha256:" + "b" * 64)]
+    assert (module._host, module._model, module.last_error, module.health) == before
+
+
+@pytest.mark.parametrize("descriptors", [
+    [{"name": "llama3"}],
+    [{"name": "llama3", "digest": "a" * 63}],
+    [{"name": "llama3:latest", "digest": "a" * 64}, {"name": "llama3", "digest": "b" * 64}],
+])
+def test_self_test_refuses_missing_malformed_or_ambiguous_digest(module, monkeypatch, descriptors):
+    monkeypatch.setattr(ai_triage, "safe_urlopen", lambda *_a, **_kw: _Response(
+        json.dumps({"models": descriptors}).encode()
+    ))
+    monkeypatch.setattr(ai_model_integrity, "observe_model_attestation",
+                        lambda *_a: pytest.fail("ambiguous version reached attestation"))
+    ok, detail = module.self_test()
+    assert not ok and ("digest" in detail or "ambiguous" in detail)
+
+
+def test_self_test_does_not_defer_known_current_disk_failure(module, monkeypatch):
+    monkeypatch.setattr(module, "_probe_model", lambda *_args: ({"digest": "a" * 64}, ""))
+    monkeypatch.setattr(ai_model_integrity, "observe_model_attestation", lambda *_args: False)
+    module._attestation_failure = module.lifecycle_generation, "llama3", "blob content digest changed"
+    ok, detail = module.self_test()
+    assert not ok and "blob content digest changed" in detail
+    module._attestation_failure = module.lifecycle_generation + 1, "llama3", "unrelated generation"
+    assert module.self_test() == (False, ai_triage.AITRIAGE_ATTESTATION_DEFERRED)
+
+
+def test_self_test_discards_attestation_observed_after_configuration_change(module, monkeypatch):
+    monkeypatch.setattr(module, "_probe_model", lambda *_args: ({"digest": "a" * 64}, ""))
+
+    def changed(*_args):
+        module._config = SimpleNamespace(ollama_host=module._host, ollama_model="replacement")
+        return True
+
+    monkeypatch.setattr(ai_model_integrity, "observe_model_attestation", changed)
+    ok, detail = module.self_test()
+    assert not ok and "interrupted" in detail
 
 
 def test_health_failure_uses_precise_readiness_detail(module, monkeypatch):

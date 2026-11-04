@@ -7,9 +7,6 @@ or unrelated failure can never be accepted through a substring allowlist.
 """
 from __future__ import annotations
 
-import re
-
-
 _EXPECTED_STOPPED_MODULES = frozenset({
     "AMSI Bridge",
     "Active Deception",
@@ -81,13 +78,10 @@ def is_expected_unstarted_failure(
         # Only the disposable harness may classify an absent approval as an
         # optional prerequisite. A present-but-invalid baseline, lost key,
         # timeout, or other attestation failure remains actionable.
-        return allow_unapproved_model_baseline and re.fullmatch(
-            r"ollama ready, but model [^\s]{1,256} has no fresh approved local "
-            r"attestation: approved model baseline unavailable \(approval-required\)",
-            normalized,
-        ) is not None
-    if name == "Active Response SOAR":
-        return "idle" in normalized and "angerona_soar_kill_and_rollback" in normalized
+        return allow_unapproved_model_baseline and normalized == (
+            "ollama ready, but approved model verification is unavailable: "
+            "approved model baseline unavailable (approval-required)"
+        )
     if name == "Anti-Suspension Heartbeat":
         return "watchdog binary absent" in normalized
     return False

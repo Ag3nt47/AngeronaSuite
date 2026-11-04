@@ -207,7 +207,7 @@ def test_unrenderable_notification_failure_is_reported_and_persisted(monkeypatch
     manager = SimpleNamespace(platform="windows", modules={}, is_enabled=lambda _name: True)
     runner = candidate.SelfTestRunner(manager, Bus())
     runner._pipeline_check = lambda: (True, "inert synthetic pipeline")
-    runner._worker_budget = lambda: (1, "inert fixture; no host inventory")
+    runner._worker_budget = lambda: (1, "inert fixture; no host inventory", 1)
     try:
         report = runner.run(timeout=1)
         assert "[FAIL] Event reporting" in report

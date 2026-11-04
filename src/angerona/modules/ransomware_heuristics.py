@@ -413,6 +413,10 @@ def _shannon_entropy(data: bytes) -> float:
     return _entropy_from_histogram(_byte_histogram(data), n)
 
 
+def _is_high_entropy(score: float) -> bool:
+    return score >= ENTROPY_THRESHOLD
+
+
 def _entropy_from_histogram(counts, n: int) -> float:
     """Return entropy from a bounded 256-bin histogram."""
     if not n:
@@ -2906,7 +2910,7 @@ class RansomwareHeuristicsModule(BaseModule):
                 self._require_active(stopped)
                 with self._lifecycle_lock:
                     self._require_active(stopped)
-                    if ent >= ENTROPY_THRESHOLD:
+                    if _is_high_entropy(ent):
                         self._flagged[candidate.path] = now
                         self.emit(
                             f"High-entropy file detected: {os.path.basename(candidate.path)} "
@@ -3104,18 +3108,13 @@ class RansomwareHeuristicsModule(BaseModule):
                 _windows_directory_api()
             except OSError as exc:
                 return False, f"held-directory API unavailable: {exc}"
-        # Run entropy on a synthetic block of random-like data
-        synthetic = bytes(range(256)) * 4   # 1 KB, entropy ~8.0
-        ent = _shannon_entropy(synthetic)
-        if ent >= ENTROPY_THRESHOLD:
-            return (
-                True,
-                f"Entropy function OK (test={ent:.3f} ≥ {ENTROPY_THRESHOLD}); "
-                "timestamp-independent full/range proof, authenticated durable "
-                "change transitions/high-water, fixed-window strided scoring, "
-                "durable fair rotation, and held no-reparse traversal enabled",
-            )
-        return False, f"Entropy function returned {ent:.3f} — unexpected"
+        suspicious = _shannon_entropy(bytes(range(256)) * 4)
+        ordinary = _shannon_entropy(b"ordinary text sample\n" * 64)
+        if not _is_high_entropy(suspicious) or _is_high_entropy(ordinary):
+            return False, f"Entropy sample classification failed (high={suspicious:.3f}, clean={ordinary:.3f})"
+        return True, (f"Offline entropy sample flagged evenly distributed bytes ({suspicious:.3f}) and kept "
+                      f"ordinary text ({ordinary:.3f}) quiet at threshold {ENTROPY_THRESHOLD}. "
+                      "Live file transitions and rename correlation were not exercised.")
 
 
 def register() -> RansomwareHeuristicsModule:

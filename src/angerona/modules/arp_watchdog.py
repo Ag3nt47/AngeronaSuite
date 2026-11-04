@@ -79,8 +79,7 @@ def _normalise_mac(mac: str) -> str:
 
 
 def _parse_arp_cache() -> dict[str, str]:
-    """Run `arp -a` and return {ip: mac} for dynamic entries."""
-    result: dict[str, str] = {}
+    """Run `arp -a` and return the observed IPv4 address/MAC mappings."""
     out = check_output_hidden(
         ["arp", "-a"],
         timeout=10,
@@ -88,8 +87,13 @@ def _parse_arp_cache() -> dict[str, str]:
         text=True,
         errors="replace",
     )
+    return _parse_arp_output(out)
+
+
+def _parse_arp_output(out: str) -> dict[str, str]:
     if not isinstance(out, str) or (not out.strip() and "Interface:" not in out):
         raise RuntimeError("ARP collector returned no parseable output")
+    result: dict[str, str] = {}
     for m in _RE_ARP.finditer(out):
         ip, mac, entry_type = m.group(1), m.group(2), m.group(3)
         if entry_type.lower() not in ("dynamic", "static"):
@@ -615,12 +619,30 @@ class ARPWatchdogModule(BaseModule):
     def self_test(self) -> tuple[bool, str]:
         # Hermetic: self-tests must not infer coverage from mutable live host
         # state or fail merely because the host has an empty ARP cache.
-        sample = "  192.0.2.1  00:11:22:33:44:55  dynamic"
-        match = _RE_ARP.search(sample)
-        if match is None or _normalise_mac(match.group(2)) != "00-11-22-33-44-55":
-            return False, "ARP parser invariant failed"
+        from angerona.core.eventbus import EventBus
+
+        address = "192.0.2.1"
+        approved = _parse_arp_output("  192.0.2.1  00:11:22:33:44:55  dynamic")
+        changed = _parse_arp_output("  192.0.2.1  02:11:22:33:44:55  dynamic")
+        if approved != {address: "00-11-22-33-44-55"} or changed != {address: "02-11-22-33-44-55"}:
+            return False, "ARP sample address/MAC parsing failed"
+        probe = ARPWatchdogModule()
+        bus = EventBus()
+        probe.bind(bus)
+        probe._baseline = approved
+        probe._evaluate_cache(approved)
+        if bus.recent(1):
+            return False, "Approved ARP mapping sample was incorrectly flagged"
+        probe._evaluate_cache(changed)
+        probe._evaluate_cache(changed)
+        alerts = bus.recent(2)
+        if len(alerts) != 1 or alerts[0].severity is not Severity.CRITICAL or (
+            alerts[0].details.get("current_mac") != changed[address]
+        ):
+            return False, "Changed ARP sample was missed or alerted more than once"
         mode = "scapy+poll" if self._scapy_ok else "poll-only"
-        return True, f"ARP parser ready — mode={mode}; baseline={self._baseline_status}"
+        return True, ("ARP parser ready; approved sample quiet and changed MAC flagged once offline. "
+                      f"Live mode={mode}; baseline={self._baseline_status}")
 
 
 def register() -> ARPWatchdogModule:

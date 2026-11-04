@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.modules.soar import SOARModule
 from angerona.modules.soar_engine import ActiveResponseSOAR
@@ -8,6 +10,72 @@ from angerona.modules.soar_engine import ActiveResponseSOAR
 def _publish_pair(bus: EventBus) -> None:
     bus.publish(Event("sensor", "first", Severity.HIGH, 1.0, {}))
     bus.publish(Event("sensor", "second", Severity.HIGH, 2.0, {}))
+
+
+def test_automation_self_test_never_replaces_live_delivery_state(monkeypatch) -> None:
+    live = SOARModule()
+    live._last_ts = 10_000.0
+    live._seen_at_last_ts = {"live-signed-row"}
+    live._priority_cursor = 90
+    pending = live._pending
+    seen = live._seen_at_last_ts
+    real_add_signal = SOARModule._add_signal
+    key = (31337, 1234, "inert live evidence")
+
+    def signal(fixture, pid, event):
+        assert fixture is not live and fixture._bus is None
+        assert live._pending is pending and live._seen_at_last_ts is seen
+        live._pending[key] = [(10_001.0, "live sensor")]
+        live._last_ts = 10_001.0
+        live._seen_at_last_ts.add("later live row")
+        return real_add_signal(fixture, pid, event)
+
+    monkeypatch.setattr(SOARModule, "_add_signal", signal)
+    ok, detail = live.self_test()
+    assert ok and "exact-process corroboration" in detail
+    assert live._pending is pending and key in pending
+    assert live._last_ts == 10_001.0 and live._seen_at_last_ts is seen
+    assert seen == {"live-signed-row", "later live row"} and live._priority_cursor == 90
+
+
+def test_active_self_test_reports_disarmed_worker_and_leaves_live_bus_untouched(monkeypatch) -> None:
+    monkeypatch.delenv("ANGERONA_SOAR_KILL_AND_ROLLBACK", raising=False)
+    bus = EventBus()
+    _publish_pair(bus)
+    events = bus.recent(2)
+    live = ActiveResponseSOAR()
+    live.bind(bus)
+    live._general_cursor, live._priority_cursor, live._last_ts = 10, 11, 12.0
+    monkeypatch.setattr(live, "_kill_and_rollback", lambda *_a: pytest.fail("used live response sink"))
+    ok, detail = live.self_test()
+    assert ok and "Policy disarmed; worker stopped" in detail
+    assert bus.recent(2) == events
+    assert (live._general_cursor, live._priority_cursor, live._last_ts) == (10, 11, 12.0)
+
+
+def test_active_self_test_reports_armed_missing_worker(monkeypatch) -> None:
+    monkeypatch.setenv("ANGERONA_SOAR_KILL_AND_ROLLBACK", "1")
+    monkeypatch.setenv("ANGERONA_SOAR_KILL_AND_ROLLBACK_MIN_SEVERITY", "HIGH")
+    ok, detail = ActiveResponseSOAR().self_test()
+    assert not ok and "Policy armed (minimum High); worker stopped" in detail
+
+
+@pytest.mark.parametrize("method,detail", [
+    ("_event_integrity_ok", "authenticated-event admission"),
+    ("event_disposition", "advisory classification"),
+    ("is_remote_observe_only", "remote observe-only evidence"),
+])
+def test_active_self_test_detects_refusal_gate_regressions(monkeypatch, method, detail) -> None:
+    from angerona.modules import soar_engine
+
+    if method == "_event_integrity_ok":
+        monkeypatch.setattr(ActiveResponseSOAR, method, lambda *_args: True)
+    elif method == "event_disposition":
+        monkeypatch.setattr(soar_engine, method, lambda *_args: "active")
+    else:
+        monkeypatch.setattr(soar_engine, method, lambda *_args: False)
+    ok, message = ActiveResponseSOAR().self_test()
+    assert not ok and detail in message
 
 
 def test_eventbus_exposes_exact_per_event_commit_revisions() -> None:

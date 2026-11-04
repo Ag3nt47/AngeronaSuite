@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import io
 import json
 import re
 import secrets
@@ -60,8 +61,8 @@ def private_model(tmp_path, monkeypatch):
     fixture_key = secrets.token_bytes(32)
     baseline_path = data / "fixture-baseline.json"
 
-    def private_init(self):
-        real_init(self)
+    def private_init(self, **kwargs):
+        real_init(self, **kwargs)
         self._baseline_path = baseline_path
         self._baseline_key_override = fixture_key
 
@@ -89,6 +90,46 @@ def private_model(tmp_path, monkeypatch):
 def _extension(raw, value):
     assert raw.endswith(b"}")
     return raw[:-1] + b',"ignored":' + value + b"}"
+
+
+def test_triage_self_test_checks_exact_approved_and_recent_disk_proof(private_model, monkeypatch):
+    from angerona.modules import ai_triage
+
+    integrity = private_model.integrity
+    original = _approve(private_model)
+    manifest_hex = hashlib.sha256(private_model.raw).hexdigest()
+    inventory = {"models": [{"name": "fixture:latest", "digest": manifest_hex}]}
+
+    class Response(io.BytesIO):
+        headers = {}
+
+    monkeypatch.setattr(ai_triage, "safe_urlopen", lambda *_args, **_kwargs:
+                        Response(json.dumps(inventory).encode("ascii")))
+    triage = ai_triage.AITriageModule()
+    assert triage.self_test() == (False, ai_triage.AITRIAGE_ATTESTATION_DEFERRED)
+    receipt = integrity.require_fresh_model_attestation("fixture:latest")
+
+    def unexpected_work(*_args, **_kwargs):
+        pytest.fail("readiness check attempted startup or a full disk attestation")
+
+    monkeypatch.setattr(triage, "_ensure_ollama", unexpected_work)
+    monkeypatch.setattr(integrity, "_repo_root", unexpected_work)
+    monkeypatch.setattr(integrity, "_attestation_scan_lock", unexpected_work)
+    monkeypatch.setattr(integrity, "_hash_file", unexpected_work)
+    monkeypatch.setattr(integrity, "verify_ollama_model_files", unexpected_work)
+    ok, detail = triage.self_test()
+    assert ok and "current disk attestation" in detail
+
+    inventory["models"][0]["digest"] = "0" * 64
+    ok, detail = triage.self_test()
+    assert not ok and "differs from the approved model" in detail
+    inventory["models"][0]["digest"] = manifest_hex
+
+    with monkeypatch.context() as patch:
+        patch.setattr(integrity.time, "monotonic", lambda: receipt.expires_monotonic + 1)
+        assert triage.self_test() == (False, ai_triage.AITRIAGE_ATTESTATION_DEFERRED)
+    assert private_model.baseline.read_bytes() == original
+    assert integrity._ATTESTATION_CACHE == {"fixture:latest": receipt}
 
 
 def _deep_value(record_property):

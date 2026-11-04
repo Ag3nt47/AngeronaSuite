@@ -689,13 +689,15 @@ class ShadowShield(BaseModule):
         return digest.hexdigest()
 
     @staticmethod
-    def _canonical_protected_path(raw_path: str) -> Path | None:
+    def _canonical_protected_path(
+        raw_path: str, *, protected_dirs: tuple[Path, ...] | None = None,
+    ) -> Path | None:
         """Resolve one target and prove it remains under a protected root."""
         try:
             target = Path(raw_path).expanduser().resolve(strict=False)
             roots = tuple(
                 Path(value).expanduser().resolve(strict=False)
-                for value in PROTECTED_DIRS
+                for value in (PROTECTED_DIRS if protected_dirs is None else protected_dirs)
             )
         except (OSError, RuntimeError, ValueError):
             return None
@@ -1055,11 +1057,25 @@ class ShadowShield(BaseModule):
             self.sleep(POLL_S)
 
     def self_test(self) -> tuple[bool, str]:
+        root = Path(__file__).parent / f"shadow-self-test-{uuid.uuid4().hex}" / "protected"
+        inside = root / "sample.txt"
+        outside = root.with_name("protected-other") / "sample.txt"
+        sample_roots = (root,)
+        if (self._canonical_protected_path(str(inside), protected_dirs=sample_roots) != inside.resolve()
+                or self._canonical_protected_path(str(outside), protected_dirs=sample_roots) is not None):
+            return False, "offline rollback target sample failed protected-root admission"
         try:
-            self._cache_dir.mkdir(parents=True, exist_ok=True)
-            return True, f"cache ready; {self._snapshots} VSS snapshots this session"
-        except Exception as exc:
+            if not self._plain(self._cache_dir.lstat(), directory=True):
+                return False, "cache directory is linked or unavailable"
+            readiness = "cache directory present"
+        except FileNotFoundError:
+            if self.status == "running" and self.first_cycle_complete and self._cache_enabled:
+                return False, "live cache directory is missing"
+            readiness = "cache directory not initialized"
+        except OSError as exc:
             return False, f"cache dir unavailable: {exc}"
+        return True, (f"offline in-scope and escaping rollback targets verified; {readiness}; "
+                      f"{self._snapshots} VSS snapshots this session")
 
 
 def register() -> ShadowShield:

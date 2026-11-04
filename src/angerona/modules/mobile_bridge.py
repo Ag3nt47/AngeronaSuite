@@ -1013,8 +1013,13 @@ class MobileResponseBridge(BaseModule):
         if not self._result_valid(result, "receive"):
             self.set_health(40, result.error)
             return []
+        return self._parse_received_commands(result.output)
+
+    @staticmethod
+    def _parse_received_commands(output: bytes) -> list[_IncomingCommand]:
+        """Normalize command envelopes after the caller verifies CLI custody."""
         msgs: list[_IncomingCommand] = []
-        for line in result.output.decode("utf-8", errors="replace").splitlines():
+        for line in output.decode("utf-8", errors="replace").splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -2443,8 +2448,29 @@ class MobileResponseBridge(BaseModule):
             self.sleep(self.POLL_S)
 
     def self_test(self) -> tuple[bool, str]:
+        fixture = MobileResponseBridge()
+        payload = (
+            b'{"envelope":{"source":"+1 (202) 555-0100","dataMessage":{"message":"STATUS"},'
+            b'"timestamp":10000,"sourceDevice":1,"serverGuid":"fixture"}}\n'
+            b'{"envelope":{"source":"unverified-sender","message":"STATUS","timestamp":10000}}\n'
+            b'not-json'
+        )
+        receipt = fixture._make_receipt(
+            nonce="a" * 64, purpose="receive", binary_sha256="b" * 64,
+            returncode=0, output=payload, state="complete",
+        )
+        signed = _CliResult(payload, receipt, True)
+        if (not fixture._result_valid(signed, "receive")
+                or fixture._result_valid(signed, "send")
+                or fixture._result_valid(_CliResult(payload[:-1] + b"x", receipt, True), "receive")):
+            return False, "mobile receipt fixture failed output or purpose binding"
+        messages = fixture._parse_received_commands(signed.output)
+        if (len(messages) != 1 or _signal_identity(messages[0].sender) != "+12025550100"
+                or messages[0].body != "STATUS" or messages[0].sent_at != 10.0):
+            return False, "mobile envelope fixture failed valid-sender normalization or malformed-input rejection"
+        detail = "isolated mobile envelope and sealed receipt fixtures passed"
         if not self._enabled():
-            return True, "disabled (opt-in)"
+            return True, detail + "; live integration is off (opt-in)"
         cfg = self._cfg()
         trust_error = self._trust_config_error(cfg)
         if trust_error:
@@ -2452,10 +2478,7 @@ class MobileResponseBridge(BaseModule):
         result = self._invoke_cli("self-test", ["--version"], timeout=10.0)
         if not self._result_valid(result, "self-test"):
             return False, result.error
-        return True, (
-            "signal-cli identity, job custody, return code, bounded output, and "
-            "authenticated nonce receipt verified"
-        )
+        return True, f"{detail}; live signal-cli custody and authenticated nonce receipt verified"
 
 
 def register() -> BaseModule:

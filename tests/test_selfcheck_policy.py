@@ -42,13 +42,12 @@ def test_selfcheck_accepts_only_narrow_unstarted_prerequisites() -> None:
         "AI Triage (Ollama)",
         "Ollama daemon unreachable or configured model is not installed",
     )
-    assert is_expected_unstarted_failure(
-        "Active Response SOAR",
-        "running, idle (set ANGERONA_SOAR_KILL_AND_ROLLBACK=1 to arm)",
-    )
 
 
 def test_selfcheck_never_accepts_timeout_exception_or_unrelated_idle_text() -> None:
+    assert not is_expected_unstarted_failure(
+        "Active Response SOAR", "fixture failed; policy disarmed; worker stopped",
+    )
     assert not is_expected_unstarted_failure(
         "Network Monitor", "test timed out after 12s",
     )
@@ -67,7 +66,7 @@ def test_selfcheck_never_accepts_timeout_exception_or_unrelated_idle_text() -> N
 
 
 _MISSING_APPROVAL = (
-    "Ollama ready, but model llama3 has no fresh approved local attestation: "
+    "Ollama ready, but approved model verification is unavailable: "
     "approved model baseline unavailable (approval-required)"
 )
 
@@ -136,7 +135,7 @@ def test_successful_empty_listener_table_confirms_absence_only_for_requested_por
     _MISSING_APPROVAL + "; digest mismatch",
     "error: " + _MISSING_APPROVAL,
     "test timed out after 12s: " + _MISSING_APPROVAL,
-    "Ollama ready, but model llama3 has no fresh approved local attestation",
+    "Ollama ready, but approved model verification is unavailable",
 ])
 def test_disposable_harness_never_masks_other_model_attestation_failures(detail) -> None:
     assert not is_expected_unstarted_failure(

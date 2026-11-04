@@ -146,16 +146,7 @@ def test_module_manager_never_starts_an_unavailable_capability(
         for event in manager.bus.recent(20)
     )
 
-    class SafeMac(BaseModule):
-        name = "Safe Mac lifecycle"
-        supported_platforms = ("macos",)
-
-        def run(self) -> None:
-            return
-
-    safe = SafeMac()
-    assert runner._is_repairable(safe, "status=stopped, health=100%")
-    assert not runner._is_repairable(safe, "test timed out after 1s")
+    assert not runner.last_repairs  # There is no prior live generation to recover.
 
     # An explicit targeted diagnostic still runs for an operator-disabled
     # native module; only the all-module dashboard sweep treats it as a skip.

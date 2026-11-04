@@ -86,6 +86,12 @@ AREAS = (
          "anthropic", "gemini", "groq"),
         "Secrets stored outside settings.json", False,
     ),
+    SettingsArea(
+        "self-test", "Self-Test",
+        "Run individual module diagnostics and view or edit test source in the sandbox.",
+        ("self-test", "self test", "module test", "diagnostics", "test code", "sample test"),
+        "Local diagnostic evidence and sandbox source copies", False,
+    ),
 )
 
 

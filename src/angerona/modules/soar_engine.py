@@ -38,10 +38,11 @@ import re
 import sys
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 from angerona.core.archive_safety import read_bounded_member, validate_zip_members
-from angerona.core.eventbus import is_remote_observe_only
+from angerona.core.eventbus import BusAuthority, Event, EventBus, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.threat import event_disposition
 from angerona.core.process_allowlist import (
@@ -122,11 +123,63 @@ class ActiveResponseSOAR(BaseModule):
             return Severity.CRITICAL  # unknown value — fail conservative, not permissive
 
     def self_test(self) -> tuple[bool, str]:
+        """Exercise real response admission helpers on isolated inert evidence."""
+        class _Fixture(ActiveResponseSOAR):
+            scope_checks = 0
+
+            def _event_in_response_scope(self, ev) -> bool:
+                self.scope_checks += 1
+                return super()._event_in_response_scope(ev)
+
+            def _kill_and_rollback(self, ev) -> None:
+                raise RuntimeError("inert fixture unexpectedly reached the response boundary")
+
+        fixture = _Fixture()
+        bus = EventBus(ring_size=4, priority_ring_size=4)
+        authority = BusAuthority(bytes(32))  # Dedicated memory-only fixture authority.
+        bus.arm(authority)
+        fixture.bind(bus)
+        event = Event("Fixture sensor", "inert event", Severity.CRITICAL, 100.0,
+                      {"active_attack": True})
+        bus.publish(event)
+        signed = bus.recent(1)[0]
+        sibling = replace(event, message="same-time advisory",
+                          details={"disposition": "observation", "response_authorized": False})
+        bus.publish(sibling)
+        sibling = bus.recent(1)[0]
+        if (not fixture._event_integrity_ok(signed)
+                or fixture._event_integrity_ok(replace(signed, message="modified event"))):
+            return False, "Active Response SOAR fixture failed authenticated-event admission"
+        if not fixture._is_unseen(signed):
+            return False, "Active Response SOAR fixture rejected an unseen cursor event"
+        fixture._commit_delivery(None, signed, legacy_cursor=True)
+        if fixture._is_unseen(signed) or not fixture._is_unseen(sibling):
+            return False, "Active Response SOAR fixture failed cursor deduplication or dropped a same-time sibling"
+        fixture._commit_delivery(2, sibling, legacy_cursor=False)
+        if fixture._general_cursor != 2:
+            return False, "Active Response SOAR fixture did not advance its delivery revision"
+        rejected_before_scope = (
+            ("advisory classification", sibling),
+            ("remote observe-only evidence", replace(event, details={"active_attack": True, "node_origin": "fixture"})),
+            ("minimum severity", replace(event, severity=Severity.HIGH)),
+        )
+        for name, control in rejected_before_scope:
+            control = replace(control, hmac_sig=authority.sign(control))
+            if (fixture._process_one_event(control, Severity.CRITICAL, process_policy=())
+                    or fixture.scope_checks != 0):
+                return False, f"Active Response SOAR fixture did not refuse {name} before scope admission"
+        if (fixture._process_one_event(signed, Severity.CRITICAL, process_policy=())
+                or fixture.scope_checks != 1):
+            return False, "Active Response SOAR fixture failed the exact response scope check"
         armed = self._armed()
-        ok = self.status == "running"
-        state = f"ARMED (min severity {self._min_severity().label})" if armed else \
-                "idle (set ANGERONA_SOAR_KILL_AND_ROLLBACK=1 to arm)"
-        return ok, f"running, {state}"
+        state = f"armed (minimum {self._min_severity().label})" if armed else "disarmed"
+        status = self.status
+        paused = bool(getattr(self, "_chill_paused", False))
+        detail = ("Offline event integrity, cursor, and refusal gates passed. "
+                  f"Policy {state}; worker {status}{' (parked by Chill Mode)' if paused else ''}.")
+        if status == "error" or (armed and status != "running" and not paused):
+            return False, detail
+        return True, detail
 
     def run(self) -> None:
         self.set_health(100, "")

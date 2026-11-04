@@ -431,17 +431,41 @@ class AMSIBridgeModule(BaseModule):
             del self._seen[k]
 
     def self_test(self) -> tuple[bool, str]:
+        from types import SimpleNamespace
+
+        from angerona.core.eventbus import Event, EventBus
+
+        positive = "powershell # angerona-inert-amsi-sample"
+        clean = "powershell # angerona-clean-control"
+        probe = AMSIBridgeModule()
+        bus = EventBus()
+        probe.bind(bus)
+        probe._amsi = SimpleNamespace(scan=lambda content, _label: (
+            AMSI_RESULT_DETECTED if content == positive.encode("ascii") else AMSI_RESULT_CLEAN
+        ))
+        for text in (clean, positive):
+            event = Event("AMSI self-test fixture", "inert script text", Severity.INFO,
+                          details={"command_line": text})
+            extracted = probe._extract_script_content(event)
+            if extracted != text:
+                return False, "AMSI fixture command-line extraction failed"
+            probe._scan_and_alert(extracted.encode("ascii"), event)
+        alerts = bus.recent(2)
+        if (len(alerts) != 1 or alerts[0].severity is not Severity.CRITICAL
+                or alerts[0].details.get("amsi_result") != AMSI_RESULT_DETECTED):
+            return False, "AMSI fixture did not keep the clean result quiet and flag the detected result"
+        detail = "Offline AMSI sample: mock-provider clean result quiet and detected result flagged. "
         if self.status != "running":
-            return super().self_test()   # not started yet — graceful "stopped" status
+            return True, detail + "Live provider was not exercised."
         if self._fallback:
-            return True, "AMSI unavailable — observation-only mode active"
+            return True, detail + "AMSI unavailable — observation-only mode active."
         if self._amsi is None:
-            return False, f"AMSI init failed: {self.last_error}"
+            return False, detail + f"AMSI init failed: {self.last_error}"
         try:
             result = self._amsi.scan(_SAFE_PROBE, "self_test")
         except Exception as exc:
-            return False, f"AmsiScanBuffer failed: {exc}"
-        return True, f"AmsiScanBuffer functional — probe result={_result_label(result)}"
+            return False, detail + f"AmsiScanBuffer failed: {exc}"
+        return True, detail + f"Live AmsiScanBuffer functional — benign probe result={_result_label(result)}"
 
 
 def register() -> AMSIBridgeModule:

@@ -43,6 +43,7 @@ os.environ.setdefault("ANGERONA_SELFCHECK", "1")
 # URL. This harness uses a fixed loopback URL and forbids service startup below;
 # it must not probe a user-selected remote provider or relax URL validation.
 os.environ["OLLAMA_HOST"] = "http://127.0.0.1:11434"
+os.environ["ANGERONA_SOAR_KILL_AND_ROLLBACK"] = "0"
 
 # ``run-selfcheck.bat`` is intentionally a non-admin diagnostic.  Production
 # runtime data is protected by an Administrators/SYSTEM-only ACL, so pointing
@@ -60,7 +61,7 @@ os.environ.setdefault(
 from angerona.core.data_paths import configure_runtime_environment  # noqa: E402
 configure_runtime_environment()
 
-# Production app startup and explicit AI self-tests may now prepare Ollama.
+# Production startup can prepare Ollama; module diagnostics only observe it.
 # This offline harness intentionally never launches services or sensors. Keep
 # the actual inventory/readiness checks and their existing expected-skip policy,
 # but make automatic startup return an honest unavailable result locally.
@@ -223,6 +224,8 @@ from angerona.core.storage import FlightRecorder     # noqa: E402
 from angerona.core.module_manager import ModuleManager   # noqa: E402
 
 config = Config.load()
+# No live profile controller or sensor workers are started in this process.
+config.runtime_chill_active = False
 storage = FlightRecorder(config.db_path)
 bus = EventBus()
 bus.arm(storage.authority)
@@ -311,6 +314,8 @@ def _():
             f"{len(runner.last_failures)} UNEXPECTED module failure(s): "
             f"{runner.last_failures}"
         )
+    if runner.last_deferred:
+        raise AssertionError(f"Incomplete offline module checks: {runner.last_deferred}")
     return report.splitlines()[-1] + " (unstarted/optional states classified as skips)"
 
 
@@ -359,7 +364,7 @@ def _():
     fixture_manager = SimpleNamespace(modules={m.name: m for m in modules},
                                       platform=manager.platform, is_enabled=lambda _name: True)
     fixture = SelfTestRunner(fixture_manager, EventBus())
-    fixture._worker_budget = lambda: (2, "controlled two-worker low-resource fixture")
+    fixture._worker_budget = lambda: (2, "controlled two-worker low-resource fixture", 2)
     fixture._write_failure_log = lambda *_args: None
     report = fixture.run(timeout=2.0)
     assert not fixture.last_failures, report

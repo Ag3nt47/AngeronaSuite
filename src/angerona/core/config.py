@@ -266,6 +266,8 @@ class Config:
     theme: str = "cyber"                       # gui theme key (see gui/theme.py)
     accent: str = ""                           # optional custom accent hex tint
     module_states: Dict[str, bool] = field(default_factory=dict)
+    selftest_timeout_seconds: int = 30
+    selftest_auto_recover_modules: list[str] = field(default_factory=list)
     autostart_enabled: bool = True              # platform-native per-user logon startup
     eco_mode: bool = True                        # start in network-first Chill Mode for all-day low-impact protection
     blackbox_enabled: bool = True                # auto-launch the decoupled Black Box diagnostic recorder at startup
@@ -713,6 +715,15 @@ class Config:
                 cfg.theme = data.get("theme", cfg.theme)
                 cfg.accent = data.get("accent", cfg.accent)
                 cfg.module_states = data.get("module_states", {})
+                test_timeout = data.get("selftest_timeout_seconds")
+                if type(test_timeout) is int and test_timeout in (15, 30, 45):
+                    cfg.selftest_timeout_seconds = test_timeout
+                recover_modules = data.get("selftest_auto_recover_modules")
+                if type(recover_modules) is list:
+                    cfg.selftest_auto_recover_modules = list(dict.fromkeys(
+                        item for item in recover_modules[:128]
+                        if type(item) is str and re.fullmatch(r"angerona\.builtin\.[a-z0-9_]{1,80}", item)
+                    ))
                 cfg.autostart_enabled = _bool_setting(
                     data, "autostart_enabled", cfg.autostart_enabled)
                 cfg.eco_mode = _bool_setting(data, "eco_mode", cfg.eco_mode)
@@ -1264,6 +1275,8 @@ class Config:
                     "theme": self.theme,
                     "accent": self.accent,
                     "module_states":     self.module_states,
+                    "selftest_timeout_seconds": self.selftest_timeout_seconds,
+                    "selftest_auto_recover_modules": self.selftest_auto_recover_modules,
                     "autostart_enabled": self.autostart_enabled,
                     "eco_mode":          self.eco_mode,
                     "blackbox_enabled":  self.blackbox_enabled,

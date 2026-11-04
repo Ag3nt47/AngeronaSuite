@@ -46,7 +46,7 @@ def runner_factory(monkeypatch, tmp_path):
         runner._REPORT_TIMEOUT = 0.1
         # Deadline regressions exercise the six-slot process cap independently
         # of the test host's hardware/pressure-dependent worker recommendation.
-        runner._worker_budget = lambda: (6, "six-slot deadline fixture")
+        runner._worker_budget = lambda: (6, "six-slot deadline fixture", 6)
         return runner
 
     return create, path
@@ -155,14 +155,15 @@ def test_six_actual_module_checks_remain_capped_across_timeouts_and_reruns(
         runner = create(modules)
         started = time.monotonic()
         report = runner.run(timeout=0.1)
-        assert "Result: 1 passed, 30 failed, 0 skipped." in report
+        assert "Result: 1 passed, 6 failed, 0 skipped, 24 deferred (no verdict)." in report
         assert sum(module.calls for module in modules) == 6
         assert active == peak == 6
         assert all(not row["repairable"] for row in runner.last_failures)
         rerun = create(modules)
         rerun.run(timeout=0.1)
         assert sum(module.calls for module in modules) == 6
-        assert all("test not started" in row["detail"] for row in rerun.last_failures)
+        assert not rerun.last_failures and len(rerun.last_deferred) == 30
+        assert all("test not started" in row["detail"] for row in rerun.last_deferred)
         assert time.monotonic() - started < 3.0
     finally:
         release.set()
@@ -170,6 +171,64 @@ def test_six_actual_module_checks_remain_capped_across_timeouts_and_reruns(
     assert active == 0
     # A timeout must not permanently consume slots once the original calls exit.
     assert "Result: 2 passed, 0 failed" in create([_Module()]).run(timeout=0.1)
+
+
+def test_paced_run_continues_in_one_spare_slot_when_timed_out_callback_is_held(
+    runner_factory,
+):
+    create, path = runner_factory
+    release = threading.Event()
+    entered = threading.Event()
+
+    def blocked():
+        entered.set()
+        assert release.wait(5.0)
+        return True, "released"
+
+    def healthy():
+        assert entered.is_set() and not release.is_set()
+        return True, "independent check completed while first call was retained"
+
+    modules = [_Module("A stalled check", blocked)] + [
+        _Module(f"Independent check {index}", healthy) for index in range(10)
+    ]
+    runner = create(modules)
+    runner._worker_budget = lambda: (1, "one paced worker with hardware headroom", 4)
+    try:
+        report = runner.run(timeout=0.15)
+        assert "Result: 11 passed, 1 failed, 0 skipped." in report
+        assert all(module.calls == 1 for module in modules)
+        assert runner.last_failures[0]["module"] == modules[0].name
+        assert runner.last_failures[0]["detail"].startswith("test timed out")
+        assert not runner.last_deferred
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["metrics"]["module_recovery_slots"] == 1
+        assert saved["deferred"] == 0
+        assert len([event for event in runner.bus.recent(30) if "CRITICAL FAILURE:" in event.message]) == 1
+    finally:
+        release.set()
+        _wait_for_permits(selftest._MODULE_CALLS, 6)
+
+
+def test_next_module_starts_while_slow_check_can_still_pass(runner_factory):
+    create, _path = runner_factory
+    first_started = threading.Event()
+    next_started = threading.Event()
+
+    def slow():
+        first_started.set()
+        assert next_started.wait(2.0), "A slow diagnostic must leave room for the next module"
+        return True, "slow fixture finished within its original deadline"
+
+    def next_module():
+        assert first_started.is_set()
+        next_started.set()
+        return True, "second fixture entered before the first returned"
+
+    runner = create([_Module("A slow check", slow), _Module("B independent check", next_module)])
+    runner._worker_budget = lambda: (1, "one paced worker with hardware headroom", 4)
+    assert "Result: 3 passed, 0 failed, 0 skipped." in runner.run(timeout=3.0)
+    assert not runner.last_deferred
 
 
 def test_inspector_lock_prevents_duplicate_module_check(runner_factory):
@@ -182,7 +241,7 @@ def test_inspector_lock_prevents_duplicate_module_check(runner_factory):
         runner = create([module])
         report = runner.run(timeout=0.1)
         assert "test already running for this capability" in report
-        assert runner.last_failures[0]["repairable"] is False
+        assert not runner.last_failures and runner.last_deferred[0]["module"] == module.name
         assert module.calls == 0
     finally:
         lock.release()
@@ -235,7 +294,6 @@ def test_busy_kernel_check_cannot_be_masked_as_optional_driver_pass():
         ):
             ok, detail = check(module, timeout=0.1)
             assert not ok and detail == "test already running for this capability"
-            assert not selftest.SelfTestRunner._is_repairable(module, detail)
         assert module.calls == 0
     finally:
         lock.release()
@@ -281,6 +339,21 @@ def test_healthy_delivery_keeps_critical_events_and_final_progress(runner_factor
     assert any("Drill complete: 1 passed, 1 failed" in message for message in messages)
     assert progress == sorted(progress)
     assert progress[-1] == (2, 2)
+
+
+def test_many_genuine_module_failures_preserve_all_rows_with_one_advisory(runner_factory):
+    create, path = runner_factory
+    modules = [_Module(f"Module {index:02d}", lambda: (False, "probe failed")) for index in range(12)]
+    runner = create(modules)
+    report = runner.run(timeout=1.0)
+    assert "Result: 1 passed, 12 failed, 0 skipped." in report
+    assert len(json.loads(path.read_text(encoding="utf-8"))["failures"]) == len(modules)
+    diagnostics = [event for event in runner.bus.recent(30) if event.severity.name == "CRITICAL"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].details["finding_code"] == "selftest.module_failures"
+    assert diagnostics[0].details["failure_count"] == len(modules)
+    assert len(diagnostics[0].details["sample_modules"]) == 5
+    assert diagnostics[0].details["response_authorized"] is False
 
 
 def test_bus_exceptions_are_reported_without_losing_module_failures(runner_factory):

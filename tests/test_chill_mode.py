@@ -144,8 +144,8 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     module._ask = lambda _prompt: (_ for _ in ()).throw(
         AssertionError("self-test must never run inference")
     )
-    module._ping_ollama = lambda: (_ for _ in ()).throw(
-        AssertionError("Chill self-test must use bounded service preparation, not model probing")
+    module._probe_model = lambda *_args: (_ for _ in ()).throw(
+        AssertionError("Chill self-test must not contact the local AI listener")
     )
     preparations = []
     module._ensure_ollama = lambda **kwargs: preparations.append(kwargs) or True
@@ -158,12 +158,13 @@ def test_chill_forces_ollama_immediate_release(monkeypatch) -> None:
     module._sync_config()
     assert module._model == "operator-model:latest"
     assert effective_keep_alive("30m") == "30m"
-    module._ping_ollama = lambda: True
-    module._attest_model = lambda: True
+    from angerona.modules import ai_model_integrity
+
+    module._probe_model = lambda *_args: ({"digest": "a" * 64}, "")
+    monkeypatch.setattr(ai_model_integrity, "observe_model_attestation", lambda *_args: True)
     ok, detail = module.self_test()
-    assert ok and "operator-model:latest" in detail and "attested" in detail
-    module._ping_ollama = lambda: False
-    module._ensure_ollama = lambda **_kwargs: False
+    assert ok and "operator-model:latest" in detail and "current disk attestation" in detail
+    module._probe_model = lambda *_args: (None, "configured model is not installed")
     ok, detail = module.self_test()
     assert not ok and "not installed" in detail
     assert module.selftest_auto_repair is False

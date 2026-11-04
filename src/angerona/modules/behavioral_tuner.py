@@ -111,17 +111,18 @@ class BehavioralTuner(BaseModule):
     }
     WATCHED_MODULES = frozenset(MODULE_ALIASES.values())
 
-    def __init__(self, learn_days: float = _DEFAULT_LEARN_DAYS) -> None:
+    def __init__(self, learn_days: float = _DEFAULT_LEARN_DAYS, *, _in_memory: bool = False) -> None:
         super().__init__()
         # Test hook: ANGERONA_TUNE_LEARN_SECONDS wins over learn_days if set.
-        env_secs = os.getenv(_LEARN_SECONDS_ENV)
+        env_secs = None if _in_memory else os.getenv(_LEARN_SECONDS_ENV)
         self._learn_seconds = float(env_secs) if env_secs else learn_days * 86400.0
-        self._db_path = _resolve_db_path()
+        self._db_path = ":memory:" if _in_memory else _resolve_db_path()
         self._db_lock = threading.Lock()
         self._db: Optional[sqlite3.Connection] = None
         self._first_launch_ts: float = time.time()
         global _INSTANCE
-        _INSTANCE = self   # expose to ai_triage's safe-path check
+        if not _in_memory:
+            _INSTANCE = self   # expose to ai_triage's safe-path check
         self._learned = 0
         self._downgraded = 0
 
@@ -133,7 +134,8 @@ class BehavioralTuner(BaseModule):
         check_event() may differ; every access is guarded by self._db_lock.
         busy_timeout lets us ride out concurrent writers instead of raising.
         """
-        os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+        if self._db_path != ":memory:":
+            os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
         self._db = sqlite3.connect(self._db_path, check_same_thread=False, timeout=5.0)
         self._db.execute("PRAGMA busy_timeout=5000")
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -642,14 +644,34 @@ class BehavioralTuner(BaseModule):
                 self.set_health(100, f"enforcing — {self._downgraded} events downgraded")
 
     def self_test(self) -> tuple[bool, str]:
-        """Verify the baseline table is reachable."""
+        """Prove candidate approval and exact matching in an isolated database."""
+        probe = BehavioralTuner(learn_days=0, _in_memory=True)
+        sample = {"name": "fixture.exe", "parent_name": "fixture-parent.exe", "hash": "a" * 64,
+                  "remote_ip": "192.0.2.20", "remote_port": 443}
+        try:
+            probe._connect()
+            probe._learn("NMON", sample)
+            identity = probe._identity("NMON", sample)
+            if (not identity or probe.check_event("NMON", sample) is not None
+                    or probe.approve_candidate(identity, "b" * 64, "self-test fixture")
+                    or not probe.approve_candidate(identity, sample["hash"], "self-test fixture")
+                    or probe.check_event("NMON", sample) != Severity.INFO
+                    or probe.check_event("NMON", dict(sample, hash="b" * 64)) is not None
+                    or probe.check_event("NMON", dict(sample, remote_ip="198.51.100.20")) is not None):
+                return False, "in-memory baseline sample failed approval, exact-match or drift control"
+        except Exception as exc:
+            return False, f"in-memory baseline sample failed: {exc}"
+        finally:
+            if probe._db is not None:
+                probe._db.close()
+
         if self.status != "running":
             return super().self_test()   # not started yet — graceful "stopped" status
         try:
             with self._db_lock:
                 n = self._db.execute("SELECT COUNT(*) FROM behavioral_baseline").fetchone()[0]
             phase = "learning" if self._in_learning() else "enforcing"
-            return True, f"{phase}; {n} baselined behaviours"
+            return True, f"{phase}; {n} baselined behaviours; in-memory approval and drift samples passed"
         except Exception as exc:
             return False, f"baseline DB unreachable: {exc}"
 

@@ -8,14 +8,16 @@ import json
 import stat
 import sys
 import time
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Mapping
 
 from angerona import __version__
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.update_authority import (
+    SCHEMA,
     AuthenticatedReleaseFloor,
+    ReleaseAuthorizationStatement,
     UpdateAuthorityPolicy,
     file_sha256,
     verify_payload_manifest,
@@ -289,19 +291,47 @@ class ReleaseTransparencyGuardModule(BaseModule):
             self.sleep(self._INTERVAL)
 
     def self_test(self) -> tuple[bool, str]:
-        result = verify_release_authorization(
-            b"{}", {}, UpdateAuthorityPolicy(), now=1,
-            expected_platform="windows-x64", expected_artifact_sha256="a" * 64,
-            expected_sbom_sha256="b" * 64,
-            expected_payload_manifest_sha256="d" * 64,
-            expected_payload_catalog_sha256="e" * 64,
-            expected_provenance_sha256="c" * 64,
-            installed_version=__version__,
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        policy = UpdateAuthorityPolicy(allowed_builders=("fixture-builder",))
+        statement = ReleaseAuthorizationStatement(
+            schema=SCHEMA, product="Angerona", version="1.0.0", sequence=2,
+            platform="windows-x64", artifact_sha256="a" * 64, sbom_sha256="b" * 64,
+            payload_manifest_sha256="d" * 64, payload_catalog_sha256="e" * 64,
+            provenance_sha256="c" * 64, source_revision="f" * 40,
+            builder_id="fixture-builder", issued_at=1, expires_at=120,
         )
-        return (
-            not result.valid,
-            "unsigned, malformed, expired, and below-threshold updates fail closed",
-        )
+        publishers = {name: Ed25519PrivateKey.generate() for name in ("fixture-a", "fixture-b")}
+        trust = {name: key.public_key().public_bytes_raw() for name, key in publishers.items()}
+        signed_bytes = statement.canonical()
+        signatures = [{
+            "signer_id": name,
+            "signature": base64.urlsafe_b64encode(key.sign(signed_bytes)).decode("ascii").rstrip("="),
+        } for name, key in publishers.items()]
+
+        def verify(evidence, signer_rows, *, now=60, floor=0):
+            envelope = json.dumps({"statement": asdict(evidence), "signatures": signer_rows}).encode("utf-8")
+            return verify_release_authorization(
+                envelope, trust, policy, now=now,
+                expected_platform="windows-x64", expected_artifact_sha256="a" * 64,
+                expected_sbom_sha256="b" * 64, expected_payload_manifest_sha256="d" * 64,
+                expected_payload_catalog_sha256="e" * 64, expected_provenance_sha256="c" * 64,
+                installed_version="1.0.0", highest_sequence=floor,
+            )
+
+        valid = verify(statement, signatures)
+        if not valid.valid or valid.verified_signers != tuple(trust):
+            return False, "Release authorization rejected the valid two-publisher sample"
+        forged = [signatures[0], {**signatures[1],
+                  "signature": base64.urlsafe_b64encode(bytes(64)).decode("ascii").rstrip("=")}]
+        if (verify(statement, signatures[:1]).valid
+                or verify(statement, forged).valid
+                or verify(replace(statement, source_revision="1" * 40), signatures).valid
+                or verify(statement, signatures, now=120).valid
+                or verify(statement, signatures, floor=3).valid):
+            return False, "Release authorization admitted an invalid threshold, signature, metadata, expiry or rollback sample"
+        return True, ("Offline release sample accepted two independent publishers; below-threshold, forged, altered, "
+                      "expired and rollback samples fail closed. Installed release evidence was not exercised.")
 
 
 def register() -> ReleaseTransparencyGuardModule:

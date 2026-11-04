@@ -171,6 +171,15 @@ MENU_INFO: dict[str, tuple[MenuInfoTopic, ...]] = {
             "src/angerona/engines/ai_consult.py",
             locations=("Operating-system protected credential store", "{data}/settings.json (preferences only; no secrets)"),
         ),
+        _topic(
+            "settings-self-test", "Self-Test",
+            "Runs bundled module diagnostics and opens their source for inspection or sandbox editing.",
+            (("Module check", "Runs the installed diagnostic against its declared fixture and prerequisites."),
+             ("Deferred", "The check has no verdict yet and can be run again."),
+             ("Sandbox copy", "A separate editable file with syntax checking. Installed tests run independently.")),
+            "src/angerona/gui/selftest_settings.py", "src/angerona/core/selftest.py",
+            locations=("{data}/diagnostics/selftest_failures.json",),
+        ),
     ),
     "operations": (
         _topic("operations-overview", "Overview", "A local SOC summary of cases, evidence, audit records, assets, and detection content.", (("Metric cards", "Bounded counts from the local stores."), ("Local only", "This workspace does not expose a remote shell.")), "src/angerona/gui/operations_center.py", "src/angerona/core/operations_center.py", locations=("{data}/evidence.db",)),

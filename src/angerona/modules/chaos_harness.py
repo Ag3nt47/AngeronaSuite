@@ -47,6 +47,7 @@ import time
 from typing import Optional
 
 from angerona.core.assurance_receipts import (
+    PRODUCER_CONTRACTS,
     AssuranceChallenge,
     AssuranceReceiptBroker,
     assurance_target_digest,
@@ -342,7 +343,42 @@ class ChaosHarness(BaseModule):
             self.sleep(self._cycle)
 
     def self_test(self) -> tuple[bool, str]:
-        return True, (f"cycle {self._cycle/3600:.1f}h; {self._runs} runs, "
+        from angerona.core.eventbus import BusAuthority, Event, EventBus
+
+        module_name, capability_id, _observations = PRODUCER_CONTRACTS["APID"]
+
+        class FixtureDetector:
+            CODE = "APID"
+            name = module_name
+            _lifecycle_generation = 1
+
+        detector = FixtureDetector()
+        broker = AssuranceReceiptBroker(lambda: {module_name: detector})
+        bus = EventBus(ring_size=8)
+        bus.arm(BusAuthority(secrets.token_bytes(32)))
+        probe = ChaosHarness(cycle_seconds=60.0)
+        probe.ECHO_TIMEOUT_S = 1.0
+        probe.bind(bus)
+        probe._assurance_broker = broker
+        broker.enroll_consumer(probe)
+        issuer = broker.enroll_producer(
+            detector, code="APID", module_name=module_name, capability_id=capability_id,
+        )
+        challenge = probe._register_challenge("apid", "ntdll-kernel32-prologues-v1")
+        if challenge is None:
+            return False, "isolated detector receipt challenge could not be registered"
+        receipt = issuer.issue(
+            detector, challenge.probe_id,
+            observation="api_prolog_integrity_observed",
+            observed_target_digest=challenge.target_digest,
+        )
+        if receipt is None or broker.verify_and_consume(probe, dict(receipt, producer_mac="0" * 64)):
+            return False, "isolated detector receipt sample failed authentic issuance or forgery refusal"
+        bus.publish(Event(detector.name, "isolated detector receipt sample", details=receipt))
+        if not probe._wait_for_echo(challenge) or broker.verify_and_consume(probe, receipt):
+            return False, "isolated detector receipt sample failed echo or replay refusal"
+        return True, (f"isolated authentic, forged and replayed receipt samples verified; "
+                      f"cycle {self._cycle/3600:.1f}h; {self._runs} runs, "
                       f"{self._failures} with regressions")
 
 

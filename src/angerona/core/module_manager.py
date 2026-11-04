@@ -38,7 +38,8 @@ from angerona.core.independent_high_water import IndependentHighWater
 from angerona.core.module_base import BaseModule, Severity
 from angerona.core.module_contract import ContractError, build_capability_contract
 from angerona.core.module_usage import (
-    ModuleUsage, has_optional_policy, kernel_service_installed, module_identity, usage_for,
+    ModuleUsage, chill_module_hold, has_optional_policy, kernel_service_installed,
+    module_identity, usage_for,
 )
 from angerona.core.platforms import (
     availability_for,
@@ -1058,6 +1059,10 @@ class ModuleManager:
             if has_optional_policy(mod):
                 self._optional_enabled[name] = effective
             if effective and not self._shutdown and self._ugcap_allows(mod):
+                if chill_module_hold(mod, self.config):
+                    if mod.status == "stopped":
+                        mod._chill_paused = True
+                    return
                 if start_admission is not None:
                     if start_admission(mod) is not True:
                         return
@@ -1065,11 +1070,14 @@ class ModuleManager:
                     # if its own execution changes a policy or registration.
                     if (self._shutdown or generation != self._control_generation
                             or self.modules.get(name) is not mod
-                            or not self.is_enabled(name) or not self._ugcap_allows(mod)):
+                            or not self.is_enabled(name) or not self._ugcap_allows(mod)
+                            or chill_module_hold(mod, self.config)):
                         return
                 mod.start()
             else:
                 mod.stop()
+                if not effective and getattr(mod, "_chill_paused", False):
+                    mod._chill_paused = False
 
     def restart_faulted_module_generation(
         self,
@@ -1081,6 +1089,14 @@ class ModuleManager:
         return self.restart_module_generation(
             name, expected_module, expected_generation, only_if_faulted=True,
         )
+
+    def module_runtime_hold_reason(self, module: BaseModule) -> str:
+        """Describe a temporary lifecycle hold separately from saved selection."""
+        if self._shutdown:
+            return "The module manager is shutting down."
+        if self._ugcap_paused and not _is_ugcap_control(module):
+            return "UGCAP verification is required before module startup."
+        return chill_module_hold(module, self.config)
 
     def restart_module_generation(
         self,
@@ -1099,7 +1115,8 @@ class ModuleManager:
         with self._module_control_lock:
             current = self.modules.get(name)
             if (self._shutdown or current is not expected_module
-                    or not self.is_enabled(name) or not self._ugcap_allows(current)):
+                    or not self.is_enabled(name) or not self._ugcap_allows(current)
+                    or self.module_runtime_hold_reason(current)):
                 return False
             restart_method = "restart_faulted_generation" if only_if_faulted else "restart_if_generation"
             restart = getattr(current, restart_method, None)

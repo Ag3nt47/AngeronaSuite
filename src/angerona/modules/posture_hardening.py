@@ -1325,30 +1325,26 @@ class PostureHardening(BaseModule):
 
     # ── self-test ─────────────────────────────────────────────────────────────
     def self_test(self) -> tuple[bool, str]:
-        # Fully ISOLATED: exercise ingest on a throwaway probe instance in a temp
-        # dir so the test never touches the live module's DB, its `_seen` set, or
-        # the REAL after-action report. (The previous version overwrote the real
-        # report and — because the live `_seen` already held the sample key —
-        # recorded 0 weaknesses, which is why the drill self-test failed.)
+        """Verify durable practice memory and its separation from host findings."""
         import tempfile
         try:
-            probe = PostureHardening(data_dir=tempfile.mkdtemp())
-            sample = {"rounds": [{"technique": "persistence_implant",
-                                  "name": "Persistence Implant", "mitre": "T1547.001",
-                                  "severity": "High", "verdict": "SUCCESS",
-                                  "objective": "run key",
-                                  "attempts": [{"attack_epoch": 111}]}]}
-            # Authenticity is exercised independently by report_attest.self_test
-            # and the strict AAR regression suite. This isolated probe validates
-            # the post-trust ingestion/business path without touching the live
-            # installation key or changing process-wide verifier policy.
-            probe._aar_trusted = lambda _doc, _path: True
-            probe.aar_path.parent.mkdir(parents=True, exist_ok=True)
-            probe.aar_path.write_text(json.dumps(sample), encoding="utf-8")
-            new = probe.ingest_report(probe.aar_path)
-            vuln = probe.weaknesses("VULNERABLE")
-            ok = any(w["mitre_id"] == "T1547.001" for w in vuln) and probe.health < 50
-            return (ok, f"probe weaknesses={len(vuln)}, health={probe.health}, staged={len(new)}")
+            with tempfile.TemporaryDirectory(prefix="angerona-posture-selftest-") as work_dir:
+                probe = PostureHardening(data_dir=work_dir)
+                source = "shark-practice"
+                first = probe._claim_learning_run(source, "posture-selftest")
+                probe.record_weakness("T1055", "Host evidence", "High")
+                collision = probe._record_practice_weakness("T1055", "Practice", "High", source=source)
+                stored = probe._record_practice_weakness("T1547.001", "Practice", "High", source=source)
+                reopened = PostureHardening(data_dir=work_dir)
+                repeat = reopened._claim_learning_run(source, "posture-selftest")
+                rows = {row["mitre_id"]: row for row in reopened.weaknesses("VULNERABLE")}
+                if not first or repeat:
+                    return False, "Practice run deduplication did not survive reopening fixture storage"
+                if collision or rows.get("T1055", {}).get("source") != "host":
+                    return False, "A practice gap could overwrite a host finding in fixture storage"
+                if not stored or rows.get("T1547.001", {}).get("source") != source:
+                    return False, "The practice gap did not retain its practice scope in fixture storage"
+                return True, "Practice gap storage, durable deduplication and host-finding isolation verified offline"
         except Exception as exc:
             return (False, str(exc))
 

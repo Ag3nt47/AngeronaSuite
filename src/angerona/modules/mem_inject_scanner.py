@@ -165,6 +165,12 @@ class ProcessCoverage:
 # Minimum suspicious region size (bytes).  1-page stubs are common in JIT/CLR.
 _MIN_REGION_BYTES = 4096
 
+
+def _is_suspicious_region(state: int, region_type: int, protection: int, size: int) -> bool:
+    return (state == MEM_COMMIT and region_type == MEM_PRIVATE
+            and protection in _RWX_PROTECTIONS and size >= _MIN_REGION_BYTES)
+
+
 # Per-PROCESS alert cooldown. A JIT-heavy app can hold dozens of anonymous RWX
 # regions across several PIDs; alerting per region produced hundreds of near-
 # identical alerts and froze the GUI. We now emit at most one aggregated alert
@@ -550,12 +556,7 @@ class MemInjectScannerModule(BaseModule):
                 region_base = mbi.BaseAddress
                 region_size = mbi.RegionSize
 
-                if (
-                    mbi.State   == MEM_COMMIT
-                    and mbi.Type    == MEM_PRIVATE
-                    and mbi.Protect in _RWX_PROTECTIONS
-                    and region_size >= _MIN_REGION_BYTES
-                ):
+                if _is_suspicious_region(mbi.State, mbi.Type, mbi.Protect, region_size):
                     regions.append((region_base, region_size, mbi.Protect))
                     if len(regions) >= 64:
                         limit_reason = "suspicious region evidence cap reached"
@@ -921,11 +922,17 @@ class MemInjectScannerModule(BaseModule):
         for k in stale:
             del self._seen[k]
 
-    def self_test(self):
+    def self_test(self) -> tuple[bool, str]:
+        suspicious = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READWRITE, _MIN_REGION_BYTES)
+        ordinary = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, 0x04, _MIN_REGION_BYTES)  # PAGE_READWRITE
+        short = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READWRITE, _MIN_REGION_BYTES - 1)
+        if not suspicious or ordinary or short:
+            return False, "Memory region sample failed RWX detection, clean control, or size boundary"
+        detail = "Offline memory region sample: committed private RWX flagged; ordinary RW and short regions ignored. "
         if self.status != "running":
-            return super().self_test()   # not started yet — graceful "stopped" status
+            return True, detail + "Live native memory queries were not exercised."
         if self._k32 is None:
-            return False, "kernel32 not loaded"
+            return False, detail + "kernel32 not loaded"
         try:
             mbi  = MEMORY_BASIC_INFORMATION()
             ret  = self._k32.VirtualQueryEx(
@@ -935,10 +942,10 @@ class MemInjectScannerModule(BaseModule):
                 ctypes.sizeof(mbi),
             )
             if ret > 0:
-                return True, "VirtualQueryEx functional"
-            return False, "VirtualQueryEx returned 0 on own process"
+                return True, detail + "Live VirtualQueryEx succeeded on Angerona's own process."
+            return False, detail + "VirtualQueryEx returned 0 on own process"
         except Exception as exc:
-            return False, str(exc)
+            return False, detail + str(exc)
 
 
 def register():

@@ -75,13 +75,37 @@ class LinuxObserveModule(BaseModule):
         return Severity.INFO, "new process start"
 
     def self_test(self) -> tuple[bool, str]:
+        processes = [{"pid": 11, "create_time": 1.0, "executable": "/usr/bin/fixture", "uid": 1000}]
+        connections: list[dict] = []
+        posture = {"apparmor_enabled": True}
+        collector = LinuxObserveCollector(
+            process_provider=lambda: processes, network_provider=lambda: connections,
+            posture_provider=lambda: posture, network_every=1, posture_every=1, clock=lambda: 10.0,
+        )
+        if collector.poll():
+            return False, "Linux Observe fixture reported the initial baseline as new activity"
+        processes.extend([
+            {"pid": 12, "create_time": 2.0, "executable": "/dev/shm/fixture", "uid": 0},  # nosec B108
+            {"pid": 13, "create_time": 2.0, "executable": "/usr/bin/fixture-new", "uid": 1000},
+        ])
+        connections.append({"pid": 12, "local": "127.0.0.1:1234", "remote": "192.0.2.8:443"})
+        posture["apparmor_enabled"] = False
+        observations = collector.poll()
+        classifications = [(item.kind, self.classify(item)[0]) for item in observations]
+        if classifications != [
+            ("process", Severity.CRITICAL), ("process", Severity.INFO),
+            ("network", Severity.INFO), ("security", Severity.HIGH),
+        ] or collector.poll():
+            return False, "Linux Observe fixture failed classification or repeated baseline suppression"
+        detail = "isolated Linux process, flow and posture fixtures passed"
         if not sys.platform.startswith("linux"):
-            return False, "Linux Observe is available only on Linux"
-        try:
-            self._collector.poll()
-        except Exception as exc:
-            return False, f"observe snapshot failed: {exc}"
-        return True, "rootless process/network/posture snapshot succeeded"
+            return True, detail + "; live observation requires Linux"
+        degraded = getattr(self._collector, "degraded_reasons", ())
+        if degraded:
+            return False, detail + "; current collector reports: " + "; ".join(degraded)[:500]
+        if self.status != "running" or not self._first_cycle_complete.is_set():
+            return True, detail + "; live collection completion was not observed"
+        return True, detail + "; worker reports no collector degradation"
 
     def run(self) -> None:
         self.set_health(80, "Rootless Observe active; eBPF kernel coverage is optional.")

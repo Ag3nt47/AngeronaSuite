@@ -21,6 +21,23 @@ _OPTIONAL_FLAGS = {
 _SOAR = ("angerona.modules.soar_engine", "ActiveResponseSOAR")
 _KERNEL = ("angerona.modules.kernel_bridge", "KernelBridgeModule")
 _OPTIONAL_POLICIES = frozenset((*_OPTIONAL_FLAGS, _SOAR))
+_CHILL_LOCAL_AI = frozenset({
+    "AI Triage (Ollama)", "Speculative Triage Pre-Warm",
+    "Scheduled AI Security Briefing", "Smart Deception",
+})
+
+
+def chill_module_hold(module, config) -> str:
+    """Read the current Chill hold without changing selection or waking work."""
+    from angerona.core.chill_mode import CHILL_PAUSED_MODULES, chill_ai_blocked
+
+    if module.name in _CHILL_LOCAL_AI and chill_ai_blocked(config):
+        return "Local AI remains off until the operator selects Full."
+    if (module.name in CHILL_PAUSED_MODULES
+            and (getattr(module, "_chill_paused", False)
+                 or bool(getattr(config, "runtime_chill_active", getattr(config, "eco_mode", False))))):
+        return "Chill keeps this module paused. Select Full to wake it."
+    return ""
 
 
 def module_identity(module: object) -> tuple[str, str]:

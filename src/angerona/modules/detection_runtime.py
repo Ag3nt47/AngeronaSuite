@@ -20,6 +20,7 @@ from typing import Any, Callable, Mapping, Sequence
 from angerona.core.detection_packages import (
     DetectionPackage,
     package_digest,
+    seal_package,
     validate_package,
 )
 from angerona.core.detection_registry import DetectionPackageRegistry
@@ -1513,19 +1514,53 @@ class DetectionRuntimeModule(BaseModule):
 
     def self_test(self) -> tuple[bool, str]:
         snapshot = self.engine.snapshot()
-        ok = (
+        if not (
             self.response_authority == "none"
             and self.capability_mode == "detect"
             and snapshot.active_queue_capacity >= 8
             and snapshot.shadow_queue_capacity >= 8
             and snapshot.active_drops >= 0
             and snapshot.shadow_drops >= 0
-        )
-        return (
-            ok,
-            "separate bounded lanes and observe-only authority passed"
-            if ok else "runtime authority or queue contract failed",
-        )
+        ):
+            return False, "runtime authority or queue contract failed"
+        marker = "angerona-detection-selftest-fixture"
+        package = DetectionPackage(seal_package({
+            "schema_version": 1, "id": "org.angerona.selftest-runtime", "version": "1.0.0",
+            "owner": "Angerona", "description": "In-memory Detection Runtime diagnostic fixture.",
+            "telemetry": ["process.creation"], "attack": ["T1059.001"],
+            "severity": "high", "confidence": 85,
+            "logic": {"type": "sigma-subset", "detection": {
+                "selection": {"cmdline|contains": marker}, "condition": "selection",
+            }},
+            "fixtures": [
+                {"name": "hit", "event": {"cmdline": marker}, "expected_match": True},
+                {"name": "miss", "event": {"cmdline": "editor"}, "expected_match": False},
+            ],
+            "performance": {"max_eval_ms": 50, "max_events_per_second": 100},
+            "rollback": {"previous_digest": None, "instructions": "Discard diagnostic fixture."},
+            "expires_at": "2099-01-01T00:00:00Z",
+        }))
+        publications: list[RuntimeFinding] = []
+        fixture = DetectionRuntimeEngine(active_sink=publications.append, work_clock=lambda: 1.0)
+        fixture.bind_shadow(package)
+        for index, command in enumerate((marker, "editor")):
+            if not fixture.submit_shadow(Event(
+                "Process Monitor", "process creation", Severity.INFO,
+                details={"event_id": f"selftest-{index}", "cmdline": command},
+            )):
+                return False, "Detection Runtime fixture could not queue a shadow event"
+        counts = fixture.process()
+        observed = fixture.snapshot()
+        if (counts != (0, 2) or [item.matched for item in observed.shadow_observations] != [True, False]
+                or publications or observed.active_findings):
+            return False, "Detection Runtime fixture failed match, non-match or shadow isolation"
+        detail = "isolated rule match, non-match and shadow publication isolation passed"
+        if snapshot.active_drops or snapshot.rule_integrity_failures:
+            return False, (
+                f"{detail}; live active drops={snapshot.active_drops}, "
+                f"rule integrity failures={snapshot.rule_integrity_failures}"
+            )
+        return True, f"{detail}; live shadow drops={snapshot.shadow_drops}"
 
 
 def register() -> DetectionRuntimeModule:

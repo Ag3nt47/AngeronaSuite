@@ -1527,8 +1527,19 @@ class AVTelemetryBridgeModule(BaseModule):
         return [dict(item) for item in data]
 
     def self_test(self) -> tuple[bool, str]:
+        sample = (f'<Event xmlns="{_NS}"><EventData>'
+                  '<Data Name="Threat Name">Inert.Test.Fixture</Data>'
+                  '<Data Name="Path">C:\\Fixtures\\inert.txt</Data></EventData></Event>')
+        # Exercise the decoder after the source admits a record. No Event Log
+        # source, native handle or delivery cursor is created by this fixture.
+        detection = self._decode_record(SimpleNamespace(EventID=1116, RecordNumber=7, StringInserts=[sample]))
+        unrelated = self._decode_record(SimpleNamespace(EventID=1, RecordNumber=8, StringInserts=[sample]))
+        if (detection is None or detection[1] is not Severity.CRITICAL
+                or detection[2].get("threat_name") != "Inert.Test.Fixture" or unrelated is not None):
+            return False, "Defender fixture detection or unrelated-event control failed"
+        detail = "Offline Defender sample: detection record decoded and unrelated record ignored. "
         if self.health >= 80:
-            return True, f"health={self.health}%"
+            return True, detail + f"Worker health={self.health}%; live delivery was not exercised."
         if (
             self.health == 70
             and self._telemetry_mode in {"native", "powershell"}
@@ -1536,8 +1547,8 @@ class AVTelemetryBridgeModule(BaseModule):
             and not self._continuity_gaps
             and not self._errors
         ):
-            return True, f"available with degraded coverage: {self.health_note}"
-        return False, self.health_note
+            return True, detail + f"Available with degraded coverage: {self.health_note}"
+        return False, detail + f"Worker health={self.health}%: {self.health_note}"
 
 
 def register() -> AVTelemetryBridgeModule:

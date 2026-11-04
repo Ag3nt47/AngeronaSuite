@@ -85,7 +85,7 @@ SECURITY NOTES
 from angerona import __version__
 from angerona.core.capability_assurance import assess_capability, cached_declaration_anchor
 from angerona.core.eventbus import Severity
-from angerona.core.module_usage import module_counts
+from angerona.core.module_usage import chill_module_hold, module_counts
 from angerona.core.threat import (
     active_threat_events, event_disposition, recent_threat_candidates,
     threat_label_from_active,
@@ -2070,13 +2070,94 @@ def _module_bulk_start_active(manager) -> bool:
     return bool(job is not None and job.thread.is_alive())
 
 
+def _module_policy_view(manager, module, usage=None, *, enabled=None) -> tuple[str, str]:
+    """Keep effective policy separate from a worker's last reported state."""
+    if usage is None and enabled is None:
+        usage_reader = getattr(manager, "module_usage", None)
+        if callable(usage_reader):
+            if manager.modules.get(module.name) is not module:
+                return "held", "The registered module changed. Open its current details."
+            usage = usage_reader(module.name)
+    if enabled is None:
+        enabled = usage.enabled if usage is not None else manager.is_enabled(module.name)
+    if not enabled:
+        return "off", usage.reason if usage is not None else "Off in module settings."
+    hold_reader = getattr(manager, "module_runtime_hold_reason", None)
+    hold = hold_reader(module) if callable(hold_reader) else ""
+    if hold:
+        return "held", hold
+    return "enabled", usage.reason if usage is not None else "Enabled for this machine."
+
+
+def _module_restart_hold(manager, module, generation, policy_view=None) -> str:
+    if _module_bulk_start_active(manager):
+        return "Bulk module startup is active. Restart is held until the current startup finishes."
+    if not callable(getattr(manager, "restart_module_generation", None)):
+        return "This manager has no generation-bound restart control."
+    if manager.modules.get(module.name) is not module:
+        return "The registered module changed. Open its current details."
+    policy, reason = policy_view or _module_policy_view(manager, module)
+    if policy != "enabled":
+        return reason
+    if type(generation) is not int or generation < 1:
+        return "No worker generation is available to restart."
+    return ""
+
+
+def _module_selection_hold(manager, module) -> str:
+    usage_reader = getattr(manager, "module_usage", None)
+    if not callable(usage_reader):
+        return ""
+    if manager.modules.get(module.name) is not module:
+        return "The registered module changed. Open its current details."
+    usage = usage_reader(module.name)
+    return "" if getattr(usage, "eligible", True) else usage.reason
+
+
+def _request_module_restart(manager, module, generation, done) -> str:
+    """Submit one detached restart request for the observed worker."""
+    reason = _module_restart_hold(manager, module, generation)
+    if reason:
+        return f"Restart held. {reason}"
+    active = getattr(manager, "_modules_restart_thread", None)
+    if active is not None and active.is_alive():
+        return "A module restart is already being requested."
+
+    def request():
+        from angerona.core.selftest import module_selftest_lock
+
+        lock = module_selftest_lock(module)
+        if not lock.acquire(blocking=False):
+            result = "Restart held. A module diagnostic is still running."
+        else:
+            try:
+                reason = _module_restart_hold(manager, module, generation)
+                if reason:
+                    result = f"Restart held. {reason}"
+                elif manager.restart_module_generation(module.name, module, generation):
+                    result = "Restart accepted. Check the replacement worker's status and run its self-test."
+                else:
+                    result = "Restart held. Worker generation or module policy changed."
+            except Exception as exc:
+                result = f"Restart request failed. {type(exc).__name__}: {str(exc)[:500]}"
+            finally:
+                lock.release()
+        try:
+            done.emit(f"{module.name} — {result}")
+        except RuntimeError:
+            pass  # The dialog can close while the manager completes the request.
+
+    worker = threading.Thread(target=request, name="AngeronaModuleRestart", daemon=True)
+    manager._modules_restart_thread = worker
+    try:
+        worker.start()
+    except RuntimeError as exc:
+        return f"Could not submit restart. {str(exc)[:500]}"
+    return f"Requesting restart for {module.name}…"
+
+
 class _ModuleEnableAllJob:
     """Detached, cancelable startup; Qt only polls the bounded progress tuple."""
-
-    _USER_ONLY_AI = frozenset({
-        "AI Triage (Ollama)", "Speculative Triage Pre-Warm",
-        "Scheduled AI Security Briefing", "Smart Deception",
-    })
 
     def __init__(self, manager, modules) -> None:
         self.manager = manager
@@ -2089,8 +2170,6 @@ class _ModuleEnableAllJob:
         self.thread = threading.Thread(target=self._run, name="ModulesTurnAllOn", daemon=True)
 
     def _hold_reason(self, name, module, *, after_save=False) -> str:
-        from angerona.core.chill_mode import CHILL_PAUSED_MODULES, chill_ai_blocked
-
         manager = self.manager
         if self.cancel.is_set():
             return "Canceled; remaining modules were left unchanged."
@@ -2107,14 +2186,7 @@ class _ModuleEnableAllJob:
         expected_selection = True if after_save else self.selected[name]
         if usage.selected != expected_selection:
             return "Module selection changed after this request."
-        config = manager.config
-        if (name in CHILL_PAUSED_MODULES
-                and (getattr(module, "_chill_paused", False)
-                     or bool(getattr(config, "runtime_chill_active", getattr(config, "eco_mode", False))))):
-            return "Chill keeps this deep scanner paused; select Full to wake it."
-        if name in self._USER_ONLY_AI and chill_ai_blocked(config):
-            return "Local AI remains off until the operator selects Full."
-        return ""
+        return chill_module_hold(module, manager.config)
 
     def _run(self) -> None:
         from collections import deque
@@ -2208,6 +2280,8 @@ class _ModuleEnableAllJob:
 class ModulesStatusWindow(QDialog):
     """Searchable Capability Center for every discovered module contract."""
 
+    _restart_done = Signal(str)
+
     def __init__(self, manager, bus, parent=None) -> None:
         super().__init__(parent)
         self.manager, self.bus = manager, bus
@@ -2249,7 +2323,7 @@ class ModulesStatusWindow(QDialog):
         filters.addWidget(self.maturity_filter)
         self.status_filter = QComboBox()
         self.status_filter.addItems(
-            ["All status", "running", "stopped", "unavailable", "error", "restarting"]
+            ["All status", "running", "stopped", "unavailable", "error", "restarting", "off", "held"]
         )
         self.status_filter.currentIndexChanged.connect(self._refresh)
         filters.addWidget(self.status_filter)
@@ -2321,6 +2395,7 @@ class ModulesStatusWindow(QDialog):
         self._bulk_timer = QTimer(self)
         self._bulk_timer.setInterval(100)
         self._bulk_timer.timeout.connect(self._poll_turn_all_on)
+        self._restart_done.connect(self._restart_finished)
         self._last_snapshot = None
         self._refresh()
 
@@ -2394,7 +2469,7 @@ class ModulesStatusWindow(QDialog):
         maturity_filter = self.maturity_filter.currentText()
         status_filter = self.status_filter.currentText()
         assurance_filter = self.assurance_filter.currentText()
-        visible: list[tuple[str, object, dict, tuple[str, int, str], object]] = []
+        visible = []
         for name, mod in mods:
             contract = _capability_summary(mod)
             haystack = " ".join(
@@ -2412,7 +2487,9 @@ class ModulesStatusWindow(QDialog):
             if maturity_filter != "All maturity" and contract.get("maturity") != maturity_filter:
                 continue
             health_summary = mod.health_summary()
-            if status_filter != "All status" and health_summary[0] != status_filter:
+            policy, reason = _module_policy_view(self.manager, mod)
+            display_status = health_summary[0] if policy == "enabled" else policy
+            if status_filter != "All status" and display_status != status_filter:
                 continue
             assurance = _module_assurance(
                 self.manager,
@@ -2425,16 +2502,16 @@ class ModulesStatusWindow(QDialog):
                 continue
             if assurance_filter == "Below 70%" and assurance.score >= 70:
                 continue
-            visible.append((name, mod, contract, health_summary, assurance))
+            visible.append((name, mod, contract, health_summary, assurance, display_status, reason))
         snapshot = tuple(
             (name, getattr(mod, "name", name), health_summary[0],
-             health_summary[1], health_summary[2],
+             health_summary[1], health_summary[2], display_status, reason,
              assurance.score,
              tuple((item.dimension, item.score, item.state) for item in assurance.dimensions),
              contract.get("mode"), contract.get("maturity"),
              contract.get("response_authority"), contract.get("implementation_version"),
              getattr(mod, "_bus_overflow_count", 0))
-            for name, mod, contract, health_summary, assurance in visible
+            for name, mod, contract, health_summary, assurance, display_status, reason in visible
         ) + (("__subscriber_slo__", subscriber_failures, subscriber_slo_violations),)
         if snapshot == self._last_snapshot:
             return
@@ -2450,19 +2527,23 @@ class ModulesStatusWindow(QDialog):
         overflowed = 0
         native = 0
         sub_full_assurance = 0
-        for name, mod, contract, health_summary, assurance in visible:
+        for name, mod, contract, health_summary, assurance, display_status, reason in visible:
             r = self.table.rowCount()
             self.table.insertRow(r)
             status, health_value, health_state = health_summary
-            running += (status == "running")
+            running += (display_status == "running")
             name_item = QTableWidgetItem(getattr(mod, "name", name))
             name_item.setData(Qt.UserRole, name)
             self.table.setItem(r, 0, name_item)
-            st_item = QTableWidgetItem(status)
-            st_item.setForeground(QColor(STATUS_COLOR.get(status, "#e5e7eb")))
+            st_item = QTableWidgetItem(display_status)
+            policy_color = (HEALTH_COLOR["off"] if display_status == "off" else
+                            HEALTH_COLOR["degraded"] if display_status == "held" else None)
+            st_item.setForeground(QColor(policy_color or STATUS_COLOR.get(status, "#e5e7eb")))
+            st_item.setToolTip(_table_text_tooltip(f"{reason}\nWorker: {status} · health {health_value}%"))
             self.table.setItem(r, 1, st_item)
-            h_item = _PercentTableItem(health_value if status == "running" else None)
-            h_item.setForeground(QColor(HEALTH_COLOR.get(health_state, "#e5e7eb")))
+            h_item = _PercentTableItem(health_value if display_status == "running" else None)
+            h_item.setForeground(QColor(policy_color or HEALTH_COLOR.get(health_state, "#e5e7eb")))
+            h_item.setToolTip(st_item.toolTip())
             self.table.setItem(r, 2, h_item)
             assurance_item = _PercentTableItem(assurance.score)
             assurance_item.setForeground(QColor(_assurance_color(assurance.score)))
@@ -2518,10 +2599,16 @@ class ModulesStatusWindow(QDialog):
         test_action = menu.addAction("Run safe self-test")
         restart_action = menu.addAction("Restart module")
         enabled = self.manager.is_enabled(module.name)
-        toggle_action = menu.addAction("Disable" if enabled else "Enable")
+        generation = getattr(module, "lifecycle_generation", None)
+        selection_hold = _module_selection_hold(self.manager, module)
+        toggle_action = menu.addAction("Selection unavailable" if selection_hold else
+                                       "Disable" if enabled else "Enable")
         bulk_active = _module_bulk_start_active(self.manager)
-        toggle_action.setEnabled(not bulk_active)
-        restart_action.setEnabled(not bulk_active)
+        toggle_action.setEnabled(not bulk_active and not selection_hold)
+        toggle_action.setToolTip(selection_hold)
+        restart_hold = _module_restart_hold(self.manager, module, generation)
+        restart_action.setEnabled(not restart_hold)
+        restart_action.setToolTip(restart_hold)
         menu.addSeparator()
         copy_action = menu.addAction("Copy capability ID")
         selected = menu.exec(self.table.viewport().mapToGlobal(position))
@@ -2541,15 +2628,24 @@ class ModulesStatusWindow(QDialog):
 
             _show_nonmodal_from(self.table, _test_inspector, "#22c55e")
         elif selected == restart_action:
-            module.stop()
-            module.start()
-            self._refresh()
+            self.bulk_status.setText(_request_module_restart(
+                self.manager, module, generation, self._restart_done,
+            ))
         elif selected == toggle_action:
-            self.manager.set_enabled(module.name, not enabled)
+            selection_hold = _module_selection_hold(self.manager, module)
+            if selection_hold:
+                self.bulk_status.setText(selection_hold)
+            elif self.manager.is_enabled(module.name) == enabled:
+                self.manager.set_enabled(module.name, not enabled)
             self._refresh()
         elif selected == copy_action:
             contract = _capability_contract(module)
             QGuiApplication.clipboard().setText(str(contract.get("capability_id", module.name)))
+
+    @Slot(str)
+    def _restart_finished(self, message: str) -> None:
+        self.bulk_status.setText(message)
+        self._refresh()
 
     def _open_module(self, row: int, column: int) -> None:
         item = self.table.item(row, 0)
@@ -3813,20 +3909,31 @@ class ModulesPanel(_MinimizableDashboardFrame):
             bool(usage.enabled) if usage is not None
             else bool(self.manager.is_enabled(name))
         )
+        policy, reason = _module_policy_view(self.manager, mod, usage, enabled=enabled)
         assurance = _module_assurance(
             self.manager, mod, _fast_assurance_operational(mod, health_summary),
             enabled=enabled,
         )
         contract = _capability_summary(mod)
+        if policy == "enabled":
+            display_status = f"{status} {health}%" if status == "running" else status
+            display_color = HEALTH_COLOR.get(health_state, "#e5e7eb")
+            status_note = reason
+        else:
+            display_status = policy
+            display_color = HEALTH_COLOR["off" if policy == "off" else "degraded"]
+            status_note = f"{reason}\nWorker: {status} · health {health}%"
         return (
             enabled,
             f"{_avatar(mod.category)}  {mod.name}",
-            f"{status} {health}%" if status == "running" else status,
-            HEALTH_COLOR.get(health_state, "#e5e7eb"),
+            display_status,
+            display_color,
             assurance.score, _assurance_tooltip(assurance), mod.category,
             str(contract.get("mode", "legacy")),
             str(contract.get("implementation_version", mod.version)),
-            usage.reason if usage is not None else "",
+            reason,
+            status_note,
+            getattr(usage, "eligible", True),
         )
 
     def _render_rows(self, rows) -> None:
@@ -3861,7 +3968,8 @@ class ModulesPanel(_MinimizableDashboardFrame):
                 if self._rendered_rows is not None and self._rendered_rows.get(name) == values:
                     continue
                 row = existing[name]
-                enabled, title, status, color, score, tooltip, category, mode, version, usage_note = values
+                (enabled, title, status, color, score, tooltip, category, mode, version,
+                 usage_note, status_note, eligible) = values
                 texts = ("On" if enabled else "Off", title, status, f"{score}%", category, mode, version)
                 for column, text in enumerate(texts):
                     item = table.item(row, column)
@@ -3877,7 +3985,9 @@ class ModulesPanel(_MinimizableDashboardFrame):
                     elif item.text() != text:
                         item.setText(text)
                 on_item = table.item(row, 0)
-                flags = (on_item.flags() | Qt.ItemIsUserCheckable) & ~Qt.ItemIsEditable
+                flags = on_item.flags() & ~(Qt.ItemIsEditable | Qt.ItemIsUserCheckable)
+                if eligible:
+                    flags |= Qt.ItemIsUserCheckable
                 if on_item.flags() != flags:
                     on_item.setFlags(flags)
                 check = Qt.Checked if enabled else Qt.Unchecked
@@ -3889,6 +3999,8 @@ class ModulesPanel(_MinimizableDashboardFrame):
                     value = texts[column]
                     if column == 1:
                         value += f"\nCategory: {category}\nMode: {mode}\nImplementation: {version}"
+                    elif column == 2:
+                        value += f"\n{status_note}"
                     full_text = _table_text_tooltip(value)
                     if table.item(row, column).toolTip() != full_text:
                         table.item(row, column).setToolTip(full_text)
@@ -3985,6 +4097,8 @@ class ModulesPanel(_MinimizableDashboardFrame):
         try:
             if _module_bulk_start_active(self.manager):
                 self.table.setToolTip("Bulk module startup is active; wait for it to finish or close its window to cancel remaining starts.")
+            elif hold := _module_selection_hold(self.manager, self.manager.modules[name]):
+                self.table.setToolTip(hold)
             elif requested != bool(self.manager.is_enabled(name)):
                 self.manager.set_enabled(name, requested)
         except Exception as exc:
@@ -4349,6 +4463,7 @@ class ModuleAssuranceDialog(QDialog):
 
 class ModuleInspector(QDialog):
     _test_done = Signal(object, str)
+    _restart_done = Signal(str)
 
     def __init__(self, manager, bus, module, parent=None) -> None:
         super().__init__(parent)
@@ -4357,6 +4472,7 @@ class ModuleInspector(QDialog):
         self._test_worker: threading.Thread | None = None
         self._test_generation = None
         self._test_result_pending = None
+        self._restart_generation = None
         from angerona.gui.action_progress import ActionActivities
         self._test_activities = ActionActivities(self)
         self._test_activity = None
@@ -4376,7 +4492,7 @@ class ModuleInspector(QDialog):
         root.addWidget(FuturisticHeader(
             f"{module.name} · Module Inspector",
             f"{module.category} · v{module.version} · live controls, events, health, and dependencies",
-            HEALTH_COLOR.get(module.health_state, "#38bdf8"),
+            "#38bdf8",
             self,
         ))
 
@@ -4401,6 +4517,7 @@ class ModuleInspector(QDialog):
         )
         root.addWidget(tabs)
         self._test_done.connect(self._apply_test_result)
+        self._restart_done.connect(self._restart_finished)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh)
@@ -4418,7 +4535,11 @@ class ModuleInspector(QDialog):
         desc.setTextFormat(Qt.PlainText)
         desc.setStyleSheet("color:#cbd5e1;"); lay.addWidget(desc)
         self.status_lbl = QLabel(""); self.status_lbl.setTextFormat(Qt.PlainText)
+        self.status_lbl.setWordWrap(True)
         lay.addWidget(self.status_lbl)
+        self.policy_lbl = QLabel(""); self.policy_lbl.setTextFormat(Qt.PlainText)
+        self.policy_lbl.setWordWrap(True)
+        lay.addWidget(self.policy_lbl)
         self.health_evidence_btn = QPushButton("")
         self.health_evidence_btn.setObjectName("ModuleHealthEvidenceButton")
         self.health_evidence_btn.setToolTip(
@@ -4439,10 +4560,10 @@ class ModuleInspector(QDialog):
         self.error_lbl.setStyleSheet("color:#ef4444;"); lay.addWidget(self.error_lbl)
         controls = QHBoxLayout()
         self.toggle_btn = QPushButton(); self.toggle_btn.clicked.connect(self._toggle)
-        restart = QPushButton("Restart module"); restart.clicked.connect(self._restart)
+        self.restart_btn = QPushButton("Restart module"); self.restart_btn.clicked.connect(self._restart)
         self.selftest_btn = QPushButton("Run self-test")
         self.selftest_btn.clicked.connect(self._selftest)
-        controls.addWidget(self.toggle_btn); controls.addWidget(restart)
+        controls.addWidget(self.toggle_btn); controls.addWidget(self.restart_btn)
         controls.addWidget(self.selftest_btn)
         if _source_editing_allowed():
             edit_btn = QPushButton("Open source sandbox")
@@ -4804,15 +4925,23 @@ class ModuleInspector(QDialog):
         if _module_bulk_start_active(self.manager):
             self.test_lbl.setText("Bulk module startup is active. Wait for it to finish or close its window to cancel remaining starts.")
             return
+        hold = _module_selection_hold(self.manager, self.module)
+        if hold:
+            self.test_lbl.setText(hold)
+            return
         self.manager.set_enabled(self.module.name, not self._enabled())
         self._refresh()
 
     def _restart(self) -> None:
-        if _module_bulk_start_active(self.manager):
-            self.test_lbl.setText("Bulk module startup is active. Restart is held until the current startup finishes.")
+        self.test_lbl.setText(_request_module_restart(
+            self.manager, self.module, self._restart_generation, self._restart_done,
+        ))
+
+    @Slot(str)
+    def _restart_finished(self, message: str) -> None:
+        if not self._accept_async_results:
             return
-        self.module.stop()
-        self.module.start()
+        self.test_lbl.setText(message)
         self._refresh()
 
     def _open_in_sandbox(self) -> None:
@@ -4993,11 +5122,8 @@ class ModuleInspector(QDialog):
     def _run_test(self, generation) -> None:
         try:
             from angerona.core.selftest import run_module_selftest
-            from angerona.modules.ai_triage import AITriageModule
-            # This explicit AI test may first start a cold daemon. Keep the
-            # shared permit/lock and an outer deadline, with enough time for
-            # the service's separately bounded startup plus model validation.
-            timeout = 60.0 if type(self.module) is AITriageModule else 15.0
+            config = getattr(self.manager, "config", None)
+            timeout = getattr(config, "selftest_timeout_seconds", 30)
             ok, detail = run_module_selftest(self.module, timeout=timeout)
             label = "SKIP" if str(detail).startswith("SKIP:") else "PASS" if ok else "FAIL"
             _emit_if_accepting(
@@ -5053,13 +5179,21 @@ class ModuleInspector(QDialog):
             health_value = 0
         health_note = str(operational.get("health_note") or "")[:1000]
         status = str(operational.get("status", "snapshot-error"))[:80]
-        color = HEALTH_COLOR.get(health_state, "#e5e7eb")
+        policy, reason = _module_policy_view(self.manager, self.module)
+        self._restart_generation = operational.get("lifecycle_generation")
+        hold = _module_restart_hold(self.manager, self.module, self._restart_generation, (policy, reason))
+        self.restart_btn.setEnabled(not hold)
+        self.restart_btn.setToolTip(hold)
+        color = (HEALTH_COLOR.get(health_state, "#e5e7eb") if policy == "enabled" else
+                 HEALTH_COLOR["degraded" if status == "running" or policy == "held" else "off"])
         note = f" · {health_note}" if health_note else ""
-        self.status_lbl.setText(
-            f"Status: {status} · "
-            f"health {health_value}% · "
-            f"{'enabled' if self._enabled() else 'disabled'}" + note)
+        self.status_lbl.setText(f"Worker — {status} · health {health_value}%{note}")
         self.status_lbl.setStyleSheet(f"color:{color};")
+        self.policy_lbl.setText(f"Effective policy — {policy.title()}. {reason}")
+        self.policy_lbl.setStyleSheet(
+            f"color:{HEALTH_COLOR['degraded' if policy == 'held' else 'off']};"
+            if policy != "enabled" else ""
+        )
         evidence = self._current_health_evidence(operational)
         evidence_fingerprint = (
             health_value,
@@ -5092,7 +5226,11 @@ class ModuleInspector(QDialog):
             f"Last error: {str(self.module.last_error)[:2000]}"
             if self.module.last_error else ""
         )
-        self.toggle_btn.setText("Disable" if self._enabled() else "Enable")
+        selection_hold = _module_selection_hold(self.manager, self.module)
+        self.toggle_btn.setText("Selection unavailable" if selection_hold else
+                               "Disable" if self._enabled() else "Enable")
+        self.toggle_btn.setEnabled(not selection_hold)
+        self.toggle_btn.setToolTip(selection_hold)
         try:
             contract = _capability_summary(self.module)
             gaps = contract.get("metadata_gaps", [])
@@ -9192,6 +9330,7 @@ class SettingsDialog(QDialog):
         ),
         "Mobile Integration": ("src/angerona/gui/pages.py", "def _tab_mobile"),
         "API Keys": ("src/angerona/gui/pages.py", "def _tab_apikeys"),
+        "Self-Test": ("src/angerona/gui/selftest_settings.py", "class SelfTestSettingsPanel"),
     }
 
     def __init__(self, config, check_updates_fn, apply_theme_fn, parent=None,
@@ -9268,6 +9407,9 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_trusted_processes()), "Trusted Processes")
         tabs.addTab(_scroll(self._tab_mobile()), "Mobile Integration")
         tabs.addTab(_scroll(self._tab_apikeys()), "API Keys")
+        from angerona.gui.selftest_settings import SelfTestSettingsPanel
+        self._selftest_settings = SelfTestSettingsPanel(parent, config, _read_trusted_source, self)
+        tabs.addTab(self._selftest_settings, "Self-Test")
         from angerona.gui.context_info import attach_context_info
         self._context_info = attach_context_info(tabs, "settings")
         self._settings_sandbox_dialogs: dict[str, QDialog] = {}
@@ -12460,6 +12602,8 @@ class SettingsDialog(QDialog):
         # All widget values are copied into a detached Config first. Nothing
         # live, persisted, protected, or scheduled changes during validation.
         candidate = copy.deepcopy(self._cfg)
+        candidate.selftest_timeout_seconds = self._selftest_settings.time_budget.currentData()
+        candidate.selftest_auto_recover_modules = self._selftest_settings.auto_recovery_modules()
         if self._fleet_service_chk.isChecked():
             tenant = self._fleet_tenant.text().strip()
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{2,127}", tenant):

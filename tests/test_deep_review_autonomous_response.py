@@ -66,10 +66,10 @@ def test_authenticated_response_worker_verifies_quarantine_receipt_without_ollam
     monkeypatch.delenv("ANGERONA_CHILL_ACTIVE", raising=False)
     module, bus = _combat(tmp_path, monkeypatch)
     ai = AITriageModule()
-    monkeypatch.setattr(ai, "_ping_ollama", lambda: False)
     monkeypatch.setattr(ai, "_ensure_ollama", lambda **_kwargs: False)
-    ai._ollama_readiness_error = "Ollama unavailable in inert autonomy fixture"
-    assert ai.self_test() == (False, ai._ollama_readiness_error)
+    detail = "Ollama unavailable in inert autonomy fixture"
+    monkeypatch.setattr(ai, "_probe_model", lambda *_args: (None, detail))
+    assert ai.self_test() == (False, detail)
     module._manager.modules[ai.name] = ai
 
     def no_model_call(*_args, **_kwargs):

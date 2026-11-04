@@ -183,6 +183,19 @@ def test_release_guard_self_test_never_authorizes_malformed_metadata():
     assert okay and "fail closed" in detail
 
 
+@pytest.mark.parametrize("always_valid", (False, True))
+def test_release_guard_self_test_checks_admission_and_refusals(monkeypatch, always_valid):
+    from angerona.modules import release_transparency_guard
+
+    def broken_verifier(*args, **kwargs):
+        result = verify_release_authorization(*args, **kwargs)
+        return replace(result, valid=always_valid)
+
+    monkeypatch.setattr(release_transparency_guard, "verify_release_authorization", broken_verifier)
+    okay, detail = ReleaseTransparencyGuardModule().self_test()
+    assert not okay and "sample" in detail
+
+
 def test_operator_verifier_binds_hash_filename_repository_and_attestation():
     text = (ROOT / "Verify-Angerona-Release.ps1").read_text(encoding="utf-8")
     assert "Ag3nt47/AngeronaSuite" in text

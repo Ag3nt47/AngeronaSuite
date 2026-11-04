@@ -78,7 +78,7 @@ class _WLANQuery:
 def _parse_interface(text: str) -> Optional[dict]:
     """Parse a single interface block from netsh output."""
     state_m = _RE_STATE.search(text)
-    if not state_m or "connected" not in state_m.group(1).lower():
+    if not state_m or state_m.group(1).strip().casefold() != "connected":
         return None
     ssid_m   = _RE_SSID.search(text)
     bssid_m  = _RE_BSSID.search(text)
@@ -508,12 +508,41 @@ class WLANMonitorModule(BaseModule):
             self._observed_bssids.pop(oldest, None)
 
     def self_test(self) -> tuple[bool, str]:
+        from angerona.core.eventbus import EventBus
+
+        sample = ("    State : connected\n    SSID : angerona-fixture\n"
+                  "    BSSID : 02:11:22:33:44:55\n    Signal : 45%\n"
+                  "    Authentication : WPA2-Personal\n    Cipher : CCMP\n")
+        approved = _parse_interface(sample)
+        changed = _parse_interface(sample.replace("02:11:22:33:44:55", "02:11:22:33:44:56"))
+        disconnected = _parse_interface(sample.replace("State : connected", "State : disconnected"))
+        if approved is None or changed is None or disconnected is not None:
+            return False, "WLAN sample connected/disconnected identity parsing failed"
+        probe = WLANMonitorModule()
+        bus = EventBus()
+        probe.bind(bus)
+        probe._baseline_status = "ok"
+        probe._baseline["networks"] = {"angerona-fixture": {
+            "bssids": ["02:11:22:33:44:55"], "authentication": "WPA2-Personal", "cipher": "CCMP",
+        }}
+        probe._observe_query(_WLANQuery("connected", approved))
+        if bus.recent(1):
+            return False, "Approved WLAN identity sample was incorrectly flagged"
+        probe._observe_query(_WLANQuery("disconnected", None))
+        probe._observe_query(_WLANQuery("connected", changed))
+        if not any(
+            event.details.get("finding_code") == "wlan.identity.unapproved_bssid"
+            and event.details.get("response_authorized") is False
+            for event in bus.recent(4)
+        ):
+            return False, "Changed WLAN identity sample was missed or received response authority"
+        detail = "Offline WLAN sample: approved BSSID quiet; unapproved reconnect flagged. "
         query = _query_wlan()
         if query.status == "connected" and query.state:
-            return True, f"Connected to {query.state['ssid']!r} via {query.state['bssid']}"
+            return True, detail + "Live WLAN query reported a connected interface."
         if query.status == "disconnected":
-            return True, "netsh WLAN query succeeded (not connected)"
-        return False, f"netsh WLAN query failed: {query.reason}"
+            return True, detail + "Live WLAN query reported a disconnected interface."
+        return False, detail + f"netsh WLAN query failed: {query.reason}"
 
 
 def register() -> WLANMonitorModule:

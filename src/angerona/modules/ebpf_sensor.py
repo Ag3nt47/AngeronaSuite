@@ -13,9 +13,12 @@ from __future__ import annotations
 SUPPORTED_PLATFORMS = ("linux",)
 
 import os
+import socket
 import sys
+from types import SimpleNamespace
 from typing import Optional
 
+from angerona.core.eventbus import EventBus
 from angerona.core.module_base import BaseModule, Severity
 
 
@@ -296,15 +299,50 @@ class EbpfSensorNode(BaseModule):
             self._bpf = None
 
     def self_test(self) -> tuple[bool, str]:
+        fixture = EbpfSensorNode()
+        bus = EventBus()
+        fixture.bind(bus)
+        fixture._bpf = {
+            stream: SimpleNamespace(event=lambda data: data)
+            for stream in ("exec_events", "net_events")
+        }
+        fixture._attached = True
+        fixture_path = "/tmp/fixture"  # nosec B108 - inert event data, never opened
+        execution = SimpleNamespace(comm=b"fixture", argv0=fixture_path.encode(), pid=77, uid=1000, seq=1)
+        fixture._on_exec(2, execution, 0)
+        fixture._on_net(0, SimpleNamespace(
+            comm=b"fixture", pid=77, dport=443, daddr6=bytes.fromhex("20010db8000000000000000000000042"),
+            family=socket.AF_INET6, v6=1, seq=1,
+        ), 0)
+        fixture._set_delivery_health()
+        events = bus.recent(2)
+        if (fixture.health != 100 or fixture._events_received != 2 or len(events) != 2
+                or events[0].details.get("raddr") != "2001:db8::42"
+                or events[1].details.get("path") != fixture_path
+                or any(event.details.get("response_authorized") is not False for event in events)):
+            return False, "eBPF fixture failed exec/IPv6 event normalization"
+        execution.seq = 3
+        fixture._on_exec(2, execution, 0)
+        fixture._on_lost("network", 0, 1)
+        fixture._set_delivery_health()
+        if fixture._sequence_gaps != 1 or fixture._events_lost != 1 or fixture.health >= 50:
+            return False, "eBPF fixture failed sequence gap or perf loss accounting"
+        detail = "isolated eBPF exec, IPv6 and loss fixtures passed"
         if not sys.platform.startswith("linux"):
-            return True, "inert (Linux-only)"
+            return True, detail + "; live probes require Linux"
         if not self._enabled():
-            return True, "disabled (opt-in)"
+            return True, detail + "; live probes are off (opt-in)"
         try:
             import bcc  # noqa: F401
-            return True, "BCC available"
         except Exception:
-            return False, "BCC not installed"
+            return False, detail + "; BCC not installed"
+        if self.status != "running":
+            return True, detail + "; BCC available, live probes were not exercised"
+        if not self._attached:
+            return False, detail + "; running worker has no attached probes"
+        if self._events_lost or self._sequence_gaps or self._callback_errors:
+            return False, detail + "; live delivery reports loss or callback errors"
+        return True, detail + "; worker reports attached probes without observed loss"
 
 
 def register() -> BaseModule:

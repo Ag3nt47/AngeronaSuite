@@ -15,6 +15,8 @@ from PySide6.QtWidgets import (
 
 from angerona.gui import main_window
 from angerona.gui.main_window import MainWindow
+from angerona.core.module_base import BaseModule
+from angerona.core.selftest_remediation import ModuleRecovery
 
 
 class _ManualModule:
@@ -102,6 +104,11 @@ def _attention_items():
 
 def _show_results(window, failures):
     window._last_selftest_report = "Full test report\nA diagnostic failure remains visible."
+    window._last_selftest_plans = {
+        item["module"]: ModuleRecovery(item["module"], module, 1, "error")
+        for item in failures if item.get("repairable")
+        if isinstance(module := window.manager.modules.get(item["module"]), _RestartableModule)
+    }
     window._prompt_selftest_fix(failures)
     return window._selftest_results
 
@@ -180,7 +187,7 @@ def test_manual_failures_have_working_details_copy_and_no_restart(window, report
         assert QApplication.clipboard().text() == window._last_selftest_report
     finally:
         QApplication.clipboard().setText(previous_clipboard)
-    dialog.modules.setCurrentText("AV Telemetry Bridge")
+    dialog.modules.setCurrentIndex(dialog.modules.findData("AV Telemetry Bridge"))
     dialog.details_button.click()
     assert window.opened_modules == ["AV Telemetry Bridge"]
 
@@ -223,13 +230,71 @@ def test_recovery_errors_stay_visible_and_release_the_gate(window, monkeypatch):
     assert not window._selftest_active.is_set()
     assert window._selftest_btn.isEnabled()
     assert "controlled recovery failure" in dialog.summary.text()
-    assert "Run self-test again to verify" in dialog.summary.text()
+    assert "Verified recovery for 0" in dialog.summary.text()
     assert "success" not in dialog.summary.text().casefold()
     assert dialog.retry_button.isEnabled()
     dialog.retry_button.click()
     QTest.qWait(20)
     assert len(workers) == 2
     assert workers[-1]["name"] == "AngeronaSelfTest"
+
+
+def test_module_tab_keeps_deferred_evidence_and_runs_selected_module(window, monkeypatch):
+    workers = _pending_workers(monkeypatch)
+    window.manager.modules = {"ETW": object(), "Watchdog": object()}
+    results = [
+        {"module": "ETW", "kind": "module", "status": "DEFERRED", "detail": "No free worker",
+         "guidance": "Check the session owner", "scope": "module diagnostic",
+         "checks": [{"check": "test admission", "status": "DEFERRED"}]},
+        {"module": "Watchdog", "kind": "module", "status": "PASS", "detail": "Heartbeat fixture passed"},
+    ]
+    window._on_selftest_done("Controlled report", ([], results, {}))
+    dialog = window._selftest_results
+    assert "Incomplete — 1 check(s) deferred" in dialog.summary.text()
+    assert "No free worker" in dialog.attention.toPlainText()
+    assert "Check the session owner" in dialog.module_detail.toPlainText()
+    dialog.modules.setCurrentIndex(dialog.modules.findData("Watchdog"))
+    assert "Heartbeat fixture passed" in dialog.module_detail.toPlainText()
+    dialog.module_retry_button.click()
+    assert workers[0]["args"] == (["Watchdog"],)
+
+
+def test_recover_selected_worker_never_requests_other_eligible_workers(window, monkeypatch):
+    workers = _pending_workers(monkeypatch)
+    failures = [
+        {"module": name, "detail": "worker stopped", "repairable": True}
+        for name in ("Sensor A", "Sensor B")
+    ]
+    window.manager.modules = {row["module"]: _RestartableModule() for row in failures}
+    dialog = _show_results(window, failures)
+    dialog.modules.setCurrentIndex(dialog.modules.findData("Sensor B"))
+    assert not dialog.module_restart_button.isEnabled()
+    dialog.approval.setChecked(True)
+    dialog.module_restart_button.click()
+    assert workers[0]["args"] == ([failures[1]],)
+
+
+def test_automatic_recovery_only_uses_the_saved_module_choice(window, monkeypatch):
+    class Sensor(BaseModule):
+        pass
+
+    workers = _pending_workers(monkeypatch)
+    plans = {}
+    failures = []
+    for leaf in ("sensor_a", "sensor_b"):
+        module = Sensor()
+        module.name = leaf
+        module._angerona_origin = "builtin"
+        module._angerona_contract = SimpleNamespace(capability_id=f"angerona.builtin.{leaf}")
+        window.manager.modules[leaf] = module
+        plans[leaf] = ModuleRecovery(leaf, module, 1, "error")
+        failures.append({"module": leaf, "detail": "worker fault", "repairable": True})
+    window.config.selftest_auto_recover_modules = ["angerona.builtin.sensor_b"]
+    window._on_selftest_done("Controlled report", (failures, [], plans))
+    assert workers[0]["args"] == ([failures[1]],)
+    assert workers[0]["kwargs"] == {"automatic": True}
+    assert "saved auto-recovery approval" in window._selftest_results.summary.text()
+    assert window._eligible_selftest_failures(failures) == [failures[0]]
 
 
 def test_retry_never_starts_a_concurrent_selftest(window, monkeypatch):

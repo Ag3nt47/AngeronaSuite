@@ -184,7 +184,7 @@ def test_usage_tooltip_change_emits_only_one_model_change(panel_factory):
     panel, manager = panel_factory([_ProbeModule("Alpha")])
     rows = dict(panel._rendered_rows)
     values = list(rows["Alpha"])
-    values[-1] = "Updated runtime usage"
+    values[-3] = "Updated runtime usage"
     rows["Alpha"] = tuple(values)
     changes = QSignalSpy(panel.table.model().dataChanged)
     panel._render_rows(rows)
@@ -297,7 +297,8 @@ def test_programmatic_refresh_uses_authoritative_enabled_state(panel_factory):
     checkbox, _, status, *_ = _items(panel, module.name)
     assert checkbox.checkState() == Qt.Unchecked
     assert checkbox.text() == "Off"
-    assert status.text() == "stopped"
+    assert status.text() == "off"
+    assert "Worker: stopped" in status.toolTip()
     assert manager.enable_calls == []
 
     manager.enabled[module.name] = True
@@ -482,7 +483,7 @@ def test_summary_reflow_measures_only_changed_visible_columns(panel_factory, mon
     monkeypatch.setattr(table, "setColumnWidth", set_column_width)
     values = (
         True, "Synthetic", "running 100%", "#22c55e", 100, "Initial assurance",
-        "Synthetic category", "observe", "1.14.0", "Synthetic state",
+        "Synthetic category", "observe", "1.14.0", "Synthetic state", "Worker note", True,
     )
     panel.resize(850, 350)
     panel.show()

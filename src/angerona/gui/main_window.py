@@ -274,7 +274,7 @@ class MainWindow(QMainWindow):
     # control back to the GUI thread to touch widgets.
     _aar_ready = Signal(object)
     _shark_narration = Signal(str)
-    _selftest_done = Signal(str, object)   # report text, failures list
+    _selftest_done = Signal(str, object)   # report text, structured module results
     _selftest_progress = Signal(int, int)  # (done, total) → live progress wheel
     _selftest_repair_done = Signal(object, object)  # restarted names, errors
     _mic_level = Signal(float)             # live mic input level (0..1) → HUD meter
@@ -6786,13 +6786,13 @@ class MainWindow(QMainWindow):
         self._selftest_active.set()
         return True
 
-    def _run_self_test(self) -> bool:
+    def _run_self_test(self, *, names=None) -> bool:
         if getattr(self, "_termination_started", False):
             return False
         if not self._claim_self_test():
             self.console._append("[self-test] already running")
             return False
-        self.console._append("ARIA# test all")
+        self.console._append(f"ARIA# test {', '.join(names) if names else 'all'}")
         self.console._start_busy()
         self.run_spinner.start("Running self-test")
         self._selftest_btn.setEnabled(False)
@@ -6802,6 +6802,7 @@ class MainWindow(QMainWindow):
         try:
             self._selftest_thread = threading.Thread(
                 target=self._self_test_worker,
+                args=(names,),
                 name="AngeronaSelfTest",
                 daemon=True,
             )
@@ -6853,25 +6854,27 @@ class MainWindow(QMainWindow):
         else:
             self._on_selftest_repair_done(*payload)
 
-    def _self_test_worker(self) -> None:
+    def _self_test_worker(self, names=None) -> None:
         try:
             # The runner grades optional AI readiness under the active profile.
             # A button press must not start a service or bypass Chill's lease.
             from angerona.core.selftest import SelfTestRunner
             runner = SelfTestRunner(self.manager, self.bus)
             report = runner.run(
+                names=names,
+                timeout=getattr(self.config, "selftest_timeout_seconds", 30),
                 progress_cb=lambda done, total: self._selftest_progress.emit(done, total))
-            failures = list(runner.last_failures)
+            payload = (list(runner.last_failures), list(runner.last_results), dict(runner.last_repairs))
         except Exception as exc:
             report = f"Self-test could not complete: {type(exc).__name__}: {str(exc)[:2000]}"
-            failures = [{"module": "Self-test runner", "detail": report, "repairable": False}]
+            payload = ([{"module": "Self-test runner", "detail": report, "repairable": False}], [], {})
         try:
-            self._selftest_done.emit(report, failures)
+            self._selftest_done.emit(report, payload)
         except RuntimeError:
             pass  # The dashboard was closed while the worker completed.
 
-    def _on_selftest_done(self, report: str, failures) -> None:
-        if self._defer_selftest_completion("test", (report, failures)):
+    def _on_selftest_done(self, report: str, payload) -> None:
+        if self._defer_selftest_completion("test", (report, payload)):
             return
         dialog = getattr(self, "_selftest_results", None)
         if dialog is not None:
@@ -6880,12 +6883,24 @@ class MainWindow(QMainWindow):
             return
         self._selftest_active.clear()
         self._selftest_btn.setEnabled(True)
+        failures, results, plans = payload if isinstance(payload, tuple) else (payload, [], {})
         self.console._append(report)
         self.console._end_busy()
+        deferred = sum(row.get("status") == "DEFERRED" for row in results)
         self.run_spinner.finish(
+            f"Self-test incomplete: {deferred} deferred" if deferred else
             f"Self-test complete: {len(failures)} need attention" if failures else "Self-test complete")
         self._last_selftest_report = report
+        self._last_selftest_results = results
+        self._last_selftest_plans = plans
+        self._selftest_auto_attempted = set()
         self._prompt_selftest_fix(failures)
+        from angerona.core.selftest_remediation import auto_recovery_allowed
+        automatic = [row for row in failures
+                     if (plan := plans.get(row.get("module"))) is not None
+                     and auto_recovery_allowed(self.config, plan)]
+        if automatic:
+            self._start_selftest_repairs(automatic, automatic=True)
 
     def _prompt_selftest_fix(self, failures) -> None:
         from angerona.gui.selftest_results import SelfTestResultsDialog
@@ -6895,11 +6910,14 @@ class MainWindow(QMainWindow):
         repairable = self._eligible_selftest_failures(failures)
         dialog = SelfTestResultsDialog(
             getattr(self, "_last_selftest_report", ""), failures, repairable,
-            self.manager.modules, self)
+            self.manager.modules, self, results=getattr(self, "_last_selftest_results", ()))
         self._selftest_results = dialog
         dialog.finished.connect(lambda _result: self._selftest_results_closed(dialog))
         dialog.retry_requested.connect(self._retry_selftest_results)
+        dialog.module_retry_requested.connect(lambda name: self._run_self_test(names=[name]))
         dialog.restart_requested.connect(lambda: self._start_selftest_repairs(repairable))
+        dialog.module_restart_requested.connect(lambda name: self._start_selftest_repairs(
+            [failure for failure in repairable if failure.get("module") == name]))
         dialog.module_requested.connect(self._open_module_window)
         configure_work_window(dialog)
         dialog.show()
@@ -6919,16 +6937,18 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._run_self_test)
 
     def _eligible_selftest_failures(self, failures):
-        from angerona.core.selftest import SelfTestRunner
+        plans = getattr(self, "_last_selftest_plans", {})
+        auto_attempted = getattr(self, "_selftest_auto_attempted", ())
         eligible = []
         for failure in failures:
-            module = self.manager.modules.get(failure.get("module"))
-            if (module is not None and failure.get("repairable") is True
-                    and SelfTestRunner._is_repairable(module, str(failure.get("detail", "")))):
+            name = failure.get("module")
+            plan = plans.get(name)
+            if (plan is not None and name not in auto_attempted and self.manager.modules.get(name) is plan.module
+                    and failure.get("repairable") is True):
                 eligible.append(dict(failure))
         return eligible
 
-    def _start_selftest_repairs(self, failures) -> None:
+    def _start_selftest_repairs(self, failures, *, automatic: bool = False) -> None:
         if self._selftest_active.is_set() or getattr(self, "_termination_started", False):
             return
         repairable = self._eligible_selftest_failures(failures)
@@ -6939,19 +6959,27 @@ class MainWindow(QMainWindow):
             return
         self._selftest_active.set()
         self._selftest_btn.setEnabled(False)
-        self.run_spinner.start("Restarting modules")
+        self.run_spinner.start("Recovering modules")
+        if automatic:
+            self._selftest_auto_attempted = {row["module"] for row in repairable}
         dialog = getattr(self, "_selftest_results", None)
         if dialog is not None:
-            dialog.set_busy("Requesting approved restarts…")
+            if automatic:
+                dialog.begin_auto_recovery({row["module"] for row in repairable})
+            else:
+                dialog.set_busy("Requesting approved restarts…")
         try:
             self._selftest_repair_thread = threading.Thread(
                 target=self._selftest_repair_worker,
                 args=(repairable,),
+                kwargs={"automatic": True} if automatic else {},
                 name="AngeronaSelfTestRepair",
                 daemon=True,
             )
             self._selftest_repair_thread.start()
         except Exception:
+            if automatic:
+                self._selftest_auto_attempted.clear()
             self._selftest_active.clear()
             self._selftest_btn.setEnabled(True)
             self.run_spinner.finish("Recovery could not start")
@@ -6959,9 +6987,10 @@ class MainWindow(QMainWindow):
                 dialog.recovery_finished([], ["The recovery worker could not start."])
             return
 
-    def _selftest_repair_worker(self, failures) -> None:
+    def _selftest_repair_worker(self, failures, *, automatic: bool = False) -> None:
         try:
-            restarted, errors = self._attempt_selftest_repairs(failures)
+            restarted, errors = (self._attempt_selftest_repairs(failures, automatic=True) if automatic
+                                 else self._attempt_selftest_repairs(failures))
         except Exception as exc:
             # Never strand the GUI in its "repair active" state if an
             # unexpected module implementation escapes the per-module guard.
@@ -6978,51 +7007,39 @@ class MainWindow(QMainWindow):
             return
         self._selftest_active.clear()
         self._selftest_btn.setEnabled(True)
-        self.run_spinner.finish("Recovery requested")
+        self.run_spinner.finish(f"Verified recovery: {len(restarted)} worker(s)")
         dialog = getattr(self, "_selftest_results", None)
         if dialog is not None:
             dialog.recovery_finished(restarted, errors)
         self.console._append(
-            f"[auto-fix] restart requested for {len(restarted)} module(s): "
-            + (", ".join(restarted) if restarted else "none")
-            + ". Re-run 'test all' after startup settles to verify recovery.")
+            f"[self-test] verified recovery for {len(restarted)} module(s): "
+            + (", ".join(restarted) if restarted else "none"))
         if errors:
             self.console._append(
-                "[auto-fix] manual attention required: " + "; ".join(errors)
+                "[self-test] further attention required: " + "; ".join(errors)
             )
 
-    def _attempt_selftest_repairs(self, failures) -> tuple[list[str], list[str]]:
-        """Sequentially restart audited failures without touching Qt/config."""
-        from angerona.core.selftest import SelfTestRunner, module_selftest_lock
+    def _attempt_selftest_repairs(self, failures, *, automatic: bool = False) -> tuple[list[str], list[str]]:
+        """Apply only live plans from this report and verify each replacement."""
+        from angerona.core.selftest_remediation import auto_recovery_allowed, recover_module
+        plans = getattr(self, "_last_selftest_plans", {})
+        config = getattr(self, "config", None)
+        startup_timeout = getattr(config, "selftest_timeout_seconds", 30)
         restarted: list[str] = []
         errors: list[str] = []
         for f in failures:
-            nm = f.get("module")
-            mod = self.manager.modules.get(nm)
-            if (
-                mod is None
-                or f.get("repairable") is not True
-                or not SelfTestRunner._is_repairable(mod, str(f.get("detail", "")))
-            ):
+            name = f.get("module")
+            plan = plans.get(name)
+            if plan is None or f.get("repairable") is not True:
                 continue
-            test_lock = module_selftest_lock(mod)
-            if not test_lock.acquire(blocking=False):
-                errors.append(f"{nm}: a self-test is still running; restart was not requested")
+            if automatic and not auto_recovery_allowed(config, plan):
+                errors.append(f"{name}: Auto-recovery is off. The worker was left as observed.")
                 continue
             try:
-                if getattr(mod, "status", "") in {"running", "restarting"}:
-                    mod.stop()
-                if not start_module_if_enabled(self.manager, mod):
-                    continue
-                restarted.append(str(nm))
-                waiter = getattr(mod, "wait_for_first_cycle", None)
-                if callable(waiter):
-                    waiter(timeout=2.0)
+                ok, detail = recover_module(self.manager, plan, startup_timeout=startup_timeout)
             except Exception as exc:
-                errors.append(f"{nm}: {exc}")
-                continue
-            finally:
-                test_lock.release()
+                ok, detail = False, str(exc)
+            (restarted if ok else errors).append(f"{name}: {detail}")
         return restarted, errors
 
     # ── Forensics: dashboard-level entry to the incident views ───────────────

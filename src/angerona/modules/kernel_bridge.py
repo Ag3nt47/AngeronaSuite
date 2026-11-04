@@ -81,6 +81,7 @@ _VERSION_SIZE = struct.calcsize(_VERSION_FMT)
 _EVENTS_HEADER_FMT = "<IIQQQ"
 _EVENTS_HEADER_SIZE = struct.calcsize(_EVENTS_HEADER_FMT)
 _HANDSHAKE_INTERVAL = 10.0
+KERNEL_BRIDGE_LIVE_UNAVAILABLE = "kernel wire parser fixture passed; AngeronaSensor.sys driver handle unavailable"
 
 
 def _kernel32():
@@ -166,7 +167,7 @@ def _close_device(handle: Optional[ctypes.wintypes.HANDLE]) -> None:
 
 def _parse_event(data: bytes, offset: int) -> Optional[dict]:
     """Parse one ANGERONA_EVENT from *data* at *offset*."""
-    if offset + _EVENT_SIZE > len(data):
+    if offset < 0 or offset + _EVENT_SIZE > len(data):
         return None
     (
         evt_type, sequence, pid, ppid, tid, ts_filetime,
@@ -477,13 +478,27 @@ class KernelBridgeModule(BaseModule):
                   response_authorized=False)
 
     def self_test(self) -> tuple[bool, str]:
+        image = r"C:\Windows\System32\fixture.exe".encode("utf-16-le")
+        command = "fixture.exe --test".encode("utf-16-le")
+        wire = struct.pack(
+            _EVENT_FMT, _EVT_PROCESS_CREATE, 9, 42, 4, 8, 116444736010000000,
+            len(image) // 2, image.ljust(520, b"\x00"), len(command) // 2, command.ljust(520, b"\x00"),
+        )
+        decoded = _parse_event(wire, 0)
+        bad_kind = struct.pack("<I", 0xFFFFFFFF) + wire[4:]
+        if (decoded is None or decoded["sequence"] != 9 or decoded["pid"] != 42
+                or decoded["image"] != image.decode("utf-16-le") or decoded["ts"] != 1.0
+                or decoded["command_line"] != "fixture.exe --test"
+                or any(_parse_event(item, 0) is not None for item in (bad_kind, wire[:-1]))
+                or _parse_event(wire, -1) is not None):
+            return False, "kernel wire parser fixture failed valid, truncated or unknown-type event handling"
         if self._handle is None:
-            return False, "AngeronaSensor.sys driver not loaded"
+            return False, KERNEL_BRIDGE_LIVE_UNAVAILABLE
         if not self._verify_version():
             return False, "exact kernel protocol handshake failed"
         if not self._identity_verified:
             return False, f"kernel protocol live; identity incomplete: {self._identity_reason}"
-        return True, "exact protocol, liveness, and driver identity verified"
+        return True, "kernel wire parser fixture passed; exact protocol, liveness and driver identity verified"
 
     def stop(self) -> None:
         super().stop()

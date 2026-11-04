@@ -146,7 +146,7 @@ def test_voice_start_is_single_flight_across_concurrent_callers():
     assert not voice._voice_loop_in_flight()
 
 
-def test_self_test_claim_is_single_flight_until_completion():
+def test_self_test_claim_is_single_flight_and_report_rows_cannot_restart_a_worker():
     class Harness:
         _claim_self_test = MainWindow._claim_self_test
         _attempt_selftest_repairs = MainWindow._attempt_selftest_repairs
@@ -161,24 +161,11 @@ def test_self_test_claim_is_single_flight_until_completion():
     assert harness._claim_self_test()
 
     class Module:
-        selftest_auto_repair = True
-        status = "running"
-
-        def __init__(self) -> None:
-            self.stops = 0
-            self.starts = 0
-            self.waits = 0
-
         def stop(self) -> None:
-            self.stops += 1
+            raise AssertionError("A report dictionary cannot stop a live worker")
 
         def start(self) -> None:
-            self.starts += 1
-
-        def wait_for_first_cycle(self, timeout: float) -> bool:
-            assert timeout == 2.0
-            self.waits += 1
-            return True
+            raise AssertionError("A report dictionary cannot start a live worker")
 
     module = Module()
 
@@ -187,11 +174,8 @@ def test_self_test_claim_is_single_flight_until_completion():
         {"module": "repairable", "repairable": True},
         {"module": "Event pipeline", "repairable": False},
     ])
-    assert restarted == ["repairable"]
+    assert restarted == []
     assert errors == []
-    assert module.stops == 1
-    assert module.starts == 1
-    assert module.waits == 1
 
 
 def test_canary_echo_saturation_keeps_newest_records_without_blocking():

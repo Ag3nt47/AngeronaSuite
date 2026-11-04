@@ -378,3 +378,120 @@ def test_default_enable_still_forces_required_ugcap_guard_selection():
             rotator.join(timeout=2.0)
             assert not rotator.is_alive(), "test-owned mesh rotator did not retire"
         assert authority.snapshot()["closed"] is True
+
+
+def test_unarmed_soar_displays_off_even_with_running_worker(monkeypatch):
+    monkeypatch.delenv("ANGERONA_SOAR_KILL_AND_ROLLBACK", raising=False)
+    module = _optional("Active Response SOAR", "angerona.modules.soar_engine", "ActiveResponseSOAR")
+    module.status = "running"
+    module.set_health(100)
+    module._lifecycle_generation = 1
+    manager, saves = _manager([module])
+    restart = []
+    monkeypatch.setattr(manager, "restart_module_generation", lambda *args: restart.append(args))
+    center = ModulesStatusWindow(manager, manager.bus)
+    center._timer.stop()
+    panel = ModulesPanel(manager, manager.bus)
+    inspector = ModuleInspector(manager, manager.bus, module)
+    inspector._timer.stop()
+    try:
+        assert "Worker — running · health 100%" in inspector.status_lbl.text()
+        assert pages.HEALTH_COLOR["ok"] not in inspector.status_lbl.styleSheet()
+        assert "Off" in inspector.policy_lbl.text() and "operator policy" in inspector.policy_lbl.text()
+        assert not inspector.restart_btn.isEnabled()
+        assert not inspector.toggle_btn.isEnabled()
+        assert inspector.toggle_btn.text() == "Selection unavailable"
+        assert not panel.table.item(0, 0).flags() & Qt.ItemIsUserCheckable
+        inspector._restart()
+        assert "not armed by operator policy" in inspector.test_lbl.text()
+        for item in (center.table.item(0, 1), panel.table.item(0, 2)):
+            assert item.text() == "off"
+            assert item.foreground().color().name() == pages.HEALTH_COLOR["off"]
+            assert "Worker: running" in item.toolTip() and "operator policy" in item.toolTip()
+        assert "0 running" in center.summary.text()
+
+        class ChooseRestart(pages.QMenu):
+            def exec(self, _position):
+                actions = {item.text(): item for item in self.actions()}
+                assert not actions["Selection unavailable"].isEnabled()
+                assert not actions["Restart module"].isEnabled()
+                return actions["Restart module"]  # Exercise the stale dispatch guard.
+
+        monkeypatch.setattr(pages, "QMenu", ChooseRestart)
+        center._context_menu(center.table.visualItemRect(center.table.item(0, 0)).center())
+        assert "not armed by operator policy" in center.bulk_status.text()
+        assert not restart and not saves and not module.started
+    finally:
+        for view in (panel, inspector):
+            view.close()
+            view.deleteLater()
+        _dispose(center)
+
+
+@pytest.mark.parametrize("hold", ["Chill", "Chill transition", "UGCAP", "shutdown"])
+def test_restart_manager_refuses_policy_holds_without_stopping(hold, monkeypatch):
+    module = _InertModule("File Integrity Monitor")
+    module.status = "running"
+    module._lifecycle_generation = 1
+    manager, _saves = _manager([module], runtime_chill_active=hold == "Chill")
+    module._chill_paused = hold == "Chill transition"
+    manager._ugcap_paused = hold == "UGCAP"
+    manager._shutdown = hold == "shutdown"
+    restart = []
+    monkeypatch.setattr(module, "restart_if_generation", lambda generation: restart.append(generation))
+
+    assert not manager.restart_module_generation(module.name, module, 1)
+    assert not restart and not module.started and module.status == "running"
+
+
+def test_enabling_a_deep_module_during_chill_saves_selection_without_starting():
+    module = _InertModule("File Integrity Monitor")
+    manager, saves = _manager([module], runtime_chill_active=True, eco_mode=True)
+
+    manager.set_enabled(module.name, True)
+
+    assert saves and manager.config.module_states[module.name] is True
+    assert not module.started and module.status == "stopped" and module._chill_paused is True
+
+
+def test_disabling_a_parked_module_does_not_leave_a_stale_chill_hold():
+    module = _InertModule("File Integrity Monitor")
+    module._chill_paused = True
+    manager, _saves = _manager([module], runtime_chill_active=True, eco_mode=True)
+
+    manager.set_enabled(module.name, False)
+    manager.config.runtime_chill_active = False
+    manager.config.eco_mode = False
+    manager.set_enabled(module.name, True)
+
+    assert module.started and module._chill_paused is False
+
+
+def test_inspector_restarts_the_displayed_generation_off_qt(monkeypatch):
+    module = _InertModule("Inert")
+    module.status = "running"
+    module._lifecycle_generation = 12
+    manager, _saves = _manager([module])
+    calls = []
+
+    def restart(generation):
+        calls.append((generation, threading.get_ident()))
+        return generation == module.lifecycle_generation
+
+    monkeypatch.setattr(module, "restart_if_generation", restart)
+    inspector = ModuleInspector(manager, manager.bus, module)
+    inspector._timer.stop()
+    try:
+        assert inspector.restart_btn.isEnabled()
+        module._lifecycle_generation = 13
+        inspector._restart()
+        _pump(lambda: "generation or module policy changed" in inspector.test_lbl.text())
+        inspector._restart()
+        _pump(lambda: "Restart accepted" in inspector.test_lbl.text())
+        assert [generation for generation, _thread in calls] == [12, 13]
+        assert all(thread != threading.get_ident() for _generation, thread in calls)
+        assert not module.started
+    finally:
+        inspector.close()
+        inspector.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)

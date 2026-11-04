@@ -12,11 +12,12 @@ import math
 import os
 import re
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import List
 
 from angerona.core.module_base import BaseModule, Severity
-from angerona.core.eventbus import is_remote_observe_only
+from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.threat import event_disposition
 from angerona.core.process_allowlist import (
     is_event_allowed as _process_event_allowed,
@@ -119,47 +120,27 @@ class SOARModule(BaseModule):
 
     def self_test(self) -> tuple[bool, str]:
         """Validate corroboration and cursor safety without executing a response."""
-        class _Fixture:
-            def __init__(self, module: str, ts: float = 100.0) -> None:
-                self.module = module
-                self.ts = ts
-                self.hmac_sig = f"sig-{module}"
-
-        original_pending = self._pending
-        original_last = self._last_ts
-        original_seen = self._seen_at_last_ts
-        try:
-            self._pending = {}
-            sensor_a = _Fixture("sensor-a")
-            sensor_b = _Fixture("sensor-b")
-            for fixture in (sensor_a, sensor_b):
-                fixture.details = {
-                    "pid": 4242,
-                    "process_create_time": 100.25,
-                    "exe": os.path.abspath("self-test.exe"),
-                }
-            first = self._add_signal(4242, sensor_a)
-            repeat = self._add_signal(4242, sensor_a)
-            corroborated = self._add_signal(4242, sensor_b)
-            event = _Fixture("cursor-source")
-            unseen_before = self._is_unseen(event)
-            self._advance_cursor(event)
-            unseen_after = self._is_unseen(event)
-            ok = (
-                not first and not repeat and corroborated
-                and unseen_before and not unseen_after
-                and "lsass.exe" in _SYSTEM32_NEVER_CONTAIN
-                and _CORROBORATION_MIN >= 2
-            )
-        finally:
-            self._pending = original_pending
-            self._last_ts = original_last
-            self._seen_at_last_ts = original_seen
-        return (
-            ok,
-            "offline distinct-source corroboration, cursor, and protected-process gates passed"
-            if ok else "SOAR safety fixture failed",
-        )
+        fixture = SOARModule()
+        sensor_a = Event("Fixture sensor A", "inert signal", Severity.HIGH, 100.0, {
+            "pid": 4242, "process_create_time": 100.25, "exe": os.path.abspath("self-test.exe"),
+        })
+        sensor_b = replace(sensor_a, module="Fixture sensor B")
+        reused_pid = replace(sensor_b, details={**sensor_b.details, "process_create_time": 101.25})
+        if (fixture._add_signal(4242, sensor_a) or fixture._add_signal(4242, sensor_a)
+                or fixture._add_signal(4242, reused_pid) or not fixture._add_signal(4242, sensor_b)):
+            return False, "SOAR fixture failed exact-process, distinct-source corroboration"
+        if not fixture._is_unseen(sensor_a):
+            return False, "SOAR fixture rejected an unseen cursor event"
+        fixture._commit_delivery(None, sensor_a, legacy_cursor=True)
+        if fixture._is_unseen(sensor_a) or not fixture._is_unseen(sensor_b):
+            return False, "SOAR fixture failed cursor deduplication or dropped a same-time sibling"
+        fixture._commit_delivery(2, sensor_b, legacy_cursor=False)
+        if fixture._priority_cursor != 2:
+            return False, "SOAR fixture did not advance its priority delivery cursor"
+        if (not fixture._protected_process_name("LSASS.EXE")
+                or fixture._protected_process_name("lsass.exe.fixture")):
+            return False, "SOAR fixture failed exact protected-process name classification"
+        return True, "Offline exact-process corroboration, delivery cursors, and protected-process gates passed"
 
     def run(self) -> None:
         mode = ("AUTO-CONTAIN" if self._auto
@@ -545,13 +526,16 @@ class SOARModule(BaseModule):
         )
 
     # ── G3-B helpers ─────────────────────────────────────────────────────────
+    @staticmethod
+    def _protected_process_name(name: str) -> bool:
+        return name.casefold() in _SYSTEM32_NEVER_CONTAIN
+
     def _is_protected_process(self, pid: int) -> bool:
         """True if the PID belongs to a never-contain system binary."""
         if psutil is None:
             return False
         try:
-            name = psutil.Process(pid).name().lower()
-            return name in _SYSTEM32_NEVER_CONTAIN
+            return self._protected_process_name(psutil.Process(pid).name())
         except Exception:
             return False
 
