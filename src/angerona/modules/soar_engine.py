@@ -736,8 +736,12 @@ class ActiveResponseSOAR(BaseModule):
                     # An exact file handoff can temporarily withhold its full
                     # proof. It permits waiting only, never response credit.
                     if self._issuer_original_combat(event, pending_handoff=True) is None:
-                        return False
-                else:
+                        # The moved handle may have been installed between the
+                        # two reads. Recheck full proof before giving up.
+                        combat = self._issuer_original_combat(event)
+                        if combat is None:
+                            return False
+                if combat is not None:
                     receipt = self._verified_origin_receipt(combat, event)
                     if receipt is not None:
                         if self.stopping or self._issuer_original_combat(event) is not combat:

@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -158,6 +159,66 @@ def test_source_canary_success_preserves_host_hold_and_public_undo_denial(source
     assert graph.combat.undo_action(action.action_id)["ok"] is False
     assert not graph.marker.exists()
     assert Path(action.details["quarantine"]).is_file()
+
+
+def test_observer_rechecks_exact_proof_when_marker_handoff_completes_between_reads(
+    source_canary, monkeypatch,
+):
+    from angerona.modules.purple_guard import RedTeamValidationLease
+
+    graph = source_canary
+    response = ActiveResponseSOAR()
+    response.bind(graph.bus)
+    response.bind_manager(graph.manager)
+    graph.manager.modules[response.name] = response
+    complete = RedTeamValidationLease.complete_marker_containment
+    issuer = response._issuer_original_combat
+    at_handoff = threading.Event()
+    release_handoff = threading.Event()
+    completed = threading.Event()
+    crossed = False
+
+    def complete_when_observed(lease, combat, path, descriptor):
+        at_handoff.set()
+        if not release_handoff.wait(8):
+            os.close(descriptor)
+            raise AssertionError("observer did not release the marker handoff")
+        complete(lease, combat, path, descriptor)
+        completed.set()
+
+    def cross_handoff_after_first_read(event, *, pending_handoff=False):
+        nonlocal crossed
+        actor = issuer(event, pending_handoff=pending_handoff)
+        if not pending_handoff and not crossed:
+            assert actor is None
+            release_handoff.set()
+            assert completed.wait(5)
+            crossed = True
+        return actor
+
+    def refuse_duplicate(event):
+        if event.hmac_sig == graph.event.hmac_sig:
+            pytest.fail("observer resubmitted the action")
+
+    monkeypatch.setattr(RedTeamValidationLease, "complete_marker_containment", complete_when_observed)
+    monkeypatch.setattr(response, "_issuer_original_combat", cross_handoff_after_first_read)
+    monkeypatch.setattr(graph.combat, "_submit", refuse_duplicate)
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        handled = worker.submit(graph.combat._handle, graph.event)
+        try:
+            assert at_handoff.wait(5)
+            observed = response.observe_issuer_completion(graph.event, timeout=5)
+        finally:
+            release_handoff.set()
+        handled.result(timeout=5)
+
+    assert crossed and not graph.marker.exists()
+    assert observed
+    matching = [event for event in graph.bus.recent(100)
+                if event.module == response.name
+                and event.details.get("origin_event_digest") == graph.event.hmac_sig]
+    assert len(matching) == 1 and graph.bus.verify(matching[0])
+    assert matching[0].details["receipt_status"] == "verified-applied"
 
 
 @pytest.mark.parametrize("change", ["expired", "released", "replaced", "foreign-manager", "raw-practice", "foreign-target"])
@@ -732,6 +793,11 @@ def test_practice_fix_requires_detection_recorder_response_and_cleanup(
             # allowing a loaded Windows runner to finish its SQLite WAL commit.
             recorder_timeout=5.0,
         )
+        if not result["ok"]:
+            snapshot = combat.response_snapshot()
+            result["combat_diagnostics"] = {
+                field: snapshot[field] for field in ("counts", "last_decision", "queue_pending")
+            }
     finally:
         combat.stop()
         recorder.close()
