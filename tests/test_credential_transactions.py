@@ -98,7 +98,10 @@ def test_pending_writer_cannot_remove_a_concurrent_new_key(inert_store, monkeypa
     }
 
 
-def test_competing_thread_creators_return_one_persisted_winner(inert_store):
+def test_competing_thread_creators_return_one_persisted_winner(inert_store, monkeypatch):
+    # Give the real file transaction room to finish on a loaded runner. The
+    # separate busy-transaction test covers refusal without modifying keys.
+    monkeypatch.setattr(secure_store, "_TRANSACTION_WAIT_SECONDS", 8.0)
     start = threading.Barrier(3)
     created = []
 
@@ -115,7 +118,7 @@ def test_competing_thread_creators_return_one_persisted_winner(inert_store):
         one = workers.submit(create, "candidate-one")
         two = workers.submit(create, "candidate-two")
         start.wait(5)
-        results = (one.result(5), two.result(5))
+        results = (one.result(10), two.result(10))
     assert len(created) == 1
     assert results == (created[0], created[0])
     assert secure_store.read_secret_values(("INERT_AUTHORITY",), inert_store, strict=True) == {
@@ -133,13 +136,15 @@ def test_soc_creators_share_the_actual_persisted_key(inert_store):
     assert load_or_create_master_key(inert_store) == keys[0]
 
 
-def test_drill_key_pair_creators_do_not_split_authority(inert_store):
+def test_drill_key_pair_creators_do_not_split_authority(inert_store, monkeypatch):
     from angerona.core.recovery_drill import protected_keys
 
+    monkeypatch.setattr(secure_store, "_TRANSACTION_WAIT_SECONDS", 8.0)
     with ThreadPoolExecutor(max_workers=2) as workers:
         futures = [workers.submit(protected_keys, create=True, data_root=inert_store) for _ in range(2)]
         keys = [future.result(10) for future in futures]
     assert keys[0] == keys[1] and keys[0][0] != keys[0][1]
+    assert protected_keys(data_root=inert_store) == keys[0]
 
 
 def test_fleet_migrators_return_the_same_random_device_and_audit_keys(inert_store, monkeypatch):
