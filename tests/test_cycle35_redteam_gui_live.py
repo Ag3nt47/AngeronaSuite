@@ -1298,7 +1298,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
 
     visited: list[str] = []
     delivered: list[object] = []
-    shown_aar: list[str] = []
+    shown_aar: list[tuple[str, str]] = []
     modal_errors: list[str] = []
     activation_states: list[str] = []
     settings_finished: list[int] = []
@@ -1512,7 +1512,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 return
             for widget in app.topLevelWidgets():
                 if isinstance(widget, AARDialog) and widget.isVisible():
-                    shown_aar.append(widget.body.toPlainText())
+                    shown_aar.append((widget._expected_report_run_id, widget.body.toPlainText()))
                     widget.accept()
                 elif isinstance(widget, QMessageBox) and widget.isVisible():
                     modal_errors.append(widget.text())
@@ -1724,6 +1724,7 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             for run_index in (1, 2):
                 started = time.monotonic()
                 previous_deliveries = len(delivered)
+                previous_shown = len(shown_aar)
                 previous_preflight = None
                 for attempt in (0, 1):
                     preflight = await_real_process_preflight(run_index)
@@ -1917,10 +1918,12 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 # Delivery can precede lease/watch release. The native witness
                 # subprocess also blocks Qt: raw owner retirement can therefore
                 # precede the next real lifecycle projection to the console.
-                # Wait for that projection under the same launch deadline.
+                # The dialog observation also has its own Qt timer. Wait for
+                # both observations under the same launch deadline.
                 while (window._session_is_active()
                        or window._session_release_delivered is not True
-                       or not console.launch_btn.isEnabled()) and time.monotonic() < deadline:
+                       or not console.launch_btn.isEnabled()
+                       or len(shown_aar) == previous_shown) and time.monotonic() < deadline:
                     app.processEvents()
                     time.sleep(0.05)
                 assert not window._session_is_active(), session.retirement_snapshot()
@@ -1928,7 +1931,9 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                 assert session.snapshot()["phase"] == "completed", session.launch_diagnostics()
                 assert window._session_release_delivered is True, console._session_lifecycle
                 assert console.launch_btn.isEnabled()
-                assert shown_aar and "RED TEAM ATTACK" in shown_aar[-1]
+                assert len(shown_aar) == previous_shown + 1
+                shown_run_id, shown_report = shown_aar[-1]
+                assert shown_run_id == run_id and "RED TEAM ATTACK" in shown_report
                 assert not modal_errors
                 response_cost.set_phase("between")
         finally:

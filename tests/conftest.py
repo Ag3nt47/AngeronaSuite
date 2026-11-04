@@ -51,6 +51,55 @@ _data_paths = importlib.import_module("angerona.core.data_paths")
 _data_paths._elevated_source_runtime = lambda: False
 
 
+_SOURCE_USER_OWNER_MODULES = frozenset({
+    "test_source_activation_file_custody.py",
+    "test_source_activation_heartbeat.py",
+    "test_source_activation_workspace.py",
+    "test_source_update_activation.py",
+    "test_source_update_activation_startup.py",
+    "test_source_update_activation_storage.py",
+    "test_source_update_recovery_coherence.py",
+})
+
+
+@pytest.fixture(scope="module", autouse=True)
+def source_user_fixture_owner(request: pytest.FixtureRequest) -> None:
+    if (os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true"
+            or request.node.path.name not in _SOURCE_USER_OWNER_MODULES):
+        return
+
+    import win32api
+    import win32security
+
+    # The hosted administrator token can default new objects to the
+    # Administrators group. Source-user fixtures need the actual user to own
+    # files and mkdir(0700) children, as in an ordinary source session.
+    # Keep the runner's original owner for other tests that exercise elevation.
+    access = win32security.TOKEN_QUERY | win32security.TOKEN_ADJUST_DEFAULT
+    token = win32security.OpenProcessToken(win32api.GetCurrentProcess(), access)
+    try:
+        owner = win32security.GetTokenInformation(token, win32security.TokenOwner)
+        user, _attributes = win32security.GetTokenInformation(token, win32security.TokenUser)
+        if owner == user:
+            return
+        win32security.SetTokenInformation(token, win32security.TokenOwner, user)
+
+        def restore_owner() -> None:
+            restored = win32security.OpenProcessToken(win32api.GetCurrentProcess(), access)
+            try:
+                win32security.SetTokenInformation(restored, win32security.TokenOwner, owner)
+                if win32security.GetTokenInformation(restored, win32security.TokenOwner) != owner:
+                    raise RuntimeError("Windows CI could not restore the fixture token's default owner")
+            finally:
+                restored.Close()
+
+        request.addfinalizer(restore_owner)
+        if win32security.GetTokenInformation(token, win32security.TokenOwner) != user:
+            raise RuntimeError("Windows CI could not set the fixture token's default owner")
+    finally:
+        token.Close()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def keep_qt_application_alive():
     """Anchor one headless QApplication for the entire pytest process."""

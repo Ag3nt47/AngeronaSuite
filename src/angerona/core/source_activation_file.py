@@ -75,8 +75,12 @@ class RetainedFile:
             api.CreateFileW.restype = w.HANDLE
             api.CloseHandle.argtypes = (w.HANDLE,)
             api.CloseHandle.restype = w.BOOL
-            raw = api.CreateFileW(str(self.path), 0x80000000 | (0x40000000 if writable else 0) | (0x10000 if mutation else 0),
-                                  1, None, 3, 0x00200000, None)
+            access = 0x80000000  # GENERIC_READ
+            if writable:
+                access |= 0x40000000  # GENERIC_WRITE
+            if mutation:
+                access |= 0x10000 | 0x100  # DELETE and FILE_WRITE_ATTRIBUTES
+            raw = api.CreateFileW(str(self.path), access, 1, None, 3, 0x00200000, None)
             if raw == w.HANDLE(-1).value:
                 raise ctypes.WinError(ctypes.get_last_error())
             try:
@@ -105,14 +109,42 @@ class RetainedFile:
             raise
 
     def check(self):
+        self._check_snapshot()
+
+    def _check_snapshot(self, *, windows_rename_completed=False):
         if self.fd < 0 or self.close_held:
             raise ActivationFileError('Source update file custody is unavailable')
         plain_path(self.path)
         opened, named = os.fstat(self.fd), self.path.lstat()
+        opened_stamp, named_stamp = identity(opened), identity(named)
         if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
                 or getattr(opened, 'st_file_attributes', 0) & 0x400
-                or identity(opened) != self.initial or identity(named) != self.initial):
+                or opened_stamp != named_stamp):
             raise ActivationFileError('Source update file identity changed')
+        if opened_stamp == self.initial:
+            return
+        # NTFS can inherit the vacated destination's creation timestamp after a
+        # rename. Restore only that metadata on the still-held, otherwise exact
+        # file and recheck the original snapshot before returning to the journal.
+        if (not windows_rename_completed
+                or dict(opened_stamp, birth_ns=self.initial['birth_ns']) != self.initial):
+            raise ActivationFileError('Source update file identity changed')
+        self._restore_windows_birth()
+        self.check()
+
+    def _restore_windows_birth(self):
+        import msvcrt
+        from ctypes import wintypes as w
+        ticks, remainder = divmod(int(self.initial['birth_ns']), 100)
+        ticks += 116444736000000000  # FILETIME ticks from 1601 to the Unix epoch
+        if remainder or not 0 < ticks < 2**63:
+            raise ActivationFileError('Source update creation timestamp is not a valid FILETIME')
+        creation = w.FILETIME(ticks & 0xffffffff, ticks >> 32)
+        setter = ctypes.WinDLL('kernel32', use_last_error=True).SetFileTime
+        setter.argtypes = (w.HANDLE, ctypes.POINTER(w.FILETIME), w.LPVOID, w.LPVOID)
+        setter.restype = w.BOOL
+        if not setter(msvcrt.get_osfhandle(self.fd), ctypes.byref(creation), None, None):
+            raise ctypes.WinError(ctypes.get_last_error())
 
     def read(self, limit):
         self.check()
@@ -203,7 +235,7 @@ class RetainedFile:
                 raise ActivationFileError('Source update publication changed identity')
             os.unlink(self.path)
         self.path = target
-        self.check()
+        self._check_snapshot(windows_rename_completed=os.name == 'nt')
 
     def delete(self):
         self.check()

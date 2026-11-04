@@ -681,7 +681,12 @@ class RedTeamRunObserver:
             return
         if self._disabled:
             return
-        for _batch in range(2):
+        # A fast playbook can retire between polls with more than two exact
+        # tickets still queued. Review each remaining ticket once within the
+        # original run deadline before switching to the signed report.
+        for _batch in range(MAX_STEPS if final else 2):
+            if final and time.monotonic() >= self.owner._run_deadline:
+                return
             with self._lock:
                 if self._loss or not self._pending:
                     if self._loss:

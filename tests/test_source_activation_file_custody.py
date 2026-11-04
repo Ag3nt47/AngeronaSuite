@@ -82,21 +82,67 @@ def test_actual_publication_and_reverse_rename_keep_both_file_objects(tmp_path):
     old_id, new_id = _object_id(target), _object_id(stage)
     with files.RetainedFile(target, mutation=True) as old:
         with files.RetainedFile(stage, mutation=True) as new:
+            old_stamp, new_stamp = dict(old.initial), dict(new.initial)
             old.rename(backup)
             new.rename(target)
             assert _object_id(backup) == old_id
             assert _object_id(target) == new_id
+            assert files.identity(backup.lstat()) == old_stamp
+            assert files.identity(target.lstat()) == new_stamp
             assert old.read(64) == b"old revision"
             assert new.read(64) == b"new revision"
             new.rename(stage)
             old.rename(target)
             assert _object_id(target) == old_id
             assert _object_id(stage) == new_id
+            assert files.identity(target.lstat()) == old_stamp
+            assert files.identity(stage.lstat()) == new_stamp
             assert old.read(64) == b"old revision"
             assert new.read(64) == b"new revision"
     assert not backup.exists()
     assert target.read_bytes() == b"old revision"
     assert stage.read_bytes() == b"new revision"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows native rename metadata")
+@pytest.mark.parametrize("change_modified", [False, True])
+def test_native_rename_repairs_only_a_changed_creation_time(tmp_path, monkeypatch, change_modified):
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    source = _seed(tmp_path / "stage")
+    target = tmp_path / "canonical"
+    native_rename = files.RetainedFile._information
+    setter = ctypes.WinDLL("kernel32", use_last_error=True).SetFileTime
+    filetime = ctypes.POINTER(wintypes.FILETIME)
+    setter.argtypes = (wintypes.HANDLE, filetime, filetime, filetime)
+    setter.restype = wintypes.BOOL
+
+    def rename_then_change_times(held, kind, request):
+        native_rename(held, kind, request)
+        # Simulate the timestamp transition on the real retained descriptor even
+        # when the test volume does not support Windows filename tunneling.
+        altered = ctypes.byref(wintypes.FILETIME(0, 0x01D00000))
+        assert setter(msvcrt.get_osfhandle(held.fd), altered, None,
+                      altered if change_modified else None)
+
+    monkeypatch.setattr(files.RetainedFile, "_information", rename_then_change_times)
+    with files.RetainedFile(source, mutation=True) as held:
+        original = dict(held.initial)
+        if change_modified:
+            with pytest.raises(files.ActivationFileError, match="identity changed"):
+                held.rename(target)
+            observed = files.identity(target.lstat())
+            assert observed["birth_ns"] != original["birth_ns"]
+            assert observed["modified_ns"] != original["modified_ns"]
+            with pytest.raises(files.ActivationFileError, match="identity changed"):
+                held.check()
+        else:
+            held.rename(target)
+            assert files.identity(target.lstat()) == original
+            assert held.read(64) == b"original private bytes"
+        assert held.path == target
 
 
 def test_rename_refuses_preexisting_destination_without_losing_custody(tmp_path):

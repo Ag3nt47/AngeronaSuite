@@ -150,7 +150,8 @@ def test_advancing_owned_process_monitor_cycles_preserve_quiet_write_cadence(tmp
             assert waiting.get(timeout=2) is True
             current = module.cycle_diagnostic_snapshot()
             assert current["cycle_serial"] > initial["cycle_serial"]
-            assert current["stage_started_monotonic"] > initial["stage_started_monotonic"]
+            # Separate cycles can share a Windows monotonic clock tick.
+            assert current["stage_started_monotonic"] >= initial["stage_started_monotonic"]
             assert reporter._write()
             assert path.read_bytes() == initial_bytes
         assert module.operational_snapshot()["cycle_count"] == cycle_count + 3

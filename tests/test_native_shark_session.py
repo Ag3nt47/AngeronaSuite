@@ -136,16 +136,26 @@ def test_real_redteam_live_step_evaluator_observes_actual_effects_before_final_r
     ctx.begin_scan()
     engine = RedTeamEngine(ctx.root)
     monkeypatch.setattr(engine, "_jitter", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(sessions.random, "shuffle", lambda _rows: None)
+    monkeypatch.setattr(sessions.random, "random", lambda: 1.0)
     session = sessions.SimulationSession(manager=ctx.manager, bus=ctx.bus, recorder=ctx.recorder,
         data_root=ctx.root, red_team_engine=engine, shark_engine=SharkAttackEngine(ctx.root))
     provisional = []
     original_note = session._note_redteam_performance
+    original_drain = session._drain_redteam_observations
+
+    def drain_after_worker_retirement(*, final=False):
+        # Reproduce a fast run whose completed steps all arrive before an
+        # observation poll. The final sweep still uses the real producer proofs.
+        if final:
+            original_drain(final=True)
 
     def retain_actual_observation(observer, identifier, verdict, settled_negative):
         original_note(observer, identifier, verdict, settled_negative)
         provisional.append(session.performance_snapshot(observer.prepared.run_id))
 
     monkeypatch.setattr(session, "_note_redteam_performance", retain_actual_observation)
+    monkeypatch.setattr(session, "_drain_redteam_observations", drain_after_worker_retirement)
     plan = session.prepare({"run_shark": False, "run_redteam": True, "intensity": "Low",
         "comprehensive": False, "target_dir": str(ctx.target)}, default_target=ctx.target)
     try:
@@ -155,7 +165,7 @@ def test_real_redteam_live_step_evaluator_observes_actual_effects_before_final_r
             worker.join(timeout=5)
             assert not worker.is_alive()
         measured = [item for item in provisional if item is not None and item.state == "provisional"]
-        assert measured, session.launch_diagnostics()
+        assert len(measured) > 2, session.launch_diagnostics()
         assert any(item.detection_verified_steps > 0 and item.containment_verified_steps > 0 for item in measured)
         for item in measured:
             assert item.session_id == plan.session_id and item.session_generation == plan.generation
