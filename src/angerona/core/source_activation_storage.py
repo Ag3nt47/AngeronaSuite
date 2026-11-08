@@ -64,13 +64,27 @@ def _read(path, absent=None):
     return value
 
 
-def _stamp(path):
-    info = path.lstat()
+def _info_stamp(info):
     if (stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400
             or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
             or stat.S_ISREG(info.st_mode) and info.st_nlink != 1):
         raise SourceActivationStorageHeld('unknown/redirected storage object needs review')
     return (str(info.st_dev), str(info.st_ino), info.st_size, str(info.st_mtime_ns), stat.S_ISDIR(info.st_mode))
+
+
+def _stamp(path):
+    return _info_stamp(path.lstat())
+
+
+def _custody_stamp(stamp, *, directory):
+    # Ancestor children are outside this review's inventory. Creating one can
+    # change its parent's size/mtime without changing the directory object.
+    # Keep the full stamp for callers inventorying that directory's contents.
+    return (stamp[0], stamp[1], stamp[-1]) if directory else stamp
+
+
+def _native_custody(native, *, directory):
+    return (native.volume, native.index, native.attributes) if directory else native
 
 
 @contextlib.contextmanager
@@ -86,10 +100,14 @@ def _held_node(path, *, directory):
         try:
             native = runtime._handle_identity(raw)
             if (bool(native.attributes & 0x10) != directory or native.attributes & 0x400
-                    or _stamp(path) != before):
+                    or _custody_stamp(_stamp(path), directory=directory) !=
+                       _custody_stamp(before, directory=directory)):
                 raise SourceActivationStorageHeld('storage native object changed while opening')
             yield before
-            if _stamp(path) != before or runtime._handle_identity(raw) != native:
+            if (_custody_stamp(_stamp(path), directory=directory) !=
+                    _custody_stamp(before, directory=directory)
+                    or _native_custody(runtime._handle_identity(raw), directory=directory) !=
+                       _native_custody(native, directory=directory)):
                 raise SourceActivationStorageHeld('storage object changed during review')
         finally:
             kernel = runtime._kernel32()
@@ -106,11 +124,18 @@ def _held_node(path, *, directory):
             flags |= os.O_DIRECTORY
         fd = os.open(path, flags)
         try:
-            info = os.fstat(fd)
-            if (str(info.st_dev), str(info.st_ino)) != before[:2] or _stamp(path) != before:
+            opened = _info_stamp(os.fstat(fd))
+            if (opened[-1] != directory or
+                    _custody_stamp(opened, directory=directory) !=
+                    _custody_stamp(before, directory=directory) or
+                    _custody_stamp(_stamp(path), directory=directory) !=
+                    _custody_stamp(before, directory=directory)):
                 raise SourceActivationStorageHeld('storage descriptor is not its named object')
             yield before
-            if _stamp(path) != before:
+            if (_custody_stamp(_stamp(path), directory=directory) !=
+                    _custody_stamp(before, directory=directory) or
+                    _custody_stamp(_info_stamp(os.fstat(fd)), directory=directory) !=
+                    _custody_stamp(opened, directory=directory)):
                 raise SourceActivationStorageHeld('storage object changed during review')
         finally:
             try:

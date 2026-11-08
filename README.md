@@ -117,6 +117,12 @@ and separate installation staging require additional space.
 
 ## What's new in 1.15
 
+- **Watchdog hardening (8 November):** process-bound heartbeat progress,
+  supervision-work deadlines, source-change launch holds and an expanded
+  48-file pinned GitHub recovery bundle. Intentional code edits remain
+  reviewable. [Recovery behavior and limits](docs/resilience-recovery.md) ·
+  [Validation and remaining attack surface](analysis/hardening-v1.15-2026-11-08-mutual-recovery.md).
+
 - **Red Team progress and diagnosis:** overall progress, a caught/missed bar,
   provisional and final outcome badges, and verified step-by-step failure reasons
   with a read-only review harness.

@@ -6,6 +6,8 @@ Current manual version **1.15.0** · Revision **3 November 2026**
 
 [Download PDF](../Angerona_Master_Manual.pdf) · [Download Word](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · [Repository guide](../README.md)
 
+Source maintenance addendum **8 November 2026**: [Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), [recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). These maintained companion chapters supplement the dated Word/PDF revision.
+
 This complete readable export follows the Word manual in document order. Dated validation and version-history sections retain their original scope; the final security-flow and Safe Startup chapters describe the maintained source profile.
 
 OPERATOR REFERENCE

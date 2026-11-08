@@ -13,7 +13,7 @@ from types import MappingProxyType
 import pytest
 
 from angerona.core import startup_recovery as recovery
-from test_startup_recovery_bundle import BUILDER
+from test_startup_recovery_bundle import BUILDER, MUTUAL_RECOVERY_FILES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,7 +87,7 @@ def test_pure_derivation_matches_actual_reviewed_generator_and_preserves_raw_cus
     assert tree == before and set(effective) == set(tree)
     generated = {recovery.RECOVERY_MANIFEST_PATH, recovery.RECOVERY_BATCH_PATH}
     assert all(effective[name] is tree[name] for name in tree if name not in generated)
-    assert proof["profile"] == "angerona-operational39/v1" and proof["schema"] == 1
+    assert proof["profile"] == "angerona-operational48/v1" and proof["schema"] == 1
     assert set(proof["generated_files"]) == generated
     assert set(proof["derived_paths"]) == generated
     for name in generated:
@@ -112,6 +112,23 @@ def test_derivation_is_idempotent_and_changed_operational_bytes_require_new_mani
     assert after["manifest_sha256"] != proof["manifest_sha256"]
     assert recovery.verify_recovery_coherence(second)["derived_paths"] == []
     assert changed[recovery.RECOVERY_MANIFEST_PATH] == first[recovery.RECOVERY_MANIFEST_PATH]
+
+
+@pytest.mark.parametrize("relative", MUTUAL_RECOVERY_FILES)
+def test_mutual_recovery_edits_require_coherent_pins_and_preserve_all_source_bytes(relative):
+    first, _ = recovery.derive_recovery_coherent_tree(_tree())
+    changed = dict(first)
+    changed[relative] += b"# reviewed user recovery customization\n"
+    before = dict(changed)
+    with pytest.raises(recovery.RecoveryCoherenceError):
+        recovery.verify_recovery_coherence(changed)
+    effective, proof = recovery.derive_recovery_coherent_tree(changed)
+    assert effective[relative] == changed[relative]
+    assert changed == before
+    assert set(proof["derived_paths"]) == {
+        recovery.RECOVERY_MANIFEST_PATH, recovery.RECOVERY_BATCH_PATH}
+    assert proof["candidate_code_executed"] is False
+    assert recovery.verify_recovery_coherence(effective)["derived_paths"] == []
 
 
 def test_mask_and_restore_change_only_four_values_and_never_copy_reference_controls():

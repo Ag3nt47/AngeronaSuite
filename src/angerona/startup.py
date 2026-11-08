@@ -443,7 +443,7 @@ def _source_fresh_cache_arguments(root: Path, storage: Path) -> tuple[str, ...]:
 def _source_core_command(executable: Path, root: Path, storage: Path, *, frozen: bool) -> tuple[str, ...]:
     if frozen:
         return (str(executable),)
-    return (str(executable), *_source_fresh_cache_arguments(root, storage), "-m", "angerona")
+    return (str(executable), *_source_fresh_cache_arguments(root, storage), "-I", "-m", "angerona")
 
 
 def platform_plan(*, operator_elevation: bool = False) -> LaunchPlan:

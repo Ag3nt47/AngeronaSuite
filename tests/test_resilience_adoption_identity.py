@@ -128,6 +128,7 @@ def test_peer_watchdog_respects_blackbox_disable_setting(tmp_path, monkeypatch, 
         components=components,
         add=lambda name, *_args, **_kwargs: components.update({name: SimpleNamespace()}),
         start=lambda: None, stop=lambda **_kwargs: None,
+        heartbeat_allowed=lambda: True,
     )
     writer = SimpleNamespace(beat=lambda: None, close=lambda: None)
     monkeypatch.setenv("ANGERONA_BLACKBOX_ENABLED", disabled)
@@ -135,6 +136,7 @@ def test_peer_watchdog_respects_blackbox_disable_setting(tmp_path, monkeypatch, 
     monkeypatch.delenv("ANGERONA_CORE_CMD", raising=False)
     monkeypatch.setattr(watchdog.hb, "HeartbeatWriter", lambda *_: writer)
     monkeypatch.setattr(watchdog, "ProcessSupervisor", lambda **_: supervisor)
+    monkeypatch.setattr(watchdog, "_prepare_source_guard", lambda _sup: lambda: {"state": "verified"})
     monkeypatch.setattr(watchdog, "_blackbox_script", lambda: Path(tmp_path / "blackbox_recorder.py"))
     monkeypatch.setattr(watchdog, "_standdown_requested", lambda: True)
     monkeypatch.setattr(watchdog.diag, "write_status", lambda *_args, **_kwargs: None)

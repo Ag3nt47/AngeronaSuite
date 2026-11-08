@@ -244,6 +244,7 @@ RECOVERY_COHERENCE_FILES = (
     "src/angerona/core/_source_tomli/_re.py",
     "src/angerona/core/_source_tomli/_types.py",
     "src/angerona/core/file_lease.py",
+    "src/angerona/core/privilege.py",
     "src/angerona/core/source_activation.py",
     "src/angerona/core/source_activation_broker.py",
     "src/angerona/core/source_activation_file.py",
@@ -251,8 +252,16 @@ RECOVERY_COHERENCE_FILES = (
     "src/angerona/core/source_activation_workspace.py",
     "src/angerona/core/startup_diagnostics.py",
     "src/angerona/core/startup_recovery.py",
+    "src/angerona/core/windows_child_job.py",
     "src/angerona/resilience/component_status.py",
+    "src/angerona/resilience/diagnostics.py",
     "src/angerona/resilience/heartbeat.py",
+    "src/angerona/resilience/manager.py",
+    "src/angerona/resilience/recovery_state.py",
+    "src/angerona/resilience/shutdown_token.py",
+    "src/angerona/resilience/source_guard.py",
+    "src/angerona/resilience/supervisor.py",
+    "src/angerona/resilience/watchdog.py",
     "src/angerona/startup.py",
     "src/angerona/updater/github_updater.py",
     "src/angerona/updater/source_git.py",
@@ -414,7 +423,7 @@ def _validate_recovery_verifier_profile(canonical):
     else:
         raise RecoveryCoherenceError("Recovery verifier member declaration is incomplete")
     if tuple(paths) != RECOVERY_COHERENCE_FILES:
-        raise RecoveryCoherenceError("Recovery verifier member profile differs from the supported 39 files")
+        raise RecoveryCoherenceError("Recovery verifier member profile differs from the supported 48 files")
 
 
 def derive_recovery_coherent_tree(files):
@@ -457,7 +466,7 @@ def derive_recovery_coherent_tree(files):
     effective[RECOVERY_MANIFEST_PATH], effective[RECOVERY_BATCH_PATH] = manifest, batch
     if sum(len(raw) for raw in effective.values()) > 256 * 1024**2:
         raise RecoveryCoherenceError("Derived effective source tree exceeds its byte limit")
-    proof = {"schema": 1, "profile": "angerona-operational39/v1",
+    proof = {"schema": 1, "profile": "angerona-operational48/v1",
         "generated_files": {name: {"sha256": hashlib.sha256(effective[name]).hexdigest(),
                                    "bytes": len(effective[name])}
                             for name in (RECOVERY_MANIFEST_PATH, RECOVERY_BATCH_PATH)},

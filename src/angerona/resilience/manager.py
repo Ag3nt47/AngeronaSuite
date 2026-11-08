@@ -35,6 +35,7 @@ from angerona.resilience.supervisor import Component, ProcessSupervisor, cached_
 
 _SENSOR_LABELS = {1: "process_creation"}
 _WATCHDOG_STALE_AFTER_SECONDS = 10.0
+_SOURCE_REVIEW_INTERVAL_SECONDS = 60.0
 
 
 class _OwnedSelfTestProcesses:
@@ -174,7 +175,70 @@ class ResilienceManager:
         self.status = "stopped"
         self._component_heartbeat_cache = None
         self._source_update_controller = None
+        self._source_guard = None
+        self._source_guard_lock = threading.Lock()
+        self._source_integrity = {"state": "pending", "reason": "Source seal not captured"}
         self._owned_core_pid = os.getpid() if os.name == "nt" else None
+
+    def _prepare_source_guard(self) -> None:
+        """Bind peer launches to this source session without approving new code."""
+        if getattr(sys, "frozen", False):
+            self._source_integrity = {
+                "state": "not-applicable",
+                "reason": "Packaged executable trust uses the installed signing boundary",
+            }
+            return
+        from angerona.resilience.source_guard import SourceGuard, SourceGuardError
+
+        try:
+            self._source_guard = SourceGuard.capture(
+                _repo_root(), expected_digest=os.environ.get("ANGERONA_PEER_SOURCE_DIGEST"))
+        except (SourceGuardError, OSError, ValueError):
+            self._source_integrity = {
+                "state": "unavailable", "reason": "Source continuity could not be established; peer launches held",
+            }
+        else:
+            os.environ["ANGERONA_PEER_SOURCE_DIGEST"] = self._source_guard.digest
+            self._source_integrity = {
+                "state": "verified", "reason": "Source bytes match the current session seal",
+                "digest": self._source_guard.digest,
+            }
+        self._sup.launch_guard = self._peer_launch_allowed
+
+    def _peer_launch_allowed(self, component) -> bool:
+        """A failed seal stays held until an explicit reviewed fresh session."""
+        with self._source_guard_lock:
+            return self._check_peer_source()
+
+    def _check_peer_source(self) -> bool:
+        if self._source_integrity["state"] in {"changed", "unavailable"}:
+            return False
+        guard = self._source_guard
+        if guard is None:
+            return False
+        try:
+            result = guard.check()
+        except Exception:
+            from angerona.resilience.source_guard import SourceCheck
+
+            result = SourceCheck(False, "unavailable", "Source observation failed; peer launches held")
+        self._source_integrity = {
+            "state": result.state, "reason": result.reason,
+            "digest": guard.digest, "changed": list(result.changed),
+            "repair": "Use start-angerona.bat after normal STOP for pinned recovery; review intentional edits in Source Sandbox",
+        }
+        if not result.ok:
+            self._publish(
+                "Resilience Supervisor",
+                "Source files changed or could not be checked. Peer relaunches are held; "
+                "STOP and the current dashboard remain available. Use Safe Startup for verified recovery.",
+                "CRITICAL", {**self._source_integrity, "response_authorized": False,
+                             "disposition": "observation"})
+        return result.ok
+
+    def _source_guard_loop(self) -> None:
+        while not self._stop.wait(_SOURCE_REVIEW_INTERVAL_SECONDS):
+            self._peer_launch_allowed(None)
 
     def _sup_event(self, level: str, msg: str, details: dict) -> None:
         self._publish("Resilience Supervisor", f"[{level}] {msg}", level, details)
@@ -205,6 +269,10 @@ class ResilienceManager:
         # core remains observable and continues consuming scanner frames.
         self._spawn_thread(self._ring_loop, "ring-drain")
         self._spawn_thread(self._status_loop, "core-status")
+
+        self._prepare_source_guard()
+        if self._source_guard is not None:
+            self._spawn_thread(self._source_guard_loop, "peer-source-integrity")
 
         py = sys.executable
         pyw = _pythonw()
@@ -315,7 +383,8 @@ class ResilienceManager:
 
     def _heartbeat_loop(self):
         while not self._stop.wait(self.heartbeat_interval):
-            self._core_beat.beat()
+            if self._sup.heartbeat_allowed():
+                self._core_beat.beat()
             if tok.is_standdown_requested():
                 self._publish("Resilience Manager", "Stand-down token present — stopping.", "MEDIUM")
                 self.stop()
@@ -377,11 +446,16 @@ class ResilienceManager:
 
     def _status_loop(self):
         while not self._stop.wait(3.0):
-            diag.write_status("core", "running", {
+            state = self._source_integrity.get("state")
+            progress = self._sup.supervision_status()
+            degraded = state in {"changed", "unavailable"} or progress["state"] not in {"starting", "running"}
+            diag.write_status("core", "degraded" if degraded else "running", {
                 "frames_ingested": self.frames_ingested,
                 "frames_rejected": self.frames_rejected,
                 "supervised": list(self._sup.components.keys()),
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
+                "source_integrity": dict(self._source_integrity),
+                "supervision_progress": progress,
             })
 
     def component_heartbeats(self) -> tuple[dict, ...]:

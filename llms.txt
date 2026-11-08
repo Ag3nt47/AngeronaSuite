@@ -1,11 +1,30 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.15.0
-Date: 2026-11-03
+Date: 2026-11-08
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
+
+- 8 November mutual recovery hardening adds native invocation/birth-bound
+  authenticated heartbeat progress, 180-second startup/60-second supervision
+  work deadlines, source-session seals inherited by peers, fresh launch checks
+  and nonblocking cached status. Periodic source review runs in background
+  workers every 60 seconds plus scan/scheduling time. Failed source checks latch
+  relaunch holds without new crash debt or a live-process kill. Signed STOP and
+  backoff remain effective. Self-Integrity Monitor fingerprints the new gates.
+  Initial source Core, canonical source peers and exact Black Box use isolated
+  Python startup to exclude implicit working-directory/script-directory import
+  shadows while preserving existing fresh-cache options.
+  The native pinned bundle expands39→48; older39-file source updaters require
+  explicit reviewed migration. GitHub repairs preserve operational originals;
+  runtime checks never overwrite developer code. Same-user/kernel compromise,
+  cached bytecode, loaded code and check-to-execution races remain outside the
+  source seal. See docs/resilience-recovery.md. Validation records are separate
+  from live host efficacy and hosted CI. The original isolated scanner lifecycle
+  passes on final source; scoped results and remaining attack surface are in
+  analysis/hardening-v1.15-2026-11-08-mutual-recovery.md. Counts are not additive.
 
 - Spyware Scan shows current work, progress and hits above collapsible setup.
   Its daily Entire PC schedule starts after dashboard readiness and uses the

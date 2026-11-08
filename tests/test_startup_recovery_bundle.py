@@ -55,6 +55,33 @@ def test_builder_is_deterministic_and_checkout_newline_independent(tmp_path):
     assert pins["manifest_blob_sha1"] == hashlib.sha1(b"blob " + str(len(actual)).encode() + b"\0" + actual).hexdigest()
 
 
+MUTUAL_RECOVERY_FILES = (
+    "src/angerona/core/privilege.py",
+    "src/angerona/core/windows_child_job.py",
+    "src/angerona/resilience/diagnostics.py",
+    "src/angerona/resilience/manager.py",
+    "src/angerona/resilience/recovery_state.py",
+    "src/angerona/resilience/shutdown_token.py",
+    "src/angerona/resilience/source_guard.py",
+    "src/angerona/resilience/supervisor.py",
+    "src/angerona/resilience/watchdog.py",
+)
+
+
+def test_pinned_bundle_covers_the_mutual_recovery_chain(tmp_path):
+    root, _, _ = fixture_root(tmp_path)
+    expected, _ = BUILDER.build_manifest(root)
+    entries = {row["path"]: row for row in json.loads(expected)["files"]}
+    assert len(BUILDER.FILES) == 48
+    for relative in MUTUAL_RECOVERY_FILES:
+        raw = BUILDER.read_plain(root, relative)
+        assert entries[relative] == {
+            "path": relative, "bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "git_blob_sha1": BUILDER.git_blob(raw),
+        }
+
+
 @pytest.mark.parametrize("raw", [b"bad\rtext", b"bad\0text", b"\xff"])
 def test_builder_rejects_noncanonical_text(raw):
     with pytest.raises((ValueError, UnicodeError)):
@@ -148,6 +175,27 @@ if($result.outcome -ne 'repaired' -or $script:fetches -ne 1 -or $result.restored
     copies = list((tmp_path / "private-state").glob("q-*.bin"))
     assert [item.read_bytes() for item in copies] == ([] if missing else [b"# operator edit\r\n"])
     assert userdata.read_text() == "untouched private fixture"
+
+
+@WINDOWS
+@pytest.mark.parametrize("relative", MUTUAL_RECOVERY_FILES)
+def test_mutual_recovery_file_drift_repairs_exact_pin_and_preserves_user_code(tmp_path, relative):
+    root, pins, transport = fixture_root(tmp_path)
+    path = root / relative
+    expected = path.read_bytes()
+    original = b"# deliberate user customization, retained for review\r\n"
+    path.write_bytes(original)
+    user_addition = root / "external_modules/custom_sensor.py"
+    user_addition.parent.mkdir()
+    user_addition.write_bytes(b"# independent user addition\n")
+    run_fixture(tmp_path, root, pins, transport, r"""
+$result=Invoke-FixtureBundle
+if($result.outcome -ne 'repaired' -or $script:fetches -ne 1 -or $result.restored_files.Count -ne 1) { throw 'Mutual recovery repair did not finish.' }
+""")
+    assert path.read_bytes() == expected
+    copies = list((tmp_path / "private-state").glob("q-*.bin"))
+    assert [item.read_bytes() for item in copies] == [original]
+    assert user_addition.read_bytes() == b"# independent user addition\n"
 
 
 @WINDOWS

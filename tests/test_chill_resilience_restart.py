@@ -29,6 +29,9 @@ def test_recovery_command_preserves_chill_and_session_consent(monkeypatch, quiet
         def stop(self, **_kwargs):
             pass
 
+        def heartbeat_allowed(self):
+            return True
+
         def request_stop(self):
             pass
 
@@ -50,6 +53,7 @@ def test_recovery_command_preserves_chill_and_session_consent(monkeypatch, quiet
         monkeypatch.setattr(resilience.sys, "frozen", True, raising=False)
         monkeypatch.setattr(resilience.sys, "argv", ["Angerona.exe", "--operator-elevation"])
     runtime = resilience.ResilienceManager(None, start_watchdog=False, with_ui=False)
+    monkeypatch.setattr(runtime, "_prepare_source_guard", lambda: None)
     monkeypatch.setattr(runtime, "_spawn_thread", lambda *_args: None)
     try:
         runtime.start()
@@ -79,6 +83,9 @@ def test_existing_watchdog_forces_chill_for_stored_full_and_fallback_commands(
         def add(self, name, argv, **_kwargs):
             self.components[name] = list(argv)
 
+        def heartbeat_allowed(self):
+            return True
+
         def start(self):
             pass
 
@@ -91,6 +98,9 @@ def test_existing_watchdog_forces_chill_for_stored_full_and_fallback_commands(
     monkeypatch.setenv("ANGERONA_CORE_CMD", command)
     monkeypatch.setenv("ANGERONA_PY", watchdog.sys.executable)
     monkeypatch.setattr(watchdog, "ProcessSupervisor", Supervisor)
+    # This fixture tests preserved Chill launch intent, independently of the
+    # source-seal policy covered by the peer policy/guard suites.
+    monkeypatch.setattr(watchdog, "_prepare_source_guard", lambda _sup: lambda: {"state": "verified"})
     monkeypatch.setattr(watchdog.hb, "HeartbeatWriter", lambda _name:
                         SimpleNamespace(beat=lambda: None, close=lambda: None))
     monkeypatch.setattr(watchdog, "_blackbox_script", lambda: None)

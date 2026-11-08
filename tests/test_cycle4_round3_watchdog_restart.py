@@ -136,7 +136,7 @@ def test_manual_core_restart_clears_safe_mode_and_respawns(
         "_terminate",
         lambda current: calls.append(("stop", current.name)) or True,
     )
-    monkeypatch.setattr(sup, "_spawn", lambda current: calls.append(("start", current.name)))
+    monkeypatch.setattr(sup, "_spawn", lambda current: calls.append(("start", current.name)) or True)
 
     supervisor.request_restart("core")
     actions = sup.tick()

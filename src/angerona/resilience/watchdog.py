@@ -24,6 +24,7 @@ import os
 import shlex
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -34,6 +35,7 @@ from angerona.resilience.supervisor import ProcessSupervisor, cached_cmdline_pro
 
 _CORE_STALE_AFTER_SECONDS = 12.0
 _SCANNER_STALE_AFTER_SECONDS = 8.0
+_SOURCE_REVIEW_INTERVAL_SECONDS = 60.0
 
 
 def _repo_root() -> Path:
@@ -108,6 +110,58 @@ def _standdown_requested() -> bool:
         return False
 
 
+def _prepare_source_guard(supervisor):
+    """Check source continuity independently of the core's liveness heartbeat."""
+    if getattr(sys, "frozen", False):
+        return lambda: {"state": "not-applicable", "reason": "Installed executable signing boundary"}
+    from angerona.resilience.source_guard import SourceGuard, SourceGuardError
+
+    guard = None
+    state = {"state": "unavailable", "reason": "Source continuity unavailable; peer launches held"}
+    lock = threading.Lock()
+    try:
+        guard = SourceGuard.capture(
+            _repo_root(), expected_digest=os.environ.get("ANGERONA_PEER_SOURCE_DIGEST"))
+    except (SourceGuardError, OSError, ValueError):
+        pass
+    else:
+        os.environ["ANGERONA_PEER_SOURCE_DIGEST"] = guard.digest
+        state = {"state": "verified", "reason": "Source bytes match the current session seal",
+                 "digest": guard.digest}
+
+    def check(_component=None):
+        nonlocal state
+        with lock:
+            if guard is None or state["state"] in {"changed", "unavailable"}:
+                return False
+            try:
+                result = guard.check()
+            except Exception:
+                from angerona.resilience.source_guard import SourceCheck
+
+                result = SourceCheck(False, "unavailable", "Source observation failed; peer launches held")
+            state = {"state": result.state, "reason": result.reason,
+                     "digest": guard.digest, "changed": list(result.changed),
+                     "repair": "After STOP, use start-angerona.bat for pinned recovery; preserve and review user edits"}
+            return result.ok
+
+    def snapshot():
+        # State is replaced atomically after each observation. Never wait for
+        # filesystem custody while the independent heartbeat loop reads status.
+        return dict(state)
+
+    supervisor.launch_guard = check
+    supervisor.source_integrity_check = check
+    return snapshot
+
+
+def _source_review_loop(supervisor, stopped):
+    while not stopped.wait(_SOURCE_REVIEW_INTERVAL_SECONDS):
+        check = getattr(supervisor, "source_integrity_check", None)
+        if check is not None:
+            check()
+
+
 def main(argv: list[str] | None = None) -> int:
     token_hex = os.environ.get("ANGERONA_WATCHDOG_TOKEN", "")
     try:
@@ -124,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
         poll_interval=1.0,
         state_namespace="peer-watchdog",
     )
+    source_integrity = _prepare_source_guard(sup)
 
     # Core (Angerona) — the thing this watchdog exists to resurrect.
     core_cmd = (os.environ.get("ANGERONA_CORE_CMD") or "").strip()
@@ -182,22 +237,37 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
-    diag.write_status("watchdog", "running", {"supervised": list(sup.components.keys())})
+    diag.write_status("watchdog", "running", {
+        "supervised": list(sup.components.keys()), "source_integrity": source_integrity()})
+    source_stopped = threading.Event()
+    source_thread = threading.Thread(
+        target=_source_review_loop, args=(sup, source_stopped),
+        name="watchdog-source-integrity", daemon=True)
+    source_thread.start()
     n = 0
     while not stop["v"]:
         n += 1
-        beat = _refresh_heartbeat(beat)
+        if sup.heartbeat_allowed():
+            beat = _refresh_heartbeat(beat)
         if _standdown_requested():
             break
         if n % 6 == 0:   # ~ every 3s
-            diag.write_status("watchdog", "running", {
+            source_state = source_integrity()
+            progress = sup.supervision_status()
+            healthy = (source_state["state"] in {"verified", "not-applicable"}
+                       and progress["state"] in {"starting", "running"})
+            diag.write_status("watchdog", "running" if healthy else "degraded", {
                 "supervised": list(sup.components.keys()),
                 "safe_mode": [k for k, c in sup.components.items() if c.safe_mode],
                 "restarts": {k: c.restarts for k, c in sup.components.items()},
+                "source_integrity": source_state,
+                "supervision_progress": progress,
             })
         time.sleep(0.5)
 
     diag.write_status("watchdog", "stopped", {})
+    source_stopped.set()
+    source_thread.join(timeout=1.0)
     beat.close()
     sup.stop(terminate_children=False)   # leave children running; core manager owns them
     return 0

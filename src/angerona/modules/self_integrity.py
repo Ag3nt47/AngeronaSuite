@@ -212,9 +212,35 @@ _TARGETS = (
     "angerona.core.commands:CommandConsole.run",        # console control path
     "angerona.resilience.heartbeat:HeartbeatWriter.beat",  # liveness attestation
     "angerona.core.process_allowlist:is_allowed",       # trust decisions
+    "angerona.resilience.source_guard:SourceGuard.check",
+    "angerona.resilience.supervisor:ProcessSupervisor._launch_allowed",
+    "angerona.resilience.supervisor:ProcessSupervisor.heartbeat_allowed",
+    "angerona.resilience.supervisor:_heartbeat_process_identity",
 )
 
 _DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "angerona.resilience.source_guard:SourceGuard.check": (
+        "angerona.resilience.source_guard:_observe",
+        "angerona.resilience.source_guard:_inventory",
+        "angerona.core.source_sandbox:_read_bytes",
+    ),
+    "angerona.resilience.supervisor:_heartbeat_process_identity": (
+        "angerona.resilience.supervisor:_invocation_identity",
+        "angerona.resilience.supervisor:ProcessSupervisor._is_running",
+        "angerona.resilience.supervisor:ProcessSupervisor._assess",
+        "angerona.resilience.supervisor:ProcessSupervisor._authenticated_record",
+        "angerona.resilience.supervisor:ProcessSupervisor._verified_peer_state",
+    ),
+    "angerona.resilience.supervisor:ProcessSupervisor._launch_allowed": (
+        "angerona.resilience.supervisor:ProcessSupervisor._spawn_locked",
+        "angerona.resilience.supervisor:ProcessSupervisor._tick_locked",
+        "angerona.resilience.supervisor:spawn_detached",
+        "angerona.resilience.supervisor:_isolated_peer_argv",
+    ),
+    "angerona.resilience.supervisor:ProcessSupervisor.heartbeat_allowed": (
+        "angerona.resilience.supervisor:ProcessSupervisor._progress_now",
+        "angerona.resilience.supervisor:ProcessSupervisor.tick",
+    ),
     "angerona.engines.ai_guardrail:process_request": (
         "angerona.engines.ai_guardrail:scan_input",
         "angerona.engines.ai_guardrail:wrap_system",

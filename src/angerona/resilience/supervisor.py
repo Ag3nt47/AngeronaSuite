@@ -52,11 +52,16 @@ _SAFE_MODE_COOLDOWN = 120.0
 # Initial readiness is separate from liveness after a verified heartbeat. A
 # slow constructor must not become three purported crashes in a few seconds.
 _STARTUP_HEARTBEAT_SECONDS = 180.0
+_SUPERVISION_PROGRESS_SECONDS = 60.0
 _VALID_RESTART_TARGETS = {
     "core", "scanner", "blackbox", "watchdog", "watchdog_ui", "scanner_ui", "*",
 }
 _SPAWN_LOCK_ERRORS: dict[str, str] = {}
 _SPAWN_LOCK_ERRORS_GUARD = threading.Lock()
+_ISOLATED_PEER_MODULES = frozenset({
+    "angerona", "angerona.resilience.watchdog", "angerona.resilience.scanner",
+    "angerona.resilience.status_ui",
+})
 
 
 def _invocation_matches(process, command, expected: tuple[str, ...]) -> bool:
@@ -156,6 +161,38 @@ def _venv_redirector(process, expected):
                 str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
 
 
+def _heartbeat_process_identity(component, record):
+    """Observe one exact peer generation with query-only native custody.
+
+    A valid MAC authenticates the local writer authority, not the executable or
+    role behind its PID. The observation cannot terminate or repair that peer.
+    It also does not attest loaded code or resist a compromised kernel.
+    """
+    import psutil
+
+    pid = int(record["pid"])
+    process = psutil.Process(pid)
+    expected = tuple(str(part) for part in component.argv)
+    if component.name == "core":
+        expected = tuple(part for part in expected if part != "--chill")
+    identity = _invocation_identity(process, expected)
+    if identity is None:
+        raise ValueError("Heartbeat process does not match its configured role")
+    if record["ts_ns"] / 1e9 < identity["birth"]:
+        raise ValueError("Heartbeat predates its current process generation")
+    if os.name == "nt":
+        from angerona.core.windows_process_lease import WindowsProcessLease
+
+        with WindowsProcessLease(pid, identity["birth"], identity["image"],
+                                 lifetime=5.0, query_only=True) as lease:
+            if _invocation_identity(process, expected) != identity:
+                raise ValueError("Heartbeat invocation changed during observation")
+            lease.validate(alive=True)
+    elif _invocation_identity(process, expected) != identity:
+        raise ValueError("Heartbeat invocation changed during observation")
+    return identity
+
+
 def cached_cmdline_probe(*needles: str, psutil_module=None,
                          expected_argv=None) -> Callable[[], bool]:
     """Return a liveness probe that scans the process table only on adoption.
@@ -229,6 +266,51 @@ def cached_cmdline_probe(*needles: str, psutil_module=None,
 
 
 # ── detached, windowed spawning ──────────────────────────────────────────────
+def _isolated_peer_argv(argv: list[str]) -> list[str]:
+    """Remove implicit CWD/script-directory imports for canonical Python peers.
+
+    Editable or installed package resolution remains available through the
+    selected interpreter's site packages. Generic child commands, frozen
+    executables and other Python installations retain their supplied arguments.
+    This does not attest interpreter/site-package bootstrap code.
+    """
+    command = list(argv)
+    if (getattr(sys, "frozen", False) or len(command) < 2
+            or not all(isinstance(part, str) for part in command)):
+        return command
+    normalize = lambda value: os.path.normcase(os.path.abspath(value))
+    selected = Path(sys.executable)
+    interpreters = {normalize(str(selected))}
+    if os.name == "nt" and selected.name.casefold() in {"python.exe", "pythonw.exe"}:
+        sibling = "pythonw.exe" if selected.name.casefold() == "python.exe" else "python.exe"
+        interpreters.add(normalize(str(selected.with_name(sibling))))
+    if normalize(command[0]) not in interpreters:
+        return command
+    index = 1
+    for _ in range(16):
+        if index >= len(command):
+            return command
+        option = command[index]
+        if option in {"-u", "-B", "-E", "-I", "-s", "-S", "-P", "-O", "-OO", "-q"}:
+            index += 1
+        elif option in {"-X", "-W"} and index + 1 < len(command):
+            index += 2
+        else:
+            break
+    if index >= len(command):
+        return command
+    canonical = (index + 1 < len(command) and command[index] == "-m"
+                 and command[index + 1] in _ISOLATED_PEER_MODULES)
+    if not canonical and not command[index].startswith("-"):
+        from angerona.core.data_paths import project_root
+
+        entry = project_root() / "blackbox_recorder.py"
+        canonical = Path(command[index]).is_absolute() and normalize(command[index]) == normalize(str(entry))
+    if canonical and "-I" not in command[1:index]:
+        command.insert(1, "-I")
+    return command
+
+
 def spawn_detached(argv: list[str], env: Optional[dict] = None,
                    window: str = "minimized", *, cwd=None):
     """Start a process fully detached from this one's process group/tree.
@@ -238,6 +320,7 @@ def spawn_detached(argv: list[str], env: Optional[dict] = None,
     the child is placed in a new session (setsid)."""
     from angerona.core.privilege import sanitized_child_environment
 
+    argv = _isolated_peer_argv(argv)
     # Sidecars need local runtime/heartbeat coordinates, not the core's cloud,
     # mail, webhook, fleet, or provider credentials. Building the block from an
     # allowlist also prevents proxy/Python controls from crossing this boundary.
@@ -435,6 +518,15 @@ class Component:
     adopted: bool = False
     adopted_identity: Optional[dict] = None
     auth_notice: str = ""
+    identity_notice: str = ""
+    _heartbeat_identity: Optional[dict] = field(default=None, repr=False)
+    _heartbeat_counter: Optional[int] = field(default=None, repr=False)
+    _heartbeat_progress_at: Optional[float] = field(default=None, repr=False)
+    _heartbeat_checked_at: Optional[float] = field(default=None, repr=False)
+    _heartbeat_advanced: bool = field(default=False, repr=False)
+    _heartbeat_lock: object = field(default_factory=threading.RLock, repr=False)
+    launch_held: bool = False
+    launch_notice: str = ""
     # In-memory only: never restore native owners or monotonic leases from disk.
     _startup: Optional[_StartupAttempt] = field(default=None, repr=False)
 
@@ -448,7 +540,8 @@ class ProcessSupervisor:
                  clock: Callable[[], float] = time.time,
                  monotonic_clock: Callable[[], float] = time.monotonic,
                  initial_backoff_s: float = 1.0,
-                 max_backoff_s: float = 60.0):
+                 max_backoff_s: float = 60.0,
+                 launch_guard: Optional[Callable[[Component], bool]] = None):
         if initial_backoff_s <= 0 or max_backoff_s < initial_backoff_s:
             raise ValueError("invalid supervisor restart backoff")
         self.components: dict[str, Component] = {}
@@ -458,6 +551,9 @@ class ProcessSupervisor:
         self._monotonic_clock = monotonic_clock
         self.initial_backoff_s = float(initial_backoff_s)
         self.max_backoff_s = float(max_backoff_s)
+        if launch_guard is not None and not callable(launch_guard):
+            raise ValueError("supervisor launch guard must be callable")
+        self._launch_guard = launch_guard
         self.state_namespace = safe_name(state_namespace or "ephemeral")
         self._state_store = state_store
         if self._state_store is None and state_namespace:
@@ -468,6 +564,67 @@ class ProcessSupervisor:
         self._stop = threading.Event()
         self._lifecycle_lock = threading.RLock()
         self._thread: Optional[threading.Thread] = None
+        self._tick_count = 0
+        self._tick_completed_at = None
+        self._tick_error = ""
+        try:
+            started = monotonic_clock()
+            self._progress_started = (started if type(started) in (int, float)
+                                      and math.isfinite(started) and started >= 0 else None)
+        except Exception:
+            self._progress_started = None
+        self._progress_last_checked = self._progress_started
+        self._progress_publication = {"state": "starting", "tick_count": 0,
+                                      "last_tick_completed_at": None, "error": ""}
+
+    def _progress_now(self):
+        try:
+            now = self._monotonic_clock()
+            if (type(now) not in (int, float) or not math.isfinite(now) or now < 0
+                    or self._progress_started is None
+                    or self._progress_last_checked is not None and now < self._progress_last_checked):
+                return None
+            self._progress_last_checked = now
+            return now
+        except Exception:
+            return None
+
+    def heartbeat_allowed(self) -> bool:
+        """Allow a pulse only during startup grace or recent completed work.
+
+        Reads process-local state and one monotonic clock. Thread/PID presence
+        cannot renew this deadline, and failed supervision passes do not count.
+        """
+        now = self._progress_now()
+        if self._stop.is_set():
+            state = "stopped"
+        elif now is None:
+            state = "clock-unavailable"
+        elif self._tick_completed_at is None:
+            state = ("starting" if now - self._progress_started < _STARTUP_HEARTBEAT_SECONDS
+                     else "startup-timeout")
+        else:
+            state = ("running" if now - self._tick_completed_at < _SUPERVISION_PROGRESS_SECONDS
+                     else "stalled")
+        self._progress_publication = {"state": state, "tick_count": self._tick_count,
+                                      "last_tick_completed_at": self._tick_completed_at,
+                                      "error": self._tick_error}
+        return state in ("starting", "running")
+
+    def supervision_status(self) -> dict:
+        """Copy the last work-progress publication without any I/O or wait."""
+        return dict(self._progress_publication)
+
+    @property
+    def launch_guard(self) -> Optional[Callable[[Component], bool]]:
+        return self._launch_guard
+
+    @launch_guard.setter
+    def launch_guard(self, callback: Optional[Callable[[Component], bool]]) -> None:
+        if callback is not None and not callable(callback):
+            raise ValueError("supervisor launch guard must be callable")
+        with self._lifecycle_lock:
+            self._launch_guard = callback
 
     # ── registration ─────────────────────────────────────────────────────────
     def add(self, name: str, argv: list, **kw) -> Component:
@@ -510,6 +667,11 @@ class ProcessSupervisor:
     # ── liveness (stateless; a stale leftover heartbeat is NOT 'alive') ───────
     @staticmethod
     def _authenticated_record(c: Component) -> tuple[Optional[dict], str]:
+        with c._heartbeat_lock:
+            return ProcessSupervisor._authenticated_record_locked(c)
+
+    @staticmethod
+    def _authenticated_record_locked(c: Component) -> tuple[Optional[dict], str]:
         if c.reader is None:
             return None, "missing"
         rec = c.reader.read()
@@ -543,6 +705,66 @@ class ProcessSupervisor:
             )
         self._emit("HIGH", message, component=c.name, heartbeat_auth=status)
 
+    def _verified_peer_state(self, c: Component, record: dict) -> str:
+        """Bind authenticated progress to a currently verified peer generation.
+
+        This is deliberately separate from process termination authority. An
+        uncertain identity holds automatic replacement, and cannot select a
+        process for destructive recovery. Initial presence needs two advancing
+        authenticated samples before becoming healthy.
+        """
+        with c._heartbeat_lock:
+            # A release-waiter may have observed a newer sample after the
+            # caller authenticated this record. Never let an older admitted
+            # sample count as new progress after that concurrent observation.
+            if c.reader.authentication_status(record=record) != "authenticated":
+                return "unauthenticated_replay"
+            return self._verified_peer_state_locked(c, record)
+
+    def _verified_peer_state_locked(self, c: Component, record: dict) -> str:
+        if not record.get("flags"):
+            return "stopped"
+        pid = int(record.get("pid", 0))
+        if not hb.pid_alive(pid):
+            return "dead"
+        try:
+            identity = _heartbeat_process_identity(c, record)
+            now = self._monotonic_clock()
+            if (type(now) not in (int, float) or not math.isfinite(now)
+                    or now < 0 or c._heartbeat_checked_at is not None
+                    and now < c._heartbeat_checked_at):
+                raise ValueError("Peer observation monotonic clock is unavailable")
+            c._heartbeat_checked_at = now
+        except Exception as exc:
+            c._heartbeat_identity = None
+            c._heartbeat_advanced = False
+            failure = type(exc).__name__
+            if c.identity_notice != failure:
+                c.identity_notice = failure
+                self._emit(
+                    "HIGH", f"{c.name}: authenticated heartbeat has no verified "
+                    "invocation/process generation; automatic replacement is held.",
+                    component=c.name, heartbeat_identity=failure,
+                )
+            return "identity-unverified"
+        c.identity_notice = ""
+        age = (time.time_ns() - int(record["ts_ns"])) / 1e9
+        if age < -max(c.stale_after_s, 5.0):
+            return "unauthenticated_clock"
+        counter = int(record["counter"])
+        if identity != c._heartbeat_identity:
+            c._heartbeat_identity = identity
+            c._heartbeat_counter = counter
+            c._heartbeat_progress_at = now
+            c._heartbeat_advanced = False
+        elif counter != c._heartbeat_counter:
+            c._heartbeat_counter = counter
+            c._heartbeat_progress_at = now
+            c._heartbeat_advanced = True
+        if age >= c.stale_after_s or now - c._heartbeat_progress_at >= c.stale_after_s:
+            return "suspended"
+        return "alive" if c._heartbeat_advanced else "heartbeat-pending"
+
     def _is_running(self, c: Component) -> bool:
         if c.running_probe is not None:
             try:
@@ -559,6 +781,8 @@ class ProcessSupervisor:
         self._report_auth_state(c, auth)
         if not rec or rec.get("flags") == 0:
             return False
+        if isinstance(c.reader, hb.HeartbeatReader):
+            return self._verified_peer_state(c, rec) == "alive"
         age = (time.time_ns() - rec["ts_ns"]) / 1e9
         # Fresh tick AND the writer's pid still alive ⇒ genuinely running.
         return abs(age) <= max(c.stale_after_s, 2.0) and hb.pid_alive(
@@ -572,6 +796,32 @@ class ProcessSupervisor:
 
     def _respawn_blocked(self) -> bool:
         return self._stop.is_set() or tok.is_standdown_requested()
+
+    def _launch_allowed(self, c: Component) -> bool:
+        """Consult a bounded source gate without changing observed liveness.
+
+        Callers retain STOP checks and native lifecycle custody. A refused gate
+        neither authorizes termination nor adds crash-loop debt. The callback
+        must be bounded because it runs before admission and again at dispatch.
+        """
+        if self._launch_guard is None:
+            return True
+        reason = "source-integrity-held"
+        try:
+            allowed = self._launch_guard(c) is True
+        except Exception as exc:
+            allowed = False
+            reason = type(exc).__name__
+        c.launch_held = not allowed
+        if allowed:
+            c.launch_notice = ""
+        elif c.launch_notice != reason:
+            c.launch_notice = reason
+            self._emit("HIGH", f"{c.name}: source verification holds automatic launch; "
+                       "existing processes and operator intent are preserved.",
+                       component=c.name, launch_guard=reason,
+                       disposition="observation", response_authorized=False)
+        return allowed
 
     def _spawn_locked(self, c: Component) -> bool:
         if self._respawn_blocked():
@@ -607,6 +857,11 @@ class ProcessSupervisor:
             if hb.pid_alive(int(rec.get("pid", 0))):
                 self._report_auth_state(c, auth)
                 return False
+        if rec and auth == "authenticated" and isinstance(c.reader, hb.HeartbeatReader):
+            if self._verified_peer_state(c, rec) not in ("dead", "stopped"):
+                # A first sample, uncertain identity or frozen live peer must
+                # never become permission to start a competing instance.
+                return False
         if not try_claim_spawn(c.name):
             error = spawn_lock_error(c.name)
             if error:
@@ -622,6 +877,8 @@ class ProcessSupervisor:
             if self._is_running(c):     # double-check under the lock
                 return True
             if self._respawn_blocked():
+                return False
+            if not self._launch_allowed(c) or self._respawn_blocked():
                 return False
             # This flag only inhibits startup. It grants no trust or privilege.
             # A child launched just before STOP must never clear its stop token.
@@ -795,7 +1052,18 @@ class ProcessSupervisor:
     # ── one monitoring pass (public for tests) ───────────────────────────────
     def tick(self) -> dict:
         with self._lifecycle_lock:
-            return self._tick_locked()
+            try:
+                result = self._tick_locked()
+            except Exception as exc:
+                self._tick_error = type(exc).__name__
+                raise
+            now = self._progress_now()
+            if now is not None:
+                self._tick_completed_at = now
+                self._tick_count += 1
+                self._tick_error = ""
+            self.heartbeat_allowed()
+            return result
 
     def _tick_locked(self) -> dict:
         actions: dict = {}
@@ -807,6 +1075,9 @@ class ProcessSupervisor:
         for name, c in self.components.items():
             # Manual restart: force a respawn now, clearing SAFE_MODE.
             if name in forced or "*" in forced:
+                if not self._launch_allowed(c) or self._respawn_blocked():
+                    actions[name] = "source-integrity-held" if c.launch_held else "standdown"
+                    continue
                 self._capture_recovery_snapshot(c, "manual_restart")
                 c.safe_mode = False
                 c.safe_mode_since = 0.0
@@ -835,9 +1106,14 @@ class ProcessSupervisor:
                         component=name,
                     )
                     continue
-                self._spawn(c)
-                actions[name] = "manual_restart"
-                self._emit("INFO", f"{name}: manual restart — respawned.", component=name)
+                spawned = self._spawn(c)
+                if spawned:
+                    actions[name] = "manual_restart"
+                    self._emit("INFO", f"{name}: manual restart — launch/adoption accepted.", component=name)
+                else:
+                    actions[name] = "source-integrity-held" if c.launch_held else "manual_restart_deferred"
+                    self._emit("HIGH", f"{name}: manual restart did not launch a replacement; "
+                               "review the held startup diagnostics.", component=name)
                 continue
             # SAFE_MODE recovery: never give up forever. After a cooldown, clear it
             # and allow a retry — a transient crash-loop (or a since-fixed bug) then
@@ -868,6 +1144,15 @@ class ProcessSupervisor:
                     actions[name] = f"backoff({state})"
                     if state_changed:
                         self._persist(c)
+                    continue
+                # A due dead-peer retry already owns its recorded failure
+                # budget and has no live process to terminate. Dispatch still
+                # performs a fresh source check under the spawn lock; repeating
+                # that full scan here adds no intervening safety boundary.
+                check_before_effect = not c.next_restart_at or state == "suspended"
+                if ((check_before_effect and not self._launch_allowed(c))
+                        or self._respawn_blocked()):
+                    actions[name] = "source-integrity-held" if c.launch_held else "standdown"
                     continue
                 if not c.next_restart_at:
                     entered_safe_mode = self._register_failure(c)
@@ -916,9 +1201,9 @@ class ProcessSupervisor:
                 spawned = self._spawn(c)
                 c.next_restart_at = 0.0
                 self._persist(c)
-                actions[name] = (
-                    f"respawned({state})" if spawned else f"restart_deferred({state})"
-                )
+                actions[name] = (f"respawned({state})" if spawned else
+                                 "source-integrity-held" if c.launch_held else
+                                 f"restart_deferred({state})")
             elif state == "alive":
                 if c.next_restart_at:
                     c.next_restart_at = 0.0
@@ -1069,7 +1354,9 @@ class ProcessSupervisor:
             self._report_auth_state(c, auth)
             return "legacy_unverified" if auth == "legacy" else f"unauthenticated_{auth}"
         self._report_auth_state(c, auth)
-        hb_state = c.reader.classify(stale_after_s=c.stale_after_s) if c.reader else "unknown"
+        hb_state = (self._verified_peer_state(c, rec)
+                    if isinstance(c.reader, hb.HeartbeatReader)
+                    else c.reader.classify(stale_after_s=c.stale_after_s) if c.reader else "unknown")
         if hb_state == "alive":
             c._startup = None
             self._decay(c)

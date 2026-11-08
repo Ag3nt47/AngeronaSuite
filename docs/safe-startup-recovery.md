@@ -100,6 +100,34 @@ and private preserved originals. A changed file is not automatically proven to
 be the individual cause of the crash. Intentional startup/trust-check edits
 require maintainer review and rebuilt pins; there is no automatic trust override.
 
+### Recovery profile migration
+
+The mutual-recovery hardening expands the pinned operational profile from 39 to
+48 files. It now includes the core manager, peer watchdog, supervisor, source
+guard, signed STOP handling, retained recovery state, diagnostics, child-process
+ownership and child-environment policy. Changed or missing covered files use
+the same exact pinned GitHub blob repair and private original-preservation path.
+Downloading a file does not authenticate the kernel, a running process or every
+other source file in the checkout.
+
+A source application already running the older 39-file update capsule cannot
+validate this new 48-file profile. That old capsule deliberately holds unknown
+recovery profiles before activation. Its automatic GUI update must not be
+reported as having accepted this migration. Do not replace its validator,
+delete a pending transaction or overwrite customized code to force acceptance.
+
+Complete this transition as an explicit maintainer-reviewed source update after
+normal STOP and verified process retirement. Preserve local edits and any
+pending source-update evidence first. The existing `pull-from-github.bat` helper
+can admit only a clean checkout and a fast-forward of its current remote branch;
+it refuses local changes, divergence and incoming workflow changes. It does not
+merge custom source or prove a canonical `main` publication. A customized or
+held checkout needs a reviewed migration preserving those edits, or a separate
+verified source checkout followed by deliberate transfer of reviewed
+customizations. Keep the original installation and data until that review is
+complete. The new profile's normal launcher must verify its own manifest and
+bootstrap pins before it loads the engine.
+
 Source candidates must also meet the current STOP lifecycle compatibility floor.
 An older snapshot or GitHub parent cannot undo the fix that prevents watchdog
 resurrection after operator STOP. Legacy edits stay preserved for review and must

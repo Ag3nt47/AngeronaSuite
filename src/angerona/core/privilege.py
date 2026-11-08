@@ -57,6 +57,9 @@ _POSIX_COPIED_ENVIRONMENT = (
 )
 _SAFE_ANGERONA_CHILD_ENVIRONMENT = frozenset({
     "ANGERONA_SUPERVISED_RECOVERY",
+    # Inhibit-only source continuity check. This digest grants no code trust,
+    # privilege, STOP override or approval of a changed developer tree.
+    "ANGERONA_PEER_SOURCE_DIGEST",
     "ANGERONA_ACL_PATH",
     "ANGERONA_BLACKBOX_ENABLED",
     "ANGERONA_CORE_CMD",
