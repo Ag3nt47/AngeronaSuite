@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -149,7 +150,27 @@ def test_c10_threat_dependency_closure_and_unknown_acl_are_fail_closed(
         "angerona.core.source_sandbox:_chain",
         "angerona.core.source_sandbox:_is_link_or_reparse",
     } <= set(engine._targets)
-    assert engine.arm() == engine.expected_count == 31
+    assert {
+        "angerona.resilience.source_guard:SourceGuard.check",
+        "angerona.resilience.source_guard:_observe",
+        "angerona.resilience.source_guard:_inventory",
+        "angerona.core.source_sandbox:_read_bytes",
+        "angerona.resilience.supervisor:ProcessSupervisor._launch_allowed",
+        "angerona.resilience.supervisor:ProcessSupervisor._spawn_locked",
+        "angerona.resilience.supervisor:ProcessSupervisor._tick_locked",
+        "angerona.resilience.supervisor:spawn_detached",
+        "angerona.resilience.supervisor:_isolated_peer_argv",
+        "angerona.resilience.supervisor:ProcessSupervisor.heartbeat_allowed",
+        "angerona.resilience.supervisor:ProcessSupervisor._progress_now",
+        "angerona.resilience.supervisor:ProcessSupervisor.tick",
+        "angerona.resilience.supervisor:_heartbeat_process_identity",
+        "angerona.resilience.supervisor:_invocation_identity",
+        "angerona.resilience.supervisor:ProcessSupervisor._is_running",
+        "angerona.resilience.supervisor:ProcessSupervisor._assess",
+        "angerona.resilience.supervisor:ProcessSupervisor._authenticated_record",
+        "angerona.resilience.supervisor:ProcessSupervisor._verified_peer_state",
+    } <= set(engine._targets)
+    assert engine.arm() == engine.expected_count == 49
     monkeypatch.setattr(threat_module, "is_active_threat", lambda _event: False)
     assert any(expected in finding for finding in engine.check())
 
@@ -160,6 +181,26 @@ def test_c10_threat_dependency_closure_and_unknown_acl_are_fail_closed(
     )
     assert score == 35
     assert "ACL" in reason
+
+
+@pytest.mark.parametrize("target", [
+    "angerona.resilience.source_guard:SourceGuard.check",
+    "angerona.resilience.supervisor:ProcessSupervisor._launch_allowed",
+    "angerona.resilience.supervisor:ProcessSupervisor.heartbeat_allowed",
+    "angerona.resilience.supervisor:_isolated_peer_argv",
+])
+def test_c10_peer_gate_reassignment_is_detected(
+    monkeypatch: pytest.MonkeyPatch, target: str,
+) -> None:
+    engine = SelfIntegrityEngine()
+    assert engine.arm() == engine.expected_count == 49
+    module, qualified = target.split(":", 1)
+    owner = importlib.import_module(module)
+    parents = qualified.split(".")
+    for name in parents[:-1]:
+        owner = getattr(owner, name)
+    monkeypatch.setattr(owner, parents[-1], lambda *_args, **_kwargs: True)
+    assert any(target in finding for finding in engine.check())
 
 
 def test_c17_ordinary_directory_object_swap_is_not_clean(

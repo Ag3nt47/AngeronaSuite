@@ -127,6 +127,20 @@ and README assets. Hosted CI is independent evidence and is not predeclared
 successful by these local results. No complete-suite, kernel-immunity or live
 host protection claim is inferred by adding the overlapping counts above.
 
+### Hosted integrity-contract follow-up
+
+The first published revision, `0db2c83`, completed each of Python 3.10, 3.11,
+3.12 and 3.13 with 15,025 passes, 44 skips and one identical failure. A retained
+regression still required the old exact
+31-target Self-Integrity closure. The implementation intentionally expanded
+that closure to 49 targets. The follow-up preserves the exact 49-target
+requirement, explicitly requires all 18 added peer targets/dependencies, and
+tests reassignment of four new gates. Its five-file focused cohort passed
+87 cases in 12.26 seconds; Ruff passed. No production check, deadline, ACL
+condition or missing-target refusal was weakened. This is a test-contract
+correction; production recovery pins and the previously verified GitHub blobs
+are unchanged. Subsequent hosted results remain a separate exact-commit check.
+
 ## Remaining attack surface
 
 The initial source seal inherits launcher trust. The inhibit-only environment
