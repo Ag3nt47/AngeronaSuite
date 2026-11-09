@@ -559,7 +559,7 @@ class ProcessSnapshotProvider:
             now = time.monotonic()
             if not _number(now) or not started <= now < deadline:
                 raise InventoryWorkerError("inventory ownership observation deadline")
-            return deadline - now
+            return min(timeout, deadline - now)
 
         def current_owner():
             if not self._lock.acquire(timeout=remaining()):

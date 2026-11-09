@@ -487,7 +487,7 @@ class OwnedWindowsChild:
                     or not last <= now < deadline):
                 raise NativeOwnershipObservationError("Child ownership observation deadline")
             last = now
-            return deadline - now
+            return min(timeout, deadline - now)
 
         def state_locked():
             if (type(self._job) is not WindowsChildJob or self._process is None

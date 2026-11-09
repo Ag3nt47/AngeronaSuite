@@ -91,6 +91,11 @@ def _waiting_session(tmp_path, monkeypatch, *, finish_after=None, expiry=200.0, 
     bus = EventBus()
     bus.arm(BusAuthority(b'w' * 32))
     session = _session(tmp_path, bus)
+    # These fixtures isolate queue/deadline scheduling. The real producer
+    # freshness graph and its refusal cases are covered by dedicated tests;
+    # no synthetic sensor or native containment claim is made here.
+    monkeypatch.setattr(session, '_begin_final_producer_observation', lambda _run_id: object())
+    monkeypatch.setattr(session, '_final_producer_observation_state', lambda _observation: 'complete')
     prepared = _prepared(tmp_path)
     budget = sessions._workflow_settlement_budget(prepared)
     session._workflow_current_budget = None if legacy else budget
@@ -100,6 +105,7 @@ def _waiting_session(tmp_path, monkeypatch, *, finish_after=None, expiry=200.0, 
     work.put(object())
     work.get_nowait()
     combat = object.__new__(AdversaryCombat)
+    combat._lifecycle_generation = 1  # Stable scheduling-only response worker.
     session.manager.modules['Adversary Combat'] = combat
     monkeypatch.setattr(AdversaryCombat, 'response_snapshot',
         lambda _combat: {'queue_depth': work.qsize(), 'queue_pending': work.unfinished_tasks})
@@ -168,7 +174,9 @@ def test_wrong_combat_scope_is_held_and_overdue_zero_snapshot_is_not_late_succes
     session.manager.modules['Adversary Combat'] = SimpleNamespace()
     assert session._settle_admitted_responses() is False
     assert session.workflow_settlement_snapshot(prepared.run_id)['outcome'] == 'unavailable'
-    session.manager.modules['Adversary Combat'] = object.__new__(AdversaryCombat)
+    replacement = object.__new__(AdversaryCombat)
+    replacement._lifecycle_generation = 1
+    session.manager.modules['Adversary Combat'] = replacement
     def delayed_zero(_combat):
         clock.now += 60
         return {'queue_pending': 0}

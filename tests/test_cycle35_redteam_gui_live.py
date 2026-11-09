@@ -344,7 +344,8 @@ def _os_witness_failure_summary(
     outcome = report.get("outcome")
     taxonomy = report.get("evidence_taxonomy", {})
     response = taxonomy.get("successful_response", {})
-    combat_states = {"RECOVERY REQUIRED", "JOURNAL FULL", "DISABLED", "STARTING", "QUEUE FULL", "ARMED"}
+    combat_states = {"RECOVERY REQUIRED", "JOURNAL FULL", "DISABLED", "STARTING", "QUEUE FULL", "ARMED",
+                     "AUTHORITY HELD"}
     decision_codes = (
         "waiting", "generation_discarded", "startup_expired", "below_threshold",
         "missing_contract", "integrity_failed", "queue_saturated", "queued",
@@ -378,6 +379,11 @@ def _os_witness_failure_summary(
         "settlement": {
             "pending": count(settled.get("pending")),
             "timed_out": settled.get("timed_out") if type(settled.get("timed_out")) is bool else None,
+            "producer_observation_state": (
+                settled.get("producer_observation_state")
+                if settled.get("producer_observation_state") in {"unrequested", "pending", "complete", "unavailable"}
+                else "unavailable"
+            ),
             "combat_ready": combat.get("ready") if type(combat.get("ready")) is bool else None,
             "combat_state": combat.get("state") if combat.get("state") in combat_states else "other",
             **{key: count(combat.get(key)) for key in (
@@ -427,7 +433,8 @@ def test_os_witness_rejects_uncontained_marker(isolated_root: Path) -> None:
     )
 
 
-def test_witness_failure_summary_keeps_reasons_without_private_values() -> None:
+@pytest.mark.parametrize("combat_state", ["ARMED", "AUTHORITY HELD"])
+def test_witness_failure_summary_keeps_reasons_without_private_values(combat_state: str) -> None:
     summary_text = _os_witness_failure_summary(
         {
             "verify_digest": False,
@@ -448,8 +455,8 @@ def test_witness_failure_summary_keeps_reasons_without_private_values() -> None:
         report={"outcome": "partial", "response_actions_applied": 0,
                 "verified_closures": 0, "body": "private-report",
                 "evidence_taxonomy": {"denominator": 37, "successful_response": {"count": 0}}},
-        settled={"pending": 0, "timed_out": False},
-        combat={"ready": True, "state": "ARMED", "reason": "private-reason",
+        settled={"pending": 0, "timed_out": False, "producer_observation_state": "complete"},
+        combat={"ready": combat_state == "ARMED", "state": combat_state, "reason": "private-reason",
                 "counts": {"no_eligible_target": 37, "private-code": 1},
                 "last_decision": "no_eligible_target"},
     )
@@ -468,6 +475,9 @@ def test_witness_failure_summary_keeps_reasons_without_private_values() -> None:
     assert summary["aar"]["successful_response_count"] == 0
     assert summary["settlement"]["pending"] == 0
     assert summary["settlement"]["timed_out"] is False
+    assert summary["settlement"]["producer_observation_state"] == "complete"
+    assert summary["settlement"]["combat_state"] == combat_state
+    assert summary["settlement"]["combat_ready"] is (combat_state == "ARMED")
     assert summary["settlement"]["decision_counts"] == {"no_eligible_target": 37}
     assert all(private not in summary_text for private in (
         "private-parent", "private-quarantine", "private-error", "private-token",
@@ -1461,8 +1471,11 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
                   combat=combat.response_snapshot())
             drained = original_settlement(session)
             combat_settled = combat.response_snapshot()
+            workflow_settled = session.workflow_settlement_snapshot(session.red_team_engine.run_id)
             settled = {"pending": combat_settled.get("queue_pending"),
-                       "timed_out": drained is False, "responses_drained": drained}
+                       "timed_out": workflow_settled.get("outcome") == "expired",
+                       "responses_drained": drained,
+                       "producer_observation_state": workflow_settled.get("producer_observation_state")}
             runtime_settled = _witness_runtime_snapshot(combat, bus)
             trace("settlement_done", settled=settled,
                   combat=combat_settled, runtime=runtime_settled)

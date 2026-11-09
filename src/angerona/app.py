@@ -417,7 +417,7 @@ class AngeronaApp:
             now = time.monotonic()
             if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
                 raise InventoryWorkerError("Complete companion ownership observation deadline")
-            return deadline - now
+            return min(1.0, deadline - now)
 
         def capture_inventory():
             requested = getattr(self, "_shutdown_requested", None)

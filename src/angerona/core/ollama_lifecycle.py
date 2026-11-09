@@ -719,11 +719,19 @@ def observe_owned_ollama_process_identities(*, captured=None, timeout=1.0):
     if on_gui_thread() or type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 1.0:
         raise InventoryWorkerError('Owned AI observations require a finite background owner')
     started = time.monotonic()
+    if type(started) not in (int, float) or not math.isfinite(started) or started < 0:
+        raise InventoryWorkerError('Owned AI observation clock unavailable')
+    deadline = started + timeout
     def remaining():
-        left = started + timeout - time.monotonic()
-        if left <= 0:
+        now = time.monotonic()
+        if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
             raise InventoryWorkerError('Owned AI observation deadline')
-        return left
+        left = deadline - now
+        if not math.isfinite(left) or left <= 0:
+            raise InventoryWorkerError('Owned AI observation deadline')
+        # Floating-point addition/subtraction may round a valid budget upward.
+        # Preserve the original caller allowance before strict nested admission.
+        return min(timeout, left)
     if not _owned_stop_lock.acquire(timeout=remaining()):
         raise InventoryWorkerError('Owned AI stop custody is busy')
     try:

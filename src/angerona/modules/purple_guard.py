@@ -5361,6 +5361,13 @@ class PurpleGuard(BaseModule):
         self._validation_cycle_generation = 0
         self._validation_cycle_techniques: frozenset[str] = frozenset()
         self._validation_cycle_at = 0.0
+        # One bounded scheduling hint for a final producer cycle. These tokens
+        # attest no detection or response; the ordinary receipt verifiers retain
+        # their existing authority checks independently.
+        self._observation_request_lock = threading.Lock()
+        self._observation_request_serial = 0
+        self._pending_observation_request = None
+        self._completed_observation_request = None
         self._had_reviewed_policy = False
         self._policy_loss_reported = False
         self._validation_lease: RedTeamValidationLease | None = None
@@ -5410,6 +5417,126 @@ class PurpleGuard(BaseModule):
                 "techniques": sorted(self._validation_cycle_techniques),
                 "completed_at": float(self._validation_cycle_at),
             }
+
+    def _fresh_observation_binding(self, lease, run_id):
+        """Return the admitted generation from the exact issuer-owned lease."""
+        if type(self) is not PurpleGuard or type(lease) is not RedTeamValidationLease:
+            return None
+        try:
+            state = _lease_authority(lease)
+            assert state.lock is not None
+            with state.lock:
+                generation = state.readiness.get("sensor_generation")
+                if (type(generation) is not int or generation <= 0
+                        or state.module is not self or self._validation_lease is not lease
+                        or type(run_id) is not str or not run_id or state.bound_run_id != run_id):
+                    return None
+                RedTeamValidationLease.assert_live_producers(lease, run_id=run_id)
+                return generation
+        except (RedTeamValidationError, AttributeError, TypeError, ValueError):
+            return None
+
+    def request_fresh_observation(self, lease, *, run_id: str) -> tuple[int, int] | None:
+        """Request a later real cycle in the still-admitted producer generation."""
+        generation = PurpleGuard._fresh_observation_binding(self, lease, run_id)
+        if generation is None:
+            return None
+        with self._lifecycle_lock:
+            thread = self._thread
+            if (generation != self._lifecycle_generation or self.status != "running"
+                    or self._validation_lease is not lease or self._stop.is_set()
+                    or thread is None or not thread.is_alive()):
+                return None
+            with self._observation_request_lock:
+                pending = self._pending_observation_request
+                if (pending is None or pending[0][0] != generation
+                        or pending[1] is not lease or pending[2] != run_id):
+                    self._observation_request_serial += 1
+                    pending = ((generation, self._observation_request_serial), lease, run_id)
+                    self._pending_observation_request = pending
+                self._process_wake.set()
+                return pending[0]
+
+    def fresh_observation_state(self, request, lease, *, run_id: str) -> str:
+        """Read same-generation work completion; unavailable never means complete."""
+        if (type(request) is not tuple or len(request) != 2
+                or any(type(value) is not int or value <= 0 for value in request)):
+            return "unavailable"
+        generation = PurpleGuard._fresh_observation_binding(self, lease, run_id)
+        if generation != request[0]:
+            return "unavailable"
+        with self._lifecycle_lock:
+            thread = self._thread
+            if (generation != self._lifecycle_generation or self.status != "running"
+                    or self._validation_lease is not lease or self._stop.is_set()
+                    or thread is None or not thread.is_alive()):
+                return "unavailable"
+            with self._observation_request_lock:
+                completed = self._completed_observation_request
+                if (completed is not None and completed[1] is lease and completed[2] == run_id
+                        and completed[0][0] == generation and completed[0][1] >= request[1]):
+                    return "complete"
+                return "pending"
+
+    def fresh_observation_complete(self, request, lease, *, run_id: str) -> bool:
+        return PurpleGuard.fresh_observation_state(self, request, lease, run_id=run_id) == "complete"
+
+    def _begin_fresh_observation(self, generation, lease):
+        if threading.current_thread() is not self._thread:
+            return None
+        with self._observation_request_lock:
+            request = self._pending_observation_request
+            self._pending_observation_request = None
+            return (request if request is not None and request[0][0] == generation
+                    and request[1] is lease else None)
+
+    def _complete_fresh_observation(self, request, generation, lease):
+        if request is None or threading.current_thread() is not self._thread:
+            return
+        token, expected_lease, run_id = request
+        if token[0] != generation or expected_lease is not lease:
+            return
+        if PurpleGuard._fresh_observation_binding(self, lease, run_id) != generation:
+            PurpleGuard._retry_fresh_observation(self, request, generation, lease)
+            return
+        # Reuse the issuer's existing complete policy/target/recorder validation.
+        # A completed scheduling hint cannot forgive lost custody or grant a
+        # detector receipt, nor can it acknowledge a cycle from another lease.
+        state = _lease_authority(lease)
+        assert state.lock is not None
+        # Marker containment updates these same issuer-owned dictionaries and
+        # sets under this lock. Keep their full scope snapshot coherent, using
+        # the existing state -> marker-move ordering; release before lifecycle.
+        with state.lock:
+            scope_matches = RedTeamValidationLease._state_matches(lease)
+        if not scope_matches:
+            PurpleGuard._retry_fresh_observation(self, request, generation, lease)
+            return
+        with self._lifecycle_lock:
+            if (self._lifecycle_generation != generation or self._stop.is_set()
+                    or self.status != "running" or self._validation_lease is not lease):
+                return
+            with self._observation_request_lock:
+                self._completed_observation_request = request
+
+    def _retry_fresh_observation(self, request, generation, lease):
+        """Retain one hint after a failed cycle, without renewing any deadline."""
+        if request is None or threading.current_thread() is not self._thread:
+            return
+        token, expected_lease, run_id = request
+        with self._lifecycle_lock:
+            if (token[0] != generation or self._lifecycle_generation != generation
+                    or expected_lease is not lease or self._validation_lease is not lease
+                    or self._stop.is_set()):
+                return
+            with self._observation_request_lock:
+                pending = self._pending_observation_request
+                if (pending is None or pending[1] is lease and pending[2] == run_id
+                        and pending[0][0] == generation and pending[0][1] < token[1]):
+                    # Leave pacing/backoff to the normal worker. A transient
+                    # scope refusal or exception cannot erase the request,
+                    # replace newer work, or manufacture an acknowledgment.
+                    self._pending_observation_request = request
 
     def wait_for_validation_cycle(
         self,
@@ -5750,25 +5877,32 @@ class PurpleGuard(BaseModule):
         second (health, file markers, and process markers). A single parse is
         faster and makes every check in the cycle observe one policy version.
         """
-        policy = self._policy_snapshot()
+        generation = self.lifecycle_generation
         lease = self._validation_lease
+        observation = PurpleGuard._begin_fresh_observation(self, generation, lease)
         try:
-            authority = (_lease_authority(lease)._queued_files(lease, create=False)
-                         if lease is not None else None)
-        except RedTeamValidationError:
-            authority = None  # Missing/retired registry supplies no fresh proof.
-        fresh_hits = authority.process(self) if authority is not None else 0
-        file_hits = fresh_hits + self.scan_once(policy)
-        process_hits = self.scan_process_once(policy)
-        with self._validation_cycle:
-            self._validation_cycle_serial += 1
-            self._validation_cycle_generation = int(self.lifecycle_generation)
-            self._validation_cycle_techniques = frozenset(
-                str(key) for key in policy
-            )
-            self._validation_cycle_at = time.time()
-            self._validation_cycle.notify_all()
-        return file_hits, process_hits, len(policy)
+            policy = self._policy_snapshot()
+            try:
+                authority = (_lease_authority(lease)._queued_files(lease, create=False)
+                             if lease is not None else None)
+            except RedTeamValidationError:
+                authority = None  # Missing/retired registry supplies no fresh proof.
+            fresh_hits = authority.process(self) if authority is not None else 0
+            file_hits = fresh_hits + self.scan_once(policy)
+            process_hits = self.scan_process_once(policy)
+            with self._validation_cycle:
+                self._validation_cycle_serial += 1
+                self._validation_cycle_generation = int(generation)
+                self._validation_cycle_techniques = frozenset(
+                    str(key) for key in policy
+                )
+                self._validation_cycle_at = time.time()
+                self._validation_cycle.notify_all()
+            PurpleGuard._complete_fresh_observation(self, observation, generation, lease)
+            return file_hits, process_hits, len(policy)
+        except BaseException:
+            PurpleGuard._retry_fresh_observation(self, observation, generation, lease)
+            raise
 
     def _update_policy_health(self, count: int) -> None:
         if count:

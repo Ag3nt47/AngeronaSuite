@@ -492,7 +492,7 @@ class ResilienceManager:
             now = time.monotonic()
             if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
                 raise InventoryWorkerError("Companion ownership observation deadline")
-            return deadline - now
+            return min(timeout, deadline - now)
 
         def current():
             if (self._stop.is_set() or self.status != "running" or self._sup is not supervisor
@@ -616,7 +616,7 @@ class ResilienceManager:
             now = time.monotonic()
             if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
                 raise InventoryWorkerError("Companion ownership observation deadline")
-            return deadline - now
+            return min(timeout, deadline - now)
 
         captured = self._capture_owned_process_scope(timeout=remaining())
         cache = captured[1]

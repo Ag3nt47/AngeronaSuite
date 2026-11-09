@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import FrozenInstanceError, replace
+import math
 import os
 import threading
 from types import SimpleNamespace
@@ -335,6 +336,109 @@ def test_matching_nested_job_member_keeps_one_original_identity_and_lease(compos
     # member occurs in both complete Job scopes.
     assert sample.children["watchdog"].model.reads >= 3
     assert sample.children["scanner"].model.reads >= 3
+
+
+def _rebase_composition_clock(sample, origin):
+    sample.clock[0] = sample.inventory_context.clock[0] = sample.core_context.clock[0] = origin
+    publish(sample.core_context)
+
+
+def test_complete_scope_binary_boundary_keeps_strict_nested_one_second_admission(composition):
+    origin = math.nextafter(512.0, 0.0)
+    assert (origin + 1.0) - origin > 1.0
+    _rebase_composition_clock(composition, origin)
+    rows = observe(composition)
+    assert {row.pid for row in rows} == {os.getpid(), 1001, 1002, 1003, 2001, 2002, 2101, 2201}
+    assert all(row.observed_monotonic == origin and row.expires_monotonic == origin + 2.0
+               for row in rows)
+    assert composition.inventory_context.native.opened and composition.native.opened
+
+
+_ROUNDING_BUDGETS = [(math.nextafter(512.0, 0.0), 1.0), (512.0, 0.1), (2.0**30, 0.2)]
+
+
+@pytest.mark.parametrize(("origin", "budget"), _ROUNDING_BUDGETS)
+def test_companion_observation_retains_original_budget_at_binary_boundaries(
+    composition, monkeypatch, origin, budget,
+):
+    assert (origin + budget) - origin > budget
+    _rebase_composition_clock(composition, origin)
+    capture = composition.resilience._capture_owned_process_scope
+    observe_child = OwnedWindowsChild.observe_owned_process_identities
+    received = []
+
+    def capture_bounded(*, timeout):
+        received.append(timeout)
+        assert 0 < timeout <= budget
+        return capture(timeout=timeout)
+
+    def observe_child_bounded(owner, *, role, timeout):
+        received.append(timeout)
+        assert 0 < timeout <= budget
+        return observe_child(owner, role=role, timeout=timeout)
+
+    monkeypatch.setattr(composition.resilience, "_capture_owned_process_scope", capture_bounded)
+    monkeypatch.setattr(OwnedWindowsChild, "observe_owned_process_identities", observe_child_bounded)
+    rows = composition.resilience.observe_owned_process_identities(timeout=budget)
+    assert {row.pid for row in rows} == {os.getpid(), 2001, 2002, 2101, 2201}
+    assert all(row.observed_monotonic == origin for row in rows)
+    assert len(received) == 5
+
+
+@pytest.mark.parametrize(("origin", "budget"), _ROUNDING_BUDGETS)
+def test_companion_capture_bounds_every_registry_and_lifetime_lock_wait(
+    composition, monkeypatch, origin, budget,
+):
+    assert (origin + budget) - origin > budget
+    _rebase_composition_clock(composition, origin)
+    received = []
+
+    class BoundedLock:
+        def __init__(self, actual):
+            self.actual = actual
+
+        def acquire(self, *, timeout):
+            received.append(timeout)
+            assert 0 < timeout <= budget
+            return self.actual.acquire(timeout=timeout)
+
+        def release(self):
+            return self.actual.release()
+
+    supervisor = composition.supervisor
+    monkeypatch.setattr(supervisor, "_lifecycle_lock", BoundedLock(supervisor._lifecycle_lock))
+    for child in composition.children.values():
+        monkeypatch.setattr(child.owner, "_handle_lock", BoundedLock(child.owner._handle_lock))
+    captured = composition.resilience._capture_owned_process_scope(timeout=budget)
+    assert len(captured[8]) == 3 and len(received) == 4
+
+
+@pytest.mark.parametrize("method", ["capture", "observe"])
+def test_companion_public_over_limit_timeout_still_rejects_before_clock(composition, monkeypatch, method):
+    def forbidden():
+        pytest.fail("Invalid public ownership timeout reached the clock")
+
+    monkeypatch.setattr(manager_module, "time", SimpleNamespace(monotonic=forbidden))
+    function = (composition.resilience._capture_owned_process_scope if method == "capture"
+                else composition.resilience.observe_owned_process_identities)
+    with pytest.raises(worker.InventoryWorkerError, match="Invalid companion ownership deadline"):
+        function(timeout=math.nextafter(1.0, math.inf))
+
+
+@pytest.mark.parametrize("method", ["app", "capture", "observe"])
+@pytest.mark.parametrize("now", [math.nan, math.inf, 99.75, 101.0])
+def test_ownership_handoff_clock_faults_cannot_become_fresh_clamped_timeouts(
+    composition, monkeypatch, method, now,
+):
+    times = iter((100.0, now))
+    module = app_module if method == "app" else manager_module
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: next(times)))
+    function = {"app": composition.app._owned_process_identities_for_response,
+                "capture": composition.resilience._capture_owned_process_scope,
+                "observe": composition.resilience.observe_owned_process_identities}[method]
+    with pytest.raises(worker.InventoryWorkerError, match="observation deadline"):
+        function()
+    assert composition.native.calls == [] and composition.inventory_context.native.calls == []
 
 
 def test_contradictory_reobserved_pid_birth_rejects_the_whole_scope(composition, monkeypatch):

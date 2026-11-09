@@ -141,6 +141,105 @@ condition or missing-target refusal was weakened. This is a test-contract
 correction; production recovery pins and the previously verified GitHub blobs
 are unchanged. Subsequent hosted results remain a separate exact-commit check.
 
+### Final detector-cycle settlement follow-up
+
+The next hosted Python 3.13 run at `3aaa06a` completed with 15,029 passes,
+44 skips and one separate GUI containment-witness failure. The signed report
+truthfully remained partial: 26 of 36 inert file markers were still present.
+All 13 admitted response requests had completed, with no recorded proof hold,
+journal fault, queue drop or remaining task. `AUTHORITY HELD` is the expected
+Source Observe host-authority state in this fixture; the diagnostic previously
+projected it to `other`. It is now represented explicitly.
+
+The peer Watchdog/source-seal paths do not run in that fixture. The new four
+Self-Integrity tests also start no workers and restore their callable changes
+through function-scoped monkeypatches. No direct causal link to peer hardening
+was established. A pre-change isolated GUI replay passed in 125.51 seconds;
+its cleanup passed and the exact pytest generation exited. Missing hosted
+private trace files prevent proving the exact scheduling of that failure.
+
+Source inspection found a real independent race: Combat can have no pending
+tasks while PurpleGuard is still enumerating files or preparing the next
+synchronous event. Queue emptiness alone therefore cannot establish final
+producer completion. A controlled regression parks an actual detector scan
+after its file snapshot, then creates a later inert marker. It verifies that
+the old empty-queue predicate is true while the marker remains unprocessed.
+
+The correction requests a cycle from the exact admitted detector object,
+lease, run and lifecycle generation. A request arriving during an older scan
+can only be acknowledged by a later full cycle. Only after that acknowledgment
+does settlement read the real response queue again. A pre-ack queue snapshot
+cannot be reused. The response object and its lifecycle generation are also
+revalidated around queue reads. Completion checks read the issuer's mutable
+artifact/handoff state under its existing lock, released before acquiring the
+detector lifecycle lock. Transient full-scope observation failure retries the same
+bounded scheduling token on the existing worker cadence; it grants no receipt
+or policy authority. Producer replacement, generation changes and failed work
+cannot acknowledge completion. Producer work and response retirement share
+the original run and settlement deadline without extension.
+
+The deterministic regression requires actual sandbox quarantine and signed
+postcondition evidence. Scheduling-only budget fixtures explicitly stub the
+producer-observation seam; their original unfinished-task, expiry, cancellation,
+warning and evidence-age assertions remain unchanged. The GUI witness retains
+the original 36-file/three-process expectations and now records the bounded
+producer observation state. A partial or unavailable result is not relabeled
+as verified containment.
+
+### Owned-process observation deadline precision
+
+The same hosted revision completed Python 3.10 and 3.11 with 15,030 passes
+and 44 skips each. Python 3.12 completed with 15,028 passes, 44 skips and two
+owned-process composition failures. A valid one-second budget became
+`1.0000000000000568` after internal floating-point deadline arithmetic, and the
+strict nested owned-AI scope validator correctly rejected it. The binary-boundary
+case is reproducible with a constant monotonic clock; host load is unnecessary.
+
+The correction caps internal remaining waits at their original validated
+caller budget after the existing finite, regression and expiry checks. Strict
+public input limits stay unchanged, including rejection of an explicitly
+over-budget input by one representable float. The affected App, companion,
+native child, process-inventory and AI ownership handoffs use that rule;
+observation expiry and identity custody are not renewed by an internal retry.
+The first owned-AI focused gate passed 32 cases, including both hosted failure
+identifiers. Final chain validation and changed-revision native GUI validation
+are separate acceptance gates.
+
+After the operator's normal STOP/Quit, the known startup lease holder was no
+longer present. The previously held two manager edits and one child-job edit
+then applied normally, without a file replacement, ACL change or process signal.
+The full App/companion/AI gate passed **105 tests** in 9.03 seconds. The native
+child/inventory gate passed **150 distinct tests** across its new and existing
+files, including **32 new boundary cases**, with native fixture retirement and
+handle-close verification. Counts overlap earlier focused checks and are not
+added into a fictitious full-suite total.
+
+The operational profile remains 48 files. Its regenerated manifest SHA256 is
+`3f946cd9530050c0480467bb4d717b07579b54849868ebd13d8b0c7a9f8043d8`
+and Git blob is `3d2821352371d1114219aa69bf7aa5d75a3bb292`. The native verifier
+is unchanged. Bootstrap pins were regenerated from the reviewed current files.
+
+The final 16-file GUI/lifecycle/recovery cohort passed **218 tests** in 482.32
+seconds on the changed source. This includes the unchanged two accepted GUI
+launches with authenticated AARs, original 36-file/three-process OS witness
+requirements, producer and response-worker generation refusals, queued
+reobservation, native containment, lifecycle and bootstrap contracts. Its
+cleanup assertions passed, the pytest command exited successfully, and the
+exact unique invocation was absent afterward. Earlier and later GUI timings
+are not a controlled performance comparison. The operator's own open session
+was preserved until their reported normal STOP/Quit; no operator process was
+selected for termination.
+
+The original isolated `ResilienceManager.self_test()` also passed on final
+source in **19.89 seconds**, retaining its **45-second outer limit and
+12-second respawn observation**. It observed initial scanner telemetry,
+duplicate avoidance and exactly one respawn. Both actual scanner Jobs were
+empty before close; all four retained query-only scanner-generation leases
+and the isolated runner proved exit and closed. No observation errors were
+recorded. Source and recovery-pin hashes matched before and after. Private
+native receipts remain retained; no Core, Watchdog, Black Box or operator
+application was launched or controlled by this scanner-only check.
+
 ## Remaining attack surface
 
 The initial source seal inherits launcher trust. The inhibit-only environment

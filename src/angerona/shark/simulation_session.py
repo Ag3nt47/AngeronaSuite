@@ -825,6 +825,7 @@ class SimulationSession:
         self._workflow_budgets = {}
         self._workflow_current_budget = None
         self._workflow_settlements = {}
+        self._workflow_producer_state = "unrequested"
         self._execution_completed = 0
         self._execution_current_finished = 0
         self._reports = []
@@ -839,7 +840,8 @@ class SimulationSession:
             "workflow_settlement_basis": "unprepared", "workflow_settlement_planned_contracts": None,
             "workflow_settlement_elapsed_seconds": 0.0, "workflow_settlement_drained": None,
             "workflow_settlement_baseline_exceeded": False, "workflow_settlement_warning": "",
-            "workflow_settlement_diagnostic_published": False}
+            "workflow_settlement_diagnostic_published": False,
+            "workflow_producer_state": "unrequested"}
 
     def prepare(self, cfg, *, default_target):
         with self._lock:
@@ -876,6 +878,7 @@ class SimulationSession:
             self._workflow_budgets = workflow_budgets
             self._workflow_current_budget = None
             self._workflow_settlements.clear()
+            self._workflow_producer_state = "unrequested"
             self._execution_completed = 0
             self._execution_current_finished = 0
             self._cache.update(completed_reports=0, execution_finished=0, settled_steps=0,
@@ -887,7 +890,8 @@ class SimulationSession:
                                workflow_settlement_elapsed_seconds=0.0,
                                workflow_settlement_baseline_exceeded=False,
                                workflow_settlement_drained=None, workflow_settlement_warning="",
-                               workflow_settlement_diagnostic_published=False)
+                               workflow_settlement_diagnostic_published=False,
+                               workflow_producer_state="unrequested")
             self._cache.update(session_id=plan.session_id, session_generation=plan.generation,
                 phase="queued", current_run_id="",
                 queued_run_ids=tuple(run.run_id for run in plan.runs), planned_runs=len(plan.runs),
@@ -1155,7 +1159,8 @@ class SimulationSession:
             'policy_seconds': budget.seconds, 'allowance_seconds': allowance,
             'elapsed_seconds': elapsed, 'responses_drained': drained, 'pending': pending,
             'outcome': outcome, 'baseline_exceeded': exceeded, 'warning': warning,
-            'response_authorized': False, 'diagnostic_published': False}
+            'response_authorized': False, 'diagnostic_published': False,
+            'producer_observation_state': self._workflow_producer_state}
         # The warning is retained even if later reporting/custody reaches Completed.
         if exceeded:
             try:
@@ -1181,35 +1186,99 @@ class SimulationSession:
                 workflow_settlement_diagnostic_published=record["diagnostic_published"])
         return drained
 
+    def _begin_final_producer_observation(self, run_id):
+        """Schedule the admitted producer's later cycle without minting proof."""
+        from angerona.modules.purple_guard import PurpleGuard, RedTeamValidationLease
+
+        producer = self.manager.modules.get("Purple Remediation Guard")
+        lease = self._active_lease
+        if (type(producer) is not PurpleGuard or type(lease) is not RedTeamValidationLease
+                or not RedTeamValidationLease.authority_matches(
+                    lease, manager=self.manager, bus=self.bus, recorder=self.recorder)):
+            return None
+        request = PurpleGuard.request_fresh_observation(producer, lease, run_id=run_id)
+        return (producer, request, lease, run_id) if request is not None else None
+
+    def _final_producer_observation_state(self, observation):
+        from angerona.modules.purple_guard import PurpleGuard, RedTeamValidationLease
+
+        if type(observation) is not tuple or len(observation) != 4:
+            return "unavailable"
+        producer, request, lease, run_id = observation
+        if (type(producer) is not PurpleGuard or self._active_lease is not lease
+                or self.manager.modules.get("Purple Remediation Guard") is not producer
+                or not RedTeamValidationLease.authority_matches(
+                    lease, manager=self.manager, bus=self.bus, recorder=self.recorder)):
+            return "unavailable"
+        return PurpleGuard.fresh_observation_state(producer, request, lease, run_id=run_id)
+
     def _settle_admitted_responses(self):
         from angerona.modules.adversary_combat import AdversaryCombat
         combat = self.manager.modules.get('Adversary Combat')
+        combat_generation = getattr(combat, 'lifecycle_generation', None)
+
+        def combat_scope_current():
+            current_generation = getattr(combat, 'lifecycle_generation', None)
+            return bool(type(combat) is AdversaryCombat
+                and self.manager.modules.get('Adversary Combat') is combat
+                and type(combat_generation) is int and combat_generation > 0
+                and type(current_generation) is int and current_generation == combat_generation)
+
         budget = self._workflow_current_budget or _workflow_settlement_budget()
         started = time.monotonic()
         # Never renew the original admitted run expiry, including after STOP.
         deadline = min(self._run_deadline, started + budget.seconds)
         allowance = max(0.0, deadline - started)
         pending = None
+        try:
+            observation = self._begin_final_producer_observation(budget.run_id)
+        except Exception:
+            observation = None
         while True:
-            if type(combat) is not AdversaryCombat:
+            if not combat_scope_current():
+                return self._record_workflow_settlement(budget, allowance,
+                    max(0.0, time.monotonic() - started), False, pending, 'unavailable')
+            try:
+                producer_state = self._final_producer_observation_state(observation)
+            except Exception:
+                producer_state = "unavailable"
+            if producer_state not in {"pending", "complete", "unavailable"}:
+                producer_state = "unavailable"
+            self._workflow_producer_state = producer_state
+            # Completion follows every inline producer publication. Only a
+            # later Combat snapshot can account for the work those publications
+            # admitted; an earlier empty-queue sample must never be reused.
+            if not combat_scope_current():
                 return self._record_workflow_settlement(budget, allowance,
                     max(0.0, time.monotonic() - started), False, pending, 'unavailable')
             snapshot = AdversaryCombat.response_snapshot(combat)
+            if not combat_scope_current():
+                # A blocking snapshot cannot transfer an old worker's empty
+                # queue into a replacement generation's completion claim.
+                return self._record_workflow_settlement(budget, allowance,
+                    max(0.0, time.monotonic() - started), False, pending, 'unavailable')
             pending = snapshot.get('queue_pending')
             now = time.monotonic()
             elapsed = max(0.0, now - started)
             with self._lock:
                 self._cache.update(workflow_settlement_elapsed_seconds=elapsed,
-                    workflow_settlement_baseline_exceeded=(elapsed > _WORKFLOW_SETTLEMENT_FLOOR_SECONDS))
+                    workflow_settlement_baseline_exceeded=(elapsed > _WORKFLOW_SETTLEMENT_FLOOR_SECONDS),
+                    workflow_producer_state=producer_state)
             if type(pending) is not int or pending < 0:
                 return self._record_workflow_settlement(budget, allowance,
                     elapsed, False, None, 'unavailable')
             if now > deadline or allowance <= 0:
                 return self._record_workflow_settlement(budget, allowance,
                     elapsed, False, pending, 'expired')
-            if pending == 0:
+            if pending == 0 and producer_state == "complete":
+                if not combat_scope_current():
+                    return self._record_workflow_settlement(budget, allowance,
+                        elapsed, False, pending, 'unavailable')
                 return self._record_workflow_settlement(budget, allowance,
                     elapsed, True, pending, 'drained')
+            if pending == 0 and producer_state == "unavailable":
+                return self._record_workflow_settlement(budget, allowance,
+                    elapsed, False, pending, 'unavailable')
             # Cancellation closes probe creation; admitted effects still need
             # truthful terminal records and actual task_done, never a set-Event spin.
             self._drain_redteam_observations()
@@ -1294,11 +1363,13 @@ class SimulationSession:
                         or budget.run_id != current.run_id or budget.plan_sha256 != current.plan_sha256):
                     raise SessionHeld("The frozen workflow settlement allowance is unavailable")
                 self._workflow_current_budget = budget
+                self._workflow_producer_state = "unrequested"
                 self._phase("preflight", workflow_settlement_policy_seconds=budget.seconds,
                     workflow_settlement_allowance_seconds=None, workflow_settlement_basis=budget.basis,
                     workflow_settlement_planned_contracts=budget.planned_contracts,
                     workflow_settlement_elapsed_seconds=0.0, workflow_settlement_drained=None,
                     workflow_settlement_baseline_exceeded=False, workflow_settlement_warning="",
+                    workflow_producer_state="unrequested",
                     workflow_settlement_diagnostic_published=False)
                 target = Path(current.target)
                 target.mkdir(parents=True, exist_ok=True)

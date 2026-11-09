@@ -25,6 +25,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   from live host efficacy and hosted CI. The original isolated scanner lifecycle
   passes on final source; scoped results and remaining attack surface are in
   analysis/hardening-v1.15-2026-11-08-mutual-recovery.md. Counts are not additive.
+  A separate hosted GUI race is corrected by requiring a post-probe cycle from
+  the exact admitted PurpleGuard generation before a fresh Combat queue drain
+  observation. The original settlement/run deadline and response proofs remain
+  unchanged; unavailable producer work cannot be reported as drained.
+  Internal owned-process observation waits cap rounded remaining values at the
+  original validated budget; public caps, clock checks and expiry stay strict.
 
 - Spyware Scan shows current work, progress and hits above collapsible setup.
   Its daily Entire PC schedule starts after dashboard readiness and uses the
