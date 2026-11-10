@@ -390,7 +390,11 @@ class AngeronaApp:
         """
         import math
         from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
-        from angerona.core.werfault_guard import MAX_OWNED_PROCESSES, read_owned_process_snapshot
+        from angerona.core.werfault_guard import (
+            MAX_OWNED_PROCESSES, OwnedProcessFailurePhase, OwnedProcessReadError,
+            read_owned_process_snapshot,
+        )
+        from angerona.core.windows_child_job import NativeOwnershipObservationError
         from angerona.resilience.manager import ResilienceManager
         from angerona.telemetry import sensors
         from angerona.telemetry.process_snapshot_worker import (
@@ -412,12 +416,34 @@ class AngeronaApp:
             raise InventoryWorkerError("Configured inventory native provider is unavailable")
         routing_generation = sensors._process_snapshot_provider_generation
         external_controller = getattr(self, "_source_update_controller", None)
+        tool_owner = getattr(getattr(self, "manager", None), "red_team_tool_owner", None)
+        if tool_owner is not None:
+            from angerona.gui.red_team_bridge import RedTeamBridge
+            if type(tool_owner) is not RedTeamBridge:
+                raise InventoryWorkerError("Configured Red Team owner has an unknown type")
 
         def remaining():
             now = time.monotonic()
             if type(now) not in (int, float) or not math.isfinite(now) or not started <= now < deadline:
                 raise InventoryWorkerError("Complete companion ownership observation deadline")
             return min(1.0, deadline - now)
+
+        def observe_phase(phase, operation):
+            # Preserve the original exception class and every exclusion check.
+            # Only closed phase/type labels cross the diagnostic boundary; an
+            # arbitrary provider's exception message is never copied there.
+            try:
+                return operation()
+            except Exception as error:
+                kind = ("inventory-owner" if isinstance(error, InventoryWorkerError)
+                        else "native-owner" if isinstance(error, NativeOwnershipObservationError)
+                        else "snapshot-validation" if isinstance(error, OwnedProcessReadError)
+                        else "provider")
+                try:
+                    error._angerona_owned_phase = OwnedProcessFailurePhase(phase, kind)
+                except (AttributeError, TypeError, ValueError):
+                    pass
+                raise
 
         def capture_inventory():
             requested = getattr(self, "_shutdown_requested", None)
@@ -458,21 +484,29 @@ class AngeronaApp:
                 provider._lock.release()
 
         from angerona.core import ollama_lifecycle
-        ai_scope = ollama_lifecycle.capture_owned_ollama_process_scope(timeout=remaining())
-        inventory_scope = capture_inventory()
-        companion_scope = resilience._capture_owned_process_scope(timeout=remaining())
-        companion_rows = resilience.observe_owned_process_identities(timeout=remaining())
-        inventory_rows = provider.observe_owned_process_identities(timeout=remaining())
-        ai_rows = ollama_lifecycle.observe_owned_ollama_process_identities(captured=ai_scope, timeout=remaining())
+        ai_scope = observe_phase("ai-capture", lambda: ollama_lifecycle.capture_owned_ollama_process_scope(timeout=remaining()))
+        inventory_scope = observe_phase("inventory-capture", capture_inventory)
+        companion_scope = observe_phase("companion-capture", lambda: resilience._capture_owned_process_scope(timeout=remaining()))
+        tool_scope = (None if tool_owner is None else observe_phase("tool-capture",
+            lambda: tool_owner.capture_owned_process_scope(timeout=remaining())))
+        companion_rows = observe_phase("companion-observe", lambda: resilience.observe_owned_process_identities(timeout=remaining()))
+        inventory_rows = observe_phase("inventory-observe", lambda: provider.observe_owned_process_identities(timeout=remaining()))
+        ai_rows = observe_phase("ai-observe", lambda: ollama_lifecycle.observe_owned_ollama_process_identities(captured=ai_scope, timeout=remaining()))
         external_rows = (() if external_controller is None else
-                         external_controller.observe(timeout=remaining()))
-        if capture_inventory() != inventory_scope:
+                         observe_phase("external-observe", lambda: external_controller.observe(timeout=remaining())))
+        tool_rows = (() if tool_owner is None else observe_phase("tool-observe",
+            lambda: tool_owner.observe_owned_process_identities(captured=tool_scope, timeout=remaining())))
+        if observe_phase("inventory-revalidate", capture_inventory) != inventory_scope:
             raise InventoryWorkerError("Configured inventory native owner changed during observation")
-        if resilience._capture_owned_process_scope(timeout=remaining()) != companion_scope:
+        if observe_phase("companion-revalidate", lambda: resilience._capture_owned_process_scope(timeout=remaining())) != companion_scope:
             raise InventoryWorkerError("Configured companion native owners changed during observation")
-        if ollama_lifecycle.capture_owned_ollama_process_scope(timeout=remaining()) != ai_scope:
+        if observe_phase("ai-revalidate", lambda: ollama_lifecycle.capture_owned_ollama_process_scope(timeout=remaining())) != ai_scope:
             raise InventoryWorkerError("Owned AI registry/admission changed during complete observation")
-        current_core = resilience._owned_core_identity(companion_scope[1], not_before=started)
+        if (getattr(getattr(self, "manager", None), "red_team_tool_owner", None) is not tool_owner
+                or tool_owner is not None and observe_phase("tool-revalidate",
+                    lambda: tool_owner.capture_owned_process_scope(timeout=remaining())) != tool_scope):
+            raise InventoryWorkerError("Owned Red Team lifetime changed during complete observation")
+        current_core = observe_phase("core-validate", lambda: resilience._owned_core_identity(companion_scope[1], not_before=started))
         native_scopes = [companion_rows, inventory_rows]
         # Only an actually revalidated empty AI registry is an absent scope.
         # Required producers and every configured external owner stay strict.
@@ -480,6 +514,8 @@ class AngeronaApp:
             native_scopes.append(ai_rows)
         if external_controller is not None:
             native_scopes.append(external_rows)
+        if tool_owner is not None and tool_scope[1] is not None and tool_scope[1][2] != "retired":
+            native_scopes.append(tool_rows)
         rows_by_pid = {}
         for rows in native_scopes:
             for row in read_owned_process_snapshot(lambda: rows, not_before=started,
@@ -1498,6 +1534,8 @@ class AngeronaApp:
                 except Exception:
                     pass
         begin_ollama_shutdown()
+        from angerona.core.mobile_cli_custody import request_signal_stop
+        request_signal_stop()
         resilience = getattr(self, "_resilience", None)
         if resilience is not None:
             resilience.request_stop()
@@ -1553,6 +1591,9 @@ class AngeronaApp:
         if metrics_publisher is not None:
             metrics_publisher.stop()
         self._shutdown_services_and_stores()
+        from angerona.core.mobile_cli_custody import SignalCliRetirementIncomplete
+        signal_outcome = self._signal_retirement_outcome()
+        self._signal_retirement_at_shutdown = signal_outcome
         from angerona.core.ollama_lifecycle import OllamaRetirementIncomplete, owned_ollama_retirement_proven, ollama_retirement_snapshot
         if not owned_ollama_retirement_proven():
             # All remaining critical/service cleanup ran before this error.
@@ -1563,9 +1604,35 @@ class AngeronaApp:
                     "diagnostic_error_type": type(error).__name__,
                     "coverage": "Owned retirement is unproven; its diagnostic snapshot is unavailable"}) from error
             raise OllamaRetirementIncomplete(outcome)
+        if not self._signal_retirement_proven(signal_outcome):
+            raise SignalCliRetirementIncomplete(signal_outcome)
+
+    @staticmethod
+    def _signal_retirement_outcome() -> dict:
+        """Read memory-only ownership facts; never run Signal for shutdown."""
+        from angerona.core.mobile_cli_custody import signal_cli_custody_snapshot
+        try:
+            return signal_cli_custody_snapshot()
+        except Exception as error:
+            return {"schema": 1, "state": "unavailable",
+                    "diagnostic_error_type": type(error).__name__[:80]}
+
+    @staticmethod
+    def _signal_retirement_proven(outcome) -> bool:
+        if type(outcome) is not dict or type(outcome.get("schema")) is not int or outcome["schema"] != 1:
+            return False
+        fields = ("active_invocations", "pending_external_trees", "held_resources")
+        if any(type(outcome.get(field)) is not int or outcome[field] < 0 for field in fields):
+            return False
+        # A retained executable/closed-resource reference fences Signal only.
+        # An unknown live process tree must still prevent a false STOP receipt.
+        return (type(outcome.get("launch_quiescent")) is bool and outcome["launch_quiescent"]
+                and outcome["active_invocations"] == 0 and outcome["pending_external_trees"] == 0)
 
     def _drain_optional_owned(self, timeout: float = 5.0) -> bool:
         """Retire scanner/review workers before their evidence stores close."""
+        from angerona.core.mobile_cli_custody import request_signal_stop
+        request_signal_stop()
         deadline = time.monotonic() + max(0.0, min(float(timeout), 10.0))
         drained = True
         tools_controller = getattr(getattr(self, "manager", None), "_curated_tools_controller", None)
@@ -1586,6 +1653,12 @@ class AngeronaApp:
             except Exception:
                 breach_drained = False
             drained = breach_drained and drained
+        signal_outcome = self._signal_retirement_outcome()
+        while not self._signal_retirement_proven(signal_outcome) and time.monotonic() < deadline:
+            time.sleep(min(0.02, max(0.0, deadline - time.monotonic())))
+            signal_outcome = self._signal_retirement_outcome()
+        self._signal_retirement_at_shutdown = signal_outcome
+        drained = self._signal_retirement_proven(signal_outcome) and drained
         return drained
 
     def _record_ai_retirement_outcome(self) -> None:

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -56,6 +57,7 @@ type capturedLaunch struct {
 	DataDir  string
 	Recovery string
 	External string
+	Console  uintptr
 }
 
 // A harmless subprocess of this test binary records the exact launched argv.
@@ -67,11 +69,17 @@ func TestWatchdogLaunchHelper(t *testing.T) {
 		Args: os.Args, Token: os.Getenv("ANGERONA_WATCHDOG_TOKEN"),
 		Mmap: os.Getenv("ANGERONA_WATCHDOG_MMAP"), DataDir: os.Getenv("ANGERONA_WD_DATADIR"),
 		Recovery: os.Getenv("ANGERONA_SUPERVISED_RECOVERY"), External: os.Getenv("ANGERONA_EXTERNAL_WATCHDOG"),
+		Console: currentConsoleWindow(),
 	})
 	if err != nil || os.WriteFile(os.Getenv("ANGERONA_TEST_LAUNCH_CAPTURE"), payload, 0600) != nil {
 		os.Exit(3)
 	}
 	os.Exit(0)
+}
+
+func currentConsoleWindow() uintptr {
+	window, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleWindow").Call()
+	return window
 }
 
 func TestLaunchAgentChillArguments(t *testing.T) {
@@ -92,6 +100,9 @@ func TestLaunchAgentChillArguments(t *testing.T) {
 			}
 			if cmd.Process == nil || cmd.Process.Pid <= 0 {
 				t.Fatal("launch did not retain the created process")
+			}
+			if !cmd.SysProcAttr.HideWindow || cmd.SysProcAttr.CreationFlags != createNoWindow|createNewProcessGroup {
+				t.Fatalf("watchdog child has unsafe visibility flags: %#v", cmd.SysProcAttr)
 			}
 			if err := cmd.Wait(); err != nil {
 				t.Fatal(err)
@@ -117,6 +128,9 @@ func TestLaunchAgentChillArguments(t *testing.T) {
 			}
 			if got.Recovery != wantRecovery || got.External != "1" {
 				t.Fatalf("explicit/recovery launch flags changed: %#v", got)
+			}
+			if got.Console != 0 {
+				t.Fatalf("watchdog child acquired a console window: %#x", got.Console)
 			}
 			if !reflect.DeepEqual(args, before) {
 				t.Fatalf("configured arguments mutated: %#v", args)

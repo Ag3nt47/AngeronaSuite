@@ -318,13 +318,19 @@ def _volume_identity(mountpoint: object) -> str:
     return ""
 
 
+class _MountSnapshot(dict):
+    """Existing policy result plus inert display metadata from the same query."""
+    all_volumes: tuple[tuple[str, str, str], ...] = ()
+
+
 def _removable_mounts() -> dict[str, str]:
     """Return {mountpoint: fstype/opts} for removable volumes (best-effort)."""
-    out: dict[str, str] = {}
+    out = _MountSnapshot()
     if psutil is None:
         return out
     try:
         present_windows_mounts: set[str] = set()
+        all_volumes = []
         for part in psutil.disk_partitions(all=False):
             opts = (part.opts or "").lower()
             # Windows marks removable/cdrom in opts; POSIX shows /media, /mnt, /run/media.
@@ -340,6 +346,9 @@ def _removable_mounts() -> dict[str, str]:
             if is_removable:
                 label = native_kind or opts or part.fstype
                 out[mp] = f"{label} ({part.fstype or 'volume'})"
+            if len(all_volumes) < 256 and type(mp) is str:
+                all_volumes.append((mp[:1024], "removable" if is_removable else "mounted-volume", str(part.fstype or "")[:80]))
+        out.all_volumes = tuple(all_volumes)
         if sys.platform.startswith("win"):
             _WINDOWS_VOLUME_PROBE.retain(present_windows_mounts)
     except Exception:
@@ -423,6 +432,7 @@ class USBMonitorModule(BaseModule):
         self._drive_provider = _windows_local_drive_letters
         self._identity_provider = _volume_identity
         self._known_local_mounts: set[str] = set()
+        self._cached_volume_inventory: tuple[tuple[str, str, str], ...] = ()
         self._watched_local_mounts: set[str] = set()
         self._approval_policy = UsbApprovalPolicy(
             identity_provider=lambda mount: self._identity_provider(mount),
@@ -496,6 +506,8 @@ class USBMonitorModule(BaseModule):
 
     def _check(self) -> None:
         current = self._mount_provider()
+        if type(current) is _MountSnapshot:
+            self._cached_volume_inventory = current.all_volumes
         local_drives = self._drive_provider()
         local_set = set(local_drives)
         cur_set = set(current)

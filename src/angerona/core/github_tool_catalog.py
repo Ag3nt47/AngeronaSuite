@@ -423,6 +423,52 @@ class GitHubToolCatalog:
         with _open_archive(content) as archive:
             return sorted(_members(archive), key=str.casefold)
 
+    def raw_member(self, identity: str, filename: str, *, max_bytes: int = MAX_PREVIEW_BYTES,
+                   require_reviewed: bool = False) -> bytes:
+        """Read exact inert bytes after ZIP/digest custody checks; never decode/eval.
+
+        Review is optional for generic source inspection. Data adapters must
+        explicitly require it; neither mode grants execution or response rights.
+        """
+        if type(max_bytes) is not int or not 1 <= max_bytes <= 4 * 1024 * 1024:
+            raise ValueError("Choose a raw member limit from 1 byte to 4 MiB.")
+        if type(require_reviewed) is not bool or not isinstance(filename, str):
+            raise ValueError("Invalid source-member request.")
+        with self._transaction():
+            row = self._row(identity)
+            if require_reviewed and row["state"] != "reviewed":
+                raise ValueError("This source import is not currently reviewed.")
+            content = self._archive(row)
+            with _open_archive(content) as archive:
+                files = _members(archive)
+                if filename not in files:
+                    raise ValueError("File is not part of this source import.")
+                return read_bounded_member(archive, files[filename], max_bytes=max_bytes)
+
+    def raw_members(self, identity: str, filenames: list[str], *, max_bytes: int = MAX_PREVIEW_BYTES,
+                    total_bytes: int = 8 * 1024 * 1024, require_reviewed: bool = False) -> dict[str, bytes]:
+        """One verified ZIP read for a bounded data pack; avoid per-rule ZIP I/O."""
+        if (not isinstance(filenames, list) or not 0 < len(filenames) <= 256
+                or any(not isinstance(name, str) for name in filenames)
+                or len(set(filenames)) != len(filenames)
+                or type(max_bytes) is not int or not 1 <= max_bytes <= 4 * 1024 * 1024
+                or type(total_bytes) is not int or not 1 <= total_bytes <= 32 * 1024 * 1024
+                or type(require_reviewed) is not bool):
+            raise ValueError("Invalid bounded source member snapshot request.")
+        with self._transaction():
+            row = self._row(identity)
+            if require_reviewed and row["state"] != "reviewed":
+                raise ValueError("This source import is not currently reviewed.")
+            with _open_archive(self._archive(row)) as archive:
+                files = _members(archive)
+                if any(name not in files for name in filenames):
+                    raise ValueError("File is not part of this source import.")
+                if (any(files[name].file_size > max_bytes for name in filenames)
+                        or sum(files[name].file_size for name in filenames) > total_bytes):
+                    raise ValueError("Source member snapshot exceeds its byte budget.")
+                return {name: read_bounded_member(archive, files[name], max_bytes=max_bytes)
+                        for name in filenames}
+
     def preview(self, identity: str, filename: str) -> str:
         with self._transaction():
             row = self._row(identity)

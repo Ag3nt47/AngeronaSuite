@@ -65,16 +65,78 @@ def test_t1059_drill_uses_bounded_inert_python_sleeper(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(
         subprocess,
         "Popen",
-        lambda argv, creationflags=0: calls.append((list(argv), creationflags)) or Probe(),
+        lambda argv, creationflags=0, **_streams: calls.append((list(argv), creationflags)) or Probe(),
     )
 
     engine._step_random_processes((0.0, 0.0))
 
     assert len(calls) == 3
-    assert all(argv[0] == __import__("sys").executable for argv, _flags in calls)
-    assert all(argv[1:3] == ["-c", "import time; time.sleep(30)"] for argv, _flags in calls)
+    import sys
+    expected = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True))
+    assert all(argv[0] == expected for argv, _flags in calls)
+    assert all(argv[1:5] == ["-I", "-S", "-c", "import time; time.sleep(30)"] for argv, _flags in calls)
     assert all(argv[-1].startswith("ANGERONA_REDTEAM_") for argv, _flags in calls)
     engine._cleanup_probe_processes()
+
+
+def test_frozen_t1059_does_not_relaunch_application_with_python_c(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    engine = RedTeamEngine(tmp_path / "data", documents_dir=tmp_path / "target")
+    engine.run_id = "frozen-no-python-probe"
+    engine._jitter = lambda *_args, **_kwargs: None
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("Frozen app is not a Python -c interpreter"))
+    engine._step_random_processes((0.0, 0.0))
+    assert engine.steps[-1].ok is False
+    assert not engine.steps[-1].pids and not engine._probe_processes
+
+
+@pytest.mark.skipif(__import__("os").name != "nt", reason="Exact retained Windows process evidence")
+def test_t1059_native_pids_are_actual_sleeper_images_and_retire_all_three(tmp_path):
+    import os
+    import sys
+    import psutil
+    from angerona.core.windows_process_lease import _Native
+
+    engine = RedTeamEngine(tmp_path / "data", documents_dir=tmp_path / "target")
+    engine.run_id = "native-direct-three-probes"
+    engine._threat_level = engine._proc_mult = 1
+    engine._jitter = lambda *_args, **_kwargs: None
+    native = _Native()
+    held = []
+    try:
+        engine._step_random_processes((0.0, 0.0))
+        row = engine.steps[-1]
+        assert row.ok and len(set(row.pids)) == 3 and len(set(row.correlation_tokens)) == 3
+        expected = os.path.normcase(str(Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)))
+        for pid, token in zip(row.pids, row.correlation_tokens):
+            handle = native.open(pid, 0x101000, False)
+            held.append(handle)
+            identity = native.identity(handle)
+            assert identity.pid == pid and identity.image == expected
+            observed = psutil.Process(pid)
+            assert token in observed.cmdline()
+            # Windows may attach a console host even to CREATE_NO_WINDOW.
+            # It must not be a second Python process hidden behind a redirector.
+            for child in observed.children():
+                child_handle = native.open(child.pid, 0x101000, False)
+                held.append(child_handle)
+                child_identity = native.identity(child_handle)
+                system_console = os.path.normcase(str(Path(os.environ["SystemRoot"]) / "System32/conhost.exe"))
+                assert child_identity.image == system_console
+                assert child.ppid() == pid and native.identity(child_handle) == child_identity
+            assert native.identity(handle) == identity and not native.wait(handle, 0)
+    finally:
+        engine._cleanup_probe_processes()
+        try:
+            deadline = time.monotonic() + 3
+            while held and any(not native.wait(handle, 0) for handle in held) and time.monotonic() < deadline:
+                time.sleep(.01)
+            assert held and all(native.wait(handle, 0) for handle in held)
+        finally:
+            for handle in reversed(held):
+                native.close(handle)
 
 
 def test_purple_guard_detects_registered_custom_target_only(tmp_path: Path) -> None:

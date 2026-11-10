@@ -212,9 +212,10 @@ def _startup_recovery_settings(raw: str) -> tuple[bool, bool]:
 def _settings_document(raw: str) -> tuple[dict, bool]:
     """Preserve legacy settings while detecting ambiguity in top-level scan consent."""
     duplicate_scan_policy = False
+    duplicate_community_policy: set[str] = set()
 
     def object_with_duplicates(pairs):
-        nonlocal duplicate_scan_policy
+        nonlocal duplicate_scan_policy, duplicate_community_policy
         values = dict(pairs)
         # The decoder calls the hook from the innermost object to the root.
         # The final hook on an object document therefore describes only its top-level keys.
@@ -222,11 +223,17 @@ def _settings_document(raw: str) -> tuple[dict, bool]:
             sum(key == name for key, _value in pairs) > 1
             for name in ("spyware_scan_auto_enabled", "spyware_scan_auto_scope")
         )
+        duplicate_community_policy = {
+            name for name in ("community_rules_enabled", "community_playbooks_enabled")
+            if sum(key == name for key, _value in pairs) > 1
+        }
         return values
 
     data = json.loads(raw, object_pairs_hook=object_with_duplicates)
     if type(data) is not dict:
         raise ValueError("Settings must be a JSON object.")
+    for name in duplicate_community_policy:
+        data[name] = False  # Ambiguous opt-in cannot authorize runtime packages.
     return data, duplicate_scan_policy
 
 
@@ -259,6 +266,8 @@ class Config:
     github_tools_enabled: bool = True
     github_tools_auto_prepare: bool = True
     github_tools_allow_download: bool = True
+    community_rules_enabled: bool = False  # separately reviewed/activated data rules only
+    community_playbooks_enabled: bool = False  # existing policy-gated runner only
     github_tools_job_limit_mib: int = 256
     github_tools_report_limit_mib: int = 64
     github_tools_report_count: int | str = SCANNER_REPORT_COUNT_UNLIMITED
@@ -686,7 +695,8 @@ class Config:
                     cfg.github_repo = "Ag3nt47/AngeronaSuite"
                 cfg.github_daily_check_enabled = _bool_setting(
                     data, "github_daily_check_enabled", cfg.github_daily_check_enabled)
-                for name in ("github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download"):
+                for name in ("github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+                             "community_rules_enabled", "community_playbooks_enabled"):
                     value = data.get(name, getattr(cfg, name))
                     setattr(cfg, name, value if type(value) is bool else False)
                 cfg.github_tools_report_count = scanner_report_count(
@@ -1211,6 +1221,7 @@ class Config:
         """Reject malformed resource/consent choices before replacing preferences."""
         for name in (
             "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+            "community_rules_enabled", "community_playbooks_enabled",
             "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
             "spyware_scan_auto_enabled", "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
         ):
@@ -1334,6 +1345,7 @@ class Config:
                     "spyware_auto_contain": self.spyware_auto_contain,
                     **{name: getattr(self, name) for name in (
                         "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+                        "community_rules_enabled", "community_playbooks_enabled",
                         "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_report_count",
                         "github_tools_timeout_seconds",
                         "spyware_scan_timeout_seconds", "spyware_scan_auto_enabled", "spyware_scan_auto_scope",

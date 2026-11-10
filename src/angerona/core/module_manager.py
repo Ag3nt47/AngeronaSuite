@@ -880,11 +880,17 @@ class ModuleManager:
     def freeze_enclave_mesh(self) -> None:
         self.bus.freeze_mesh()
 
-    def _start_current(self, mod: BaseModule, generation: int) -> bool:
+    def _start_current(self, mod: BaseModule, generation: int, *, initial: bool = False) -> bool:
         with self._module_control_lock:
             if (generation != self._control_generation or self._shutdown
                     or self.modules.get(mod.name) is not mod
                     or not self.is_enabled(mod.name) or not self._ugcap_allows(mod)):
+                return False
+            if initial and chill_module_hold(mod, self.config):
+                # The initial Full-mode queue can outlive an operator's Chill
+                # click. Explicit wake/maintenance uses start_if_enabled and
+                # retains its own policy/epoch admission rather than this gate.
+                mod._chill_paused = True
                 return False
             mod.start()
             return True
@@ -988,13 +994,17 @@ class ModuleManager:
         # Do not make containment, IPC protection, or the watchdog wait behind a
         # slow scanner. These modules are intentionally lightweight.
         for mod in critical:
-            if not self._start_current(mod, generation):
+            if not self._start_current(mod, generation, initial=True):
+                if getattr(mod, "_chill_paused", False):
+                    skipped.append(mod.name)
                 continue
             completed += 1
             _report(mod)
 
         for mod in staged:
-            if not self._start_current(mod, generation):
+            if not self._start_current(mod, generation, initial=True):
+                if getattr(mod, "_chill_paused", False):
+                    skipped.append(mod.name)
                 continue
             completed += 1
             _report(mod)
@@ -1011,7 +1021,8 @@ class ModuleManager:
                     current = (generation == self._control_generation
                                and not self._shutdown
                                and self.modules.get(mod.name) is mod
-                               and self.is_enabled(mod.name))
+                               and self.is_enabled(mod.name)
+                               and not chill_module_hold(mod, self.config))
                 if not ready and current:
                     mod.set_health(
                         min(int(getattr(mod, "health", 100)), 40),

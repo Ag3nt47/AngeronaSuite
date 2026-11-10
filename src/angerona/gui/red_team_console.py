@@ -28,7 +28,7 @@ import time
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication, QObject, QRunnable, QRectF, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QPoint, QRunnable, QRect, QRectF, QSize, Qt, QThreadPool, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QPainter
 from shiboken6 import isValid
 from PySide6.QtWidgets import (
@@ -44,7 +44,9 @@ from angerona.core.source_sandbox import SourceSandboxWorkspace
 from angerona.gui.aar_history import HistoryListing, list_history, load_verified_history_text
 from angerona.gui.animations import RunSpinner
 from angerona.gui.async_snapshot import AsyncSnapshot
+from angerona.gui.dashboard_sections import DashboardDisclosure
 from angerona.gui.progress_ring import ProgressRing
+from angerona.gui.theme import set_function_role
 from angerona.shark.run_manifest import RED_TEAM_COMPREHENSIVE_PLAN
 
 # Canonical kill-chain stages → (stable key, readable label, narration aliases).
@@ -137,11 +139,12 @@ class _HistorySignals(QObject):
 
 
 class _HistoryWorker(QRunnable):
-    def __init__(self, operation: str, root: Path, name: str = "") -> None:
+    def __init__(self, operation: str, root: Path, name: str = "", reader=None) -> None:
         super().__init__()
         self.operation = operation
         self.root = root
         self.name = name
+        self.reader = reader
         # Auto-delete runnables are released on the pool thread. Keep this
         # GUI-affinity QObject application-owned until GUI deferred deletion.
         self.signals = _HistorySignals(QCoreApplication.instance())
@@ -157,7 +160,7 @@ class _HistoryWorker(QRunnable):
     def run(self) -> None:
         try:
             try:
-                result = (
+                result = self.reader(self.operation, self.name) if self.reader is not None else (
                     list_history(self.root)
                     if self.operation == "list"
                     else load_verified_history_text(self.root, self.name)
@@ -296,14 +299,109 @@ class _CaughtMissedBar(QWidget):
                          metrics.elidedText(right, Qt.TextElideMode.ElideLeft, half))
 
 
+class _WrappedResponseLabel(QLabel):
+    """Reserve current wrapped text without ratcheting an explicit height floor."""
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt API
+        hint = super().minimumSizeHint()
+        if self.wordWrap() and self.width() > 0:
+            hint.setHeight(max(hint.height(), self.heightForWidth(self.width())))
+        return hint
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.updateGeometry()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self.updateGeometry()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self.updateGeometry()
+
+
+class _ResponsePreviewPanel(QFrame):
+    """Reflow against this panel's settled width and polished control metrics."""
+
+    reflow_requested = Signal()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.reflow_requested.emit()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        self.reflow_requested.emit()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self.reflow_requested.emit()
+
+
+class _StickyRunPage(QWidget):
+    """Reserve current-width sticky content; give surplus to the middle viewport."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+        self.middle_viewport = None
+
+    def heightForWidth(self, width):  # noqa: N802 - Qt API
+        layout = self.layout()
+        if layout is None:
+            return super().heightForWidth(width)
+        margins = layout.contentsMargins()
+        inner_width = max(1, width - margins.left() - margins.right())
+        heights = []
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            if item.isEmpty():
+                continue
+            widget = item.widget()
+            if widget is not None and widget is getattr(self, "middle_viewport", None):
+                height = widget.minimumHeight()
+            elif item.hasHeightForWidth():
+                height = item.heightForWidth(inner_width)
+            else:
+                height = item.minimumSize().height()
+            heights.append(max(0, height, item.minimumSize().height()))
+        return (margins.top() + margins.bottom() + sum(heights)
+                + max(0, len(heights) - 1) * max(0, layout.spacing()))
+
+    def minimumSizeHint(self):  # noqa: N802 - Qt API
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), max(hint.height(), self.heightForWidth(self.width())))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        if event.size().width() != event.oldSize().width():
+            self.updateGeometry()
+
+
 class RedTeamConsole(QDialog):
     def __init__(self, parent=None, default_target: str | None = None) -> None:
         super().__init__(parent)
         self._parent = parent
+        self._remote_backend = getattr(parent, "_red_team_remote_backend", None)
         self.setWindowTitle("🗡️  Red Team Simulation — Console")
         # Keep Launch reachable on scaled/small desktops. The Run tab scrolls
         # independently while its action footer stays fixed at the bottom.
         self.setMinimumSize(700, 520)
+        self._initial_screen_fit_pending = True
+        self._initial_screen_fit_snapshot = None
+        self._initial_screen_fit_native_snapshot = None
+        self._initial_screen_fit_issued_native_geometry = None
+        self._initial_screen_fit_timer = QTimer(self)
+        self._initial_screen_fit_timer.setSingleShot(True)
+        self._initial_screen_fit_timer.timeout.connect(self._finish_initial_screen_fit)
+        self.finished.connect(self._initial_screen_fit_timer.stop)
         self.setSizeGripEnabled(True)
         self.setWindowFlag(Qt.WindowMaximizeButtonHint, True)
         screen = self.screen() or QApplication.primaryScreen()
@@ -354,12 +452,11 @@ class RedTeamConsole(QDialog):
         title = QLabel("🗡️  Red Team Simulation")
         title.setObjectName("PageTitle")
         title.setStyleSheet("font-size:18px; font-weight:800;")
+        set_function_role(title, "response")
         root.addWidget(title)
-        sub = QLabel("Unannounced, non-destructive adversary simulation against THIS instance. "
-                     "Every technique is a benign, reversible marker — no real exploit, secret, or "
-                     "persistence mechanism is ever touched.")
+        sub = QLabel("Benign, reversible markers against this Core. Results require authenticated evidence.")
         sub.setWordWrap(True); sub.setStyleSheet("color:#9fb3c8;")
-        root.addWidget(sub)
+        self._run_guidance = sub
 
         summary = QFrame()
         summary.setObjectName("RedTeamProgressSummary")
@@ -380,9 +477,8 @@ class RedTeamConsole(QDialog):
         self.workflow_detail.setWordWrap(True)
         self.workflow_detail.setStyleSheet("color:#94a3b8; font-size:11px;")
         self.catch_comparison = _CaughtMissedBar()
-        score_heading = QHBoxLayout()
-        score_heading.addWidget(QLabel("Measured detection results"))
-        score_heading.addStretch(1)
+        self._score_caption = QLabel("Measured detection results")
+        set_function_role(self._score_caption, "analysis")
         self.performance_badge = QLabel("Pending")
         self.performance_badge.setObjectName("SimulationPerformanceBadge")
         self.performance_badge.setTextFormat(Qt.TextFormat.PlainText)
@@ -390,15 +486,17 @@ class RedTeamConsole(QDialog):
         self.performance_badge.setMinimumWidth(0)
         self.performance_badge.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._set_performance_badge("pending", "Pending", "Awaiting authenticated current-run detection and response evidence.")
-        score_heading.addWidget(self.performance_badge)
-        summary_text.addWidget(self.workflow_status)
+        status_heading = QHBoxLayout()
+        status_heading.addWidget(self.workflow_status, 1)
+        status_heading.addWidget(self.performance_badge)
+        summary_text.addLayout(status_heading)
         summary_text.addWidget(self.workflow_detail)
-        summary_text.addLayout(score_heading)
         summary_text.addWidget(self.catch_comparison)
         summary_layout.addLayout(summary_text, 1)
         root.addWidget(summary)
 
         self._tabs = QTabWidget()
+        self._tabs.setUsesScrollButtons(True)
         self._tabs.addTab(self._build_run_tab(default_target), "▶  Run")
         self._tabs.addTab(self._build_history_tab(), "🕑  History")
         self._tabs.addTab(self._build_device_lab_tab(), "🛰  Device Security Lab")
@@ -407,9 +505,16 @@ class RedTeamConsole(QDialog):
         self.github_tools = GitHubToolsPanel(self)
         self._tabs.addTab(self.github_tools, "GitHub Tools")
         self.finished.connect(lambda _result: self.github_tools.cancel_pending())
-        self._tabs.currentChanged.connect(self._on_tab_changed)
         from angerona.gui.context_info import attach_context_info
         self._context_info = attach_context_info(self._tabs, "red-team")
+        # Inactive pages must not force their natural minimum onto Run. Keep
+        # their full content accessible through a local viewport instead.
+        for index in range(1, self._tabs.count()):
+            page = self._tabs.widget(index)
+            icon, text = self._tabs.tabIcon(index), self._tabs.tabText(index)
+            self._tabs.removeTab(index)
+            self._tabs.insertTab(index, self._scroll_page(page), icon, text)
+        self._tabs.currentChanged.connect(self._on_tab_changed)
         root.addWidget(self._tabs, 1)
 
         # Engine callbacks originate on worker threads. A queued connection is
@@ -431,6 +536,13 @@ class RedTeamConsole(QDialog):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if getattr(self, "_initial_screen_fit_pending", False):
+            self._initial_screen_fit_pending = False
+            self._fit_initial_screen()
+            # One receiver-owned turn permits native decoration metrics to settle.
+            self._initial_screen_fit_snapshot = QRect(self.geometry())
+            self._initial_screen_fit_native_snapshot = self._initial_screen_fit_issued_native_geometry
+            self._initial_screen_fit_timer.start(0)
         if not getattr(self, "_hist_accept_results", True):
             self._hist_generation = getattr(self, "_hist_generation", 0) + 1
             self._hist_accept_results = True
@@ -440,9 +552,112 @@ class RedTeamConsole(QDialog):
             if tabs is not None and "History" in tabs.tabText(tabs.currentIndex()):
                 self._load_history()
 
+    @staticmethod
+    def _scroll_page(page: QWidget) -> QScrollArea:
+        area = QScrollArea()
+        area.setObjectName("RedTeamPageViewport")
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setWidgetResizable(True)
+        area.setMinimumSize(0, 0)
+        area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        area.setWidget(page)
+        return area
+
+    def _finish_initial_screen_fit(self) -> None:
+        expected = self._initial_screen_fit_snapshot
+        expected_native = self._initial_screen_fit_native_snapshot
+        self._initial_screen_fit_snapshot = None
+        self._initial_screen_fit_native_snapshot = None
+        if (expected is None or not isValid(self) or not self.isVisible()
+                or self.isMinimized() or self.isMaximized() or self.isFullScreen()):
+            return
+        native = self.windowHandle()
+        if expected_native is not None:
+            # An issued native client geometry may synchronize into QWidget on
+            # this turn. Any different native move or resize belongs to the user.
+            if native is None or native.geometry() != expected_native:
+                return
+            if self.geometry() != expected and self.geometry() != expected_native:
+                return
+        elif self.geometry() != expected:
+            return
+        self._fit_initial_screen()
+
+    def _fit_initial_screen(self) -> None:
+        """Allocate the first normal view within its actual client/frame budget."""
+        if not isValid(self) or self.isMaximized() or self.isFullScreen():
+            return
+        screen = self.screen() or QApplication.primaryScreen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        if available.isEmpty():
+            return
+        self.ensurePolished()
+        native = self.windowHandle()
+        if native is not None:
+            margins = native.frameMargins()
+            extra_width = max(0, margins.left() + margins.right())
+            extra_height = max(0, margins.top() + margins.bottom())
+        else:
+            frame = self.frameGeometry()
+            extra_width = max(0, frame.width() - self.width())
+            extra_height = max(0, frame.height() - self.height())
+        client_width = max(1, available.width() - extra_width)
+        client_height = max(1, available.height() - extra_height)
+        self.setMinimumSize(min(700, client_width), min(520, client_height))
+        layout = self.layout()
+        if layout is not None:
+            layout.activate()
+        width = min(client_width, max(self.width(), self.minimumSizeHint().width()))
+        self.resize(width, min(self.height(), client_height))
+        self._layout_response_actions()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        required_height = max(self.minimumSizeHint().height(),
+                              layout.heightForWidth(width) if layout is not None else 0)
+        if required_height > client_height and width < client_width:
+            # One wider first-show allocation can reduce wrapping. This never
+            # runs on an operator resize or a later hide/show.
+            width = client_width
+            self.resize(width, min(self.height(), client_height))
+            self._layout_response_actions()
+            if layout is not None:
+                layout.invalidate()
+                layout.activate()
+            required_height = max(self.minimumSizeHint().height(),
+                                  layout.heightForWidth(width) if layout is not None else 0)
+        # A normal first view uses bounded headroom for live warnings; this is
+        # an initial size choice, never a saved or persistent height floor.
+        preferred_height = min(800, client_height)
+        self.resize(width, min(client_height, max(self.height(), required_height, preferred_height)))
+        if layout is not None:
+            layout.activate()
+        frame_width, frame_height = self.width() + extra_width, self.height() + extra_height
+        frame = self.frameGeometry()
+        left = max(available.left(), min(frame.left(), available.right() - frame_width + 1))
+        top = max(available.top(), min(frame.top(), available.bottom() - frame_height + 1))
+        if native is not None:
+            # QWindow takes frame coordinates directly; QWidget's deferred
+            # client/frame conversion must not add decorations a second time.
+            native.setFramePosition(QPoint(left, top))
+            self._initial_screen_fit_issued_native_geometry = QRect(
+                left + margins.left(), top + margins.top(), self.width(), self.height())
+            issued = self._initial_screen_fit_issued_native_geometry
+            if (self.isVisible() and not self.isMinimized()
+                    and not self.isMaximized() and not self.isFullScreen()
+                    and native.geometry() == issued and self.geometry() != issued):
+                # Keep QWidget's client cache at the already issued native
+                # rectangle before a subsequent hide/close can freeze it.
+                self.setGeometry(QRect(issued))
+        else:
+            self.move(left, top)
+            self._initial_screen_fit_issued_native_geometry = None
+
     # ── Run tab ──────────────────────────────────────────────────────────────
     def _build_run_tab(self, default_target: str | None) -> QWidget:
-        w = QWidget()
+        w = _StickyRunPage()
         outer = QVBoxLayout(w)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(8)
@@ -456,11 +671,15 @@ class RedTeamConsole(QDialog):
         lay = QVBoxLayout(body)
         lay.setContentsMargins(4, 4, 8, 4)
         lay.setSpacing(10)
+        # Static guidance belongs to the existing expandable setup viewport;
+        # current task/reasons and response warnings remain in the fixed area.
+        lay.addWidget(self._score_caption)
+        lay.addWidget(self._run_guidance)
 
         # attack types
         types = QFrame(); types.setObjectName("Card")
         tl = QVBoxLayout(types)
-        tl.addWidget(self._h("Attack profile"))
+        tl.addWidget(self._h("Attack profile", "configure"))
         self.cb_shark = QCheckBox("Shark — noisy commodity-malware chain")
         self.cb_shark.setToolTip(
             "Lure → discovery → persistence → exfiltration markers"
@@ -487,7 +706,7 @@ class RedTeamConsole(QDialog):
 
         # intensity
         inten = QFrame(); inten.setObjectName("Card"); il = QVBoxLayout(inten)
-        il.addWidget(self._h("Intensity"))
+        il.addWidget(self._h("Intensity", "configure"))
         row = QHBoxLayout()
         self.sld = QSlider(Qt.Orientation.Horizontal)
         self.sld.setMinimum(0); self.sld.setMaximum(3); self.sld.setValue(1)
@@ -510,7 +729,7 @@ class RedTeamConsole(QDialog):
 
         # marker location picker
         loc = QFrame(); loc.setObjectName("Card"); ll = QVBoxLayout(loc)
-        ll.addWidget(self._h("Marker discovery location"))
+        ll.addWidget(self._h("Marker discovery location", "configure"))
         loc_help = QLabel(
             "Choose where benign marker files are written. A watched folder makes "
             "detections appear faster."
@@ -538,10 +757,18 @@ class RedTeamConsole(QDialog):
         prow.setColumnStretch(0, 1)
         ll.addLayout(prow)
         lay.addWidget(loc)
+        self.target_summary = QLabel()
+        self.target_summary.setObjectName("RedTeamCurrentTarget")
+        self.target_summary.setTextFormat(Qt.TextFormat.PlainText)
+        self.target_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.target_summary.setWordWrap(True)
+        self.target_summary.setMinimumWidth(0)
+        self.target_summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        outer.addWidget(self.target_summary)
 
         # custom technique + toggles
         opt = QFrame(); opt.setObjectName("Card"); ol = QVBoxLayout(opt)
-        ol.addWidget(self._h("Options"))
+        ol.addWidget(self._h("Custom markers", "configure"))
         ol.addWidget(QLabel("Custom technique name (optional)"))
         self.custom_name = QLineEdit(); self.custom_name.setPlaceholderText(
             "Example: my-detection-test")
@@ -563,7 +790,6 @@ class RedTeamConsole(QDialog):
             "unready, the selected simulation still runs with a warning. "
             "Uncheck for a detection-only run."
         )
-        ol.addWidget(self.cb_remediate)
         remediation_help = QLabel(
             "The selected simulation can run even when Combat needs recovery. "
             "Response limits stay in effect, and containment requires verified results. "
@@ -572,16 +798,39 @@ class RedTeamConsole(QDialog):
         remediation_help.setWordWrap(True)
         remediation_help.setStyleSheet("color:#9fb3c8; margin-left:24px;")
         ol.addWidget(remediation_help)
-        self.response_readiness = QLabel()
+        self.response_readiness = _WrappedResponseLabel()
         self.response_readiness.setObjectName("RedTeamResponseReadiness")
         self.response_readiness.setAccessibleName("Containment readiness preview")
         self.response_readiness.setTextFormat(Qt.PlainText)
         self.response_readiness.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.response_readiness.setWordWrap(True)
-        ol.addWidget(self.response_readiness)
         self.refresh_readiness_btn = QPushButton("Refresh containment readiness")
         self.refresh_readiness_btn.clicked.connect(self._refresh_response_readiness)
-        ol.addWidget(self.refresh_readiness_btn)
+        response = _ResponsePreviewPanel()
+        response.setObjectName("RedTeamResponsePreview")
+        response_layout = QVBoxLayout(response)
+        response_layout.setContentsMargins(4, 2, 4, 2)
+        response_layout.setSpacing(4)
+        response_actions = QGridLayout()
+        response_actions.addWidget(self.cb_remediate, 0, 0)
+        response_actions.addWidget(self.refresh_readiness_btn, 0, 1)
+        response_actions.setColumnStretch(0, 1)
+        response_layout.addLayout(response_actions)
+        response_layout.addWidget(self.response_readiness)
+        self.launch_warning = _WrappedResponseLabel()
+        self.launch_warning.setObjectName("RedTeamLaunchWarning")
+        self.launch_warning.setAccessibleName("Simulation response warning")
+        self.launch_warning.setTextFormat(Qt.PlainText)
+        self.launch_warning.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.launch_warning.setWordWrap(True)
+        self.launch_warning.setStyleSheet("color:#fbbf24; font-size:11px;")
+        self.launch_warning.hide()
+        response_layout.addWidget(self.launch_warning)
+        outer.addWidget(response)
+        self._response_panel = response
+        self._response_actions = response_actions
+        response.reflow_requested.connect(self._layout_response_actions)
+        set_function_role(self.refresh_readiness_btn, "monitor")
         for option in (self.cb_shark, self.cb_apt, self.cb_remediate):
             option.toggled.connect(self._refresh_response_readiness)
         self._refresh_response_readiness()
@@ -598,21 +847,12 @@ class RedTeamConsole(QDialog):
         live_lay = QVBoxLayout(live)
         live_lay.setContentsMargins(10, 8, 10, 10)
         live_lay.setSpacing(6)
-        live_lay.addWidget(self._h("Live kill-chain"))
+        live_lay.addWidget(self._h("Live kill-chain", "monitor"))
         self.live_status = QLabel("Waiting to launch…")
         self.live_status.setTextFormat(Qt.TextFormat.PlainText)
         self.live_status.setWordWrap(True)
         self.live_status.setStyleSheet("color:#9fb3c8; font-size:11px;")
         live_lay.addWidget(self.live_status)
-        self.launch_warning = QLabel()
-        self.launch_warning.setObjectName("RedTeamLaunchWarning")
-        self.launch_warning.setAccessibleName("Simulation response warning")
-        self.launch_warning.setTextFormat(Qt.PlainText)
-        self.launch_warning.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.launch_warning.setWordWrap(True)
-        self.launch_warning.setStyleSheet("color:#fbbf24; font-size:11px;")
-        self.launch_warning.hide()
-        live_lay.addWidget(self.launch_warning)
         self._chip_wrap = QWidget(); self._chips: dict[str, _StageChip] = {}
         self._active_stage: str | None = None
         cl = QGridLayout(self._chip_wrap)
@@ -654,12 +894,24 @@ class RedTeamConsole(QDialog):
         splitter.setObjectName("RedTeamRunSplitter")
         splitter.setChildrenCollapsible(False)
         splitter.setHandleWidth(7)
-        splitter.addWidget(scroll)
+        self.setup_disclosure = DashboardDisclosure(
+            "Simulation setup", scroll, "Profiles, intensity and marker location", expanded=False,
+        )
+        set_function_role(self.setup_disclosure.toggle, "configure")
+        splitter.addWidget(self.setup_disclosure)
         splitter.addWidget(live)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([360, 280])
-        outer.addWidget(splitter, 1)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([self.setup_disclosure.collapsed_height(), 280])
+        # Only the middle may scroll when space is short; readiness and the
+        # action footer remain outside this viewport, with no warning removed.
+        middle = self._scroll_page(splitter)
+        middle.setObjectName("RedTeamRunContentViewport")
+        middle.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
+        middle.setMinimumHeight(48 + middle.horizontalScrollBar().sizeHint().height())
+        outer.addWidget(middle, 1)
+        self._run_content_scroll = middle
+        w.middle_viewport = middle
 
         # Sticky actions live outside the scrolling configuration body, keeping
         # Launch and Stop & clean reachable at every supported window size.
@@ -675,16 +927,62 @@ class RedTeamConsole(QDialog):
                                       "border-radius:6px; padding:7px 16px; font-weight:800;")
         self.launch_btn.clicked.connect(self._launch)
         self.stop_btn = QPushButton("■  Stop & clean")
+        self.stop_btn.setStyleSheet(self.launch_btn.styleSheet())
         self.stop_btn.clicked.connect(self._stop)
+        set_function_role(self.launch_btn, "response")
+        set_function_role(self.stop_btn, "response")
         act.addStretch(); act.addWidget(self.stop_btn); act.addWidget(self.launch_btn)
         outer.addLayout(act)
         self._run_scroll = scroll
         self._run_splitter = splitter
         self._live_panel = live
+        for control in (self.cb_shark, self.cb_apt, self.cb_comprehensive, self.cb_campaign, self.cb_remediate):
+            control.toggled.connect(self._update_run_setup_summary)
+        self.sld.valueChanged.connect(self._update_run_setup_summary)
+        self.loc_edit.textChanged.connect(self._update_run_setup_summary)
+        self._update_run_setup_summary()
         return w
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._layout_response_actions()
+
+    def _layout_response_actions(self) -> None:
+        if not hasattr(self, "_response_actions"):
+            return
+        gap = max(0, self._response_actions.horizontalSpacing())
+        needed = self.cb_remediate.minimumSizeHint().width() + self.refresh_readiness_btn.minimumSizeHint().width() + gap
+        margins = self._response_panel.layout().contentsMargins()
+        available = self._response_panel.width() - margins.left() - margins.right()
+        stacked = needed > available
+        if stacked != getattr(self, "_response_stacked", None):
+            self._response_stacked = stacked
+            self._response_actions.removeWidget(self.refresh_readiness_btn)
+            self._response_actions.addWidget(self.refresh_readiness_btn, int(stacked), int(not stacked),
+                                             alignment=Qt.AlignmentFlag.AlignLeft if stacked else Qt.AlignmentFlag.AlignRight)
+
+    def _update_run_setup_summary(self, *_unused) -> None:
+        profiles = [name for name, control in (("Shark", self.cb_shark), ("APT", self.cb_apt))
+                    if control.isChecked()]
+        parts = [" + ".join(profiles) or "No profile selected", _INTENSITY[self.sld.value()]]
+        if self.cb_comprehensive.isChecked():
+            parts.append("safe catalog")
+        parts.append("containment requested" if self.cb_remediate.isChecked() else "detection only")
+        self.setup_disclosure.set_summary(" · ".join(parts))
+        self.target_summary.setText("Marker target: " + self.loc_edit.text())
 
     def _refresh_response_readiness(self, *_unused) -> None:
         """Show a current, read-only preview; launch performs its own check."""
+        if getattr(self, "_remote_backend", None) is not None:
+            assessment = self._remote_backend.response_readiness(self.cb_apt.isChecked())
+        else:
+            from angerona.core.drill_readiness import assess_drill_response
+            assessment = assess_drill_response(
+                getattr(self._parent, "manager", None), require_process=self.cb_apt.isChecked())
+        self._apply_response_readiness(assessment)
+
+    def _apply_response_readiness(self, assessment) -> None:
+        """Render a public Core projection; the remote UI loads no policy keys."""
         if not (self.cb_shark.isChecked() or self.cb_apt.isChecked()):
             message = "Select an attack profile to check containment readiness."
             color = "#fbbf24"
@@ -695,34 +993,25 @@ class RedTeamConsole(QDialog):
             )
             color = "#9fb3c8"
         else:
-            from angerona.core.drill_readiness import assess_drill_response
-
-            assessment = assess_drill_response(
-                getattr(self._parent, "manager", None),
-                require_process=self.cb_apt.isChecked(),
-            )
             state = str(assessment.get("state") or "UNKNOWN")
             reason = str(assessment.get("reason") or "No reason was supplied.")
             scope = "APT process checks" if self.cb_apt.isChecked() else "Shark checks"
             if assessment.get("ready") is True and state == "ARMED":
                 message = (
-                    f"Containment readiness now ({scope}): ARMED. {reason} "
+                    f"Containment readiness ({scope}): ARMED. {reason} "
                     "Launch checks again; signed report receipts decide the result."
                 )
                 color = "#4ade80"
             elif assessment.get("ready") is True and state == "CANARYONLY":
                 message = (
                     f"Practice canaries ready ({scope}). {reason} "
-                    "Ordinary host response remains held. Fresh issuer leases, "
-                    "exact target checks and authenticated report receipts are "
-                    "required; launch checks readiness again."
+                    "Ordinary host response remains held; exact canary leases and verified receipts are required."
                 )
                 color = "#38bdf8"
             else:
                 message = (
-                    f"Containment readiness now ({scope}): {state}. {reason} "
-                    "Launch will continue with a warning. Response permissions will "
-                    "not be expanded; unavailable containment stays unverified. "
+                    f"Containment readiness ({scope}): {state}. {reason} "
+                    "Simulation can continue; unavailable containment stays unverified. "
                     "Review Settings > Adversary Combat for response recovery."
                 )
                 color = "#fbbf24"
@@ -1388,7 +1677,8 @@ class RedTeamConsole(QDialog):
         self._hist_pending_name = None
         self._hist_list.clear()
         self._hist_view.setPlainText("Loading report history…")
-        worker = _HistoryWorker("list", self._history_dir())
+        worker = _HistoryWorker("list", self._history_dir(), reader=(
+            self._remote_backend.history if getattr(self, "_remote_backend", None) is not None else None))
         receiver = _HistoryResultReceiver(self, getattr(self, "_hist_generation", 0))
         worker.signals.finished.connect(receiver.receive)
         try:
@@ -1480,7 +1770,8 @@ class RedTeamConsole(QDialog):
 
     def _start_history_read(self, name: str) -> None:
         self._hist_reading = True
-        worker = _HistoryWorker("text", self._history_dir(), name)
+        worker = _HistoryWorker("text", self._history_dir(), name, reader=(
+            self._remote_backend.history if getattr(self, "_remote_backend", None) is not None else None))
         receiver = _HistoryResultReceiver(self, getattr(self, "_hist_generation", 0))
         worker.signals.finished.connect(receiver.receive)
         try:
@@ -1540,6 +1831,8 @@ class RedTeamConsole(QDialog):
         return root / "device-security-lab"
 
     def _device_lab_service(self):
+        if getattr(self, "_remote_backend", None) is not None:
+            return self._remote_backend.device_service()
         service = getattr(self, "_device_lab", None)
         if service is None:
             from angerona.core.device_security_lab import DeviceSecurityLab
@@ -2012,8 +2305,9 @@ class RedTeamConsole(QDialog):
 
     # ── helpers ──────────────────────────────────────────────────────────────
     @staticmethod
-    def _h(text: str) -> QLabel:
-        lbl = QLabel(text); lbl.setStyleSheet("font-weight:700; color:#dbeafe;")
+    def _h(text: str, role: str = "analysis") -> QLabel:
+        lbl = QLabel(text); lbl.setStyleSheet("font-weight:700;")
+        set_function_role(lbl, role)
         return lbl
 
     @staticmethod

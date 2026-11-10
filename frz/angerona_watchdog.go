@@ -67,7 +67,6 @@ const (
 
 	// Windows CreateProcess flags (avoids importing extra constants).
 	createNoWindow        = 0x08000000
-	detachedProcess       = 0x00000008
 	createNewProcessGroup = 0x00000200
 
 	// SetProcessMitigationPolicy policy IDs (winnt.h ProcessMitigationPolicy).
@@ -268,7 +267,10 @@ func launchAgent(cfg config, token, wdMmapPath string) (*exec.Cmd, error) {
 		cmd.Env = append(cmd.Env, "ANGERONA_SUPERVISED_RECOVERY=0")
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: createNoWindow | detachedProcess | createNewProcessGroup,
+		// DETACHED_PROCESS makes Windows ignore CREATE_NO_WINDOW. Keep the
+		// independent process group without allowing a replacement console.
+		HideWindow:    true,
+		CreationFlags: createNoWindow | createNewProcessGroup,
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, err

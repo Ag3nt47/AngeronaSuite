@@ -382,8 +382,8 @@ def test_source_owned_child_rechecks_issuer_and_stop_at_final_native_dispatch(tm
     acquire = combat._acquire_termination_lease
     held_at_refusal, producers = [], []
 
-    def wrapped_acquire(action):
-        real = acquire(action)
+    def wrapped_acquire(action, *, canary=None):
+        real = acquire(action, canary=canary)
         assert type(real) is WindowsProcessLease
         producers[:] = tuple(manager.modules.values())
         terminate = real.terminate

@@ -309,6 +309,7 @@ def test_historical_gap_is_visible_and_preserves_fresh_failures(monkeypatch, iss
     assert health["selftest_history_note"].startswith("Unavailable:")
     tab = blackbox.HealthTab()
     try:
+        tab.show()
         tab.on_health(health)
         assert tab.history_lbl.textFormat() == Qt.PlainText
         assert "Unavailable:" in tab.history_lbl.text()
@@ -537,6 +538,7 @@ def test_history_dates_remain_visible_in_health_table_and_export_without_changin
     health = worker._collect()
     tab = blackbox.HealthTab()
     try:
+        tab.show()
         tab.on_health(health)
         assert tab.fail_table.rowCount() == 5
         sources = [tab.fail_table.item(row, 2).text() for row in range(tab.fail_table.rowCount())]

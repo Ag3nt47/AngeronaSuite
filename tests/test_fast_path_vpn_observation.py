@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,10 @@ from angerona.core import net_interfaces
 from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
 from angerona.core.threat import event_disposition, is_active_threat
 from angerona.modules import fast_path
+
+
+def authenticated_input(bus, event):
+    return replace(event, hmac_sig=bus._authority.sign(event))
 
 
 def connection(local, remote, status="ESTABLISHED"):
@@ -137,7 +142,7 @@ def test_network_event_does_not_promote_topology_but_other_ioc_still_critical(mo
         "raddr": "8.8.8.8",
         "command_line": "sekurlsa::logonpasswords",
     })
-    module._check_event(event)
+    module._check_event(authenticated_input(bus, event))
     outputs = bus.recent(10)
     assert len(outputs) == 2
     context, = [item for item in outputs if item.severity == Severity.MEDIUM]
@@ -154,7 +159,7 @@ def test_low_severity_network_context_stays_exposure(monkeypatch):
     event = Event("Inert socket sensor", "fixture", Severity.LOW, details={
         "pid": 4242, "interface_type": net_interfaces.VIRTUAL_VPN,
     })
-    module._check_event(event)
+    module._check_event(authenticated_input(bus, event))
     observation, = bus.recent(10)
     assert observation.severity == Severity.MEDIUM
     assert event_disposition(observation) == "exposure"
@@ -163,9 +168,9 @@ def test_low_severity_network_context_stays_exposure(monkeypatch):
 
 def test_empty_sampler_result_leaves_other_rules_available(monkeypatch):
     module, bus = producer(monkeypatch, None)
-    module._check_event(Event("Inert sensor", "fixture", Severity.HIGH, details={
+    module._check_event(authenticated_input(bus, Event("Inert sensor", "fixture", Severity.HIGH, details={
         "pid": 4242, "raddr": "8.8.8.8", "command_line": "sekurlsa::logonpasswords",
-    }))
+    })))
     event, = bus.recent(10)
     assert event.severity == Severity.CRITICAL
     assert event.details["rule_label"] == "Mimikatz / credential dumping tool"

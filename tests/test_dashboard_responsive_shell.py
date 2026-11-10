@@ -88,15 +88,15 @@ def shell():
 @pytest.mark.parametrize(
     "width, expected_header, expected_orientation",
     [
-        (1920, "wide", Qt.Horizontal),
-        (1650, "wide", Qt.Horizontal),
-        (1649, "two", Qt.Horizontal),
-        (1280, "two", Qt.Horizontal),
-        (1000, "two", Qt.Horizontal),
-        (999, "two", Qt.Vertical),
-        (850, "two", Qt.Vertical),
-        (849, "stack", Qt.Vertical),
-        (480, "stack", Qt.Vertical),
+        (1920, "single-row", Qt.Horizontal),
+        (1650, "single-row", Qt.Horizontal),
+        (1649, "single-row", Qt.Horizontal),
+        (1280, "single-row", Qt.Horizontal),
+        (1000, "single-row", Qt.Horizontal),
+        (999, "single-row", Qt.Vertical),
+        (850, "single-row", Qt.Vertical),
+        (849, "single-row", Qt.Vertical),
+        (480, "single-row", Qt.Vertical),
     ],
 )
 def test_header_and_panels_reflow_at_readable_widths(shell, width, expected_header, expected_orientation):
@@ -105,10 +105,12 @@ def test_header_and_panels_reflow_at_readable_widths(shell, width, expected_head
     assert shell._header_layout_mode == expected_header
     assert shell._top_splitter.orientation() == expected_orientation
     assert shell._console_section.orientation() == expected_orientation
-    positions = [shell._header_layout.getItemPosition(shell._header_layout.indexOf(widget))
-                 for widget in shell._header_groups]
-    assert len({position[:2] for position in positions}) == 3
-    assert all(shell._header_layout.indexOf(widget) >= 0 for widget in shell._header_groups)
+    brand = shell._header_groups[1]
+    assert shell._header_layout.getItemPosition(shell._header_layout.indexOf(brand))[0] == 0
+    row = shell._header_control_row
+    assert shell._header_layout.getItemPosition(shell._header_layout.indexOf(row))[0] == 1
+    assert all(shell._header_action_strip.widget().isAncestorOf(group)
+               for group in shell._header_groups[::2])
 
 
 @pytest.mark.parametrize("size, expected", [((480, 340), 0.9), ((1200, 780), 1.0), ((3840, 2160), 1.1)])
@@ -174,7 +176,7 @@ def test_small_window_can_scroll_to_every_panel_and_footer_then_restore_desktop_
     shell.resize(1920, 1040)
     shell._apply_dashboard_layout()
     QApplication.processEvents()
-    assert shell._header_layout_mode == "wide"
+    assert shell._header_layout_mode == "single-row"
     assert shell._top_splitter.orientation() == Qt.Horizontal
     assert shell._console_section.orientation() == Qt.Horizontal
     assert scroll.verticalScrollBar().maximum() == 0

@@ -72,7 +72,7 @@ class Service:
         self.calls.append(("status", threading.get_ident()))
         return dict(installed=True, verified=True, state="ready", message="Pinned fixture ready", version="0.1.10")
 
-    def prepare(self, operation, *, progress, allow_download):
+    def prepare(self, operation, *, progress, allow_download, restore_uninstalled=False):
         self.calls.append(("prepare", threading.get_ident()))
         self.operation = operation
         progress("Synthetic preparation")
@@ -234,6 +234,63 @@ def test_settings_save_runs_off_qt_and_revert_disables_future_auto_prepare(contr
     assert controller.manager.cfg.github_tools_enabled is False
     assert controller.manager.cfg.github_tools_auto_prepare is False
     assert not controller.auto_prepare()
+
+
+def test_community_runtime_settings_are_off_by_default_and_save_off_qt_without_response_escalation(controller):
+    ready(controller)
+    cfg = controller.manager.cfg
+    cfg.custom_preference = {"preserve": "operator choice"}
+    cfg.adversary_combat_mode = "observe"
+    widget = ui.CuratedToolsSettings(controller)
+    try:
+        assert not widget.controls["community_rules_enabled"].isChecked()
+        assert not widget.controls["community_playbooks_enabled"].isChecked()
+        widget.controls["community_rules_enabled"].setChecked(True)
+        widget.controls["community_playbooks_enabled"].setChecked(True)
+        assert not getattr(cfg, "community_rules_enabled", False)
+        widget.save_button.click()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert cfg.community_rules_enabled is True and cfg.community_playbooks_enabled is True
+        assert cfg.custom_preference == {"preserve": "operator choice"}
+        assert cfg.adversary_combat_mode == "observe"
+        assert Config.saved_on and all(value != threading.get_ident() for value in Config.saved_on)
+        assert "permissions are unchanged" in widget.save_status.text()
+    finally:
+        widget.close()
+
+
+def test_failed_community_settings_save_keeps_saved_switches_and_preferences(controller, monkeypatch):
+    ready(controller)
+    cfg = controller.manager.cfg
+    cfg.community_rules_enabled = cfg.community_playbooks_enabled = False
+    cfg.custom_preference = "keep"
+    main_thread = threading.get_ident()
+    def fail_save(_candidate):
+        assert threading.get_ident() != main_thread
+        raise OSError("inert persistence failure")
+    monkeypatch.setattr(Config, "save", fail_save)
+    widget = ui.CuratedToolsSettings(controller)
+    try:
+        widget.controls["community_rules_enabled"].setChecked(True)
+        widget.controls["community_playbooks_enabled"].setChecked(True)
+        widget.save_button.click()
+        wait_until(lambda: not controller.snapshot()["busy"])
+        assert cfg.community_rules_enabled is False and cfg.community_playbooks_enabled is False
+        assert cfg.custom_preference == "keep"
+        assert not widget.controls["community_rules_enabled"].isChecked()
+        assert not widget.controls["community_playbooks_enabled"].isChecked()
+        assert "Save failed" in widget.save_status.text()
+    finally:
+        widget.close()
+
+
+@pytest.mark.parametrize("name", ["community_rules_enabled", "community_playbooks_enabled"])
+def test_community_setting_requires_literal_boolean(controller, name):
+    cfg = controller.manager.cfg
+    before = dict(vars(cfg))
+    with pytest.raises(ValueError, match="setting"):
+        controller._save_config(cfg, {name: 1})
+    assert vars(cfg) == before
 
 
 def test_only_the_requesting_view_opens_credits(controller, monkeypatch):
@@ -459,7 +516,7 @@ def test_priority_request_preempts_optional_work_only_after_its_worker_retires(c
     controller.manager.modules["SpywareGuard"] = native
     controller.manager.priority_scan_focus = lambda **_kwargs: focus
 
-    def retained_prepare(operation, *, progress, allow_download):
+    def retained_prepare(operation, *, progress, allow_download, restore_uninstalled=False):
         service.operation = operation
         old_active.set()
         assert release_old.wait(3)

@@ -1,11 +1,376 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.15.0
-Date: 2026-11-08
+Date: 2026-11-09
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
 ## LATEST (v1.15.0 — major hardening review)
+
+- Final staging-only format qualifier: one surplus EOF blank line was removed
+  from each of two newly staged community-tool tests. ASTs including line
+  attributes are unchanged; two in-memory compiles and scoped Ruff passed,
+  without PYC. The full 1,581-file/27,924,607-byte/3c697a67 snapshot below is a
+  dated pre-format gate. Final content fingerprint only:1,581files/27,924,605B,
+  62f4cb27d975454a79179fafe4f2dd995397a7078161017a25006f01caaca4d4;
+  1,579files remain byte-identical. This is not a repeated full gate. Product
+  code, media and Word are unchanged; the earlier missing-Ruff-path harness
+  attempt remains retained.
+- Final integrated caption/idle follow-up: header text uses ceiling-rounded
+  fractional spans after polish; a complete styled allocation keeps the full
+  semantic label, while true underallocation still elides. Known ready/idle
+  dedicated Spyware controls without bound request evidence show the selected
+  next-run budget, not generic status-operation timing. Existing summary signal
+  refreshes it; bound/active/completed/held/partial/unknown/standalone timing and
+  cancellation stay unchanged. Private header81/81 and scan64/64 passed; the
+  post-integration tracked normal-import30/30 gate passed (15caption+15timing).
+  All overlap other cohorts and are not a unique total or production pixel proof.
+- Current final local source gate: Ruff passed; in-memory syntax checked1,581
+  files (546src/931tests/103tools/1root Black Box),27,924,607bytes/zero missing
+  or failed/no PYC. Before/after inventory and bytes matched aggregate
+  3c697a67aa516c73dec5aef957ad8fc8fbc79b8bf8735c809737e60f51f7f81d.
+  Both diff --no-ext-diff --no-textconv --check scopes and unchanged48rawinput
+  recovery manifest/bootstrap checks passed without regeneration. Corrected
+  private GitPATH/explicit tools+repo import paths were reused; no new bootstrap
+  failure. Earlier validation-harness failures remain retained in dated records.
+  Seven nested commands had exact native identity/signal/once-close/stdio proof;
+  strict owner released mandatory Job/control custody and outerFDs closed.
+  No independent postexit global census or isolated timing claim is made.
+- Latest integrated UI follow-up: Red Team first-show fit respects available
+  frame/client geometry and enlarged text; full readiness/warnings/Launch/Stop
+  stay fixed while setup/middle and tall secondary pages scroll. Native-client
+  cache sync uses the same issued rectangle before the initial snapshot. Preserve
+  hide/close, queued-fit and later operator geometry; no new continuing resize.
+  SpywareGuard contributes known completed native-reader work even when detailed
+  percent becomes unavailable, without changing raw finished_stages/counters,
+  per-reader unknowns or gaps and without a monotonic clamp. Private UI42/42
+  passed; canonical tracked-module normal-import62/62 (13fit+49presentation)
+  also passed. These overlap and are not production-pixel/catch acceptance.
+- Earlier 1,580-file frozen local code checks: Ruff passed across src/tests/tools/root Black
+  Box; in-memory syntax checked1,580files (546src/930tests/103tools/1root),
+  27,908,104bytes/zero failed or missing/no PYC. Before/after names and hashes
+  matched: a7617538e46d7a0a164ac3d46c5d5908866e3b62d9a1b38c1f82e0b696d3645c.
+  Staged+unstaged diff --no-ext-diff --no-textconv --check passed; unchanged
+  48-input recovery-manifest and bootstrap --check passed, without regeneration.
+  Preserve private bootstrap failures: sanitized PATH initially lacked Git
+  (zero checks); direct isolated bootstrap check later lacked tools import path.
+  Only that failed coherence node was rerun with explicit private import paths.
+  Mandatory owned Job/control/stdio retirement passed; no independent global
+  post-exit census is claimed.
+- Later alerts/Red Team source follow-up: alert sizing coalesces native resize/style
+  work, caches bounded intrinsic measurements and skips unchanged setters while
+  preserving explicit fit, invalidation and selection. First typed startup
+  terminal/stop context now survives writer-first shutdown. Nonempty history
+  rows become JSON lists at the producer; strict IPC still rejects tuples.
+  Production start_probe passes clock=time.monotonic to the real owned-process
+  verifier, preserving native/source/Job/plan/cap checks. Process-step detail
+  retains bounded counts and first closed phase/exception class, not raw errors
+  or an unsupported no-spawn claim.
+- Earlier frozen-source gate:155 focused inert tests passed; the separate alerts
+  cohort passed55. These overlap earlier cohorts and must not be summed. Full
+  Ruff passed across src/tests/tools/root Black Box. In-memory syntax checked
+  1,577files (source546/tests927/tools103/root Black Box1),27,849,714bytes,
+  zero failed/missing files and no byte-cache writes. Aggregate SHA-256:
+  352f1152a160275282c7d9f3d7e6fc4caa8a86d5aabfe87b0d16f5f3b505a4ae.
+  The before/after inventory matched and owned gate children/Jobs/handles/stdios
+  retired. Earlier1575/1576 snapshots and failures retain their original scope.
+- Initial canary response admission now receives the original validation-canary
+  proof explicitly; initial admission cannot borrow ambient thread-local proof.
+  Original target/source/lease/policy checks remain mandatory. Combat: 252 passed,
+  one expected skip/two deselected; all 24 new cases are included, not additive.
+  Fresh authenticated APT-only run:37/37 controlled containment checks.
+  All3T1059 original native process commits precede the30s natural deadline;
+  original ledger11/11 HMAC verified/zero gaps. Native-analytic credit0/37;
+  finding contract remainsOPEN. This is not a general malware catch rate.
+- Exact optional-tool free-space hold before any toolkit operation started now
+  leaves native SpywareGuard running to its own terminal result. Zero-Breach's
+  3 GiB plus working allowance stays enforced. The first storage validation helper
+  failed before test bootstrap: zero tests ran. Corrected gate:
+  162passed/oneprivate-harness inert-child denial/7deselected; all15newpassed.
+  Exactly the failed node passed after allowing its fixed inert child; assertions
+  unchanged and original failure preserved. Fresh EntirePC native+ZeroBreach
+  workflow finished in 47:49 within its original 3,600 s budget / one Start. Native
+  completed in 14.5 s with no-enabled-hash-definition, memory-disabled, configured-bound
+  and permission gaps. Toolkit 47:43 / exit 2 = FINDINGS, nottimeout; all five readers retain
+  unchecked areas. One historical 29 August 2026 HSTS contact trace overlaps the native
+  advisory; two contextual references are different locations, notexecution/infection
+  or response authority. Controller reported 12 native generations retired / zero
+  retirement-observation gaps; these do not erase collector coverage gaps.
+  The complete upstream file matched its controller receipt by size/SHA256;
+  bounded controller JSON is not independent cryptographic authentication.
+  Saved preferences remained unchanged; no response/alert clearing performed.
+- Preview limits: genuine Source Observe Shark T1041 outbound/network containment
+  remains an open gap. The user authorized this 1.15 preview with that gap disclosed
+  after remaining checks. The user then authorized C-only Unity cache cleanup
+  for ZeroBreach:1,314files/234,623,555logical bytes removed, all D installations
+  and licenses/settings preserved. Later independent C free-space checks exceeded
+  the unchanged 3.25 GiB toolkit admission. Concurrent Optimus work prevents
+  attributing the whole free-space gain to this cleanup. Toolkit run resumed;
+  terminal workflow and partial findings are scoped above; do not turn them into
+  complete-device coverage or use stale free-space values.
+- Retained historical live evidence: earlier authenticated controlled APT was complete/
+  coverage-eligible but Partial 36/37. Its T1059 check bound all 3 required probes
+  without supplier failures; ProcessMonitor observed it and Purple recognized the
+  simulation contract, native_analytic=false. Reported response was not applied
+  and natural 30s exits earn no credit. The explicit initial-canary admission fix
+  has the separate later37/37 observation above; it does not rewrite that history.
+  The earlier combined scan was terminal failed/partial; native was cancelled
+  with incomplete coverage and Zero-Breach never started at the free-space hold.
+  One browser-cache advisory is an exposure lead, not infection or response
+  authority. Complete original controller JSON is retained privately; copying it
+  does not establish cryptographic report authentication.
+- The completed combined-scan session exited through normal STOP before UI
+  integration: all13originally recorded generations retired and11source anchors
+  released; all161saved preferences were byte-identical. This is not a shutdown
+  receipt for any later session. A subsequent actual default Red Team window
+  fit normally without resize/maximize, with full readiness/footer, on unchanged
+  Red Team source. Main/Spyware painted but caption/timing defects were retained
+  and fixed only afterward. That later session exited0 through normal STOP:
+  all16recorded original generations retired/12source anchors released and
+  all161saved preferences byte-identical before final caption/timing integration.
+  Final canonical UI observation passed: default Main 1216×819 had full STOP/
+  SELF-TEST; default Spyware 1096×819 showed Ready with selected 1h/3600s rather
+  than generic elapsed300s/run-ended. Both frames fit the observed 1920×1032 work
+  area without resize/maximize. One SpywareOpen/no scanStart; all 161preferences
+  unchanged. This is a UI result, not a new drill/scan/detection result.
+  Final UI session normal STOP exited 0; 13 held original native generations
+  signaled with unchanged identity/once-close, 12 runtime source anchors released
+  and all 161 preferences byte-identical. Three earlier snapshot-only transients
+  lack independently witnessed exits and are not counted among the 13 held. No
+  relaunch followed; companion exit 1 during owned shutdown is not spontaneous
+  crash proof.
+  Current manual/operator refresh accepted: 238 pages/86modules/164 settings/
+  735 controls/86 tables/12 unchangedfigures;211exact body matches plus 27 individual
+  original-detail views, history last and four-page Security Summary unchanged.
+  Final mainDEMO15assets promoted (70sGIF9,712,027B/9.3MiB); community5 unchanged.
+  All20public media files matched reviewed bytes;53unique declared source
+  fingerprints plus2separate integration anchors stayed frozen. Canonical
+  export/drift checks remain a separate required prepublication step.
+  Prepublication checkpoint (9 November 2026): a reviewed commit, guarded
+  canonical-main publication and all required exact-commit GitHub Actions checks
+  are required release gates (https://github.com/Ag3nt47/AngeronaSuite/actions).
+  This dated source record does not attest a later commit's hosted CI result.
+- 9 November community workspaces: Suggested tools provides explicit managed
+  install/uninstall, constrained data adapters, per-tool self-checks, separate
+  editable source copies and credits. Zero-Breach uninstall intent blocks
+  automatic restoration until explicit preparation. Atomic/Sigma/Sysmon/YARA
+  adapters expose their supported subsets; Caldera/Velociraptor/Wazuh entries
+  do not install full platforms. Source review and copying grant no execution
+  or response authority. Rules & Playbooks adds pinned batch drafts, guided
+  X/O tactics, exact-draft checks, activation/disable/rollback and visible
+  provenance. Community YARA and declarative SOAR switches default off and save
+  in the existing worker path; per-item activation never enables them silently.
+  YARA candidate aggregates have bounded owned native admission, source review,
+  namespace/raw/compile-input binding and whole-active-set rechecks. Optional
+  failures preserve bundled scanning. Native SOAR accepts only the fixed JSON
+  schema and existing original-evidence/opt-in/corroboration/identity gates.
+- Red Team now has a separate ordinary-user tool UI and fixed inert execution
+  endpoint. Core keeps plans, enrollment, report keys and response authority.
+  Distinct authenticated directional IPC and queued owner epochs resist replay
+  and generation substitution. Native Job/PID-birth checks and one-file marker
+  write capabilities remain mandatory; cleanup earns no catch/response credit.
+  The two-case native execution/retirement gate passed; it is NOT detector catch
+  coverage. Full drills and combined scans were pending at that earlier gate;
+  the separate later controlled APT and ongoing combined scan are scoped above.
+  An earlier normal source Core startup and normal STOP passed
+  with six reviewed preferences unchanged. A later session ended by normal Quit
+  with its full161-key settings file byte-identical and saved Chill ON, after
+  the operator selected OFF then ON. This does not explain an earlier recorded
+  settings-file hash change or prove preservation outside those comparisons.
+  Core exited normally; Black Box's exit1 followed intentional owned-Job
+  termination during Quit and is not evidence of a spontaneous crash. The
+  retained owned process scope was retired; those startup/STOP receipts do not
+  establish later drill or scan outcomes.
+  A later fresh session reached readiness
+  then exited unexpectedly; exact-generation Windows error records report a
+  Python runtime access violation and user-callback failure. Final production runtime
+  acceptance and publication were pending at that checkpoint; later scoped
+  observations do not establish its initiating cause. First COM/VEH labels and late corrupted frames
+  do not establish cause. Matched official PDB symbols locate the fault inside
+  Python dump_frame. A handled-COM/thread-churn comparison did not reproduce AV
+  in either mode; the all-thread diagnostic emitted inconsistent frame context.
+  Native fault capture now explicitly uses current-thread-only scope, including
+  fallback, while Python-owned all-thread snapshots and exception hooks remain.
+  The focused171-case gate passed; fresh same-path native observation was
+  pending at that mitigation gate. Later controlled acceptance does not identify
+  the initiating COM condition. A recovered session alone is not crash-fix proof.
+- The title, posture and Current Assessment sit above ONE horizontal control
+  row. Narrow windows scroll actions; fully labeled STOP is pinned outside the
+  viewport at the right. Tab reveals the focused control; wheel/scroll changes
+  invoke no actions. Primary and SpywareGuard labels retain readable semantic
+  widths, with polished styles and the existing coalesced resize timer. The
+  earlier 108-case inert header/router/responsive cohort passed. Earlier wrapped/
+  two-row arrangements are superseded. The earlier 91/205/265-case gates overlap;
+  their unreconstructed STOP-fixture failure remains retained. Exactly-once
+  dispatch, callback-failure behavior and operator termination fences remain.
+- Compact UI function cues opt in individual headings/button edges only:
+  monitoring/inspection blue, analysis/research violet, configuration/recovery
+  amber, controlled response red. Existing severity/status colors, unknown states,
+  enablement and authority do not change. Main retains one action row/fixed STOP
+  and open panels except folded module health. SpywareGuard keeps progress/hits,
+  current work/file/timing and cached PC specs primary, with warnings/Stop visible.
+  Red Team folds setup while target/readiness/progress/Launch/Stop stay visible.
+  Suggested tools keeps nested scanner holds/storage gaps visible even with JSON
+  folded; explicit results/errors open details, polling respects collapse. Rules
+  keeps globals/Settings/results/action warnings visible with expandable provenance.
+  Inert scopes: initial 341 passes/four fixture failures (100.73s); test-only
+  follow-up five passes/one old-caption failure (6.28s), final one-case pass
+  (3.18s), product unchanged. Counts overlap; no live scan/drill/catch claim.
+  All three workers signaled; Jobs empty/native handles closed; wrapper exits
+  and log-FD closes recorded. Actual DEMO review then exposed excess vertical
+  allocation in Suggested tools. A conditional trailing spacer keeps summary/
+  primary actions at the top and lets expanded exact records use spare height;
+  18 focused inert checks passed7.46s, with both tall views visually reviewed.
+- Supported tray/orb restore now shows Qt before optional animation. Display
+  recovery permits normal/plain attempts with owned epoch-bound one-shot timers,
+  closed bounded private logging and16 retained records. Optional clock/cleanup
+  failures cannot extend retries. Persistent failure offers a nonmodal Retry
+  display/Safe STOP/instructions notice; it creates no helper or engine bypass.
+  Qt paint is advisory, not readable-pixel/protection proof. Hide/STOP/new
+  requests fence stale callbacks. Initial staged startup rechecks fresh Chill
+  intent; explicit wake/maintenance, identity/lifecycle and UGCAP gates remain.
+  The module count is live/selected; held modules can stay checked, and pause
+  requests allow in-flight calls to finish. The205-case focused Qt/Chill gate
+  passed and overlaps the91-case gate; that inert gate established no native
+  UI/scan/drill acceptance. Separate later controlled/runtime scopes are above.
+- Standalone startup now has one original absolute 90-second verification/
+  bootstrap deadline beginning before the parent source check and inherited
+  unchanged by the child. Both source checks and authenticated/native admission
+  remain mandatory. The separate 15-second Qt allowance starts after
+  initialization; the whole attempt has a 105-second cap and STOP fences. No
+  child message can renew them. Optional SourceGuard deadlines/cancellation
+  reject malformed/failed/regressed clocks; positive results require the final
+  fence and already-known source changes remain negative evidence. Defaults
+  preserve previous source checks and call shapes. The source cohort passed
+  75/one platform skip, followed by nine scoped precedence/fence cases.
+- Startup stderr is byte/line bounded with 16 whitelisted advisory records and
+  no raw-text retention. The real private writer saves a closed bounded
+  projection with explicit omissions; real readback verifies fields. Primary
+  and retirement receipt states remain separate. Final admission or closed-held
+  disposition precedes shutdown quiescence/new-owner replacement. Optional
+  read/query observations cannot block mandatory cleanup; an ambiguous query
+  close is disclosed and latches future optional opens off, without an
+  all-handles-closed claim. Admission, control and write capabilities retain
+  their strict cleanup. The final inert startup cohort passed 118 cases.
+- The fresh native execution/retirement gate passed two cases in 32.81 seconds:
+  real source seals, authenticated admission, Qt, inert marker/probe execution
+  and mandatory retirement. Both cases retained all 16 advisory records with
+  zero omissions/diagnostic-close gaps. Nine sampled original generations were
+  independently absent; the external outer-wrapper identity was not separately
+  sampled. This proves the scoped execution gate, not catch coverage, a full
+  production drill/scan or complete process history. Earlier 78/10 diagnostic
+  cohorts overlap. Black Box's separate 118-case inert Qt cohort covers cached
+  complete failure text, selection/scroll and hidden rendering, not host health.
+- A later current-compact-UI native gate passed2/2 execution/retirement cases
+  in26.40s (graceful close and suiteSTOP); enclosing strictJobexit0/
+  custody_pending=False in28.51s, console0/no descendants. Both cases retained
+  all16advisoryphases (1,589B/16lines) with0omission/malformed/unrecognized/
+  exhaustion/close gaps. All9sampled original generations, including the outer
+  venv wrapper, were independently absent. This later gate is separate from
+  the earlier2/2,
+  not a unique4case total, detectorcatch or fullCore/scan/drill acceptance.
+- A later ordinary guarded Core session, before the final header/tool-budget
+  changes, reached readiness, restored through the supported physical Qt route
+  and ended by normal STOP/exit 0. Its complete 161-key settings file remained
+  byte-identical, saved Chill ON. Recorder writes were held below the configured
+  2 GiB free-space floor; no verified AAR can waive that evidence requirement.
+  Full production drills, combined scans and catch-rate acceptance were pending
+  at that earlier storage-held checkpoint. The first tool hello timeout remains
+  unreconstructed; the corrected budget scope alone does not identify its cause.
+- Source fingerprinting records typed numeric TIME/entry/file/byte limits and
+  closed/held custody. Only one typed-TIME retry of both complete inventories is
+  allowed under the continuous original lock and proven prior closes. Capacity,
+  identity, reparse, changed-source and close failures never receive that retry.
+  Per-pass 30s/16,384 entries/4,096 files/64 MiB and outer 300s remain unchanged.
+  New 18 tests passed in about 5s; original 53 separately passed 35.59s. A measured
+  production-shaped default closure under original leases covered543 files/580
+  entries/18 dirs/15,137,400 bytes per pass at about 0.672s each; total 1.437s and
+  CPU 1.375s, normal priority, owned-Job CPU flags 0, no ancestor-Job claim. The
+  helper had console 0/exit 0/custody_pending=False. The earlier 30s hold remains
+  unexplained; that fingerprint gate granted no production drill/scan or
+  protection acceptance.
+  A new hosted Windows native-watchdog Go job is configured but not yet a pass;
+  local Go remains unbuilt/unexecuted. Current facts and explicit scope are in
+  analysis/hardening-v1.15-2026-11-09-community-workspaces.md#bounded-source-inventory-retry-and-measured-closure.
+- Quiet background launch follow-up removes NEW_CONSOLE/DETACHED before applying
+  NO_WINDOW in the shared Python helper, preserves explicit interactive paths,
+  and adds hidden canonical-CMD options to mutual recovery. The optional Go
+  launcher retains its group/STOP semantics; Go was not locally built or run.
+  The final Python visibility cohort passed38/one non-Windows skip. Its native
+  default/detached modes had console0/visible0 and retained Job retirement; all39
+  original generations across three invocations were independently retired.
+  Earlier import/stdin fixture failures remain retained and were corrected only
+  in tests. Separate policy cohorts passed10/three unselected and later5/13
+  unselected; counts overlap and are not additive to the earlier82-case gate.
+  The later external-watchdog hint changes failure presentation only: held85/
+  stderr, initial recovery0 and ordinary interactive explanation remain. The
+  reported popup sequence is not reproduced or assigned a current cause here.
+  This is not fresh Core, scan, detector, Go or hosted acceptance. Scoped facts:
+  analysis/hardening-v1.15-2026-11-09-community-workspaces.md#quiet-background-helper-creation.
+- Suite Map3D renders cached components, module policy/health, mounted volumes,
+  visible peripherals and observed endpoints with orbit/pan/zoom/selection and
+  navigation. Architectural/observed links, losses and omissions stay distinct.
+  Particles are not delivery, liveness, containment or kernel-integrity proof.
+  Source activation and publication folders use the actual current Windows
+  token, avoiding synthetic USERPROFILE substitution. Quiet reserved helpers
+  retain failure/custody checks; authenticated scanner workers hide nested
+  toolkit/PowerShell consoles without altering pinned engine bytes.
+- Forensics remains opt-in: exact original raw process birth, fresh active
+  local evidence and retained native read/query identity precede bounded strings/
+  socket capture. AES-GCM ciphertext uses a current-user DPAPI-wrapped case key;
+  explicit export alone writes plaintext. Failed frame encryption/write poisons
+  the writer before retries/terminal encryption can reuse a nonce. The raw-fd
+  constructor handoff cleanup gap remains a low-availability next-loop item.
+  AMSI forwarding preserves original native provenance but grants no response
+  authority; its crash-prone in-process compatibility path remains default off.
+  Signal full-call leases, retained Job/handle/executable custody and App STOP
+  checks distinguish unknown trees from close-only holds. Failed outbound/digest
+  work retains bounded batches and existing token scope; local CLI verification
+  is not recipient delivery. SentinelLens fences stop/admission and retains
+  pending/lost analysis through failed snapshot builds. No live Signal/AMSI
+  provider acceptance is claimed.
+- Earlier documentation-checkpoint full Ruff passed across src/tests/tools/rootBlackBox.
+  After15approved exact control-purpose descriptions changed only the manual
+  generator, fresh in-memory syntax passed1,575files (source546/tests925/
+  tools103/rootBlackBox1),27,800,298bytes,0failure/missing andno bytecache writes.
+  Checkpoint aggregate672871f2553e13c6ec9bb4cb61925bdab1ed26df5b690a2bbf5e218fcec9adc5.
+  Prior8b2b30a175961aad090b06cee605d67d6f57ef756e5791d268cb173b22ac810f/
+  27,795,710B snapshot remains separately recorded. Between those documentation
+  snapshots, runtime/UI/media/pins didnot change. Earlier48-filemanifest/bootstrap --check passes remain applicable
+  (manifestecbbbb9982ce...); no redundantnative/pin gate was run. Both original
+  five-command and final Git/Ruff gates retain exact native retirement/close
+  receipts. Earlier 1,569-file counts keep their scope. Earlier canonical manual closure
+  passed: 236 PDF pages, 12 exact figures and 735 controls; 170 baseline pixel
+  matches and 66 individual original-detail views. All 15 purpose corrections
+  checked; page 179 received a second independent clear of the same file. The
+  earlier reviewer delivery uncertainty was not a document defect.
+  Word SHA-256:84226c820ad93cb9270c5862461b7b48be046b2524a214a4cd717a9ed87ac776.
+  PDF SHA-256:9bccdb3c959ae5f76c78e682160c1a9e0b622d689354658ca97ab443e433c127,
+  4,910,758 bytes. Markdown:602,433 bytes; recorded structure 5,178 paragraphs
+  and 86 tables. Final manual/operator --check and PdfReader page/image checks
+  passed. Unchanged four-page security summary SHA-256:
+  a6218fbd54d6db74649e09568afc811cd0a589a92c78d9ea388a674800a1c8f2.
+  All owned helpers retired. At that earlier checkpoint, genuine Core detection/
+  catch, Red Team/Shark and combined SpywareGuard/Zero-Breach scans were PENDING
+  under unchanged 2 GiB free-space admission; later live findings appear above. Publication and hosted exact-commit verification remain
+  PENDING; no work-in-progress commit or publisher invocation was performed.
+  The isolated bootstrap-coordinator rerun passed after a script-directory
+  sys.path fixture correction; its earlier failure remains retained. Three
+  workflow-configuration tests passed, without claiming hosted Go execution. Focused cohorts overlap and must not be summed. Prior public baseline
+  560eebe had15 hosted jobs green; this tranche requires its own exact-commit
+  publication and hosted verification. Current evidence/limits:
+  analysis/hardening-v1.15-2026-11-09-community-workspaces.md.
+  Operator guides:docs/community-tools.md,docs/rules-playbooks.md,docs/suite-map.md;
+  current master manual:docs/master-manual.md. All20finalDEMOartifacts promoted:
+  18PNGs plus70s/140slot9,884,718B mainGIF and18s/379,672B communityGIF. All20
+  localbytes/hashes and53sourcefingerprints matched those capture receipts;28READMEPNG/95links
+  valid. Five newcommunitymedia stillrequire reviewedGitstaging; publicMain
+  verification belongs to publisher. Maincapture8/9independentabsence checks
+  succeeded; one access-deniedquery retains earlier same-generation native
+  signal/close proof, not9independentconfirmations. Media are synthetic/no-host-
+  action views, not efficacy evidence. Signed deployment,
+  kernel/PPL/ELAM, PID-bound WFP admission, TPM freshness and independent witness
+  acceptance remain separate; Ring3/same-user/kernel limits remain material.
 
 - 8 November mutual recovery hardening adds native invocation/birth-bound
   authenticated heartbeat progress, 180-second startup/60-second supervision

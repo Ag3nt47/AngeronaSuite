@@ -111,6 +111,23 @@ jobs:
           }
           exit $pytestExit
 
+  native-watchdog:
+    name: Native watchdog console and STOP contracts
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: stable
+          cache-dependency-path: frz/go.sum
+      - name: Exercise the optional Go watchdog with inert helper processes
+        working-directory: frz
+        shell: pwsh
+        run: |
+          go test -mod=readonly -timeout 90s angerona_watchdog.go angerona_watchdog_test.go
+          exit $LASTEXITCODE
+
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 15

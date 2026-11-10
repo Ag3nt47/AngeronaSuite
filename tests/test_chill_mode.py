@@ -188,6 +188,7 @@ def test_reentering_chill_reclaims_stopped_and_restarting_wake_queue(monkeypatch
             self.stop_calls = 0
 
         def stop(self) -> None:
+            assert harness.config.runtime_chill_active is True
             self.stop_calls += 1
             self.status = "stopped"
 

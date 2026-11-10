@@ -31,6 +31,7 @@ from shiboken6 import isValid
 
 from angerona.gui.header_controls import motion_allowed
 from angerona.gui.presentation_timer import PresentationTimer
+from angerona.gui.theme import set_function_role
 
 
 _ROW_LIMIT = 200
@@ -244,11 +245,13 @@ class SpywareGuardPage(QWidget):
         self._header_grid = QGridLayout()
         self._page_title = _label("SPYWAREGUARD · Surveillanceware & Zero-Day Defense")
         self._page_title.setObjectName("SectionTitle")
+        set_function_role(self._page_title, "analysis")
         self._header_grid.addWidget(self._page_title, 0, 0)
         self._header_grid.setColumnStretch(0, 1)
         self.scan_button = QPushButton("Spyware Scan")
         from angerona.gui.curated_tools import style_spyware_scan_button
         style_spyware_scan_button(self.scan_button)
+        set_function_role(self.scan_button, "response")
         self.scan_button.clicked.connect(self._request_scan)
         self._header_grid.addWidget(self.scan_button, 0, 1)
         root.addLayout(self._header_grid)
@@ -261,6 +264,8 @@ class SpywareGuardPage(QWidget):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs, 1)
         self._build_dashboard()
+        self.priority_scan._progress_grid.addWidget(self.stats, 3, 0, 1, 3)
+        self.stats.setToolTip("Recent module-reported native records; separate from this scan's findings and verdict.")
         self._build_definitions()
         self._build_settings()
         self._build_research()
@@ -355,7 +360,6 @@ class SpywareGuardPage(QWidget):
         self._news_grid.addWidget(self._news_actions, 0, 2)
         self._news_grid.setColumnStretch(1, 1)
         self.news_summary = _label()
-        self._news_grid.addWidget(self.news_summary, 2, 0, 1, 3)
         footer = QHBoxLayout()
         self.news_state = _label()
         footer.addWidget(self.news_state, 1)
@@ -367,6 +371,7 @@ class SpywareGuardPage(QWidget):
         feed_details = QWidget()
         detail_layout = QVBoxLayout(feed_details)
         detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.addWidget(self.news_summary)
         self.news_checks = _label()
         detail_layout.addWidget(self.news_checks)
         self.news_sources = _label()
@@ -375,6 +380,11 @@ class SpywareGuardPage(QWidget):
         self.news_feed_details.toggled.connect(feed_details.setVisible)
         self._news_grid.addWidget(feed_details, 4, 0, 1, 3)
         self._news_grid.addWidget(self.action_progress_view, 5, 0, 1, 3)
+        set_function_role(self.news_masthead, "analysis")
+        for control, role in ((self.news_headline, "analysis"), (self.news_source_button, "analysis"),
+                              (self.news_refresh_button, "monitor"), (self.news_pause_button, "monitor"),
+                              (self.news_settings_button, "configure"), (self.news_feed_details, "analysis")):
+            set_function_role(control, role)
         root.addWidget(self.news_strip)
 
     def _news_message(self, message: str) -> None:
@@ -681,8 +691,7 @@ class SpywareGuardPage(QWidget):
     def _build_dashboard(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
-        self.stats = _label("Hits: 0   ·   Containment records: 0   ·   Approved indicators: 0")
-        layout.addWidget(self.stats)
+        self.stats = _label("Recent native records · Hits: 0 · Containment: 0 · Approved indicators: 0")
         self.evidence_tabs = QTabWidget()
         self.hits_table = _table(("Time", "Rule", "Process / artifact", "Severity"), (150, 210, 170, 90), stretch=2)
         self.containments_table = _table(("Time", "Target", "Outcome", "Details"), (150, 170, 110, 200), stretch=3)
@@ -1112,7 +1121,7 @@ class SpywareGuardPage(QWidget):
         if not isinstance(stats, dict):
             stats = {}
         self.stats.setText(
-            f"Hits: {_text(stats.get('findings', stats.get('hits', len(hits))), 30)}   ·   "
+            f"Recent native records · Hits: {_text(stats.get('findings', stats.get('hits', len(hits))), 30)}   ·   "
             f"Containment records: {_text(stats.get('containments', len(containments)), 30)}   ·   "
             f"Approved indicators: {sum(bool(row.get('approved')) for row in indicators)}"
         )

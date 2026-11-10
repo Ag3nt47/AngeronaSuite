@@ -1,12 +1,14 @@
 # Angerona Security Suite
 
-Angerona is an open-source desktop security suite for monitoring computers and
-networks, investigating suspicious activity, and managing incident response.
+Angerona is an open-source security suite combining endpoint detection and
+response (EDR), network detection and response (NDR), and security orchestration,
+automation, and response (SOAR) for local monitoring, investigation and governed
+incident response.
 
-The suite combines endpoint detection and response (EDR), network detection
-and response (NDR), and security orchestration, automation, and response (SOAR).
-Platform support and installed authority determine which sensors and response
-actions are available.
+Its desktop dashboard connects host and network evidence, spyware scans,
+defensive validation and policy-controlled actions. Available sensors and
+response capabilities depend on the platform, configuration and installed
+authority.
 
 Built for home labs, defenders, researchers, and security engineering portfolios.
 The suite runs deterministic checks locally and offers optional local AI to
@@ -14,7 +16,11 @@ explain evidence and propose next steps.
 
 ## Current development: v1.15.0
 
-**Source preview.** Validation and deployment acceptance remain in progress.
+**Source preview.** A genuine Source Observe network-containment gap remains
+open. Controlled response validation passed. A combined SpywareGuard/Zero-Breach
+run finished with findings and incomplete coverage; it is not a clean-PC verdict.
+Controlled results and remaining coverage limits are documented in the
+[current release notes](docs/releases/v1.15.0.md).
 
 [Download and installation choices](#choose-your-installation) ·
 [Latest changes](CHANGELOG.md) ·
@@ -34,10 +40,21 @@ explain evidence and propose next steps.
 
 The demo covers Current Assessment, the notification badge, scrolling alerts,
 SpywareGuard and Research Wire, MITRE ATT&CK, curated tools, breach review,
-Settings, scan progress, Auto Adapt, Red Team scoring and component heartbeats. [Play the 70-second application demonstration](assets/demo/angerona-demo.gif)
+Settings, scan progress, Auto Adapt, Red Team scoring and component heartbeats.
+[Play the 70-second application demonstration](assets/demo/angerona-demo.gif)
+(9.3 MiB GIF).
 
 **Demo data.** All displayed telemetry, identifiers, timestamps and counts are
 synthetic.
+
+| Suggested community tools | Rules & Playbooks | Suite Map · 3D |
+| --- | --- | --- |
+| [![DEMO: Suggested GitHub tools with install, uninstall, self-check and credits controls](docs/screenshots/suggested-tools-demo.png)](docs/community-tools.md) | [![DEMO: YARA and SOAR authoring with the X/O tactics board and explicit validation controls](docs/screenshots/rules-playbooks-demo.png)](docs/rules-playbooks.md) | [![DEMO: interactive 3D modules, EventBus, local volumes and observed endpoints](docs/screenshots/suite-map-3d-demo.png)](docs/suite-map.md) |
+
+[Play the 18-second community workspace tour](docs/media/community-suite-tour-demo.gif):
+Suggested tools, separate editable source copies, Rules & Playbooks and the
+3D Suite Map (371 KiB GIF). All four chapters use synthetic DEMO data and
+perform no host actions.
 
 | Curated tools | Integrated toolkit |
 | --- | --- |
@@ -68,8 +85,12 @@ synthetic.
   undo actions.
 - **SpywareGuard:** surveillanceware evidence review and governed response,
   subject to its published preview and platform prerequisites.
-- **GitHub Tools:** curated, version-pinned scanners, source review, settings,
-  analysis, integrity checks, managed revert and visible third-party credits.
+- **GitHub Tools:** suggested compatible adapters, pinned scanners, source
+  review, self-checks, editable copies, managed uninstall/revert and credits.
+- **Rules & Playbooks:** review and batch-import compatible YARA data and
+  declarative SOAR tactics; validate, sample-test, activate and roll back.
+- **Suite Map · 3D:** orbit, zoom and select modules, EventBus, drives,
+  host-visible devices and observed endpoints, then open their owning controls.
 - **Spyware Scan:** selected native and toolkit checks with priority, resource
   and privilege-coverage controls; unavailable collection remains visible.
 - **Breach review:** qualified native evidence, persistent case visibility and
@@ -77,8 +98,9 @@ synthetic.
   Managed network lockdown and Lift require the accepted installed authority.
 - **Integrity and provenance:** source, model, audit, IPC and enrolled UGCAP
   checks; independent witness authority requires its own deployment.
-- **Defensive practice:** benign validation, deception and canary exercises
-  produce labeled receipts; synthetic markers cannot authorize host actions.
+- **Independent Red Team:** a separate tool window runs fixed inert probes
+  while Core retains detector validation, response policy and report authority.
+  Native evidence and exact enrolled canary proofs govern credited actions.
 - **Optional AI:** local Ollama explanations and manual sanitized preview/Send
   assist review; model text has no response authority.
 - **Operations and recovery:** resource controls, watchdogs, storage warnings,
@@ -117,6 +139,73 @@ and separate installation staging require additional space.
 
 ## What's new in 1.15
 
+- **Community tools and tactics:** Suggested tools adds explicit install,
+  uninstall, self-check, source-copy editing and credits. Rules & Playbooks adds
+  pinned source discovery, batch drafts, a guided X/O tactics board and reviewed
+  activation/rollback. Both community runtime switches default off.
+  [Supported adapters and limits](docs/community-tools.md) ·
+  [Rules and settings](docs/rules-playbooks.md).
+- **Interactive Suite Map:** a software-rendered 3D view connects cached module,
+  host, drive/device and endpoint observations to existing controls. Its activity
+  particles represent observed publications, not proof of delivery or protection.
+  [Map controls and coverage](docs/suite-map.md).
+- **Separate Red Team application:** the dashboard button launches an ordinary-user
+  tool with a process-bound private channel. Core owns plans, validation leases,
+  signing and response authority; the tool cannot submit arbitrary commands or
+  grant itself catch credit. [Execution boundary](docs/community-tools.md#standalone-red-team).
+- **Quieter, accurate helper startup:** background failures remain nonzero and
+  logged without opening modal native dialogs. Source and publication storage
+  resolve from the actual Windows user token even under a private helper profile.
+  Windows scanner workers also hide background toolkit and PowerShell consoles.
+- **One-row dashboard controls:** the title, posture and Current Assessment sit
+  above one row of grouped actions. Narrow windows scroll the controls
+  horizontally; STOP stays fully labeled at the right edge. Tab reveals the
+  focused control, and optional animation cannot consume or duplicate an action.
+- **Clearer, compact workspaces:** blue cues mark monitoring, violet analysis,
+  amber configuration/recovery and red controlled response. Existing severity
+  colors and permission checks remain separate. Progress, findings and warnings
+  stay visible; secondary help, source metadata and technical records expand
+  on demand. [Workspace controls](docs/community-tools.md#compact-workspace-controls).
+- **Separate tool-startup budgets:** Red Team retains both source checks within
+  a shared 90-second verification allowance, then allows 15 seconds for Qt
+  presentation, with a 105-second overall cap. Bounded diagnostics preserve
+  failure details and explicit gaps. These checks do not prove detection coverage.
+- **Smoother alerts and clearer Red Team failures:** coalesce repeated alert-table
+  sizing and reuse unchanged measurements. Preserve the first typed startup
+  failure, support nonempty report history through the strict JSON channel, and
+  restore clock-checked process-probe admission. A failed process step now shows
+  bounded phase/count details instead of an empty explanation.
+  [Source fixes and proof limits](analysis/hardening-v1.15-2026-11-09-community-workspaces.md#later-alerts-and-red-team-source-follow-up).
+- **Explicit canary response proof:** the first Combat lease receives the
+  original validation-canary proof explicitly. Initial admission cannot borrow
+  ambient thread-local proof; existing target and policy checks
+  still apply. A fresh authenticated drill verified 37/37 controlled containment
+  checks, with native-analytic credit of 0/37. Controlled probes do not establish
+  real-world detection coverage.
+- **Native scans continue through an optional toolkit storage hold:** if no
+  Zero-Breach operation started, that exact free-space hold leaves native checks
+  running to their own finish. The toolkit reserve of 3 GiB plus its working
+  allowance remains enforced. A fresh combined run finished within its one-hour
+  budget with one historical browser-contact trace and two contextual references;
+  every toolkit reader retained coverage gaps. Findings do not establish infection
+  or grant response authority. Completed native-reader work keeps its workflow
+  contribution when detailed percentages become unavailable; coverage gaps remain
+  visible.
+- **Red Team fits the available screen:** keep readiness, warnings, progress and
+  Launch/Stop visible while setup and tall secondary pages scroll. Initial fit
+  respects the window frame, enlarged text and later operator geometry. Inert
+  Inert checks passed, and a fresh default normal-window observation confirmed
+  readable readiness and Launch/Stop without manual resize or maximize. This
+  verifies that layout observation, not detection coverage.
+- **Reliable header labels and idle scan timing:** full-budget controls retain
+  their complete captions with fractional font widths. A known ready Spyware
+  view shows the selected next-run budget; current and retained scan timing keeps
+  its own request budget. Unknown or incomplete observations stay explicit.
+- **Bounded display recovery and clearer Chill state:** tray/orb restore shows
+  the Qt window before animation, retries once without owned visual effects,
+  and offers a nonmodal recovery notice if paint remains unconfirmed. Initial
+  startup rechecks Chill intent; selected modules can remain checked while held.
+  [Recovery paths and limits](docs/resilience-recovery.md#dashboard-presentation-recovery).
 - **Watchdog hardening (8 November):** process-bound heartbeat progress,
   supervision-work deadlines, source-change launch holds and an expanded
   48-file pinned GitHub recovery bundle. Intentional code edits remain
@@ -276,6 +365,12 @@ is active. [Recovery guide](docs/safe-startup-recovery.md).
   governed response with explicit preview/prerequisite limits.
 - [GitHub Tools and Zero Breach](docs/zero-breach-toolkit.md): pinned engine,
   integrated and held modes, priority scans, private reports and retained credits.
+- [Community tools and standalone Red Team](docs/community-tools.md): exact
+  adapter capabilities, source copies, uninstall and execution boundaries.
+- [Rules & Playbooks](docs/rules-playbooks.md): every authoring/routing control,
+  default-off settings, sample results and rollback.
+- [Suite Map · 3D](docs/suite-map.md): camera, selection, navigation, cached
+  status and the meaning of observed flow.
 - [Hardware and self-check](docs/hardware-and-selfcheck.md), [native setup](docs/NATIVE_INSTALL.md),
   [v1.14 acceptance register](docs/releases/v1.14-security-integration.md).
 
@@ -284,11 +379,36 @@ witness/backup authorities retain separate acceptance gates. Passing source
 tests cannot deploy those authorities or prove field detection rates.
 Broader v1.15 remains incomplete.
 
+## Validation and contributing
+
+Historical release evidence: **Final Cycle 34 verification.** The gate on
+`7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passes **2882 tests with 15 intentional platform skips**.
+This is a dated checkpoint, not the current revision's result or live coverage.
+[Retained maintenance history](analysis/public-maintenance-history.md) preserves
+the previous README and its scoped measurements;
+[the issue map](analysis/live-debug-2026-10-22/README.md) records further evidence
+and remaining work.
+The [v1.14.2 review map](analysis/curated-tools-breach-2026-10-29.md) records the
+new integration and breach-control checks with their scope and remaining holds.
+
+For a configured development environment, run the focused checks relevant to
+your change, then the required integration/self-check gates. Preserve skips and
+coverage gaps. Maintainer publication must verify canonical public `main`, a
+clean worktree and byte-identical tracked README assets.
+
+[Contributing](CONTRIBUTING.md) · [Writing modules](docs/writing-modules.md) ·
+[Report security issues](SECURITY.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
+
+Third-party components retain their own terms. Zero Breach Toolkit code is
+Apache-2.0; its research data and optional rules retain their separate licenses
+and author notices. [Credits and bundled notices](docs/zero-breach-toolkit.md#credits-licenses-and-integrity).
+
 ## Detailed v1.15 hardening notes
 
-**Development status:** source preview. An unresolved native shutdown crash,
-coverage gaps and CPU/UI pressure remain documented. A later normal exit does
-not establish a crash fix; signed deployment and hardware acceptance are separate.
+**Development status:** source preview. Historical native runtime/shutdown
+failures, coverage gaps and CPU/UI pressure remain documented. Later normal
+exits do not establish fixes for their initiating causes; signed deployment and
+hardware acceptance are separate.
 
 [Telemetry storage, dialog recovery and validation limits](analysis/hardening-v1.15-2026-11-01-telemetry-storage-dialogs.md).
 
@@ -356,29 +476,5 @@ review remain available.
   and release their temporary masks.
 - **Persistence evidence:** pre-existing startup entries retain urgent review
   priority as observations; enrollment alone grants no trust or attack verdict.
-
-## Validation and contributing
-
-Historical release evidence: **Final Cycle 34 verification.** The gate on
-`7eef1f0a0c400b34f170cbd1463cd3c6a454de3b` passes **2882 tests with 15 intentional platform skips**.
-This is a dated checkpoint, not the current revision's result or live coverage.
-[Retained maintenance history](analysis/public-maintenance-history.md) preserves
-the previous README and its scoped measurements;
-[the issue map](analysis/live-debug-2026-10-22/README.md) records further evidence
-and remaining work.
-The [v1.14.2 review map](analysis/curated-tools-breach-2026-10-29.md) records the
-new integration and breach-control checks with their scope and remaining holds.
-
-For a configured development environment, run the focused checks relevant to
-your change, then the required integration/self-check gates. Preserve skips and
-coverage gaps. Maintainer publication must verify canonical public `main`, a
-clean worktree and byte-identical tracked README assets.
-
-[Contributing](CONTRIBUTING.md) · [Writing modules](docs/writing-modules.md) ·
-[Report security issues](SECURITY.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)
-
-Third-party components retain their own terms. Zero Breach Toolkit code is
-Apache-2.0; its research data and optional rules retain their separate licenses
-and author notices. [Credits and bundled notices](docs/zero-breach-toolkit.md#credits-licenses-and-integrity).
 
 <!-- ANGERONA_DOC_STATUS tests=2882 skips=15 modules=86 -->

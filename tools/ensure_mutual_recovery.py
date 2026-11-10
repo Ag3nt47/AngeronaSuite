@@ -185,8 +185,14 @@ def _guarded_launch() -> dict:
         raise Held("The source launcher path cannot be represented safely for the Windows command host")
     _windows, system = trusted_windows_directories()
     environment = sanitized_child_environment({"ANGERONA_SUPERVISED_RECOVERY": "1"})
+    options = {"cwd": ROOT, "env": environment, "close_fds": True}
+    if os.name == "nt":
+        startup = subprocess.STARTUPINFO()
+        startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startup.wShowWindow = 0
+        options.update(creationflags=subprocess.CREATE_NO_WINDOW, startupinfo=startup)
     process = subprocess.Popen([str(system / "cmd.exe"), "/d", "/c", str(launcher)],
-                               cwd=ROOT, env=environment, close_fds=True)
+                               **options)
     # The launcher owns its own pins, leases, STOP/resume boundary and readiness.
     # It must remain alive if this one-shot observation ends first.
     return {"launcher_pid": process.pid, "outcome": "launch-requested"}

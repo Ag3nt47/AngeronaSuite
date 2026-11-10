@@ -7,6 +7,7 @@ import importlib
 import html
 import json
 import math
+from pathlib import Path
 import queue
 import threading
 import time
@@ -31,9 +32,14 @@ from angerona.core.config import (
 )
 from angerona.gui.presentation_timer import PresentationTimer
 from angerona.gui.progress_ring import ProgressRing
+from angerona.gui.theme import set_function_role
 
 _PROJECT = "https://github.com/interplains/Zero-Breach-Toolkit"
 _RELEASE = _PROJECT + "/releases/tag/v0.1.10"
+_COMMUNITY_SETTINGS = {
+    "community_rules_enabled": ("Use individually activated community YARA rules", False),
+    "community_playbooks_enabled": ("Use individually activated community SOAR playbooks", False),
+}
 _SETTINGS = {
     "github_tools_enabled": ("Enable curated scanners", True),
     "github_tools_auto_prepare": ("Prepare the pinned scanner after dashboard startup", True),
@@ -42,6 +48,7 @@ _SETTINGS = {
     "spyware_scan_zero_breach_enabled": ("Include Zero-Breach in Spyware Scan", True),
     "spyware_scan_verify_admin": ("Verify current privilege coverage before Spyware Scan", True),
     "breach_auto_isolate_enabled": ("Automatically request network lockdown for confirmed breaches", True),
+    **_COMMUNITY_SETTINGS,
 }
 _REPORT_REVIEW_PAGE_SIZE = 32
 _LIMITS = {
@@ -495,6 +502,7 @@ class CuratedToolsController(QObject):
         self.manager = manager
         self._factory = service_factory
         self._service = None
+        self._service_lock = threading.Lock()
         self._busy = False
         self._closed = False
         self._auto_started = False
@@ -537,6 +545,17 @@ class CuratedToolsController(QObject):
 
     def snapshot(self):
         return copy.deepcopy(self._snapshot)
+
+    def community_service(self):
+        """One lazily constructed backend shared by scanner and tool-hub workers."""
+        with self._service_lock:
+            if self._closed:
+                raise RuntimeError("Curated scanner controller is stopping.")
+            if self._service is None:
+                backend = _backend()
+                factory = self._factory or backend.CuratedToolService
+                self._service = factory(cfg=_config(self.manager))
+            return self._service
 
     def _publish(self, **values):
         self._snapshot.update(values)
@@ -670,10 +689,7 @@ class CuratedToolsController(QObject):
                 if self._cancel_requested.is_set():
                     operation.cancel()
                 operation.check()
-                if self._service is None:
-                    factory = self._factory or backend.CuratedToolService
-                    self._service = factory(cfg=cfg)
-                service = self._service
+                service = self.community_service()
                 progress = lambda message: self._frame("progress", _literal(message, 1000))
                 if action == "automatic_probe":
                     from angerona.core.spyware_scan_schedule import AutomaticSpywareScanSchedule
@@ -690,7 +706,8 @@ class CuratedToolsController(QObject):
                     result = self._priority_work(backend, service, cfg, operation, options, progress, budget)
                 elif action == "prepare":
                     result = service.prepare(operation, progress=progress,
-                                             allow_download=bool(getattr(cfg, "github_tools_allow_download", True)))
+                                             allow_download=bool(getattr(cfg, "github_tools_allow_download", True)),
+                                             restore_uninstalled=(options or {}).get("restore_uninstalled") is True)
                 elif action == "revert":
                     self._save_config(cfg, {"github_tools_enabled": False, "github_tools_auto_prepare": False})
                     result = service.revert(operation, progress=progress)
@@ -735,8 +752,13 @@ class CuratedToolsController(QObject):
                     failure["storage_review_error"] = reason
                 if type(error) is getattr(backend, "ToolStorageHeld", None):
                     failure.update(state="held", storage_hold=copy.deepcopy(error.storage_hold))
+                elif type(error) is getattr(backend, "ToolWorkStorageHeld", None):
+                    failure["storage_hold"] = copy.deepcopy(error.storage_hold)
+                    if not (cancelled or timed_out):
+                        failure["state"] = "held"
                 if (action not in {"review_reports", "export_report", "clear_reports"}
-                        and not (timed_out or cancelled or type(error) is getattr(backend, "ToolStorageHeld", None))):
+                        and not (timed_out or cancelled or type(error) in (
+                            getattr(backend, "ToolStorageHeld", None), getattr(backend, "ToolWorkStorageHeld", None)))):
                     failure["verified"] = False
                 if type(result) is dict:
                     failure["partial_result"] = result
@@ -917,7 +939,18 @@ class CuratedToolsController(QObject):
                                 service.prepare(operation, progress=progress,
                                                 allow_download=bool(getattr(cfg, "github_tools_allow_download", True)))
                             operation.check()
-                            tool_result = service.scan(backend.ToolScanRequest(**options), operation, progress=progress)
+                            try:
+                                tool_result = service.scan(backend.ToolScanRequest(**options), operation, progress=progress)
+                            except Exception as error:
+                                if type(error) is not getattr(backend, "ToolWorkStorageHeld", None):
+                                    raise  # Source, custody and unknown failures retain strict cleanup.
+                                operation.check()  # A storage observation never overrides STOP/deadline.
+                                hold = copy.deepcopy(error.storage_hold)
+                                tool_result = dict(state="held", tool_worker_started=False,
+                                    coverage_incomplete=True, message=str(error), storage_hold=hold,
+                                    findings=[], coverage={"state": "not-started", "storage_hold": hold})
+                                self._frame("metadata", {"storage_hold": hold})
+                                progress("Zero-Breach is held by free space; native SpywareGuard checks continue.")
                             self._frame("metadata", {"partial_result": tool_result})
                             operation.check()
                     completed_stages.add("toolkit")
@@ -958,6 +991,8 @@ class CuratedToolsController(QObject):
                         scan_progress=scan_progress("finished", terminal=True))
             if self._last_native_completion is not None:
                 result["native_scan_completion"] = self._last_native_completion
+            if type(tool_result.get("storage_hold")) is dict:
+                result["storage_hold"] = copy.deepcopy(tool_result["storage_hold"])
             if options.get("mode") == "full" and native_enabled:
                 observed = {}
                 for key, name, member in (
@@ -1379,7 +1414,7 @@ class CuratedToolsController(QObject):
         return self._start("status")
 
     def prepare(self):
-        return self._start("prepare")
+        return self._start("prepare", {"restore_uninstalled": True})
 
     def scan(self, **options):
         return self._start("scan", options)
@@ -1794,19 +1829,37 @@ class CuratedToolsSettings(QWidget):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
+        self._settings_save_pending = False
         cfg = _config(controller.manager)
         layout = QVBoxLayout(self)
         if hasattr(controller, "activities"):
             from angerona.gui.action_progress import ActionProgressView
             self.progress_view = ActionProgressView(controller.activities, self, config=cfg)
             layout.addWidget(self.progress_view)
-        layout.addWidget(_label("Scanner setup runs after the dashboard paints. Scanning requires an explicit action."))
+        layout.addWidget(_label("Scanner setup runs after the dashboard paints. Scans follow the saved schedule or an explicit scan action."))
         self.controls = {}
         for name, (title, default) in _SETTINGS.items():
+            if name in _COMMUNITY_SETTINGS:
+                continue
             check = QCheckBox(title)
             check.setChecked(bool(getattr(cfg, name, default)))
             self.controls[name] = check
             layout.addWidget(check)
+        community = QGroupBox("Community rules and playbooks")
+        community_layout = QVBoxLayout(community)
+        for name, (title, default) in _COMMUNITY_SETTINGS.items():
+            check = QCheckBox(title)
+            check.setObjectName(name)
+            check.setChecked(getattr(cfg, name, default) is True)
+            self.controls[name] = check
+            community_layout.addWidget(check)
+            warning = ("Only individually activated, validated rules are included. Imported matches do not grant response authority. "
+                       "Invalid or unavailable packs leave bundled scanning available and report a coverage gap."
+                       if name == "community_rules_enabled" else
+                       "Only individually activated playbooks run. Containment requests still need verified original evidence, "
+                       "existing response permissions, exact target identity and corroboration. This switch grants no administrator rights.")
+            community_layout.addWidget(_label(warning))
+        layout.addWidget(community)
         limits = QFormLayout()
         for name, (title, default, low, high) in _LIMITS.items():
             spin = QSpinBox()
@@ -1832,6 +1885,9 @@ class CuratedToolsSettings(QWidget):
         self.save_button = save
         save.clicked.connect(self._save)
         layout.addWidget(save, 0, Qt.AlignmentFlag.AlignLeft)
+        self.save_status = _label("Changes apply only after Save succeeds. Per-item activation remains separate.")
+        self.save_status.setObjectName("CommunityRuntimeSettingsSaveStatus")
+        layout.addWidget(self.save_status)
         clear = QPushButton("Delete scanner reports…")
         self.clear_reports_button = clear
         clear.clicked.connect(self._clear_reports)
@@ -1848,6 +1904,16 @@ class CuratedToolsSettings(QWidget):
     def _update_busy(self, snapshot):
         self.save_button.setEnabled(not snapshot.get("busy"))
         self.clear_reports_button.setEnabled(not snapshot.get("busy"))
+        if (self._settings_save_pending and not snapshot.get("busy")
+                and snapshot.get("active_action") == "settings" and snapshot.get("lifecycle") == "terminal"):
+            self._settings_save_pending = False
+            cfg = _config(self.controller.manager)
+            for name, (_title, default) in _COMMUNITY_SETTINGS.items():
+                self.controls[name].setChecked(getattr(cfg, name, default) is True)
+            failed = snapshot.get("state") in {"failed", "cancelled", "timed-out"}
+            self.save_status.setText(("Save failed; community runtime switches retain their saved values. "
+                                      + str(snapshot.get("error", snapshot.get("message", "")))[:500]) if failed else
+                                     "Tool settings saved. Only individually activated community data can run; response permissions are unchanged.")
 
     def _save(self):
         values = {name: widget.isChecked() if name in _SETTINGS else widget.value()
@@ -1855,7 +1921,9 @@ class CuratedToolsSettings(QWidget):
         count = self.report_count.value()
         values["github_tools_report_count"] = SCANNER_REPORT_COUNT_UNLIMITED if count == 0 else count
         values["spyware_scan_priority"] = self.priority.currentData()
-        self.controller.save_options(values)
+        if self.controller.save_options(values):
+            self._settings_save_pending = True
+            self.save_status.setText("Saving in background; current runtime switches remain unchanged until persistence succeeds.")
 
     def _clear_reports(self):
         if QMessageBox.question(self, "Delete scanner reports",
@@ -2144,11 +2212,9 @@ class SpywareScanControls(QWidget):
         self.review_button.clicked.connect(self._open_report)
         self.outcome = _label()
         self.outcome.setStyleSheet("color:#fbbf24;font-weight:600;")
-        for label in (self.activity, self.current_file, self.timing, self.hits, self.outcome, self.review_notice):
+        for label in (self.hits, self.outcome, self.review_notice):
             layout.addWidget(label)
         layout.addWidget(self.review_button, 0, Qt.AlignmentFlag.AlignLeft)
-        layout.addWidget(self.item_caption)
-        layout.addWidget(self.item_progress)
 
         self.setup_toggle = _ScanToolButton()
         self.setup_toggle.setText("Scan setup")
@@ -2181,7 +2247,7 @@ class SpywareScanControls(QWidget):
         self.steps_scroll = QScrollArea()
         self.steps_scroll.setWidgetResizable(True)
         self.steps_scroll.setMinimumHeight(90)
-        self.steps_scroll.setMaximumHeight(260)
+        self.steps_scroll.setMaximumHeight(220)
         self.steps_body = QWidget()
         self.steps_layout = QVBoxLayout(self.steps_body)
         self.steps_layout.setContentsMargins(0, 0, 0, 0)
@@ -2197,6 +2263,8 @@ class SpywareScanControls(QWidget):
         explanation = QVBoxLayout(self.explanation_group)
         self.stage_explanation = _label()
         explanation.addWidget(self.stage_explanation)
+        for observation in (self.activity, self.current_file, self.timing, self.item_caption, self.item_progress):
+            explanation.addWidget(observation)
         self._stage_grid = QGridLayout()
         self.stage_chips = {}
         for stage, title in (("preflight", "Preflight"), ("native", "Native"),
@@ -2235,7 +2303,8 @@ class SpywareScanControls(QWidget):
             Qt.ArrowType.DownArrow if opened else Qt.ArrowType.RightArrow))
         explanation.addWidget(self.explanation_details)
 
-        self.resource_group = QGroupBox("Computer specs" if scope_controls else "Resource and privilege details")
+        self.resource_group = QGroupBox("Computer specs" if scope_controls
+                                       else "Scan resources & permissions")
         resources = QVBoxLayout(self.resource_group)
         self.host_specs = _label("Host sample unavailable.") if scope_controls else None
         if self.host_specs is not None:
@@ -2246,13 +2315,19 @@ class SpywareScanControls(QWidget):
         resources.addWidget(self.resources)
         resources.addWidget(self.privileges)
         self.privileges.setToolTip("Current-token observations do not grant administrator rights or response authority.")
-        if scope_controls:
-            next_section = layout.indexOf(self.item_progress) + 1
-            layout.insertWidget(next_section, self.explanation_group)
-            layout.insertWidget(next_section + 1, self.resource_group)
-        else:
-            layout.addWidget(self.explanation_group)
-            layout.addWidget(self.resource_group)
+        next_section = layout.indexOf(self.review_button) + 1
+        layout.insertWidget(next_section, self.explanation_group)
+        layout.insertWidget(next_section + 1, self.resource_group)
+        for section, role in ((self.progress_group, "monitor"), (self.explanation_group, "analysis"),
+                              (self.resource_group, "monitor"), (self.scope_group, "configure"),
+                              (self.checks_group, "configure")):
+            set_function_role(section, role)
+            section.layout().setContentsMargins(8, 6, 8, 6)
+            section.layout().setSpacing(4)
+        for control, role in ((self.cancel_button, "response"), (self.review_button, "analysis"),
+                              (self.setup_toggle, "configure"), (self.step_toggle, "monitor"),
+                              (self.storage_button, "configure"), (self.explanation_toggle, "analysis")):
+            set_function_role(control, role)
         initial = self.controller.snapshot()
         self._apply(initial)
         self._presentation = _ScanViewPresentation(self, initial)
@@ -2282,6 +2357,27 @@ class SpywareScanControls(QWidget):
 
     def _apply_timing(self, snapshot, current=None):
         current = current if type(current) is dict else {}
+        readers = snapshot.get("scanner_progress")
+        unbound_ready = (
+            self._has_scope_controls and snapshot.get("busy") is False
+            and snapshot.get("state") in ("ready", "idle")
+            and snapshot.get("lifecycle") in (None, "idle", "terminal")
+            and snapshot.get("active_action") not in ("scan", "priority_scan")
+            and snapshot.get("scan_progress") is None
+            and (readers is None or type(readers) is dict and not readers)
+            and not current
+            and all(snapshot.get(key) is None for key in (
+                "request_id", "native_scan_completion", "partial_result",
+                "storage_hold", "job_id", "report", "review_gap", "previous_attempt"))
+            and (snapshot.get("review_available") is None or snapshot.get("review_available") is False)
+        )
+        if unbound_ready:
+            budget = self.budget.value()
+            self.timing.setText(f"Ready · next Spyware Scan budget {_duration(budget)} ({budget}s)")
+            self.timing.setToolTip("No current scan request is bound to this ready/idle view. "
+                                   "This is the selected budget for the next Spyware Scan, not elapsed scan work. "
+                                   "Retained reports and their coverage limits are unchanged.")
+            return
         started = _measured(snapshot.get("started_monotonic"))
         elapsed = (max(0, time.monotonic() - started) if snapshot.get("busy") and started is not None
                    else snapshot.get("elapsed_seconds", current.get("elapsed_s")))
@@ -2324,6 +2420,9 @@ class SpywareScanControls(QWidget):
         scope = f"{names[self._scope_mode]} · " if self._has_scope_controls else ""
         checks = " + ".join(selected) if selected else "No checks selected"
         self.setup_summary.setText(f"{scope}{checks} · next run {_duration(self.budget.value())}")
+        presentation = getattr(self, "_presentation", None)
+        if presentation is not None:
+            self._apply_timing(presentation.latest, getattr(self, "_timing_current", None))
 
     def _set_setup_open(self, opened):
         self.setup_body.setVisible(opened)
@@ -2481,7 +2580,7 @@ class SpywareScanControls(QWidget):
                                   and native_reader.get("state") == "completed")
         fractions = []
         for name in planned:
-            if name in done:
+            if name in done or (name == "native" and native_checks_finished):
                 fractions.append(1.0)
                 continue
             source = readers.get(name)
@@ -2536,13 +2635,22 @@ class SpywareScanControls(QWidget):
         hold = snapshot.get("storage_hold")
         if ended and type(hold) is dict:
             explanation = "The toolkit did not start because retained reports need review. Open Review scanner storage. "
-            if hold.get("kind") == "report-count":
+            if hold.get("kind") == "free-space":
+                facts = []
+                for key, label in (("required_bytes", "required"), ("free_bytes", "available")):
+                    value = hold.get(key)
+                    if type(value) is int and 0 <= value <= 2**64:
+                        facts.append(f"{label}: {value / 1024**3:.2f} GiB")
+                explanation = ("Zero-Breach did not start because its working volume lacks free space. "
+                    + "; ".join(facts) + ". Review space on " + _literal(hold.get("volume"), 80)
+                    + ". Native checks retain their own recorded result; coverage is incomplete. ")
+            elif hold.get("kind") == "report-count":
                 retained = hold.get("retained_reports")
                 if type(retained) is int and retained < SCANNER_REPORT_COUNT_MAX:
                     explanation += "You can allow one extra report for the next scan, if the fresh review permits it. "
                 explanation += "You can change the saved count, choose Unlimited, or delete eligible reports. "
                 explanation += "Export alone does not free slots. "
-            else:
+            elif hold.get("kind") != "free-space":
                 explanation += "Count settings do not bypass byte, free-space or managed inventory checks. "
             explanation += "No evidence was deleted automatically."
         if (native_checks_finished and progress.get("stage") in {"toolkit", "native"}
@@ -2554,7 +2662,8 @@ class SpywareScanControls(QWidget):
                            "Native checks finished; report aggregation is pending. Next: assemble findings and explicit coverage gaps.")
         if state == "timed-out":
             explanation = "The selected time budget expired. Partial results are retained; this is incomplete coverage. Choose a larger next-run budget to retry."
-        if progress.get("stage") == "finished" and state == "incomplete":
+        if (progress.get("stage") == "finished" and state == "incomplete"
+                and not (type(hold) is dict and hold.get("kind") == "free-space")):
             explanation = ("Some selected checks were unavailable or stopped early. "
                            "Review the hits and the areas the scan could not check. "
                            "A clean verdict requires more evidence.")
@@ -3107,7 +3216,7 @@ class CuratedScannerWidget(QWidget):
 
 
 class GitHubToolsDialog(QDialog):
-    def __init__(self, manager, parent=None):
+    def __init__(self, manager, parent=None, *, open_forge=None):
         super().__init__(parent)
         self.setWindowTitle("Angerona — GitHub tools")
         self.setModal(False)
@@ -3124,26 +3233,78 @@ class GitHubToolsDialog(QDialog):
         scroll.setWidget(self.scanner)
         self.tabs.addTab(scroll, "Curated scanners")
         from angerona.gui.github_tools import GitHubToolsPanel
-        self.source_library = GitHubToolsPanel(self)
+        cfg = _config(manager)
+        from angerona.core.data_paths import data_dir
+        configured_root = getattr(cfg, "data_dir", None)
+        root = Path(configured_root) if configured_root is not None else data_dir()
+        self.source_library = GitHubToolsPanel(self, root=root / "github-source-library")
         source_scroll = QScrollArea()
         source_scroll.setWidgetResizable(True)
         source_scroll.setWidget(self.source_library)
         self.tabs.addTab(source_scroll, "Source library & analysis")
+        self.source_scroll = source_scroll
+        from angerona.core.github_tool_catalog import GitHubToolCatalog
+        from angerona.core.community_tool_adapters import CommunityToolService
+        from angerona.core.rule_playbook_library import RulePlaybookLibrary
+        from angerona.gui.community_tools import CommunityToolsPanel
+        from angerona.gui.rules_playbooks import RulesPlaybooksPanel
+        controller = self.scanner.controller
+        class ScannerProxy:
+            def __getattr__(self, name):
+                return getattr(controller.community_service(), name)
+        catalog = GitHubToolCatalog(root / "github-source-library")
+        self.community_service = CommunityToolService(root / "community-tools", catalog=catalog, curated=ScannerProxy())
+        self.suggested = CommunityToolsPanel(self.community_service, self, open_source_review=self.open_source_library)
+        self.tabs.addTab(self.suggested, "Suggested tools")
+        self.rule_library = RulePlaybookLibrary(root / "rule-playbook-library", catalog=catalog)
+        self.rules = RulesPlaybooksPanel(self.rule_library, self, open_forge=open_forge,
+                                        open_source_review=self.open_source_library, open_settings=self.open_settings, cfg=cfg)
+        self.tabs.addTab(self.rules, "Rules & Playbooks")
         settings = QScrollArea()
         settings.setWidgetResizable(True)
         settings.setWidget(CuratedToolsSettings(self.scanner.controller, self))
+        self.settings_scroll = settings
         self.tabs.addTab(settings, "Settings")
         self.scanner.analysis_requested.connect(self.open_analysis)
         layout.addWidget(self.tabs)
         from angerona.gui.window_fit import install_window_fit
         self._window_fit = install_window_fit(self)
+        self.tabs.setCurrentWidget(self.suggested)
 
     def open_analysis(self):
-        self.tabs.setCurrentIndex(1)
+        self.tabs.setCurrentWidget(self.source_scroll)
         self.source_library.tabs.setCurrentWidget(self.source_library.analysis_lab)
+
+    def open_source_library(self):
+        self.tabs.setCurrentWidget(self.source_scroll)
+        self.source_library.tabs.setCurrentIndex(0)
+
+    def open_settings(self):
+        self.tabs.setCurrentWidget(self.settings_scroll)
+
+    def closeEvent(self, event):  # noqa: N802
+        self.source_library.cancel_pending()
+        self.source_library.analysis_lab.cancel_pending()
+        self.suggested.analysis_lab.cancel_pending()
+        for entry in tuple(self.suggested._operations.values()):
+            entry["operation"].cancel()
+        self.rules.cancel()
+        super().closeEvent(event)
+
+    def owned_workers(self):
+        source = getattr(self.source_library, "_worker", None)
+        analysis = getattr(self.source_library.analysis_lab, "_worker", None)
+        return (*self.suggested.owned_workers(), *self.rules.owned_workers(), *((source,) if source else ()), *((analysis,) if analysis else ()))
+
+    def custody_released(self):
+        return self.suggested.custody_released() and self.rules.custody_released()
 
     def retire_view(self):
         # Source-review work belongs to its view; scanner work belongs to App.
         self.source_library._lifetime["closed"] = True
         self.source_library.cancel_pending()
+        self.source_library.analysis_lab._lifetime["closed"] = True
+        self.source_library.analysis_lab.cancel_pending()
+        self.suggested.request_shutdown()
+        self.rules.request_shutdown()
         self.close()

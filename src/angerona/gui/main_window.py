@@ -39,7 +39,7 @@ from angerona.core.module_usage import (
 from angerona.gui.animations import GlobalLoadingIndicator, HeaderActivityLane, RunSpinner
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.header_controls import (
-    CurrentAssessmentBanner, HeaderActionButton, NotificationHeaderButton, PanelRevealOverlay, motion_allowed)
+    CurrentAssessmentBanner, HeaderActionButton, HeaderActionStrip, NotificationHeaderButton, PanelRevealOverlay, motion_allowed)
 from angerona.gui.holographic_orb import HolographicOrbController
 from angerona.gui.notification_inbox import NotificationInbox
 from angerona.gui.live_defense_activity import LiveDefenseActivityCard
@@ -298,12 +298,16 @@ class MainWindow(QMainWindow):
         shutdown_prepare=None,
         shutdown_callback=None,
         shutdown_critical=None,
+        red_team_console_factory=None,
     ) -> None:
         super().__init__()
         self.bus, self.storage, self.manager, self.config = bus, storage, manager, config
         self._shutdown_prepare = shutdown_prepare
         self._shutdown_callback = shutdown_callback
         self._shutdown_critical = shutdown_critical
+        # Explicit embedding/fixture seam, never a saved setting or IPC input.
+        # Ordinary application startup launches the separate bundled tool.
+        self._red_team_console_factory = red_team_console_factory
         self._termination_started = False
         self._simulation_session = None
         self._simulation_plan = None
@@ -355,6 +359,8 @@ class MainWindow(QMainWindow):
         self._spyware_guard_ui_closed = False
         QApplication.instance().aboutToQuit.connect(self._close_spyware_guard_window)
         self._github_tools_dialog = None
+        self._rules_playbooks_dialog = None
+        self._suite_map_dialog = None
         self._github_tools_ui_closed = False
         QApplication.instance().aboutToQuit.connect(self._close_github_tools_window)
 
@@ -399,9 +405,9 @@ class MainWindow(QMainWindow):
         root.setSpacing(7)
         self._dashboard_content = central
 
-        # ── Header: routine actions left, admin actions right, title centered ─
-        # Wide desktops use one row; smaller windows place the brand above
-        # the controls, then stack the two action groups when necessary.
+        # ── Header: centered title/assessment above one control row ─────────
+        # Narrow screens scroll the actions horizontally; STOP stays pinned
+        # outside that viewport with its complete label at the right edge.
         #
         # Self-Test and Shark Attack are the two things you reach for while
         # actively USING the app, so they anchor the left edge, closest to
@@ -534,6 +540,14 @@ class MainWindow(QMainWindow):
         worldview_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 worldview_btn, self._open_worldview, "#38bdf8"))
+        self._suite_map_btn = HeaderActionButton(
+            "SUITE MAP · 3D", "world", "Suite Map — interactive 3D topology",
+            "Explore modules, EventBus, drives, visible devices and observed ports. "
+            "Orbit, zoom and select a shape for details and navigation.")
+        self._suite_map_btn.setObjectName("SuiteMapShortcut")
+        self._suite_map_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self._suite_map_btn, self._open_suite_map, "#22d3ee"))
         attack_heatmap_btn = HeaderActionButton(
             "ATT&CK MAP",
             "attack",
@@ -583,6 +597,15 @@ class MainWindow(QMainWindow):
         self._github_tools_btn.clicked.connect(
             lambda _checked=False: self._run_header_action(
                 self._github_tools_btn, self._open_github_tools, "#e2e8f0"))
+        self._rules_playbooks_btn = HeaderActionButton(
+            "RULES & PLAYBOOKS", "console", "Rules & Playbooks",
+            "Find, import, edit and test YARA rules or scoped declarative SOAR "
+            "playbooks, then review activation, global switches and rollback.",
+        )
+        self._rules_playbooks_btn.setObjectName("RulesPlaybooksShortcut")
+        self._rules_playbooks_btn.clicked.connect(
+            lambda _checked=False: self._run_header_action(
+                self._rules_playbooks_btn, self._open_rules_playbooks, "#a78bfa"))
         self._threat_intel_dlg: ThreatIntelDashboard | None = None
         self._intl_alert_pulse = False   # toggled each tick when alert is pending
         forensics_btn = HeaderActionButton(
@@ -677,32 +700,33 @@ class MainWindow(QMainWindow):
         self._stop_btn = stop_btn
         self._header_primary_buttons = [adaptation_btn, test_btn, sim_btn, self.eco_btn]
         self._header_nav_buttons = [
+            self._suite_map_btn,
             worldview_btn,
             attack_heatmap_btn,
             self.threat_intel_btn,
             self._spyware_guard_btn,
-            self._github_tools_btn,
-            forensics_btn,
             operations_btn,
+            forensics_btn,
+            self._rules_playbooks_btn,
+            self._github_tools_btn,
             console_btn,
-            setup_btn,
-            self._help_btn,
             self._notification_btn,
+            setup_btn,
             settings_btn,
+            self._help_btn,
         ]
-        # The destructive Stop action keeps its label whenever the available
-        # width permits; at very narrow widths it remains uniquely identifiable
-        # by its red square icon and definition tooltip.
+        # STOP always keeps its complete label and its own visible allocation.
         self._header_stop_button = stop_btn
         self._header_nav_columns = len(self._header_nav_buttons) + 1
-        for column, button in enumerate((*self._header_nav_buttons, stop_btn), 1):
-            rl.addWidget(button, 0, column)
+        self._place_header_navigation(
+            rl, (*self._header_nav_buttons, stop_btn), self._header_nav_columns)
 
         self._header_groups = (left, brand_box, right)
         self._header_layout_mode = None
         header.addWidget(left, 0, 0)
         header.addWidget(brand_box, 0, 1)
         header.addWidget(right, 0, 2)
+        self._install_single_row_header()
         root.addLayout(header)
         root.addWidget(self._header_activity_box)
         QTimer.singleShot(0, self._apply_dashboard_layout)
@@ -1120,109 +1144,47 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _update_header_button_modes(self) -> None:
-        """Allocate bounded button widths to the current header row budget."""
-        width = max(1, self.width())
+    def _update_header_button_modes(self, *, layout_mode: str | None = None) -> None:
+        """Keep readable semantic widths; overflow scrolls instead of wrapping."""
         scale = max(0.75, min(1.35, getattr(self, "_ui_scale", 1.0)))
-        icon_extent = max(32, min(64, round(28 + width * 0.011)))
-        gap = max(3, min(10, round(width / 180)))
+        gap = max(4, min(10, round(6 * scale)))
+        icon_extent = max(32, round(38 * scale))
         primary = list(getattr(self, "_header_primary_buttons", ()))
         navigation = list(getattr(self, "_header_nav_buttons", ()))
         stop = getattr(self, "_header_stop_button", None)
-        if stop is not None:
-            navigation.append(stop)
+        buttons = [*primary, *navigation, *([stop] if stop is not None else [])]
         spy = getattr(self, "_spyware_guard_btn", None)
-        nav_compact = width < 2600 * scale
-        primary_compact = width < 1100 * scale
-        stop_compact = width < 1100 * scale
-        for button in navigation:
-            compact = stop_compact if button is stop else nav_compact
-            if button is spy:
-                compact = width < 850 * scale
+        for button in buttons:
+            if not getattr(button, "_angerona_header_relayout_bound", False):
+                button.semantic_width_changed.connect(self._queue_header_semantic_layout)
+                button._angerona_header_relayout_bound = True
+            button.ensurePolished()
+            compact = button in navigation and button is not spy
             button.set_compact(compact, icon_extent)
-        for button in primary:
-            button.set_compact(primary_compact, icon_extent)
+            button.set_responsive_width(icon_extent if compact else button.full_label_width())
+        height = max([max(32, round(32 * scale)),
+                      *(button.sizeHint().height() for button in buttons)])
+        for button in buttons:
+            if button.minimumHeight() != height or button.maximumHeight() != height:
+                button.setFixedHeight(height)
         for group in getattr(self, "_header_groups", ())[::2]:
+            if group.minimumHeight() != height or group.maximumHeight() != height:
+                group.setFixedHeight(height)
             layout = group.layout()
-            if layout is not None and layout.spacing() != gap:
+            if layout is not None:
                 layout.setSpacing(gap)
-
-        growth = max(0.90, min(1.20, width / 1800))
-
-        def allocate(buttons, budget):
-            if not buttons:
-                return
-            minima, desired = [], []
-            for button in buttons:
-                # Stylesheet/font changes may otherwise leave a stale hint.
-                button.ensurePolished()
-                if button.is_compact():
-                    minimum = 48 if button is spy else 32
-                    preferred = round(icon_extent * 1.55) if button is spy else icon_extent
-                else:
-                    minimum = 96 if button is spy else 64
-                    preferred = round(button.sizeHint().width() * growth)
-                    if button is spy:
-                        preferred += 20
-                minima.append(minimum)
-                limit = 380 if button in navigation and button is not spy else 400
-                desired.append(max(minimum, min(limit, preferred)))
-            if spy in buttons:
-                # Preserve the wider SpywareGuard destination at every shared
-                # budget ratio, including long labels and high-DPI fonts.
-                peers = [want for button, want in zip(buttons, desired)
-                         if button in navigation and button is not spy]
-                index = buttons.index(spy)
-                desired[index] = min(400, max(desired[index], max(peers, default=0) + 20))
-            # All allocated widths include a click target. Only spare space
-            # shrinks; semantic labels elide through HeaderActionButton.
-            available = max(sum(minima), int(budget) - gap * (len(buttons) - 1))
-            spare = sum(want - minimum for want, minimum in zip(desired, minima))
-            ratio = min(1.0, max(0, available - sum(minima)) / max(1, spare))
-            for button, minimum, preferred in zip(buttons, minima, desired):
-                button.set_responsive_width(minimum + int((preferred - minimum) * ratio))
-                height = max(32, round(32 * scale))
-                if button.minimumHeight() != height:
-                    button.setMinimumHeight(height)
-
-        # Leave room for viewport margins, inter-group spacing and, on a
-        # single-row desktop, the centered brand. Stacked rows get independent
-        # budgets so the right-side destinations remain reachable at 480 px.
-        row_budget = max(408, width - 80)
-        navigation_budget = row_budget
-        if width < 850 * scale:
-            allocate(primary, row_budget)
-            allocate(navigation, row_budget)
-        else:
-            if width >= 1650 * scale:
-                groups = getattr(self, "_header_groups", ())
-                brand_width = (groups[1].minimumSizeHint().width()
-                               if len(groups) > 1 else 0)
-                row_budget -= max(180, round(180 * scale), brand_width)
-            allocate(primary + navigation, row_budget - gap)
-        # A fixed-width button may paint outside its layout slot when the
-        # minimum widths plus gaps exceed the narrow viewport. Keep the same
-        # widgets and wrap navigation only when its single row cannot fit.
-        if navigation:
-            columns = len(navigation)
-            row_width = sum(button.minimumWidth() for button in navigation) + gap * (columns - 1)
-            if row_width > navigation_budget:
-                columns = (columns + 1) // 2
-            if columns != self._header_nav_columns:
-                layout = self._header_groups[2].layout()
-                for button in navigation:
-                    layout.removeWidget(button)
-                for index, button in enumerate(navigation):
-                    row, column = divmod(index, columns)
-                    layout.addWidget(button, row, column + 1)
-                self._header_nav_columns = columns
-        for indicator in (
-            getattr(self, "run_spinner", None),
-            getattr(self, "loading_indicator", None),
-        ):
+                layout.invalidate()
+                layout.activate()
+            group.updateGeometry()
+        strip = getattr(self, "_header_action_strip", None)
+        if strip is not None:
+            strip.sync_geometry(gap)
+        row = getattr(self, "_header_control_row", None)
+        if row is not None:
+            row.layout().setSpacing(gap)
+        for indicator in (getattr(self, "run_spinner", None),
+                          getattr(self, "loading_indicator", None)):
             if indicator is not None:
-                # A separate lane can retain useful, elided activity text even
-                # on narrow windows without taking space from any action.
                 indicator.set_compact(False, icon_extent)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
@@ -1288,73 +1250,21 @@ class MainWindow(QMainWindow):
     def _apply_dashboard_layout(self) -> None:
         if not hasattr(self, "_console_section"):
             return
+        self._install_single_row_header()
         if getattr(self, "_screen_fit_enabled", False):
-            # Size the header for the width the screen can actually display.
-            # A final clamp alone leaves wider buttons on old compact slots
-            # until the debounced resize pass, which can overlap destinations.
             self._fit_dashboard_to_screen()
         self._maybe_rescale_ui()
         self._update_header_button_modes()
         width = self.width()
         scale = self._ui_scale
-        # Refresh nested layouts before reading their minima. Font and label
-        # mode changes can otherwise leave wider children on old icon slots.
-        minima = []
         for group in self._header_groups:
             group.ensurePolished()
-            group_layout = group.layout()
-            if group_layout is not None:
-                group_layout.invalidate()
-                group_layout.activate()
+            if group.layout() is not None:
+                group.layout().invalidate()
+                group.layout().activate()
             group.updateGeometry()
-            minima.append(max(group.minimumWidth(), group.minimumSizeHint().width(),
-                              group_layout.minimumSize().width() if group_layout else 0))
-        available = max(1, width - 80)
-        spacing = max(0, self._header_layout.horizontalSpacing()) * 2
-        wide_needed = sum(minima) + spacing
-        two_needed = minima[0] + minima[2] + spacing
-        mode = "wide" if width >= 1650 * scale else "stack" if width < 850 * scale else "two"
-        if getattr(self, "_operations_disclosure", None) is not None and mode == "two":
-            if wide_needed <= available:
-                mode = "wide"
-        # Recheck every mode against fresh constraints, including nominally
-        # wide desktops. A width breakpoint alone does not prove a row fits.
-        if mode == "wide" and wide_needed > available:
-            mode = "two"
-        if mode == "two" and two_needed > available:
-            mode = "stack"
-        if mode != self._header_layout_mode:
-            layout = self._header_layout
-            left, brand, right = self._header_groups
-            for widget in self._header_groups:
-                layout.removeWidget(widget)
-            for column in range(3):
-                layout.setColumnStretch(column, 0)
-            if mode == "wide":
-                layout.addWidget(left, 0, 0)
-                layout.addWidget(brand, 0, 1)
-                layout.addWidget(right, 0, 2)
-                layout.setColumnStretch(1, 1)
-            elif mode == "two":
-                layout.addWidget(brand, 0, 0, 1, 3)
-                layout.addWidget(left, 1, 0)
-                layout.addWidget(right, 1, 2)
-                layout.setColumnStretch(1, 1)
-            else:
-                layout.addWidget(brand, 0, 0, 1, 3)
-                layout.addWidget(left, 1, 0, 1, 3, Qt.AlignLeft)
-                layout.addWidget(right, 2, 0, 1, 3, Qt.AlignLeft)
-            self._header_layout_mode = mode
-
-        # Width constraints changed below nested QWidget layout boundaries.
-        # Explicitly refresh their cached hints before the grid assigns space;
-        # otherwise a compact group's old width can survive a label-mode
-        # transition and Qt places wider children on the former icon slots.
-        for group in self._header_groups:
-            group_layout = group.layout()
-            if group_layout is not None:
-                group_layout.invalidate()
-            group.updateGeometry()
+        self._header_action_strip.sync_geometry()
+        self._header_control_row.layout().activate()
         self._header_layout.invalidate()
         self._header_layout.activate()
 
@@ -1415,6 +1325,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._fit_collapsed_operations)
         if getattr(self, "_screen_fit_enabled", False):
             self._fit_dashboard_to_screen()
+        MainWindow._sync_header_focus_order(self)
 
     def apply_theme(self, theme: str | None = None) -> None:
         # SettingsDialog passes the newly-chosen theme here; callers that just
@@ -1493,16 +1404,7 @@ class MainWindow(QMainWindow):
         color: str = "#38bdf8",
     ) -> None:
         """Reveal the actual window created by any clickable dashboard surface."""
-        if not motion_allowed(self.config):
-            callback()
-            return
-        overlay = getattr(self, "_panel_reveal", None)
-        if overlay is None:
-            callback()
-            return
-        # A second click while the destination reveal is active is deliberately
-        # ignored so it cannot open duplicate modal windows.
-        overlay.reveal(source, callback, color)
+        MainWindow._dispatch_header_destination(self, source, callback, color)
 
     def _open_system_pulse_details(self) -> None:
         def _show():
@@ -2296,7 +2198,7 @@ class MainWindow(QMainWindow):
         setattr(dialog, "_angerona_close_bypass", True)
         dialog.close()
 
-    def _open_github_tools(self, *, open_analysis=False):
+    def _open_github_tools(self, *, open_analysis=False, open_source_review=False, open_settings=False):
         """Open a reusable tool hub; creating its view starts no scan."""
         if (getattr(self, "_github_tools_ui_closed", False)
                 or getattr(self.manager, "ugcap_paused", False)
@@ -2305,13 +2207,17 @@ class MainWindow(QMainWindow):
         dialog = self._github_tools_dialog
         if dialog is None:
             from angerona.gui.curated_tools import GitHubToolsDialog
-            dialog = GitHubToolsDialog(self.manager, self)
+            dialog = GitHubToolsDialog(self.manager, self, open_forge=self._open_community_forge)
             dialog.setWindowIcon(self._github_tools_btn.icon())
             dialog.setStyleSheet(self._qss())
             self._github_tools_dialog = dialog
             configure_work_window(dialog)
         if open_analysis:
             dialog.open_analysis()
+        elif open_source_review:
+            dialog.open_source_library()
+        elif open_settings:
+            dialog.open_settings()
         if dialog.isMinimized():
             dialog.showNormal()
         else:
@@ -2320,12 +2226,93 @@ class MainWindow(QMainWindow):
         dialog.activateWindow()
         return dialog
 
+    def _open_community_forge(self):
+        dialog = self._open_operations_center()
+        if dialog is not None:
+            dialog.tabs.setCurrentWidget(dialog.detection_forge)
+        return dialog
+
+    def _open_rules_playbooks(self):
+        if (getattr(self, "_github_tools_ui_closed", False)
+                or getattr(self.manager, "ugcap_paused", False)
+                or getattr(self, "_ugcap_workspace_locked", False)):
+            return None
+        dialog = self._rules_playbooks_dialog
+        if dialog is None:
+            from angerona.core.github_tool_catalog import GitHubToolCatalog
+            from angerona.core.rule_playbook_library import RulePlaybookLibrary
+            from angerona.gui.rules_playbooks import RulesPlaybooksDialog
+            root = Path(self.config.data_dir)
+            library = RulePlaybookLibrary(root / "rule-playbook-library",
+                                         catalog=GitHubToolCatalog(root / "github-source-library"))
+            dialog = RulesPlaybooksDialog(library, self, cfg=self.config,
+                open_forge=self._open_community_forge,
+                open_source_review=lambda: self._open_github_tools(open_source_review=True),
+                open_settings=lambda: self._open_github_tools(open_settings=True))
+            dialog.setStyleSheet(self._qss())
+            dialog.setWindowIcon(self._rules_playbooks_btn.icon())
+            self._rules_playbooks_dialog = dialog
+            configure_work_window(dialog)
+        dialog.showNormal() if dialog.isMinimized() else dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _open_suite_map(self):
+        if (getattr(self, "_termination_started", False)
+                or getattr(self.manager, "ugcap_paused", False)
+                or getattr(self, "_ugcap_workspace_locked", False)):
+            return None
+        dialog = self._suite_map_dialog
+        if dialog is None:
+            from angerona.gui.suite_map import SuiteMapDialog
+            dialog = SuiteMapDialog(self.manager, self.bus, self, navigate=self._suite_map_navigate)
+            dialog.setStyleSheet(self._qss())
+            dialog.setWindowIcon(self.windowIcon())
+            self._suite_map_dialog = dialog
+        dialog.showNormal() if dialog.isMinimized() else dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+        return dialog
+
+    def _suite_map_navigate(self, route, target=""):
+        if getattr(self, "_termination_started", False):
+            return
+        if route == "module" and target in self.manager.modules:
+            self._open_module_window(target)
+            return
+        actions = {"worldview": self._open_worldview, "spyware": self._open_spyware_guard,
+            "devices": self._open_device_lab, "dashboard": self.show,
+            "rules": self._open_rules_playbooks, "tools": self._open_github_tools,
+            "settings": self._open_settings}
+        callback = actions.get(route)
+        if callback is not None:
+            callback()
+        elif route in {"health", "blackbox"}:
+            self.component_heartbeat_strip.show_details()
+        elif route == "notifications":
+            self._notifications.show()
+        elif route == "network" and "Network Monitor" in self.manager.modules:
+            self._open_module_window("Network Monitor")
+        elif route == "alerts":
+            self.showNormal() if self.isMinimized() else self.show()
+            self._right_tabs.setCurrentWidget(self.alerts_panel)
+            self.raise_()
+
     def _close_github_tools_window(self) -> None:
         self._github_tools_ui_closed = True
+        suite_map = getattr(self, "_suite_map_dialog", None)
+        if suite_map is not None:
+            suite_map.request_shutdown()
+            suite_map.hide()
         dialog = getattr(self, "_github_tools_dialog", None)
         if dialog is not None:
             setattr(dialog, "_angerona_close_bypass", True)
             dialog.retire_view()
+        rules = getattr(self, "_rules_playbooks_dialog", None)
+        if rules is not None:
+            setattr(rules, "_angerona_close_bypass", True)
+            rules.retire_view()
 
     # ── Chill Mode (network-first, all-day low-impact monitoring) ────────────
     # Compatibility alias retained for the startup loader and older tests.
@@ -2460,6 +2447,9 @@ class MainWindow(QMainWindow):
 
     def _enter_eco(self, startup: bool = False, auto_return: bool = False) -> None:
         set_chill_ai_blocked(self.config, True)
+        # Initial staged startup reads this before every admission. Publish it
+        # before stopping modules, so an already-entered start is reclaimed below.
+        setattr(self.config, "runtime_chill_active", True)
         # Pause each running heavy module, remembering which we touched so resume
         # restores exactly that set.
         # If a sequential wake is still in flight, cancel it first. The worker's
@@ -2511,8 +2501,9 @@ class MainWindow(QMainWindow):
         self._set_chill_runtime(True)
         self.eco_btn.set_full_label("CHILL: ON")
         self.eco_btn.setToolTip(
-            "Chill keeps local AI and Ollama off until you manually switch Chill off. "
-            "Live protection and threat escalation remain enabled."
+            f"Chill requested a pause for {len(self._eco_paused)} deep scanner/AI modules. "
+            "In-flight checks may finish; selected checkboxes stay enabled. "
+            "Local AI stays off until you select Full. Live sensors and response remain on."
         )
         self.eco_btn.setStyleSheet(
             "background:#166534; color:#dcfce7; font-weight:800; border:none;"
@@ -2697,12 +2688,17 @@ class MainWindow(QMainWindow):
     def _open_simulation(self) -> None:
         """Open the modern Red Team console (config + live kill-chain + editor).
         The console calls back into _run_simulation(cfg) when the operator launches."""
-        from angerona.gui.red_team_console import RedTeamConsole
         # Keep drill artifacts with Angerona's bounded runtime data by default.
         # User folders remain explicit presets for deliberate coverage tests.
         default_target = str(self.config.data_dir / "drill-sandbox")
         if getattr(self, "_rt_console", None) is None or not isValid(self._rt_console):
-            self._rt_console = RedTeamConsole(self, default_target=default_target)
+            factory = getattr(self, "_red_team_console_factory", None)
+            if factory is None:
+                from angerona.gui.red_team_bridge import RedTeamBridge
+                factory = RedTeamBridge
+            self._rt_console = factory(self, default_target=default_target)
+            if getattr(self, "_red_team_console_factory", None) is None:
+                self.manager.red_team_tool_owner = self._rt_console
             session, plan = self._simulation_session, self._simulation_plan
             if session is not None and plan is not None:
                 self._simulation_launch_status("accepted", "Showing the retained sequential session.",
@@ -2726,6 +2722,10 @@ class MainWindow(QMainWindow):
         """Open Red Team directly to the owner-authorized Device Security Lab."""
         self._open_simulation()
         console = getattr(self, "_rt_console", None)
+        select_tab = getattr(console, "select_tab", None)
+        if callable(select_tab):
+            select_tab("Device Security Lab")
+            return
         tabs = getattr(console, "_tabs", None)
         if tabs is None:
             return
@@ -6759,6 +6759,8 @@ class MainWindow(QMainWindow):
             for widget in [getattr(self, "modules_panel", None), getattr(self, "console", None),
                            getattr(self, "_spyware_guard_dialog", None),
                            getattr(self, "_github_tools_dialog", None),
+                           getattr(self, "_rules_playbooks_dialog", None),
+                           getattr(self, "_suite_map_dialog", None),
                            *getattr(self, "_header_primary_buttons", []),
                            *(button for button in getattr(self, "_header_nav_buttons", [])
                              if button not in {getattr(self, "_settings_btn", None),
@@ -7144,13 +7146,7 @@ class MainWindow(QMainWindow):
         self.tray.show()
 
     def _restore_from_background(self) -> None:
-        controller = getattr(self, "_holographic_orb", None)
-        if controller is not None:
-            controller.restore_main()
-            return
-        self.showNormal()
-        self.raise_()
-        self.activateWindow()
+        self._request_display_restore()
 
     def showEvent(self, event) -> None:
         # Center the window the first time it is shown. Qt otherwise drops it at a
@@ -7169,6 +7165,9 @@ class MainWindow(QMainWindow):
 
     def hideEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         super().hideEvent(event)
+        display = getattr(self, "_display_recovery", None)
+        if display is not None:
+            display.cancel()
         bridge = getattr(self, "_breach_view", None)
         if bridge is not None:
             bridge._sync_visibility()
@@ -7313,6 +7312,10 @@ class MainWindow(QMainWindow):
         session = getattr(self, "_simulation_session", None)
         if session is not None:
             session.cancel()
+        tool = getattr(self, "_rt_console", None)
+        shutdown_tool = getattr(tool, "request_shutdown", None)
+        if callable(shutdown_tool):
+            shutdown_tool()
         preparing = getattr(self, "_sim_launch_job", None)
         if preparing is not None:
             preparing.cancel()
@@ -7401,6 +7404,12 @@ class MainWindow(QMainWindow):
             retain("finite-user-action-" + str(index), worker, True, proof=poll_finite_action_retirement)
         for index, worker in enumerate(active_live_debug_streams()):
             retain("live-debug-stream-" + str(index), worker, proof=poll_live_debug_retirement)
+        for owner_name in ("_github_tools_dialog", "_rules_playbooks_dialog", "_suite_map_dialog", "_rt_console"):
+            owner = getattr(self, owner_name, None)
+            workers = getattr(owner, "owned_workers", None)
+            if callable(workers):
+                for worker in workers():
+                    retain("community-view-" + owner_name, worker, True)
         for kind in ("red_team_engine", "shark_engine"):
             retain(kind, getattr(getattr(self, kind, None), "_thread", None), True)
         launch = getattr(self, "_sim_launch_job", None)
@@ -7471,6 +7480,12 @@ class MainWindow(QMainWindow):
         from angerona.core.source_activation import source_activation_resource_retirement_proven
         holds.append(RetainedCustody("source-update-resource-retirement", source_activation_resource_retirement_proven,
                      source_activation_resource_retirement_proven))
+        for owner_name in ("_github_tools_dialog", "_rules_playbooks_dialog", "_suite_map_dialog", "_rt_console"):
+            owner = getattr(self, owner_name, None)
+            proof = getattr(owner, "custody_released", None)
+            if callable(proof):
+                holds.append(RetainedCustody("community-native-custody-" + owner_name, owner,
+                             proof))
         return tuple(holds)
 
     def _start_owned_report_worker(self, kind, target) -> bool:
@@ -7643,3 +7658,193 @@ class MainWindow(QMainWindow):
             return
 
         self._terminate()
+
+    def _place_header_navigation(self, layout, navigation, columns: int) -> None:
+        """Keep visual/focus order coherent and STOP at the right edge on wrap."""
+        stop = getattr(self, "_header_stop_button", None)
+        for index, button in enumerate(navigation):
+            row, column = divmod(index, columns)
+            if button is stop:
+                column = columns - 1
+            layout.addWidget(button, row, column + 1)
+
+    def _sync_header_focus_order(self) -> None:
+        buttons = (*getattr(self, "_header_primary_buttons", ()),
+                   *getattr(self, "_header_nav_buttons", ()))
+        stop = getattr(self, "_header_stop_button", None)
+        if stop is not None:
+            buttons = (*buttons, stop)
+        for first, second in zip(buttons, buttons[1:]):
+            if first.window() is second.window():
+                QWidget.setTabOrder(first, second)
+
+    def _dispatch_header_destination(self, source, callback, color: str) -> None:
+        """Optional animation cannot consume or duplicate an admitted UI action."""
+        if getattr(self, "_termination_started", False):
+            return
+        dispatched = False
+        callback_failed = False
+        result = None
+
+        def once():
+            nonlocal dispatched, callback_failed, result
+            if dispatched or getattr(self, "_termination_started", False):
+                return result
+            # Latch before calling out: nested Qt loops or a callback failure
+            # must not retry partially performed work through the fallback.
+            dispatched = True
+            try:
+                result = callback()
+            except BaseException:
+                callback_failed = True
+                raise
+            return result
+
+        overlay = getattr(self, "_panel_reveal", None)
+        if not motion_allowed(self.config) or overlay is None:
+            once()
+            return
+        try:
+            accepted = overlay.reveal(source, once, color)
+        except Exception as error:
+            if callback_failed:
+                raise
+            # A deleted/native visual driver is optional. Retire its masks and
+            # retain a closed diagnostic reason, without retrying action work.
+            self._header_reveal_error = type(error).__name__
+            try:
+                overlay.shutdown()
+            except Exception:
+                pass
+            once()
+            return
+        if not accepted:
+            once()
+
+    def _request_display_restore(self) -> None:
+        if getattr(self, "_termination_started", False):
+            return
+        display = getattr(self, "_display_recovery", None)
+        if display is None:
+            from angerona.gui.display_recovery import DisplayRecovery
+            display = self._display_recovery = DisplayRecovery(
+                self, normal=lambda: self._restore_dashboard_display(plain=False),
+                plain=lambda: self._restore_dashboard_display(plain=True),
+                failed=self._display_restore_failed,
+                terminating=lambda: bool(getattr(self, "_termination_started", False)),
+            )
+        display.request()
+
+    def _queue_header_semantic_layout(self) -> None:
+        if getattr(self, "_termination_started", False):
+            return
+        timer = getattr(self, "_resize_timer", None)
+        if timer is not None and isValid(timer):
+            timer.start()
+
+    def _restore_dashboard_display(self, *, plain: bool) -> None:
+        if getattr(self, "_termination_started", False):
+            return
+        if plain:
+            # Restore only the masks/filters owned by our reveal coordinators.
+            # Arbitrary window masks and security gates retain their owners.
+            for name in ("_panel_reveal", "_angerona_window_reveal"):
+                overlay = getattr(self, name, None)
+                if overlay is not None:
+                    try:
+                        overlay.shutdown()
+                    except Exception as error:
+                        display = getattr(self, "_display_recovery", None)
+                        if display is not None:
+                            display.decoration_failed(error)
+        controller = getattr(self, "_holographic_orb", None)
+        if controller is not None:
+            if plain:
+                try:
+                    controller.disable_display_motion()
+                except Exception as error:
+                    display = getattr(self, "_display_recovery", None)
+                    if display is not None:
+                        display.decoration_failed(error)
+            try:
+                controller.show_main_now()
+            except Exception as error:
+                if not plain:
+                    raise
+                display = getattr(self, "_display_recovery", None)
+                if display is not None:
+                    display.decoration_failed(error)
+        if controller is None or plain:
+            self.setWindowState(self.windowState() & ~Qt.WindowMinimized)
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+        # Native SW_RESTORE alone does not restore Qt's logical child visibility.
+        # Re-enable paints without accepting prompts or enabling controls.
+        targets = [self, self.centralWidget()]
+        if plain and self.centralWidget() is not None:
+            targets.extend(self.centralWidget().findChildren(QWidget))
+        for target in targets:
+            if target is not None and isValid(target):
+                target.setUpdatesEnabled(True)
+                layout = target.layout()
+                if layout is not None:
+                    layout.activate()
+                target.update()
+
+    def _display_restore_failed(self, records) -> None:
+        if getattr(self, "_termination_started", False):
+            return
+        from angerona.gui.display_recovery import DisplayRecoveryNotice
+        notice = getattr(self, "_display_recovery_notice", None)
+        if notice is None or not isValid(notice):
+            notice = self._display_recovery_notice = DisplayRecoveryNotice(
+                self, retry=self._request_display_restore, stop=self._quit)
+        notice.show_records(records)
+
+    def _install_single_row_header(self) -> None:
+        """Keep the assessment above a scrollable row with a separate STOP."""
+        if getattr(self, "_header_control_row", None) is not None:
+            return
+        MainWindow._style_header_functions(self)
+        left, brand, right = self._header_groups
+        for group in self._header_groups:
+            self._header_layout.removeWidget(group)
+            group.setParent(self._dashboard_content)
+        stop = getattr(self, "_header_stop_button", None)
+        if stop is not None and right.layout() is not None:
+            right.layout().removeWidget(stop)
+        row = QWidget(self._dashboard_content)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self._header_action_strip = HeaderActionStrip((left, right), row)
+        layout.addWidget(self._header_action_strip, 1, Qt.AlignTop)
+        if stop is not None:
+            layout.addWidget(stop, 0, Qt.AlignTop)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._header_control_row = row
+        for column in range(3):
+            self._header_layout.setColumnStretch(column, 1 if column == 0 else 0)
+        self._header_layout.addWidget(brand, 0, 0, 1, 3)
+        self._header_layout.addWidget(row, 1, 0, 1, 3)
+        self._header_layout_mode = "single-row"
+
+    def _style_header_functions(self) -> None:
+        """Function accents are navigation hints, separate from live status."""
+        from angerona.gui.theme import set_function_role
+
+        groups = {
+            "monitor": ("_selftest_btn", "_suite_map_btn", "_worldview_btn",
+                        "_spyware_guard_btn", "_operations_btn", "_notification_btn", "_help_btn"),
+            "analysis": ("_attack_btn", "threat_intel_btn", "_forensics_btn",
+                         "_github_tools_btn", "_console_btn"),
+            "configure": ("_adaptation_btn", "eco_btn", "_rules_playbooks_btn",
+                          "_setup_btn", "_settings_btn"),
+            "response": ("_sim_btn", "_stop_btn"),
+        }
+        for role, names in groups.items():
+            for name in names:
+                button = getattr(self, name, None)
+                if button is not None:
+                    set_function_role(button, role)

@@ -30,7 +30,18 @@ FIGURES = {
     'security-flow-breach.png': 'Native breach qualification, governed containment and managed Lift',
     'security-flow-hardening.png': 'Version 1.15 telemetry assurance, independent history and service authority layers',
     'security-flow-auto-adapt.png': 'Auto Adapt exact change review, approval and supported rollback',
+    'suggested-tools-demo.png': 'DEMO Suggested community tools and their separate adapter scopes',
+    'community-source-sandbox-demo.png': 'DEMO Separate editable source copies with diff and revert controls',
+    'rules-playbooks-demo.png': 'DEMO Rules and Playbooks tactics board and explicit runtime routing',
+    'suite-map-3d-demo.png': 'DEMO Suite Map with synthetic components volumes and observed links',
+    'dashboard-demo.png': 'DEMO Compact dashboard with Current Assessment and fixed STOP control',
 }
+FIGURE_PATHS = {leaf: Path('assets') / leaf for leaf in FIGURES}
+FIGURE_PATHS.update({leaf: Path('docs/screenshots') / leaf for leaf in (
+    'suggested-tools-demo.png', 'community-source-sandbox-demo.png',
+    'rules-playbooks-demo.png', 'suite-map-3d-demo.png',
+)})
+FIGURE_PATHS['dashboard-demo.png'] = Path('assets/screenshots/dashboard-demo.png')
 LOCAL_PATH = re.compile(
     r'(?<![\w/])(?:(?:src|tests|tools|docs|analysis|assets)/[\w./-]+\.(?:py|ps1|md|png|json|txt|bat|toml|go)|'
     r'(?:README\.md|Angerona_Master_Manual\.(?:docx|pdf)))\b')
@@ -93,11 +104,17 @@ class Exporter:
                 leaf = PurePosixPath(target).name
                 if leaf not in FIGURES or target != 'media/' + leaf:
                     raise ValueError(f'unrecognized manual figure: {target}')
-                asset = ROOT / 'assets' / leaf
+                relative = FIGURE_PATHS[leaf]
+                allowed = {'assets/' + leaf, 'docs/screenshots/' + leaf}
+                if leaf == 'dashboard-demo.png':
+                    allowed.add('assets/screenshots/dashboard-demo.png')
+                if relative.is_absolute() or '..' in relative.parts or relative.as_posix() not in allowed:
+                    raise ValueError('manual figure path is outside its closed manifest')
+                asset = ROOT / relative
                 if self.archive.read('word/' + target) != asset.read_bytes():
                     raise ValueError(f'Word figure differs from repository asset: {leaf}')
                 self.figures.append(leaf)
-                pieces.append(f'\n\n![{FIGURES[leaf]}](../assets/{leaf})\n\n')
+                pieces.append(f'\n\n![{FIGURES[leaf]}](../{relative.as_posix()})\n\n')
             elif name == 'hyperlink':
                 content = self.inline(child)
                 relation = self.relationships.get(child.get(f'{{{R}}}id'), {})
@@ -205,13 +222,13 @@ class Exporter:
             '[Download PDF](../Angerona_Master_Manual.pdf) · '
             '[Download Word](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · '
             '[Repository guide](../README.md)\n\n'
-            'Source maintenance addendum **8 November 2026**: '
+            'Source maintenance revision **9 November 2026**: '
             '[Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), '
             '[recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). '
-            'These maintained companion chapters supplement the dated Word/PDF revision.\n\n'
+            'These companion chapters provide additional source and recovery context.\n\n'
             'This complete readable export follows the Word manual in document order. '
             'Dated validation and version-history sections retain their original scope; '
-            'the final security-flow and Safe Startup chapters describe the maintained source profile.\n\n'
+            'the current operator workflows and complete references precede the final update history.\n\n'
         )
         return introduction + '\n\n'.join(blocks).rstrip() + '\n'
 

@@ -22,7 +22,7 @@ from angerona import app as app_module
 from angerona.app import AngeronaApp
 from angerona.core import ollama_lifecycle, windows_process_lease
 from angerona.core.process_snapshot_lifecycle import ProcessSnapshotLifecycle
-from angerona.core.werfault_guard import OwnedProcessIdentity, OwnedProcessReadError, read_owned_process_snapshot
+from angerona.core.werfault_guard import OwnedProcessFailurePhase, OwnedProcessIdentity, OwnedProcessReadError, read_owned_process_snapshot
 from angerona.core.windows_child_job import NativeOwnershipObservationError, OwnedWindowsChild
 from angerona.resilience import manager as manager_module
 from angerona.resilience.manager import ResilienceManager
@@ -100,6 +100,33 @@ def composition(context, inert_owner, inert_child_factory, monkeypatch):
 
 def observe(sample):
     return sample.app._owned_process_identities_for_response()
+
+
+@pytest.mark.parametrize("failure,phase,kind", [
+    ("missing-companion", "companion-capture", "inventory-owner"),
+    ("native-companion-member", "companion-observe", "native-owner"),
+    ("native-inventory-member", "inventory-observe", "inventory-owner"),
+    ("inventory-not-ready", "inventory-capture", "inventory-owner"),
+])
+def test_actual_owner_rejections_preserve_closed_phase_without_replacing_missing_scope(
+    composition, failure, phase, kind,
+):
+    sample = composition
+    if failure == "missing-companion":
+        sample.supervisor.components.pop("scanner")
+    elif failure == "native-companion-member":
+        sample.children["scanner"].members[:] = [[]]
+    elif failure == "native-inventory-member":
+        sample.inventory_context.members[:] = [[]]
+    else:
+        sample.inventory._ready = False
+    with pytest.raises(OwnedProcessReadError) as result:
+        read_owned_process_snapshot(lambda: observe(sample), not_before=100.0, clock=lambda: 100.0)
+    error = result.value
+    assert error.reason_code == "supplier_failed"
+    assert error.supplier_phase == OwnedProcessFailurePhase(phase, kind)
+    assert error.snapshot_count is None
+    assert "C:\\inert" not in str(error) and "missing" not in str(error)
 
 
 def identity(row):

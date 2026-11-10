@@ -17,6 +17,8 @@ module-level register().
 """
 from __future__ import annotations
 
+import ipaddress
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -36,18 +38,35 @@ _MIN_CALLBACKS   = 4       # need at least this many callbacks to judge
 _MIN_INTERVAL_S  = 3.0     # ignore sub-3s chatter
 _MAX_INTERVAL_S  = 3600.0  # ignore >1h (too slow to distinguish here)
 _MAX_CV          = 0.25    # coefficient of variation below this ⇒ "regular"
-_PRIVATE_PREFIXES = ("10.", "192.168.", "127.", "169.254.", "::1", "fe80:")
-
-
 def _is_external(ip: str) -> bool:
-    if not ip:
+    if type(ip) is not str or not ip or len(ip) > 128 or "%" in ip:
         return False
-    if ip.startswith("172."):
-        try:
-            return not (16 <= int(ip.split(".")[1]) <= 31)
-        except Exception:
-            return True
-    return not ip.startswith(_PRIVATE_PREFIXES)
+    try:
+        address = ipaddress.ip_address(ip.strip("[]"))
+        address = getattr(address, "ipv4_mapped", None) or address
+        return bool(address.is_global and not address.is_multicast
+                    and not address.is_reserved and not address.is_unspecified)
+    except ValueError:
+        return False
+
+
+def _peer_ip(endpoint: object) -> str | None:
+    """Parse shared-snapshot IPv4/IPv6 endpoints without prefix guesses."""
+    if type(endpoint) is not str or len(endpoint) > 512:
+        return None
+    host, separator, port = endpoint.rpartition(":")
+    if not separator or not port.isascii() or not port.isdecimal() or not 1 <= int(port) <= 65535:
+        return None
+    if host.startswith("["):
+        if not host.endswith("]"):
+            return None
+        host = host[1:-1]
+    if "%" in host:
+        return None
+    try:
+        return str(ipaddress.ip_address(host))
+    except ValueError:
+        return None
 
 
 def _beacon_score(timestamps: list[float]) -> tuple[bool, float, float]:
@@ -91,6 +110,12 @@ class BeaconDetectorModule(BaseModule):
         super().__init__()
         self.state_lock = threading.Lock()
         self._seen_last: set[tuple] = set()          # (pid, ip) seen on the previous poll
+        # Legacy endpoint view stays diagnostic-only. Cadence admission uses
+        # process birth; a reused PID cannot inherit "already connected" state.
+        self._seen_instances: set[tuple] = set()
+        self._continuity_epoch = 0
+        self._cadence_gap = False
+        self._last_poll_time: float | None = None
         # Exact process instance + peer. Name-only grouping lets unrelated
         # same-name processes fabricate one apparent cadence, and PID-only
         # grouping crosses Windows PID reuse.
@@ -140,6 +165,7 @@ class BeaconDetectorModule(BaseModule):
     def _poll_once(self) -> BeaconPollReceipt:
         now = time.time()
         current: set[tuple] = set()
+        current_instances: set[tuple] = set()
         names: dict[int, str] = {}
         create_times: dict[int, float] = {}
         identity_attempted: set[int] = set()
@@ -149,18 +175,24 @@ class BeaconDetectorModule(BaseModule):
             # cadences; independently enumerating it is expensive on Windows.
             conns = list_connections()
         except Exception as exc:
+            self._cadence_gap = True
             return BeaconPollReceipt(False, 0, 0, str(exc)[:500])
         snapshot = getattr(conns, "receipt", None)
         snapshot_complete = bool(getattr(snapshot, "complete", True))
         snapshot_error = str(getattr(snapshot, "error", "") or "")[:500]
+        collected_at = getattr(snapshot, "collected_at", None)
+        clock_gap = (not math.isfinite(now) or
+                     self._last_poll_time is not None and now < self._last_poll_time)
+        if math.isfinite(now):
+            self._last_poll_time = now
         identity_failures = 0
         for c in conns:
             raddr = c.get("raddr") or ""
             if not raddr or c.get("status") not in ("ESTABLISHED", "SYN_SENT"):
                 continue
-            ip = raddr.rsplit(":", 1)[0]
+            ip = _peer_ip(raddr)
             pid = c.get("pid")
-            if not _is_external(ip) or not pid:
+            if ip is None or not _is_external(ip) or type(pid) is not int or pid <= 0:
                 continue
             current.add((pid, ip))
             if pid not in identity_attempted:
@@ -169,20 +201,30 @@ class BeaconDetectorModule(BaseModule):
                     process = psutil.Process(pid)
                     created = float(process.create_time())
                     name = str(process.name() or "?")[:260]
-                    if float(process.create_time()) != created:
+                    if (not math.isfinite(created) or created <= 0
+                            or float(process.create_time()) != created
+                            or type(collected_at) in {int, float} and (
+                                not math.isfinite(collected_at) or created > collected_at)):
                         raise ValueError("process generation changed during lookup")
                     names[pid] = name
                     create_times[pid] = created
                 except Exception:
                     identity_failures += 1
+            if pid in create_times:
+                current_instances.add((pid, create_times[pid], ip))
+        complete = snapshot_complete and identity_failures == 0 and not clock_gap
+        if not complete:
+            # Repeated partial rows must never manufacture regular callbacks.
+            # Preserve prior complete inventory and history as evidence, then
+            # start a separate cadence epoch after coverage returns.
+            self._cadence_gap = True
+        elif self._cadence_gap:
+            self._continuity_epoch += 1
+            self._seen_instances = current_instances
+            self._cadence_gap = False
         # A NEW connection = present now but not on the previous poll.
-        for (pid, ip) in current - self._seen_last:
-            created = create_times.get(pid)
-            if created is None:
-                # A cadence without a process birth time cannot be bound to one
-                # process instance and therefore cannot authorize containment.
-                continue
-            key = (pid, created, names.get(pid, "?"), ip)
+        for (pid, created, ip) in current_instances - self._seen_instances if complete else ():
+            key = (pid, created, names.get(pid, "?"), ip, self._continuity_epoch)
             hist = self._callbacks.setdefault(key, [])
             hist.append(now)
             if len(hist) > self._HISTORY:
@@ -220,12 +262,15 @@ class BeaconDetectorModule(BaseModule):
                         if corroborated
                         else "cadence-indicator-alert-only"
                     ),
+                    continuity_epoch=self._continuity_epoch,
                     **response)
         # An incomplete table must not be mistaken for closed sockets; retain
         # the previous complete state so recovery does not fabricate "new"
         # callbacks from rows that were merely absent during a failed scan.
         if snapshot_complete:
             self._seen_last = current
+        if complete:
+            self._seen_instances = current_instances
         # evict stale history
         for key, hist in list(self._callbacks.items()):
             if hist and now - hist[-1] > self._EVICT_AFTER:
@@ -235,8 +280,10 @@ class BeaconDetectorModule(BaseModule):
         errors = [value for value in (snapshot_error,) if value]
         if identity_failures:
             errors.append(f"{identity_failures} process identity lookup(s) failed")
+        if clock_gap:
+            errors.append("poll clock regressed or is unavailable; cadence continuity held")
         return BeaconPollReceipt(
-            snapshot_complete and identity_failures == 0,
+            complete,
             len(conns),
             identity_failures,
             "; ".join(errors)[:500],

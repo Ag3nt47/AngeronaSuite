@@ -1342,6 +1342,8 @@ class AdversaryCombat(BaseModule):
         self._host_authority_reason = "Host response authority has not been sampled."
         self._host_authority_verified = False
         self._owned_process_hold_reason = "not-sampled"
+        self._owned_process_hold_phase = ""
+        self._owned_process_hold_failure_kind = ""
         self._response_dispatch_local = threading.local()
         self._lockdown_policy_reason = ""
         self._seen_order: deque[str] = deque(maxlen=8192)
@@ -1529,6 +1531,8 @@ class AdversaryCombat(BaseModule):
             "policy_armed": policy.enabled,
             "host_authority_verified": self._host_authority_verified,
             "owned_process_hold_reason": self._owned_process_hold_reason,
+            "owned_process_hold_phase": self._owned_process_hold_phase,
+            "owned_process_hold_failure_kind": self._owned_process_hold_failure_kind,
             "producer_proof_coverage": "native-hash-strict; existing-verifiers-rechecked; legacy-unmigrated",
             "canary_ready": (state in {"ARMED", "AUTHORITY HELD"} and not self._queue.full()
                              and not self.generation_stop_event().is_set()),
@@ -4787,7 +4791,9 @@ class AdversaryCombat(BaseModule):
                     RedTeamValidationLease.finish_yara_containment(
                         handoff_lease, self, event, action, succeeded=handoff_succeeded)
 
-    def _acquire_termination_lease(self, action: CombatAction) -> Any:
+    def _acquire_termination_lease(
+        self, action: CombatAction, *, canary: _CanaryMutation | None = None,
+    ) -> Any:
         """Acquire object custody independently of psutil's cached PID view."""
         from angerona.core.windows_process_lease import WindowsProcessLease
 
@@ -4802,7 +4808,9 @@ class AdversaryCombat(BaseModule):
                     in _SYSTEM32_NEVER_CONTAIN
                     or self._is_system_path(image)):
                 raise ValueError("native process image is protected")
-            self._require_not_owned_identity(lease.identity)
+            # Acquisition precedes journal admission: use only the explicit
+            # issuer proof, never ambient dispatch context for another stage.
+            self._require_not_owned_identity(lease.identity, canary=canary, action=action)
             return lease
         except BaseException:
             lease.close()
@@ -4831,7 +4839,7 @@ class AdversaryCombat(BaseModule):
             if event is not None:
                 self._require_current_response_event(event, canary=canary)
                 if lease is not None:
-                    self._require_not_owned_identity(lease.identity)
+                    self._require_not_owned_identity(lease.identity, canary=canary, action=action)
                 if not self._integrity_ok(event) or "terminate_process" not in (self._response_actions(event) or ()):
                     raise HostMutationHeld("Original producer proof or exact termination contract was revoked.")
                 supplied, observed_birth = self._expected_process_start(event.details)
@@ -4854,7 +4862,7 @@ class AdversaryCombat(BaseModule):
                 if _WINDOWS_PROCESS_CUSTODY:
                     # Failure refuses this Windows operation. In particular,
                     # there is no fallback to a second PID-based kill.
-                    lease = self._acquire_termination_lease(action)
+                    lease = self._acquire_termination_lease(action, canary=canary)
                     action = CombatAction(**{
                         **asdict(action),
                         "details": {
@@ -4865,7 +4873,7 @@ class AdversaryCombat(BaseModule):
                             "native_image": lease.identity.image,
                         },
                     })
-                custody = (self._retained_process_custody(action, lease)
+                custody = (self._retained_process_custody(action, lease, canary=canary)
                            if lease is not None else nullcontext())
                 with custody:
                     with self._journaled_mutation(action, canary=canary, event=event):
@@ -5379,7 +5387,30 @@ class AdversaryCombat(BaseModule):
         if require_canary and not self._canary_mutation_valid(canary, action=action, pinned=pinned):
             raise HostMutationHeld("Current issuer-owned canary proof is unavailable.")
 
-    def _require_not_owned_identity(self, identity):
+    def _owned_inert_probe_admitted(self, identity, *, canary, action) -> bool:
+        """Narrow issuer-owned termination of a Core-admitted tool probe only.
+
+        This is evaluated only after a complete fresh exclusion snapshot. A
+        child PID, UI/wrapper root, role label, copied token or public setting
+        cannot create admission. Every existing native barrier calls it anew.
+        """
+        try:
+            from angerona.gui.red_team_bridge import RedTeamBridge
+            owner = getattr(self._manager, "red_team_tool_owner", None)
+            if (type(owner) is not RedTeamBridge or type(canary) is not _CanaryMutation
+                    or type(action) is not CombatAction
+                    or action.action != canary.operation or action.action != "terminate_process"
+                    or canary.target != identity.pid
+                    or not self._canary_mutation_valid(canary, action=action)):
+                return False
+            details = canary.event.details
+            return owner.validate_probe_identity(identity,
+                token=details.get("correlation_token"), run_id=details.get("run_id"),
+                lease=canary.lease) is True
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _require_not_owned_identity(self, identity, *, canary=None, action=None):
         from angerona.core.werfault_guard import OwnedProcessReadError, read_owned_process_snapshot
         import ntpath
         try:
@@ -5389,22 +5420,41 @@ class AdversaryCombat(BaseModule):
         except OwnedProcessReadError as error:
             with self._admission_lock:
                 self._owned_process_hold_reason = error.reason_code
-            raise HostMutationHeld("Current companion ownership is unknown: " + error.reason_code) from None
+                self._owned_process_hold_phase = error.supplier_phase.phase if error.supplier_phase else ""
+                self._owned_process_hold_failure_kind = error.supplier_phase.failure_kind if error.supplier_phase else ""
+            suffix = (" (" + error.supplier_phase.phase + "/" + error.supplier_phase.failure_kind + ")"
+                      if error.supplier_phase else "")
+            raise HostMutationHeld("Current companion ownership is unknown: " + error.reason_code + suffix) from None
         image = ntpath.normcase(ntpath.normpath(identity.image))
         for row in snapshot.rows:
             if row.pid != identity.pid or row.birth_ticks != str(identity.birth_ticks):
+                continue
+            if (row.image == image and row.role == "redteam-tool"
+                    and self._owned_inert_probe_admitted(identity, canary=canary, action=action)):
+                # Retain the original short lease through the issuer/native
+                # reads. This validation never renews the supplier's rows.
+                try:
+                    read_owned_process_snapshot(lambda: snapshot.rows,
+                        not_before=snapshot.checked_monotonic, clock=time.monotonic)
+                except OwnedProcessReadError as error:
+                    with self._admission_lock:
+                        self._owned_process_hold_reason = error.reason_code
+                    raise HostMutationHeld("Companion ownership expired during exact probe admission: "
+                        + error.reason_code) from None
                 continue
             # A contradictory image for one exact process generation is unknown,
             # never an exemption or permission based only on a reused PID.
             reason = "owned-companion" if row.image == image else "owned-image-mismatch"
             with self._admission_lock:
                 self._owned_process_hold_reason = reason
+                self._owned_process_hold_phase = self._owned_process_hold_failure_kind = ""
             raise HostMutationHeld("Exact companion process generation is protected: " + reason)
         with self._admission_lock:
             self._owned_process_hold_reason = ""
+            self._owned_process_hold_phase = self._owned_process_hold_failure_kind = ""
 
     @contextmanager
-    def _retained_process_custody(self, action: CombatAction, lease):
+    def _retained_process_custody(self, action: CombatAction, lease, *, canary=None):
         """Bind the actual retained native object to this exact transaction.
 
         No report field, proof dictionary or caller observation flag can create
@@ -5421,7 +5471,7 @@ class AdversaryCombat(BaseModule):
             action.action_id, action.action, lease, getattr(lease, "identity", None))
         try:
             self._retained_process_identity(action)
-            self._require_not_owned_identity(lease.identity)
+            self._require_not_owned_identity(lease.identity, canary=canary, action=action)
             yield
         finally:
             self._response_dispatch_local.process_custody = previous
@@ -5473,7 +5523,7 @@ class AdversaryCombat(BaseModule):
         except Exception:
             raise HostMutationHeld("The exact retained process custody no longer binds this action.") from None
 
-    def _require_process_not_owned(self, pid, created, exe):
+    def _require_process_not_owned(self, pid, created, exe, *, canary=None, action=None):
         # Native identity is observed only on the existing response worker.
         # Failure is held; no float-to-FILETIME reconstruction or psutil fallback.
         # Observation never asks for PROCESS_TERMINATE access.
@@ -5482,7 +5532,7 @@ class AdversaryCombat(BaseModule):
         try:
             lease = WindowsProcessLease(pid, created, exe, query_only=True)
             lease.validate(alive=True)
-            self._require_not_owned_identity(lease.identity)
+            self._require_not_owned_identity(lease.identity, canary=canary, action=action)
         except HostMutationHeld:
             raise
         except Exception:
@@ -5555,14 +5605,16 @@ class AdversaryCombat(BaseModule):
         if dispatch is not None:
             response_event, response_canary, response_action, response_pin = dispatch
             action = response_action if action is None else action
+            canary = response_canary if canary is None else canary
         if (check_policy and not restoring and action is not None
                 and action.action in {"terminate_process", "suspend_process", "isolate_program"}):
             identity = self._retained_process_identity(action)
             if identity is not None:
-                self._require_not_owned_identity(identity)
+                self._require_not_owned_identity(identity, canary=canary, action=action)
             else:
                 self._require_process_not_owned(action.details.get("pid"),
-                    action.details.get("create_time"), action.details.get("exe"))
+                    action.details.get("create_time"), action.details.get("exe"),
+                    canary=canary, action=action)
         if dispatch is not None:
             # Recheck expiry after native lease/roster acquisition can block.
             if deferred_canary:

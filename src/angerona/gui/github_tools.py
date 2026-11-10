@@ -173,7 +173,7 @@ class GitHubToolsPanel(QWidget):
             widget.setEnabled(not self._busy)
 
     def _start(self, kind, work, message):
-        if self._busy:
+        if self._lifetime["closed"] or self._busy or self._worker is not None:
             return
         if not _WORKERS.acquire(blocking=False):
             self.status.setText("Source review workers are busy; reopen this tab after they finish.")
@@ -211,6 +211,7 @@ class GitHubToolsPanel(QWidget):
                 return  # A lost start acknowledgment is not thread retirement.
             _WORKERS.release()
             self._busy = False
+            self._worker = None
             self._activities.finish(self._activity_handle)
             self._activity_handle = None
             self._update_buttons()

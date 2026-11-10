@@ -98,11 +98,37 @@ OwnedProcessReadReason = Literal[
     "row_type_invalid", "row_not_yet_valid", "row_expired", "duplicate_pid",
 ]
 
+_OWNED_PHASES = frozenset({
+    "ai-capture", "inventory-capture", "companion-capture", "companion-observe",
+    "inventory-observe", "ai-observe", "external-observe", "inventory-revalidate",
+    "companion-revalidate", "ai-revalidate", "core-validate", "merge-validate",
+    "tool-capture", "tool-observe", "tool-revalidate",
+})
+_OWNED_FAILURE_KINDS = frozenset({"inventory-owner", "native-owner", "snapshot-validation", "provider"})
+
+
+@dataclass(frozen=True)
+class OwnedProcessFailurePhase:
+    """Closed diagnostic metadata only; never identity or response authority."""
+
+    phase: str
+    failure_kind: str
+
+    def __post_init__(self):
+        if (type(self.phase) is not str or self.phase not in _OWNED_PHASES
+                or type(self.failure_kind) is not str or self.failure_kind not in _OWNED_FAILURE_KINDS):
+            raise ValueError("Unsupported ownership observation diagnostic")
+
 
 class OwnedProcessReadError(ValueError):
     """A fixed consumer rejection code, without supplier exception text or identity."""
 
-    def __init__(self, reason_code: OwnedProcessReadReason, *, snapshot_count: int | None = None):
+    def __init__(self, reason_code: OwnedProcessReadReason, *, snapshot_count: int | None = None,
+                 supplier_phase: OwnedProcessFailurePhase | None = None):
+        if supplier_phase is not None:
+            if type(supplier_phase) is not OwnedProcessFailurePhase:
+                raise ValueError("Unsupported ownership observation diagnostic")
+            OwnedProcessFailurePhase.__post_init__(supplier_phase)
         if reason_code in {"row_type_invalid", "row_not_yet_valid", "row_expired"}:
             message = "Native-owned process cache is stale or malformed"
         elif reason_code == "duplicate_pid":
@@ -112,6 +138,7 @@ class OwnedProcessReadError(ValueError):
         super().__init__(message)
         self.reason_code = reason_code
         self.snapshot_count = snapshot_count
+        self.supplier_phase = supplier_phase
 
 
 @dataclass(frozen=True)
@@ -127,8 +154,17 @@ def _read_owned_supplier(supplier: OwnedProcessSupplier | None) -> object:
         raise OwnedProcessReadError("supplier_unbound")
     try:
         return supplier()
-    except Exception:
-        raise OwnedProcessReadError("supplier_failed") from None
+    except Exception as error:
+        phase = None
+        try:
+            phase = getattr(error, "_angerona_owned_phase", None)
+            if type(phase) is not OwnedProcessFailurePhase:
+                phase = None
+            else:
+                OwnedProcessFailurePhase.__post_init__(phase)
+        except (AttributeError, TypeError, ValueError):
+            phase = None
+        raise OwnedProcessReadError("supplier_failed", supplier_phase=phase) from None
 
 
 def _validate_owned_processes(rows: object, *, now: float) -> tuple[OwnedProcessIdentity, ...]:

@@ -105,7 +105,10 @@ def test_full_scope_is_explicit_and_saved_selections_survive_status_updates(memo
         }
         assert "Entire PC" in panel.scope_button.text()
         assert panel.layout().itemAt(0).widget() is panel.progress_group
-        assert panel.layout().indexOf(panel.activity) < panel.layout().indexOf(panel.hits) < panel.layout().indexOf(panel.setup_toggle)
+        assert (panel.layout().indexOf(panel.progress_group) < panel.layout().indexOf(panel.hits)
+                < panel.layout().indexOf(panel.explanation_group) < panel.layout().indexOf(panel.resource_group)
+                < panel.layout().indexOf(panel.setup_toggle))
+        assert panel.explanation_group.layout().indexOf(panel.activity) < panel.explanation_group.layout().indexOf(panel.current_file)
         assert panel.setup_body.isHidden() and "Entire PC · Zero-Breach" in panel.setup_summary.text()
         assert not panel.native.isChecked() and panel.zero_breach.isChecked()
         assert panel.priority.currentData() == "high"
@@ -202,7 +205,8 @@ def test_real_github_hub_keeps_all_tabs_and_scope_edits_inside_work_area(memory,
             dialog._window_fit.fit_now(work)
             assert work.contains(dialog.frameGeometry())
             assert dialog.tabs.currentIndex() == index
-        assert dialog.tabs.count() == 3
+        assert [dialog.tabs.tabText(index) for index in range(dialog.tabs.count())] == [
+            "Curated scanners", "Source library & analysis", "Suggested tools", "Rules & Playbooks", "Settings"]
         review = next(button for button in dialog.findChildren(ui.QPushButton)
                       if button.text() == "Review / export retained reports…")
         assert controller.storage_reviews == 0
@@ -297,8 +301,9 @@ def test_spyware_workspace_orders_sections_and_reuses_dashboard_sample_on_reopen
         assert page.layout().indexOf(page.news_strip) < page.layout().indexOf(panel)
         assert page.layout().indexOf(panel) < page.layout().indexOf(page.tabs)
         layout = panel.layout()
-        assert layout.indexOf(panel.progress_group) < layout.indexOf(panel.item_progress)
-        assert layout.indexOf(panel.item_progress) < layout.indexOf(panel.explanation_group)
+        assert layout.indexOf(panel.progress_group) < layout.indexOf(panel.explanation_group)
+        assert panel.item_progress.parentWidget() is panel.explanation_group
+        assert panel.explanation_group.layout().indexOf(panel.activity) < panel.explanation_group.layout().indexOf(panel.item_progress)
         assert layout.indexOf(panel.explanation_group) < layout.indexOf(panel.resource_group)
         assert layout.indexOf(panel.resource_group) < layout.indexOf(panel.setup_toggle)
         assert layout.indexOf(panel.resource_group) < layout.indexOf(panel.steps_scroll)
@@ -316,8 +321,10 @@ def test_spyware_workspace_orders_sections_and_reuses_dashboard_sample_on_reopen
 
         standalone = page.zero_breach.priority_controls
         assert standalone.host_specs is None
-        assert standalone.resource_group.title() == "Resource and privilege details"
-        assert standalone.layout().indexOf(standalone.steps_scroll) < standalone.layout().indexOf(standalone.explanation_group)
+        assert standalone.resource_group.title() == "Scan resources & permissions"
+        assert (standalone.layout().indexOf(standalone.explanation_group)
+                < standalone.layout().indexOf(standalone.resource_group)
+                < standalone.layout().indexOf(standalone.steps_scroll))
         assert controller.requests == [] and module.calls == []
     finally:
         MainWindow._close_spyware_guard_window(owner)
@@ -728,6 +735,7 @@ def test_news_and_scan_actions_reflow_and_full_summary_height_remains_readable(m
         page._news_scroll_timer.stop()
         page.news_source_button.setText("Synthetic official research source")
         page.news_source_button.show()
+        page.news_feed_details.setChecked(True)
         page.news_summary.setText("Synthetic copied news summary with full coverage caveats. " * 18)
         _settle_layout()
         assert area.horizontalScrollBar().maximum() == 0
@@ -949,3 +957,194 @@ def test_observed_text_native_wrap_exact_copy_and_retained_review_state(memory, 
     finally:
         area.close()
         area.deleteLater()
+
+
+def test_completed_native_workflow_does_not_regress_when_detailed_percent_becomes_unknown(memory):
+    controller, manager, _, module = memory
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    QApplication.processEvents()
+    try:
+        native = dict(state="running", overall_percent=89, completed_steps=7, total_steps=9,
+                      steps=[dict(id="permissions", label="Restricted source", state="incomplete",
+                                  completed=0, total=None, checked=0, skipped=1)])
+        toolkit = dict(state="running", overall_percent=None, completed_steps=0, total_steps=None,
+                       current_task="Reading browser evidence", steps=[])
+        controller.publish(busy=True, state="running", scan_progress=progress(),
+                           scanner_progress={"native": native, "toolkit": toolkit})
+        assert panel.progress_ring.percent == 47
+        native["state"], native["overall_percent"] = "completed", None
+        completion = dict(request_id="a" * 32, lifecycle_generation=3, request_finished=True,
+                          collector_finished=True, coverage_incomplete=True,
+                          finding_counts={"advisory": 0, "omitted": 0})
+        before = copy.deepcopy({"native": native, "toolkit": toolkit})
+        controller.publish(scanner_progress=before, native_scan_completion=completion)
+        assert panel.progress_ring.percent == 50  # Two equal workflow contributions, not file coverage.
+        assert "1/4 stages finished" in panel.progress_count.text()
+        assert "Native checks finished; report aggregation is pending" in panel.stage_explanation.text()
+        assert "indeterminate" in panel.scanner_summaries["native"].text()
+        assert "indeterminate" in panel.scanner_summaries["toolkit"].text()
+        assert "Coverage incomplete" in panel.hits.text()
+        assert controller.snapshot()["scanner_progress"] == before
+        assert controller.snapshot()["scan_progress"]["finished_stages"] == ("preflight",)
+        assert controller.requests == [] and module.calls == []
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("native_state", ["running", "cancelled", "failed", "unavailable"])
+def test_unfinished_or_failed_native_reader_is_not_promoted_to_completed_workflow(memory, native_state):
+    controller, manager, _, module = memory
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    QApplication.processEvents()
+    try:
+        readers = {"native": dict(state=native_state, overall_percent=None,
+                                   completed_steps=7, total_steps=9, steps=[]),
+                   "toolkit": dict(state="running", overall_percent=None,
+                                    completed_steps=0, total_steps=None, steps=[])}
+        controller.publish(busy=True, state="running", scan_progress=progress(), scanner_progress=readers)
+        assert panel.progress_ring.percent == 44
+        assert "checks finished" not in panel.stage_chips["native"].text()
+        assert "indeterminate" in panel.scanner_summaries["native"].text()
+        assert controller.snapshot()["scanner_progress"] == readers
+        assert controller.requests == [] and module.calls == []
+    finally:
+        panel.close()
+
+
+def test_workflow_fraction_is_recomputed_instead_of_clamped_to_previous_value(memory):
+    controller, manager, _, _ = memory
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    QApplication.processEvents()
+    try:
+        readers = {"native": dict(state="running", overall_percent=89, steps=[]),
+                   "toolkit": dict(state="running", overall_percent=None, steps=[])}
+        controller.publish(busy=True, scan_progress=progress(), scanner_progress=readers)
+        assert panel.progress_ring.percent == 47
+        readers["native"]["overall_percent"] = None
+        controller.publish(scanner_progress=readers)
+        assert panel.progress_ring.percent == 25  # Missing observations remain unknown, never latched.
+        assert "indeterminate" in panel.scanner_summaries["native"].text()
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("state", ["ready", "idle"])
+def test_unbound_ready_timing_uses_next_spyware_budget_not_generic_status(memory, state):
+    controller, manager, config, _ = memory
+    controller.value.update(state=state, active_action="status", lifecycle="terminal",
+                            elapsed_seconds=3, timeout_seconds=300,
+                            scan_progress=None, scanner_progress={},
+                            latest_report={"state": "partial", "coverage_incomplete": True})
+    original = controller.snapshot()
+    saved = copy.deepcopy(vars(config))
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    _settle_layout()
+    try:
+        assert panel.timing.text() == "Ready · next Spyware Scan budget 1:00:00 (3600s)"
+        assert "Elapsed" not in panel.timing.text() and "run ended" not in panel.timing.text()
+        assert "Retained reports" in panel.timing.toolTip()
+        assert not panel.cancel_button.isEnabled()
+        panel.budget.setValue(5400)
+        _settle_layout()
+        assert panel.timing.text() == "Ready · next Spyware Scan budget 1:30:00 (5400s)"
+        assert "next run 1:30:00" in panel.setup_summary.text()
+        assert controller.snapshot() == original
+        assert vars(config) == saved and controller.requests == []
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("state,busy", [("unknown", False), ("unavailable", True), ("ready", None)])
+def test_unknown_scan_timing_is_not_reclassified_as_ready(memory, monkeypatch, state, busy):
+    controller, manager, _, _ = memory
+    monkeypatch.setattr(ui.time, "monotonic", lambda: 500.0)
+    controller.value.update(state=state, busy=busy, active_action="status", lifecycle="terminal",
+                            elapsed_seconds=3, timeout_seconds=300, started_monotonic=490.0,
+                            scan_progress=None, scanner_progress={})
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    _settle_layout()
+    try:
+        assert "Ready · next" not in panel.timing.text()
+        assert "time budget 300s" in panel.timing.text()
+        expected_elapsed = "Elapsed 0:10" if busy is True else "Elapsed 0:03"
+        assert expected_elapsed in panel.timing.text()
+        assert panel.cancel_button.isEnabled() is (busy is True)
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("state,busy,lifecycle", [
+    ("running", True, "active"), ("completed", False, "terminal"),
+    ("incomplete", False, "terminal"), ("held", False, "terminal"),
+])
+def test_bound_scan_timing_keeps_original_budget_when_next_run_choice_changes(memory, monkeypatch, state, busy, lifecycle):
+    controller, manager, config, _ = memory
+    monkeypatch.setattr(ui.time, "monotonic", lambda: 500.0)
+    controller.value.update(state=state, busy=busy, lifecycle=lifecycle, active_action="priority_scan",
+                            timeout_seconds=1800, elapsed_seconds=70, started_monotonic=490.0,
+                            scan_progress=progress(), scanner_progress={
+                                "toolkit": {"state": "running" if busy else "incomplete", "remaining_s": 120,
+                                            "elapsed_s": 70, "overall_percent": None, "steps": []}},
+                            partial_result={"coverage_incomplete": True} if not busy else None)
+    saved = copy.deepcopy(vars(config))
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    _settle_layout()
+    try:
+        before = panel.timing.text()
+        assert "time budget 1800s" in before and "Ready · next" not in before
+        expected_elapsed = "Elapsed 0:10" if busy else "Elapsed 1:10"
+        assert expected_elapsed in before
+        panel.budget.setValue(5400)
+        _settle_layout()
+        assert panel.timing.text() == before
+        assert "next run 1:30:00" in panel.setup_summary.text()
+        assert panel.cancel_button.isEnabled() is busy
+        assert vars(config) == saved and controller.requests == []
+    finally:
+        panel.close()
+
+
+@pytest.mark.parametrize("binding", [
+    {"request_id": "b" * 32},
+    {"native_scan_completion": {"request_id": "b" * 32, "request_finished": True}},
+    {"scan_progress": progress(stage="finished")},
+    {"partial_result": {"state": "incomplete", "coverage_incomplete": True}},
+    {"previous_attempt": {"state": "failed", "coverage_incomplete": True}},
+])
+def test_ready_status_with_current_request_evidence_keeps_retained_timing(memory, binding):
+    controller, manager, _, _ = memory
+    controller.value.update(state="ready", busy=False, active_action="status", lifecycle="terminal",
+                            elapsed_seconds=70, timeout_seconds=1800, scan_progress=None, scanner_progress={})
+    controller.value.update(binding)
+    panel = ui.SpywareScanControls(manager)
+    panel.show()
+    _settle_layout()
+    try:
+        assert "Elapsed 1:10" in panel.timing.text()
+        assert "time budget 1800s" in panel.timing.text()
+        assert "Ready · next" not in panel.timing.text()
+    finally:
+        panel.close()
+
+
+def test_standalone_tool_timing_keeps_its_separate_budget(memory):
+    controller, manager, _, _ = memory
+    controller.value.update(state="ready", busy=False, active_action="status", lifecycle="terminal",
+                            elapsed_seconds=3, timeout_seconds=300, scan_progress=None, scanner_progress={})
+    panel = ui.SpywareScanControls(manager, scope_controls=False)
+    panel.show()
+    _settle_layout()
+    try:
+        assert "Elapsed 0:03" in panel.timing.text() and "time budget 300s" in panel.timing.text()
+        panel.budget.setValue(5400)
+        _settle_layout()
+        assert "time budget 300s" in panel.timing.text() and "Ready · next" not in panel.timing.text()
+        assert controller.requests == []
+    finally:
+        panel.close()

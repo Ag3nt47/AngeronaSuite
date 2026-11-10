@@ -514,7 +514,10 @@ def preflight_run(
         "safety_profile": _SAFETY_PROFILE["profile"],
     }
     admitted_run_seconds = int(
-        math.ceil(projected_steps * (hi + 5.0) + 75.0)
+        # Independent process probes execute serially to retain the complete
+        # bounded native ownership roster. Admit their fixed worst-case idle
+        # lifetime before execution; never renew an already issued run lease.
+        math.ceil(projected_steps * (hi + 5.0) + projected_processes * 30.0 + 75.0)
     )
     if admitted_run_seconds > MAX_ADMITTED_DRILL_SECONDS:
         violations.append(
@@ -553,6 +556,7 @@ def preflight_run(
             ),
             "max_optional_noise_steps": max(0, normalized_cycles),
             "admitted_run_ttl_seconds": admitted_run_seconds,
+            "projected_serial_process_seconds": projected_processes * 30,
             "max_admitted_run_ttl_seconds": MAX_ADMITTED_DRILL_SECONDS,
         },
     )

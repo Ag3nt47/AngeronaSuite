@@ -299,7 +299,7 @@ def transaction(tmp_path, monkeypatch):
     monkeypatch.setattr(combat_module, "_WINDOWS_PROCESS_CUSTODY", True)
     native = FakeNative()
     clock = [0.0]
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action: acquire(
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action, *, canary=None: acquire(
         native, _monotonic=lambda: clock[0]))
     monkeypatch.setattr(lease_module, "_Native", lambda: pytest.fail(
         "Retained termination transaction opened an independent native observer"))
@@ -471,7 +471,7 @@ def test_transaction_rechecks_after_durable_intent_before_possible_effect(
 
 def test_native_acquisition_failure_has_no_pid_kill_fallback(transaction, monkeypatch):
     module, native, _clock, process = transaction
-    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action:
+    monkeypatch.setattr(module, "_acquire_termination_lease", lambda _action, *, canary=None:
                         (_ for _ in ()).throw(OSError("access denied")))
     assert module._terminate_process_transaction(process, action(), event=_response_event()) is None
     assert native.calls == []

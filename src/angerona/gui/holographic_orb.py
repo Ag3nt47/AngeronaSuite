@@ -975,6 +975,7 @@ class HolographicOrbController(QObject):
         self._collapsed: list[weakref.ReferenceType[QWidget]] = []
         self._component_windows: dict[str, QMainWindow] = {}
         self._trails: list[CollapseTrail] = []
+        self._display_motion_disabled = False
         self._shutting_down = False
         self._service_status_source = None
         self._service_status_timer = None
@@ -1164,7 +1165,12 @@ class HolographicOrbController(QObject):
                 finished()
 
         trail.completed.connect(_done)
-        trail.start()
+        try:
+            trail.start()
+        except Exception:
+            # Showing a content window never depends on this decoration.
+            self.disable_display_motion()
+            raise
 
     def collapse_window(self, window: QWidget) -> None:
         if not self.enabled() or self._shutting_down:
@@ -1186,13 +1192,22 @@ class HolographicOrbController(QObject):
             return
         destination = self._orb_destination()
         self.orb.set_menu_expanded(False, animated=False)
-        if motion_allowed(self.config):
-            QTimer.singleShot(250, self.orb.show_token)
-            self._start_trail(source, destination, expanding=False)
+        if motion_allowed(self.config) and not self._display_motion_disabled:
+            QTimer.singleShot(250, self, self._show_orb_if_collapsed)
+            try:
+                self._start_trail(source, destination, expanding=False)
+            except Exception:
+                self._show_orb_if_collapsed()
         else:
             self.orb.show_token()
 
+    def _show_orb_if_collapsed(self) -> None:
+        if not self._shutting_down and self._collapsed_windows():
+            self.orb.show_token()
+
     def _show_window(self, window: QWidget, geometry: QRect | None = None) -> None:
+        if self._shutting_down or getattr(self.main_window, "_termination_started", False):
+            return
         try:
             window.setWindowState(Qt.WindowNoState)
             if geometry is not None and not geometry.isEmpty():
@@ -1207,35 +1222,62 @@ class HolographicOrbController(QObject):
             self._drop_window(window)
 
     def restore_window(self, window: QWidget, *, immediate: bool = False) -> None:
+        if self._shutting_down or getattr(self.main_window, "_termination_started", False):
+            return
         geometry = QRect(
             self._normal_geometries.get(window, window.frameGeometry())
         )
         self._remove_collapsed(window)
 
-        def _finished() -> None:
-            self._show_window(window, geometry)
-            if not self._collapsed_windows():
-                self.orb.hide_token()
-
-        if immediate or not motion_allowed(self.config):
-            _finished()
+        # Restore the actual Qt owner first. A decorative trail, its timer or
+        # its completed signal cannot hold a hidden application window hostage.
+        self._show_window(window, geometry)
+        if not self._collapsed_windows():
+            self.orb.hide_token()
+        if immediate or self._display_motion_disabled or not motion_allowed(self.config):
             return
         self.orb.set_menu_expanded(False)
-        self._start_trail(
-            geometry,
-            self._orb_destination(),
-            expanding=True,
-            finished=_finished,
-        )
+        try:
+            self._start_trail(geometry, self._orb_destination(), expanding=True)
+        except Exception:
+            self.disable_display_motion()
+
+    def disable_display_motion(self) -> None:
+        """Retire our optional trails for this run; preserve saved preferences."""
+        self._display_motion_disabled = True
+        for trail in tuple(self._trails):
+            try:
+                trail._completion_guard.stop()
+                trail._animation.stop()
+                trail.hide()
+                trail.deleteLater()
+            except RuntimeError:
+                pass
+        self._trails.clear()
 
     def restore_recent(self) -> None:
         windows = self._collapsed_windows()
         if windows:
-            self.restore_window(windows[-1])
+            if windows[-1] is self.main_window:
+                self.restore_main()
+            else:
+                self.restore_window(windows[-1])
         else:
             self.restore_main()
 
     def restore_main(self) -> None:
+        if self._shutting_down or getattr(self.main_window, "_termination_started", False):
+            return
+        request = getattr(self.main_window, "_restore_from_background", None)
+        if callable(request):
+            request()
+        else:
+            self.show_main_now()
+
+    def show_main_now(self) -> None:
+        """Qt-only restore used by the MainWindow's bounded display coordinator."""
+        if self._shutting_down or getattr(self.main_window, "_termination_started", False):
+            return
         if self.is_collapsed(self.main_window) or not self.main_window.isVisible():
             self.restore_window(self.main_window)
         else:
@@ -1248,7 +1290,10 @@ class HolographicOrbController(QObject):
 
     def restore_all(self, *, immediate: bool = False) -> None:
         for window in list(self._collapsed_windows()):
-            self.restore_window(window, immediate=immediate)
+            if window is self.main_window and not immediate:
+                self.restore_main()
+            else:
+                self.restore_window(window, immediate=immediate)
 
     def _component_window(self, component: str) -> QMainWindow:
         existing = self._component_windows.get(component)

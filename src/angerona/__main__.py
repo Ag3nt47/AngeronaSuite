@@ -33,6 +33,18 @@ def _run_kernel_telemetry_canary(arguments: tuple[str, ...]) -> int:
     return 0
 
 
+def _run_red_team_inert_probe(arguments: tuple[str, ...]) -> int:
+    """Fixed tagged idle target. It accepts neither executable code nor paths."""
+    import re
+    if (len(arguments) != 2 or arguments[0] != "--red-team-inert-probe"
+            or re.fullmatch(r"ANGERONA_REDTEAM_[0-9a-f]{8}", arguments[1]) is None):
+        print("[Angerona] Invalid inert Red Team target arguments.", file=sys.stderr, flush=True)
+        return 2
+    import time
+    time.sleep(30)
+    return 0
+
+
 def _install_fast_pyside_feature_detection() -> bool:
     """Avoid Shiboken rereading every imported source file during startup.
 
@@ -100,6 +112,78 @@ def _source_activation_pending_at(base) -> bool:
     return os.path.lexists(pending)
 
 
+def _background_entry_requested(arguments) -> bool:
+    """A background failure must never create a modal retry storm.
+
+    This affects presentation only. Malformed reserved variants remain quiet
+    and still fail their custody/argument checks; no worker gains authority.
+    """
+    prefixes = (
+        "--process-snapshot-worker", "--curated-tool-worker", "--community-tool-probe",
+        "--red-team-tool-worker", "--red-team-inert-probe", "--kernel-telemetry-canary",
+        "--ugcap-worker", "--spyware-beacon-watch", "--engine-service", "--response-service",
+        "--automatic-start",
+    )
+    return (any(type(argument) is str and argument.startswith(prefixes) for argument in arguments)
+            or os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
+            or os.environ.get("ANGERONA_EXTERNAL_WATCHDOG") == "1")
+
+
+def _source_storage_lookup_error(operation, code=None):
+    error = OSError("Canonical source storage is unavailable")
+    error.source_storage_operation = operation
+    if type(code) is int and -(1 << 31) <= code < (1 << 32):
+        error.source_storage_code = code & 0xffffffff
+    return error
+
+
+def _source_storage_known_folder():
+    """Resolve LocalAppData from our actual Windows token, not a child profile.
+
+    SHGetKnownFolderPath(NULL) can expand USERPROFILE from the calling process.
+    Helpers intentionally replace that variable with a private scratch profile.
+    An explicit current-user token keeps this custody check at the real source
+    activation store, including when the scratch profile happens to exist.
+    """
+    import ctypes
+    from ctypes import wintypes as w
+    from pathlib import Path
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", w.DWORD), ("b", w.WORD), ("c", w.WORD), ("d", ctypes.c_ubyte * 8)]
+    guid = GUID(0xF1B32785, 0x6FBA, 0x4FCF, (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91))
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    ole = ctypes.WinDLL("ole32", use_last_error=True)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes, kernel.GetCurrentProcess.restype = (), w.HANDLE
+    kernel.CloseHandle.argtypes, kernel.CloseHandle.restype = (w.HANDLE,), w.BOOL
+    advapi.OpenProcessToken.argtypes = (w.HANDLE, w.DWORD, ctypes.POINTER(w.HANDLE))
+    advapi.OpenProcessToken.restype = w.BOOL
+    shell.SHGetKnownFolderPath.argtypes = (ctypes.POINTER(GUID), w.DWORD, w.HANDLE, ctypes.POINTER(ctypes.c_void_p))
+    shell.SHGetKnownFolderPath.restype = ctypes.c_long
+    ole.CoTaskMemFree.argtypes, ole.CoTaskMemFree.restype = (ctypes.c_void_p,), None
+    token = w.HANDLE()
+    # TOKEN_QUERY | TOKEN_IMPERSONATE, as required for an explicit folder token.
+    if not advapi.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008 | 0x0004, ctypes.byref(token)):
+        raise _source_storage_lookup_error("token-open", ctypes.get_last_error())
+    if not token.value:
+        raise _source_storage_lookup_error("token-open")
+    try:
+        result = ctypes.c_void_p()
+        try:
+            status = shell.SHGetKnownFolderPath(ctypes.byref(guid), 0, token, ctypes.byref(result))
+            if status != 0 or not result.value:
+                raise _source_storage_lookup_error("folder-query", status)
+            return Path(ctypes.wstring_at(result.value))
+        finally:
+            if result.value:
+                ole.CoTaskMemFree(result)
+    finally:
+        # Never retry an ambiguous numeric handle. Failure still holds startup.
+        if not kernel.CloseHandle(token):
+            raise _source_storage_lookup_error("token-close", ctypes.get_last_error())
+
+
 def _source_activation_pending_guard() -> bool:
     """Hold mixed source before engine imports; package __init__ already ran.
 
@@ -110,36 +194,33 @@ def _source_activation_pending_guard() -> bool:
         return False
     import ctypes
     from ctypes import wintypes as w
-    from pathlib import Path
     message = ""
+    phase = "canonical-user-folder"
     try:
-        class GUID(ctypes.Structure):
-            _fields_ = [("a", w.DWORD), ("b", w.WORD), ("c", w.WORD), ("d", ctypes.c_ubyte * 8)]
-        # FOLDERID_LocalAppData; caller-provided environment paths are ignored.
-        guid = GUID(0xF1B32785, 0x6FBA, 0x4FCF, (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91))
-        shell = ctypes.WinDLL("shell32", use_last_error=True)
-        ole = ctypes.WinDLL("ole32", use_last_error=True)
-        shell.SHGetKnownFolderPath.argtypes = (ctypes.POINTER(GUID), w.DWORD, w.HANDLE, ctypes.POINTER(ctypes.c_void_p))
-        shell.SHGetKnownFolderPath.restype = ctypes.c_long
-        ole.CoTaskMemFree.argtypes, ole.CoTaskMemFree.restype = (ctypes.c_void_p,), None
-        result = ctypes.c_void_p()
-        try:
-            if shell.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(result)) != 0 or not result.value:
-                raise OSError("Canonical source storage is unavailable")
-            base = Path(ctypes.wstring_at(result.value))
-        finally:
-            if result.value:
-                ole.CoTaskMemFree(result)
+        base = _source_storage_known_folder()
+        phase = "activation-store-custody"
         if _source_activation_pending_at(base):
             message = ("An interrupted source update is retained. Angerona's engines were not started. "
                        "Run start-angerona.bat so Safe Startup can verify the approved original recovery capsule. "
                        "Unknown or damaged evidence remains held; no approval is inferred.")
-    except Exception:
+    except Exception as error:
+        operation = getattr(error, "source_storage_operation", None)
+        code = getattr(error, "source_storage_code", None)
+        native_diagnostic = ""
+        if type(operation) is str and operation in {"token-open", "folder-query", "token-close"}:
+            native_diagnostic = f" Native operation: {operation}."
+            if type(code) is int and 0 <= code <= 0xffffffff:
+                native_diagnostic += f" Native code: 0x{code:08x}."
         message = ("Source update custody could not be checked. Angerona's engines were not started. "
-                   "Run start-angerona.bat for Safe Startup. Existing source and evidence were preserved.")
+                   "Run start-angerona.bat for Safe Startup. Existing source and evidence were preserved. "
+                   f"Diagnostic phase: {phase}; error type: {type(error).__name__[:80]}." + native_diagnostic)
     if not message:
         return False
     print("[Angerona Safe Startup] " + message, file=sys.stderr, flush=True)
+    if _background_entry_requested(sys.argv[1:]):
+        # Parent-owned startup/job diagnostics retain stderr and the nonzero
+        # result. Hidden helpers must not open a foreground Win32 MessageBox.
+        return True
     # A fixed system UI remains available even when application/Qt files are
     # mixed. Never import those files just to display the held explanation.
     try:
@@ -151,8 +232,24 @@ def _source_activation_pending_guard() -> bool:
     return True
 
 def main() -> int:
+    red_team_diagnostic_entry = sys.argv[1:] == ["--red-team-tool-worker"]
+    if red_team_diagnostic_entry:
+        try:
+            os.write(2, b'ANGERONA_REDTEAM_STARTUP {"phase":"entry","status":"started","error_type":"","elapsed_ms":0}\n')
+        except OSError:
+            pass
     if _source_activation_pending_guard():
+        if red_team_diagnostic_entry:
+            try:
+                os.write(2, b'ANGERONA_REDTEAM_STARTUP {"phase":"source-pending-guard","status":"failed","error_type":"EntryGuardHeld","elapsed_ms":0}\n')
+            except OSError:
+                pass
         return 85
+    if red_team_diagnostic_entry:
+        try:
+            os.write(2, b'ANGERONA_REDTEAM_STARTUP {"phase":"source-pending-guard","status":"completed","error_type":"","elapsed_ms":0}\n')
+        except OSError:
+            pass
     if any(argument.startswith("--kernel-telemetry-canary") for argument in sys.argv[1:]):
         # Reserved malformed variants must also fail here; they must never
         # fall through to Config, GUI startup or automatic-start mutation.
@@ -192,6 +289,22 @@ def main() -> int:
         sys.argv = [arg for arg in sys.argv if arg != "--automatic-start"]
     process_worker = "--process-snapshot-worker" in sys.argv[1:]
     curated_worker = "--curated-tool-worker" in sys.argv[1:]
+    community_worker = any(arg.startswith("--community-tool-probe") for arg in sys.argv[1:])
+    red_team_worker = any(arg.startswith("--red-team-tool-worker") for arg in sys.argv[1:])
+    inert_probe = any(arg.startswith("--red-team-inert-probe") for arg in sys.argv[1:])
+    if red_team_worker and sys.argv[1:] != ["--red-team-tool-worker"]:
+        print("[Angerona] Invalid standalone Red Team worker arguments.", file=sys.stderr, flush=True)
+        return 2
+    if inert_probe:
+        import re
+        if (len(sys.argv) != 3 or sys.argv[1] != "--red-team-inert-probe"
+                or re.fullmatch(r"ANGERONA_REDTEAM_[0-9a-f]{8}", sys.argv[2]) is None):
+            print("[Angerona] Invalid inert Red Team target arguments.", file=sys.stderr, flush=True)
+            return 2
+    if community_worker and (len(sys.argv) != 6 or sys.argv[1] != "--community-tool-probe"
+            or sys.argv[2] != "--request" or sys.argv[4] != "--sha256"):
+        print("[Angerona] Invalid community rule probe arguments.", file=sys.stderr, flush=True)
+        return 2
     if curated_worker and (len(sys.argv) != 3 or sys.argv[1] != "--curated-tool-worker"):
         print("[Angerona] Invalid curated scanner worker arguments.", file=sys.stderr, flush=True)
         return 2
@@ -220,6 +333,20 @@ def main() -> int:
                 flush=True,
             )
             return 2
+        if community_worker:
+            if is_admin():
+                print("[Angerona] Community rule probes require an ordinary-user worker.", file=sys.stderr, flush=True)
+                return 2
+            from angerona.core.community_tool_probe_worker import worker_main
+            return worker_main(sys.argv[2:])
+        if red_team_worker or inert_probe:
+            if is_admin():
+                print("[Angerona] Red Team tools require an ordinary-user worker.", file=sys.stderr, flush=True)
+                return 2
+            if inert_probe:
+                return _run_red_team_inert_probe(tuple(sys.argv[1:]))
+            from angerona.gui.red_team_app import worker_main
+            return worker_main()
         if curated_worker:
             # A maintained external scanner remains an ordinary-user child.
             # Package identity is still proved; this entry never requests UAC.
@@ -296,6 +423,17 @@ def main() -> int:
         # bounded request. No Config, Qt, singleton or security engine is loaded.
         from angerona.core.curated_tool_worker import main as curated_worker_main
         return curated_worker_main(sys.argv[2:])
+
+    if community_worker:
+        from angerona.core.community_tool_probe_worker import worker_main
+        return worker_main(sys.argv[2:])
+
+    if inert_probe:
+        return _run_red_team_inert_probe(tuple(sys.argv[1:]))
+
+    if red_team_worker:
+        from angerona.gui.red_team_app import worker_main
+        return worker_main()
 
     if process_worker:
         # The ordinary-source privilege guard above still applies. No Config,

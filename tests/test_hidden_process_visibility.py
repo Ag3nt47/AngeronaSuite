@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import nullcontext
+import io
 import json
 import os
 import subprocess
@@ -16,6 +18,7 @@ from angerona.core import win
 
 NO_WINDOW = 0x08000000
 NEW_CONSOLE = 0x10
+DETACHED = 0x8
 NEW_GROUP = 0x200
 SUSPENDED = 0x4
 BREAKAWAY = 0x01000000
@@ -59,7 +62,9 @@ def windows_boundary(monkeypatch):
 
 @pytest.mark.parametrize("flags", [0, NEW_GROUP, SUSPENDED | NEW_GROUP,
                                     BREAKAWAY | SUSPENDED | NEW_GROUP,
-                                    NEW_CONSOLE | NEW_GROUP])
+                                    NEW_CONSOLE | NEW_GROUP,
+                                    DETACHED | NEW_GROUP,
+                                    DETACHED | NEW_CONSOLE | BREAKAWAY | SUSPENDED | NEW_GROUP])
 def test_default_composes_visibility_with_explicit_security_and_job_flags(windows_boundary, flags):
     boundary = windows_boundary
     win.install_no_window_default()
@@ -67,7 +72,7 @@ def test_default_composes_visibility_with_explicit_security_and_job_flags(window
                                     close_fds=True, start_new_session=True,
                                     cwd="owned-workspace", env={"OWNED": "value"})
     row = process.arguments
-    assert row["creationflags"] == ((flags & ~NEW_CONSOLE) | NO_WINDOW)
+    assert row["creationflags"] == ((flags & ~(NEW_CONSOLE | DETACHED)) | NO_WINDOW)
     assert row["startupinfo"].dwFlags & 1
     assert row["startupinfo"].wShowWindow == 0
     assert row["close_fds"] is True and row["start_new_session"] is True
@@ -117,12 +122,13 @@ def test_invalid_duplicate_arguments_do_not_launch_or_get_reinterpreted(windows_
     assert boundary.captured == []
 
 
-def test_hidden_helper_cannot_opt_out_with_flags_zero_or_interactive_startupinfo(windows_boundary):
+@pytest.mark.parametrize("flags", [0, DETACHED | NEW_CONSOLE])
+def test_hidden_helper_cannot_opt_out_with_flags_zero_or_interactive_startupinfo(windows_boundary, flags):
     boundary = windows_boundary
     supplied = boundary.module.STARTUPINFO()
     supplied._angerona_interactive_console = True
     win.install_no_window_default()
-    process = win.popen_hidden(["owned-helper"], creationflags=0, startupinfo=supplied)
+    process = win.popen_hidden(["owned-helper"], creationflags=flags, startupinfo=supplied)
     assert process.arguments["creationflags"] == NO_WINDOW
     assert process.arguments["startupinfo"].wShowWindow == 0
     assert process.arguments["startupinfo"]._angerona_interactive_console is False
@@ -155,6 +161,33 @@ def test_no_window_installation_is_idempotent_without_replacing_popen_class(wind
     assert boundary.module.Popen.__init__ is first
     boundary.module.Popen(["owned-helper"])
     assert len(boundary.captured) == 1
+
+
+def test_direct_scanner_worker_hides_nested_commands_before_loading_pinned_bytes(
+        windows_boundary, monkeypatch, tmp_path):
+    """An inert engine fixture tests launch presentation, not scan authority."""
+    from angerona.core import curated_tool_worker as worker
+    from angerona.core import source_sandbox
+    job = tmp_path / "job"
+    for key in ("TEMP", "TMP", "TMPDIR"):
+        monkeypatch.setenv(key, str(job / "scratch"))
+    document = {"kind": "version", "limits": {"retained_bytes": 5 * 1024**2, "working_bytes": 64 * 1024**2}}
+    source = b"from angerona.core import win\ndef main(args):\n win.subprocess.Popen(['inert-pinned-reader'], creationflags=0x210)\n return 0\n"
+    monkeypatch.setattr(worker, "_pipe_streams", lambda: None)
+    monkeypatch.setattr(worker, "_user_only", lambda: None)
+    monkeypatch.setattr(worker, "_request", lambda *_: (document, tmp_path, job, tmp_path / "engine.py", source))
+    monkeypatch.setattr(worker, "_arguments", lambda *_: [])
+    monkeypatch.setattr(worker, "_posix_limits", lambda *_: None)
+    monkeypatch.setattr(source_sandbox, "_hold_plain_directories", lambda *_: nullcontext())
+    monkeypatch.setattr(worker, "_WriteBudget", lambda *_: SimpleNamespace(install=lambda: None))
+    monkeypatch.setattr(worker, "sys", SimpleNamespace(
+        stdin=SimpleNamespace(buffer=io.BytesIO(b"{}\n")), stderr=sys.stderr, modules=sys.modules, argv=[]))
+    assert worker.main(["inert-private-request.json"]) == 0
+    assert len(windows_boundary.captured) == 1
+    actual = windows_boundary.captured[0]
+    assert actual["args"] == ["inert-pinned-reader"]
+    assert actual["creationflags"] == NEW_GROUP | NO_WINDOW
+    assert actual["startupinfo"].wShowWindow == 0
 
 
 def test_nonwindows_keeps_caller_process_options_and_does_not_patch(monkeypatch):
@@ -215,7 +248,7 @@ print(json.dumps({'child':json.loads(result.stdout),'stderr':result.stderr,'call
     source = Path(win.__file__).resolve(strict=True)
     expected = hashlib.sha256(source.read_bytes()).hexdigest()
     result = subprocess.run([sys.executable, "-I", "-c", inner, str(source), expected], capture_output=True,
-                            text=True, timeout=25, check=True,
+                            stdin=subprocess.DEVNULL, text=True, timeout=25, check=True,
                             creationflags=subprocess.CREATE_NO_WINDOW)
     assert len(result.stdout) < 4096 and result.stderr == ""
     row = json.loads(result.stdout)

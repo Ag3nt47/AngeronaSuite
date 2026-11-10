@@ -7,8 +7,8 @@ Purpose
     allow/deny lists miss.
 
 How
-    NDRD consumes DNS query strings from the EventBus (emitted by the packet
-    sniffer / network monitor) and can also decode raw query names directly. For
+    NDRD consumes explicit DNS query strings from the EventBus, including native
+    Sysmon Event22, and can also decode raw query names directly. For
     each name it computes Shannon entropy per label, label-length and digit-ratio
     stats, and flags names that exceed the tunneling/DGA thresholds.
 
@@ -222,14 +222,27 @@ class NetworkProtocolDecoderModule(BaseModule):
             return
         event_type = d.get("event_type")
         protocol = d.get("protocol")
+        # Native Sysmon22 supplies query_name but no generic event_type or
+        # protocol marker. Keep the exact native source/EID guard instead of
+        # accepting arbitrary log prose or relabeling another sensor as native.
+        # This source shape still grants no object-bound detector receipt or
+        # response authority; existing mesh verification above remains intact.
+        native_sysmon_dns = (
+            getattr(event, "module", "") == "Sysmon Event Bridge"
+            and type(d.get("eid")) is int and d["eid"] == 22
+            and d.get("sensor_source") == "sysmon-native"
+            and d.get("raw_sensor_evidence") is True
+            and d.get("fallback") is not True
+        )
         if not (
             isinstance(event_type, str) and len(event_type) <= 32
             and event_type.casefold() in _DNS_EVENT_TYPES
             or isinstance(protocol, str) and len(protocol) == 3
             and protocol.casefold() == "dns"
+            or native_sysmon_dns
         ):
             return
-        qname = d.get("qname") or d.get("query_name")
+        qname = d.get("query_name") if native_sysmon_dns else d.get("qname") or d.get("query_name")
         if isinstance(qname, str):
             self._handle(qname, src=getattr(event, "module", ""))
 

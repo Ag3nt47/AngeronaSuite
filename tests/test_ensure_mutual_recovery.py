@@ -77,6 +77,9 @@ def test_late_stop_after_ensure_inspection_is_not_cleared_by_guarded_fallback(he
     monkeypatch.setattr(helper.subprocess, "Popen", launch)
     assert helper._guarded_launch()["outcome"] == "launch-requested"
     assert captured["env"]["ANGERONA_SUPERVISED_RECOVERY"] == "1"
+    assert captured["creationflags"] == subprocess.CREATE_NO_WINDOW
+    assert captured["startupinfo"].dwFlags & subprocess.STARTF_USESHOWWINDOW
+    assert captured["startupinfo"].wShowWindow == 0
     # Simulate intent written after ensure's last absence check, before the
     # assistant consumes its inherited inhibition-only marker.
     monkeypatch.setenv("ANGERONA_SUPERVISED_RECOVERY", captured["env"]["ANGERONA_SUPERVISED_RECOVERY"])
@@ -87,6 +90,28 @@ def test_late_stop_after_ensure_inspection_is_not_cleared_by_guarded_fallback(he
     monkeypatch.setattr(startup, "run_startup", lambda *_args, **_kwargs: pytest.fail("Late STOP launched startup work"))
     monkeypatch.setattr(sys, "argv", ["angerona.startup", "--no-startup-window"])
     assert startup.main() == 86
+
+
+def test_non_windows_guarded_launch_keeps_existing_process_options(helper, tmp_path, monkeypatch):
+    from angerona.core import privilege
+
+    launcher = tmp_path / "start-angerona.bat"
+    launcher.write_text("@echo off\n", encoding="ascii")
+    captured = {}
+
+    def launch(argv, **kwargs):
+        captured.update(argv=argv, **kwargs)
+        return SimpleNamespace(pid=123)
+
+    monkeypatch.setattr(helper, "ROOT", tmp_path)
+    monkeypatch.setattr(helper, "os", SimpleNamespace(name="posix"))
+    monkeypatch.setattr(helper.subprocess, "Popen", launch)
+    monkeypatch.setattr(privilege, "trusted_windows_directories", lambda: (tmp_path, tmp_path))
+    assert helper._guarded_launch()["outcome"] == "launch-requested"
+    assert captured["argv"] == [str(tmp_path / "cmd.exe"), "/d", "/c", str(launcher)]
+    assert captured["cwd"] == tmp_path and captured["close_fds"] is True
+    assert captured["env"]["ANGERONA_SUPERVISED_RECOVERY"] == "1"
+    assert "startupinfo" not in captured and "creationflags" not in captured
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows private settings custody")

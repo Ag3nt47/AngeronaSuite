@@ -18,7 +18,9 @@ Why this matters:
 Design
 ------
   A compiled list of ``FastPathRule`` objects is checked against every bus event
-  that is HIGH or CRITICAL severity from another sensor module.  Each rule
+  that is HIGH or CRITICAL severity from another sensor module. This is a
+  post-detection router, not a raw-INFO script interceptor or AMSI provider.
+  The cmdline/command_line wire aliases do not lower rule thresholds. Each rule
   specifies:
     - ``pattern``   — regex compiled at startup (re.IGNORECASE)
     - ``field``     — which event attribute to test: "message", "image",
@@ -51,6 +53,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.eventbus import Event, is_remote_observe_only
+from angerona.core.threat import event_disposition
 from angerona.core.net_interfaces import detect_split_tunnel
 from angerona.core.werfault_guard import (
     MAX_IDENTITY_AGE, MAX_OWNED_PROCESSES,
@@ -59,6 +63,53 @@ from angerona.core.werfault_guard import (
 )
 
 DEDUP_TTL = 120.0   # seconds between repeat fast-path alerts for same triple
+_MAX_FAST_PATH_TEXT = 4096
+_ETWR_MODULE = "ETW Real-Time Process Sensor"
+_WINDOWS_EPOCH = 116444736000000000
+
+
+def _raw_etwr_context(event, bus, *, verified: bool) -> tuple[dict, str]:
+    """Lossless original native birth normalization; never a capture grant."""
+    if (not verified or bus is None or bus.mesh_required is not True
+            or is_remote_observe_only(event) or event.module != _ETWR_MODULE):
+        return {}, "exact native ETWR publisher provenance unavailable"
+    details = event.details
+    generation = details.get("collection_generation")
+    if (details.get("event_type") != "process_creation" or details.get("source") != "ETW:Kernel-Process"
+            or details.get("fallback") is True or type(details.get("pid")) is not int
+            or not 0 < details["pid"] <= 0xFFFFFFFF or type(generation) is not str
+            or re.fullmatch(r"[0-9a-f]{32}", generation) is None
+            or type(event.mesh_sig) is not str or not 1 <= len(event.mesh_sig) <= 4096
+            or type(event.mesh_peer) is not str or not 1 <= len(event.mesh_peer) <= 256
+            or type(event.hmac_sig) is not str or len(event.hmac_sig) > 128
+            or type(event.ts) not in {int, float} or not math.isfinite(event.ts)):
+        return {}, "native ETWR source shape or generation unavailable"
+    normalized, wire = {}, []
+    for field in ("process_birth_ticks", "native_birth_ticks"):
+        if field not in details:
+            continue
+        value = details[field]
+        original = value
+        if type(value) is str:
+            if (not 1 <= len(value) <= 20 or not value.isascii() or not value.isdecimal()
+                    or value != str(int(value))):
+                return {}, "native ETWR birth text is not canonical"
+            value = int(value)
+        if type(value) is not int or not _WINDOWS_EPOCH < value <= 0xFFFFFFFFFFFFFFFF:
+            return {}, "native ETWR birth is missing or invalid"
+        normalized[field] = value
+        wire.append({"field": field, "type": type(original).__name__, "value": original})
+    if not normalized or len(set(normalized.values())) != 1:
+        return {}, "native ETWR birth aliases are missing or conflict"
+    normalized["native_origin"] = {
+        "schema": "angerona.fast-path.native-etwr-origin.v1", "module": event.module,
+        "source": details["source"], "collection_generation": generation,
+        "ts": event.ts, "pid": details["pid"], "source_hmac": event.hmac_sig,
+        "source_mesh_sig": event.mesh_sig, "source_mesh_peer": event.mesh_peer,
+        "wire_birth": wire, "identity_inferred": False,
+        "scope": "Original native process-start observation; no new response or capture authority",
+    }
+    return normalized, "native process-start/token match is observation; separate active capture evidence required"
 
 _WER_REJECTIONS = frozenset({
     "supplier_unbound", "caller_clock_invalid", "supplier_failed", "snapshot_type_invalid",
@@ -498,6 +549,19 @@ class FastPathModule(BaseModule):
             self._check_event(ev)
 
     def _check_event(self, ev) -> None:
+        if (type(ev) is not Event or type(ev.details) is not dict or ev.module == self.name
+                or type(ev.module) is not str or not 1 <= len(ev.module) <= 256
+                or type(ev.severity) not in {int, Severity} or not 0 <= ev.severity <= 4):
+            return
+        bus = self._bus
+        verified = False
+        if bus is not None and bus.integrity_enabled:
+            try:
+                verified = bus.verify(ev) is True
+            except Exception:
+                return
+            if not verified:
+                return
         # Mixed-interface socket context (not a malicious IOC). Only run the
         # per-PID connection scan for network-bearing events to stay cheap.
         pid_val = ev.details.get("pid")
@@ -505,12 +569,18 @@ class FastPathModule(BaseModule):
             self._check_split_tunnel(ev, pid_val)
 
         # Build a dict of fields we can test
+        def bounded_text(value):
+            return value if type(value) is str and len(value) <= _MAX_FAST_PATH_TEXT else ""
+        canonical = bounded_text(ev.details.get("command_line"))
+        alias = bounded_text(ev.details.get("cmdline"))
         fields = {
             "message":      ev.message,
-            "image":        str(ev.details.get("image", "")),
-            "command_line": str(ev.details.get("command_line", "")),
-            "path":         str(ev.details.get("path", "")),
+            "image":        bounded_text(ev.details.get("image", "")),
+            "command_line": "" if canonical and alias and canonical != alias else canonical or alias,
+            "path":         bounded_text(ev.details.get("path", "")),
         }
+        fields["message"] = bounded_text(fields["message"])
+        native, held = _raw_etwr_context(ev, bus, verified=verified)
 
         for rule in _RULES:
             if ev.severity < rule.threshold:
@@ -522,15 +592,29 @@ class FastPathModule(BaseModule):
                 continue
 
             # Dedup check
-            pid_str = str(ev.details.get("pid", ""))
-            key     = (rule.label, ev.module, pid_str)
+            pid = ev.details.get("pid")
+            pid_str = str(pid) if type(pid) is int else ""
+            native_birth = native.get("process_birth_ticks", native.get("native_birth_ticks"))
+            key = (rule.label, ev.module, pid_str, native_birth) if native_birth is not None else (rule.label, ev.module, pid_str)
             now     = time.time()
             if now - self._seen.get(key, 0.0) < DEDUP_TTL:
                 continue
-            self._seen[key] = now
 
             # Match — emit CRITICAL immediately
             snippet = text[:200]
+            # Recheck the exact original after matching, before copying its
+            # source binding. Invalid or changed input cannot mint native proof.
+            if verified and not bus.verify(ev):
+                return
+            self._seen[key] = now
+            observational = (ev.module == _ETWR_MODULE
+                             or event_disposition(ev) in {"observation", "exposure", "health", "practice"})
+            metadata = {"response_authorized": False, "forensic_coverage": "held",
+                        "forensic_coverage_reason": held,
+                        "input_authentication": "verified" if verified else "unverified-legacy-input", **native}
+            if observational:
+                metadata.update(disposition="observation", active_attack=False,
+                                detector_policy="fast-path-token-observation")
             self.emit(
                 f"[FAST-PATH] {rule.label}: matched in {rule.field!r} from "
                 f"{ev.module} — '{snippet}' (bypassed LLM triage)",
@@ -542,6 +626,7 @@ class FastPathModule(BaseModule):
                 source_module=ev.module,
                 mitre_tags=list(rule.mitre),
                 pid=ev.details.get("pid"),
+                **metadata,
             )
             break   # one rule match per event is enough
 

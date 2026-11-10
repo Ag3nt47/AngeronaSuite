@@ -1307,7 +1307,11 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     monkeypatch.setattr(system_pulse, "_wifi_signal_windows", lambda: None)
     app = _app()
     window_construction_started = True
-    window = MainWindow(bus, recorder, manager, config)
+    from angerona.gui.red_team_console import RedTeamConsole
+    # This fixture proves the original Core-owned producer/response/report
+    # path. Standalone tool IPC/native custody has its own integration gate.
+    window = MainWindow(bus, recorder, manager, config,
+                        red_team_console_factory=RedTeamConsole)
 
     pulse_worker = window.system_pulse._sample_worker
     trace("mainwindow_constructed")

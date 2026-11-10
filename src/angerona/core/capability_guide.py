@@ -158,13 +158,63 @@ _BASE_GUIDES = (
     ),
     CapabilityGuide(
         "red-team", "Red Team Simulation", "Validation",
-        "A safe, reversible drill that evaluates detection, evidence and remediation.",
+        "A separate ordinary-user drill application that evaluates detection, evidence "
+        "and remediation through Core-owned validation leases. Its UI cannot approve "
+        "host response or sign its own passing results.",
         ("Open Red Team Simulation.", "Choose a benign profile and intensity.",
          "Run the drill.", "Review the After-Action Report.",
          "Build and verify fixes, then rerun to prove closure."),
-        "A rerun detects the marker and the report records a passing closure receipt.",
+        "Review each step's authenticated detection and exact-target response receipts, "
+        "including failures, held actions and unscored observations; rerun after a reviewed fix.",
         "Uses inert local markers and never deploys real exploitation.",
         "_open_simulation", DestinationKind.WINDOW,
+    ),
+    CapabilityGuide(
+        "github-tools", "GitHub Tools", "Integration",
+        "A reviewed source and toolkit workbench with suggested projects, pinned "
+        "downloads, capability-specific checks, credits and editable sandbox copies.",
+        ("Open the GitHub icon and choose Suggested.",
+         "Review the repository, pinned revision, license and supported adapter.",
+         "Prepare the supported tool or import its source for review, then run Self-check.",
+         "Use the sandbox to inspect, edit, compare or revert a separate copy; native "
+         "sample compilation and an explicitly configured analysis VM are different operations.",
+         "Uninstall managed toolkit code when finished; reports and user edits are preserved."),
+        "A check reports what actually ran, its resource bounds and any unsupported coverage. "
+        "A repository download does not prove the whole upstream platform is installed.",
+        "Downloads contact the selected public repository. Source review does not execute "
+        "upstream installation commands or upload host evidence.",
+        "_open_github_tools", DestinationKind.WINDOW,
+    ),
+    CapabilityGuide(
+        "rules-playbooks", "Rules and Playbooks", "Response",
+        "A tactics workbench for reviewing YARA rules, constrained Sigma translations "
+        "and Angerona's declarative response playbooks before exact-revision activation.",
+        ("Open Rules and Playbooks, choose a preset repository or paste its URL, and select items.",
+         "Review source, license, definitions and supported format before importing.",
+         "Build or edit a draft, inspect the diff, validate it and run explicit sample checks.",
+         "Enable the separate community rule or playbook setting only when intended, "
+         "then activate the reviewed revision.",
+         "Inspect check badges and reasons; disable or roll back a revision when needed."),
+        "Green sample badges bind to the exact tested bytes. Compile-only or unknown "
+        "results remain distinct; changes invalidate prior checks.",
+        "Imports are bounded data. Shell scripts and foreign playbook commands are not "
+        "executed, and imported content cannot grant containment authority.",
+        "_open_rules_playbooks", DestinationKind.WINDOW,
+    ),
+    CapabilityGuide(
+        "suite-map", "Suite Map 3D", "Visibility",
+        "An interactive three-dimensional view of cached modules, the event bus, "
+        "companions, known drives, devices and observed network endpoints.",
+        ("Open Suite Map 3D from the dashboard.",
+         "Drag to orbit, Shift-drag to pan and scroll to zoom.",
+         "Search or filter components, hover for context and select a shape or list entry.",
+         "Review its cached status and coverage, then use Take me there for its controls.",
+         "Pause flow animation when desired; suite and operating-system reduced motion are respected."),
+        "Dashed architecture links differ from observed publications or endpoints. "
+        "Inspect age, loss and omitted-count information before interpreting a component.",
+        "The view reads existing local caches. It does not actively scan devices, collect "
+        "packet contents or locate endpoints geographically.",
+        "_open_suite_map", DestinationKind.WINDOW,
     ),
     CapabilityGuide(
         "device-security-lab", "Device Security Lab", "Validation",
@@ -528,9 +578,33 @@ _METADATA: dict[str, _CapabilityMetadata] = {
     ),
     "red-team": _CapabilityMetadata(
         CapabilityMaturity.OPERATIONAL,
-        ("tests/test_drill_remediation_lifecycle.py", "tests/test_purple_remediation_e2e.py"),
+        ("tests/test_drill_remediation_lifecycle.py", "tests/test_purple_remediation_e2e.py",
+         "tests/test_red_team_standalone_ipc.py", "tests/test_red_team_standalone_admission.py"),
         ("Inert simulations validate Angerona paths; they are not a substitute for an authorized penetration test.",),
         ("shark attack", "red team drill", "after action report"),
+    ),
+    "github-tools": _CapabilityMetadata(
+        CapabilityMaturity.CONFIGURABLE_PREVIEW,
+        ("tests/test_community_tool_adapters.py", "tests/test_community_tool_probe_worker.py",
+         "tests/test_community_tools_ui.py"),
+        ("Supported adapters have different scopes. External platforms may offer result "
+         "review only, and process/resource isolation is not an operating-system sandbox.",),
+        ("suggested tools", "community tools", "github library"),
+    ),
+    "rules-playbooks": _CapabilityMetadata(
+        CapabilityMaturity.CONFIGURABLE_PREVIEW,
+        ("tests/test_rule_playbook_library.py", "tests/test_community_policy_runtime.py",
+         "tests/test_community_sigma.py"),
+        ("Only supported constrained formats can activate. Community rules and playbooks "
+         "are off by default; original response policy and exact-target proof remain required.",),
+        ("yara rules", "sigma rules", "soar playbooks", "tactics builder"),
+    ),
+    "suite-map": _CapabilityMetadata(
+        CapabilityMaturity.OPERATIONAL,
+        ("tests/test_suite_topology.py", "tests/test_suite_map_ui.py"),
+        ("Cached topology and observed event publication do not establish every consumer "
+         "received an event or that an endpoint remains connected. Hidden intervals are not observed.",),
+        ("3d topology", "suite topology", "component map"),
     ),
     "device-security-lab": _CapabilityMetadata(
         CapabilityMaturity.CONFIGURABLE_PREVIEW,

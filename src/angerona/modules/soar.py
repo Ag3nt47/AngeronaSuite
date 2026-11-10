@@ -114,9 +114,46 @@ class SOARModule(BaseModule):
         self._delivery_failures: dict[str, int] = {}
         self._delivery_bus = None
         self._dead_lettered = 0
+        self._community_runtime = None
 
     def bind_manager(self, manager) -> None:
         self._manager = manager
+        self._community_runtime = None
+
+    def _community_playbook_request(self, ev) -> bool:
+        """Read selected data on this worker; retain all response-owner gates."""
+        config = getattr(self._manager, "config", None)
+        if getattr(config, "community_playbooks_enabled", False) is not True:
+            self._community_runtime = None
+            return False
+        # Imported policy cannot manufacture an original signed detector event.
+        # Unlike legacy test compatibility, new user playbooks require an armed
+        # bus and a real original signature before even selecting an action.
+        bus = self._bus
+        if (bus is None or getattr(bus, "integrity_enabled", False) is not True
+                or type(getattr(ev, "hmac_sig", None)) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", ev.hmac_sig) is None
+                or not self._event_integrity_ok(ev)):
+            return False
+        try:
+            from angerona.core.rule_playbook_library import CommunityPlaybookRuntime
+            if self._community_runtime is None:
+                self._community_runtime = CommunityPlaybookRuntime(config)
+            selected = self._community_runtime.matching(ev)
+            request = False
+            for row, document in selected:
+                for action in document["actions"]:
+                    if action["type"] == "notify":
+                        self.emit("Playbook[" + document["name"] + "]: " + action["message"],
+                            Severity.INFO, playbook_id=row["id"], playbook_sha256=row["active_sha256"],
+                            trigger_module=ev.module, trigger_hmac=ev.hmac_sig,
+                            disposition="observation", response_authorized=False)
+                    elif action["type"] == "request_containment":
+                        request = True
+            return request
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError, RecursionError) as exc:
+            self.last_error = "Community playbook held: " + str(exc)[:240]
+            return False
 
     def self_test(self) -> tuple[bool, str]:
         """Validate corroboration and cursor safety without executing a response."""
@@ -462,12 +499,13 @@ class SOARModule(BaseModule):
                 Severity.INFO,
             )
             return
+        community_request = self._community_playbook_request(ev)
         if self._report_combat_ownership(ev):
             return
         pid = ev.details.get("pid")
 
         # Playbook 1: CRITICAL event tied to a process → corroborate then contain.
-        if ev.severity >= Severity.CRITICAL and isinstance(pid, int):
+        if (ev.severity >= Severity.CRITICAL or (community_request and ev.severity >= Severity.HIGH)) and type(pid) is int:
             # G3-B: System32 allowlist check
             if self._is_protected_process(pid):
                 self.emit(

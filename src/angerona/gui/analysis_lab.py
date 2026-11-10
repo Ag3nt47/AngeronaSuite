@@ -142,7 +142,7 @@ class AnalysisLabPanel(QWidget):
         self._start('load', lambda _op, _progress: self._load(root), 'Checking Analysis Lab…')
 
     def _start(self, kind, work, message):
-        if self._busy:
+        if self._lifetime['closed'] or self._busy or self._worker is not None:
             return
         if not _WORKERS.acquire(blocking=False):
             self.status.setText('Analysis workers are busy. Wait for the current operation to finish.')
@@ -196,6 +196,7 @@ class AnalysisLabPanel(QWidget):
                 return
             _WORKERS.release()
             self._busy = False
+            self._worker = None
             self._activities.finish(self._activity_handle)
             self._activity_handle = None
             self._operation = None

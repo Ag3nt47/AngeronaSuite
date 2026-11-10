@@ -8,13 +8,12 @@ throttle, and hardens itself with process-mitigation policies. It is bounded, no
 un-killable (a clean shutdown, a `watchdog.stop` file, or a restart storm all stop
 it) — an un-killable watchdog would be indistinguishable from a rootkit.
 
-Angerona already prefers it automatically once it exists:
-- `start-angerona.bat` launches via `frz\angerona_watchdog.exe` when present and
-  sets `ANGERONA_EXTERNAL_WATCHDOG=1` + `ANGERONA_AGENT_SHA256`.
-- `resilience/manager.py` then **skips** its internal Python watchdog, so there is
-  no double-supervision.
-
-If the exe is absent, nothing changes — the Python peer watchdog runs as before.
+The current `start-angerona.bat` uses verified Safe Startup and the Python peer
+watchdog. Placing a Go executable beside the checkout does not select it.
+The compiled watchdog remains an explicit deployment/development option: its
+command accepts an agent executable and arguments, and it sets
+`ANGERONA_EXTERNAL_WATCHDOG=1` for that child. When an external parent is
+configured, `resilience/manager.py` skips its internal Python watchdog.
 
 ## 1. Build (needs the Go toolchain)
 
@@ -49,16 +48,26 @@ way if you distribute them.
 
 ## 3. Deploy
 
-Just place the (signed) `angerona_watchdog.exe` at `AngeronaSuite\angerona_watchdog.exe`
-and start via `start-angerona.bat`. Verify from the watchdog log:
+Build and sign the watchdog before arranging an explicit deployment around a
+reviewed agent executable. Its command interface is:
 
-```
-type runtime-data\watchdog.log
+```bat
+angerona_watchdog.exe <reviewed-agent.exe> [agent arguments...]
 ```
 
-You should see `mitigation applied`, `integrity baseline learned` (first run) or a
-match, and `agent launched pid=…`. Kill Angerona from Task Manager → the log should
-show `AGENT TERMINATED` and a relaunch.
+Set `ANGERONA_WD_DATADIR` to the approved runtime location and
+`ANGERONA_AGENT_SHA256` to the reviewed executable digest. A learned local hash
+is continuity information, not publisher authentication. This command does not
+enroll a Windows service or integrate a signed package automatically. Keep
+using `start-angerona.bat` for source checkout startup; a raw Python command
+does not replace that launcher's dependency, recovery and readiness checks.
+
+Watchdog children use hidden console flags. An externally supervised source
+custody failure remains held with stderr diagnostics instead of opening a
+modal message box. This presentation hint grants no trust, privilege or STOP
+resume authority: the first-launch and automatic-recovery STOP rules remain
+separate. Validate an isolated deployment's own logs, authenticated heartbeats,
+normal STOP and bounded restart behavior before relying on it.
 
 ## Out of scope here (needs a driver + Microsoft signing, not a code change)
 

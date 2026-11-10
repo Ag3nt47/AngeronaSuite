@@ -185,6 +185,127 @@ def test_native_enable_failure_reports_real_single_output_or_unavailable(arming,
     assert len(arming.native_calls) == 2 and sum(row.native_selected for row in report.targets) <= 1
 
 
+def test_native_current_thread_scope_accepts_the_real_none_success_contract(arming, monkeypatch):
+    calls = []
+
+    def enable(*, file, all_threads):
+        calls.append((file, all_threads))
+        return None  # CPython's successful enable() return value.
+
+    monkeypatch.setattr(crashlog.faulthandler, "enable", enable)
+    report = crashlog.install().report
+
+    assert report.state == "armed" and len(calls) == 1
+    assert calls[0][1] is False and not calls[0][0].closed
+    assert Path(calls[0][0].name) == report.native_fault_target
+    assert "native_threads=current" in arming.records[-1][2]["coverage"]
+
+
+def test_positional_only_native_fallback_never_restores_default_all_threads(arming, monkeypatch):
+    calls = []
+
+    def enable(file, all_threads=True, /):
+        calls.append((file, all_threads))
+
+    monkeypatch.setattr(crashlog.faulthandler, "enable", enable)
+    report = crashlog.install().report
+
+    assert report.state == "armed" and len(calls) == 1
+    assert calls[0][1] is False and Path(calls[0][0].name) == report.native_fault_target
+
+
+def test_failed_positional_fallback_preserves_scope_for_the_second_output(arming, monkeypatch):
+    calls = []
+
+    def enable(*args, **kwargs):
+        calls.append((args, kwargs))
+        if kwargs:
+            assert kwargs["all_threads"] is False
+            raise TypeError("fixture positional API")
+        assert len(args) == 2 and args[1] is False
+        if Path(args[0].name).parent.name == "diagnostics":
+            raise OSError(5, "private fixture native failure")
+
+    monkeypatch.setattr(crashlog.faulthandler, "enable", enable)
+    report = crashlog.install().report
+
+    assert report.state == "partial" and len(calls) == 4
+    assert report.targets[1].errors == ("faulthandler:OSError:5",)
+    assert report.native_fault_target == arming.root / "logs/crash.log"
+    assert all(not stream.closed for stream in crashlog._FH_FILES)
+    assert "native_threads=current" in arming.records[-1][2]["coverage"]
+
+
+@pytest.mark.parametrize("unavailable", [None, False])
+def test_unavailable_native_api_is_not_reported_as_armed(arming, monkeypatch, unavailable):
+    monkeypatch.setattr(crashlog.faulthandler, "enable", unavailable)
+    report = crashlog.install().report
+
+    assert report.state == "partial" and report.native_fault_target is None
+    assert all(not row.native_selected and row.errors == ("faulthandler:TypeError",)
+               for row in report.targets)
+    assert report.main_hook and report.thread_hook and report.qt_hook
+    assert "native_threads=unavailable" in arming.records[-1][2]["coverage"]
+
+
+def test_native_scope_change_keeps_complete_python_exception_and_qt_evidence(arming, monkeypatch):
+    forwarded = []
+    monkeypatch.setattr(sys, "__excepthook__", lambda *args: forwarded.append(args))
+    report = crashlog.install().report
+
+    def owned_python_evidence():
+        raise ValueError("OWNED_PYTHON_STACK_WITNESS")
+
+    try:
+        owned_python_evidence()
+    except ValueError:
+        captured = sys.exc_info()
+        sys.excepthook(*captured)
+        crashlog.threading.excepthook(SimpleNamespace(
+            thread=SimpleNamespace(name="OwnedPythonWitness"),
+            exc_type=captured[0], exc_value=captured[1], exc_traceback=captured[2],
+        ))
+    arming.qt_calls[0](arming.qt.QtMsgType.QtCriticalMsg, None, "OWNED_QT_CRITICAL_WITNESS")
+
+    assert report.main_hook and report.thread_hook and report.qt_hook and len(forwarded) == 1
+    for target in report.targets:
+        evidence = target.path.read_text("utf-8")
+        assert "UNHANDLED EXCEPTION (main)" in evidence
+        assert "THREAD EXCEPTION (OwnedPythonWitness)" in evidence
+        assert evidence.count("ValueError: OWNED_PYTHON_STACK_WITNESS") == 2
+        assert "owned_python_evidence" in evidence and "OWNED_QT_CRITICAL_WITNESS" in evidence
+
+
+def test_native_scope_change_keeps_python_owned_all_thread_snapshot(arming, monkeypatch):
+    from angerona.resilience import diagnostics
+
+    entered, release = crashlog.threading.Event(), crashlog.threading.Event()
+
+    def owned_python_snapshot_witness():
+        entered.set()
+        release.wait(10)
+
+    worker = crashlog.threading.Thread(
+        target=owned_python_snapshot_witness, name="OwnedPythonSnapshotWitness", daemon=True,
+    )
+    worker.start()
+    try:
+        assert entered.wait(5)
+        crashlog.install()
+        monkeypatch.setattr(diagnostics, "diag_dir", lambda: arming.root)
+        assert diagnostics.write_thread_dump()
+        report = json.loads((arming.root / "thread_dump.json").read_text("utf-8"))
+        own_rows = [row for row in report["threads"] if row["name"] == "OwnedPythonSnapshotWitness"]
+        assert len(own_rows) == 1
+        assert any("owned_python_snapshot_witness" in frame for frame in own_rows[0]["stack"])
+        assert any("test_native_scope_change_keeps_python_owned_all_thread_snapshot" in frame
+                   for row in report["threads"] for frame in row["stack"])
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+
+
 def test_qt_hook_failure_is_visible_without_stopping_python_log_capture(arming, monkeypatch):
     def unavailable(_callback):
         raise RuntimeError("private Qt issue")

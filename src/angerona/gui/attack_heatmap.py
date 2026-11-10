@@ -596,7 +596,7 @@ class AttackHeatmapWindow(QDialog):
                 ty = cy + _HDR_H + row_idx * (_CH + 2)
                 lbl = _TID_TO_META[tid][0] if tid in _TID_TO_META else tid
                 cell = _CellItem(tid, lbl, cx, ty, self._on_cell_clicked)
-                scene.addItem(cell); scene.addItem(cell._lbl); scene.addItem(cell._bar)
+                scene.addItem(cell)  # Qt also adds its parented label and bar.
                 self._cells[tid] = cell
 
     # ── Refresh ──────────────────────────────────────────────────────────────

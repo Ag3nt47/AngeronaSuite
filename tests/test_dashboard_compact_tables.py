@@ -58,7 +58,9 @@ def test_alert_summary_uses_message_space_without_horizontal_scrolling(width, sc
     panel._rebuild_event_rows(events())
     panel.resize(width, 380)
     panel.show()
-    application.processEvents()
+    # Coalesced fitting and Qt's scrollbar range/layout settle separately.
+    for _ in range(6):
+        application.processEvents()
     try:
         assert [not panel.table.isColumnHidden(column) for column in range(8)] == [True] * 4 + [False] * 4
         minimum = sum(panel.table.columnWidth(column) for column in (0, 1, 2)) + 140

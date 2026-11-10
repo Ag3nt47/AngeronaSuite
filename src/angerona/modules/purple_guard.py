@@ -2058,11 +2058,13 @@ class RedTeamValidationLease:
                 )
             )
 
-    def create_yara_control(self, *, run_id, step_id, scanner_enrollment, control_kind):
+    def create_yara_control(self, *, run_id, step_id, scanner_enrollment, control_kind,
+                            marker_writer=None, writer_source=None):
         """Create one fixed benign control, never enroll an arbitrary path."""
         return _lease_authority(self)._yara().create(
             run_id=run_id, step_id=step_id, scanner_enrollment=scanner_enrollment,
             control_kind=control_kind,
+            marker_writer=marker_writer, writer_source=writer_source,
         )
 
     def begin_yara_containment(self, combat, event, path):
@@ -3890,7 +3892,7 @@ def _yara_creation_parent_handles(state) -> list[int]:
         raise
 
 
-def _create_yara_control_file(state, name: str) -> tuple[int, list[int]]:
+def _create_yara_control_file(state, name: str, *, delete_access=True) -> tuple[int, list[int]]:
     """Exclusive creator handle: no arbitrary existing file can be enrolled."""
     if os.name != "nt":
         return os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL
@@ -3905,7 +3907,7 @@ def _create_yara_control_file(state, name: str) -> tuple[int, list[int]]:
     create.restype = ctypes.c_void_p
     handles = _yara_creation_parent_handles(state)
     try:
-        handle = create(str(state.target / name), 0x80000000 | 0x40000000 | 0x10000,
+        handle = create(str(state.target / name), 0x80000000 | 0x40000000 | (0x10000 if delete_access else 0),
                         0x1 | 0x2 | 0x4, None, 1, 0x00200000, None)
         if handle in (None, ctypes.c_void_p(-1).value):
             raise OSError(int(ctypes.windll.kernel32.GetLastError()),
@@ -4113,10 +4115,35 @@ class _YaraLeaseAuthority:
             return True
         return False
 
-    def create(self, *, run_id, step_id, scanner_enrollment, control_kind):
+    def create(self, *, run_id, step_id, scanner_enrollment, control_kind,
+               marker_writer=None, writer_source=None):
         from angerona.core.practice_scope import register_artifact, unregister_artifact
 
         lease, producer, state = self._scope()
+        if marker_writer is not None or writer_source is not None:
+            from angerona.gui.red_team_bridge import RedTeamBridge, ReservedMarkerWriter
+            from angerona.shark.shark_attack import SharkAttackEngine
+            from angerona.shark.simulation_session import SharkRunSession
+            tool = getattr(state.manager, "red_team_tool_owner", None)
+            engine = getattr(writer_source, "_engine", None)
+            prepared = getattr(writer_source, "_prepared", None)
+            planned = getattr(engine, "_active_planned_step", None)
+            if (type(marker_writer) is not ReservedMarkerWriter
+                    or type(writer_source) is not SharkRunSession
+                    or type(tool) is not RedTeamBridge or tool.marker_writer is not marker_writer
+                    or tool.owner is not marker_writer.owner
+                    or type(engine) is not SharkAttackEngine
+                    or engine._thread is not threading.current_thread()
+                    or writer_source._owner.manager is not state.manager
+                    or writer_source._owner.bus is not state.bus
+                    or writer_source._owner.recorder is not state.recorder
+                    or prepared is None or prepared.run_id != run_id
+                    or planned not in prepared.steps or planned.planned_step_id != step_id
+                    or step_id not in writer_source._issued_steps
+                    or not writer_source.matches(prepared, lease, engine)
+                    or not marker_writer.owner._native_current()):
+                raise RedTeamValidationError("Independent YARA writer has no exact current Core source/lease")
+            writer_source.check_current()
         if (type(run_id) is not str or not run_id or len(run_id) > 128
                 or type(control_kind) is not str):
             raise RedTeamValidationError("YARA control run or recipe is malformed")
@@ -4157,18 +4184,28 @@ class _YaraLeaseAuthority:
             candidate = state.target / name
             descriptor = None
             read_descriptor = None
+            identity = {}
+            marker_created = False
             read_custody = False
             parent_handles = []
             registered = retained = False
             try:
-                descriptor, parent_handles = _create_yara_control_file(state, name)
-                offset = 0
-                while offset < len(payload):
-                    written = os.write(descriptor, payload[offset:])
-                    if written <= 0:
-                        raise OSError("YARA control write made no progress")
-                    offset += written
-                os.fsync(descriptor)
+                if marker_writer is None:
+                    descriptor, parent_handles = _create_yara_control_file(state, name)
+                    offset = 0
+                    while offset < len(payload):
+                        written = os.write(descriptor, payload[offset:])
+                        if written <= 0:
+                            raise OSError("YARA control write made no progress")
+                        offset += written
+                    os.fsync(descriptor)
+                else:
+                    descriptor, parent_handles = _create_yara_control_file(state, name, delete_access=False)
+                    marker_created = True
+                    creation_fd, descriptor = descriptor, None
+                    descriptor = marker_writer.complete_new_marker(creation_fd, candidate, payload)
+                    read_custody = True
+                    writer_source.check_current()
                 identity = _yara_held_identity(descriptor, candidate)
                 named = candidate.stat(follow_symlinks=False)
                 if (not identity or len(payload) > 1024 * 1024
@@ -4179,7 +4216,7 @@ class _YaraLeaseAuthority:
                         or not _target_identity_matches(state)
                         or not self._current(state, producer)):
                     raise RedTeamValidationError("YARA control creation identity changed")
-                if os.name == "nt":
+                if os.name == "nt" and marker_writer is None:
                     # Ordinary CRT readers do not necessarily share DELETE.
                     # Transfer custody while the DELETE-capable creator is
                     # still held, then retire it before returning/scanning.
@@ -4225,6 +4262,8 @@ class _YaraLeaseAuthority:
                         "run_id": run_id, "step_id": step_id, "rule": rule,
                         "archive_member": member, **metadata}
             finally:
+                if marker_created and descriptor is None and not retained:
+                    state.artifact_custody_failed = True
                 if descriptor is not None and not retained:
                     removed = (
                         _dispose_held_marker(descriptor, candidate, identity)

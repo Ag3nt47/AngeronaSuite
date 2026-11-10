@@ -536,6 +536,11 @@ def main(argv=None) -> int:
         # Only first-party plain-directory guards are imported. No GUI,
         # configuration, manager or security engine is initialized here.
         from angerona.core.source_sandbox import _hold_plain_directories
+        from angerona.core.win import install_no_window_default
+        # Source workers enter this module directly and packaged workers return
+        # before the dashboard's setup. Their pinned scanner can itself invoke
+        # PowerShell; hiding only the outer worker does not hide those children.
+        install_no_window_default()
         with ExitStack() as stack:
             stack.enter_context(_hold_plain_directories(root, job, engine.parent))
             for name in ("TEMP", "TMP", "TMPDIR"):

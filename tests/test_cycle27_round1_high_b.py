@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import threading
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -271,13 +272,33 @@ def test_mobile_launch_uses_secret_free_environment_and_bounded_custody(
     monkeypatch.setattr(mobile_module.subprocess, "Popen", FakeProcess)
     import angerona.resilience._selftest_environment as selftest_environment
 
-    monkeypatch.setattr(
-        selftest_environment, "_assign_windows_kill_job", lambda _process: (1, lambda _job: 1)
-    )
+    from angerona.core import mobile_cli_custody as custody
+
+    class FakeJob:
+        _handle = 7
+        def assign(self, handle):
+            assert handle == 1
+
+    class FakeOwned:
+        def __init__(self, *_args):
+            self.closed = False
+        def prepare_tree_retirement(self, timeout):
+            return None
+        def terminate(self):
+            return None
+        def wait_tree(self, timeout):
+            return None
+        def tree_retirement_snapshot(self):
+            return {"signals_proven": True, "handles_closed": self.closed}
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(custody, "WindowsChildJob", FakeJob)
+    monkeypatch.setattr(custody, "OwnedWindowsChild", FakeOwned)
+    monkeypatch.setattr(custody, "_STOP", threading.Event())
+    monkeypatch.setattr(custody, "_ACTIVE", {})
+    monkeypatch.setattr(custody, "_HOLDS", {})
     monkeypatch.setattr(selftest_environment, "_resume_windows_process", lambda _process: None)
-    monkeypatch.setattr(
-        selftest_environment, "_stop_process_custody", lambda _process, _job: None
-    )
 
     state, returncode, output = bridge._launch_cli(_sealed(), ["--version"], 2.0)
 

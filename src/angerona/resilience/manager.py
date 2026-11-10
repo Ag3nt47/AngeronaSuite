@@ -317,8 +317,9 @@ class ResilienceManager:
         self._spawn_thread(self._component_heartbeat_loop, "component-heartbeat-status")
 
         # 1) Watchdog. BL-01: the compiled Go watchdog is a resilience PARENT that
-        # LAUNCHES + hashes + relaunches Angerona (deployed by start-angerona.bat,
-        # which sets ANGERONA_EXTERNAL_WATCHDOG=1). It is NOT a child to spawn here —
+        # LAUNCHES + hashes + relaunches an explicitly configured agent and sets
+        # ANGERONA_EXTERNAL_WATCHDOG=1. The source starter uses the Python peer.
+        # The compiled parent is NOT a child to spawn here —
         # doing so passed no agent arg and just errored. So: if an external parent
         # watchdog is running, skip our own; otherwise run the Python PEER watchdog.
         if external_wd:

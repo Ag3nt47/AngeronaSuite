@@ -39,6 +39,9 @@ CAPTURE_SOURCES = (
     "src/angerona/gui/main_window.py", "src/angerona/gui/curated_tools.py",
     "src/angerona/gui/spyware_guard_page.py", "src/angerona/gui/breach_display.py",
     "src/angerona/gui/header_controls.py", "src/angerona/gui/pages.py",
+    "src/angerona/gui/display_recovery.py", "src/angerona/gui/holographic_orb.py",
+    "src/angerona/gui/attack_heatmap.py",
+    "src/angerona/gui/theme.py", "src/angerona/gui/dashboard_sections.py",
     "src/angerona/gui/dashboard_footer.py", "src/angerona/gui/window_fit.py",
     "src/angerona/core/curated_tools.py", "src/angerona/core/curated_tool_worker.py",
     "src/angerona/core/curated_tool_progress.py", "src/angerona/modules/spyware_guard.py",
@@ -1240,6 +1243,10 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
 
         from angerona.gui.curated_tools import GitHubToolsDialog
         hub = GitHubToolsDialog(window.manager, window)
+        # Select the inert curated page before showing the new Suggested default.
+        if hub.tabs.tabText(0) != "Curated scanners":
+            raise RuntimeError("the curated demo tab contract changed")
+        hub.tabs.setCurrentIndex(0)
         # Reuse production views without constructing a catalog or lab worker.
         hub.source_library._loaded = True
         hub.source_library.analysis_lab._loaded = True
@@ -1272,7 +1279,9 @@ def capture(runtime_root: Path, frames_root: Path, poster: Path, *, replace: boo
                 spyware.layout().addWidget(spyware.tabs, 1)
                 spyware.tabs.show()
                 stack.setCurrentWidget(hub)
-                hub.tabs.setCurrentIndex(2)
+                hub.open_settings()
+                if hub.tabs.currentWidget() is not hub.settings_scroll:
+                    raise RuntimeError("the Settings demo did not open its actual settings widget")
                 selected_view = "GitHub Tools - settings"
             elif step == 8:
                 stack.setCurrentWidget(hub)

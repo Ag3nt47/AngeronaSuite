@@ -1,6 +1,144 @@
 # Changelog
 
-## 1.15.0 — telemetry assurance, independent history and service custody (2026-10-29)
+## 1.15.0 — community workspaces and security maintenance (2026-11-09)
+
+- Final staging removed one surplus terminal blank line from each of two new
+  community-tool tests. ASTs, including line attributes, are unchanged; focused
+  compilation and Ruff checks passed. The recorded full 1,581-file byte/hash
+  result remains the dated pre-format snapshot, not a new post-format full gate.
+- Add Suggested GitHub tools with explicit install/uninstall, constrained data
+  adapters, per-tool self-checks, separate editable source copies and credits.
+  External platform entries do not install upstream servers/agents or gain
+  response authority. Preserve explicit Zero-Breach uninstall intent.
+- Add Rules & Playbooks: pinned source discovery, batch drafts, guided X/O
+  tactics, exact-draft checks, activation, disable and rollback. Community YARA
+  and declarative SOAR runtime switches default off; existing response policy,
+  original evidence and exact native target checks remain mandatory.
+- Separate the Red Team tool window and fixed inert probes from Core's plan,
+  detector enrollment, report keys and response authority. Bind IPC and queued
+  work to the exact owner generation; retain native Job and marker custody.
+- Add the interactive Suite Map with cached module, EventBus, drive/device and
+  endpoint relationships. Distinguish architectural links, observed activity,
+  losses and omissions from delivery, liveness or protection proof.
+- Place the title, posture and Current Assessment above one grouped control
+  row. Narrow windows scroll horizontally with Tab focus reveal; STOP remains
+  fully labeled outside that viewport at the right edge. Preserve readable
+  primary/SpywareGuard text and exactly-once action dispatch. The single-row header
+  cohort passed 108 inert Qt cases. Earlier 91/205/265-case results overlap;
+  the earlier unreproduced STOP-fixture failure remains separately recorded.
+- Streamline the dashboard, SpywareGuard, Red Team, Suggested tools and Rules
+  workspaces. Function accents mark monitoring/inspection blue, analysis/research
+  violet, configuration/recovery amber and controlled response red, without
+  replacing status/severity colors, permission checks or the single header row.
+  Keep progress, hits, warnings and primary actions visible; fold secondary
+  help/provenance. Preserve operator collapse choices during polling. The
+  overlapping UI cohorts recorded 341 passes/four fixture failures, then five
+  passes/one stale-caption failure, then the final focused case passed; all
+  corrections after the first run were test-only. These are inert UI checks.
+- Restore the Qt dashboard before optional orb motion. Add two bounded display
+  attempts, closed private diagnostics and a nonmodal Retry display/Safe STOP
+  notice. Preserve operator hide/STOP and saved preferences. Recheck Chill at
+  initial staged startup admission; retain explicit wake and maintenance paths.
+  Clarify held versus selected modules. The 205-case focused Qt/Chill cohort
+  overlaps earlier routing checks and is separate from fresh live acceptance.
+- Resolve source activation/publication storage through the actual Windows user
+  token even under a synthetic helper profile. Keep background custody failures
+  nonzero and logged without modal dialogs. Hide nested scanner/PowerShell
+  consoles in the authenticated first-party worker without changing engine pins.
+- Track standalone tool startup failures and pending/written/held private
+  receipts through owned background work and STOP. Cache complete Black Box
+  health rows, preserve selection/scroll and label invalid retained snapshots;
+  these are diagnostic/UI improvements rather than sensor-success evidence.
+- Separate a shared absolute 90-second source/bootstrap budget from 15 seconds
+  of admitted Qt startup, under a 105-second whole-attempt cap. Retain both source
+  checks, native admission and STOP fences. Bound advisory stderr records and
+  persist their closed projection through the real writer with counted omissions.
+  Optional query diagnostics cannot block mandatory cleanup; final receipt
+  admission precedes shutdown quiescence. The 118-case inert startup cohort and
+  two-case native execution/retirement gate passed; neither is a catch-rate test.
+- Coalesce repeated alert-table resize/style requests, cache bounded intrinsic
+  measurements and skip unchanged geometry writes. Preserve explicit fitting,
+  optional columns, sort/content/style invalidation and selection. This does not
+  establish the cause or resolution of an earlier live GUI delay.
+- Preserve the first typed Red Team startup terminal before writer shutdown and
+  retain known/unknown stop-request context in bounded private receipts. Convert
+  nonempty history rows to JSON lists at the producer; keep strict IPC validation.
+- Supply the required monotonic clock to production process-probe admission.
+  Keep native identity, Job, prepared-plan and process-cap checks. Record bounded
+  process-step counts, first failure phase and exception class without raw errors
+  or a false claim that an empty bound-PID list proves no child was created.
+  The earlier focused inert cohort passed 155 cases; a separate alerts cohort
+  passed 55. These overlap earlier results and are not detection-rate evidence.
+  Full Ruff and 1,577 in-memory syntax checks passed for the recorded snapshot.
+  Controlled live results and the genuine Shark T1041 network-response gap remain
+  separately reviewed; no all-pass or general attack-coverage claim is made.
+- Pass the original validation-canary proof explicitly at the initial Combat
+  lease; initial admission does not borrow ambient thread-local proof. Preserve
+  original target, source, lease and response-policy checks. The Combat cohort
+  passed 252 tests, with one expected skip and two deselected; all 24 new cases
+  are included in that total, not added to it. A fresh authenticated APT run
+  verified 37/37 controlled containment checks, with original native process
+  commits before natural exit. Native-analytic credit is 0/37; this is simulation
+  validation, not a general catch rate. The genuine Source Observe network-
+  containment gap stays open in this preview.
+- Let native SpywareGuard finish after the exact optional-tool free-space hold
+  when no toolkit operation started. Keep the Zero-Breach 3 GiB reserve plus
+  working allowance unchanged. The first validation helper failed before test
+  bootstrap and ran zero tests. The corrected cohort passed 162 cases, with one
+  failure caused by the private harness denying a bounded inert fixture and seven
+  deselected. The exact failed node then passed after allowing only that fixed
+  inert fixture; all 15 new
+  cases had already passed. The earlier failed/partial scan remains retained. A
+  fresh combined run ended in 47:49 within its one-hour budget; the toolkit
+  returned findings (exit 2), not a timeout. Native completed in 14.5 s with explicit
+  gaps; every toolkit reader retained unchecked areas. One historical HSTS trace
+  overlaps the native advisory, alongside two contextual references; these do not
+  prove execution/infection or grant response authority.
+- Fit the Red Team window to available frame/client space on first show. Keep
+  full readiness/warning text and Launch/Stop fixed while the middle and tall
+  secondary pages scroll. Preserve later operator sizing and hide/close fences.
+  The private 42-case UI gate and canonical-import 62-case gate passed; their
+  cases overlap and are not a combined total or production-pixel acceptance.
+- Preserve a completed native reader's workflow contribution when its detailed
+  percentage becomes unavailable. Keep original stage counts, per-reader
+  unknowns and coverage gaps; do not clamp the overall percentage to its old value.
+- Keep complete header captions at their styled semantic budget using fractional
+  font-width measurement; genuinely undersized controls still elide. For a known
+  ready dedicated Spyware view without bound scan evidence, show the selected
+  next-run budget instead of generic status-operation elapsed/time limits.
+  Bound, held, partial, unknown and standalone timing remains unchanged.
+  Separate private header81/81 and scan-presentation64/64 gates passed; the
+  canonical-import30/30 gate passed after integration. These scopes overlap.
+- Final frozen-code checks passed Ruff and 1,581 in-memory syntax checks with
+  zero missing/failed files. Both whitespace-diff scopes and the unchanged
+  48-input recovery manifest/bootstrap checks passed in their separate scopes.
+  Private bootstrap failures and their targeted harness-only correction remain
+  retained. Fresh UI observation and refreshed manual/media remain separate gates.
+- Verify default normal Windows layouts after those fixes: full STOP/SELF-TEST
+  captions and ready Spyware timing at the selected one-hour budget, without
+  resize/maximize. The final session exited normally; 13 retained native
+  generations retired, 12 source anchors were released, and all 161 saved
+  preferences were byte-identical. This UI check started no new scan/drill.
+- Harden opt-in encrypted Forensics with exact original native birth, retained
+  read/query custody, bounded ciphertext and explicit plaintext export. Poison
+  a failed AEAD frame attempt so later retries/receipts cannot reuse its nonce.
+- Preserve AMSI's original native provenance without inventing pre-execution
+  interception or response authority. Retain Signal invocation/executable custody,
+  distinguish local CLI execution from recipient delivery, and preserve digest
+  batches across failed sends. Harden SentinelLens stop/admission/snapshot recovery.
+- Refresh operating guides, current manual indexes and 20 synthetic DEMO
+  artifacts: 18 PNGs plus actual-themed 70-second application and 18-second
+  community GIF tours. Capture fingerprints bind the reviewed source and style.
+  Media QA also prompted top-aligned Suggested actions and balanced, resizable
+  Auto Adapt columns with complete selected details; neither changes authority.
+  Focused/static/native execution checks retain separate scopes; fresh full
+  drills or combined coverage are not implied by them. Prepublication checkpoint
+  (9 November 2026): guarded publication and all required exact-commit
+  [GitHub Actions checks](https://github.com/Ag3nt47/AngeronaSuite/actions) remain
+  release gates; this entry does not claim they have passed.
+  [Source review and remaining gaps](analysis/hardening-v1.15-2026-11-09-community-workspaces.md).
+
+### Earlier 1.15 maintenance — milestone introduced 29 October 2026
 
 - 3 November. Show a pending count on the dashboard mail icon. Hover over a
   notification to preview it and click to open its own prompt. Rotate Current

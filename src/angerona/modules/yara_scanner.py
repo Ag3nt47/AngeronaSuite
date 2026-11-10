@@ -207,6 +207,9 @@ class YaraScannerModule(BaseModule):
     def _repo_root(self) -> Path:
         return resource_root()
 
+    def bind_manager(self, manager) -> None:
+        self._community_config = manager.config
+
     def _find_rules(self) -> str:
         override = os.environ.get("ANGERONA_YARA_RULES", "").strip()
         if override:
@@ -927,7 +930,7 @@ class YaraScannerModule(BaseModule):
                     path, payload, observed_content_sha256=digest,
                     observed_file_identity=observed_file_identity,
                 )
-                archive_error = ""
+                archive_error = str(getattr(scanner, "community_error", ""))[:500]
                 # Inspect ZIP members in memory only; no extraction, recursion,
                 # archive paths, encryption, or unbounded decompression.
                 if payload.startswith(b"PK\x03\x04"):
@@ -938,6 +941,8 @@ class YaraScannerModule(BaseModule):
                         ):
                             for match in scanner.scan(content).matching_rules:
                                 matches.setdefault(str(match.identifier), member)
+                            if getattr(scanner, "community_error", ""):
+                                archive_error = str(scanner.community_error)[:500]
                             classification = classification or self._response_classification(
                                 path, content, observed_content_sha256=digest,
                                 observed_file_identity=observed_file_identity,
@@ -1079,6 +1084,12 @@ class YaraScannerModule(BaseModule):
         control_capability = None
         control_rules = None
         control_epoch = None
+        community_runtime = None
+        community_warning = ""
+        config = getattr(self, "_community_config", None)
+        if config is not None:
+            from angerona.core.community_yara_runtime import CommunityYaraRuntime
+            community_runtime = CommunityYaraRuntime(config)
         rules = self._find_rules()
         if not rules:
             self.status = "error"
@@ -1114,6 +1125,15 @@ class YaraScannerModule(BaseModule):
                         continue
                     scanner = replacement
                     compiled = active_rules
+                normal_scanner = scanner
+                if community_runtime is not None:
+                    normal_scanner = community_runtime.compose(scanner)
+                    community_status = community_runtime.snapshot()
+                    warning = community_status["reason"] if community_status["state"] == "unavailable" else ""
+                    if warning and warning != community_warning:
+                        self.emit("Community YARA coverage unavailable: " + warning,
+                            Severity.MEDIUM, disposition="health", response_authorized=False)
+                    community_warning = warning
                 if (control_capability is not self._redteam_receipt_capability
                         or control_rules is not compiled
                         or control_epoch != self._control_source_epoch
@@ -1160,10 +1180,20 @@ class YaraScannerModule(BaseModule):
                             break
                         if self.stopping:
                             break
+                        if community_runtime is not None:
+                            # A traversal may span thousands of files. Check the
+                            # memory/5-second cache before even a scan-cache hit.
+                            normal_scanner = community_runtime.compose(scanner)
+                            community_status = community_runtime.snapshot()
+                            warning = community_status["reason"] if community_status["state"] == "unavailable" else ""
+                            if warning and warning != community_warning:
+                                self.emit("Community YARA coverage unavailable: " + warning,
+                                    Severity.MEDIUM, disposition="health", response_authorized=False)
+                            community_warning = warning
                         if control_scanner is not None:
-                            outcome = self._scan_file(scanner, path, control_scanner=control_scanner)
+                            outcome = self._scan_file(normal_scanner, path, control_scanner=control_scanner)
                         else:
-                            outcome = self._scan_file(scanner, path)
+                            outcome = self._scan_file(normal_scanner, path)
                         if outcome == "scanned":
                             scanned += 1
                         elif outcome == "failed":
@@ -1239,6 +1269,9 @@ class YaraScannerModule(BaseModule):
                         f"complete YARA traversal: scanned {scanned}, skipped {skipped}, "
                         f"roots {existing_roots}"
                     )
+                if community_warning:
+                    health = min(health, 55)
+                    note += "; community rule coverage unavailable"
                 self.set_health(health, note)
                 alert_key = f"{health}:{truncated_roots}:{traversal_errors}:{failed}"
                 if health < 70 and alert_key != self._last_coverage_alert:
@@ -1256,6 +1289,10 @@ class YaraScannerModule(BaseModule):
                     self._seen_matches.clear()
                 self._sleep_for_scan()
         finally:
+            normal_scanner = None
+            if community_runtime is not None:
+                community_runtime.close()
+            community_runtime = None
             scanner = None
             replacement = None
             if control_scanner is not None:

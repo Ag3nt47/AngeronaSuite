@@ -113,6 +113,34 @@ class ToolStorageHeld(ToolError):
             "automatic_deletion": False}
 
 
+class ToolWorkStorageHeld(ToolError):
+    """Only a measured pre-worker free-space admission, never native custody."""
+
+    def __init__(self, path, *, free_bytes, working_bytes, stage):
+        if (stage not in {"preflight", "before-worker"}
+                or type(free_bytes) is not int or free_bytes < 0
+                or type(working_bytes) is not int
+                or not 64 * 1024**2 <= working_bytes <= 1024**3):
+            raise ValueError("Invalid scanner working-space observation.")
+        checked = _absolute(Path(path))
+        required = 3 * 1024**3 + working_bytes
+        if free_bytes >= required:
+            raise ValueError("Working-space admission is not held.")
+        # The checked path's mount/drive anchor is display metadata, not a
+        # hardware identity or permission to relocate scanner files.
+        volume = checked.anchor
+        super().__init__("Optional scanner work needs 3 GiB plus its working allowance free. "
+                         "Dashboard startup is unaffected. "
+                         f"Required {required} bytes; available {free_bytes} bytes "
+                         f"on {volume} ({stage}).")
+        self.storage_hold = {"kind": "free-space", "stage": stage,
+            "checked_path": str(checked), "volume": volume,
+            "volume_kind": "checked-path-anchor", "reserve_bytes": 3 * 1024**3,
+            "working_bytes": working_bytes, "required_bytes": required,
+            "free_bytes": free_bytes, "tool_worker_started": False,
+            "automatic_deletion": False}
+
+
 class ToolOperation:
     def __init__(self, timeout: float = 300, *, report_count_limit: int | None = None) -> None:
         if report_count_limit is not None and (type(report_count_limit) is not int
@@ -980,6 +1008,8 @@ class CuratedToolService:
         return root / "engines" / ZERO_BREACH["version"] / "engine.py"
 
     def _verify_installed(self, root):
+        if (root / "uninstalled.json").exists():
+            raise ToolError("Scanner is explicitly uninstalled; only an explicit Install/Prepare may restore it.")
         destination = self._engine(root).parent
         marker = _json(_read(destination / "prepared.json", 4096, private=True))
         if marker != {"schema": 1, "version": ZERO_BREACH["version"], "sha256": ZERO_BREACH["sha256"]}:
@@ -996,7 +1026,8 @@ class CuratedToolService:
         root = self._root()
         state = {"installed": False, "verified": False, "state": "not-installed", "message": "Optional scanner has not been prepared.",
                  "version": ZERO_BREACH["version"], "disk_bytes": 0, "latest_report": None,
-                 "storage_inventory_error": None, "resource_usage": self.resource_snapshot(), "admin_state": _admin_state()}
+                 "storage_inventory_error": None, "resource_usage": self.resource_snapshot(), "admin_state": _admin_state(),
+                 "auto_prepare_blocked": False}
         admin = state["admin_state"]
         report_count = self._report_count()
         state["report_storage_policy"] = {"report_count": report_count,
@@ -1018,6 +1049,15 @@ class CuratedToolService:
             return state
         try:
             _validate_chain(root)
+            intent = root / "uninstalled.json"
+            if intent.exists():
+                marker = _json(_read(intent, 4096, private=True))
+                if marker != {"schema": 1, "tool": "zero-breach", "auto_prepare": False}:
+                    raise ToolError("Scanner uninstall intent requires review.")
+                state["auto_prepare_blocked"] = True
+                state["execution_available"] = False
+                state["execution_hold_reason"] = "Scanner was explicitly uninstalled; automatic preparation and execution remain held."
+                state.update(state="uninstalled", message="Scanner was uninstalled; automatic preparation stays blocked until explicit Install/Prepare.")
             engine = self._engine(root)
             state["installed"] = engine.exists()
             if state["installed"]:
@@ -1041,11 +1081,18 @@ class CuratedToolService:
                 state["state"] = "needs-review"
         return state
 
-    def prepare(self, operation: ToolOperation, progress=lambda _message: None, allow_download=True) -> dict:
+    def prepare(self, operation: ToolOperation, progress=lambda _message: None, allow_download=True, *, restore_uninstalled=False) -> dict:
         if not self._enabled():
             raise ToolError("Curated scanners are disabled in settings.")
         allow_download = allow_download is True and getattr(self.cfg, "github_tools_allow_download", True) is True
         with self._transaction(operation) as root:
+            intent = root / "uninstalled.json"
+            if intent.exists():
+                marker = _json(_read(intent, 4096, private=True))
+                if marker != {"schema": 1, "tool": "zero-breach", "auto_prepare": False}:
+                    raise ToolError("Scanner uninstall intent requires review.")
+                if restore_uninstalled is not True:
+                    raise ToolError("Scanner was explicitly uninstalled; choose Install/Prepare to restore it. Automatic preparation remains disabled.")
             progress("Verifying the bundled scanner and its license notices…")
             catalog = _catalog(self._bundle())
             engines = root / "engines"
@@ -1110,6 +1157,11 @@ class CuratedToolService:
                 _sealed_engine(stack, destination / "engine.py")
             marker = json.dumps({"schema": 1, "version": ZERO_BREACH["version"], "sha256": ZERO_BREACH["sha256"]}).encode()
             _atomic_bytes_write(destination / "prepared.json", marker, root=root)
+            if intent.exists():
+                with _ReportDeletion(intent, 4096) as held:
+                    if _json(held.raw) != {"schema": 1, "tool": "zero-breach", "auto_prepare": False}:
+                        raise ToolError("Scanner uninstall intent changed; review it before restoration.")
+                    held.delete()
             return self.status()
 
     def _new_job(self, root, *, report_count_limit=None):
@@ -1256,13 +1308,21 @@ class CuratedToolService:
             # volume can also prevent diagnostics from being persisted.
             pass
 
+    def _require_work_storage(self, path, *, stage):
+        working = self._limit("job_limit_mib", 256, 64, 1024) * 1024**2
+        free = shutil.disk_usage(path).free
+        if type(free) is not int or free < 0:
+            raise ToolError("Optional scanner free-space observation is unavailable.")
+        if free < 3 * 1024**3 + working:
+            raise ToolWorkStorageHeld(path, free_bytes=free,
+                                      working_bytes=working, stage=stage)
+
     def _preflight_scan(self, root):
         if not self._enabled():
             raise ToolError("Curated scanners are disabled in settings.")
         _require_user()
         self._python()
-        if shutil.disk_usage(root).free < (3 * 1024**3 + self._limit("job_limit_mib", 256, 64, 1024) * 1024**2):
-            raise ToolError("Optional scanner work needs 3 GiB plus its working allowance free. Dashboard startup is unaffected.")
+        self._require_work_storage(root, stage="preflight")
 
     def _environment(self, job, *, metadata_only=False):
         from angerona.core.privilege import sanitized_child_environment
@@ -1296,8 +1356,7 @@ class CuratedToolService:
         # A bursty upstream snapshot can otherwise exceed the monitored limit
         # before the next poll. Reserve optional scan working capacity and also
         # apply a conservative bounded Python writer/copy shim in the child.
-        if shutil.disk_usage(job).free < (3 * 1024**3 + self._limit("job_limit_mib", 256, 64, 1024) * 1024**2):
-            raise ToolError("Optional scanner work needs 3 GiB plus its working allowance free. Dashboard startup is unaffected.")
+        self._require_work_storage(job, stage="before-worker")
         nonce = secrets.token_hex(32)
         self._progress_start(operation, job_id=job.name)
         state = self._job_states[job.name]
@@ -1794,8 +1853,19 @@ class CuratedToolService:
                            "native fixed-scope read-only checks remain available.",
                 "url": ZERO_BREACH["repository"], "coverage": "Not scanned.", "findings": []}
 
-    def revert(self, operation: ToolOperation, progress=lambda _message: None):
+    def uninstall(self, operation: ToolOperation, progress=lambda _message: None):
+        """Remove managed files and persist opt-out; preserve edits/reports/config."""
+        return self.revert(operation, progress, disable_auto_prepare=True)
+
+    def revert(self, operation: ToolOperation, progress=lambda _message: None, *, disable_auto_prepare=False):
         with self._transaction(operation) as root:
+            if disable_auto_prepare is True:
+                intent = root / "uninstalled.json"
+                if intent.exists() and _json(_read(intent, 4096, private=True)) != {"schema": 1, "tool": "zero-breach", "auto_prepare": False}:
+                    raise ToolError("Edited scanner uninstall intent was preserved for review.")
+                _atomic_bytes_write(root / "uninstalled.json", json.dumps(
+                    {"schema": 1, "tool": "zero-breach", "auto_prepare": False},
+                ).encode(), root=root)
             progress("Retiring only the exact verified managed scanner files…")
             destination = self._engine(root).parent
             if not destination.exists():

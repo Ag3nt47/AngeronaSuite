@@ -47,10 +47,31 @@ OPERATIONAL_SOURCE = frozenset({"src/angerona/startup.py", "src/angerona/core/st
 STOP_CONTRACT_SOURCE = "src/angerona/resilience/shutdown_token.py"
 STOP_CONTRACT_SYMBOL = "OPERATOR_STOP_CONTRACT_VERSION"
 MIN_STOP_CONTRACT = 1
+INVENTORY_SECONDS = 30
+_FILE_CLOSE_HELD = False
 
 
 class Held(RuntimeError):
     pass
+
+
+class InventoryLimit(Held):
+    """A closed numeric limit result, never an input/identity failure."""
+    def __init__(self, limit, observations):
+        if limit not in {"time", "entries", "files", "bytes"}:
+            raise ValueError("Unknown source inventory limit")
+        self.limit = limit
+        self.observations = dict(observations)
+        super().__init__(
+            f"Source inventory {limit} bound exceeded; "
+            f"elapsed={observations['elapsed_seconds']:.3f}s, "
+            f"entries={observations['visited']}, files={observations['files']}, "
+            f"bytes={observations['bytes']}")
+
+
+def _hold_file_close():
+    global _FILE_CLOSE_HELD
+    _FILE_CLOSE_HELD = True
 
 
 def require_stop_contract(files):
@@ -125,6 +146,8 @@ def identity(info):
 
 class FileLease:
     def __init__(self, path, *, mutation=False):
+        if _FILE_CLOSE_HELD:
+            raise Held("Recovery file retirement is uncertain; further file work is held")
         self.path = absolute(path)
         self.fd = -1
         before = self.path.lstat()
@@ -136,6 +159,7 @@ class FileLease:
             kernel.CreateFileW.argtypes = (w.LPCWSTR, w.DWORD, w.DWORD, w.LPVOID, w.DWORD, w.DWORD, w.HANDLE)
             kernel.CreateFileW.restype = w.HANDLE
             kernel.CloseHandle.argtypes = (w.HANDLE,)
+            kernel.CloseHandle.restype = w.BOOL
             handle = kernel.CreateFileW(str(self.path), 0x80000000 | (0x10000 if mutation else 0),
                                         1, None, 3, 0x00200000, None)
             if handle == w.HANDLE(-1).value:
@@ -143,7 +167,12 @@ class FileLease:
             try:
                 self.fd = msvcrt.open_osfhandle(handle, os.O_RDONLY | os.O_BINARY)
             except BaseException:
-                kernel.CloseHandle(handle)
+                try:
+                    if not kernel.CloseHandle(handle):
+                        raise ctypes.WinError(ctypes.get_last_error())
+                except BaseException:
+                    _hold_file_close()
+                    raise Held("Recovery native file close could not be confirmed")
                 raise
         else:
             self.fd = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -164,9 +193,15 @@ class FileLease:
         self.close()
 
     def close(self):
-        if self.fd >= 0:
-            os.close(self.fd)
-            self.fd = -1
+        fd, self.fd = self.fd, -1
+        if fd >= 0:
+            try:
+                os.close(fd)
+            except BaseException:
+                # A close may have completed before reporting failure. Never
+                # close the possibly reused numeric descriptor a second time.
+                _hold_file_close()
+                raise Held("Recovery file close could not be confirmed")
 
     def read(self, limit):
         if self.initial[2] > limit:
@@ -404,43 +439,99 @@ def local_head(root):
     return value
 
 
-def inventory(root):
-    result, total, visited, folded = {}, 0, 0, set()
-    deadline = time.monotonic() + 30
-    for prefix in ("src/angerona", "src/srt"):
-        start = root / prefix
-        if not start.exists():
-            if prefix == "src/angerona":
-                raise Held("Application source root is missing")
-            continue
-        pending = [start]
-        while pending:
-            directory = pending.pop()
-            plain(directory.lstat(), directory=True)
-            with os.scandir(directory) as entries:
-                for entry in entries:
-                    visited += 1
-                    if visited > MAX_ENTRIES or time.monotonic() > deadline:
-                        raise Held("Source inventory exceeded its entry or time bound")
-                    path = Path(entry.path)
-                    name = path.relative_to(root).as_posix()
-                    if entry.name in {"__pycache__", "external_modules", "external-modules"}:
-                        continue
-                    info = path.lstat()
-                    if stat.S_ISDIR(info.st_mode):
-                        plain(info, directory=True)
-                        pending.append(path)
-                    elif allowed(name):
-                        plain(info)
-                        if name.casefold() in folded:
-                            raise Held("Source paths collide under Windows case rules")
-                        folded.add(name.casefold())
-                        data = read(path, MAX_FILE)
-                        total += len(data)
-                        if len(result) >= MAX_FILES or total > MAX_BYTES:
-                            raise Held("Source inventory exceeds its file or byte bound")
-                        result[name] = data
-    return result
+def inventory(root, *, observations=None):
+    result, folded = {}, set()
+    started = time.monotonic()
+    row = dict(visited=0, directories=0, read_calls=0, files=0, bytes=0,
+               elapsed_seconds=0.0, status="held", reason="input-held", close_custody="closed")
+
+    def limit(kind):
+        row.update(elapsed_seconds=max(0.0, time.monotonic() - started), reason=kind)
+        raise InventoryLimit(kind, row)
+
+    def check_time():
+        if time.monotonic() - started > INVENTORY_SECONDS:
+            limit("time")
+
+    try:
+        if _FILE_CLOSE_HELD:
+            raise Held("Recovery file retirement is uncertain; source inventory is held")
+        for prefix in ("src/angerona", "src/srt"):
+            start = root / prefix
+            if not start.exists():
+                if prefix == "src/angerona":
+                    raise Held("Application source root is missing")
+                continue
+            pending = [start]
+            while pending:
+                directory = pending.pop()
+                plain(directory.lstat(), directory=True)
+                row["directories"] += 1
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        row["visited"] += 1
+                        if row["visited"] > MAX_ENTRIES:
+                            limit("entries")
+                        check_time()
+                        path = Path(entry.path)
+                        name = path.relative_to(root).as_posix()
+                        if entry.name in {".git", ".tmp", "__pycache__", "external_modules", "external-modules"}:
+                            continue
+                        info = path.lstat()
+                        if stat.S_ISDIR(info.st_mode):
+                            plain(info, directory=True)
+                            pending.append(path)
+                        elif allowed(name):
+                            plain(info)
+                            if name.casefold() in folded:
+                                raise Held("Source paths collide under Windows case rules")
+                            folded.add(name.casefold())
+                            row["read_calls"] += 1
+                            data = read(path, MAX_FILE)
+                            row["bytes"] += len(data)
+                            if len(result) >= MAX_FILES:
+                                limit("files")
+                            if row["bytes"] > MAX_BYTES:
+                                limit("bytes")
+                            result[name] = data
+                            row["files"] = len(result)
+                            # FileLease has returned and acknowledged its one
+                            # close before a time expiry can become retryable.
+                            check_time()
+        check_time()
+        row.update(status="complete", reason="complete")
+        return result
+    finally:
+        row["elapsed_seconds"] = max(0.0, time.monotonic() - started)
+        row["close_custody"] = "held" if _FILE_CLOSE_HELD else "closed"
+        if observations is not None:
+            observations.append(dict(row))
+
+
+def fingerprint(root, observations):
+    """At most one complete TIME retry while the caller keeps its same lock."""
+    for attempt in (1, 2):
+        current = []
+        first = second = None
+        try:
+            first = inventory(root, observations=current)
+            second = inventory(root, observations=current)
+            if second != first:
+                raise Held("An editor changed source during its pre-launch fingerprint")
+            return dict(empty_summary(), outcome="source-fingerprinted", source_digest=digest(first),
+                        file_count=len(first), inventory_attempts=attempt, inventory_passes=observations + [
+                            dict(row, attempt=attempt, pass_number=index + 1) for index, row in enumerate(current)])
+        except InventoryLimit as error:
+            if (error.limit != "time" or attempt != 1 or _FILE_CLOSE_HELD
+                    or any(row["close_custody"] != "closed" for row in current)):
+                raise
+            # Discard every byte from the expired attempt. Both full reads and
+            # their exact comparison must succeed again; no deadline is renewed
+            # within either original bounded inventory.
+            first = second = None
+        finally:
+            observations.extend(dict(row, attempt=attempt, pass_number=index + 1)
+                                for index, row in enumerate(current))
 
 
 def manifest(files):
@@ -1148,6 +1239,7 @@ def main(argv=None):
     parser.add_argument("--expected-source-digest")
     parser.add_argument("--failure-detail", default="")
     options = parser.parse_args(argv)
+    inventory_observations = []
     try:
         if options.action == "inspect":
             result = inspect_state(options.root, options.state_root)
@@ -1156,10 +1248,7 @@ def main(argv=None):
         store = RecoveryStore(options.root, options.state_root)
         with store.locked():
             if options.action == "fingerprint":
-                first = inventory(store.root)
-                if inventory(store.root) != first:
-                    raise Held("An editor changed source during its pre-launch fingerprint")
-                result = dict(empty_summary(), outcome="source-fingerprinted", source_digest=digest(first), file_count=len(first))
+                result = fingerprint(store.root, inventory_observations)
             elif options.action == "snapshot":
                 result = store.snapshot(ready_observed=options.ready_observed, expected_source_digest=options.expected_source_digest)
             elif options.action == "recover":
@@ -1186,6 +1275,13 @@ def main(argv=None):
             pass
         saved["launch_held"] = unresolved or options.action in {"apply-pending", "inspect"}
         saved["reason_code"] = "source-transaction-unresolved" if unresolved else "source-recovery-unavailable"
+        if inventory_observations:
+            saved["inventory_passes"] = inventory_observations
+            saved["inventory_attempts"] = max(row["attempt"] for row in inventory_observations)
+        if isinstance(error, InventoryLimit) and not unresolved:
+            saved["reason_code"] = "source-inventory-" + error.limit + "-limit"
+        if _FILE_CLOSE_HELD:
+            saved.update(launch_held=True, file_retirement="held")
         emit_record(saved)
         return 1
 

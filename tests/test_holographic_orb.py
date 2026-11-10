@@ -257,10 +257,11 @@ def test_animated_collapse_and_restore_complete_without_stranding_window(
 
     controller.restore_main()
     assert controller._trails
+    assert window.isVisible()  # Presentation is restored before optional motion.
     restore_trail = controller._trails[-1]
     restore_completed = QSignalSpy(restore_trail.completed)
-    # Simulate a display/animation interruption.  The independent completion
-    # guard must still restore the real window rather than strand it hidden.
+    # The independent guard retires an interrupted decoration; the actual
+    # window was already restored without waiting for either completion signal.
     restore_trail._animation.stop()
     restore_trail._completion_guard.setInterval(40)
     restore_trail._completion_guard.start()

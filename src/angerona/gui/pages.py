@@ -85,7 +85,7 @@ SECURITY NOTES
 from angerona import __version__
 from angerona.core.capability_assurance import assess_capability, cached_declaration_anchor
 from angerona.core.eventbus import Severity
-from angerona.core.module_usage import chill_module_hold, module_counts
+from angerona.core.module_usage import chill_module_hold, enabled_module_items, module_counts
 from angerona.core.threat import (
     active_threat_events, event_disposition, recent_threat_candidates,
     threat_label_from_active,
@@ -1661,11 +1661,22 @@ class DashboardCards(QWidget):
 
     def refresh(self) -> None:
         counts = module_counts(self.manager)
+        paused = sum(1 for _name, module in enabled_module_items(self.manager)
+                     if chill_module_hold(module, getattr(self.manager, "config", None)))
+        caption = (
+            f"Chill:\n{paused} held" if paused else "Modules running"
+        )
+        if self.c_modules._label != caption:
+            self.c_modules._label = caption
+            self.c_modules._collapse_caption_changed()
         self.c_modules.set(f"{counts['running']}/{counts['enabled']}")
         self.c_modules.setToolTip(
             f"{counts['enabled']} enabled for this machine; {counts['off']} off. "
             f"{counts['discovered']} discovered in the catalog. Enabled sensors "
-            "that are paused or degraded remain in the expected count."
+            "that are paused or degraded remain in the expected count. "
+            "The count is live / selected. "
+            f"{paused} have a Chill pause requested; in-flight checks may finish. "
+            "Checked means selected, not running. Live monitoring and response remain on."
         )
         revision = self.storage.revision()
         if revision != self._last_storage_revision and not self._count_reader.busy:
@@ -5805,26 +5816,94 @@ class AlertDetailDialog(QDialog):
 
 
 class _ResponsiveAlertsTable(QTableWidget):
-    """Give the summary message available width; details expand on request."""
+    """Fit bounded evidence samples once per event turn, without repeated writes."""
+
+    _SUMMARY_COLUMNS = (
+        (0, "23:59:59", 72, True), (1, "Module", 110, False),
+        (2, "Critical", 78, True), (5, "Allow", 62, True),
+        (6, "Block", 62, True), (7, "Analyze", 76, True),
+    )
+    _APPEARANCE_EVENTS = (
+        QEvent.FontChange, QEvent.StyleChange, QEvent.PaletteChange,
+        QEvent.Type.ScreenChangeInternal, QEvent.Type.DevicePixelRatioChange,
+    )
+
+    def __init__(self, rows: int, columns: int) -> None:
+        super().__init__(rows, columns)
+        self._evidence_appearance = None
+        self._evidence_widths = {}
+        self._evidence_delegates = weakref.WeakSet()
+        self._evidence_row_height = 0
+        self._evidence_fit_timer = QTimer(self)
+        self._evidence_fit_timer.setSingleShot(True)
+        self._evidence_fit_timer.timeout.connect(self.fit_evidence_columns)
+        header = self.horizontalHeader()
+        header.installEventFilter(self)
+        header.sortIndicatorChanged.connect(self._queue_evidence_fit)
+        model = self.model()
+        for signal in (model.dataChanged, model.headerDataChanged,
+                       model.layoutChanged, model.modelReset,
+                       model.rowsInserted, model.rowsRemoved):
+            signal.connect(self._queue_evidence_fit)
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
-        self.fit_evidence_columns()
+        self._queue_evidence_fit()
 
     def viewportEvent(self, event) -> bool:  # noqa: N802
         handled = super().viewportEvent(event)
         if event.type() == QEvent.Resize:
-            self.fit_evidence_columns()
+            self._queue_evidence_fit()
         return handled
 
-    def changeEvent(self, event) -> None:  # noqa: N802
-        super().changeEvent(event)
-        if event.type() in (QEvent.FontChange, QEvent.StyleChange):
-            self.fit_evidence_columns()
+    def event(self, event) -> bool:
+        if event.type() in self._APPEARANCE_EVENTS:
+            self._evidence_appearance = None
+            self._queue_evidence_fit()
+        return super().event(event)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        if event.type() in self._APPEARANCE_EVENTS:
+            self._evidence_appearance = None
+            self._queue_evidence_fit()
+        return super().eventFilter(watched, event)
+
+    def _queue_evidence_fit(self, *_args) -> None:
+        timer = getattr(self, "_evidence_fit_timer", None)
+        if timer is not None and not timer.isActive():
+            timer.start(0)
+
+    def _invalidate_evidence_fit(self, *_args) -> None:
+        self._evidence_appearance = None
+        self._queue_evidence_fit()
+
+    def _watch_evidence_delegate(self, delegate) -> None:
+        if delegate not in self._evidence_delegates:
+            delegate.sizeHintChanged.connect(self._invalidate_evidence_fit)
+            self._evidence_delegates.add(delegate)
+
+    @staticmethod
+    def _evidence_item_key(item):
+        if item is None:
+            return None
+        # These are the standard styled delegate's measurement inputs. Copy Qt
+        # value roles; use the immutable icon cache key rather than its wrapper.
+        return (
+            item.text(), item.data(Qt.CheckStateRole), item.data(Qt.FontRole),
+            item.data(Qt.SizeHintRole), item.icon().cacheKey(),
+            item.data(Qt.TextAlignmentRole), item.flags(),
+            item.data(Qt.ForegroundRole), item.data(Qt.BackgroundRole),
+        )
 
     def fit_evidence_columns(self) -> None:
-        if self.columnCount() != 8 or getattr(self, "_fitting_columns", False):
+        """Honor explicit callers synchronously, consuming any queued request."""
+        timer = getattr(self, "_evidence_fit_timer", None)
+        if timer is None or self.columnCount() != 8:
             return
+        if getattr(self, "_fitting_columns", False):
+            self._queue_evidence_fit()
+            return
+        timer.stop()
         self._fitting_columns = True
         try:
             self._fit_evidence_columns()
@@ -5832,28 +5911,65 @@ class _ResponsiveAlertsTable(QTableWidget):
             self._fitting_columns = False
 
     def _fit_evidence_columns(self) -> None:
-        metrics = self.fontMetrics()
-        widths = {
-            0: _summary_column_width(self, 0, "23:59:59", 72),
-            1: max(_summary_column_width(self, 1, "Module", 110, measure_content=False),
-                   min(180, round(self.viewport().width() * 0.18))),
-            2: _summary_column_width(self, 2, "Critical", 78),
-            5: _summary_column_width(self, 5, "Allow", 62),
-            6: _summary_column_width(self, 6, "Block", 62),
-            7: _summary_column_width(self, 7, "Analyze", 76),
-        }
-        for column, width in widths.items():
-            self.setColumnWidth(column, width)
-        fixed = sum(width for column, width in widths.items() if not self.isColumnHidden(column))
+        header = self.horizontalHeader()
+        appearance = (
+            self.font(), header.font(), self.logicalDpiX(), self.logicalDpiY(),
+            self.devicePixelRatioF(), self.iconSize(), self.layoutDirection(),
+            header.layoutDirection(), self.palette().cacheKey(),
+            header.palette().cacheKey(), self.styleSheet(), header.styleSheet(),
+        )
+        if appearance != self._evidence_appearance:
+            self._evidence_appearance = appearance
+            self._evidence_widths.clear()
+            self._evidence_row_height = max(26, self.fontMetrics().height() + 10)
+
+        sample_rows = range(min(8, self.rowCount()))
+        sort_column = header.sortIndicatorSection() if header.isSortIndicatorShown() else -1
+        widths = {}
+        for column, sample, minimum, measure_content in self._SUMMARY_COLUMNS:
+            if self.isColumnHidden(column):
+                continue
+            if measure_content:
+                for row in sample_rows:
+                    self._watch_evidence_delegate(
+                        self.itemDelegateForIndex(self.model().index(row, column)),
+                    )
+            key = (
+                self._evidence_item_key(self.horizontalHeaderItem(column)),
+                header.sectionSizeHint(column), column == sort_column,
+                header.sortIndicatorOrder(),
+                tuple((self._evidence_item_key(self.item(row, column)),
+                       self.itemDelegateForIndex(self.model().index(row, column)))
+                      for row in sample_rows) if measure_content else (),
+            )
+            cached = self._evidence_widths.get(column)
+            if cached is None or key != cached[0]:
+                width = _summary_column_width(
+                    self, column, sample, minimum, measure_content=measure_content,
+                )
+                cached = self._evidence_widths[column] = (key, width)
+            width = cached[1]
+            if column == 1:
+                width = max(width, min(180, round(self.viewport().width() * 0.18)))
+            widths[column] = min(header.maximumSectionSize(), max(header.minimumSectionSize(), width))
+
+        fixed = sum(widths.values())
         if self.isColumnHidden(4):
-            self.setColumnWidth(3, max(140, self.viewport().width() - fixed))
+            widths[3] = max(140, self.viewport().width() - fixed)
         else:
             available = max(360, self.viewport().width() - fixed)
-            message_width = max(200, round(available * 0.6))
-            path_width = max(160, available - message_width)
-            self.setColumnWidth(3, message_width)
-            self.setColumnWidth(4, path_width)
-        self.verticalHeader().setDefaultSectionSize(max(26, metrics.height() + 10))
+            widths[3] = max(200, round(available * 0.6))
+            widths[4] = max(160, available - widths[3])
+        for column, width in widths.items():
+            width = min(header.maximumSectionSize(), max(header.minimumSectionSize(), width))
+            if self.columnWidth(column) != width:
+                self.setColumnWidth(column, width)
+        vertical = self.verticalHeader()
+        row_height = min(vertical.maximumSectionSize(), max(
+            vertical.minimumSectionSize(), self._evidence_row_height,
+        ))
+        if vertical.defaultSectionSize() != row_height:
+            vertical.setDefaultSectionSize(row_height)
 
 
 class _CompactStatusLabel(QLabel):

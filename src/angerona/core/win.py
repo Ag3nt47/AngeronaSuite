@@ -14,6 +14,7 @@ import inspect
 NO_WINDOW = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
 _CREATE_NO_WINDOW = 0x08000000
 _CREATE_NEW_CONSOLE = 0x00000010
+_DETACHED_PROCESS = 0x00000008
 _INTERACTIVE_CONSOLE = "_angerona_interactive_console"
 
 
@@ -37,10 +38,12 @@ def _startupinfo(existing=None, *, hidden=True):
 def _hidden_child_kwargs(kwargs):
     prepared = dict(kwargs)
     if os.name == "nt":
-        # CREATE_NEW_CONSOLE overrides CREATE_NO_WINDOW at CreateProcess. It
-        # is the only visibility flag removed; job/session/priority/suspended
+        # Windows ignores CREATE_NO_WINDOW with either of these console flags.
+        # Remove both for background launches; job/session/priority/suspended
         # creation flags remain exactly as requested by the existing owner.
-        prepared["creationflags"] = (prepared.get("creationflags", 0) & ~_CREATE_NEW_CONSOLE) | _CREATE_NO_WINDOW
+        prepared["creationflags"] = (
+            prepared.get("creationflags", 0) & ~(_CREATE_NEW_CONSOLE | _DETACHED_PROCESS)
+        ) | _CREATE_NO_WINDOW
         prepared["startupinfo"] = _startupinfo(prepared.get("startupinfo"))
     else:
         prepared.setdefault("creationflags", NO_WINDOW)

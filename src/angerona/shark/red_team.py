@@ -226,6 +226,11 @@ class RedTeamEngine:
         self.documents_dir.mkdir(parents=True, exist_ok=True)
         p = self.documents_dir / name
         encoded = body.encode("utf-8")
+        writer = getattr(self, "_marker_writer", None)
+        if writer is not None:
+            from angerona.gui.red_team_bridge import ReservedMarkerWriter
+            if type(writer) is not ReservedMarkerWriter:
+                raise RedTeamValidationError("Exact independent marker writer is required")
         descriptor: int | None = None
         flags = (
             os.O_WRONLY
@@ -251,7 +256,7 @@ class RedTeamEngine:
                 create_file.restype = ctypes.c_void_p
                 raw_handle = create_file(
                     str(p),
-                    0x80000000 | 0x40000000 | 0x00010000,
+                    0x80000000 | 0x40000000 | (0x00010000 if writer is None else 0),
                     0x1 | 0x2 | 0x4,
                     None,
                     1,  # CREATE_NEW
@@ -291,13 +296,20 @@ class RedTeamEngine:
             registered = False
             enrolled = False
             try:
-                offset = 0
-                while offset < len(encoded):
-                    written = os.write(descriptor, encoded[offset:])
-                    if written <= 0:
-                        raise OSError("marker write made no progress")
-                    offset += written
-                os.fsync(descriptor)
+                if writer is None:
+                    offset = 0
+                    while offset < len(encoded):
+                        written = os.write(descriptor, encoded[offset:])
+                        if written <= 0:
+                            raise OSError("marker write made no progress")
+                        offset += written
+                    os.fsync(descriptor)
+                else:
+                    # The child receives only a write-only capability to this
+                    # newly created object. Core independently pins and checks
+                    # its completed bytes before issuing original provenance.
+                    creation_fd, descriptor = descriptor, None
+                    descriptor = writer.complete_new_marker(creation_fd, p, encoded)
                 after = os.fstat(descriptor)
                 path_stat = p.stat(follow_symlinks=False)
                 if (
@@ -327,9 +339,8 @@ class RedTeamEngine:
                 self._owned_artifacts.append(p)
             except Exception:
                 if not enrolled:
-                    removed = RedTeamValidationLease.discard_unenrolled_marker(
-                        descriptor, p
-                    )
+                    removed = (descriptor is not None and
+                        RedTeamValidationLease.discard_unenrolled_marker(descriptor, p))
                     if registered:
                         unregister_artifact(p, run_id=self.run_id)
                     if not removed:
@@ -1236,26 +1247,57 @@ class RedTeamEngine:
                       "red-team-TAGGED idle processes (maximum 30 seconds) so process sensors "
                       "and SOAR see realistic process-creation activity. Nothing harmful runs.")
         spawned = 0
+        attempted = failures = 0
+        first_failure_phase = first_failure_type = "none"
+        failure_types = frozenset({"Exception", "AttributeError", "TypeError", "ValueError",
+            "OSError", "RuntimeError", "PermissionError", "FileNotFoundError", "Full",
+            "ToolProtocolError", "InventoryWorkerError", "OwnedProcessReadError",
+            "RedTeamValidationError", "RedTeamProducerLivenessError", "TimeoutExpired",
+            "NoSuchProcess", "AccessDenied", "ZombieProcess"})
         pids = []
         tokens = []
+        # The venv executable is a redirector on Windows. Killing only that
+        # wrapper can leave its actual sleeper alive. This fixed stdlib probe
+        # must execute directly in the current base interpreter, as practice
+        # verification already does. A frozen application is not a Python -c
+        # interpreter and must wait for an admitted fixed probe entrypoint.
+        probe_executable = (None if getattr(sys, "frozen", False) else
+                            str(Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True)))
+        executor = getattr(self, "_independent_executor", None)
+        if executor is not None:
+            from angerona.gui.red_team_bridge import RedTeamToolOwner
+            if type(executor) is not RedTeamToolOwner:
+                raise RuntimeError("Exact independent process probe owner required")
         for _ in range(n):
             if self._cancel.is_set():
                 break
             tag = f"ANGERONA_REDTEAM_{uuid.uuid4().hex[:8]}"
             proc = None
+            attempted += 1
+            failure_phase = "interpreter-check"
             try:
+                if probe_executable is None and executor is None:
+                    raise RuntimeError("No admitted inert process probe interpreter")
                 lease = self._validation_lease
                 if type(lease) is RedTeamValidationLease:
+                    failure_phase = "challenge-enroll"
                     RedTeamValidationLease.enroll_process_challenge(
                         lease, token=tag, run_id=self.run_id
                     )
                 register_process(tag, self.run_id, kind="red-team")
                 flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                proc = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
-                    [sys.executable, "-c", "import time; time.sleep(30)", tag],
-                    creationflags=flags,
-                )
+                if executor is not None:
+                    failure_phase = "executor-start"
+                    proc = executor.start_probe(self, tag)
+                else:
+                    failure_phase = "direct-start"
+                    proc = subprocess.Popen(  # noqa: S603 - fixed interpreter, inert sleep
+                        [probe_executable, "-I", "-S", "-c", "import time; time.sleep(30)", tag],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, creationflags=flags,
+                    )
                 if type(lease) is RedTeamValidationLease:
+                    failure_phase = "challenge-bind"
                     RedTeamValidationLease.bind_process_challenge(
                         lease, token=tag, pid=int(proc.pid), run_id=self.run_id
                     )
@@ -1264,7 +1306,25 @@ class RedTeamEngine:
                 pids.append(int(proc.pid))
                 tokens.append(tag)
                 register_process(tag, self.run_id, pid=int(proc.pid), kind="red-team")
-            except Exception:
+                if executor is not None:
+                    # One native target at a time preserves the complete
+                    # 16-process exclusion scope. Observe the actual child;
+                    # wrapper exit, UI claims and cleanup earn no catch credit.
+                    failure_phase = "probe-wait"
+                    expires = time.monotonic() + 30.0
+                    while proc.poll() is None and time.monotonic() < expires:
+                        if self._cancel.wait(.1):
+                            break
+                    proc.wait(timeout=1.0)
+                    failure_phase = "probe-retire"
+                    executor.retire_probe(proc.record.probe_id)
+            except Exception as exc:
+                failures += 1
+                if first_failure_phase == "none":
+                    first_failure_phase = failure_phase
+                    name = type(exc).__name__
+                    first_failure_type = name if name in failure_types else "Exception"
+                self._narrate("⚠ bounded process probe unavailable: " + type(exc).__name__)
                 if proc is not None:
                     try:
                         proc.terminate()
@@ -1277,9 +1337,14 @@ class RedTeamEngine:
             if self._cancel.wait(0.2):
                 break
         self._record("Benign Execution (simulated)", "T1059 tagged spawns",
-                     f"Spawned {spawned} bounded red-team-tagged idle process(es).", ts,
+                     f"Recorded {spawned} bound red-team process probe target(s).", ts,
                      pid=(pids[0] if pids else None), pids=pids,
-                     correlation_tokens=tokens, ok=(spawned == n and n > 0))
+                     correlation_tokens=tokens, ok=(spawned == n and n > 0),
+                     detail=(f"Process probe execution: required={n}; attempted={attempted}; "
+                         f"bound={spawned}; failures={failures}; first_phase={first_failure_phase}; "
+                         f"first_exception={first_failure_type}. "
+                         "Creation before admission is not inferred from recorded PIDs. "
+                         "Detection and containment require separate receipts."))
 
     def _step_initial_access(self, jitter_range) -> None:
         self._jitter(*jitter_range, note="Initial Access — inert phishing-attachment marker")

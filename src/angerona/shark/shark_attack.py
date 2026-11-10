@@ -84,6 +84,7 @@ from __future__ import annotations
 
 import hashlib
 import fnmatch
+import io
 import os
 import random
 import socket
@@ -407,7 +408,7 @@ class SharkAttackEngine:
         unregister_run(self.run_id)
 
     @staticmethod
-    def _open_new_artifact(path: Path) -> int:
+    def _open_new_artifact(path: Path, *, delete_access: bool = True) -> int:
         """Create a new leaf, refusing an existing file, link, or reparse leaf."""
         if os.name != "nt":
             return os.open(
@@ -429,7 +430,7 @@ class SharkAttackEngine:
         create.restype = ctypes.c_void_p
         handle = create(
             str(path),
-            0x80000000 | 0x40000000 | 0x00010000,  # read, write, delete
+            0x80000000 | 0x40000000 | (0x00010000 if delete_access else 0),
             0x1 | 0x2 | 0x4,  # share read, write, delete with sensors
             None,
             1,  # CREATE_NEW, including no replacement of an existing link
@@ -538,19 +539,30 @@ class SharkAttackEngine:
 
     def _create_artifact(
         self, path: Path, writer: Callable[[int], None], *, durable: bool = True,
+        encoded: bytes | None = None,
     ) -> Path:
         """Write through an exclusive handle and remember only its file ID."""
         descriptor: int | None = None
         created: os.stat_result | None = None
         registered = False
+        marker_writer = getattr(self, "_marker_writer", None) if encoded is not None else None
+        if marker_writer is not None:
+            from angerona.gui.red_team_bridge import ReservedMarkerWriter
+            if type(marker_writer) is not ReservedMarkerWriter:
+                raise ValueError("Exact independent marker writer is required")
         try:
-            descriptor = self._open_new_artifact(path)
+            descriptor = (self._open_new_artifact(path) if marker_writer is None else
+                          self._open_new_artifact(path, delete_access=False))
             created = os.fstat(descriptor)
             if not _plain_single_link(created):
                 raise OSError("drill artifact is not one ordinary single-link file")
-            writer(descriptor)
-            if durable:
-                os.fsync(descriptor)
+            if marker_writer is None:
+                writer(descriptor)
+                if durable:
+                    os.fsync(descriptor)
+            else:
+                creation_fd, descriptor = descriptor, None
+                descriptor = marker_writer.complete_new_marker(creation_fd, path, encoded)
             after = os.fstat(descriptor)
             if (
                 not _plain_single_link(after)
@@ -599,7 +611,7 @@ class SharkAttackEngine:
                     raise OSError("drill artifact write made no progress")
                 offset += count
 
-        return self._create_artifact(path, write, durable=durable)
+        return self._create_artifact(path, write, durable=durable, encoded=encoded)
 
     def _write_text_artifact(self, path: Path, body: str, *, encoding: str) -> Path:
         return self._write_bytes_artifact(path, body.encode(encoding))
@@ -867,15 +879,13 @@ class SharkAttackEngine:
                 self._narrate("▶ STAGE: Initial Access [zipped lure] — dropping an EICAR-marker "
                               f"test file inside a real .zip archive into {self.downloads_dir} "
                               "(tests whether signature scanning looks inside archives).")
-                def write_zip(descriptor: int) -> None:
-                    with os.fdopen(os.dup(descriptor), "w+b") as stream:
-                        with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zf:
-                            zf.writestr(
-                                "shipping_label.txt",
-                                f"{EICAR_MARKER} :: Angerona Shark Attack drill sample (zipped)\n",
-                            )
-
-                self._create_artifact(path, write_zip)
+                stream = io.BytesIO()
+                with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.writestr(
+                        "shipping_label.txt",
+                        f"{EICAR_MARKER} :: Angerona Shark Attack drill sample (zipped)\n",
+                    )
+                self._write_bytes_artifact(path, stream.getvalue())
                 technique = "T1204-style file drop (zipped)"
             else:  # html_lure
                 path = self.downloads_dir / f"urgent_invoice_{hexid}.html"

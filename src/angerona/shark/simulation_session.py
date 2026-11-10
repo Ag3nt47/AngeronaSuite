@@ -426,9 +426,12 @@ class SharkRunSession:
         created = []
         for recipe in planned.control_kinds:
             self.check_current()
+            marker_writer = getattr(self._engine, "_marker_writer", None)
+            writer_options = ({} if marker_writer is None else
+                {"marker_writer": marker_writer, "writer_source": self})
             declaration = RedTeamValidationLease.create_yara_control(self._lease,
                 run_id=self._prepared.run_id, step_id=planned.planned_step_id,
-                scanner_enrollment=self._enrollment, control_kind=recipe)
+                scanner_enrollment=self._enrollment, control_kind=recipe, **writer_options)
             self._declarations[declaration["path"]] = declaration
             identity = declaration["identity"]
             # Preserve exact cleanup custody even if the next fixed create fails.

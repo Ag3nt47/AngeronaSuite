@@ -80,6 +80,7 @@ from PySide6.QtCore import (
     QCoreApplication,
     QDateTime,
     QEvent,
+    QItemSelectionModel,
     QObject,
     QPointF,
     Qt,
@@ -101,6 +102,7 @@ from PySide6.QtGui import (
     QTextCursor,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QDialog,
     QFileDialog,
@@ -1712,6 +1714,11 @@ class HealthTab(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.latest: Dict = {}
+        self._latest_failure_rows = None
+        self._rendered_failure_rows = None
+        self._rendered_failure_keys = ()
+        self._failure_snapshot_invalid = False
+        self._failure_render_failed = False
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
         root.addWidget(section_label("ANGERONA SUITE HEALTH ANALYSIS"))
@@ -1736,7 +1743,9 @@ class HealthTab(QWidget):
                   self.recovery_lbl, self.res_lbl):
             root.addWidget(w)
 
-        root.addWidget(section_label("RECENTLY FAILED MODULES"))
+        self._failure_heading = section_label("RECENTLY FAILED MODULES")
+        self._failure_heading.setWordWrap(True)
+        root.addWidget(self._failure_heading)
         self.fail_table = QTableWidget(0, 3)
         self.fail_table.setHorizontalHeaderLabels(["Module", "Detail", "Source"])
         self.fail_table.setAlternatingRowColors(True)
@@ -1777,14 +1786,132 @@ class HealthTab(QWidget):
         self.recovery_lbl.setText(
             f"Self-healing: {h.get('recovery_note', 'No current recovery report')}")
 
-        fails = h.get("failed", [])
-        self.fail_table.setSortingEnabled(False)
-        self.fail_table.setRowCount(len(fails))
-        for r, f in enumerate(fails):
-            self.fail_table.setItem(r, 0, QTableWidgetItem(f["name"]))
-            self.fail_table.setItem(r, 1, QTableWidgetItem(f["detail"]))
-            self.fail_table.setItem(r, 2, QTableWidgetItem(_history_source_label(f)))
-        self.fail_table.setSortingEnabled(True)
+        rows = self._failure_display_rows(h.get("failed"))
+        self._failure_snapshot_invalid = rows is None
+        if rows is not None:
+            self._latest_failure_rows = rows
+        self._update_failure_heading()
+        self._render_pending_failure_rows()
+
+    @staticmethod
+    def _failure_display_rows(fails):
+        """Freeze the complete displayed text; invalid input is not no failures."""
+        if type(fails) is not list:
+            return None
+        rows = []
+        for row in fails:
+            if type(row) is not dict:
+                return None
+            values = {key: row.get(key) for key in (
+                "name", "detail", "src", "recorded_at", "recorded_scope",
+            )}
+            if any(type(values[key]) is not str for key in ("name", "detail", "src")):
+                return None
+            stamp, scope = values["recorded_at"], values["recorded_scope"]
+            if not ((stamp is None and scope is None) or
+                    (type(stamp) is str and type(scope) is str and scope in ("event", "run"))):
+                return None
+            rows.append((values["name"], values["detail"], _history_source_label(values)))
+        return tuple(rows)
+
+    @staticmethod
+    def _failure_row_keys(rows):
+        counts, keys = {}, []
+        for row in rows:
+            occurrence = counts.get(row, 0)
+            counts[row] = occurrence + 1
+            keys.append((row, occurrence))
+        return tuple(keys)
+
+    def _update_failure_heading(self):
+        text = "RECENTLY FAILED MODULES"
+        if self._failure_render_failed:
+            text += " — table refresh failed; displayed rows may be incomplete"
+        elif self._failure_snapshot_invalid:
+            text += " — snapshot unavailable; last valid rows retained"
+        self._failure_heading.setText(text)
+
+    def _render_pending_failure_rows(self):
+        rows = self._latest_failure_rows
+        window = self.window()
+        if (rows is None or rows == self._rendered_failure_rows or not self.isVisible()
+                or window.isMinimized() or getattr(window, "_closing", False)):
+            return
+        try:
+            keys = self._paint_failure_rows(rows)
+        except Exception:
+            # A partial native update must not become an unchanged-cache hit.
+            self._rendered_failure_rows = None
+            self._rendered_failure_keys = ()
+            self._failure_render_failed = True
+            self._update_failure_heading()
+            raise  # Keep the existing exception/logging path available.
+        self._rendered_failure_rows = rows
+        self._rendered_failure_keys = keys
+        self._failure_render_failed = False
+        self._update_failure_heading()
+
+    def _paint_failure_rows(self, rows):
+        table, old_keys = self.fail_table, self._rendered_failure_keys
+
+        def selected_key(item):
+            if item is None:
+                return None
+            first = table.item(item.row(), 0)
+            source_index = first.data(Qt.UserRole) if first is not None else None
+            if type(source_index) is int and 0 <= source_index < len(old_keys):
+                return old_keys[source_index], item.column()
+            return None
+
+        selected = [key for item in table.selectedItems()
+                    if (key := selected_key(item)) is not None]
+        current = selected_key(table.currentItem())
+        top_item = table.item(table.rowAt(0), 0)
+        top = selected_key(top_item)
+        top_offset = table.visualItemRect(top_item).top() if top_item is not None else 0
+        vertical, horizontal = table.verticalScrollBar().value(), table.horizontalScrollBar().value()
+        sorting, updates = table.isSortingEnabled(), table.updatesEnabled()
+        keys = self._failure_row_keys(rows)
+        positions = {key: index for index, key in enumerate(keys)}
+        items = []
+        for index, row in enumerate(rows):
+            cells = [QTableWidgetItem(text) for text in row]
+            cells[0].setData(Qt.UserRole, index)
+            items.append(cells)
+        self._rendered_failure_rows = None
+        self._rendered_failure_keys = ()
+        table.setUpdatesEnabled(False)
+        try:
+            try:
+                table.setSortingEnabled(False)
+                table.setRowCount(len(rows))
+                for row_index, cells in enumerate(items):
+                    for column, item in enumerate(cells):
+                        table.setItem(row_index, column, item)
+            finally:
+                table.setSortingEnabled(sorting)
+            table.clearSelection()
+            table.selectionModel().clearCurrentIndex()
+            if current is not None and current[0] in positions:
+                table.setCurrentItem(items[positions[current[0]]][current[1]],
+                                     QItemSelectionModel.NoUpdate)
+            for key, column in selected:
+                if key in positions:
+                    items[positions[key]][column].setSelected(True)
+            if top is not None and top[0] in positions:
+                table.scrollToItem(items[positions[top[0]]][0], QAbstractItemView.PositionAtTop)
+                if table.verticalScrollMode() == QAbstractItemView.ScrollPerPixel:
+                    table.verticalScrollBar().setValue(table.verticalScrollBar().value() - top_offset)
+            else:
+                table.verticalScrollBar().setValue(vertical)
+            table.horizontalScrollBar().setValue(horizontal)
+        finally:
+            table.setUpdatesEnabled(updates)
+        return keys
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().showEvent(event)
+        self._render_pending_failure_rows()
 
     def snapshot_text(self) -> str:
         h = self.latest
@@ -1794,8 +1921,12 @@ class HealthTab(QWidget):
         lines.append(self.bus_lbl.text())
         lines.append(self.history_lbl.text())
         lines.append(self.recovery_lbl.text())
-        for f in h.get("failed", []):
-            lines.append(f"  ✗ {f['name']}: {f['detail']}  [{_history_source_label(f)}]")
+        if self._failure_snapshot_invalid:
+            lines.append("Failure snapshot unavailable; last valid rows retained.")
+        if self._failure_render_failed:
+            lines.append("Failure table refresh failed; displayed rows may be incomplete.")
+        for name, detail, source in self._latest_failure_rows or ():
+            lines.append(f"  ✗ {name}: {detail}  [{source}]")
         return "\n".join(lines)
 
 
@@ -3115,6 +3246,8 @@ class BlackBoxWindow(QMainWindow):
 
     def _sync_inspectors(self, *_args) -> None:
         visible = not self._closing and self.isVisible() and not self.isMinimized()
+        if visible:
+            self.tab_health._render_pending_failure_rows()
         for worker_name, tab_name in (("w_thread", "tab_threads"),
                                      ("w_mem", "tab_mem"),
                                      ("w_config", "tab_config")):

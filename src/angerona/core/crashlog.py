@@ -9,7 +9,10 @@ fault leaves no trace — the window just vanishes. install() wires up:
 
 Python/Qt messages are appended to available logs/crash.log and
 diagnostics/crash.log below the runtime data directory. faulthandler has one
-selected output, reported separately. Arming observations do not guarantee
+selected output and captures the faulting thread only, reported separately.
+Python-owned watchdog/diagnostic snapshots retain all-thread context under the
+GIL; native exception handlers must not walk other threads' moving frames.
+Arming observations do not guarantee
 capture of every native failure or faults during interpreter teardown.
 Normal appends preserve existing evidence and pause at bounded message/file/
 process allowances. Native C fault output and external writers are not bounded
@@ -367,6 +370,7 @@ def _publish_report(report: CrashLogReport) -> CrashLogReport:
             reason="Crash log arming attempt completed; startup continues.",
             coverage=f"main={report.main_hook};thread={report.thread_hook};qt={report.qt_hook};"
                      f"native_output={next((t.role for t in report.targets if t.native_selected), 'unavailable')};"
+                     f"native_threads={'current' if report.native_fault_target is not None else 'unavailable'};"
                      f"identity={report.identity_state};generation observed at installation only;"
                      "one native output only; native teardown failures may remain uncaptured",
             log_error=[*report.errors, *(["identity:" + report.identity_error] if report.identity_error else [])],
@@ -391,6 +395,18 @@ def _publish_report(report: CrashLogReport) -> CrashLogReport:
             # retained in latest_report even if both reporting sinks fail.
             pass
     return report
+
+
+def _enable_native_current_thread(stream) -> None:
+    # Windows first-chance exceptions can enter faulthandler without the GIL.
+    # Raw traversal of other threads can race frame/code lifetime. Keep native
+    # fault evidence, but leave all-thread snapshots to Python-owned diagnostics.
+    try:
+        faulthandler.enable(file=stream, all_threads=False)
+    except TypeError:
+        # A positional-only API/shim must retain the explicit current-thread
+        # scope. Omitting the argument would silently restore default True.
+        faulthandler.enable(stream, False)
 
 
 def install() -> CrashLogInstallation:
@@ -428,7 +444,7 @@ def install() -> CrashLogInstallation:
         if target.path not in files:
             continue
         try:
-            faulthandler.enable(file=files[target.path], all_threads=True)
+            _enable_native_current_thread(files[target.path])
             targets[index] = replace(target, native_selected=True)
             break
         except Exception as error:

@@ -42,6 +42,11 @@ from typing import Optional
 
 from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.mobile_cli_custody import (
+    begin_signal_call, end_signal_call,
+    request_signal_stop, resume_signal_admission, retain_signal_custody,
+    run_signal_cli, signal_cli_custody_snapshot,
+)
 
 try:
     import psutil
@@ -91,18 +96,27 @@ class _CliIdentity:
 class _SealedCli:
     identity: _CliIdentity
     handle: int
+    close_attempted: bool = False
+    close_failed: bool = False
 
     def close(self) -> None:
+        if self.close_failed:
+            raise OSError("Signal executable pin close remains unverified")
         if not self.handle:
             return
+        self.close_attempted = True
         try:
             kernel = ctypes.WinDLL("kernel32", use_last_error=True)
             close = kernel.CloseHandle
             close.argtypes = [ctypes.wintypes.HANDLE]
             close.restype = ctypes.wintypes.BOOL
-            close(self.handle)
-        finally:
-            self.handle = 0
+            if not close(self.handle):
+                raise OSError("Signal executable pin close failed")
+        except BaseException:
+            self.close_failed = True
+            retain_signal_custody(self, "executable-pin")
+            raise
+        self.handle = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +177,7 @@ _HELP_TEXT = (
     "🔐 ARM - Issue one fresh 2-minute administrative nonce\n"
     "🌿 ECO ON/OFF <NONCE> <PIN> - Change Governor throttling\n"
     "🚨 LOCKDOWN <NONCE> <PIN> - Request receipt-verified host isolation\n"
-    "🛠️ DIAG - Export Black Box diagnostic package\n"
+    "🛠️ DIAG - Read a brief resource snapshot (no package export)\n"
     "🚫 KILL <TOKEN> <PIN> - Terminate an exact bound process instance\n"
     "⏸️ SUSPEND <TOKEN> <PIN> - Suspend an exact bound process instance\n"
     "🔄 ROLLBACK <TOKEN> <PIN> - Restore one exact Shadow Shield version\n"
@@ -409,7 +423,7 @@ def _authenticode_publisher(path: Path) -> tuple[str, str]:
             "[pscustomobject]@{status=[string]$s.Status;publisher=$p}"
             "|ConvertTo-Json -Compress"
         )
-        result = subprocess.run(
+        state, returncode, output = run_signal_cli(
             [
                 str(powershell),
                 "-NoProfile",
@@ -418,17 +432,13 @@ def _authenticode_publisher(path: Path) -> tuple[str, str]:
                 script,
             ],
             cwd=str(system),
-            env=environment,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            environment=environment,
             timeout=15,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            max_output=4096,
         )
-        if result.returncode != 0 or len(result.stdout) > 4096:
+        if state != "complete" or returncode != 0 or len(output) > 4096:
             return "Unavailable", ""
-        payload = json.loads(result.stdout.decode("utf-8", errors="strict"))
+        payload = json.loads(output.decode("utf-8", errors="strict"))
         status = str(payload.get("status") or "")[:64]
         publisher = str(payload.get("publisher") or "")[:512]
         return status, publisher
@@ -470,6 +480,8 @@ class MobileResponseBridge(BaseModule):
         self._token_admission_drops = 0
         self._last_sweep = 0.0
         self._last_digest_flush = 0.0
+        self._delivery_lock = threading.RLock()
+        self._digest_inflight = None
         self._aria_handler = None                    # optional ARIA chat handler
         self._cli_receipt_key = secrets.token_bytes(32)
         self._last_cli_receipt_at = 0.0
@@ -704,7 +716,10 @@ class MobileResponseBridge(BaseModule):
             )
             return sealed
         except Exception:
-            sealed.close()
+            if signal_cli_custody_snapshot()["pending_external_trees"]:
+                retain_signal_custody(sealed, "executable-pin")
+            else:
+                sealed.close()
             raise
 
     @classmethod
@@ -727,76 +742,11 @@ class MobileResponseBridge(BaseModule):
         except Exception:
             return False
 
-    @staticmethod
-    def _read_bounded_child(
-        process: subprocess.Popen[bytes], timeout: float
-    ) -> tuple[str, bytes]:
-        if process.stdout is None:
-            return "io-error", b""
-        captured = bytearray()
-        done = threading.Event()
-        overflow = threading.Event()
-        failed = threading.Event()
-
-        def reader() -> None:
-            try:
-                while True:
-                    chunk = process.stdout.read(4096)
-                    if not chunk:
-                        break
-                    available = _MAX_CLI_OUTPUT - len(captured)
-                    if len(chunk) > available:
-                        if available > 0:
-                            captured.extend(chunk[:available])
-                        overflow.set()
-                        break
-                    captured.extend(chunk)
-            except (OSError, ValueError):
-                failed.set()
-            finally:
-                done.set()
-
-        thread = threading.Thread(
-            target=reader, name="angerona-signal-cli-reader", daemon=True
-        )
-        thread.start()
-        deadline = time.monotonic() + timeout
-        while not done.wait(0.02):
-            if overflow.is_set() or time.monotonic() >= deadline:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
-                thread.join(timeout=2.0)
-                return (
-                    "overflow" if overflow.is_set() else "timeout",
-                    bytes(captured),
-                )
-        remaining = max(0.0, deadline - time.monotonic())
-        try:
-            process.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            try:
-                process.kill()
-            except OSError:
-                pass
-            return "timeout", bytes(captured)
-        thread.join(timeout=2.0)
-        if thread.is_alive() or failed.is_set():
-            return "io-error", bytes(captured)
-        return "complete", bytes(captured)
-
     @classmethod
     def _launch_cli(
         cls, sealed: _SealedCli, arguments: list[str], timeout: float
     ) -> tuple[str, int, bytes]:
         from angerona.core.privilege import sanitized_child_environment
-        from angerona.resilience._selftest_environment import (
-            _assign_windows_kill_job,
-            _resume_windows_process,
-            _stop_process_custody,
-        )
-
         argv = [sealed.identity.path, *[str(value) for value in arguments]]
         if (
             sum(len(value) for value in argv) > 32768
@@ -806,34 +756,8 @@ class MobileResponseBridge(BaseModule):
         environment = sanitized_child_environment(source={})
         if _PIN_ENV in environment or _PORTABLE_PIN_ENV in environment:
             return "environment-invalid", -1, b""
-        process: subprocess.Popen[bytes] | None = None
-        job = None
-        try:
-            process = subprocess.Popen(
-                argv,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=str(Path(sealed.identity.path).parent),
-                env=environment,
-                close_fds=True,
-                creationflags=(
-                    getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                    | getattr(subprocess, "CREATE_SUSPENDED", 0x00000004)
-                ),
-            )
-            try:
-                job = _assign_windows_kill_job(process)
-                _resume_windows_process(process)
-            except OSError:
-                process.kill()
-                process.wait(timeout=2.0)
-                raise
-            state, output = cls._read_bounded_child(process, timeout)
-            return state, int(process.returncode or 0), output
-        finally:
-            _stop_process_custody(process, job)
+        return run_signal_cli(argv, environment, cwd=str(Path(sealed.identity.path).parent),
+                              timeout=timeout, max_output=_MAX_CLI_OUTPUT)
 
     def _make_receipt(
         self,
@@ -930,7 +854,12 @@ class MobileResponseBridge(BaseModule):
         state = "identity-error"
         returncode = -1
         error = "signal-cli identity could not be proven"
+        verified = False
+        call = None
         try:
+            if self.stopping or signal_cli_custody_snapshot()["capability_held"]:
+                raise OSError("Signal invocation admission is stopped or custody held")
+            call = begin_signal_call()
             sealed = self._acquire_cli(self._cfg())
             binary_digest = sealed.identity.sha256
             state, returncode, output = self._launch_cli(
@@ -953,19 +882,16 @@ class MobileResponseBridge(BaseModule):
                 and self._receipt_valid(receipt)
             )
             if verified:
-                self._record_cli_result(purpose, True)
-                return _CliResult(output, receipt, True)
-            if not identity_valid:
+                error = ""
+            elif not identity_valid:
                 error = "signal-cli identity changed during launch"
             elif state != "complete":
                 error = f"signal-cli IPC {state}"
             else:
                 error = f"signal-cli exited with code {returncode}"
-            self._record_cli_result(purpose, False, error)
-            return _CliResult(output, receipt, False, error)
         except Exception as exc:
             error = f"signal-cli rejected: {type(exc).__name__}: {str(exc)[:240]}"
-            self._record_cli_result(purpose, False, error)
+            verified = False
             receipt = self._make_receipt(
                 nonce=nonce,
                 purpose=purpose,
@@ -974,10 +900,28 @@ class MobileResponseBridge(BaseModule):
                 output=output,
                 state=state,
             )
-            return _CliResult(output, receipt, False, error)
         finally:
-            if sealed is not None:
-                sealed.close()
+            try:
+                if sealed is not None:
+                    if state == "retirement-held":
+                        # The CLI may still execute. Keep its executable pin
+                        # for that same retained lifetime.
+                        retain_signal_custody(sealed, "executable-pin")
+                    else:
+                        try:
+                            sealed.close()
+                        except Exception:
+                            retain_signal_custody(sealed, "executable-pin")
+                            state, verified = "close-held", False
+                            error = "Signal executable pin retirement is unverified"
+            finally:
+                if call is not None:
+                    end_signal_call(call)
+        if not verified and receipt.state != state:
+            receipt = self._make_receipt(nonce=nonce, purpose=purpose, binary_sha256=binary_digest,
+                                         returncode=returncode, output=output, state=state)
+        self._record_cli_result(purpose, verified, error)
+        return _CliResult(output, receipt, verified, error)
 
     def _send(self, message: str) -> bool:
         cfg = self._cfg()
@@ -1140,38 +1084,57 @@ class MobileResponseBridge(BaseModule):
         # Rate-limit: >_FLOOD_MAX alerts in the window → aggregate into a digest.
         # The most recent MAX+1 arrivals prove whether the window is flooded;
         # older arrivals cannot change that answer and need not be retained.
-        now = time.time()
-        self._alert_times = [t for t in self._alert_times if now - t <= _FLOOD_WINDOW]
-        self._alert_times.append(now)
-        self._alert_times = self._alert_times[-(_FLOOD_MAX + 1):]
-        if len(self._alert_times) > _FLOOD_MAX:
-            self._digest_count += 1
-            if len(self._digest) < 15:
-                self._digest.append(line)
-        else:
-            self._send(line)
+        with self._delivery_lock:
+            now = time.time()
+            self._alert_times = [t for t in self._alert_times if now - t <= _FLOOD_WINDOW]
+            self._alert_times.append(now)
+            self._alert_times = self._alert_times[-(_FLOOD_MAX + 1):]
+            flooded = len(self._alert_times) > _FLOOD_MAX
+            if flooded:
+                self._digest_count += 1
+                if len(self._digest) < 15:
+                    self._digest.append(line)
+        if not flooded:
+            sent = False
+            try:
+                sent = self._send(line) is True
+            finally:
+                if not sent:
+                    with self._delivery_lock:
+                        self._digest_count += 1
+                        if len(self._digest) < 15:
+                            self._digest.append(line)
 
     def _flush_digest(self) -> None:
-        if not self._digest:
-            return
-        if time.time() - self._last_digest_flush < _FLOOD_WINDOW:
-            return
-        self._last_digest_flush = time.time()
-        n = self._digest_count
+        with self._delivery_lock:
+            if (not self._digest or self._digest_inflight is not None
+                    or time.time() - self._last_digest_flush < _FLOOD_WINDOW):
+                return
+            self._last_digest_flush = time.time()
+            samples, n, drops = self._digest, self._digest_count, self._token_admission_drops
+            self._digest_inflight = (samples, n, drops)
+            # New arrivals go to a separate bounded batch while I/O runs.
+            self._digest, self._digest_count, self._token_admission_drops = [], 0, 0
         body = (f"📥 Angerona digest — {n} alert(s) in the last minute "
                 "(individual texts suppressed to avoid flooding):\n\n"
-                + "\n".join(self._digest))
-        if self._token_admission_drops:
+                + "\n".join(samples))
+        if drops:
             body += (
-                f"\n\n{self._token_admission_drops} alert(s) received no new "
+                f"\n\n{drops} alert(s) received no new "
                 "response token because pending authorization capacity was full. "
                 "Review those alerts on the host. Existing tokens retain their "
                 "original scope and expiry."
             )
-        self._digest.clear()
-        self._digest_count = 0
-        self._token_admission_drops = 0
-        self._send(body)
+        sent = False
+        try:
+            sent = self._send(body) is True
+        finally:
+            with self._delivery_lock:
+                if not sent:
+                    self._digest = (samples + self._digest)[:15]
+                    self._digest_count += n
+                    self._token_admission_drops += drops
+                self._digest_inflight = None
 
     def _new_token(self) -> str:
         for _ in range(50):
@@ -2396,6 +2359,8 @@ class MobileResponseBridge(BaseModule):
         return ""
 
     def run(self) -> None:
+        if not self.stopping:
+            resume_signal_admission()
         while not self.stopping:
             if not self._enabled():
                 self.set_health(100, "disabled (enable in Settings ▸ Mobile Integration)")
@@ -2440,12 +2405,20 @@ class MobileResponseBridge(BaseModule):
                 else:
                     self.set_health(
                         100,
-                        f"sealed identity + verified IPC receipt; "
+                        f"sealed CLI invocation verified; recipient delivery unverified; "
                         f"{len(self.pending_alerts)} pending token(s)",
                     )
             except Exception as exc:
                 self.set_health(50, f"bridge loop error: {exc}")
             self.sleep(self.POLL_S)
+
+    def stop(self) -> None:
+        request_signal_stop()
+        super().stop()
+
+    @staticmethod
+    def shutdown_custody_snapshot() -> dict:
+        return signal_cli_custody_snapshot()
 
     def self_test(self) -> tuple[bool, str]:
         fixture = MobileResponseBridge()
@@ -2478,7 +2451,8 @@ class MobileResponseBridge(BaseModule):
         result = self._invoke_cli("self-test", ["--version"], timeout=10.0)
         if not self._result_valid(result, "self-test"):
             return False, result.error
-        return True, f"{detail}; live signal-cli custody and authenticated nonce receipt verified"
+        return True, (f"{detail}; pinned local CLI version invocation verified; "
+                      "Signal send/receive and recipient delivery remain unverified")
 
 
 def register() -> BaseModule:

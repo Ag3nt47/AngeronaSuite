@@ -1191,12 +1191,24 @@ def _assert_private_directory_acl(
         kernel32.LocalFree(descriptor)
 
 
-def _trusted_temp_root() -> Path:
-    """Resolve a token-owned staging parent without ambient path authority."""
+def _token_local_app_data() -> Path:
+    """Resolve the actual process user's folder despite a synthetic profile."""
+
+    if os.name != "nt":
+        raise WindowsRuntimeError("Windows private staging parent query is unavailable")
 
     try:
         shell32 = ctypes.WinDLL("shell32", use_last_error=True)
         ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+        kernel32 = _kernel32()
+        advapi32 = _advapi32()
+        kernel32.GetCurrentProcess.argtypes = []
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        open_token = advapi32.OpenProcessToken
+        open_token.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        open_token.restype = wintypes.BOOL
         query = shell32.SHGetKnownFolderPath
         query.argtypes = [
             ctypes.POINTER(_GUID),
@@ -1213,23 +1225,40 @@ def _trusted_temp_root() -> Path:
             "Windows private staging parent query is unavailable"
         ) from exc
 
-    allocated = wintypes.LPWSTR()
+    token = wintypes.HANDLE()
+    if not open_token(kernel32.GetCurrentProcess(), _TOKEN_QUERY | 0x0004, ctypes.byref(token)):
+        raise WindowsRuntimeError("Windows private staging user token is unavailable")
+    if not token.value:
+        raise WindowsRuntimeError("Windows private staging user token is invalid")
     try:
-        result = int(
-            query(
-                ctypes.byref(_FOLDERID_LOCAL_APP_DATA),
-                0,
-                None,
-                ctypes.byref(allocated),
+        allocated = wintypes.LPWSTR()
+        try:
+            result = int(
+                query(
+                    ctypes.byref(_FOLDERID_LOCAL_APP_DATA),
+                    0,
+                    token,
+                    ctypes.byref(allocated),
+                )
             )
-        )
-        raw_parent = allocated.value or ""
+            raw_parent = allocated.value or ""
+            if result != 0 or not raw_parent:
+                raise WindowsRuntimeError("Windows private staging parent is unavailable")
+            return Path(raw_parent)
+        finally:
+            if allocated:
+                release(ctypes.cast(allocated, wintypes.LPVOID))
     finally:
-        if allocated:
-            release(ctypes.cast(allocated, wintypes.LPVOID))
-    if result != 0 or not raw_parent:
-        raise WindowsRuntimeError("Windows private staging parent is unavailable")
-    candidate = Path(raw_parent) / "Temp"
+        # One checked close before the path can authorize staging. An ambiguous
+        # numeric handle is never retried and cannot produce a trusted parent.
+        if not kernel32.CloseHandle(token):
+            raise WindowsRuntimeError("Windows private staging token retirement is unverified")
+
+
+def _trusted_temp_root() -> Path:
+    """Resolve a token-owned staging parent without ambient path authority."""
+
+    candidate = _token_local_app_data() / "Temp"
     try:
         resolved = candidate.resolve(strict=True)
         details = candidate.lstat()

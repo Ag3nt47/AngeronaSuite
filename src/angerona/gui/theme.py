@@ -20,6 +20,41 @@ SEVERITY_COLOR = {
     Severity.CRITICAL: "#b91c1c", # deep red, visually distinct from HIGH
 }
 
+# Function cues describe a control's purpose, never its health or authority.
+# Keep these separate from severity/status palettes and opt in individual
+# headings/actions rather than recoloring an entire evidence subtree.
+FUNCTION_ROLES = {
+    "monitor": ("#60a5fa", "Monitoring and inspection"),
+    "analysis": ("#a78bfa", "Analysis and research"),
+    "configure": ("#fbbf24", "Configuration and recovery"),
+    "response": ("#fb7185", "Controlled response"),
+}
+
+
+def set_function_role(widget, role: str) -> None:
+    """Add a labeled function cue without changing enablement or status text."""
+    if role not in FUNCTION_ROLES:
+        raise ValueError("Unknown interface function role")
+    widget.setProperty("functionRole", role)
+    if not widget.accessibleDescription():
+        widget.setAccessibleDescription("Function: " + FUNCTION_ROLES[role][1] + ".")
+    style = widget.style()
+    style.unpolish(widget)
+    style.polish(widget)
+    widget.update()
+
+
+def _function_role_qss() -> str:
+    return "\n".join(
+        f'QPushButton[functionRole="{role}"], QToolButton[functionRole="{role}"] '
+        f'{{border-left:2px solid {color};}}\n'
+        f'QLabel[functionRole="{role}"], QLabel#SectionTitle[functionRole="{role}"], '
+        f'QLabel#sectionTitle[functionRole="{role}"], QLabel#PageTitle[functionRole="{role}"], '
+        f'QGroupBox[functionRole="{role}"]::title '
+        f'{{color:{color};}}'
+        for role, (color, _description) in FUNCTION_ROLES.items()
+    )
+
 # Font stacks — each theme picks either a UI-style or mono-style stack.
 # Segoe UI: Windows system font — crisp, readable, zero-install.
 # Fira Code: beautiful ligature monospace for code / console areas.
@@ -309,6 +344,9 @@ QToolTip {{
     padding: 4px 8px;
     border-radius: 4px;
 }}
+/* Function accents supplement labels; severity/status colors remain owned by
+   their original widgets. No function rule changes a button's background. */
+{_function_role_qss()}
 """
 
 

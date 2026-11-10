@@ -219,6 +219,7 @@ def test_health_ui_renders_quiet_stale_and_cumulative_errors(health_environment)
     health_environment.write_text(json.dumps(snapshot), encoding="utf-8")
     tab = blackbox.HealthTab()
     try:
+        tab.show()
         tab.on_health(worker._collect())
         assert tab.state_lbl.text() == "STATE: RUNNING"
         assert "QUIET" in tab.bus_lbl.text()

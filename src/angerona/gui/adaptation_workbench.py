@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QGroupBox,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
@@ -871,6 +872,24 @@ class AdaptationWorkbench(QDialog):
         self.change_table = self._table([
             "Profile", "State", "Before", "After", "Reason", "Reversibility", "Verification",
         ])
+        change_header = self.change_table.horizontalHeader()
+        change_header.setStretchLastSection(False)
+        change_header.setSectionResizeMode(QHeaderView.Interactive)
+        self.change_table.ensurePolished()
+        change_header.ensurePolished()
+        header_padding = 2 * max(8, change_header.style().pixelMetric(QStyle.PM_HeaderMargin)) + 24
+        # Do not size these columns from potentially long JSON or let the last
+        # one absorb the review. Narrow viewports retain horizontal scrolling;
+        # operators can resize each column without later refreshes resetting it.
+        for column, width in enumerate((100, 120, 220, 220, 220, 220, 260)):
+            caption = self.change_table.horizontalHeaderItem(column).text()
+            header_minimum = change_header.fontMetrics().horizontalAdvance(caption) + header_padding
+            self.change_table.setColumnWidth(column, max(width, header_minimum))
+        self.change_table.setAccessibleDescription(
+            "Select a change to read its complete before/after values, reason and verification below. "
+            "Drag column edges to resize; scroll horizontally in a narrow window. "
+            "Double-click a row for nonmodal, read-only details."
+        )
         self.change_table.setMinimumHeight(145)
         layout.addWidget(self.change_table, 1)
         self.change_details = QPlainTextEdit()

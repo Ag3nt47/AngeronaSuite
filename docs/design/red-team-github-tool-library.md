@@ -1,11 +1,84 @@
 # Red Team: GitHub Tool Library and isolated analysis
 
-Status updated 2026-09-23: source import/review is delivered. The VMware analyzer
-backend, pinned catalog, optional setup and report controls are implemented, but
-native guest acceptance failed on tested Workstation 25.0.1. Run remains gated.
-Runtime stays v1.13.0 with 84 catalog capabilities. The implementation status
-below distinguishes shipped controls from the intended design and remaining
-acceptance work.
+Status updated **2026-11-09: Angerona 1.15.0 source development**. Source
+import/review, constrained community adapters, editable copies, rules/playbooks
+and a standalone Red Team transport are implemented. The separate VMware
+analyzer backend, pinned catalog, setup and report controls remain subject to
+native acceptance: tested Workstation 25.0.1 failed its configuration-custody
+gate. This design distinguishes compatible data integration from execution of
+foreign repository code.
+
+Operator guides: [Community tools](../community-tools.md) ·
+[Rules & Playbooks](../rules-playbooks.md) · [Suite Map](../suite-map.md).
+
+## Current community integration
+
+| Path | Delivered behavior | Authority |
+| --- | --- | --- |
+| Source Library | Public HTTPS GitHub revision resolution, immutable ZIP import, text review and revocation. | No downloaded code, hooks or setup scripts execute. |
+| Suggested tools | Compatible bounded data adapters, maintained Zero-Breach preparation, per-adapter self-checks, uninstall and credits. | An adapter is not the upstream project's full platform. |
+| Editable sandbox | Separate source copies, save, diff, revert and compatible data analysis. | Copy separation, not an OS sandbox or automatic execution. |
+| Rules & Playbooks | Batch drafts, guided X/O tactics, validation, exact-draft sample results, activate/disable/rollback. | Default-off global switches plus explicit per-item routing and existing response policy. |
+| Standalone Red Team | Independent ordinary-user UI and fixed inert probe execution through private IPC. | Core retains plans, issuer/producer validation, report keys and response authority. |
+| VM Analysis Lab | Fixed Gitleaks/Bandit source analysis and its own readiness controls. | Native acceptance remains held; reports are advisory. |
+
+Atomic Red Team metadata maps supported techniques to reviewed Angerona
+controls; upstream executors/prerequisites are not run. The constrained Sigma
+adapter retains supported logsource/event-field guards and refuses unsupported
+semantics rather than approximating them. Sysmon Modular provides configuration
+review, not silent installation/application. YARA-X uses the existing pinned
+engine for compatible explicit-buffer checks. Caldera, Velociraptor and Wazuh
+entries do not install their servers/agents or gain response authority.
+
+`core/community_tool_adapters.py` retains pinned member hashes, source review and
+license provenance. Edited copies cannot replace the managed scanner or become
+Core Python. Explicit Zero-Breach uninstall persists across restart and blocks
+automatic preparation until an explicit restore. Unknown or edited originals,
+source imports, preferences and reports remain preserved.
+
+`core/rule_playbook_library.py` keeps original, draft, active and prior revisions
+separate. Compatible YARA activation/rollback probes the complete candidate
+aggregate in an owned ordinary-user helper, then rechecks the source and active
+set before committing. The active aggregate is limited to 32 sources / 64 KiB,
+without includes/imported modules. Namespaces and separate raw/compile-input
+hashes preserve identity, including UTF-8 byte-order marks. Runtime refresh is
+bounded; optional failures preserve bundled scanning and report a coverage gap.
+
+The fixed helper accepts only closed rule/sample data. Windows checks actual
+membership of its retained outer Job, memory/process/CPU limits, no breakaway and
+kill-on-close before compilation; a ready file is only an ordering signal.
+Named Job collisions refuse before changing limits or assigning a process.
+POSIX workers install/read back address-space and CPU limits. A 15-second wall
+budget and bounded I/O constrain both. This is process/resource isolation, not
+an OS sandbox, and does not execute foreign Python or shell programs.
+
+Native SOAR accepts the closed `angerona-playbook/v1` JSON schema with `notify`
+or `request_containment`. It contains no arbitrary command, target PID or path.
+Containment still requires verified original evidence, existing opt-in,
+corroboration, exact target identity and normal Combat admission/receipts.
+Foreign workflow scripts remain review-only. Known sample checkmarks require
+the expected positive and negative fixtures; compilation alone is not an
+accuracy result.
+
+The standalone Red Team channel has a distinct MAC domain, directional verbs,
+sequences and native parent/wrapper/actual-child birth bindings. Core queued Qt
+work retains its owner epoch. Fixed process probes require the current prepared
+plan, enrolled challenge, lease, native invocation and retained Job membership.
+The narrowly enrolled canary exception does not unprotect Core, the tool UI or
+other companions. Probe cleanup earns no response credit.
+
+For markers, Core creates a fresh file and passes a bounded write capability,
+not a child-selected path. It verifies exact bytes/identity before retaining
+read custody. Uncertain remote handoff retires only the exact owned tool Job;
+unproved retirement retains the deny-delete reservation. Descriptor cleanup
+does not retry ambiguous numeric closes. Retired probe records are pruned only
+after proven pin retirement/close.
+
+The implementation sections below preserve the separate source-analysis design
+and its historical acceptance evidence. Future backend candidates are design
+options, not enabled alternatives. Angerona remains Ring 3 software: these
+checks do not establish PPL, ELAM, kernel immunity or resistance to a fully
+compromised user/OS trust root.
 
 ## VMware implementation follow-up
 
@@ -73,8 +146,9 @@ for ordinary Angerona monitoring, response and GitHub source review.
 
 ## Implementation status
 
-**Delivered:** Red Team -> GitHub Tools contains Source, Verification and Analysis
-Lab views. Resolve a public GitHub repository's branch, tag or full SHA, inspect
+**Delivered:** the dashboard GitHub hub's **Source library & analysis** and the
+standalone Red Team GitHub Tools view provide source/verification and Analysis
+Lab access. Resolve a public GitHub repository's branch, tag or full SHA, inspect
 the pinned commit, then import that source snapshot. Browse text, mark it reviewed
 or permanently revoke the exact import. Review status never enables execution.
 The source-library shortcuts themselves do not install binaries. The separate

@@ -550,11 +550,11 @@ def _event_value(event: Any) -> tuple[str, str, int, float, dict[str, Any], str]
     message = _bounded_text(getattr(event, "message", ""), 512)
     try:
         severity = max(0, min(4, int(getattr(event, "severity", 0))))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         severity = 0
     try:
         stamp = float(getattr(event, "ts", 0.0) or 0.0)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         stamp = 0.0
     if not math.isfinite(stamp) or stamp < 0:
         stamp = 0.0
@@ -823,6 +823,7 @@ class SentinelLensService:
         self._last_analysis_at = 0.0
         self._last_error_type = ""
         self._clean_shutdown = False
+        self._analysis_pending = False
         self._accepted_by_source = {
             "eventbus": 0,
             "syslog": 0,
@@ -847,17 +848,36 @@ class SentinelLensService:
             )
             self._thread = worker
             bus = self._bus
-            if bus is not None and not self._subscribed:
-                subscribe = getattr(bus, "subscribe", None)
-                if not callable(subscribe):
-                    self._accepting = False
-                    self._state = "created"
-                    self._thread = None
-                    raise TypeError("SentinelLens EventBus does not support subscriptions")
-                subscribe(self.submit_event, delivery_budget_ms=2.0)
-                self._subscribed = True
-            worker.start()
+            try:
+                if bus is not None and not self._subscribed:
+                    subscribe = getattr(bus, "subscribe", None)
+                    if not callable(subscribe):
+                        raise TypeError("SentinelLens EventBus does not support subscriptions")
+                    subscribe(self.submit_event, delivery_budget_ms=2.0)
+                    self._subscribed = True
+                worker.start()
+            except Exception as exc:
+                self._accepting = False
+                self._state = "created"
+                self._thread = None
+                self._last_error_type = type(exc).__name__[:120]
+                self._detach_subscription()
+                raise
             return True
+
+    def _detach_subscription(self) -> None:
+        """Remove the read callback after closing admission; never reopen it."""
+        unsubscribe = getattr(self._bus, "unsubscribe", None)
+        if not callable(unsubscribe):
+            return
+        try:
+            unsubscribe(self.submit_event)
+        except Exception as exc:
+            with self._lock:
+                self._last_error_type = type(exc).__name__[:120]
+        else:
+            with self._lock:
+                self._subscribed = False
 
     def _admission_error(self, message: str) -> SentinelLensInputError:
         with self._lock:
@@ -872,19 +892,19 @@ class SentinelLensService:
     def _enqueue(self, source: str, payload: object) -> bool:
         # Do not acquire a condition, wait for capacity, parse, copy an open-ended
         # object, or perform I/O here.  This method is the EventBus hot-path gate.
-        if not self._accepting:
-            with self._lock:
+        # Share one short admission transaction with stop(). An enqueue that
+        # was counted accepted must be visible before stop lets the worker exit.
+        with self._lock:
+            if not self._accepting:
                 self._submitted += 1
                 self._stopped_rejections += 1
-            return False
-        try:
-            self._queue.put_nowait((source, payload))
-        except Full:
-            with self._lock:
+                return False
+            try:
+                self._queue.put_nowait((source, payload))
+            except Full:
                 self._submitted += 1
                 self._queue_dropped += 1
-            return False
-        with self._lock:
+                return False
             self._submitted += 1
             self._accepted += 1
             self._accepted_by_source[source] += 1
@@ -943,7 +963,7 @@ class SentinelLensService:
     def _consume(self, source: str, payload: object) -> bool:
         try:
             event = self._normalize_queued(source, payload)
-        except (SentinelLensInputError, TypeError, ValueError, RecursionError) as exc:
+        except Exception as exc:
             with self._lock:
                 self._analysis_rejections += 1
                 self._last_error_type = type(exc).__name__[:120]
@@ -951,9 +971,10 @@ class SentinelLensService:
         with self._lock:
             self._records.append(event)
             self._processed_records += 1
+            self._analysis_pending = True
         return True
 
-    def _analyze(self) -> None:
+    def _analyze(self) -> bool:
         with self._lock:
             # Mirror EventBus.recent(): newest evidence first.  The graph builder
             # independently sorts facts by timestamp and identity.
@@ -966,16 +987,18 @@ class SentinelLensService:
                 self._last_error_type = type(exc).__name__[:120]
                 self._state = "degraded" if self._accepting else self._state
                 self._changed.notify_all()
-            return
+            return False
         with self._changed:
             self._snapshot = snapshot
             self._snapshot_revision += 1
             self._analyses_completed += 1
             self._last_analysis_at = time.time()
             self._last_error_type = ""
+            self._analysis_pending = False
             if self._accepting:
                 self._state = "running"
             self._changed.notify_all()
+        return True
 
     def _run(self) -> None:
         dirty = False
@@ -988,8 +1011,7 @@ class SentinelLensService:
                     source, payload = self._queue.get(timeout=0.05)
                 except Empty:
                     if dirty and time.monotonic() - last_analysis >= self._analysis_interval:
-                        self._analyze()
-                        dirty = False
+                        dirty = not self._analyze()
                         last_analysis = time.monotonic()
                     continue
 
@@ -1011,15 +1033,14 @@ class SentinelLensService:
                     time.monotonic() - last_analysis >= self._analysis_interval
                     or self._stop_requested.is_set()
                 ):
-                    self._analyze()
-                    dirty = False
+                    dirty = not self._analyze()
                     last_analysis = time.monotonic()
             if dirty:
-                self._analyze()
+                dirty = not self._analyze()
         finally:
             with self._changed:
                 self._accepting = False
-                self._clean_shutdown = self._queue.empty()
+                self._clean_shutdown = self._queue.empty() and not self._analysis_pending and not dirty
                 self._state = "stopped"
                 self._changed.notify_all()
 
@@ -1084,6 +1105,8 @@ class SentinelLensService:
                 "last_analysis_at": self._last_analysis_at,
                 "last_error_type": self._last_error_type,
                 "clean_shutdown": self._clean_shutdown,
+                "analysis_pending": self._analysis_pending,
+                "subscribed": self._subscribed,
                 "accepted_by_source": dict(self._accepted_by_source),
                 "network_listener": False,
                 "remediation_execution": False,
@@ -1108,12 +1131,15 @@ class SentinelLensService:
             self._accepting = False
             if thread is None or not thread.is_alive():
                 self._state = "stopped"
-                self._clean_shutdown = self._queue.empty()
+                self._clean_shutdown = self._queue.empty() and not self._analysis_pending
                 self._changed.notify_all()
-                return True
-            self._state = "stopping"
-            self._stop_requested.set()
-            self._changed.notify_all()
+            else:
+                self._state = "stopping"
+                self._stop_requested.set()
+                self._changed.notify_all()
+        self._detach_subscription()
+        if thread is None or not thread.is_alive():
+            return True
         thread.join(bounded_timeout)
         stopped = not thread.is_alive()
         if not stopped:

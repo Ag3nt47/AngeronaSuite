@@ -610,6 +610,65 @@ STEPS: tuple[Step, ...] = (
         ),
     ),
     Step(
+        "Sensor coverage and local evidence",
+        "Review what each input can observe before choosing response settings. "
+        "A healthy application process does not prove every Windows collector is available. "
+        "Module Self-Test and source coverage show missing permissions, collection loss and partial results.",
+        (
+            Field("info", "_setup_etw_coverage", "Windows process and image events",
+                  placeholder="ETW Real-Time Process Sensor observes process starts when its privileged native session is available. "
+                  "Sysmon supplies separately configured process, image-load, network and DNS events. "
+                  "Polling fallback can miss short-lived activity and does not provide equivalent coverage.", platforms=("win32",)),
+            Field("info", "_setup_amsi_coverage", "Script inspection",
+                  placeholder="AMSI Bridge reviews already observed command/script text; it is not a pre-execution interception hook. "
+                  "Direct in-process native scanning stays disabled by default for stability. Existing AV/provider availability is separate.",
+                  platforms=("win32",)),
+            Field("info", "_setup_network_coverage", "DNS and beacon observations",
+                  placeholder="DNS lexical checks and process-bound connection timing identify review leads. "
+                  "Collection gaps interrupt cadence evidence; encrypted DNS, missing events and short-lived sockets remain coverage limits. "
+                  "A timing or entropy clue alone cannot authorize killing a process or network lockdown."),
+            Field("info", "_setup_forensic_coverage", "Sensitive forensic evidence",
+                  placeholder="Forensics Capture is off by default. It reads bounded process memory strings and sockets when enabled. "
+                  "Review identity, permission, evidence protection and retention settings before opting in; this is not a complete memory dump.",
+                  platforms=("win32",)),
+            Field("info", "_setup_local_knowledge", "Local runbooks and ATT&CK context",
+                  placeholder="Local retrieval provides cited runbook passages and reviewed Defense Memory. "
+                  "ATT&CK declarations are separate from verified detection/response evidence. Retrieved text and AI explanations are data, "
+                  "not permission to run commands or change trust."),
+            Field("info", "_setup_privilege_boundary", "Administrator access warning",
+                  placeholder="Setup does not grant administrator access. An explicit supported installed launch can request Windows consent. "
+                  "Administrator access can change protected files and settings; a compromised Angerona process could make the same changes. "
+                  "Source/development startup remains unelevated. Approval and actual available permissions must be verified separately.",
+                  platforms=("win32",)),
+        ),
+    ),
+    Step(
+        "Community tools, rules and playbooks",
+        "Prepare maintained tools, then review their exact source version, credits, license, self-check and sandbox results in GitHub Tools. "
+        "Installing a repository does not activate its rules or authorize its code. "
+        "Community rules and playbooks start off until deliberately reviewed and activated; existing saved choices are preserved.",
+        (
+            Field("check", "github_tools_enabled", "Enable maintained scanner integrations",
+                  note="Zero-Breach checks are available in SpywareGuard and the GitHub Tools page. Suggested tools retain their own compatibility and review requirements."),
+            Field("check", "github_tools_auto_prepare", "Prepare the pinned Zero-Breach scanner after startup",
+                  note="On by default. Preparation runs after the dashboard opens; it does not start a host scan or activate community packages."),
+            Field("check", "github_tools_allow_download", "Allow verified downloads for missing scanner files",
+                  note="Uses the maintained version and digest. Source-review imports remain non-executable; download consent is separate from rule/playbook activation."),
+            Field("check", "community_rules_enabled", "Allow separately reviewed community detection rules",
+                  note="Off by default. Runtime evaluation still requires a supported data-only rule, provenance, self-check and deliberate activation. "
+                       "A rule match is a review lead and grants no response authority."),
+            Field("check", "community_playbooks_enabled", "Allow separately reviewed community playbook packages",
+                  note="Off by default. Only validated packages can reach the existing policy-gated runner. "
+                       "Imported YAML, repository scripts and AI text cannot grant execution or response permission."),
+            Field("spin", "github_tools_job_limit_mib", "Scanner working data per job (MiB)", minimum=64, maximum=1024),
+            Field("spin", "github_tools_report_limit_mib", "Retained scanner reports (MiB)", minimum=8, maximum=256),
+            Field("spin", "github_tools_report_count", "Retained scanner report slots",
+                  minimum=0, maximum=SCANNER_REPORT_COUNT_MAX,
+                  note="Unlimited is the default. Byte, free-space and inventory safeguards still apply."),
+            Field("spin", "github_tools_timeout_seconds", "Standalone toolkit deadline (seconds)", minimum=30, maximum=900),
+        ),
+    ),
+    Step(
         "Updates and storage",
         "Angerona can check canonical GitHub metadata daily while Angerona is open. "
         "This optional network check prompts before any isolated download and "
@@ -630,18 +689,6 @@ STEPS: tuple[Step, ...] = (
             Field("check", "startup_recovery_github_enabled", "Allow public GitHub source downloads during startup recovery",
                   note="On by default. Uses the canonical repository without uploading host files. "
                        "Off keeps local working-source recovery available when automatic recovery is enabled."),
-            Field("check", "github_tools_enabled", "Enable maintained scanner integrations",
-                  note="Zero-Breach checks are available in SpywareGuard and the GitHub tools page."),
-            Field("check", "github_tools_auto_prepare", "Prepare the pinned Zero-Breach scanner after startup",
-                  note="On by default. Preparation runs after the dashboard opens; it does not start a host scan."),
-            Field("check", "github_tools_allow_download", "Allow verified downloads for missing scanner files",
-                  note="Uses the maintained version and digest. Source-review imports stay non-executable."),
-            Field("spin", "github_tools_job_limit_mib", "Scanner working data per job (MiB)", minimum=64, maximum=1024),
-            Field("spin", "github_tools_report_limit_mib", "Retained scanner reports (MiB)", minimum=8, maximum=256),
-            Field("spin", "github_tools_report_count", "Retained scanner report slots",
-                  minimum=0, maximum=SCANNER_REPORT_COUNT_MAX,
-                  note="Unlimited is the default. Byte, free-space and inventory safeguards still apply."),
-            Field("spin", "github_tools_timeout_seconds", "Standalone toolkit deadline (seconds)", minimum=30, maximum=900),
             Field("check", "breach_auto_isolate_enabled", "Automatically request network lockdown for confirmed breaches",
                   note="Requires first-party confirmed evidence and installed response authority. "
                        "External scanner leads do not trigger lockdown; Lift Lockdown restores only the case's owned controls."),
@@ -771,6 +818,9 @@ def validate_setup(values: dict[str, object]) -> list[str]:
     """Validate the complete staged setup without touching disk or the network."""
     values = normalize_setup_values(values)
     errors: list[str] = []
+    for key in ("community_rules_enabled", "community_playbooks_enabled"):
+        if key in values and type(values[key]) is not bool:
+            errors.append(f"{key} must be an explicit boolean opt-in.")
     if "selftest_timeout_seconds" in values and (
         type(values["selftest_timeout_seconds"]) is not int or values["selftest_timeout_seconds"] not in SELFTEST_TIMEOUTS
     ):
@@ -1244,7 +1294,7 @@ if _HAVE_QT:
                     widget.setEchoMode(QLineEdit.Password)
                 return widget
             if field.kind == "info":
-                value = QLabel(str(getattr(self._cfg, field.key, "")))
+                value = QLabel(str(getattr(self._cfg, field.key, field.placeholder)))
                 value.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 value.setWordWrap(True)
                 return value

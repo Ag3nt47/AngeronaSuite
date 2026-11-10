@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import json
 import socket
 import subprocess
 import threading
@@ -213,7 +214,7 @@ def test_accepted_stop_retires_motion_before_threads_and_real_dialog_close(app, 
     scene.release_critical.set()
     wait_for(app, lambda: scene.owner._operator_stop_retirement._done)
     result = scene.owner._operator_stop_result
-    assert result["state"] == "retired" and result["forced"] is False
+    assert result["state"] == "retired" and result["forced"] is False, json.dumps(result, sort_keys=True)
     assert result["diagnostic_persisted"] is True
     assert not result["pending_workers"] and not result["pending_custody"]
     assert scene.calls.count("inert-cleanup") == 1
@@ -282,11 +283,11 @@ def test_busy_reveal_cannot_drop_or_mask_the_real_stop_confirmation(app, scene, 
         owner, stop, owner._full_shutdown, "#ef4444"))
     first = scene.destination()
     assert overlay._target is first and not first.mask().isEmpty()
-    # The actual optional route remains busy, while critical STOP must dispatch.
+    # Busy optional motion cannot consume either an ordinary action or STOP.
     normal = QWidget(owner)
     ordinary_calls = []
     MainWindow._run_header_action(owner, normal, lambda: ordinary_calls.append(True), "#38bdf8")
-    assert ordinary_calls == []
+    assert ordinary_calls == [True]
 
     shown, checked, failures = [], [], []
 

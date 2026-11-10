@@ -8,6 +8,13 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 
+def _app_owner(**attributes):
+    from angerona.app import AngeronaApp
+    owner = AngeronaApp.__new__(AngeronaApp)
+    owner.__dict__.update(attributes)
+    return owner
+
+
 @pytest.mark.parametrize("frozen,administrator,trusted,expected,dispatched", [
     (False, False, True, 17, True),
     (False, True, True, 2, False),
@@ -20,6 +27,9 @@ def test_worker_entry_keeps_source_and_package_privilege_boundaries(
 ):
     import angerona.__main__ as entry
     from angerona.core import privilege, windows_package_identity
+    # This fixture isolates privilege/dispatch contracts; native source-store
+    # custody has independent Windows and fail-closed regression coverage.
+    monkeypatch.setattr(entry, "_source_activation_pending_guard", lambda: False)
     monkeypatch.setattr(sys, "argv", ["Angerona", "--curated-tool-worker", "private-request.json"])
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
@@ -45,7 +55,7 @@ def test_optional_scanner_failure_does_not_skip_ai_or_watchdog_stop_fences(monke
         calls.append("tool-cancel")
         raise RuntimeError("optional controller already retired")
 
-    owner = SimpleNamespace(
+    owner = _app_owner(
         _shutdown_requested=threading.Event(),
         manager=SimpleNamespace(_curated_tools_controller=SimpleNamespace(shutdown=broken_shutdown)),
         _breach_state_controller=SimpleNamespace(request_stop=lambda: calls.append("breach-cancel")),
@@ -80,7 +90,7 @@ def test_shutdown_waits_for_scanner_thread_and_also_closes_breach_review():
         calls.append("breach-retired")
         return True
 
-    owner = SimpleNamespace(
+    owner = _app_owner(
         manager=SimpleNamespace(_curated_tools_controller=SimpleNamespace(
             shutdown=cancelled.set, wait_for_shutdown=wait_for_shutdown,
         )),
@@ -106,7 +116,7 @@ def test_unresolved_scanner_retirement_still_drains_breach_but_holds_store_close
             raise RuntimeError("inert uncertain retirement")
         return False
 
-    owner = SimpleNamespace(
+    owner = _app_owner(
         manager=SimpleNamespace(_curated_tools_controller=SimpleNamespace(
             shutdown=lambda: calls.append("scanner-cancel"), wait_for_shutdown=scanner_wait,
         )),

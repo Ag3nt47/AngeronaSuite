@@ -327,13 +327,28 @@ class _OwnedTreeRetirement:
 
 
 class WindowsChildJob:
-    def __init__(self, *, kill_on_close=True):
+    def __init__(self, *, kill_on_close=True, job_name=None):
+        self._handle = None
         import win32job
 
+        if job_name is not None and (type(job_name) is not str
+                or not re.fullmatch(r"Local\\Angerona\.YaraProbe\.[0-9a-f]{32}", job_name)):
+            raise ValueError("Only the private YARA probe Job namespace is permitted")
+
         self._api = win32job
-        self._handle = None
-        self._handle = win32job.CreateJobObject(None, "")
+        if job_name is None:
+            self._handle = win32job.CreateJobObject(None, "")
+            already_exists = False
+        else:
+            import win32api
+            win32api.SetLastError(0)
+            self._handle = win32job.CreateJobObject(None, job_name)
+            already_exists = win32api.GetLastError() == 183
         try:
+            # Never configure, assign to or terminate a pre-existing named Job.
+            # Close only this returned reference before reporting the collision.
+            if job_name is not None and already_exists:
+                raise FileExistsError("The private YARA probe Job name is already in use")
             info = win32job.QueryInformationJobObject(
                 self._handle, win32job.JobObjectExtendedLimitInformation,
             )
@@ -656,6 +671,23 @@ class OwnedWindowsChild:
         retirement = getattr(self, "_tree_retirement", None)
         return None if retirement is None else retirement.snapshot()
 
+    def tree_retirement_members_snapshot(self):
+        """Advisory retained-cut identities, never a new/fresh native proof.
+
+        Images are not sampled by the original retirement cut. A diagnostic
+        consumer must independently bind its own retained query handle before
+        recording an image or exit. No kernel handle escapes in this view.
+        """
+        retirement = getattr(self, "_tree_retirement", None)
+        if retirement is None:
+            return dict(advisory_only=True, cut_recorded=False, members=None,
+                        recorded_wait_deadline=None, error_type="")
+        return dict(advisory_only=True, cut_recorded=retirement.ready,
+            members=(tuple(dict(pid=identity[0], birth_ticks=str(identity[1]))
+                           for _handle, identity in retirement.processes) if retirement.ready else None),
+            recorded_wait_deadline=retirement.deadline, error_type=retirement.failure,
+            scope="Original retained current-member cut; historical early exits/images are not attested")
+
     def terminate(self):
         # Terminate the job even after its server exits: a runner can outlive it.
         with self._handle_lock:
@@ -757,7 +789,7 @@ class OwnedWindowsChild:
 
 
 def launch_windows_child(argv, environment, *, cwd=None, deadline=None,
-                         check_cancelled=None, kill_on_close=True, window="hidden"):
+                         check_cancelled=None, kill_on_close=True, window="hidden", job_name=None):
     """Launch trusted fixed argv in a private job before its first instruction."""
     import win32api
     import win32con
@@ -768,13 +800,16 @@ def launch_windows_child(argv, environment, *, cwd=None, deadline=None,
     image = str(argv[0])
     if deadline is None:
         deadline = time.monotonic() + 10.0
-    job = WindowsChildJob(kill_on_close=kill_on_close)
+    job = (WindowsChildJob(kill_on_close=kill_on_close) if job_name is None
+           else WindowsChildJob(kill_on_close=kill_on_close, job_name=job_name))
     process = thread = None
     try:
         startup = win32process.STARTUPINFO()
         startup.dwFlags = win32con.STARTF_USESHOWWINDOW
         startup.wShowWindow = 0 if window == "hidden" else (7 if window == "minimized" else 1)
-        visibility = (win32con.DETACHED_PROCESS | win32con.CREATE_NEW_PROCESS_GROUP | win32con.CREATE_NO_WINDOW
+        # Windows ignores CREATE_NO_WINDOW when DETACHED_PROCESS is present.
+        # A venv redirector can then allocate a visible console for its child.
+        visibility = (win32con.CREATE_NEW_PROCESS_GROUP | win32con.CREATE_NO_WINDOW
                       if window == "hidden" else win32con.CREATE_NEW_CONSOLE | win32con.CREATE_NEW_PROCESS_GROUP)
         process, thread, pid, _ = win32process.CreateProcess(
             image, subprocess.list2cmdline(list(argv)),

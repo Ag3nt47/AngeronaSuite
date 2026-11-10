@@ -13,6 +13,7 @@ import time
 import weakref
 from functools import lru_cache
 from html import escape
+from math import ceil
 from typing import Callable
 
 from PySide6.QtCore import (
@@ -25,11 +26,13 @@ from PySide6.QtCore import (
     QRect,
     QRectF,
     QSize,
+    Signal,
     QTimer,
     Qt,
 )
 from PySide6.QtGui import (
     QColor,
+    QFontMetricsF,
     QIcon,
     QPainter,
     QPainterPath,
@@ -39,7 +42,9 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QHBoxLayout,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStyle,
     QStyleOptionButton,
@@ -273,6 +278,8 @@ def navigation_icon(kind: str, color: str | None = None, size: int = 22) -> QIco
 class HeaderActionButton(QPushButton):
     """Header button with a unique icon and an immediate definition card."""
 
+    semantic_width_changed = Signal()
+
     def __init__(
         self,
         label: str,
@@ -342,20 +349,50 @@ class HeaderActionButton(QPushButton):
     def sizeHint(self):  # noqa: N802 - Qt signature
         hint = super().sizeHint()
         if not self._compact:
-            # Elision must not become the next layout's preferred width. Keep
-            # requesting room for the semantic label when space returns.
-            metrics = self.fontMetrics()
-            hint.setWidth(hint.width() + max(0,
-                metrics.horizontalAdvance(self._full_label) - metrics.horizontalAdvance(self.text())))
+            hint.setWidth(max(hint.width(), self.full_label_width()))
         return hint
+
+    def full_label_width(self) -> int:
+        """Measure the complete label with the current polished button style.
+
+        Font weight, stylesheet padding/borders and icon spacing are part of
+        this budget. The currently elided text and fixed widget width are not.
+        """
+        self.ensurePolished()
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        option.text = self._full_label
+        metrics = self.fontMetrics()
+        # Integer font metrics round to nearest; the text elider compares the
+        # fractional glyph width. Round the complete span up so a full budget
+        # cannot be narrower than the label it promises to display.
+        text_width = ceil(
+            QFontMetricsF(self.font(), self).horizontalAdvance(self._full_label)
+        )
+        content = QSize(text_width, metrics.height())
+        if not self.icon().isNull():
+            content.setWidth(content.width() + self.iconSize().width() + 4)
+            content.setHeight(max(content.height(), self.iconSize().height()))
+        return max(32, self.style().sizeFromContents(
+            QStyle.CT_PushButton, option, content, self).width())
 
     def set_full_label(self, label: str) -> None:
         """Change the semantic label while preserving the responsive mode."""
-        self._full_label = str(label)
+        label = str(label)
+        changed = label != self._full_label
+        self._full_label = label
         self.setText("" if self._compact else self._full_label)
         self.updateGeometry()
         if not self._compact:
-            QTimer.singleShot(0, self._fit_label)
+            QTimer.singleShot(0, self, self._fit_label)
+        if changed:
+            self.semantic_width_changed.emit()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().changeEvent(event)
+        if event.type() in (QEvent.FontChange, QEvent.StyleChange) and hasattr(self, "_full_label"):
+            self.updateGeometry()
+            self.semantic_width_changed.emit()
 
     def _fit_label(self) -> None:
         """Elide a full-mode label instead of allowing hard visual clipping."""
@@ -368,11 +405,21 @@ class HeaderActionButton(QPushButton):
         if self.width() < 40:
             fitted = self._full_label
         else:
-            icon_space = self.iconSize().width() + 30
-            available = max(12, self.width() - icon_space)
-            fitted = self.fontMetrics().elidedText(
-                self._full_label, Qt.ElideRight, available
-            )
+            # Polish before taking any metrics: a stylesheet may change weight
+            # or padding. A complete allocation must keep the semantic label;
+            # re-eliding at a rounded boundary can truncate the STOP caption.
+            full_width = self.full_label_width()
+            if self.width() >= full_width:
+                fitted = self._full_label
+            else:
+                text_width = ceil(
+                    QFontMetricsF(self.font(), self).horizontalAdvance(self._full_label)
+                )
+                overhead = full_width - text_width
+                available = max(0, self.width() - overhead)
+                fitted = self.fontMetrics().elidedText(
+                    self._full_label, Qt.ElideRight, available
+                )
         if fitted != self.text():
             self.setText(fitted)
 
@@ -1372,3 +1419,79 @@ def show_with_window_reveal(
     # transition a stable centre-origin before its first visible frame.
     overlay.reveal(window, _show, color)
     return overlay
+
+class HeaderActionStrip(QScrollArea):
+    """One readable action row; keyboard focus reveals off-screen controls."""
+
+    def __init__(self, groups, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFrameShape(QScrollArea.NoFrame)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.viewport().setFocusPolicy(Qt.NoFocus)
+        self.horizontalScrollBar().setFocusPolicy(Qt.NoFocus)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAccessibleName("Dashboard controls")
+        self.setAccessibleDescription(
+            "One horizontal action row. Scroll or use Tab to reveal controls; STOP remains visible.")
+        self._content = QWidget(self)
+        self._row = QHBoxLayout(self._content)
+        self._row.setContentsMargins(0, 0, 0, 0)
+        self._row.setSpacing(8)
+        self._groups = tuple(groups)
+        for group in self._groups:
+            # A queued layout may still have the previous taller rectangle.
+            # Top alignment keeps controls inside the current viewport meanwhile.
+            self._row.addWidget(group, 0, Qt.AlignTop)
+        self._row.addStretch(1)
+        self.setWidget(self._content)
+        for button in self._content.findChildren(QPushButton):
+            button.installEventFilter(self)
+        self.horizontalScrollBar().rangeChanged.connect(self._sync_height)
+        self.sync_geometry()
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt signature
+        return QSize(0, self.minimumHeight())
+
+    def sync_geometry(self, spacing: int | None = None) -> None:
+        if spacing is not None and self._row.spacing() != spacing:
+            self._row.setSpacing(spacing)
+        self._row.invalidate()
+        self._row.activate()
+        self._content.setMinimumWidth(self._row.minimumSize().width())
+        self._sync_height()
+        self.updateGeometry()
+
+    def _sync_height(self, *_ignored) -> None:
+        height = max((group.minimumSizeHint().height() for group in self._groups), default=32)
+        if self.horizontalScrollBar().maximum() > 0:
+            height += self.horizontalScrollBar().sizeHint().height()
+        height += 2 * self.frameWidth()
+        if self.minimumHeight() != height or self.maximumHeight() != height:
+            self.setFixedHeight(height)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt signature
+        if event.type() == QEvent.FocusIn and isinstance(watched, QWidget):
+            self.ensureWidgetVisible(watched, 12, 0)
+        return super().eventFilter(watched, event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        bar = self.horizontalScrollBar()
+        if bar.maximum() <= 0:
+            super().wheelEvent(event)
+            return
+        pixels = event.pixelDelta()
+        angle = event.angleDelta()
+        delta = pixels.x() or pixels.y() or (angle.x() or angle.y()) / 120 * 48
+        if delta:
+            bar.setValue(bar.value() - round(delta))
+            event.accept()
+        else:
+            super().wheelEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt signature
+        super().resizeEvent(event)
+        self._sync_height()
