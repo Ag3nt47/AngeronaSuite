@@ -70,6 +70,21 @@ def _connections(pids: set[int]) -> list[dict]:
     return rows
 
 
+def _is_link(entry) -> bool:
+    """Symbolic link, junction or any other reparse point (never followed).
+
+    ``is_symlink`` is False for a Windows junction, and ``is_junction`` exists
+    only from Python 3.12, so the reparse attribute is checked as well.
+    """
+    if entry.is_symlink():
+        return True
+    junction = getattr(entry, "is_junction", None)
+    if junction is not None and junction():
+        return True
+    attributes = getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0)
+    return bool(attributes & 0x400)  # FILE_ATTRIBUTE_REPARSE_POINT
+
+
 def _temp_drops(since: float, deadline: float, root: Optional[Path] = None) -> list[dict]:
     base = Path(root) if root is not None else Path(tempfile.gettempdir())
     rows, seen = [], 0
@@ -83,7 +98,7 @@ def _temp_drops(since: float, deadline: float, root: Optional[Path] = None) -> l
                     if seen >= _MAX_DIR_ENTRIES or len(rows) >= _MAX_ROWS:
                         break
                     try:
-                        if entry.is_symlink():
+                        if _is_link(entry):
                             continue
                         if entry.is_dir(follow_symlinks=False):
                             if depth < 2:

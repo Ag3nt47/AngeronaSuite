@@ -57,6 +57,11 @@ _POSIX_COPIED_ENVIRONMENT = (
 )
 _SAFE_ANGERONA_CHILD_ENVIRONMENT = frozenset({
     "ANGERONA_SUPERVISED_RECOVERY",
+    # Restart-pressure hint from the supervising peer ("elevated"/"attack").
+    # It only reorders sensor start-up; the consumer honours it solely with
+    # ANGERONA_SUPERVISED_RECOVERY=1 and the supervisor strips any inherited
+    # value before deciding whether to set it.
+    "ANGERONA_RECOVERY_PRESSURE",
     # Inhibit-only source continuity check. This digest grants no code trust,
     # privilege, STOP override or approval of a changed developer tree.
     "ANGERONA_PEER_SOURCE_DIGEST",
@@ -484,6 +489,10 @@ def sanitize_privileged_bootstrap_environment() -> None:
     # so privileged recovery cannot accidentally become an explicit resume.
     if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
         environment["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+        # Closed-value start-up ordering hint; meaningless without the flag above.
+        pressure = os.environ.get("ANGERONA_RECOVERY_PRESSURE")
+        if pressure in ("elevated", "attack"):
+            environment["ANGERONA_RECOVERY_PRESSURE"] = pressure
     os.environ.clear()
     os.environ.update(environment)
     if startup_ready:

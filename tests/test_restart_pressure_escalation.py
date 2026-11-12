@@ -25,6 +25,18 @@ def _component() -> Component:
     return Component(name="core", argv=["inert"])
 
 
+def test_pressure_hint_survives_the_sidecar_environment_allowlist():
+    from angerona.core.privilege import sanitized_child_environment
+
+    source = {"PATH": "/usr/bin", "ANGERONA_SUPERVISED_RECOVERY": "1",
+              "ANGERONA_RECOVERY_PRESSURE": "attack", "ANGERONA_UNREVIEWED": "x"}
+    child = sanitized_child_environment(source=source)
+    # Without this the relaunched core never learns it is under restart pressure.
+    assert child["ANGERONA_RECOVERY_PRESSURE"] == "attack"
+    assert child["ANGERONA_SUPERVISED_RECOVERY"] == "1"
+    assert "ANGERONA_UNREVIEWED" not in child
+
+
 def test_paced_kills_every_61_seconds_escalate_to_attack_without_safe_mode():
     sup, clock, events = _supervisor()
     c = _component()

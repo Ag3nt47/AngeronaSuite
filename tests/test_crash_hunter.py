@@ -83,3 +83,39 @@ def test_module_contains_no_host_mutation_calls():
                  "SetValueEx", "DeleteValue", "DeleteKey", "CreateKey", "rename", "replace"}
     assert not (called & forbidden), called & forbidden
     assert "import subprocess" not in source
+
+
+def test_junctions_and_other_reparse_points_are_treated_as_links():
+    class Entry:
+        def __init__(self, *, symlink=False, junction=None, attributes=0):
+            self._symlink, self._junction, self._attributes = symlink, junction, attributes
+            if junction is not None:
+                self.is_junction = lambda: junction
+
+        def is_symlink(self):
+            return self._symlink
+
+        def stat(self, follow_symlinks=True):
+            assert follow_symlinks is False
+            return type("Stat", (), {"st_file_attributes": self._attributes})()
+
+    assert crash_hunter._is_link(Entry(symlink=True)) is True
+    assert crash_hunter._is_link(Entry(junction=True)) is True
+    # Python 3.10/3.11 have no DirEntry.is_junction: the attribute decides.
+    assert crash_hunter._is_link(Entry(attributes=0x400)) is True
+    assert crash_hunter._is_link(Entry(junction=False, attributes=0x10)) is False
+
+
+def test_sweep_never_descends_into_a_linked_directory(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "elsewhere.exe").write_text("inert")
+    root = tmp_path / "temp"
+    root.mkdir()
+    (root / "local.cmd").write_text("inert")
+    try:
+        os.symlink(outside, root / "link", target_is_directory=True)
+    except (OSError, NotImplementedError):
+        return  # Link creation is not permitted on this host.
+    rows = crash_hunter._temp_drops(time.time() - 60, time.monotonic() + 5, root)
+    assert [Path(row["path"]).name for row in rows] == ["local.cmd"]
