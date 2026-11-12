@@ -25,9 +25,19 @@ class UiWatchdog:
     _MAX_LOG_BYTES = 4 * 1024 * 1024
     _MIN_DUMP_INTERVAL = 60.0
 
-    def __init__(self, log_path, stall_seconds: float = 5.0) -> None:
+    def __init__(self, log_path, stall_seconds: float = 5.0,
+                 startup_stall_seconds: float | None = None) -> None:
         self.log_path = Path(log_path)
         self.stall_seconds = float(stall_seconds)
+        # Window construction before the first event-loop beat is one long,
+        # expected GUI-thread call. A separate, larger budget keeps a slow cold
+        # start from being logged as a hang while still reporting a startup
+        # that never reaches its first beat. None keeps the single threshold.
+        self.startup_stall_seconds = (
+            None if startup_stall_seconds is None
+            else max(float(startup_stall_seconds), self.stall_seconds))
+        self._beat_seen = False
+        self._reported_threshold = self.stall_seconds
         self._last_beat = time.monotonic()
         self._stop = threading.Event()
         self._logged_for = None      # dedupe: one dump per distinct stall
@@ -38,6 +48,7 @@ class UiWatchdog:
     def beat(self) -> None:
         """Call on the GUI thread (from a QTimer) to prove it is alive."""
         self._last_beat = time.monotonic()
+        self._beat_seen = True
 
     def start(self) -> None:
         try:
@@ -84,7 +95,11 @@ class UiWatchdog:
             sample_gap = None if previous_sample is None else now - previous_sample
             previous_sample = now
             age = now - last_beat
-            if (age >= self.stall_seconds
+            threshold = (self.stall_seconds
+                         if self._beat_seen or self.startup_stall_seconds is None
+                         else self.startup_stall_seconds)
+            self._reported_threshold = threshold
+            if (age >= threshold
                     and last_beat != self._logged_for
                     and now - self._last_dump_at >= self._MIN_DUMP_INTERVAL):
                 if self._dump(age, expected_beat=last_beat, watchdog_sample_gap=sample_gap):
@@ -130,7 +145,7 @@ class UiWatchdog:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write("\n" + "=" * 72 + "\n")
                 f.write(f"[{time.strftime('%Y-%m-%dT%H:%M:%S')}] UI NOT RESPONDING — GUI "
-                        f"heartbeat delayed ~{age:.1f}s (threshold {self.stall_seconds:.0f}s)\n")
+                        f"heartbeat delayed ~{age:.1f}s (threshold {self._reported_threshold:.0f}s)\n")
                 f.write(f"Sample context: pid={pid} birth_filetime={birth} "
                         f"main_native_tid={main.native_id or 'unavailable'} watchdog_sample_gap_s={gap}\n")
                 f.write("Sampled MainThread stack: a slow Python/native call, CPU contention, "

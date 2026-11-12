@@ -6,34 +6,97 @@ import time
 import pytest
 
 from angerona.modules import forensics, frz_heartbeat
-from angerona.core.eventbus import BusAuthority, EventBus, Severity
+from angerona.core.eventbus import BusAuthority, Event, EventBus, Severity
+from angerona.core.windows_process_lease import ProcessObjectIdentity
 from angerona.core.module_base import BaseModule
 from angerona.modules import intel_sync, mobile_bridge
 from angerona.modules import network_monitor
 from angerona.telemetry.sensors import ConnectionList, ConnectionSnapshot
 
 
-@pytest.mark.parametrize("exit_code", [1, -1, None])
-def test_failed_socket_collector_never_claims_an_empty_successful_capture(tmp_path, monkeypatch, exit_code):
-    module = forensics.ForensicsModule()
-    monkeypatch.setattr(forensics, "run_hidden", lambda *_a, **_k: SimpleNamespace(
-        returncode=exit_code, stdout="", stderr="inert failure",
-    ))
-    receipt = module._audit_sockets(123, tmp_path)
-    assert receipt["complete"] is False
-    assert receipt["written_bytes"] == 0
+class _InertForensicNative:
+    """Retained-handle fixture; no host process, memory or socket table access."""
+    ticks = forensics._EPOCH + 100 * 10_000_000
+
+    def __init__(self):
+        self.closed = []
+
+    def open(self, pid, rights, inherit):
+        assert pid == 4242 and inherit is False
+        assert rights & 0x0010 and not rights & 0x0001
+        return 901
+
+    def identity(self, handle):
+        assert handle == 901
+        return ProcessObjectIdentity(4242, self.ticks, r"D:\fixtures\sample.exe")
+
+    def wait(self, handle, milliseconds):
+        assert handle == 901 and milliseconds == 0
+        return False
+
+    def is_system(self, handle):
+        assert handle == 901
+        return False
+
+    def close(self, handle):
+        self.closed.append(handle)
+
+    socket_rows = forensics._NativeCapture.socket_rows
+
+
+def _forensic_event(module):
+    bus = EventBus()
+    bus.arm(BusAuthority(b"group-b-inert-forensic-key-32!!!!"))
+    module.bind(bus)
+    bus.publish(Event("Native Detection", "Inert authenticated active evidence", Severity.HIGH,
+        details={"pid": 4242, "process_birth_ticks": str(_InertForensicNative.ticks),
+                 "process_create_time": 100.0, "active_attack": True}))
+    return bus.recent(1)[0]
+
+
+@pytest.mark.parametrize("native_error", [1, -1, None])
+def test_failed_socket_collector_never_claims_an_empty_successful_capture(tmp_path, native_error):
+    module, native, output = forensics.ForensicsModule(), _InertForensicNative(), []
+    event = _forensic_event(module)
+
+    def failed_table(_buffer, size, *_args):
+        size._obj.value = 4
+        return native_error
+
+    native._iphlp = SimpleNamespace(GetExtendedTcpTable=failed_table, GetExtendedUdpTable=failed_table)
+    writer = SimpleNamespace(append=lambda *args: output.append(args))
+    with forensics._CaptureHandle(4242, native.ticks, 100, _native=native, _clock=lambda: 1) as retained:
+        with pytest.raises(ValueError, match="native socket table unavailable"):
+            module._audit_sockets(retained, writer, event=event)
+    assert output == []  # Failure cannot append even an empty successful record.
+    assert sum(len(data) for _kind, data in output) == 0
+    assert native.closed == [901]
     assert not (tmp_path / "network_sockets.txt").exists()
 
 
-def test_successful_empty_socket_capture_remains_complete(tmp_path, monkeypatch):
-    module = forensics.ForensicsModule()
-    monkeypatch.setattr(forensics, "run_hidden", lambda *_a, **_k: SimpleNamespace(
-        returncode=0, stdout="", stderr="",
-    ))
-    receipt = module._audit_sockets(123, tmp_path)
+def test_successful_empty_socket_capture_remains_complete(tmp_path):
+    module, native, output = forensics.ForensicsModule(), _InertForensicNative(), []
+    event = _forensic_event(module)
+    table_calls = []
+
+    def empty_table(buffer, size, *_args):
+        size._obj.value = 4
+        table_calls.append(buffer is None)
+        if buffer is None:
+            return 122
+        forensics.ctypes.memmove(buffer, b"\0" * 4, 4)
+        return 0
+
+    native._iphlp = SimpleNamespace(GetExtendedTcpTable=empty_table, GetExtendedUdpTable=empty_table)
+    writer = SimpleNamespace(append=lambda *args: output.append(args))
+    with forensics._CaptureHandle(4242, native.ticks, 100, _native=native, _clock=lambda: 1) as retained:
+        receipt = module._audit_sockets(retained, writer, event=event)
     assert receipt["complete"] is True
-    assert receipt["rows"] == 0
-    assert "No tracked endpoints" in (tmp_path / "network_sockets.txt").read_text()
+    assert receipt["rows"] == 0 and receipt["written_bytes"] == 0
+    assert table_calls == [True, False] * 4  # TCP/UDP, IPv4/IPv6 were queried.
+    assert output == [("sockets", b"")]
+    assert native.closed == [901]
+    assert not (tmp_path / "network_sockets.txt").exists()  # No plaintext fallback.
 
 
 @pytest.mark.parametrize("recover", [False, True])
@@ -215,15 +278,6 @@ def test_network_untyped_empty_collection_does_not_claim_complete_coverage():
     assert module.health < 100
 
 
-class _NativeCall:
-    """Assignable ctypes signatures around a strictly inert Python callback."""
-    def __init__(self, callback):
-        self.callback = callback
-
-    def __call__(self, *args):
-        return self.callback(*args)
-
-
 @pytest.mark.parametrize("read_mode,region_size,expected_calls,complete", [
     ("fail", 256, 2, False),
     ("fail", 128, 2, False),
@@ -234,41 +288,39 @@ class _NativeCall:
 def test_forensics_read_failures_consume_work_and_never_claim_completeness(
     tmp_path, monkeypatch, read_mode, region_size, expected_calls, complete,
 ):
-    module = forensics.ForensicsModule()
-    calls = {"query": 0, "read": 0, "close": 0}
+    module, native = forensics.ForensicsModule(), _InertForensicNative()
+    event = _forensic_event(module)
+    calls = {"query": 0, "read": 0}
+    output = []
 
-    def query(_handle, _address, pointer, size):
+    def region(handle, _address):
+        assert handle == 901
         calls["query"] += 1
-        if calls["query"] > 1:
-            return 0
-        mbi = pointer._obj
-        mbi.BaseAddress, mbi.RegionSize, mbi.State = 4096, region_size, forensics.MEM_COMMIT
-        return size
+        return (4096, region_size, 0x1000, 4) if calls["query"] == 1 else None
 
-    def read(_handle, _address, buffer, size, returned):
+    def memory(handle, _address, amount):
+        assert handle == 901
         calls["read"] += 1
         if read_mode == "stop":
             module._stop.set()
         if read_mode in {"fail", "stop"}:
-            return 0
-        returned._obj.value = size // 2 if read_mode == "partial" else size
-        buffer.raw = b"x" * size
-        return 1
+            return b"", False
+        returned = amount // 2 if read_mode == "partial" else amount
+        return b"x" * returned, returned == amount
 
-    def close(_handle):
-        calls["close"] += 1
-
-    kernel = SimpleNamespace(
-        OpenProcess=_NativeCall(lambda *_: 1), VirtualQueryEx=_NativeCall(query),
-        ReadProcessMemory=_NativeCall(read), CloseHandle=_NativeCall(close),
-    )
-    monkeypatch.setattr(forensics.ctypes, "windll", SimpleNamespace(kernel32=kernel), raising=False)
+    native.region, native.memory = region, memory
     monkeypatch.setattr(forensics, "_MEMORY_CHUNK_BYTES", 64)
     monkeypatch.setattr(forensics, "_MEMORY_READ_BUDGET", 128)
-    receipt = module._dump_memory_strings(42, tmp_path)
+    writer = SimpleNamespace(append=lambda *args: output.append(args))
+    with forensics._CaptureHandle(4242, native.ticks, 100, _native=native, _clock=lambda: 1) as retained:
+        receipt = module._dump_memory_strings(retained, writer, event=event)
     assert calls["read"] == expected_calls
-    assert calls["close"] == 1
+    assert native.closed == [901]
     assert receipt["attempted_bytes"] == expected_calls * 64
     assert receipt["complete"] is complete
+    assert receipt["read_bytes"] == (expected_calls * (32 if read_mode == "partial" else 64)
+                                      if read_mode in {"partial", "success"} else 0)
     if read_mode != "success":
         assert receipt["failed_reads"] == expected_calls
+    assert all(kind == "memory" for kind, _data in output)
+    assert not list(tmp_path.iterdir())  # Only the bounded encrypted-writer interface is used.

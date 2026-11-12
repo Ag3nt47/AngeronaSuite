@@ -160,7 +160,7 @@ def test_mobile_digest_keeps_only_rendered_samples_and_exact_total(monkeypatch) 
     module = mobile_bridge.MobileResponseBridge()
     module._alert_times = [now] * (mobile_bridge._FLOOD_MAX + 1)
     sent = []
-    module._send = sent.append
+    module._send = lambda message: sent.append(message) or True
     event = SimpleNamespace(
         details={"pid": None},
         module="TEST",
@@ -173,7 +173,9 @@ def test_mobile_digest_keeps_only_rendered_samples_and_exact_total(monkeypatch) 
 
     assert len(module._digest) == 15
     assert module._digest_count == 1_000
+    assert sent == []  # Flooded arrivals do not send individual texts.
     module._flush_digest()
+    assert len(sent) == 1
     assert "1000 alert(s)" in sent[-1]
     assert module._digest == []
     assert module._digest_count == 0

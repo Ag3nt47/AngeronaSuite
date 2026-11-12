@@ -71,7 +71,12 @@ def test_red_team_readiness_preview_tracks_profile_and_detection_only(
 
         checks_before_detection_only = len(calls)
         dialog.cb_remediate.setChecked(False)
-        assert len(calls) == checks_before_detection_only
+        # The mode change refreshes policy evidence without granting response.
+        assert calls[checks_before_detection_only:] == [False]
+        assert readiness == {
+            "ready": False, "state": "POLICY RESTRICTED",
+            "reason": "File quarantine is disabled.",
+        }
         assert "Detection-only run selected" in dialog.response_readiness.text()
         assert "will not assign a containment pass" in dialog.response_readiness.text()
     finally:

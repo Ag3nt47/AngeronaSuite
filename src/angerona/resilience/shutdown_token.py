@@ -31,6 +31,50 @@ from typing import Optional
 _OPERATOR_STOP_PREFIX = "operator-stop: "
 # Source-recovery compatibility floor; this marker is not trust authority.
 OPERATOR_STOP_CONTRACT_VERSION = 1
+_ADMIN_CACHE: dict = {"until": 0.0, "active": False}
+
+
+def _admin_authority():
+    """Return the control_authority module once an admin authority exists.
+
+    When provisioned, the legacy user-directory HMAC stand-down is neither
+    issued nor honoured: STOP/RESUME require administrator approval.
+    """
+    # Called from supervisor/scanner hot loops: cache the filesystem probe.
+    now = time.monotonic()
+    if now < _ADMIN_CACHE.get("probe_until", 0.0):
+        return _ADMIN_CACHE.get("authority")
+    try:
+        from angerona.resilience import control_authority
+        authority = control_authority if control_authority.provisioned() else None
+    except Exception:
+        authority = None
+    _ADMIN_CACHE.update(probe_until=now + 2.0, authority=authority)
+    return authority
+
+
+def _admin_stop_active(authority) -> bool:
+    now = time.monotonic()
+    if now < _ADMIN_CACHE["until"]:
+        return bool(_ADMIN_CACHE["active"])
+    active = bool(authority.stop_active())
+    _ADMIN_CACHE.update(until=now + 1.0, active=active)
+    return active
+
+
+def _admin_resume(authority, *, strict: bool) -> None:
+    _ADMIN_CACHE["until"] = 0.0
+    if not authority.stop_active():
+        return
+    try:
+        code = authority.request_elevated("resume")
+    except authority.AdminApprovalRequired:
+        if strict:
+            raise RuntimeError("Resuming after STOP requires administrator approval.") from None
+        return
+    _ADMIN_CACHE["until"] = 0.0
+    if strict and (code != 0 or authority.stop_active()):
+        raise RuntimeError("The administrator STOP could not be cleared.")
 
 
 def _atomic_command(path: Path, command: dict) -> None:
@@ -135,6 +179,10 @@ def verify_response(nonce: str, sig: str, key: Optional[bytes] = None) -> bool:
 def request_standdown(reason: str = "maintenance", key: Optional[bytes] = None,
                       path: Optional[Path] = None) -> dict:
     """Write a signed stand-down command. Returns the command dict."""
+    authority = _admin_authority() if key is None and path is None else None
+    if authority is not None:
+        raise authority.AdminApprovalRequired(
+            "Legacy stand-down is disabled; STOP requires administrator approval.")
     reason = str(reason).strip()
     if not reason or len(reason) > 256 or any(ord(char) < 32 for char in reason):
         raise ValueError("stand-down reason must be 1-256 printable characters")
@@ -154,7 +202,18 @@ def request_operator_stop(reason: str = "dashboard STOP", **kwargs) -> dict:
 
     The domain is part of the signed reason, so editing an unsigned expiry or
     mode field cannot turn a maintenance command into a persistent stop.
+
+    With a provisioned admin authority this raises a visible UAC prompt and
+    raises ``AdminApprovalRequired`` if consent is declined (nothing changes).
     """
+    authority = _admin_authority() if not kwargs else None
+    if authority is not None:
+        code = authority.request_elevated("stop")
+        _ADMIN_CACHE["until"] = 0.0
+        if code != 0 or not authority.stop_active():
+            raise authority.AdminApprovalRequired(
+                f"Administrator STOP was not recorded (helper exit {code}).")
+        return dict(authority.status().get("stop") or {})
     return request_standdown(_OPERATOR_STOP_PREFIX + reason, **kwargs)
 
 
@@ -178,6 +237,9 @@ def is_standdown_requested(max_age_s: float = 3600.0, key: Optional[bytes] = Non
                            path: Optional[Path] = None,
                            max_future_skew_s: float = 30.0) -> bool:
     """Verify maintenance freshness or a persistent, signed operator stop."""
+    authority = _admin_authority() if key is None and path is None else None
+    if authority is not None:
+        return _admin_stop_active(authority)
     p = Path(path) if path else _standdown_path()
     try:
         with p.open("rb") as stream:
@@ -237,6 +299,9 @@ def standdown_active_for_storage(storage: Path) -> bool:
     root = Path(storage)
     if not root.is_absolute():
         raise ValueError("Startup stop storage must be absolute")
+    authority = _admin_authority()
+    if authority is not None:
+        return _admin_stop_active(authority)
     command = root / "ipc" / "standdown.cmd"
     if not command.exists():
         return False
@@ -276,6 +341,10 @@ def clear_standdown_for_storage(storage: Path) -> None:
     root = Path(storage)
     if not root.is_absolute():
         raise ValueError("Startup stop storage must be absolute")
+    authority = _admin_authority()
+    if authority is not None:
+        _admin_resume(authority, strict=True)
+        return
     command = root / "ipc" / "standdown.cmd"
     if not command.exists():
         return
@@ -306,6 +375,10 @@ def clear_standdown_for_storage(storage: Path) -> None:
 
 
 def clear_standdown(path: Optional[Path] = None, *, strict: bool = False) -> None:
+    authority = _admin_authority() if path is None else None
+    if authority is not None:
+        _admin_resume(authority, strict=strict)
+        return
     p = Path(path) if path else _standdown_path()
     try:
         p.unlink()

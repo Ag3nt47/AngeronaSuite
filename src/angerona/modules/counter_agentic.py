@@ -32,6 +32,13 @@ from angerona.telemetry.sensors import list_connections
 
 _MIN_PAUSE, _MAX_PAUSE = 1.5, 4.0
 _STALE_AFTER = 60.0
+# A long-lived, already-reported process generation talking to the same peer
+# host in the same role opens a new ephemeral port for every request. Each
+# full-endpoint key below is still recorded, but the bus alert for that
+# generation/peer/role is repeated at most hourly. A new process generation,
+# peer host or listener/client role is reported immediately.
+_PORT_GENERATION_REALERT_AFTER = 3600.0
+_PORT_GENERATION_KEYS_MAX = 1024
 _MAX_LINEAGES = 256
 _MAX_CHILDREN = 1024
 _MAX_EVENTS_PER_POLL = 512
@@ -162,6 +169,7 @@ class CounterAgenticModule(BaseModule):
         self._sysmon_live = False
         self._behavior_binding = None
         self._port_alerted: dict[tuple, float] = {}
+        self._port_generation_alerted: dict[tuple, list] = {}
         self._detections = 0
         self._agent_integrity_store = None
         self._agent_integrity_due = 0.0
@@ -422,6 +430,9 @@ class CounterAgenticModule(BaseModule):
         port_connections = 0
         identity_failures = 0
         unexpected = 0
+        # Every socket seen in one sweep stays separate evidence; only later
+        # sweeps of an already-reported generation/peer/role are rate-limited.
+        self._port_sweep = getattr(self, "_port_sweep", 0) + 1
         for c in conns:
             laddr = c.get("laddr") or ""
             raddr = c.get("raddr") or ""
@@ -473,9 +484,31 @@ class CounterAgenticModule(BaseModule):
                 dedup_window = _STALE_AFTER if created is not None else 10.0
                 if now - self._port_alerted.get(key, 0.0) < dedup_window:
                     continue
+                raw_status = c.get("status")
+                generation_key = None
+                suppressed_repeats = 0
+                if created is not None and executable:
+                    generation_key = (
+                        pid, created, executable.casefold(),
+                        laddr.rsplit(":", 1)[0], raddr.rsplit(":", 1)[0],
+                        local_match, remote_match,
+                        isinstance(raw_status, str) and raw_status == "LISTEN",
+                    )
+                    prior = self._port_generation_alerted.get(generation_key)
+                    same_sweep = prior is not None and prior[2] == self._port_sweep
+                    if (prior is not None and not same_sweep
+                            and 0 <= now - prior[0] < _PORT_GENERATION_REALERT_AFTER):
+                        prior[1] += 1
+                        continue
+                    if not same_sweep:
+                        suppressed_repeats = prior[1] if prior is not None else 0
+                        if len(self._port_generation_alerted) >= _PORT_GENERATION_KEYS_MAX:
+                            oldest = min(self._port_generation_alerted,
+                                         key=lambda item: self._port_generation_alerted[item][0])
+                            del self._port_generation_alerted[oldest]
+                        self._port_generation_alerted[generation_key] = [now, 0, self._port_sweep]
                 self._port_alerted[key] = now
                 self._detections += 1
-                raw_status = c.get("status")
                 socket_status = _socket_advisory_text(raw_status, 64) or "UNKNOWN"
                 matched_endpoint = (
                     "both" if local_match and remote_match
@@ -503,6 +536,7 @@ class CounterAgenticModule(BaseModule):
                     matched_endpoint=matched_endpoint,
                     socket_role=socket_role,
                     socket_metadata_advisory=True,
+                    suppressed_repeats=suppressed_repeats,
                     disposition="observation",
                     process_create_time=created,
                     process_path=executable,
@@ -540,6 +574,9 @@ class CounterAgenticModule(BaseModule):
         for key, ts in list(self._port_alerted.items()):
             if now - ts > 4 * _STALE_AFTER:
                 del self._port_alerted[key]
+        for key, state in list(self._port_generation_alerted.items()):
+            if now - state[0] > 2 * _PORT_GENERATION_REALERT_AFTER:
+                del self._port_generation_alerted[key]
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _check_agent_integrity(self):

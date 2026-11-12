@@ -21,7 +21,12 @@ from angerona.core.win import popen_hidden
 _CAPTURE_WINDOW_SECONDS = 30.0
 _WORKER_POLL_SECONDS = 0.20
 _WORKER_STOP_TIMEOUT = 1.5
-_WORKER_HARD_DEADLINE = _CAPTURE_WINDOW_SECONDS + 5.0
+# The worker's capture window starts only after a cold interpreter has
+# imported Scapy/Npcap, which alone can take longer than five seconds on a
+# busy or slow-disk host. Without a startup allowance every healthy capture
+# was terminated as exit 124 and the Watchdog cycled the module.
+_WORKER_STARTUP_ALLOWANCE = 45.0
+_WORKER_HARD_DEADLINE = _CAPTURE_WINDOW_SECONDS + _WORKER_STARTUP_ALLOWANCE + 5.0
 _MAX_WORKER_OUTPUT_CHARS = 256 * 1024
 _MAX_FAILURE_BACKOFF = 60.0
 
@@ -101,6 +106,11 @@ class PacketSnifferModule(BaseModule):
     )
     category = "Network"
     enabled_by_default = False  # requires Scapy + Npcap
+    # One healthy cycle is a full capture window plus worker startup. The
+    # 30-second module defaults expired before any first cycle could finish,
+    # so the Watchdog replaced every generation about 34 seconds after launch.
+    startup_cycle_timeout = _WORKER_HARD_DEADLINE + 15.0
+    watchdog_work_budget_seconds = _WORKER_HARD_DEADLINE + 15.0
 
     def __init__(self) -> None:
         super().__init__()

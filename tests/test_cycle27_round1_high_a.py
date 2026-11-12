@@ -374,8 +374,9 @@ def _install_inert_termination_native(module, process, monkeypatch):
         assert len(factories) == 1, "retained target was reopened"
         return native
 
-    def observe_acquire(action):
-        lease = original_acquire(action)
+    def observe_acquire(action, *, canary=None):
+        assert canary is None  # This case exercises ordinary installed authority.
+        lease = original_acquire(action, canary=canary)
         assert type(lease) is WindowsProcessLease
         leases.append(lease)
         return lease

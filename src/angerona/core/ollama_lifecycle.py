@@ -1055,6 +1055,25 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
         attempt.done.set()
 
 
+def configured_startup_timeout(default: float = 90.0) -> float:
+    """Startup budget for the explicit AI lifecycle path.
+
+    A cold Ollama daemon on a busy or eco-mode host can verify its listener
+    and still need well over 30 seconds before its API answers. The optional
+    ``ANGERONA_OLLAMA_STARTUP_SECONDS`` value is bounded to 30-120 seconds, the
+    ceiling ``_startup_timeout`` already enforces; invalid text keeps the
+    default. A longer wait grants no model or inference authority.
+    """
+    raw = os.environ.get("ANGERONA_OLLAMA_STARTUP_SECONDS", "").strip()
+    try:
+        seconds = float(raw) if raw else float(default)
+    except ValueError:
+        seconds = float(default)
+    if not math.isfinite(seconds):
+        seconds = float(default)
+    return min(120.0, max(30.0, seconds))
+
+
 def _startup_timeout(value: float) -> float:
     seconds = float(value)
     if not math.isfinite(seconds) or seconds <= 0:

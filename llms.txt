@@ -5,6 +5,90 @@ Date: 2026-11-09
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
+## PENDING (2026-11-11 live triage — source applied, NOT validated on Windows)
+
+- Read `analysis/hardening-v1.15-2026-11-11-live-triage.md` first. Syntax
+  checks only; no pytest, selfcheck, GUI launch, Red Team run or publication.
+- Changed: `core/uiwatchdog.py` (startup budget), `blackbox_recorder.py`,
+  `modules/file_integrity.py` (known-folder roots), `core/ollama_lifecycle.py`
+  and `modules/ai_triage.py` (startup wait), `modules/forensics.py`,
+  `modules/counter_agentic.py`, `modules/mem_inject_scanner.py` (repeat
+  cadence), `modules/packet_sniffer.py` (cycle budgets),
+  `resilience/supervisor.py` (unexpected stop reported at High), README layout.
+- New and never run: `tools/Start-AngeronaOllama.ps1`,
+  `Start-Angerona-With-Ollama.bat`, `tests/test_uiwatchdog_startup_budget.py`,
+  `tests/test_alert_noise_bounds.py`.
+- `tests/test_counter_agentic_socket_presentation.py` was edited to the hourly
+  per-generation cadence; the pinned endpoint keys are unchanged.
+- Host observations: Ollama 0.40.16 (non-default path) listens on a wildcard
+  address and needs minutes of GPU discovery; the instance runs unelevated
+  source, so response authority is held by design; 13 modified test files
+  predate this work and are unreviewed.
+- Open: native Go watchdog build/sign, SpywareGuard review, fresh Red Team
+  run, main-window stall attribution, Defender detections on an npm package
+  and a Codex command line.
+
+## PENDING (2026-11-11 restart-loop / STOP hardening â€” branch `hardening/restart-loop-stop-authority`)
+
+- The ranked attack-path analysis for this pass is a local-only file
+  (`analysis/hardening-v1.15-2026-11-11-exploit-analysis.md`, excluded from
+  git, not published). Ask the operator for it before changing these controls.
+- Test drift fixed (full run 16,129 pass / 31 fail / 1 error before fixes):
+  Red Team preflight tests use 3x60 s (serial probe time keeps the 4,500 s
+  hard limit), the journal test binds the admitted TTL, the live GUI spy
+  matches the isolated `-I -S` probe argv, launcher tests use an absolute
+  path (`NoDefaultCurrentDirectoryInExePath`), autonomy fakes accept
+  `action=`. 19 startup-repair failures were host disk space (<5 GiB on D:).
+- `resilience/peer_alerts.py`: peer watchdog supervisor events (MEDIUM+) go
+  to an HMAC-chained outbox the core drains (`manager._drain_peer_alerts`);
+  the core-death alert was previously dropped (`watchdog.py` had no
+  `on_event`).
+- `resilience/control_authority.py`: once provisioned (elevated, one time),
+  STOP/RESUME are Ed25519-signed in `<ProgramData>\Angerona\control`
+  (Admins/SYSTEM write, Users list/read), epoch-bound so RESUME retires
+  captured STOPs; UAC via `request_elevated`; frozen entry
+  `--control-authority`. `shutdown_token` refuses the legacy user-dir HMAC
+  stand-down when provisioned; unprovisioned hosts keep the legacy contract.
+- `resilience/supervisor.py` restart ledger: unexpected stops counted over
+  10 min/1 h/24 h (persisted in `recovery_state` `pressure`); escalates
+  High "elevated" / Critical "attack"; under attack SAFE_MODE cools down in
+  15 s; relaunched core gets `ANGERONA_RECOVERY_PRESSURE` and
+  `module_manager` starts Process Monitor, Persistence Sweep and FIM
+  immediately with a 5 s staged-cycle cap. Each relaunch emits a MEDIUM
+  coverage-gap lower bound.
+- `core/service_recovery.py`: installer step for SCM failure actions on
+  `AngeronaProtection` (restart 5 s/5 s/30 s, 24 h reset, non-crash
+  failures) plus read-only `verify()`. Logon tasks now use RestartCount 999.
+- Third, non-Python watchdog: REQUESTED, NOT BUILT. No code exists. Work
+  stopped during design and was not resumed; do not treat it as present.
+  Coverage for the pair-kill gap comes from SCM recovery (signed package),
+  the Task Scheduler backstop and the restart ledger. The existing Go parent
+  in `frz/` remains unbuilt and carries the defects listed in the analysis.
+- `resilience/crash_hunter.py`: on an unexpected core stop the peer watchdog
+  runs one bounded READ-ONLY sweep (new processes, their remote endpoints,
+  recent temp drops, Run/RunOnce digest), at most once per 60 s; report in
+  the diagnostics folder plus an outbox alert. It changes nothing and cannot
+  identify who stopped the core.
+- `resilience/deadman.py`: OFF by default. With an administrator-signed
+  policy (`control_authority.set_deadman`, 120-3600 s) an ELEVATED watchdog
+  adds two fixed firewall block rules (`Angerona-DeadMan-out/-in`) after the
+  core stays down past the threshold, verifies them by readback, rolls back
+  on partial apply and releases 15 s after the core returns or on stand-down.
+  Unelevated: reports once, never acts. Fake-firewall tests only; NEVER run
+  against the real firewall.
+- `tools/Stage-AngeronaAutoLogger.ps1`: dry-run by default; elevated
+  `-Apply` registers a circular 64 MB Kernel-Process AutoLogger
+  (`AngeronaBoot`), `-Remove` deletes it. Never applied. Angerona does NOT
+  read the .etl yet (no replay-on-start).
+- UI: Watchdog monitor (`resilience/status_ui.py`) has a Protection group
+  (`resilience/posture.py`: STOP protection, restart pressure, network hold,
+  Windows service recovery) with a one-time "Require administrator approval
+  for STOP" button; the Details row is readable text.
+- Validation so far: full local suite on 46d3ff0 (2026-11-12): 16,200 pass,
+  84 skip, 5 fail, 1 error; the six are host-dependent (temp-directory
+  access-denied, process churn, worktree path) and reproduce on unchanged
+  code or pass on rerun. No live-host run, no elevated path exercised, STOP authority not provisioned on this host.
+
 ## LATEST (v1.15.0 — major hardening review)
 
 - Final staging-only format qualifier: one surplus EOF blank line was removed

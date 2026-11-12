@@ -136,7 +136,11 @@ def test_redteam_setup_is_keyboard_accessible_while_progress_target_and_warnings
     dialog.show()
     try:
         settle()
-        assert dialog.width() == width
+        # First show fits the actual available workarea; requested width is
+        # not a promise to extend beyond a smaller CI/offscreen screen.
+        available = dialog.screen().availableGeometry()
+        assert available.contains(dialog.frameGeometry())
+        assert 0 < dialog.width() <= width
         assert not dialog.setup_disclosure.is_expanded()
         assert dialog.setup_disclosure.toggle.accessibleName() == "Simulation setup: expand details"
         assert not dialog.cb_shark.isVisible()
@@ -146,10 +150,19 @@ def test_redteam_setup_is_keyboard_accessible_while_progress_target_and_warnings
             inside(widget, dialog)
         assert target in dialog.target_summary.text()
         assert "HELD" in dialog.response_readiness.text()
+        for label in (dialog.target_summary, dialog.response_readiness):
+            assert label.height() >= label.heightForWidth(label.width())
         dialog.setup_disclosure.toggle.setFocus()
         QTest.keyClick(dialog.setup_disclosure.toggle, Qt.Key.Key_Space)
         settle()
         assert dialog.setup_disclosure.is_expanded() and dialog.cb_shark.isVisible()
+        for widget in (dialog.target_summary, dialog.response_readiness,
+                       dialog.launch_btn, dialog.stop_btn):
+            assert widget.isVisible()
+            inside(widget, dialog)
+        assert dialog.response_readiness.height() >= dialog.response_readiness.heightForWidth(
+            dialog.response_readiness.width(),
+        )
         assert dialog.sld.minimum() == 0 and dialog.sld.maximum() == 3
         assert dialog.launch_btn.text() == "▶  Launch simulation"
         dialog.sld.setValue(0)

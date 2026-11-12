@@ -184,10 +184,32 @@ def test_paired_socket_rows_keep_original_dedup_keys_and_window(watch):
     watch.module._watch_ollama_port()
     assert len(watch.events) == 2 and watch.module._detections == 2
 
+    # The per-endpoint window has expired, but the same process generation,
+    # peer host and role is repeated on the bus only hourly.
     watch.clock[0] = 1060.0
     watch.module._watch_ollama_port()
+    assert len(watch.events) == 2 and watch.module._detections == 2
+
+    watch.clock[0] = 1000.0 + counter_agentic._PORT_GENERATION_REALERT_AFTER + 0.5
+    watch.module._watch_ollama_port()
     assert len(watch.events) == 4 and watch.module._detections == 4
+    assert all(details["suppressed_repeats"] == 1 for _args, details in watch.events[2:])
     assert set(watch.module._port_alerted) == expected_keys
+
+
+def test_new_ephemeral_port_of_a_reported_generation_is_not_a_new_alert(watch):
+    watch.rows.append(_row(pid=4343, local="127.0.0.1:11434", remote="127.0.0.1:50000"))
+    watch.module._watch_ollama_port()
+    assert len(watch.events) == 1
+
+    watch.rows[0]["raddr"] = "127.0.0.1:50001"
+    watch.module._watch_ollama_port()
+    assert len(watch.events) == 1
+
+    # A different peer host is a new observation immediately.
+    watch.rows[0]["raddr"] = "192.0.2.7:50002"
+    watch.module._watch_ollama_port()
+    assert len(watch.events) == 2
 
 
 def test_unavailable_process_identity_still_alerts_with_incomplete_coverage(watch, monkeypatch):

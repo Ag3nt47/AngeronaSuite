@@ -187,7 +187,23 @@ def test_mobile_bridge_requires_digest_and_publisher_pins() -> None:
     assert "publisher" in bridge._trust_config_error(cfg).casefold()
 
 
-def test_mobile_cli_receipt_binds_nonce_return_code_and_output(monkeypatch) -> None:
+@pytest.fixture
+def signal_cli_admission(monkeypatch):
+    """Each receipt fixture models one fresh process, including real call leases."""
+    from angerona.core import mobile_cli_custody as custody
+
+    monkeypatch.setattr(custody, "_STOP", threading.Event())
+    monkeypatch.setattr(custody, "_ACTIVE", {})
+    monkeypatch.setattr(custody, "_CALLS", {})
+    monkeypatch.setattr(custody, "_HOLDS", {})
+    yield custody
+    snapshot = custody.signal_cli_custody_snapshot()
+    assert snapshot["active_invocations"] == 0
+    assert snapshot["held_resources"] == 0
+    assert snapshot["pending_external_trees"] == 0
+
+
+def test_mobile_cli_receipt_binds_nonce_return_code_and_output(monkeypatch, signal_cli_admission) -> None:
     bridge = _configured_bridge()
     sealed = _sealed()
     monkeypatch.setattr(bridge, "_acquire_cli", lambda _cfg: sealed)
@@ -199,6 +215,7 @@ def test_mobile_cli_receipt_binds_nonce_return_code_and_output(monkeypatch) -> N
     monkeypatch.setattr(bridge, "_seal_still_valid", lambda _seal: True)
 
     result = bridge._invoke_cli("receive", ["receive"], timeout=2.0)
+    assert signal_cli_admission.signal_cli_custody_snapshot()["active_invocations"] == 0
 
     assert bridge._result_valid(result, "receive")
     assert len(result.receipt.nonce) == 64
@@ -210,7 +227,7 @@ def test_mobile_cli_receipt_binds_nonce_return_code_and_output(monkeypatch) -> N
     assert not bridge._result_valid(forged_output, "receive")
 
 
-def test_mobile_cli_nonzero_return_code_is_never_accepted(monkeypatch) -> None:
+def test_mobile_cli_nonzero_return_code_is_never_accepted(monkeypatch, signal_cli_admission) -> None:
     bridge = _configured_bridge()
     monkeypatch.setattr(bridge, "_acquire_cli", lambda _cfg: _sealed())
     monkeypatch.setattr(

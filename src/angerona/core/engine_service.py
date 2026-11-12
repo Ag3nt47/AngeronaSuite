@@ -87,7 +87,9 @@ def _windows_install() -> str:
         settings.ExecutionTimeLimit = "PT0S"
         settings.MultipleInstances = 2  # TASK_INSTANCES_IGNORE_NEW
         settings.RestartInterval = "PT1M"
-        settings.RestartCount = 3
+        # Task Scheduler's maximum: a low ceiling let a paced restart-loop
+        # attacker exhaust recovery. Escalation lives in the restart ledger.
+        settings.RestartCount = 999
         trigger = task.Triggers.Create(9)  # TASK_TRIGGER_LOGON
         trigger.UserId = sid
         action = task.Actions.Create(0)

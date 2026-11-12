@@ -261,7 +261,8 @@ def test_producer_revocation_during_durable_intent_holds_before_effect(monkeypat
                         lambda: (True, "Inert installed-authority observation fixture"))
     ownership_calls = []
 
-    def observe_target(pid, created, _image):
+    def observe_target(pid, created, _image, *, canary=None, action=None):
+        assert canary is None
         assert (pid, created) == (45001, NOW - 10)
         ownership_calls.append(current["phase"])
 
@@ -298,7 +299,12 @@ def test_expiry_after_held_process_lease_is_rechecked_before_dispatch(monkeypatc
                             reversible=False,
                             details={"pid": 45001, "create_time": NOW - 10, "exe": "C:/inert/fixture.exe"})
     combat._response_dispatch_local.context = (event, None, action, None)
-    monkeypatch.setattr(combat, "_require_process_not_owned", lambda *_: current.update(valid=False))
+    def expire_after_ownership(pid, created, image, *, canary=None, action=None):
+        assert (pid, created, image) == (45001, NOW - 10, "C:/inert/fixture.exe")
+        assert canary is None
+        current.update(valid=False)
+
+    monkeypatch.setattr(combat, "_require_process_not_owned", expire_after_ownership)
     with pytest.raises(HostMutationHeld, match="immutable producer proof"):
         combat._require_host_mutation_authority(action=action)
     combat._response_dispatch_local.context = None

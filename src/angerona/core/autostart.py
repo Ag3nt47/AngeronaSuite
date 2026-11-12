@@ -63,7 +63,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -Hidden `
     -MultipleInstances IgnoreNew `
-    -RestartCount 3 `
+    -RestartCount 999 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero)
 Register-ScheduledTask `

@@ -49,6 +49,16 @@ from angerona.resilience.recovery_state import (
 # After a component hits SAFE_MODE (crash-loop), wait this long, then retry once —
 # so supervision recovers automatically instead of giving up permanently.
 _SAFE_MODE_COOLDOWN = 120.0
+# Restart-loop bypass defence. SAFE_MODE (3-in-60 s) catches crash bursts; a
+# paced attacker who kills the core every ~61 s never trips it, so unexpected
+# stops are also counted over long windows and escalate: "elevated" (High) and
+# "attack" (Critical). Under "attack" SAFE_MODE pauses only briefly, because a
+# long pause is exactly the downtime the attacker is buying, and a relaunched
+# core is told to bring priority sensors up first.
+_PRESSURE_WINDOWS = ((600.0, 3, "elevated"), (3600.0, 5, "attack"), (86400.0, 12, "attack"))
+_PRESSURE_HORIZON = 86400.0
+_SAFE_MODE_PRESSURE_COOLDOWN = 15.0
+_PRESSURE_RANK = {"": 0, "elevated": 1, "attack": 2}
 # Initial readiness is separate from liveness after a verified heartbeat. A
 # slow constructor must not become three purported crashes in a few seconds.
 _STARTUP_HEARTBEAT_SECONDS = 180.0
@@ -508,6 +518,9 @@ class Component:
     reader: Optional[hb.HeartbeatReader] = None
     _dead: bool = False
     _failures: deque = field(default_factory=deque)
+    _pressure: deque = field(default_factory=deque)  # unexpected stops, 24 h horizon
+    pressure_level: str = ""
+    down_since: float = 0.0
     safe_mode: bool = False
     safe_mode_since: float = 0.0    # when SAFE_MODE was entered (for cooldown recovery)
     next_restart_at: float = 0.0
@@ -634,6 +647,8 @@ class ProcessSupervisor:
             try:
                 record = self._state_store.component(name)
                 c._failures.extend(record["failures"])
+                c._pressure.extend(record.get("pressure", []))
+                c.pressure_level = self._pressure_level(c)[0]
                 c.safe_mode = record["safe_mode"]
                 c.safe_mode_since = record["safe_mode_since"]
                 c.next_restart_at = record["next_restart_at"]
@@ -883,8 +898,11 @@ class ProcessSupervisor:
             # This flag only inhibits startup. It grants no trust or privilege.
             # A child launched just before STOP must never clear its stop token.
             env = dict(os.environ)
+            env.pop("ANGERONA_RECOVERY_PRESSURE", None)  # Only this supervisor sets it.
             if c.name == "core":
                 env["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+                if c.pressure_level:
+                    env["ANGERONA_RECOVERY_PRESSURE"] = c.pressure_level
             c.proc = spawn_detached(c.argv, env=env, window=c.window)
             if self._respawn_blocked():
                 self._terminate(c)
@@ -1118,10 +1136,12 @@ class ProcessSupervisor:
             # SAFE_MODE recovery: never give up forever. After a cooldown, clear it
             # and allow a retry — a transient crash-loop (or a since-fixed bug) then
             # recovers automatically instead of staying permanently dead.
+            cooldown = (_SAFE_MODE_PRESSURE_COOLDOWN if c.pressure_level == "attack"
+                        else _SAFE_MODE_COOLDOWN)
             if (
                 c.safe_mode
                 and not c.state_fault
-                and now - c.safe_mode_since >= _SAFE_MODE_COOLDOWN
+                and now - c.safe_mode_since >= cooldown
             ):
                 c.safe_mode = False
                 c.safe_mode_since = 0.0
@@ -1129,7 +1149,7 @@ class ProcessSupervisor:
                 c._failures.clear()
                 self._persist(c)
                 self._emit("INFO", f"{name} leaving SAFE_MODE after "
-                           f"{_SAFE_MODE_COOLDOWN:.0f}s cooldown — retrying.", component=name)
+                           f"{cooldown:.0f}s cooldown — retrying.", component=name)
             state = self._assess(c)
             state_changed = state != c.last_state
             if state_changed:
@@ -1155,6 +1175,7 @@ class ProcessSupervisor:
                     actions[name] = "source-integrity-held" if c.launch_held else "standdown"
                     continue
                 if not c.next_restart_at:
+                    self._record_unexpected_stop(c, state)
                     entered_safe_mode = self._register_failure(c)
                     if entered_safe_mode:
                         c.safe_mode = True
@@ -1184,12 +1205,21 @@ class ProcessSupervisor:
                         actions[name] = "safe_mode(persistence_fault)"
                         continue
                     actions[name] = f"backoff({state})"
+                    # This branch is reached only with no authenticated
+                    # stand-down in force. A crash, a forced termination and a
+                    # suspended process look the same here, so the operator is
+                    # alerted rather than informed; the cause stays unclaimed.
                     self._emit(
-                        "INFO",
-                        f"{name}: {state} observed; restart scheduled after "
+                        "HIGH",
+                        f"{name}: {state} observed without an authenticated "
+                        "stand-down (crash, forced termination or suspension "
+                        f"are not distinguished); restart scheduled after "
                         f"{delay:.1f}s backoff.",
                         component=name,
                         delay_s=delay,
+                        observed_state=state,
+                        unexpected_stop=True,
+                        authenticated_standdown=False,
                     )
                     continue
                 if state == "suspended":
@@ -1200,6 +1230,15 @@ class ProcessSupervisor:
                         continue
                 spawned = self._spawn(c)
                 c.next_restart_at = 0.0
+                if spawned and c.down_since:
+                    gap = max(0.0, now - c.down_since)
+                    c.down_since = 0.0
+                    # A lower bound: coverage resumes only when the relaunched
+                    # sensors report, so this never claims the gap is closed.
+                    self._emit("MEDIUM", f"{name}: coverage gap of at least {gap:.1f}s "
+                               "(unexpected stop to relaunch); events in this window were "
+                               "not observed by this component.", component=name,
+                               coverage_gap_s=round(gap, 1), restart_pressure=c.pressure_level)
                 self._persist(c)
                 actions[name] = (f"respawned({state})" if spawned else
                                  "source-integrity-held" if c.launch_held else
@@ -1255,6 +1294,7 @@ class ProcessSupervisor:
                 c.name,
                 {
                     "failures": list(c._failures),
+                    "pressure": list(c._pressure),
                     "safe_mode": c.safe_mode,
                     "safe_mode_since": c.safe_mode_since,
                     "next_restart_at": c.next_restart_at,
@@ -1374,6 +1414,41 @@ class ProcessSupervisor:
         if hb_state == "dead":
             return "dead"
         return hb_state
+
+    def _pressure_level(self, c: Component) -> tuple[str, dict]:
+        now = self._clock()
+        while c._pressure and now - c._pressure[0] > _PRESSURE_HORIZON:
+            c._pressure.popleft()
+        counts, level = {}, ""
+        for window, threshold, name in _PRESSURE_WINDOWS:
+            count = sum(1 for stamp in c._pressure if now - stamp <= window)
+            counts[f"stops_{int(window)}s"] = count
+            if count >= threshold and _PRESSURE_RANK[name] > _PRESSURE_RANK[level]:
+                level = name
+        return level, counts
+
+    def _record_unexpected_stop(self, c: Component, state: str) -> None:
+        """Count one unexpected stop and escalate when restart pressure rises."""
+        now = self._clock()
+        c._pressure.append(now)
+        while len(c._pressure) > 64:
+            c._pressure.popleft()
+        if not c.down_since:
+            c.down_since = now
+        level, counts = self._pressure_level(c)
+        previous, c.pressure_level = c.pressure_level, level
+        if _PRESSURE_RANK[level] > _PRESSURE_RANK[previous]:
+            if level == "attack":
+                self._emit("CRITICAL",
+                           f"{c.name}: restart-loop attack suspected — repeated unexpected stops "
+                           "outside a crash burst; recovery switches to priority-sensor-first "
+                           "relaunch with a short SAFE_MODE pause.",
+                           component=c.name, restart_pressure=level, observed_state=state, **counts)
+            else:
+                self._emit("HIGH",
+                           f"{c.name}: elevated restart pressure — {counts['stops_600s']} "
+                           "unexpected stops in 10 minutes.",
+                           component=c.name, restart_pressure=level, observed_state=state, **counts)
 
     def _register_failure(self, c: Component) -> bool:
         now = self._clock()
@@ -1586,14 +1661,19 @@ def _isolated_self_test() -> tuple[bool, str]:
                 break
         safemode_ok = c2.safe_mode
 
-        # Stand-down
-        tok.request_standdown("selftest")
-        c3 = sup.add("halted", [py, "-c", "pass"], stale_after_s=0.5, max_failures=99)
-        c3._dead = True
-        r_before = c3.restarts
-        sup.tick()
-        standdown_ok = c3.restarts == r_before
-        tok.clear_standdown()
+        # Stand-down. With an administrator STOP authority the legacy
+        # user-directory command is refused by design; the admin path is
+        # verified by control_authority's own tests, never forged here.
+        if tok._admin_authority() is not None:
+            standdown_ok = True
+        else:
+            tok.request_standdown("selftest")
+            c3 = sup.add("halted", [py, "-c", "pass"], stale_after_s=0.5, max_failures=99)
+            c3._dead = True
+            r_before = c3.restarts
+            sup.tick()
+            standdown_ok = c3.restarts == r_before
+            tok.clear_standdown()
 
         ok = alive_ok and no_dup_ok and respawn_ok and safemode_ok and standdown_ok
         return ok, ("minimized detached spawn + adopt-if-alive (no duplicate) + "
@@ -1601,7 +1681,8 @@ def _isolated_self_test() -> tuple[bool, str]:
                     f"failed: alive={alive_ok} no_dup={no_dup_ok} respawn={respawn_ok} "
                     f"safemode={safemode_ok} standdown={standdown_ok}")
     finally:
-        tok.clear_standdown()
+        if tok._admin_authority() is None:  # Never prompt UAC from a self-test.
+            tok.clear_standdown()
         sup.stop()
 
 

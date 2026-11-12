@@ -1184,7 +1184,14 @@ class SpywareGuardModule(BaseModule):
         now = self._clock()
         with self._lock:
             previous = self._dedup.get(token)
-            if previous is not None and 0 <= now - previous < 300:
+            # A configuration exposure (unquoted service path, a startup
+            # entry in a transient directory) is a standing fact, not a new
+            # event every sweep. Repeat an identical exposure every six hours;
+            # response-eligible and active findings keep the 5-minute window.
+            exposure_only = (finding.get("response_eligible") is False
+                             and finding.get("finding_kind") == "exposure")
+            window = 21600 if exposure_only else 300
+            if previous is not None and 0 <= now - previous < window:
                 return
             self._dedup[token] = now
             self._dedup.move_to_end(token)

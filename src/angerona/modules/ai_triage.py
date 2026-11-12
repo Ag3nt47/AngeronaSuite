@@ -538,7 +538,10 @@ class AITriageModule(BaseModule):
 
     def _ensure_ollama(self) -> bool:
         """Prepare the daemon only on explicit lifecycle operations, not idle health."""
-        from angerona.core.ollama_lifecycle import ensure_ollama_service
+        from angerona.core.ollama_lifecycle import (
+            configured_startup_timeout,
+            ensure_ollama_service,
+        )
 
         self._sync_config()
         stop = self.generation_stop_event()
@@ -551,7 +554,8 @@ class AITriageModule(BaseModule):
                 )
 
         status = ensure_ollama_service(
-            self._host, stop_event=stop, progress=progress, timeout=30.0,
+            self._host, stop_event=stop, progress=progress,
+            timeout=configured_startup_timeout(),
         )
         return bool(status.daemon_ready and not stop.is_set())
 

@@ -3575,7 +3575,10 @@ def main() -> None:
         # not only stalls that occur after the event loop begins.
         from angerona.core.uiwatchdog import UiWatchdog
         ui_watchdog = UiWatchdog(
-            DIAG_DIR / "blackbox_not_responding.log", stall_seconds=5.0
+            DIAG_DIR / "blackbox_not_responding.log", stall_seconds=5.0,
+            # Building nine tabs imports most of the GUI on a cold cache; that
+            # single constructor call is not an event-loop stall.
+            startup_stall_seconds=45.0,
         )
         ui_watchdog.start()
         win = BlackBoxWindow()

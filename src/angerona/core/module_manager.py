@@ -934,6 +934,24 @@ class ModuleManager:
         "Process Egress Lease Guard",
         "Removable-Media / USB Monitor",
     }
+    # Restart-loop defence: when the supervisor reports restart pressure, these
+    # host sensors also come up immediately and the staged tail waits at most
+    # _PRESSURE_CYCLE_TIMEOUT per module, so each forced restart re-establishes
+    # process, persistence and file coverage in seconds rather than minutes.
+    _PRESSURE_PRIORITY = {
+        "Process Monitor",
+        "Persistence Sweep",
+        "File Integrity Monitor",
+    }
+    _PRESSURE_CYCLE_TIMEOUT = 5.0
+
+    @staticmethod
+    def _recovery_pressure() -> str:
+        value = os.environ.get("ANGERONA_RECOVERY_PRESSURE", "")
+        # Only meaningful for a supervised recovery launch; never user-forced.
+        if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") != "1":
+            return ""
+        return value if value in {"elevated", "attack"} else ""
 
     def start_enabled(
         self,
@@ -969,13 +987,20 @@ class ModuleManager:
         skipped: list[str] = []
         critical: list[BaseModule] = []
         staged: list[BaseModule] = []
+        immediate = set(self._NO_STAGGER)
+        # Class references: callers may drive this with a stand-in owner.
+        pressure = ModuleManager._recovery_pressure()
+        if pressure:
+            immediate |= ModuleManager._PRESSURE_PRIORITY
+            deferred -= ModuleManager._PRESSURE_PRIORITY
+            cycle_timeout = min(float(cycle_timeout), ModuleManager._PRESSURE_CYCLE_TIMEOUT)
         for name, mod in tuple(self.modules.items()):
             if not self.is_enabled(name):
                 continue
             if name in deferred:
                 skipped.append(name)
                 continue
-            if name in self._NO_STAGGER:
+            if name in immediate:
                 critical.append(mod)
             else:
                 staged.append(mod)
@@ -1016,6 +1041,8 @@ class ModuleManager:
                     0.1,
                     float(getattr(mod, "startup_cycle_timeout", cycle_timeout)),
                 )
+                if pressure:
+                    timeout = min(timeout, ModuleManager._PRESSURE_CYCLE_TIMEOUT)
                 ready = bool(waiter(timeout=timeout))
                 with self._module_control_lock:
                     current = (generation == self._control_generation

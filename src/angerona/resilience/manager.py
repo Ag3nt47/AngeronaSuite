@@ -413,6 +413,27 @@ class ResilienceManager:
             for fr in batch:
                 self.frames_ingested += 1
                 self._handle_frame(fr)
+            self._drain_peer_alerts()
+
+    def _drain_peer_alerts(self) -> None:
+        """Republish authenticated peer-watchdog alerts (bounded, ~every 2 s)."""
+        now = time.monotonic()
+        if now < getattr(self, "_peer_alert_due", 0.0):
+            return
+        self._peer_alert_due = now + 2.0
+        try:
+            if getattr(self, "_peer_alerts", None) is None:
+                from angerona.resilience.peer_alerts import PeerAlertReader
+                self._peer_alerts = PeerAlertReader()
+            records = self._peer_alerts.drain()
+        except Exception:
+            return
+        for record in records:
+            details = dict(record.get("details") or {})
+            details.update(peer_alert=True, observed_ts=record.get("ts"),
+                           peer_source=record.get("source"))
+            self._publish("Peer Watchdog", str(record.get("msg", "")),
+                          str(record.get("level", "HIGH")), details)
 
     def _record_ipc_rejection(self, count: int, reason: str) -> None:
         self.frames_rejected += max(1, int(count))

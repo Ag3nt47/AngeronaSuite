@@ -176,6 +176,13 @@ def _is_suspicious_region(state: int, region_type: int, protection: int, size: i
 # identical alerts and froze the GUI. We now emit at most one aggregated alert
 # per process per this window.
 _DEDUP_TTL = 300.0
+# After a process generation has been reported, a later sweep that finds only
+# regions already reported for it is repeated hourly instead of every five
+# minutes. Any region not reported before is still reported at the ordinary
+# five-minute cadence, so new executable memory in a known JIT host is not
+# hidden by this window.
+_UNCHANGED_REPEAT_S = 3600.0
+_REPORTED_REGIONS_MAX = 4096
 
 # Ensure proper 64-bit padding/alignment for VirtualQueryEx
 if sys.maxsize > 2**32:
@@ -820,7 +827,24 @@ class MemInjectScannerModule(BaseModule):
         # Only exact scanned-object identity can own a cooldown. Missing birth
         # evidence must not suppress a later process which reuses the same PID.
         if cooldown_key is not None:
+            reported = self.__dict__.setdefault("_reported_regions", {})
+            try:
+                signature = frozenset((int(r[0]), int(r[1])) for r in regions)
+            except (TypeError, ValueError, IndexError):
+                signature = None
+            prior = reported.get(cooldown_key)
+            if (signature is not None and prior is not None and signature <= prior[0]
+                    and 0 <= now - prior[1] < _UNCHANGED_REPEAT_S):
+                # Nothing new for this exact generation: keep the short
+                # cooldown moving and leave the hourly report clock alone.
+                self._seen[cooldown_key] = now
+                return
             self._seen[cooldown_key] = now
+            if signature is not None:
+                known = signature if prior is None else (signature | prior[0])
+                if len(known) > _REPORTED_REGIONS_MAX:
+                    known = signature
+                reported[cooldown_key] = (known, now)
 
         # Largest region drives the technique prediction and the headline detail.
         base, size, protect = max(regions, key=lambda r: r[1])
@@ -836,6 +860,7 @@ class MemInjectScannerModule(BaseModule):
         if not self._generation_active(stopped):
             if cooldown_key is not None and self._seen.get(cooldown_key) == now:
                 self._seen.pop(cooldown_key, None)
+                self.__dict__.get("_reported_regions", {}).pop(cooldown_key, None)
             return
         # PID enrichment is advisory and may describe a later reused PID.
         # Neither it nor image enrichment can stand in for inspected-object proof.
@@ -879,6 +904,7 @@ class MemInjectScannerModule(BaseModule):
             if not self._generation_active(stopped):
                 if cooldown_key is not None and self._seen.get(cooldown_key) == now:
                     self._seen.pop(cooldown_key, None)
+                    self.__dict__.get("_reported_regions", {}).pop(cooldown_key, None)
                 return
             self.emit(
                 "\n".join(parts),
@@ -921,6 +947,11 @@ class MemInjectScannerModule(BaseModule):
         stale  = [k for k, ts in self._seen.items() if ts < cutoff]
         for k in stale:
             del self._seen[k]
+        reported = self.__dict__.get("_reported_regions")
+        if reported:
+            region_cutoff = time.time() - _UNCHANGED_REPEAT_S
+            for k in [k for k, state in reported.items() if state[1] < region_cutoff]:
+                del reported[k]
 
     def self_test(self) -> tuple[bool, str]:
         suspicious = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READWRITE, _MIN_REGION_BYTES)

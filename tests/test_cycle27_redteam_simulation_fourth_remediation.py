@@ -425,9 +425,11 @@ def test_maximum_preflight_receives_a_bounded_sufficient_monotonic_deadline(
 ) -> None:
     bus, recorder, guard, _fim, manager = _runtime(tmp_path, monkeypatch)
     target = tmp_path / "target"
+    # Largest admissible plan: serial process probes put 4x60 s over the
+    # unchanged 4500 s hard limit, so the maximum accepted plan is 3x60 s.
     contract = preflight_run(
         kind="red_team",
-        cycles=4,
+        cycles=3,
         jitter_range=(60, 60),
         noise_chance=1,
         target_dir=target,

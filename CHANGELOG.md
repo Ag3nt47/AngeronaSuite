@@ -2,6 +2,82 @@
 
 ## 1.15.0 — community workspaces and security maintenance (2026-11-09)
 
+### Restart-loop and STOP hardening (2026-11-11)
+
+Full local suite run on Windows (16,200 passed; six host-dependent failures
+reproduced on unchanged code or passed on rerun). Not run against a live or
+elevated instance.
+
+- Watchdog alerts: the peer watchdog's supervisor events, including an
+  unexpected Core stop, are written to an authenticated outbox and published
+  by the Core when it returns. They were previously dropped.
+- STOP: after a one-time elevated setup, STOP and resume require Windows
+  administrator approval. Commands are signed, stored where only
+  administrators can write, and a STOP captured before a resume no longer
+  verifies. Hosts that have not run the setup behave as before.
+- Restart loops: unexpected stops are counted over 10 minutes, one hour and
+  one day and escalate to a High, then Critical alert. Under sustained
+  pressure SAFE_MODE pauses for 15 seconds instead of 120, and the relaunched
+  Core starts Process Monitor, Persistence Sweep and File Integrity Monitor
+  first. Each relaunch reports the minimum unobserved interval.
+- After an unexpected Core stop the watchdog records a bounded, read-only
+  sweep of new processes, their remote endpoints, recent temp-folder scripts
+  and executables, and the autorun values.
+- Optional network hold, off by default: with an administrator-signed policy
+  and an elevated watchdog, remote traffic is blocked while the Core stays
+  down past a chosen threshold and released when it returns.
+- Recovery: logon tasks restart up to Task Scheduler's limit of 999 instead of
+  3; an installer step sets Windows service failure actions for
+  `AngeronaProtection`.
+- `tools/Stage-AngeronaAutoLogger.ps1` stages a boot-time process trace owned
+  by Windows. Dry run by default; Angerona does not read the trace yet.
+- Watchdog monitor: a Protection group shows STOP protection, restart
+  pressure, the network hold and Windows service recovery in plain language.
+- Test fixes: Red Team preflight and journal tests follow the serial-probe
+  time budget, the live GUI test matches the isolated probe command, launcher
+  tests use an absolute path, and two autonomy fakes accept the new argument.
+
+### Live triage follow-up (2026-11-11, not yet validated on Windows)
+
+These source changes passed Python syntax checks only. Focused and full gates
+have not run. Findings: `analysis/hardening-v1.15-2026-11-11-live-triage.md`.
+
+- Packet Sniffer: allow worker startup before the capture window and give the
+  module first-cycle/work budgets longer than one capture cycle. The 30-second
+  defaults expired before any capture could finish, so the Watchdog replaced
+  every generation about 34 seconds after launch.
+- Alert volume: repeat an identical Forensics "capture held" reason at most
+  every 15 minutes with a repeat count; repeat a Counter-Agentic inference-port
+  alert for one process generation, peer host and role hourly; repeat a Memory
+  Injection Scanner report hourly when a sweep finds only regions already
+  reported for that generation. New generations, peer hosts, roles and regions
+  report as before.
+- Black Box: a separate 45-second not-responding budget applies only before
+  the first event-loop beat; the 5-second threshold is unchanged afterwards.
+- File Integrity Monitor: default Documents/Downloads roots come from the
+  Windows known-folder record, so a redirected profile folder is watched.
+- Ollama: the explicit startup wait is 90 seconds, 30-120 through
+  `ANGERONA_OLLAMA_STARTUP_SECONDS`. `Start-Angerona-With-Ollama.bat` verifies
+  the publisher signature, optionally upgrades through winget, starts Ollama on
+  loopback and waits for its API. `-FixHostBinding` replaces a stored wildcard
+  `OLLAMA_HOST`, which exposes the unauthenticated API to the network.
+- SpywareGuard: an identical configuration-exposure finding (unquoted service
+  path, startup entry in a transient directory) repeats every six hours
+  instead of every five-minute sweep. Response-eligible and active findings
+  keep the five-minute window. No test was added for this change.
+- Kernel-Boundary Posture Ledger: an unchanged posture risk repeats its High
+  alert every six hours, or at once when the risk set or a measured field
+  changes. Every observation is still signed into the ledger and reflected in
+  health. No test was added for this change.
+- Resilience Supervisor: a supervised component found dead or suspended with
+  no authenticated stand-down is now reported at High instead of Info. Crash,
+  forced termination and suspension are not distinguished; restart behaviour
+  is unchanged.
+- README: project description, status badges and primary links first; the
+  current-development status follows installation.
+
+### Release entries
+
 - Final staging removed one surplus terminal blank line from each of two new
   community-tool tests. ASTs, including line attributes, are unchanged; focused
   compilation and Ruff checks passed. The recorded full 1,581-file byte/hash

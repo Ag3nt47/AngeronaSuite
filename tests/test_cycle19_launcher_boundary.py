@@ -183,7 +183,9 @@ def test_launcher_selftest_rejects_hostile_inherited_environment(launcher):
     })
 
     result = subprocess.run(
-        [str(command), "/d", "/c", launcher, "--bootstrap-selftest"],
+        # Absolute path: cmd skips the current directory when
+        # NoDefaultCurrentDirectoryInExePath is set (hardened hosts).
+        [str(command), "/d", "/c", str(ROOT / launcher), "--bootstrap-selftest"],
         cwd=ROOT,
         env=environment,
         stdin=subprocess.DEVNULL,

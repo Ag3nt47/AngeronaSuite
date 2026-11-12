@@ -7578,6 +7578,12 @@ class MainWindow(QMainWindow):
                 request_operator_stop()
                 begin_ollama_shutdown()
         except Exception as error:
+            if type(error).__name__ == "AdminApprovalRequired":
+                QMessageBox.information(self, "STOP needs administrator approval",
+                    "STOP is protected so that malware cannot switch Angerona off. "
+                    "Administrator approval was not granted, so protection continues "
+                    "and Angerona has not exited.")
+                return
             QMessageBox.critical(self, "Angerona could not record STOP",
                 "STOP could not be completed, so Angerona has not exited. "
                 "If STOP was already recorded, protection may be partially paused. "

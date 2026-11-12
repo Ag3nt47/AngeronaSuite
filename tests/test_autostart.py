@@ -156,7 +156,7 @@ def test_enable_autostart_registers_hidden_resilient_task(monkeypatch):
     assert "-Hidden" in script
     assert "-AllowStartIfOnBatteries" in script
     assert "-DontStopIfGoingOnBatteries" in script
-    assert "-RestartCount 3" in script
+    assert "-RestartCount 999" in script
     assert "-ExecutionTimeLimit ([TimeSpan]::Zero)" in script
     assert "-RunLevel Limited" in script
 

@@ -30,6 +30,8 @@ from angerona.core.windows_process_lease import _Native as _ProcessNative
 _EPOCH = 116444736000000000
 _CAPTURE_TTL_S = 86400
 _CAPTURE_MAX = 2048
+_HELD_REPEAT_S = 900.0
+_HELD_KEYS_MAX = 64
 _MEMORY_READ_BUDGET = 64 * 1024 * 1024
 _MEMORY_CHUNK_BYTES = 1024 * 1024
 _MEMORY_OUTPUT_BUDGET = 8 * 1024 * 1024
@@ -339,8 +341,26 @@ class ForensicsModule(BaseModule):
 
     def _held(self, reason, pid=None):
         self.set_health(45, reason)
+        # Every High observation that is not active evidence reaches this
+        # path. Health always reflects the latest reason; the bus alert for an
+        # identical reason and process is repeated at most every 15 minutes and
+        # carries the number of identical holds it stands for.
+        now = time.monotonic()
+        recent = getattr(self, "_held_recent", None)
+        if recent is None:
+            recent = self._held_recent = {}
+        key = (str(reason), pid)
+        last, suppressed = recent.get(key, (None, 0))
+        if last is not None and 0 <= now - last < _HELD_REPEAT_S:
+            recent[key] = (last, suppressed + 1)
+            return
+        if len(recent) >= _HELD_KEYS_MAX:
+            for stale in sorted(recent, key=lambda item: recent[item][0])[:_HELD_KEYS_MAX // 2]:
+                del recent[stale]
+        recent[key] = (now, 0)
         self.emit("Forensic capture held: " + reason, Severity.MEDIUM, pid=pid,
                   complete=False, disposition="health", response_authorized=False,
+                  repeats_since_last_report=suppressed,
                   forensic_retirement=retirement_snapshot())
 
     @staticmethod

@@ -74,6 +74,30 @@ def _hb_state(component: str) -> str:
         return "unknown"
 
 
+_DETAIL_LABELS = {
+    "events_forwarded": "Events forwarded", "dropped": "Dropped",
+    "ring_backpressure": "Backpressure", "frames_ingested": "Frames read",
+    "supervised": "Watching", "safe_mode": "Paused (safe mode)", "restarts": "Restarts",
+}
+
+
+def _format_details(status: dict) -> str:
+    """Readable one-line summary of the status counters (no Python reprs)."""
+    bits = []
+    for key, label in _DETAIL_LABELS.items():
+        if key not in status:
+            continue
+        value = status[key]
+        if isinstance(value, dict):
+            text = ", ".join(f"{name} {count}" for name, count in value.items() if count) or "none"
+        elif isinstance(value, (list, tuple)):
+            text = ", ".join(str(item) for item in value) or "none"
+        else:
+            text = str(value)
+        bits.append(f"{label}: {text}")
+    return " · ".join(bits) if bits else "—"
+
+
 def _monitor_refresh_interval_ms(*, visible: bool, minimized: bool, active: bool) -> int:
     """Presentation cadence only; supervision remains in the sidecar process."""
     return 1_000 if visible and not minimized and active else 10_000
@@ -136,12 +160,31 @@ def build_status_widget(component: str, title: str | None = None):
             g = QGroupBox("Live status"); form = QFormLayout(g)
             self._heartbeat = QLabel("—"); self._state = QLabel("—")
             self._pid = QLabel("—"); self._rss = QLabel("—"); self._extra = QLabel("—")
+            self._extra.setWordWrap(True)
             form.addRow("Heartbeat:", self._heartbeat)
             form.addRow("State:", self._state)
             form.addRow("PID:", self._pid)
             form.addRow("Memory (MB):", self._rss)
             form.addRow("Details:", self._extra)
             lay.addWidget(g)
+            self._posture_labels: dict[str, QLabel] = {}
+            if self.component == "watchdog":
+                pg = QGroupBox("Protection"); pform = QFormLayout(pg)
+                for key, label in (("stop", "STOP protection"), ("pressure", "Restart pressure"),
+                                   ("deadman", "Network hold"),
+                                   ("service", "Windows service recovery")):
+                    value = QLabel("—"); value.setWordWrap(True)
+                    value.setAccessibleName(label)
+                    self._posture_labels[key] = value
+                    pform.addRow(label + ":", value)
+                self._stop_setup = QPushButton("Require administrator approval for STOP…")
+                self._stop_setup.setToolTip(
+                    "One-time setup. Afterwards, stopping or resuming Angerona shows a Windows "
+                    "administrator prompt, so other programs cannot switch protection off.")
+                self._stop_setup.clicked.connect(self._setup_admin_stop)
+                self._stop_setup.setVisible(False)
+                pform.addRow(self._stop_setup)
+                lay.addWidget(pg)
             lg = QGroupBox("Recent"); lgl = QVBoxLayout(lg)
             self._log = QTextEdit(); self._log.setReadOnly(True)
             lgl.addWidget(self._log); lay.addWidget(lg)
@@ -262,6 +305,40 @@ def build_status_widget(component: str, title: str | None = None):
             except Exception as exc:
                 QMessageBox.warning(self, "Diagnostics", f"Could not open the folder:\n{exc}")
 
+        def _setup_admin_stop(self):
+            if QMessageBox.question(
+                    self, "Protect STOP",
+                    "Require administrator approval to stop or resume Angerona?\n\n"
+                    "Windows will ask for administrator approval now, and again each time "
+                    "Angerona is stopped or resumed. This cannot be turned off from here."
+                    ) != QMessageBox.Yes:
+                return
+            try:
+                from angerona.resilience import control_authority
+                code = control_authority.request_elevated("provision")
+                if code != 0:
+                    raise RuntimeError(f"setup did not complete (code {code})")
+                QMessageBox.information(self, "Protect STOP",
+                                        "Done. STOP and resume now need administrator approval.")
+            except Exception as exc:
+                QMessageBox.warning(self, "Protect STOP",
+                                    f"STOP protection was not set up. Nothing was changed.\n{exc}")
+            self.refresh()
+
+        def _refresh_posture(self, st: dict):
+            if not self._posture_labels:
+                return
+            from angerona.resilience.posture import protection_posture
+            tones = {"ok": "#4ade80", "warn": "#fbbf24", "alert": "#f87171", "off": "#94a3b8"}
+            for row in protection_posture(st):
+                label = self._posture_labels.get(row["key"])
+                if label is None or label.text() == row["text"]:
+                    continue
+                label.setText(row["text"])
+                label.setStyleSheet(f"color:{tones.get(row['tone'], '#94a3b8')};")
+                if row["key"] == "stop":
+                    self._stop_setup.setVisible(row["text"].startswith("Not set up"))
+
         def _restart(self):
             if QMessageBox.question(
                     self, "Restart",
@@ -307,12 +384,11 @@ def build_status_widget(component: str, title: str | None = None):
             self._state.setText(str(st.get("state", "—")))
             self._pid.setText(str(st.get("pid", "—")))
             self._rss.setText(str(st.get("rss_mb", "—")))
-            bits = []
-            for k in ("events_forwarded", "dropped", "ring_backpressure",
-                      "frames_ingested", "supervised", "safe_mode", "restarts"):
-                if k in st:
-                    bits.append(f"{k}={st[k]}")
-            self._extra.setText(", ".join(bits) if bits else "—")
+            self._extra.setText(_format_details(st))
+            try:
+                self._refresh_posture(st)
+            except Exception:
+                pass
             ts = st.get("ts_iso") or ""
             if ts:
                 line = f"[{ts}] {hbst}"

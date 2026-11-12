@@ -532,8 +532,10 @@ def test_red_team_canary_preview_keeps_general_host_response_held(tmp_path):
         text = dialog.response_readiness.text()
         assert "Practice canaries ready (APT process checks)" in text
         assert "Ordinary host response remains held" in text
-        assert "Fresh issuer leases" in text
-        assert "exact target checks and authenticated report receipts" in text
+        assert "issuer-enrolled practice canaries" in text
+        assert "fresh exact lease" in text
+        assert "original event and verified postcondition" in text
+        assert "exact canary leases and verified receipts" in text
         assert "ARMED" not in text
         assert "Launch will continue with a warning" not in text
         assert "#4ade80" not in dialog.response_readiness.styleSheet()
@@ -545,11 +547,12 @@ def test_red_team_canary_preview_keeps_general_host_response_held(tmp_path):
         dialog.refresh_readiness_btn.click()
         assert "AUTHORITY HELD" in dialog.response_readiness.text()
         assert "Practice canaries ready" not in dialog.response_readiness.text()
-        assert "Launch will continue with a warning" in dialog.response_readiness.text()
+        assert "Simulation can continue" in dialog.response_readiness.text()
+        assert "unavailable containment stays unverified" in dialog.response_readiness.text()
 
         snapshot.update(state="ARMED", ready=True)
         dialog.refresh_readiness_btn.click()
-        assert "Containment readiness now (APT process checks): ARMED" in (
+        assert "Containment readiness (APT process checks): ARMED" in (
             dialog.response_readiness.text()
         )
         assert "signed report receipts decide" in dialog.response_readiness.text()
@@ -557,7 +560,10 @@ def test_red_team_canary_preview_keeps_general_host_response_held(tmp_path):
         reads_before = len(reads)
         dialog.cb_remediate.setChecked(False)
         assert "Detection-only run selected" in dialog.response_readiness.text()
-        assert len(reads) == reads_before
+        # Changing display mode still refreshes the read-only policy snapshot.
+        assert len(reads) == reads_before + 1
+        assert snapshot["state"] == "ARMED" and snapshot["ready"] is True
+        assert "will not assign a containment pass" in dialog.response_readiness.text()
         assert host_calls == []
     finally:
         dialog.close()

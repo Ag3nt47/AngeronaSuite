@@ -340,8 +340,9 @@ def test_irreversible_effect_runs_while_canonical_journal_is_delete_locked(
         assert len(factories) == 1, "retained target was reopened"
         return native
 
-    def observe_acquire(candidate_action):
-        lease = original_acquire(candidate_action)
+    def observe_acquire(candidate_action, *, canary=None):
+        assert canary is None  # This case exercises ordinary installed authority.
+        lease = original_acquire(candidate_action, canary=canary)
         assert type(lease) is WindowsProcessLease
         leases.append(lease)
         return lease

@@ -143,11 +143,15 @@ class RecoveryStateStore:
         cleaned_failures = [
             _finite_timestamp(value, maximum=maximum) for value in failures
         ]
+        pressure = record.get("pressure", [])
+        if not isinstance(pressure, list) or len(pressure) > _MAX_FAILURES_PER_COMPONENT:
+            raise RecoveryStateError("invalid recovery pressure history")
         digest = str(record.get("last_diagnostic_sha256") or "")
         if digest and not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise RecoveryStateError("invalid recovery diagnostic digest")
         return {
             "failures": cleaned_failures,
+            "pressure": [_finite_timestamp(value, maximum=maximum) for value in pressure],
             "safe_mode": bool(record.get("safe_mode", False)),
             "safe_mode_since": _finite_timestamp(
                 record.get("safe_mode_since", 0.0), maximum=maximum
@@ -168,8 +172,10 @@ class RecoveryStateStore:
             if component not in components and len(components) >= _MAX_COMPONENTS:
                 raise RecoveryStateError("recovery-state component limit reached")
             failures = [float(value) for value in list(record.get("failures", []))[-64:]]
+            pressure = [float(value) for value in list(record.get("pressure", []))[-64:]]
             components[component] = {
                 "failures": failures,
+                "pressure": pressure,
                 "safe_mode": bool(record.get("safe_mode", False)),
                 "safe_mode_since": float(record.get("safe_mode_since", 0.0)),
                 "next_restart_at": float(record.get("next_restart_at", 0.0)),

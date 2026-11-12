@@ -121,8 +121,8 @@ def test_history_rejected_start_retires_bridge_without_running_reader(
         def start(self, _worker):
             raise RuntimeError("inert pool start failure")
 
-    def observe_worker(*args):
-        worker = original_worker(*args)
+    def observe_worker(operation, root, name="", *, reader=None):
+        worker = original_worker(operation, root, name, reader=reader)
         worker.signals.destroyed.connect(
             lambda: destroyed.append(threading.get_ident()),
             Qt.ConnectionType.DirectConnection,

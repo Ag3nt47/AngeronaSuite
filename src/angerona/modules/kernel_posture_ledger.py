@@ -522,6 +522,11 @@ class KernelBoundaryPostureLedger(BaseModule):
     version = "1.14.0"
     enabled_by_default = True
     _INTERVAL = 300.0
+    # An unchanged posture risk (for example HVCI not running) is a standing
+    # exposure. Every observation is still appended to the signed ledger and
+    # reflected in health; the High bus alert repeats every six hours, or at
+    # once when the risk set or any measured posture field changes.
+    _RISK_REPEAT_S = 21600.0
 
     def __init__(
         self,
@@ -565,7 +570,19 @@ class KernelBoundaryPostureLedger(BaseModule):
                 or (f"unknown: {', '.join(result.unknown)}" if result.unknown else "posture verified")
             )
             self.set_health(result.health, note)
-            if result.risks:
+            risk_key = tuple(result.risks)
+            reported = getattr(self, "_reported_risk", None)
+            now = time.monotonic()
+            repeat_due = (
+                reported is None or reported[0] != risk_key or bool(changes)
+                or not 0 <= now - reported[1] < self._RISK_REPEAT_S
+            )
+            if not result.risks:
+                self._reported_risk = None
+            if result.risks and not repeat_due:
+                pass
+            elif result.risks:
+                self._reported_risk = (risk_key, now)
                 self.emit(
                     "Kernel-boundary posture risk: " + "; ".join(result.risks),
                     Severity.HIGH,

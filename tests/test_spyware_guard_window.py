@@ -20,7 +20,7 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
         from angerona.core import data_paths
         data_paths._elevated_source_runtime = lambda: False
         data_paths.configure_runtime_environment()
-        from PySide6.QtCore import QPoint, QTimer
+        from PySide6.QtCore import QPoint, QRect, Qt, QTimer
         from PySide6.QtTest import QTest
         from PySide6.QtWidgets import QApplication
         app = QApplication([])
@@ -95,12 +95,63 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
                                 [(b.accessibleName(), b.geometry().getRect()) for b in buttons],
                                 group.geometry().getRect(), group.minimumSizeHint().toTuple(),
                                 group.layout().minimumSize().toTuple(), window._header_layout.minimumSize().toTuple())
-                        # Check the actual visible scroll viewport rather than
-                        # an obsolete fixed margin from the former dashboard.
-                        viewport = window.centralWidget().viewport()
-                        left = group.mapTo(viewport, QPoint()).x()
-                        edge = left + group.width()
-                        assert viewport.contentsRect().left() <= left < edge <= viewport.contentsRect().right() + 1, (width, scale, left, edge)
+                        # Groups belong to the horizontally scrollable content;
+                        # the viewport, rather than all content, must fit the window.
+                        assert window._header_action_strip._content.rect().contains(
+                            QRect(group.mapTo(window._header_action_strip._content, QPoint()), group.size()))
+                    strip = window._header_action_strip
+                    viewport = window.centralWidget().viewport()
+                    assert viewport.rect().contains(QRect(strip.mapTo(viewport, QPoint()), strip.size()))
+                    stop = window._header_stop_button
+                    assert stop.parentWidget() is window._header_control_row
+                    assert stop.isVisible() and stop.text() == stop._full_label
+                    assert viewport.rect().contains(QRect(stop.mapTo(viewport, QPoint()), stop.size()))
+                    assert not strip.geometry().intersects(stop.geometry())
+                    assert abs(stop.geometry().right() - window._header_control_row.rect().right()) <= 1
+                    assert strip.verticalScrollBar().maximum() == 0
+                    if strip._content.width() > strip.viewport().width():
+                        assert strip.horizontalScrollBar().maximum() > 0
+                    # Focus must reveal every off-screen control without invoking it.
+                    controls = window._header_primary_buttons + window._header_nav_buttons
+                    for button in controls:
+                        assert button.accessibleName() and button.accessibleDescription() and button.toolTip()
+                        button.setFocus(Qt.TabFocusReason)
+                        app.processEvents()
+                        assert app.focusWidget() is button
+                        visible = strip.viewport().rect()
+                        rect = QRect(button.mapTo(strip.viewport(), QPoint()), button.size())
+                        if button.width() <= visible.width():
+                            assert visible.contains(rect), (width, scale, button.accessibleName(), rect.getRect())
+                        else:
+                            # A large-font control may exceed the narrow viewport.
+                            # Focus reveals its center and scrolling reaches both edges.
+                            assert visible.contains(rect.center())
+                            assert visible.intersected(rect).width() == visible.width()
+                            bar = strip.horizontalScrollBar()
+                            bar.setValue(bar.value() + rect.left())
+                            assert button.mapTo(strip.viewport(), QPoint()).x() >= visible.left()
+                            rect = QRect(button.mapTo(strip.viewport(), QPoint()), button.size())
+                            bar.setValue(bar.value() + rect.right() - visible.right())
+                            assert button.mapTo(strip.viewport(), QPoint()).x() + button.width() <= visible.right() + 1
+                    for button in window._header_primary_buttons + [spy, stop]:
+                        assert not button.is_compact()
+                        if button.width() >= button.full_label_width():
+                            assert button.text() == button._full_label
+                        else:
+                            # The explicit 400px safety cap still elides rather than clips.
+                            assert button.text() and button.text() != button._full_label
+                            assert '\u2026' in button.text()
+                    # Tab across the actual focus chain keeps STOP reachable.
+                    controls[0].setFocus(Qt.TabFocusReason)
+                    seen = set()
+                    for _ in range(len(controls) + 2):
+                        focused = app.focusWidget()
+                        seen.add(focused)
+                        if focused is stop:
+                            break
+                        QTest.keyClick(focused, Qt.Key_Tab)
+                        app.processEvents()
+                    assert stop in seen and set(controls).issubset(seen)
                     lane = window._header_activity_box
                     assert lane.isVisible()
                     assert lane.parentWidget() is not window._header_groups[1]
@@ -115,9 +166,9 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
                     assert spy.width() > window.threat_intel_btn.width(), (width, scale)
                     widths.append((scale, width, window._selftest_btn.width(),
                                    window.threat_intel_btn.width(), spy.width()))
-            # Font/style changes can make a peer's natural hint larger than
-            # SpywareGuard's. Assert the allocation before geometry settles;
-            # a longer event-loop wait cannot establish this priority rule.
+            # Navigation peers keep their icon-only allocations even when a
+            # stylesheet increases their natural text hint; Spyware keeps its
+            # complete semantic caption.
             for pixels in (32, 10, 26):
                 window.threat_intel_btn.setStyleSheet(
                     'font-size:%dpx; font-weight:700;' % pixels)
@@ -130,7 +181,7 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
                 QTest.qWait(30)
                 assert spy.width() > max(button.width() for button in peers)
                 right = window._header_groups[2]
-                buttons = window._header_nav_buttons + [window._header_stop_button]
+                buttons = window._header_nav_buttons
                 for index, button in enumerate(buttons):
                     assert right.rect().contains(button.geometry())
                     assert not any(button.geometry().intersects(other.geometry())
@@ -140,12 +191,16 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
             window.run_spinner.stop()
             app.processEvents()
             assert window._header_activity_box.isHidden()
-            small, large = widths[0], widths[8]
-            assert large[2] > small[2] and large[3] > small[3] and large[4] > small[4]
+            # Window width changes scroll capacity, not readable label size.
+            for scale in (1.0, 1.35):
+                samples = [row for row in widths if row[0] == scale]
+                assert len({{row[2:] for row in samples}}) == 1
             spy.click()
             app.processEvents()
             dialog, page = window._spyware_guard_dialog, window.spyware_guard_page
             assert dialog is not None and dialog.isVisible()
+            QTest.qWait(30)
+            assert dialog.screen().availableGeometry().contains(dialog.frameGeometry())
             assert page is window.spyware_guard and page._timer.isActive()
             page.setting_checks['spyware_memory_enabled'].setChecked(True)
             dialog.close()
@@ -189,8 +244,8 @@ def test_dedicated_spyware_window_and_responsive_header_preserve_runtime_gates(t
         "ANGERONA_BLACKBOX_ENABLED": "0",
     })
     result = subprocess.run(
-        [sys.executable, "-I", "-c", script], cwd=root, env=environment,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, check=False,
+        [sys.executable, "-I", "-B", "-c", script], cwd=root, env=environment,
+        input=b"", stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=90, check=False,
     )
     assert result.returncode == 0, result.stderr.decode("utf-8", "replace")[-10000:]
     evidence = json.loads(result.stdout.decode().splitlines()[-1])

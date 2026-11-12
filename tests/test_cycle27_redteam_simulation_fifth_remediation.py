@@ -348,8 +348,15 @@ def test_append_only_head_journal_prevents_rollback_fork_and_handoff_mutation(
     )
     assert 0.0 in inventory_ages  # Real requested observation consumed fixture input.
     try:
+        # Bind the lease to the admitted horizon exactly as RedTeamEngine does;
+        # serial probe time puts even one cycle above the 600 s default TTL.
+        admitted = preflight_run(
+            kind="red_team", cycles=1, jitter_range=(0, 0), noise_chance=0,
+            target_dir=target, campaign=True,
+        ).budget["admitted_run_ttl_seconds"]
         receipt = RedTeamValidationLease.consume_for_run(
-            lease, run_id="journal-run", target=target, data_root=tmp_path
+            lease, run_id="journal-run", target=target, data_root=tmp_path,
+            run_ttl_seconds=float(admitted),
         )
         history = _history(tmp_path, receipt)
         first = generate_aar(
@@ -423,13 +430,14 @@ def test_max_campaign_query_uses_authenticated_ttl_not_legacy_window(
     try:
         decision = preflight_run(
             kind="red_team",
-            cycles=4,
+            cycles=3,  # Largest plan within the unchanged 4500 s hard limit.
             jitter_range=(60, 60),
             noise_chance=0,
             target_dir=target,
             campaign=True,
         )
         assert decision.accepted
+        assert float(decision.budget["admitted_run_ttl_seconds"]) > 3600
         admitted = float(decision.budget["admitted_run_ttl_seconds"])
         receipt = RedTeamValidationLease.consume_for_run(
             lease,
@@ -441,7 +449,7 @@ def test_max_campaign_query_uses_authenticated_ttl_not_legacy_window(
         history = _history(
             tmp_path,
             receipt,
-            cycles=4,
+            cycles=3,
             jitter=(60, 60),
             long_timeline=True,
         )

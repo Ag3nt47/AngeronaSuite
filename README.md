@@ -14,25 +14,11 @@ Built for home labs, defenders, researchers, and security engineering portfolios
 The suite runs deterministic checks locally and offers optional local AI to
 explain evidence and propose next steps.
 
-## Current development: v1.15.0
-
-**Source preview.** A genuine Source Observe network-containment gap remains
-open. Controlled response validation passed. A combined SpywareGuard/Zero-Breach
-run finished with findings and incomplete coverage; it is not a clean-PC verdict.
-Controlled results and remaining coverage limits are documented in the
-[current release notes](docs/releases/v1.15.0.md).
-
-[Download and installation choices](#choose-your-installation) ·
-[Latest changes](CHANGELOG.md) ·
-[Read the Master Manual online](docs/master-manual.md) ·
-[PDF manual](Angerona_Master_Manual.pdf) ·
-[Security fixes and residual exposure report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) ·
-[Download Word manual](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx) ·
-[Security flow and review map](docs/security-flow.md)
-
 [![CI](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/ci.yml)
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
 ![License](https://img.shields.io/badge/License-MIT-green)
+
+**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-115)** · **[Master Manual](docs/master-manual.md)** ([PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1150)**
 
 ## See Angerona in action
 
@@ -137,8 +123,34 @@ and separate installation staging require additional space.
 | macOS source setup | 0.50–0.75 GB | 1.5–3 GB |
 | Linux source setup | 0.30–0.50 GB | 1–2 GB |
 
+## Current development: v1.15.0
+
+**Source preview.** A genuine Source Observe network-containment gap remains
+open. Controlled response validation passed. A combined SpywareGuard/Zero-Breach
+run finished with findings and incomplete coverage; it is not a clean-PC verdict.
+Controlled results and remaining coverage limits are documented in the
+[current release notes](docs/releases/v1.15.0.md).
+
+Further reading: [current release notes](docs/releases/v1.15.0.md) · [security fixes and residual exposure report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
+
 ## What's new in 1.15
 
+- **Harder to switch off:** after a one-time setup, STOP and resume need
+  Windows administrator approval, and an old STOP cannot be replayed. Repeated
+  forced restarts are counted over minutes, hours and a day, raise a Critical
+  restart-loop alert and bring the key sensors back first; every restart
+  reports how long protection was down. The Watchdog monitor shows this
+  posture in a new Protection group. Optional and off by default: a network
+  hold while Angerona stays down. Not yet run elevated or against a live instance.
+- **Live-triage noise and startup fixes:** unchanged Counter-Agentic, memory
+  injection, forensics-hold, SpywareGuard and kernel-posture findings now repeat
+  on a bounded cadence (15 minutes to 6 hours) instead of every sweep, while a
+  new process generation, peer, region or risk still alerts immediately. The
+  Ollama startup budget is 90 seconds (30–120 via `ANGERONA_OLLAMA_STARTUP_SECONDS`),
+  Black Box allows 45 seconds before its first UI beat, the packet-sniffer worker
+  and module budgets fit a full 30-second capture, and FIM resolves Documents and
+  Downloads from the shell known-folder record.
+  [Triage record](analysis/hardening-v1.15-2026-11-11-live-triage.md).
 - **Community tools and tactics:** Suggested tools adds explicit install,
   uninstall, self-check, source-copy editing and credits. Rules & Playbooks adds
   pinned source discovery, batch drafts, a guided X/O tactics board and reviewed

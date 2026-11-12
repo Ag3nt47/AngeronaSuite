@@ -122,7 +122,7 @@ def _background_entry_requested(arguments) -> bool:
         "--process-snapshot-worker", "--curated-tool-worker", "--community-tool-probe",
         "--red-team-tool-worker", "--red-team-inert-probe", "--kernel-telemetry-canary",
         "--ugcap-worker", "--spyware-beacon-watch", "--engine-service", "--response-service",
-        "--automatic-start",
+        "--automatic-start", "--control-authority",
     )
     return (any(type(argument) is str and argument.startswith(prefixes) for argument in arguments)
             or os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1"
@@ -232,6 +232,12 @@ def _source_activation_pending_guard() -> bool:
     return True
 
 def main() -> int:
+    if sys.argv[1:2] == ["--control-authority"]:
+        # Elevated STOP/RESUME helper (UAC). Exact arity; no GUI or Config.
+        if len(sys.argv) != 3:
+            return 2
+        from angerona.resilience.control_authority import main as control_main
+        return control_main(sys.argv[2:])
     red_team_diagnostic_entry = sys.argv[1:] == ["--red-team-tool-worker"]
     if red_team_diagnostic_entry:
         try:

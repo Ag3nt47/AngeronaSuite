@@ -233,7 +233,11 @@ def test_readiness_warning_persists_through_run_and_unverified_result(console, m
                                   "reason": "journal hold"},
     )
     dialog._refresh_response_readiness()
-    assert "Launch will continue with a warning" in dialog.response_readiness.text()
+    readiness_text = dialog.response_readiness.text()
+    assert "RECOVERY REQUIRED" in readiness_text and "journal hold" in readiness_text
+    assert "Simulation can continue" in readiness_text
+    assert "unavailable containment stays unverified" in readiness_text
+    assert "#4ade80" not in dialog.response_readiness.styleSheet()
     dialog.set_launch_status(
         {"status": "accepted", "runs": {"red_team": "redteam-current"},
          "response_warning": warning},

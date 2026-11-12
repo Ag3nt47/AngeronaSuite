@@ -29,11 +29,62 @@ from angerona.core.atomic_io import replace_with_retry
 # a dropped driver is known-vulnerable / the benign drill marker.
 from angerona.modules.intel_sync import is_known_bad_driver
 
+def _user_folder(name: str, known_folder_id: str) -> str:
+    """Return the user's real Documents/Downloads directory.
+
+    A relocated or OneDrive-redirected profile can leave ``%USERPROFILE%\\name``
+    as a link, which the scanner correctly refuses as a watch root. The shell's
+    known-folder record names the directory the user actually writes to. Any
+    failure keeps the historical profile-relative path; this lookup is
+    read-only and never creates the folder.
+    """
+    fallback = os.path.join(os.environ.get("USERPROFILE", str(Path.home())), name)
+    if os.name != "nt":
+        return fallback
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _GUID(ctypes.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD),
+                        ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+        ole32 = ctypes.WinDLL("ole32", use_last_error=True)
+        shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+        ole32.CLSIDFromString.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(_GUID)]
+        ole32.CLSIDFromString.restype = ctypes.c_long
+        ole32.CoTaskMemFree.argtypes = [ctypes.c_void_p]
+        ole32.CoTaskMemFree.restype = None
+        shell32.SHGetKnownFolderPath.argtypes = [
+            ctypes.POINTER(_GUID), wintypes.DWORD, wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_void_p)]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        guid = _GUID()
+        if ole32.CLSIDFromString(known_folder_id, ctypes.byref(guid)) != 0:
+            return fallback
+        raw = ctypes.c_void_p()
+        try:
+            # KF_FLAG_DONT_VERIFY: report the configured path without creating it.
+            if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0x4000, None,
+                                            ctypes.byref(raw)) != 0 or not raw.value:
+                return fallback
+            resolved = ctypes.wstring_at(raw.value)
+        finally:
+            if raw.value:
+                ole32.CoTaskMemFree(raw)
+        if (resolved and len(resolved) < 1024 and os.path.isabs(resolved)
+                and os.path.isdir(resolved)):
+            return resolved
+    except Exception:
+        pass
+    return fallback
+
+
 # Sensible high-value defaults; users can extend via a watchlist file later.
 DEFAULT_WATCH = [
     os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "System32", "drivers", "etc"),
-    os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Documents"),
-    os.path.join(os.environ.get("USERPROFILE", str(Path.home())), "Downloads"),
+    _user_folder("Documents", "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}"),
+    _user_folder("Downloads", "{374DE290-123F-4565-9164-39C4925E467B}"),
     str(data_dir() / "drill-sandbox"),
 ]
 _RUNTIME_WATCH: set[str] = set()

@@ -370,13 +370,13 @@ def test_native_socket_row_decoding_uses_owner_pid_network_ports_and_ipv6_scopes
     assert native.socket_rows(99, lambda: None) == []
 
 
-def test_native_owner_and_retained_handle_only_for_our_inert_child():
+def test_native_owner_and_retained_handle_only_for_our_inert_child(request):
     if os.name != "nt":
         pytest.skip("Windows native handle and token APIs")
     # This fixture never reads memory or host socket tables. It owns its child,
     # captures raw creation identity through a retained handle, and retires it.
     child = subprocess.Popen([sys._base_executable, "-I", "-c", "import sys; sys.stdin.buffer.read(1)"],
-                             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              creationflags=subprocess.CREATE_NO_WINDOW)
     query = handle = None
     try:
@@ -384,15 +384,39 @@ def test_native_owner_and_retained_handle_only_for_our_inert_child():
         handle = query.open(child.pid, 0x1000 | 0x00100000, False)
         identity = query.identity(handle)
         assert identity.pid == child.pid and identity.birth_ticks > forensics._EPOCH
-        with forensics._CaptureHandle(child.pid, identity.birth_ticks, time.monotonic() + 5) as retained:
-            retained.check()
-            assert retained.identity == identity
-        child.communicate(b"x", timeout=5)
+        request.node.user_properties.extend([
+            ("owned_child_pid", str(identity.pid)),
+            ("owned_child_birth_ticks", str(identity.birth_ticks)),
+            ("owned_child_image", identity.image),
+        ])
+        assert Path(identity.image).samefile(sys._base_executable)
+        native = forensics._NativeCapture()
+        owner_is_system = native.is_system(handle)
+        assert type(owner_is_system) is bool
+        request.node.user_properties.append(("owned_child_system_owner", str(owner_is_system)))
+        # Hosted Python can live below a literal Windows directory or run as
+        # SYSTEM. The production exclusion must still hold for our own child.
+        protected = ("\\windows\\" in identity.image.casefold()
+                     or "angerona" in identity.image.casefold()
+                     or owner_is_system)
+        if protected:
+            with pytest.raises(ValueError, match="protected process is excluded"):
+                forensics._CaptureHandle(child.pid, identity.birth_ticks, time.monotonic() + 5,
+                                         _native=native)
+        else:
+            with forensics._CaptureHandle(child.pid, identity.birth_ticks, time.monotonic() + 5,
+                                          _native=native) as retained:
+                retained.check()
+                assert retained.identity == identity
+        assert query.identity(handle) == identity
+        assert child.communicate(b"x", timeout=5) == (b"", b"")
         assert child.returncode == 0
         assert query.wait(handle, 0) is True and query.exit_code(handle) == 0
+        request.node.user_properties.append(("owned_child_exit_code", "0"))
     finally:
         if child.poll() is None:
             child.kill()  # exact Popen-owned object, never a discovered PID
             child.wait(timeout=5)
         if handle is not None:
-            query.close(handle)
+            assert query.close(handle) is not False
+            request.node.user_properties.append(("owned_query_handle_closed", "True"))

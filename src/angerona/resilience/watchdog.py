@@ -174,8 +174,25 @@ def main(argv: list[str] | None = None) -> int:
     beat = hb.HeartbeatWriter("watchdog")
 
     pyw = os.environ.get("ANGERONA_PY") or _pythonw()
+    # Core death is the event this process exists to report, and the core's bus
+    # is down at that moment: persist MEDIUM+ supervisor events durably.
+    try:
+        from angerona.resilience.peer_alerts import PeerAlertOutbox
+        outbox_event = PeerAlertOutbox("peer-watchdog").supervisor_callback()
+        from angerona.resilience.crash_hunter import CrashHunter
+        hunter = CrashHunter(outbox_event)
+
+        def forward_event(level: str, msg: str, details: dict) -> None:
+            outbox_event(level, msg, details)
+            try:  # Read-only evidence sweep for the unobserved interval.
+                hunter.on_supervisor_event(level, msg, details)
+            except Exception:
+                pass
+    except Exception:
+        forward_event = None
     sup = ProcessSupervisor(
         poll_interval=1.0,
+        on_event=forward_event,
         state_namespace="peer-watchdog",
     )
     source_integrity = _prepare_source_guard(sup)
@@ -244,13 +261,28 @@ def main(argv: list[str] | None = None) -> int:
         target=_source_review_loop, args=(sup, source_stopped),
         name="watchdog-source-integrity", daemon=True)
     source_thread.start()
+    deadman = None
+    if forward_event is not None and "core" in sup.components:
+        try:  # Off unless an administrator signed the opt-in policy.
+            from angerona.resilience.deadman import DeadMan
+            deadman = DeadMan(forward_event)
+        except Exception:
+            deadman = None
+    deadman_state = "disabled"
     n = 0
     while not stop["v"]:
         n += 1
         if sup.heartbeat_allowed():
             beat = _refresh_heartbeat(beat)
         if _standdown_requested():
+            if deadman is not None:
+                deadman.tick("stopped", standdown=True)
             break
+        if deadman is not None and n % 6 == 0:
+            try:
+                deadman_state = deadman.tick(sup.components["core"].last_state)
+            except Exception:
+                pass
         if n % 6 == 0:   # ~ every 3s
             source_state = source_integrity()
             progress = sup.supervision_status()
@@ -260,6 +292,9 @@ def main(argv: list[str] | None = None) -> int:
                 "supervised": list(sup.components.keys()),
                 "safe_mode": [k for k, c in sup.components.items() if c.safe_mode],
                 "restarts": {k: c.restarts for k, c in sup.components.items()},
+                "restart_pressure": {k: c.pressure_level for k, c in sup.components.items()
+                                     if c.pressure_level},
+                "deadman": deadman_state,
                 "source_integrity": source_state,
                 "supervision_progress": progress,
             })

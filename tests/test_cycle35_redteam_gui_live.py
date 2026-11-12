@@ -1251,6 +1251,20 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
     spawn_births: dict[tuple[int, str], float | None] = {}
     original_popen = subprocess.Popen
 
+    probe_executable = str(Path(getattr(sys, "_base_executable", sys.executable)).resolve(strict=True))
+
+    def probe_token(command: object) -> str | None:
+        # Exact fixed inert probe shape from RedTeamEngine (isolated base interpreter).
+        if (
+            isinstance(command, (list, tuple)) and len(command) == 6
+            and command[0] == probe_executable
+            and tuple(command[1:5]) == ("-I", "-S", "-c", "import time; time.sleep(30)")
+            and isinstance(command[5], str)
+            and command[5].startswith("ANGERONA_REDTEAM_")
+        ):
+            return command[5]
+        return None
+
     def record_tagged_spawn(*args: object, **kwargs: object) -> subprocess.Popen:
         try:
             proc = original_popen(*args, **kwargs)
@@ -1258,34 +1272,21 @@ def test_mainwindow_arm_launch_and_deliver_signed_aar_twice(
             # Parse only the same fixed inert command shape as the existing
             # successful-spawn observer. Never query a failed spawn's identity.
             try:
-                command = args[0] if args else kwargs.get("args")
-                if (
-                    isinstance(command, (list, tuple)) and len(command) == 4
-                    and command[0] == sys.executable
-                    and tuple(command[1:3]) == ("-c", "import time; time.sleep(30)")
-                    and isinstance(command[3], str)
-                    and command[3].startswith("ANGERONA_REDTEAM_")
-                ):
-                    process_phase("popen-error", token=command[3], exception=exc)
+                token = probe_token(args[0] if args else kwargs.get("args"))
+                if token is not None:
+                    process_phase("popen-error", token=token, exception=exc)
             except Exception:
                 pass
             raise
-        command = args[0] if args else kwargs.get("args")
-        if (
-            isinstance(command, (list, tuple))
-            and len(command) == 4
-            and command[0] == sys.executable
-            and tuple(command[1:3]) == ("-c", "import time; time.sleep(30)")
-            and isinstance(command[3], str)
-            and command[3].startswith("ANGERONA_REDTEAM_")
-        ):
+        token = probe_token(args[0] if args else kwargs.get("args"))
+        if token is not None:
             try:
                 birth = float(psutil.Process(proc.pid).create_time())
             except (psutil.Error, OSError, ValueError):
                 birth = None
             with marker_lock:
-                spawn_births[(int(proc.pid), command[3])] = birth
-            process_phase("popen-return", token=command[3], pid=int(proc.pid), birth=birth)
+                spawn_births[(int(proc.pid), token)] = birth
+            process_phase("popen-return", token=token, pid=int(proc.pid), birth=birth)
         return proc
 
     monkeypatch.setattr(subprocess, "Popen", record_tagged_spawn)
