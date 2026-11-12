@@ -28,7 +28,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   run, main-window stall attribution, Defender detections on an npm package
   and a Codex command line.
 
-## PENDING (2026-11-11 restart-loop / STOP hardening â€” branch `hardening/restart-loop-stop-authority`)
+## PENDING (2026-11-11 restart-loop / STOP hardening — branch `hardening/restart-loop-stop-authority`)
 
 - The ranked attack-path analysis for this pass is a local-only file
   (`analysis/hardening-v1.15-2026-11-11-exploit-analysis.md`, excluded from
@@ -59,8 +59,18 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - `core/service_recovery.py`: installer step for SCM failure actions on
   `AngeronaProtection` (restart 5 s/5 s/30 s, 24 h reset, non-crash
   failures) plus read-only `verify()`. Logon tasks now use RestartCount 999.
+- Follow-up 2026-11-12 (Linux unit checks only): `core/privilege.py` now
+  carries `ANGERONA_RECOVERY_PRESSURE` through the sidecar environment
+  allow-list; before this the hint was dropped and priority-sensor relaunch
+  never triggered outside tests. The crash sweep treats junctions and other
+  reparse points as links. The startup-recovery manifest and both
+  `start-angerona.bat` pins were regenerated: the hardening commit changed
+  six pinned files without doing so, so the source launcher's verifier saw
+  them as drift. Repeat that step after any change to a pinned file.
 - Third, non-Python watchdog: REQUESTED, NOT BUILT. No code exists. Work
   stopped during design and was not resumed; do not treat it as present.
+  Outline for a later build: `frz/THIRD_WATCHDOG_OUTLINE.md` (a plain,
+  bounded supervisor that honours STOP).
   Coverage for the pair-kill gap comes from SCM recovery (signed package),
   the Task Scheduler backstop and the restart ledger. The existing Go parent
   in `frz/` remains unbuilt and carries the defects listed in the analysis.

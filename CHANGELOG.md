@@ -2,6 +2,20 @@
 
 ## 1.15.0 — community workspaces and security maintenance (2026-11-09)
 
+### Restart-loop follow-up (2026-11-12)
+
+Linux unit checks only; not run on Windows.
+
+- Priority-sensor relaunch now actually triggers: the restart-pressure hint
+  the watchdog sets for a relaunched Core was removed by the sidecar
+  environment allow-list before it reached the Core.
+- The crash sweep no longer descends into junctions or other reparse points
+  under the temp directory.
+- The startup-recovery manifest and launcher pins match the hardened files
+  again, so the source launcher's verifier no longer sees them as drift.
+- Record the outline for the unbuilt third (Go) watchdog in
+  `frz/THIRD_WATCHDOG_OUTLINE.md`.
+
 ### Restart-loop and STOP hardening (2026-11-11)
 
 Full local suite run on Windows (16,200 passed; six host-dependent failures
