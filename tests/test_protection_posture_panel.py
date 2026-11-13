@@ -27,7 +27,7 @@ def test_default_host_reports_unprotected_stop_and_everything_else_off_or_normal
     assert rows["pressure"] == {"key": "pressure", "label": "Restart pressure", "tone": "ok",
                                 "text": "Normal. Core restarts this session: 2."}
     assert rows["deadman"]["tone"] == "off" and rows["service"]["tone"] == "off"
-    assert list(rows) == ["stop", "pressure", "deadman", "service"]
+    assert list(rows) == ["stop", "pressure", "deadman", "service", "watchdog3"]
 
 
 def test_protected_stop_attack_pressure_and_engaged_hold_are_reported(monkeypatch):

@@ -172,7 +172,8 @@ def build_status_widget(component: str, title: str | None = None):
                 pg = QGroupBox("Protection"); pform = QFormLayout(pg)
                 for key, label in (("stop", "STOP protection"), ("pressure", "Restart pressure"),
                                    ("deadman", "Network hold"),
-                                   ("service", "Windows service recovery")):
+                                   ("service", "Windows service recovery"),
+                                   ("watchdog3", "Native third watchdog")):
                     value = QLabel("—"); value.setWordWrap(True)
                     value.setAccessibleName(label)
                     self._posture_labels[key] = value
@@ -330,7 +331,11 @@ def build_status_widget(component: str, title: str | None = None):
                 return
             from angerona.resilience.posture import protection_posture
             tones = {"ok": "#4ade80", "warn": "#fbbf24", "alert": "#f87171", "off": "#94a3b8"}
-            for row in protection_posture(st):
+            # Render the core's bounded cached observation; no process query,
+            # executable hash, signature check or launch occurs in this widget.
+            core_status = _read_status("core")
+            native_status = core_status.get("native_watchdog") if isinstance(core_status, dict) else None
+            for row in protection_posture(st, native_watchdog_status=native_status):
                 label = self._posture_labels.get(row["key"])
                 if label is None or label.text() == row["text"]:
                     continue

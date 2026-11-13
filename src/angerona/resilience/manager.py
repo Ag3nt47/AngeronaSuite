@@ -427,12 +427,27 @@ class ResilienceManager:
                 self._peer_alerts = PeerAlertReader()
             records = self._peer_alerts.drain()
         except Exception:
-            return
+            records = []
         for record in records:
             details = dict(record.get("details") or {})
             details.update(peer_alert=True, observed_ts=record.get("ts"),
                            peer_source=record.get("source"))
             self._publish("Peer Watchdog", str(record.get("msg", "")),
+                          str(record.get("level", "HIGH")), details)
+        # The native supervisor has one independent chain/cursor; its failure
+        # cannot prevent ingestion from the existing Python peer's outbox.
+        try:
+            if getattr(self, "_native_peer_alerts", None) is None:
+                from angerona.resilience.native_watchdog import NativeAlertReader
+                self._native_peer_alerts = NativeAlertReader()
+            records = self._native_peer_alerts.drain()
+        except Exception:
+            records = []
+        for record in records:
+            details = dict(record.get("details") or {})
+            details.update(peer_alert=True, native_watchdog=True,
+                           observed_ts=record.get("ts"), peer_source=record.get("source"))
+            self._publish("Native Third Watchdog", str(record.get("msg", "")),
                           str(record.get("level", "HIGH")), details)
 
     def _record_ipc_rejection(self, count: int, reason: str) -> None:
@@ -478,7 +493,18 @@ class ResilienceManager:
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
                 "source_integrity": dict(self._source_integrity),
                 "supervision_progress": progress,
+                "native_watchdog": self._native_watchdog_status(),
             })
+
+    def _native_watchdog_status(self) -> dict:
+        """Observe on the status worker, never in a GUI refresh or core launch."""
+        try:
+            if getattr(self, "_native_watchdog_observer", None) is None:
+                from angerona.resilience.native_watchdog import NativeWatchdogObserver
+                self._native_watchdog_observer = NativeWatchdogObserver()
+            return self._native_watchdog_observer.snapshot()
+        except Exception:
+            return {"state": "unavailable", "reason": "Native third-watchdog observation is unavailable"}
 
     def component_heartbeats(self) -> tuple[dict, ...]:
         cache = self._component_heartbeat_cache

@@ -1,5 +1,11 @@
 # BL-01 — Build, Sign, Deploy the Out-of-Process Watchdog
 
+This document describes the **legacy parent** in `angerona_watchdog.go`.
+The independent third watchdog is a separate implementation in
+[`watchdog3/`](watchdog3/README.md), with authenticated observation records, protected
+installation intent and bounded recovery. Use that guide for new third-watchdog
+builds. The legacy external-parent setting does not enable the third watchdog.
+
 The Go watchdog (`angerona_watchdog.go`) is the resilience **parent**: it launches
 Angerona, SHA-256-verifies the on-disk binary before every (re)launch, holds the
 real process **handle** (a spoofed PID can't fool it), detects forced termination

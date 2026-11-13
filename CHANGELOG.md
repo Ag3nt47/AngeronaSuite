@@ -2,6 +2,38 @@
 
 ## 1.15.0 — community workspaces and security maintenance (2026-11-09)
 
+### Native third watchdog (2026-11-13; development build)
+
+- Add a standalone Windows amd64 Go `watchdog3.exe`, with no Python runtime
+  dependency, its own native process lifetime and a reproducible build record.
+- Use the actual installed `AngeronaProtection` SCM service contract. The
+  frozen application rejects a direct `--chill` launch, and its service graph
+  deliberately has no legacy Python heartbeat pair. No entry, package, UAC or
+  restricted-service admission guard was weakened to make recovery work.
+- Verify the fixed service registration/account/SID/DACL, pinned image and
+  retained native process identity. Only failed stopped services are eligible
+  after grace; clean Windows exit code zero always stays stopped, even when a
+  stale service-specific error remains. Pending/paused/unknown states block
+  duplicate starts. There are no install, reconfigure, stop or terminate actions.
+- Honor authenticated administrator STOP/epoch and the existing legacy format,
+  recheck STOP and service state immediately before `StartService`, persist
+  bounded authenticated pressure/backoff, and continue at a 60-second ceiling.
+  Full or invalid alert outboxes preserve evidence and report gaps without
+  permanently disabling otherwise approved recovery. Uncertain resource
+  retirement holds further allocation rather than claiming cleanup succeeded.
+- Add closed schema-2 installed configuration, separate native runtime/key
+  custody, optional read-only Python status/alert adapters and a cached UI row.
+  Source runs never auto-start the native binary. Public CI/release preparation
+  produces unsigned artifacts; trusted publisher signing, final-byte pins and
+  independent installer registration remain required for deployment.
+- Go validation: 63 top-level tests and their subtests passed; one opt-in exporter
+  skipped in the normal run. `go vet` and the legacy native console/STOP tests
+  passed. The built executable ran with no Python on PATH and a nonexistent
+  PYTHONHOME. The revised Python integration/frozen-entry cohort passed 74 tests;
+  147 further Go/Python interoperability, recovery and release-policy cases passed.
+  No live service activation, registration, signing or authority provisioning
+  was performed. See `frz/watchdog3/README.md` for the supported contract.
+
 ### Restart-loop follow-up (2026-11-12)
 
 Windows/Python 3.12 offline validation (2026-11-12): 151 unique focused

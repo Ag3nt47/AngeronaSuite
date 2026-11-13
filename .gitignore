@@ -60,6 +60,8 @@ frz/*.dll
 frz/*.obj
 frz/*.pdb
 frz/hypervisor/*.exe
+frz/watchdog3/*.exe
+frz/watchdog3/*.exe.build.json
 frz/hypervisor/go.sum
 *.test
 

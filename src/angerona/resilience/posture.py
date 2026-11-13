@@ -72,12 +72,31 @@ def _service_row(service: dict) -> dict:
     return _row("service", "Windows service recovery", "Unavailable on this system.", "off")
 
 
+def _native_watchdog_row(status: Optional[dict]) -> dict:
+    state = status.get("state") if isinstance(status, dict) else None
+    if state == "observed":
+        return _row("watchdog3", "Native third watchdog", "Core reports an authenticated native "
+                    "heartbeat. Recovery behavior and installer trust are not verified here.", "ok")
+    if state in {"unverified", "stale", "unavailable"}:
+        return _row("watchdog3", "Native third watchdog", "Needs review: a current authenticated "
+                    "native heartbeat is not verified. No launch or repair was attempted.", "warn")
+    if state == "stopped":
+        return _row("watchdog3", "Native third watchdog", "The native writer reported stopping. "
+                    "Only the verified STOP controls authorize stand-down.", "warn")
+    if state in {"source-disabled", "not-packaged"}:
+        return _row("watchdog3", "Native third watchdog", "Not auto-started in this build. The "
+                    "signed installer owns native-watchdog registration and startup.", "off")
+    return _row("watchdog3", "Native third watchdog", "No current native heartbeat is reported. "
+                "Existing recovery controls are unchanged; no new protection is inferred.", "off")
+
+
 def _row(key: str, label: str, text: str, tone: str) -> dict:
     return {"key": key, "label": label, "text": text, "tone": tone}
 
 
-def protection_posture(watchdog_status: Optional[dict] = None) -> list[dict]:
-    """Return the four posture rows. Never raises."""
+def protection_posture(watchdog_status: Optional[dict] = None, *,
+                       native_watchdog_status: Optional[dict] = None) -> list[dict]:
+    """Return read-only posture rows; no row grants launch/response authority."""
     status = watchdog_status if isinstance(watchdog_status, dict) else {}
     try:
         from angerona.resilience import control_authority
@@ -93,4 +112,4 @@ def protection_posture(watchdog_status: Optional[dict] = None) -> list[dict]:
             _CACHE["service"] = {"state": "unavailable"}
         _CACHE["until"] = now + 30.0
     return [_stop_row(authority), _pressure_row(status), _deadman_row(policy, status),
-            _service_row(_CACHE["service"])]
+            _service_row(_CACHE["service"]), _native_watchdog_row(native_watchdog_status)]

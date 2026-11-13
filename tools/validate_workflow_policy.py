@@ -97,6 +97,7 @@ _RELEASE_STEP_GRAPH: dict[
     "prepare-windows": (
         ("uses", "actions/checkout", None, frozenset({"uses"})),
         ("uses", "actions/setup-python", None, frozenset({"uses", "with"})),
+        ("uses", "actions/setup-go", None, frozenset({"uses", "with"})),
         (
             "run", "Resolve filesystem-safe artifact label", "pwsh",
             frozenset({"name", "id", "shell", "env", "run"}),

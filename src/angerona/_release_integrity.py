@@ -11,3 +11,8 @@ BLACKBOX_SHA256 = ""
 # intentionally keep them empty and report the watchdog boundary as inactive.
 FRZ_WATCHDOG_SHA256 = ""
 FRZ_WATCHDOG_PUBLISHER = ""
+
+# The independent third supervisor is registered by the protected installer,
+# never auto-started from source. These must describe its signed final bytes.
+WATCHDOG3_SHA256 = ""
+WATCHDOG3_PUBLISHER = ""

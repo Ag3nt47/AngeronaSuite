@@ -1,9 +1,18 @@
-# Third watchdog (Go) — outline, UNFINISHED
+# Third watchdog (Go) — original outline and implementation status
 
-**Status: not built. No code for this component exists in the repository.**
-This file is the design outline to rebuild from. Nothing here is implemented,
-compiled, signed, tested or shipped, and no other document may describe the
-third watchdog as present until that changes.
+**Implementation: [`watchdog3/`](watchdog3/README.md), added 2026-11-13.**
+The new component is a standalone Windows Go executable. Development builds
+are unsigned and are not auto-started or registered on the host. Production
+deployment still requires the protected publisher and installer; building is
+not evidence of installation or active recovery. The following sections retain
+the original design outline. Current build and behavior details are in its README.
+
+The installed implementation uses the approved native SCM service route. The
+current service graph does not publish the original Python pair's heartbeats;
+the native supervisor does not fabricate them or bypass package/UAC admission
+with a direct `--chill` launch. A clean SCM stop remains stopped. The heartbeat
+and pair-policy sections below are historical design/protocol material, not a
+claim that the installed service has that deployment shape.
 
 Recorded 2026-11-12. The ranked attack-path analysis behind it is a local-only
 file that is not published; ask the operator for it before building this.

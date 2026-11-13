@@ -5,6 +5,60 @@ Date: 2026-11-09
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
+## NATIVE THIRD WATCHDOG (2026-11-13 — Go development build)
+
+- New standalone Windows amd64 module: `frz/watchdog3/`. Build with
+  `tools/Build-AngeronaWatchdog3.ps1`; default artifact is
+  `build/watchdog3/watchdog3.exe`, plus input hashes and third-party notices.
+  Go 1.27.4 is pinned in CI; CGO is disabled. This executable does not need
+  Python. Development artifacts are unsigned and have not been registered or
+  activated on this host. No certificate or service authority was created.
+- IMPORTANT: the historical pair-based outline is not the installed contract.
+  Frozen `Angerona.exe --chill` is rejected. The admitted SCM service uses
+  exactly `Angerona.exe --engine-service`, restricted virtual account
+  `NT SERVICE\AngeronaProtection`, own-process registration and its existing
+  package/service/token/storage guards. That graph intentionally does NOT run
+  ResilienceManager or publish the legacy core/watchdog heartbeat pair. The
+  native implementation therefore uses fixed-service SCM observations and
+  StartService, without fabricating heartbeat progress or relaxing those guards.
+- Schema 2 has exactly six fields: schema, data_dir, launcher_path,
+  launcher_sha256, launcher_args (exactly ["--engine-service"]),
+  working_directory. The fixed config is the native ProgramData known folder's
+  `Angerona/watchdog3/config.json`, controlled by Administrators/SYSTEM.
+  data_dir is this supervisor's own separately provisioned private authority
+  and runtime namespace, NOT the service's `Protection` root or ambient Core
+  data. Keys are never created/repaired by the supervisor.
+- Clean SCM Win32ExitCode zero never authorizes a restart, including stale
+  ServiceExitCode values. Only failed stopped services can recover after
+  180-second startup and continuous 20-second failure grace. Pending, paused,
+  running or uncertain ownership prevents duplicate starts. Signed STOP,
+  registration, process generation, image custody and authenticated ledger
+  are checked again at dispatch. No service install/change/stop or process
+  termination, hidden persistence or owner-termination resistance exists.
+- Restart pressure survives supervisor restarts; retry backoff caps at 60s
+  without permanent give-up. Outbox exhaustion/tamper is an explicit evidence
+  gap, not automatic recovery authority and not a permanent recovery block.
+  Unknown file/native/SCM resource closes propagate and hold future allocation.
+- Optional Python admission/observation adapters are in
+  `resilience/native_watchdog.py`; manager/status presentation uses cached
+  observations and an independent alert cursor, never source autostart or
+  proof of service liveness. Signing must precede pinning final bytes in
+  WATCHDOG3_SHA256/WATCHDOG3_PUBLISHER; public unsigned requests leave pins empty.
+  Installer registration must survive either Python process's child Job.
+- Current validation: Go 63 top-level tests plus their subtests, one opt-in
+  exporter skip; go vet and legacy Go console/STOP cases passed. The compiled
+  native --version check exited zero without Python on PATH/PYTHONHOME.
+  Schema-2 Python integration and actual frozen-entry fixtures passed 74 cases.
+  The separate interoperability/recovery/release-policy run passed 147 cases
+  in 193.99s, exit zero with completed unconfigure and Python exit. The full
+  16,304-case suite was not repeated for this change.
+  Native SCM tests were injected, and native process tests used owned inert
+  helpers. No live Angerona/service activation or provisioning was performed.
+- The existing source recovery profile stays operational48/v1: the new
+  Python adapter is optional/lazy/caught as unavailable, not a recovery-startup
+  dependency. Changed manager bytes and both launcher pins were regenerated.
+  Private analyses, raw host/test logs and the full handoff remain outside git.
+
 ## HANDOFF FOLLOW-UP (2026-11-12 — Windows offline validation)
 
 - Imported exactly the two user-supplied v2 follow-up commits on `df4e9e6`:
@@ -30,8 +84,8 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   passed here on 3.12. This does not establish 3.10/3.13 compatibility or
   replace those dated CI failures with a green result.
 - No live Angerona restart, elevated path, STOP provisioning, AutoLogger
-  apply or real firewall change was performed. The third Go watchdog is
-  still an unbuilt outline. Earlier live-triage observations below remain
+  apply or real firewall change was performed. The third Go watchdog
+  was still an unbuilt outline at that point. Earlier live-triage observations below remain
   dated findings and are not superseded by this offline validation.
 
 ## PENDING LIVE TRIAGE (2026-11-11 — original findings; later offline results above)
@@ -97,10 +151,10 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   `start-angerona.bat` pins were regenerated: the hardening commit changed
   six pinned files without doing so, so the source launcher's verifier saw
   them as drift. Repeat that step after any change to a pinned file.
-- Third, non-Python watchdog: REQUESTED, NOT BUILT. No code exists. Work
-  stopped during design and was not resumed; do not treat it as present.
-  Outline for a later build: `frz/THIRD_WATCHDOG_OUTLINE.md` (a plain,
-  bounded supervisor that honours STOP).
+- At the original restart-loop review the third non-Python watchdog was only
+  an outline. Its later Go/SCM implementation and unsigned deployment status
+  are recorded above; do not confuse it with the legacy Go parent.
+  Original design: `frz/THIRD_WATCHDOG_OUTLINE.md`.
   Coverage for the pair-kill gap comes from SCM recovery (signed package),
   the Task Scheduler backstop and the restart ledger. The existing Go parent
   in `frz/` remains unbuilt and carries the defects listed in the analysis.

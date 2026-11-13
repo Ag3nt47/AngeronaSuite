@@ -3,6 +3,8 @@
 *.bat text eol=crlf
 *.sh text eol=lf
 *.command text eol=lf
+# Native build records bind exact source bytes on every checkout platform.
+frz/watchdog3/** text eol=lf
 # This contract is byte-canonical JSON and must not be rewritten by Windows checkouts.
 installer/windows-install-contract.json text eol=lf
 # This profile is authenticated by an exact compile-time SHA-256.

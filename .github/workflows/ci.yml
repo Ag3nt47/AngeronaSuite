@@ -50,6 +50,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: matrix.python-version == '3.12'
+        with:
+          go-version: '1.27.4'
+          cache-dependency-path: frz/watchdog3/go.sum
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade --require-hashes --no-deps -r requirements-bootstrap-pip.txt
@@ -114,19 +119,46 @@ jobs:
   native-watchdog:
     name: Native watchdog console and STOP contracts
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
-          go-version: stable
-          cache-dependency-path: frz/go.sum
+          go-version: '1.27.4'
+          cache-dependency-path: |
+            frz/go.sum
+            frz/watchdog3/go.sum
       - name: Exercise the optional Go watchdog with inert helper processes
         working-directory: frz
         shell: pwsh
         run: |
           go test -mod=readonly -timeout 90s angerona_watchdog.go angerona_watchdog_test.go
           exit $LASTEXITCODE
+      - name: Test independent third watchdog and Windows custody contracts
+        working-directory: frz/watchdog3
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+          GOTOOLCHAIN: local
+        run: |
+          go test -mod=readonly -timeout 180s ./...
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go vet -mod=readonly ./...
+          exit $LASTEXITCODE
+      - name: Build standalone Go watchdog artifact
+        shell: pwsh
+        run: |
+          & ./tools/Build-AngeronaWatchdog3.ps1 -SkipTests
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: watchdog3-windows-amd64-unsigned
+          path: |
+            build/watchdog3/watchdog3.exe
+            build/watchdog3/watchdog3.exe.build.json
+            build/watchdog3/watchdog3.exe.NOTICE.txt
+          if-no-files-found: error
+          retention-days: 7
 
   dependency-audit:
     runs-on: ubuntu-latest
