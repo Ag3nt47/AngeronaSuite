@@ -78,7 +78,7 @@ def _harness(monkeypatch, *, output=None):
 def test_windows_ci_streams_test_ids_and_opt_in_stages_without_changing_job_policy():
     workflow = yaml.safe_load((Path(__file__).resolve().parents[1] / ".github/workflows/ci.yml").read_text())
     job = workflow["jobs"]["python"]
-    assert job["timeout-minutes"] == "${{ matrix.python-version == '3.10' && 75 || 60 }}"
+    assert job["timeout-minutes"] == "${{ (matrix.python-version == '3.10' || matrix.python-version == '3.11') && 75 || 60 }}"
     assert job["strategy"]["fail-fast"] is False
     assert job["strategy"]["matrix"]["python-version"] == ["3.10", "3.11", "3.12", "3.13"]
     steps = [step for step in job["steps"] if "tools.ci_pytest" in step.get("run", "")]

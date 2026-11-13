@@ -27,6 +27,12 @@ elevated host behavior; no STOP authority was provisioned or dead-man hold armed
   again, so the source launcher's verifier no longer sees them as drift.
 - Record the outline for the unbuilt third (Go) watchdog in
   `frz/THIRD_WATCHDOG_OUTLINE.md`.
+- Forensic vault on Python 3.10 and 3.11: the evidence-directory pin compared
+  a 128-bit native file identity with the narrower values `os.stat` reports
+  before Python 3.12, so every capture was refused there. The pin now compares
+  the same handle in that interpreter's widths. Verified on Python 3.12 with a
+  forced legacy comparison; not run on 3.10 or 3.11 locally.
+- CI: the Python 3.11 job gets the 75-minute limit Python 3.10 already has.
 
 ### Restart-loop and STOP hardening (2026-11-11)
 

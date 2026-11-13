@@ -17,6 +17,7 @@ import secrets
 import shutil
 import stat
 import struct
+import sys
 import threading
 import time
 from pathlib import Path
@@ -99,6 +100,18 @@ def _file_identity(info) -> tuple:
     return info.st_dev, info.st_ino
 
 
+# Before Python 3.12, Windows os.stat reports the 32-bit volume serial and the
+# 64-bit file index, not the 64-bit serial and 128-bit FILE_ID_INFO identity.
+_LEGACY_STAT_IDENTITY = os.name == "nt" and sys.version_info < (3, 12)
+
+
+def _legacy_handle_identity(by_handle: bytes) -> tuple:
+    """(dwVolumeSerialNumber, nFileIndex) of one BY_HANDLE_FILE_INFORMATION."""
+    serial, = struct.unpack_from("<I", by_handle, 28)
+    high, low = struct.unpack_from("<II", by_handle, 44)
+    return serial, (high << 32) | low
+
+
 class DirectoryPins:
     """Pin every existing directory; Windows handles deny rename/delete."""
 
@@ -149,6 +162,9 @@ class DirectoryPins:
                         raise ForensicVaultError("evidence directory full file identity unavailable")
                     volume, object_id = struct.unpack("<Q16s", file_id.raw)
                     identity = (volume, int.from_bytes(object_id, "little"))
+                    if _LEGACY_STAT_IDENTITY:
+                        # Same pinned handle, in the widths this interpreter's lstat uses.
+                        identity = _legacy_handle_identity(info.raw)
                     if attrs & 0x400 or not attrs & 0x10 or identity != _file_identity(before):
                         raise ForensicVaultError("evidence directory changed during native pin")
                 self._named.append((part, _file_identity(before)))

@@ -280,3 +280,28 @@ def test_sensitive_export_short_write_is_not_reported_as_success(tmp_path, monke
         vault.export_vault(path, destination, operator_confirmed=True)
     assert (destination / "memory-strings.txt").exists()  # explicit partial evidence is preserved
     assert not (destination / "capture-receipt.json").exists()
+
+
+def test_directory_pin_compares_identity_in_pre_312_stat_widths(tmp_path, monkeypatch):
+    """Before Python 3.12, lstat reports a 32-bit serial and 64-bit index for the same directory."""
+    if os.name != "nt":
+        pytest.skip("Windows handle identity widths")
+
+    def legacy(info):
+        return info.st_dev & 0xFFFFFFFF, info.st_ino & 0xFFFFFFFFFFFFFFFF
+
+    monkeypatch.setattr(vault, "_LEGACY_STAT_IDENTITY", True)
+    monkeypatch.setattr(vault, "_file_identity", legacy)
+    with vault.DirectoryPins(tmp_path) as pins:
+        pins.check()
+    # The narrower comparison is still an exact one: another index is refused.
+    monkeypatch.setattr(vault, "_file_identity", lambda info: (legacy(info)[0], legacy(info)[1] ^ 1))
+    with pytest.raises(vault.ForensicVaultError, match="changed during native pin"):
+        vault.DirectoryPins(tmp_path)
+
+
+def test_legacy_handle_identity_reads_serial_and_index_fields():
+    record = bytearray(52)
+    struct.pack_into("<I", record, 28, 0x1234ABCD)
+    struct.pack_into("<II", record, 44, 0x00010002, 0x00030004)
+    assert vault._legacy_handle_identity(bytes(record)) == (0x1234ABCD, 0x0001000200030004)
