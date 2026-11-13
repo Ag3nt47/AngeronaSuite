@@ -244,8 +244,13 @@ def test_mobile_cli_nonzero_return_code_is_never_accepted(monkeypatch, signal_cl
     assert bridge._cli_failures["receive"] == result.error
 
 
-def test_mobile_health_does_not_overwrite_a_send_failure(monkeypatch) -> None:
+@pytest.mark.parametrize("auth_ready", [True, False])
+@pytest.mark.parametrize("lockout", [0.0, 30.0])
+def test_mobile_health_does_not_overwrite_a_send_failure(monkeypatch, auth_ready, lockout) -> None:
     bridge = _configured_bridge()
+    monkeypatch.setattr(bridge, "_mobile_auth_status", lambda: SimpleNamespace(
+        ready=auth_ready, reason="synthetic authorization custody unavailable"))
+    monkeypatch.setattr(bridge, "_lockout_remaining", lambda: lockout)
     bridge._record_cli_result("send", False, "send receipt failed")
     bridge._record_cli_result("receive", True)
     monkeypatch.setattr(bridge, "_poll_alerts", lambda: None)
@@ -258,6 +263,10 @@ def test_mobile_health_does_not_overwrite_a_send_failure(monkeypatch) -> None:
 
     assert bridge.health == 40
     assert "send receipt failed" in bridge.health_note
+    if not auth_ready:
+        assert "synthetic authorization custody unavailable" in bridge.health_note
+    if lockout:
+        assert "authorization temporarily held" in bridge.health_note
 
 
 def test_mobile_launch_uses_secret_free_environment_and_bounded_custody(

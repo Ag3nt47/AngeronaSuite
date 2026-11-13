@@ -10,6 +10,14 @@ The Word/PDF manual edition is older: **1.15.0** · **9 November 2026**. The bod
 
 [Download older PDF edition](../Angerona_Master_Manual.pdf) · [Download older Word edition](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · [Repository guide](../README.md)
 
+Current **1.15.1 source follow-up**:
+
+- File Integrity Monitor receipt issuance and historical Red Team verification now use the same current per-root coverage schema, root lists, digests and aggregate counters. This corrects a mismatch that discarded genuine complete scan evidence. Incomplete, budget-exhausted or inconsistent coverage remains ineligible; exact object, lease, generation and signature checks still apply. A test marker alone earns no detection credit.
+- Mobile bridge health preserves a failed send/receive receipt at **40**, while displaying any separate authorization or lockout hold. An authorization-only or lockout hold remains **60**; a receipt-authority fault takes priority at **0**. These are module health scores, not protection percentages. The change does not authorize mobile commands or claim recipient delivery.
+- **Settings > Watchdog** now has its own contextual Info and matching source-sandbox metadata. Unsigned monitoring remains off by default, shares Core's child-job lifetime and cannot recover Core independently. Signing and protected enrollment remain separate requirements; selecting a candidate inspects it as data. Opening isolated source copies grants no installation or response authority.
+
+These are focused source and fixture corrections. Hosted-check reconciliation and fresh exact-commit validation remain separate acceptance work; this note does not claim that all GitHub checks are green. See the [current release companion](releases/v1.15.1.md#hosted-check-reconciliation) for the maintained scope. The exported **1.15.0 Word/PDF body below remains unchanged**.
+
 Earlier source maintenance companion **9 November 2026**: [Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), [recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). These companion chapters provide additional source and recovery context.
 
 This complete readable export follows the Word manual in document order. Dated validation and version-history sections retain their original scope; the current operator workflows and complete references precede the final update history.

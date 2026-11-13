@@ -114,6 +114,19 @@ MENU_INFO: dict[str, tuple[MenuInfoTopic, ...]] = {
             locations=("{data}/settings.json", "{data}/diagnostics"),
         ),
         _topic(
+            "settings-watchdog", "Watchdog",
+            "Reviews the optional ordinary-user third watchdog, its live status, and candidate signing information. Unsigned mode is off by default and grants no privileged protection.",
+            (
+                ("Unsigned mode", "Explicit opt-in with reduced protection. It remains in a Core-owned kill-on-close job and cannot recover Core independently."),
+                ("Signing and enrollment", "A valid signature alone grants no privileged authority. Protected operation also requires explicit enrollment and the installed service and engine checks."),
+                ("Candidate inspection", "The selected file is inspected as data; selecting or inspecting it never runs or installs it. A signing-request export is for operator review."),
+                ("Heartbeat", "An advancing verified heartbeat measures this generation's progress; it does not prove successful recovery or protection."),
+            ),
+            "src/angerona/gui/watchdog_settings.py", "src/angerona/core/watchdog_signing.py",
+            "src/angerona/resilience/native_watchdog.py",
+            locations=("{data}/settings.json",),
+        ),
+        _topic(
             "settings-adversary-combat", "Adversary Combat",
             "Configures Angerona's standing autonomous-response policy, intensity, exact action permissions, protected boundaries, history, and verified Undo controls.",
             (("Mode", "Selects the bounded response posture used after a qualifying detection."), ("Automatic action", "Executes only actions admitted by the saved typed policy; no per-alert prompt is required."), ("Undo", "Reverses an eligible exact action and verifies the rollback postcondition.")),

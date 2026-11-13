@@ -160,3 +160,54 @@ and Source Observe network enforcement remain documented limits.
 
 See the [release companion](../docs/releases/v1.15.1.md) and
 [29-item security report](../docs/releases/security-worklist-review-2026-11-13.md).
+
+## Hosted failure reconciliation and final native fixtures
+
+The first complete hosted matrix for the earlier maintenance commit exposed
+45 distinct failing cases: current source contracts disagreed with several old
+fixtures, and FIM issuance/historical validation rejected the producer's new
+per-root coverage fields. The latter was a real product defect. Both validation
+boundaries now require the exact current schema, matching root inventory and
+counters, complete coverage and the existing object/caller/generation/lease/
+signature gates. Missing or budget-exhausted coverage is never promoted.
+
+Two additional source fixes preserve a failed mobile CLI receipt health score
+when authorization is also unavailable, and provide missing Watchdog contextual
+Info/sandbox metadata. Protected command admission is unchanged. Test fixtures
+now declare real durable restart state, explicitly test replay after supervisor
+replacement, retain the missing-state hold, and cover strict TLS on deferred
+context Python versions. New Windows deception creation remains held; existing
+static-canary observation is tested with disposable preexisting input.
+
+The final focused evidence includes 72 passing cases covering 32 root-coverage
+scenarios, mobile health and the affected UI/integrity contracts. A real native
+supervision fixture passed with isolated selected-input-pinned imports, three
+authenticated durable restart admissions and verified exact-generation
+retirement. Separate startup, ACL and manual-restart fixtures completed their
+affected cases. These scopes overlap and are not a whole-suite total.
+
+The final native response follow-up passed all three cases: base containment,
+comprehensive containment, and genuine FIM evidence retained through subsequent
+scans, tamper rejection and AAR scoring. All three used real owned Windows
+processes/handles and authentic local validation evidence in private inert
+fixtures. This is controlled validation, not protection against arbitrary
+malware or an installed privileged deployment. The source pins and diagnostic
+retirement receipts are retained privately.
+
+Earlier broader diagnostic scopes remain failed/held records: the restrictive
+harness rejected fixed inert sleep/collector children and existing-ancestor
+mkdir attempts; one intermediate harness rule also mishandled integer file
+descriptors, and an isolated collector rewrite initially mismatched its
+declared command. Those were diagnosed without weakening product checks. The
+corrected harness permits only reviewed fixed commands, declares the exact
+collector command before native admission, and substitutes a no-effect EEXIST
+for existing outside-scratch ancestor mkdir calls while native handle custody
+checks continue. No general outside writes or network access were admitted.
+
+A fresh consistent ledger snapshot preceded external exact-generation PC
+maintenance. All ten identified source generations retired with native handles
+closed; independent bounded discovery found no remaining owned generation.
+This was operator maintenance, not an authenticated protected STOP. Settings,
+keys, policy, ACLs, baselines and original alerts were preserved. Guarded
+publication, new exact-head hosted checks and the subsequent normal Core
+observation retain their separate receipts.

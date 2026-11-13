@@ -300,7 +300,8 @@ def test_temp_flush_failure_never_claims_a_healthy_directory(tmp_path, monkeypat
 def test_source_delegation_bounds_distinct_strategies_and_keeps_chill_checks():
     text = SOURCE.read_text(encoding="utf-8")
     bat = (ROOT / "start-angerona.bat").read_text(encoding="utf-8")
-    assert "setlocal DisableDelayedExpansion" in bat
+    setlocal = next(line for line in bat.splitlines() if line.lower().startswith("setlocal "))
+    assert setlocal.lower().split() == ["setlocal", "enableextensions", "disabledelayedexpansion"]
     assert "__ANGERONA_PINNED_BOOTSTRAP__" in bat
     assert "'-RunSupervisor'" in bat
     assert "Invoke-AngeronaSourceStartup.ps1" in (ROOT / "tools/verify_startup_recovery_bundle.ps1").read_text(encoding="utf-8")

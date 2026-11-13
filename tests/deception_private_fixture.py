@@ -14,6 +14,20 @@ from angerona.core import deception_io
 from angerona.modules import deception
 
 
+def seed_existing_static_canaries(base):
+    """Create disposable input before product read-only adoption is exercised.
+
+    This fixture is not a claim that Windows product deployment is available.
+    Native observation/adoption still uses the real admitted read-only boundary.
+    """
+    base = Path(base)
+    base.mkdir(parents=True, exist_ok=True)
+    raw = "# Do not modify — security canary.\n".encode("utf-8")
+    for name in ("passwords.txt", "wallet.dat", "backup_keys.txt"):
+        with (base / name).open("xb") as stream:
+            stream.write(raw)
+
+
 def private_canary_io(monkeypatch, root):
     root = root.resolve()
     original_temporary = deception.tempfile.TemporaryDirectory

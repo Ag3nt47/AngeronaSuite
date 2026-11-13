@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from deception_private_fixture import seed_existing_static_canaries
 
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.modules import adversary_combat as combat_module
@@ -237,7 +238,9 @@ def test_a13_same_timestamp_object_replacement_is_detected_or_claim_is_narrowed(
     module._base = tmp_path / "static"
     bus = EventBus()
     module.bind(bus)
+    seed_existing_static_canaries(module._base)
     module._plant()
+    assert len(module._canaries) == 3, module._canary_hold_details
     target = Path(next(iter(module._canaries)))
     before = target.stat()
     baseline = module._canaries[str(target)]
@@ -270,7 +273,9 @@ def test_a13_health_degrades_when_every_canary_is_lost(tmp_path: Path) -> None:
     module = DeceptionModule()
     module._base = tmp_path / "static"
     module.bind(EventBus())
+    seed_existing_static_canaries(module._base)
     module._plant()
+    assert len(module._canaries) == 3, module._canary_hold_details
     module.set_health(70, "file mutation/deletion visibility active")
     for raw_path in tuple(module._canaries):
         Path(raw_path).unlink()

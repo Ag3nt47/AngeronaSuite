@@ -126,8 +126,8 @@ def test_top_talkers_ask_ai_returns_promptly_and_finishes_on_qt(monkeypatch) -> 
 
     monkeypatch.setattr(window, "_ask_ai", request)
     monkeypatch.setattr(
-        top_talkers.QMessageBox,
-        "information",
+        top_talkers,
+        "_plain_notice",
         lambda parent, title, body: messages.append(
             (threading.current_thread(), parent, title, body)
         ),
@@ -186,8 +186,8 @@ def test_top_talkers_ignores_ai_result_after_close(monkeypatch) -> None:
 
     monkeypatch.setattr(window, "_ask_ai", request)
     monkeypatch.setattr(
-        top_talkers.QMessageBox,
-        "information",
+        top_talkers,
+        "_plain_notice",
         lambda *_args: messages.append("shown"),
     )
 

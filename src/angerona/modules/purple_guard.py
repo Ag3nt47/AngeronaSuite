@@ -569,6 +569,63 @@ def _lease_authority(lease: object) -> _LeaseAuthorityAccess:
     return _LeaseAuthorityAccess(state)
 
 
+def _fim_scan_coverage_is_complete(receipt: object) -> bool:
+    """Validate the current producer's per-root coverage, without granting trust."""
+    if not isinstance(receipt, dict):
+        return False
+    rows = receipt.get("root_coverage")
+    covered = receipt.get("covered_roots")
+    if (
+        receipt.get("complete") is not True
+        or receipt.get("reason") != "complete"
+        or receipt.get("deadline_scope")
+        != "cooperative checks; individual filesystem I/O may block"
+        or not isinstance(rows, list)
+        or not isinstance(covered, list)
+        or not rows
+        or len(rows) != len(covered)
+        or type(receipt.get("error_count")) is not int
+        or receipt["error_count"] != 0
+        or not isinstance(receipt.get("errors"), (list, tuple))
+        or receipt["errors"]
+    ):
+        return False
+    row_keys = {
+        "root", "complete", "reason", "blocking_object", "files_visited",
+        "content_bytes_hashed", "budget_exhausted",
+    }
+    roots: list[str] = []
+    visited = content_bytes = 0
+    for row in rows:
+        if (
+            not isinstance(row, dict)
+            or set(row) != row_keys
+            or not isinstance(row.get("root"), str)
+            or not row["root"]
+            or len(row["root"]) > 32_768
+            or not os.path.isabs(row["root"])
+            or row.get("complete") is not True
+            or row.get("reason") != "complete"
+            or row.get("blocking_object") != ""
+            or row.get("budget_exhausted") is not False
+            or any(type(row.get(field)) is not int or row[field] < 0
+                   for field in ("files_visited", "content_bytes_hashed"))
+        ):
+            return False
+        roots.append(row["root"])
+        visited += row["files_visited"]
+        content_bytes += row["content_bytes_hashed"]
+    return bool(
+        roots == sorted(set(roots))
+        and covered == sorted(roots)
+        and _sha256(roots) == receipt.get("watch_roots_sha256")
+        and type(receipt.get("files_visited")) is int
+        and receipt["files_visited"] == visited
+        and type(receipt.get("content_bytes_hashed")) is int
+        and receipt["content_bytes_hashed"] == content_bytes
+    )
+
+
 class _ProducerReceiptCapability:
     """One-lease receipt capability bound to one exact producer and code site.
 
@@ -754,6 +811,8 @@ class _ProducerReceiptCapability:
                 "completed_monotonic_ns",
                 "watch_roots_sha256",
                 "covered_roots",
+                "root_coverage",
+                "deadline_scope",
                 "complete",
                 "reason",
                 "files_visited",
@@ -806,6 +865,7 @@ class _ProducerReceiptCapability:
                 and set(scan_proof) == proof_keys
                 and isinstance(scan_receipt, dict)
                 and set(scan_receipt) == receipt_keys
+                and _fim_scan_coverage_is_complete(scan_receipt)
                 and isinstance(scan_identity, dict)
                 and set(scan_identity) == identity_keys
                 and scan_receipt.get("schema") == "angerona.fim-scan-receipt.v1"
@@ -3530,6 +3590,8 @@ class RedTeamValidationLease:
                 "completed_monotonic_ns",
                 "watch_roots_sha256",
                 "covered_roots",
+                "root_coverage",
+                "deadline_scope",
                 "complete",
                 "reason",
                 "files_visited",
@@ -3567,6 +3629,7 @@ class RedTeamValidationLease:
             scan_valid = bool(
                 isinstance(scan_receipt, dict)
                 and set(scan_receipt) == receipt_keys
+                and _fim_scan_coverage_is_complete(scan_receipt)
                 and isinstance(scan_identity, dict)
                 and set(scan_identity) == identity_keys
                 and scan_receipt.get("schema") == "angerona.fim-scan-receipt.v1"

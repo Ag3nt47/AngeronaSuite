@@ -6,6 +6,19 @@ import time
 from types import SimpleNamespace
 
 
+def _durable_supervisor(tmp_path, namespace, **kwargs):
+    """Use real authenticated replay state, confined to this inert fixture."""
+    from angerona.core.engine_transport import private_directory
+    from angerona.resilience.recovery_state import RecoveryStateStore
+    from angerona.resilience.supervisor import ProcessSupervisor
+
+    directory = private_directory(tmp_path / "recovery-state")
+    store = RecoveryStateStore(
+        namespace, path=directory / f"{namespace}.json", key=bytes(range(32)),
+    )
+    return ProcessSupervisor(state_namespace=namespace, state_store=store, **kwargs)
+
+
 def test_watchdog_allows_busy_core_heartbeat_jitter() -> None:
     from angerona.resilience import manager, watchdog
 
@@ -107,16 +120,50 @@ def test_unrelated_supervisor_cannot_consume_the_core_restart(
     monkeypatch.setattr(heartbeat, "_data_dir", lambda: tmp_path)
     monkeypatch.setattr(shutdown_token, "_load_key", lambda: bytes(range(32)))
     [core_command] = supervisor.request_restart("core")
+    original_command = core_command.read_bytes()
 
-    core_side = supervisor.ProcessSupervisor()
+    core_side = _durable_supervisor(tmp_path, "fixture-core-side")
     core_side.add("scanner", ["scanner"])
     assert core_side._pop_restart_requests() == set()
     assert core_command.exists()
 
-    watchdog_side = supervisor.ProcessSupervisor()
+    watchdog_side = _durable_supervisor(tmp_path, "fixture-watchdog-side")
     watchdog_side.add("core", ["core"])
     assert watchdog_side._pop_restart_requests() == {"core"}
     assert not core_command.exists()
+
+    nonce = json.loads(original_command)["nonce"]
+    assert nonce in watchdog_side._restart_nonce_store.load()["restart_nonces"]
+    # A fresh supervisor has no in-memory seen set. Its authenticated durable
+    # nonce document must still reject the exact previously accepted command.
+    core_command.write_bytes(original_command)
+    events = []
+    fresh_watchdog = _durable_supervisor(
+        tmp_path, "fixture-watchdog-side",
+        on_event=lambda level, message, details: events.append((level, message, details)),
+    )
+    fresh_watchdog.add("core", ["core"])
+    assert fresh_watchdog._restart_seen == {}
+    assert fresh_watchdog._pop_restart_requests() == set()
+    assert any("Rejected replayed restart command" in message for _, message, _ in events)
+    assert not core_command.exists()
+
+
+def test_restart_without_durable_nonce_state_is_held(tmp_path, monkeypatch):
+    from angerona.resilience import heartbeat, shutdown_token, supervisor
+
+    monkeypatch.setattr(heartbeat, "_data_dir", lambda: tmp_path)
+    monkeypatch.setattr(shutdown_token, "_load_key", lambda: bytes(range(32)))
+    events = []
+    ephemeral = supervisor.ProcessSupervisor(
+        on_event=lambda level, message, details: events.append((level, message, details)),
+    )
+    ephemeral.add("core", ["core"])
+    assert len(supervisor.request_restart("core")) == 1
+
+    assert ephemeral._pop_restart_requests() == set()
+    assert any("durable nonce admission unavailable" in message for _, message, _ in events)
+    assert all(details.get("response_authorized") is False for _, _, details in events)
 
 
 def test_manual_core_restart_clears_safe_mode_and_respawns(
@@ -126,7 +173,7 @@ def test_manual_core_restart_clears_safe_mode_and_respawns(
 
     monkeypatch.setattr(heartbeat, "_data_dir", lambda: tmp_path)
     monkeypatch.setattr(shutdown_token, "_load_key", lambda: bytes(range(32)))
-    sup = supervisor.ProcessSupervisor()
+    sup = _durable_supervisor(tmp_path, "fixture-manual-restart")
     component = sup.add("core", ["core"])
     component.safe_mode = True
     component._failures.extend([1.0, 2.0, 3.0])
@@ -154,7 +201,7 @@ def test_manual_restart_does_not_spawn_when_safe_termination_fails(
 
     monkeypatch.setattr(heartbeat, "_data_dir", lambda: tmp_path)
     monkeypatch.setattr(shutdown_token, "_load_key", lambda: bytes(range(32)))
-    sup = supervisor.ProcessSupervisor()
+    sup = _durable_supervisor(tmp_path, "fixture-refused-restart")
     sup.add("core", ["core"])
     calls = []
     monkeypatch.setattr(sup, "_terminate", lambda current: False)

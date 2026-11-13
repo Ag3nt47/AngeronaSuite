@@ -296,3 +296,49 @@ def test_public_verifier_closure_cell_is_not_the_dispatch_authority(
     finally:
         verifier_cell.cell_contents = original
         _stop_fim(recorder, guard, _fim, lease, keep_alive)
+
+
+def test_current_root_coverage_is_checked_by_issuer_and_historical_verifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import copy
+
+    run_id = "coverage-schema-history"
+    bus, recorder, guard, fim, manager, lease, keep_alive, target = _start_fim(
+        tmp_path, monkeypatch, run_id=run_id
+    )
+    marker = target / "_redteam_lsass_dump_coverage_schema.txt"
+    validate = purple_guard._fim_scan_coverage_is_complete
+    checked = []
+
+    def observe(receipt):
+        result = validate(receipt)
+        checked.append((copy.deepcopy(receipt), result))
+        return result
+
+    monkeypatch.setattr(purple_guard, "_fim_scan_coverage_is_complete", observe)
+    try:
+        marker.write_text("inert current-schema marker", encoding="utf-8")
+        RedTeamValidationLease.register_artifact_handle(lease, marker, run_id=run_id)
+        fim._evaluate_snapshot(fim._scan())
+        source = _signed_events(bus, fim, marker)[0]
+        assert len(checked) == 1 and checked[0][1] is True  # Genuine issuer input.
+        original = copy.deepcopy(source.details)
+        generation = original["fim_scan_receipt"]["scan_generation"]
+        later = fim._scan()
+        assert later._fim_receipt["scan_generation"] > generation
+        assert purple_guard.verify_validation_native_event(lease, source, manager, _STEP)
+        assert len(checked) == 2 and checked[-1][1] is True
+
+        malformed = copy.deepcopy(original)
+        malformed["fim_scan_receipt"]["root_coverage"][0]["budget_exhausted"] = True
+        rejected = dataclasses.replace(source, details=malformed)
+        assert not purple_guard.verify_validation_native_event(lease, rejected, manager, _STEP)
+        assert len(checked) == 3 and checked[-1][1] is False
+        # The negative probe is neither published nor re-signed; the genuine
+        # immutable observation must still verify after malformed input.
+        assert source.details == original
+        assert purple_guard.verify_validation_native_event(lease, source, manager, _STEP)
+    finally:
+        _stop_fim(recorder, guard, fim, lease, keep_alive)
+        marker.unlink(missing_ok=True)

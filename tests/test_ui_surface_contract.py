@@ -204,11 +204,19 @@ def test_every_declared_menu_action_has_signal_or_exact_menu_dispatch() -> None:
 
 
 def test_contextual_info_catalog_covers_each_registered_tab_exactly_once() -> None:
-    assert sum(len(topics) for topics in MENU_INFO.values()) == 34
+    assert sum(len(topics) for topics in MENU_INFO.values()) == 35
     for surface, topics in MENU_INFO.items():
         labels = [normalize_tab_label(topic.title) for topic in topics]
         assert len(labels) == len(set(labels)), surface
         assert all(label for label in labels)
+    settings_topics = {
+        normalize_tab_label(topic.title): topic for topic in MENU_INFO["settings"]
+    }
+    assert set(settings_topics) == {
+        normalize_tab_label(label) for label in SettingsDialog._SANDBOX_TARGETS
+    }
+    for label, (source_path, _find_text) in SettingsDialog._SANDBOX_TARGETS.items():
+        assert source_path in settings_topics[normalize_tab_label(label)].source_paths
 
 
 def test_settings_tabs_buttons_and_close_behavior_offscreen(tmp_path: Path) -> None:
@@ -221,6 +229,7 @@ def test_settings_tabs_buttons_and_close_behavior_offscreen(tmp_path: Path) -> N
         "Information",
         "General",
         "System",
+        "Watchdog",
         "Adversary Combat",
         "Enterprise",
         "Integrations",
@@ -238,6 +247,8 @@ def test_settings_tabs_buttons_and_close_behavior_offscreen(tmp_path: Path) -> N
         assert [
             dialog.tabs.tabText(index) for index in range(dialog.tabs.count())
         ] == expected
+        assert dialog._watchdog_settings.unsigned_enabled.objectName() == "WatchdogUnsignedEnabled"
+        assert not dialog._watchdog_settings.unsigned_enabled.isChecked()
         for index, label in enumerate(expected[:-1]):
             dialog.tabs.setCurrentIndex(index)
             app.processEvents()

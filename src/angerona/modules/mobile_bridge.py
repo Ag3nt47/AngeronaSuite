@@ -2519,16 +2519,26 @@ class MobileResponseBridge(BaseModule):
                 auth_status = self._mobile_auth_status()
                 if self._receipt_authority_fault:
                     self.set_health(0, self._receipt_authority_fault)
-                elif not auth_status.ready:
-                    self.set_health(60, auth_status.reason)
-                elif self._lockout_remaining() > 0:
-                    self.set_health(60, "mobile protocol authorization temporarily held; local rearm can reset it")
                 elif self._cli_failures:
                     failures = "; ".join(
                         f"{purpose}: {detail}"
                         for purpose, detail in sorted(self._cli_failures.items())
                     )
-                    self.set_health(40, failures[:500])
+                    # A separate authorization hold must not hide a failed
+                    # send/receive receipt or raise its unhealthy score.
+                    holds = []
+                    if not auth_status.ready:
+                        holds.append(auth_status.reason)
+                    if self._lockout_remaining() > 0:
+                        holds.append("mobile protocol authorization temporarily held; local rearm can reset it")
+                    note = failures[:350]
+                    if holds:
+                        note += "; " + "; ".join(holds)
+                    self.set_health(40, note[:500])
+                elif not auth_status.ready:
+                    self.set_health(60, auth_status.reason)
+                elif self._lockout_remaining() > 0:
+                    self.set_health(60, "mobile protocol authorization temporarily held; local rearm can reset it")
                 elif len(self.pending_alerts) >= _MAX_PENDING_ALERTS:
                     self.set_health(70, "pending mobile authorization capacity full; new alerts are review-only")
                 elif time.monotonic() - self._last_cli_receipt_at > max(

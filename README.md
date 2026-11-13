@@ -164,6 +164,10 @@ The [current source companion](docs/releases/v1.15.1.md) and
 - **Quieter persistence review:** ordinary scheduled-task runtime-state changes
   no longer repeat configuration alerts when every selected definition field
   matches. Real definition changes and uncertain evidence remain visible.
+- **Consistent scan evidence:** current file-scan coverage is validated at both
+  receipt issuance and historical Red Team review. Missing or incomplete roots
+  retain their coverage gap. Mobile send failures remain visible beside separate
+  authorization holds, and Watchdog settings now have contextual help.
 - **Native file reliability:** corrected the Windows rename-buffer boundary
   used for atomic private-file updates. Diagnostics retain the original OS
   error, and native build discovery selects one compiler path.
@@ -258,7 +262,7 @@ The [current source companion](docs/releases/v1.15.1.md) and
 - **Red Team fits the available screen:** keep readiness, warnings, progress and
   Launch/Stop visible while setup and tall secondary pages scroll. Initial fit
   respects the window frame, enlarged text and later operator geometry. Inert
-  Inert checks passed, and a fresh default normal-window observation confirmed
+  checks passed, and a fresh default normal-window observation confirmed
   readable readiness and Launch/Stop without manual resize or maximize. This
   verifies that layout observation, not detection coverage.
 - **Reliable header labels and idle scan timing:** full-budget controls retain

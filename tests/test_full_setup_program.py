@@ -49,7 +49,10 @@ def test_full_setup_maps_every_supported_end_user_config_option() -> None:
     internal_or_runtime = {
         "data_dir",
         "module_states",
+        "settings_degraded",  # Load-time health status; never editable setup input.
+        "settings_issues",
         "selftest_auto_recover_modules",  # Selected per discovered module in Settings.
+        "watchdog3_unsigned_enabled",  # Explicit reduced-protection opt-in in live Watchdog Settings.
         "teams_bot_skip_auth",
         "holographic_orb_x",
         "holographic_orb_y",
@@ -59,6 +62,10 @@ def test_full_setup_maps_every_supported_end_user_config_option() -> None:
     }
     configurable = {field.name for field in fields(Config)} - internal_or_runtime
     assert configurable == mapped
+    assert Config().watchdog3_unsigned_enabled is False
+    assert not {"settings_degraded", "settings_issues", "watchdog3_unsigned_enabled"} & mapped
+    assert all(not field.init for field in fields(Config)
+               if field.name in {"settings_degraded", "settings_issues"})
     assert len(STEPS) >= 15
     assert self_test()[0]
 

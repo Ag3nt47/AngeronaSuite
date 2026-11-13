@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from deception_private_fixture import private_canary_io
 
 from angerona.core.eventbus import Event, EventBus, Severity
 from angerona.modules import adversary_combat as combat_module
@@ -412,6 +413,20 @@ def test_deception_lure_claim_matches_observed_mutation_boundary(
     monkeypatch.setattr(module, "_plant_fake_registry_cred", lambda _name: None)
     monkeypatch.setattr("angerona.modules.deception.random.choice", lambda values: values[0])
 
+    if os.name == "nt":
+        # Product creation remains held; do not turn CI elevation or this
+        # disposable path into permission for an unreviewed native mutation.
+        module._restage("inert credential discovery")
+        assert not list(tmp_path.glob("aws_credentials_*.txt"))
+        assert not module._canaries
+        assert module._restage_count == 0
+        assert module._canary_hold_reasons == ["restage:CanaryHeld"]
+        assert any("object-relative provider" in detail
+                   for detail in module._canary_hold_details)
+
+    # Exercise wording/content using the explicit private byte/identity adapter.
+    # This checks the lure contract, not native Windows deployment coverage.
+    private_canary_io(monkeypatch, tmp_path)
     module._restage("inert credential discovery")
 
     lure = next(tmp_path.glob("aws_credentials_*.txt"))

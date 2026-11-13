@@ -1071,23 +1071,37 @@ Write-Output ('RESULT:'+(@{boundaries=@(8190,8191,8192);complete_frames_bounded=
 
 @pytest.mark.parametrize("native_code", [0, 1, 82, 124, 125])
 def test_assistant_diagnostic_failure_preserves_known_native_result_and_capture_owner(tmp_path, native_code):
-    body = r"""
+    body = PREFLIGHT_CACHE_FIXTURE + r"""
 $root=$env:ANGERONA_TEST_SCRATCH
 [void][IO.Directory]::CreateDirectory((Join-Path $root 'tools'))
 $fixture=@'
 function Invoke-SourceStartupCapturedAssistant {
+    param($Python,$Arguments,$WorkingDirectory,$Environment,$StdoutPath,$StderrPath,$TimeoutSeconds,$Heartbeat)
+    Assert-FixtureFreshCacheCall $Arguments $WorkingDirectory $Environment
+    if(($Arguments[3..5] -join '|') -cne '-m|angerona.startup|--chill'){
+        throw 'The inert assistant lost its canonical startup arguments.'
+    }
     return [pscustomobject]@{ExitCode=$script:NativeCode;ReadersComplete=$false;TimedOut=($script:NativeCode -eq 124);
         Process=[pscustomobject]@{HasExited=$false};ProcessId=424242;ProcessRole='inert-fixture'}
 }
 '@
 [IO.File]::WriteAllText((Join-Path $root 'tools\startup_assistant_capture.ps1'),$fixture)
+$script:SourceStartupCriticalMode=$true
+$scratch=New-SourceStartupTemporary -Root $root -Storage $fixtureStorage -Purpose preflight
+$prefix=New-SourceStartupCachePrefix $root $scratch
 function Write-SourceStartupEvent {throw 'Injected diagnostic journal failure.'}
 function Read-SourceStartupLogTail {throw 'Injected diagnostic tail failure.'}
 $script:NativeCode=NATIVE_CODE
-$code=Invoke-SourceStartupAssistant -Python 'inert-python.exe' -Root $root -Environment @{} -Scratch $root
-Write-Output ('RESULT:'+(@{code=$code;owners=$script:StartupPendingCaptures.Count}|ConvertTo-Json -Compress))
+try {
+    $code=Invoke-SourceStartupAssistant -Python 'inert-python.exe' -Root $root `
+        -Environment @{TEMP=$scratch;TMP=$scratch} -Scratch $scratch -FreshCachePrefix $prefix
+    Write-Output ('RESULT:'+(@{code=$code;owners=$script:StartupPendingCaptures.Count
+        cache_checks=$script:FixtureCacheChecks;cache_absent=!(Test-Path -LiteralPath $prefix)}|ConvertTo-Json -Compress))
+} finally { Close-SourceStartupCriticalWorkspaces }
 """
-    assert run(tmp_path, body.replace("NATIVE_CODE", str(native_code))) == {"code": native_code, "owners": 1}
+    assert run(tmp_path, body.replace("NATIVE_CODE", str(native_code))) == {
+        "code": native_code, "owners": 1, "cache_checks": 1, "cache_absent": True,
+    }
 
 
 def test_repair_diagnostic_tail_failure_preserves_each_native_result(tmp_path):

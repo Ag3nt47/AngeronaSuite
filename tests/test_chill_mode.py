@@ -330,4 +330,6 @@ def test_chill_starts_resilience_backends_without_redundant_status_windows(
 
     app._load_modules()
 
-    assert calls == [{"with_ui": False}]
+    assert len(calls) == 1
+    assert calls[0]["config"] is app.config
+    assert calls[0] == {"config": app.config, "with_ui": False}

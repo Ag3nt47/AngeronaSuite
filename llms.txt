@@ -64,6 +64,13 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Earlier 1.15.0 validation and deployed-authority limits below remain dated
   evidence; no new hosted success or live coverage follows from those records.
 
+- Current FIM root coverage/deadline fields are validated symmetrically at
+  native receipt issuance and historical verification, preserving exact lease,
+  object, generation, caller and signature admission. Mobile CLI failures retain
+  their health score beside authorization holds. Watchdog contextual help now
+  matches its Settings controls. Hosted fixture reconciliation retains native
+  durable-replay checks and honest Windows deception creation holds.
+
 ## CURRENT REVIEW (v1.15.1 — 13 November security candidate)
 
 - Version 1.15.1 integrates the reviewed worklist candidate, initially based on

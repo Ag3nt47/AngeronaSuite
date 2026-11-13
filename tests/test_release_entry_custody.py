@@ -346,6 +346,14 @@ def test_retained_verification_artifact_blocks_writes_and_rename_until_retiremen
     target = tmp_path / "staged.exe"
     source.write_bytes(b"inert artifact, not executable")
     _functions("Verify-Angerona-Release.ps1", ["Copy-RetainedReleaseStageFile"], r"""
+# This fixture extracts only the copy function, outside the verifier's trusted
+# bootstrap environment. Load the real OS security cmdlet by its fixed module
+# manifest instead of depending on inherited PSModulePath/autoload discovery.
+$securityManifest = [IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Security','Microsoft.PowerShell.Security.psd1')
+Import-Module -Name $securityManifest -ErrorAction Stop
+if((Get-Command Get-Acl -CommandType Cmdlet -ErrorAction Stop).ModuleName -cne 'Microsoft.PowerShell.Security'){
+    throw 'The retained-artifact fixture did not load the real OS ACL cmdlet.'
+}
 $fixture = [IO.Path]::GetFullPath($data.fixture)
 function Assert-ReleaseStageDirectory { param($Path) if ($Path -ne $fixture) { throw 'escaped fixture' } }
 function Assert-ReleaseAuthorityAcl { param($Acl,$Label,$Ancestor) }

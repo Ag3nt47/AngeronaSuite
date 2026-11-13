@@ -157,6 +157,8 @@ def test_process_sensor_fetches_expensive_fields_only_for_new_pids(
 def test_scanner_status_is_periodic_but_change_driven(monkeypatch) -> None:
     host = scanner.ScannerHost.__new__(scanner.ScannerHost)
     host.ring = SimpleNamespace(backpressure=False)
+    host._ring_retry_at = 0.0
+    host._ring_state = host._last_ring_state = "available"
     host._last_status = 10.0
     host._last_ping_poll = 10.0
     host._last_ping = ""
@@ -190,8 +192,16 @@ def test_scanner_status_is_periodic_but_change_driven(monkeypatch) -> None:
     clock["value"] = 43.0
     assert host._maybe_write_status(clock["value"])
 
+    # A coverage-state change is reportable even if pressure and ping stay put.
+    host._ring_state = "degraded"
+    clock["value"] = 44.0
+    assert host._maybe_write_status(clock["value"])
+    clock["value"] = 45.0
+    assert not host._maybe_write_status(clock["value"])
+
     assert writes == [
         (12.0, "nonce", False),
         (13.0, "nonce", True),
         (43.0, "nonce", True),
+        (44.0, "nonce", True),
     ]

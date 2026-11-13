@@ -283,12 +283,13 @@ def test_actual_settings_preserves_tabs_search_values_and_reachable_footer(tmp_p
     monkeypatch.setattr(dialog, "screen", lambda: SimpleNamespace(
         availableGeometry=lambda: QRect(work)))
     controller = dialog._window_fit_controller
-    expected = ["Overview", "Information", "General", "System", "Adversary Combat",
+    expected = ["Overview", "Information", "General", "System", "Watchdog", "Adversary Combat",
                 "Enterprise", "Integrations", "ARIA", "Trusted Processes",
                 "Mobile Integration", "API Keys", "Self-Test", "Info"]
     try:
         assert dialog.minimumWidth() >= 720
         assert [dialog.tabs.tabText(i) for i in range(dialog.tabs.count())] == expected
+        assert not dialog._watchdog_settings.unsigned_enabled.isChecked()
         assert all(isinstance(dialog.tabs.widget(i), QScrollArea) for i in range(len(expected) - 1))
         assert dialog.tabs.tabText(dialog.tabs.currentIndex()) == "Adversary Combat"
         dialog.resize(1200, 950)

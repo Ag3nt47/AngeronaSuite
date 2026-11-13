@@ -155,6 +155,10 @@ def test_direct_canonical_fim_evaluator_cannot_mint_proof_without_scan(
 
         # No _scan() result or scan/change-token receipt exists. An unrelated
         # in-process caller supplies the evaluator's `current` mapping directly.
+        # Explicit watch scope is input, not evidence from a completed scan.
+        monkeypatch.setattr(
+            "angerona.modules.file_integrity.watch_roots", lambda: [str(target)]
+        )
         fim._evaluate_snapshot({str(marker.resolve()): digest})
 
         assert fim._last_scan_receipt == {"complete": False, "reason": "not scanned"}

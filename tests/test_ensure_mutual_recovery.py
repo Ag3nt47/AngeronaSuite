@@ -173,6 +173,13 @@ def test_batch_wrapper_ignores_hostile_inherited_control_text(tmp_path, argument
 
 @pytest.mark.skipif(os.name != "nt", reason="Native Windows private jobs, locks and process handles")
 def test_native_existing_supervisor_consumes_signed_requests_and_real_children_publish_heartbeats(helper, tmp_path, monkeypatch):
+    import hashlib
+    import psutil
+    import pywintypes
+    import win32api
+    import win32con
+    import win32security
+
     from angerona.core.engine_transport import private_directory
     from angerona.core.privilege import sanitized_child_environment
     from angerona.core.windows_child_job import launch_windows_child
@@ -183,56 +190,126 @@ def test_native_existing_supervisor_consumes_signed_requests_and_real_children_p
     root = private_directory(tmp_path / "isolated-runtime")
     for name in ("ipc", "heartbeats"):
         private_directory(root / name)
+    source_root = (ROOT / "src").resolve(strict=True)
+    assert Path(heartbeat.__file__).resolve(strict=True) == source_root / "angerona/resilience/heartbeat.py"
+    assert Path(supervisor.__file__).resolve(strict=True) == source_root / "angerona/resilience/supervisor.py"
+    origins = {
+        name: Path(module.__file__).resolve(strict=True)
+        for name, module in {
+            "psutil": psutil, "win32api": win32api, "win32con": win32con,
+            "win32security": win32security, "pywintypes": pywintypes,
+        }.items()
+    }
+    libraries = origins["psutil"].parent.parent
+    assert all(path.is_relative_to(libraries) for path in origins.values())
+    bootstrap_paths = list(dict.fromkeys(map(str, (
+        source_root, libraries, origins["win32api"].parent,
+        origins["win32security"].parent, origins["win32con"].parent,
+    ))))
+    selected_files = [*origins.values(), *(source_root / path for path in (
+        "angerona/__init__.py", "angerona/core/singleton.py", "angerona/core/engine_transport.py",
+        "angerona/core/windows_child_job.py", "angerona/core/privilege.py",
+        "angerona/resilience/heartbeat.py", "angerona/resilience/shutdown_token.py",
+        "angerona/resilience/supervisor.py", "angerona/resilience/recovery_state.py",
+    ))]
+    bootstrap = {
+        "paths": bootstrap_paths,
+        "dll_directory": str(origins["pywintypes"].parent),
+        "pins": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in selected_files},
+    }
     fixture = tmp_path / "inert_supervision.py"
     fixture.write_text(r'''
-import sys,time
+import hashlib,json,os,sys,time,traceback
 from pathlib import Path
-from angerona.core import singleton
-from angerona.core.engine_transport import create_private_file
-from angerona.resilience import heartbeat,shutdown_token,supervisor
 role,root=sys.argv[1],Path(sys.argv[2])
-# This inert child represents an ordinary-user runtime. A hosted runner's
-# administrator token may otherwise choose Administrators as the default
-# owner of generic heartbeat/singleton files. Adjust only this child's default
-# owner; keep the real private-file ACL/owner checks and all auth boundaries.
-if __import__('os').name=='nt':
+if role not in {'core','watchdog','scanner','blackbox'} or not root.is_absolute():
+    raise RuntimeError('Unexpected isolated fixture invocation')
+stage='bootstrap'
+def diagnostic(kind,error,tb):
+    # Private diagnostic data only; never grants startup/restart authority.
+    value={'schema':1,'synthetic':True,'role':role,'stage':stage,
+           'error_type':kind.__name__[:128],'traceback':''.join(traceback.format_exception(kind,error,tb))[-8192:]}
+    raw=json.dumps(value,ensure_ascii=True)
+    if len(raw.encode('ascii'))>16384:
+        value['traceback']='Diagnostic traceback exceeded its bounded record; original error type and stage retained.'
+        raw=json.dumps(value,ensure_ascii=True)
+    try:(root/(role+'.error.json')).write_text(raw,encoding='ascii')
+    except Exception:pass
+sys.excepthook=diagnostic
+if not (sys.flags.isolated and sys.flags.no_site and sys.dont_write_bytecode):
+    raise RuntimeError('The inert child requires -I -S -B without site or bytecode writes')
+bootstrap=BOOTSTRAP_MANIFEST
+for path,digest in bootstrap['pins'].items():
+    if hashlib.sha256(Path(path).read_bytes()).hexdigest()!=digest:
+        raise RuntimeError('Selected fixture bootstrap bytes changed before child import')
+sys.path[:0]=bootstrap['paths']
+_dll_owner=os.add_dll_directory(bootstrap['dll_directory'])
+def main():
+    global stage
+    stage='explicit-library-imports'
+    from angerona.core import singleton
+    from angerona.core.engine_transport import create_private_file
+    from angerona.resilience import heartbeat,shutdown_token,supervisor
+    from angerona.resilience.recovery_state import RecoveryStateStore
+    # This inert child represents an ordinary-user runtime. A hosted runner's
+    # administrator token may otherwise choose Administrators as the default
+    # owner of generic heartbeat/singleton files. Adjust only this child's default
+    # owner; keep the real private-file ACL/owner checks and all auth boundaries.
+    stage='private-token-owner'
     import win32api,win32security
     token=win32security.OpenProcessToken(win32api.GetCurrentProcess(),0x88)
     try:
         sid=win32security.GetTokenInformation(token,win32security.TokenUser)[0]
         win32security.SetTokenInformation(token,win32security.TokenOwner,sid)
     finally:token.Close()
-heartbeat._data_dir=lambda:root
-shutdown_token._data_dir=lambda:root
-singleton.data_dir=lambda:root
-key=bytes(range(32))
-lease=None;peer=None
-if role=='core':
-    with __import__('os').fdopen(create_private_file(root/'shutdown.key'),'w',encoding='ascii') as stream:stream.write(key.hex())
-    lease=singleton.acquire_single_instance()
-    if lease is None:raise RuntimeError('Unexpected isolated incumbent')
-    def event(level,message,details):
-        with (root/'events.jsonl').open('a',encoding='utf-8') as stream:stream.write(__import__('json').dumps({'level':level,'message':message,'details':details})+'\n')
-    peer=supervisor.ProcessSupervisor(poll_interval=.1,on_event=event)
-    for target in ('watchdog','scanner','blackbox'):
-        component=peer.add(target,[sys.executable,__file__,target,str(root)],stale_after_s=10,window='hidden')
-        component.safe_mode=True;component.safe_mode_since=time.time()
-    peer.start()
-writer=heartbeat.HeartbeatWriter(role,token_raw=key,path=root/'heartbeats'/(role+'.hb'))
-while True:
-    writer.beat()
-    time.sleep(.1)
-''', encoding="utf-8")
+    heartbeat._data_dir=lambda:root
+    shutdown_token._data_dir=lambda:root
+    singleton.data_dir=lambda:root
+    key=bytes(range(32))
+    lease=None;peer=None
+    if role=='core':
+        stage='durable-supervisor'
+        with os.fdopen(create_private_file(root/'shutdown.key'),'w',encoding='ascii') as stream:stream.write(key.hex())
+        lease=singleton.acquire_single_instance()
+        if lease is None:raise RuntimeError('Unexpected isolated incumbent')
+        def event(level,message,details):
+            with (root/'events.jsonl').open('a',encoding='utf-8') as stream:stream.write(json.dumps({'level':level,'message':message,'details':details})+'\n')
+        real_spawn=supervisor.spawn_detached
+        def spawn_fixture(command,env=None,window='hidden',*,cwd=None):
+            if (len(command)!=4 or command[0]!=sys.executable or command[1]!=__file__ or
+                    command[2] not in {'watchdog','scanner','blackbox'} or command[3]!=str(root) or window!='hidden'):
+                raise RuntimeError('The inert spawn seam refused an unknown script, role or window')
+            return real_spawn([command[0],'-I','-S','-B',*command[1:]],env=env,window=window,cwd=cwd)
+        supervisor.spawn_detached=spawn_fixture
+        state=RecoveryStateStore('inert-core',path=root/'ipc'/'supervisor-state.inert-core.json',key=key)
+        peer=supervisor.ProcessSupervisor(poll_interval=.1,on_event=event,state_namespace='inert-core',state_store=state)
+        for target in ('watchdog','scanner','blackbox'):
+            component=peer.add(target,[sys.executable,__file__,target,str(root)],stale_after_s=10,window='hidden')
+            component.safe_mode=True;component.safe_mode_since=time.time()
+        peer.start()
+    stage='authenticated-heartbeat'
+    writer=heartbeat.HeartbeatWriter(role,token_raw=key,path=root/'heartbeats'/(role+'.hb'))
+    try:
+        while True:
+            writer.beat()
+            time.sleep(.1)
+    finally:writer.close()
+try:main()
+finally:_dll_owner.close()
+'''.replace("BOOTSTRAP_MANIFEST", repr(bootstrap)), encoding="utf-8")
     from angerona.core import data_paths
     monkeypatch.setattr(data_paths, "data_dir", lambda create=False: root)
     monkeypatch.setattr(heartbeat, "_data_dir", lambda: root)
     monkeypatch.setattr(shutdown_token, "_data_dir", lambda: root)
     monkeypatch.setattr(helper, "_expected_argv", lambda role: [sys.executable, str(fixture), role, str(root)])
-    child = launch_windows_child([sys.executable, str(fixture), "core", str(root)],
+    child = launch_windows_child([sys.executable, "-I", "-S", "-B", str(fixture), "core", str(root)],
                                  sanitized_child_environment(), cwd=str(ROOT), window="hidden", kill_on_close=True)
     retained = []
     redirectors = {}
-    receipt = {"schema": 1, "synthetic": True, "protection_verified": False, "generations": []}
+    receipt = {"schema": 1, "synthetic": True, "protection_verified": False, "generations": [],
+               "bootstrap": {"interpreter_options": ["-I", "-S", "-B"],
+                             "selected_file_pins": len(bootstrap["pins"]),
+                             "full_dependency_closure_verified": False}}
     try:
         deadline = time.monotonic() + 15
         reader = heartbeat.HeartbeatReader(
@@ -241,7 +318,12 @@ while True:
         record = None
         while time.monotonic() < deadline:
             if child.poll() is not None:
-                pytest.fail("Isolated native supervisor fixture exited before its first heartbeat")
+                diagnostic = root / "core.error.json"
+                detail = "No private child diagnostic was published"
+                if diagnostic.exists():
+                    with diagnostic.open("rb") as stream:
+                        detail = stream.read(16384).decode("ascii", "replace")
+                pytest.fail(f"Isolated native supervisor fixture exited before its first heartbeat: {detail}")
             candidate = reader.read()
             # The writer creates a zero-filled mmap backing file before its
             # initial beat. Existence alone cannot prove a published heartbeat.
@@ -266,6 +348,17 @@ while True:
         assert report["outcome"] == "supervision-live", (report, (root / "events.jsonl").read_text() if (root / "events.jsonl").exists() else "no supervisor event")
         assert report["supervision_verified"] and not report["protection_verified"]
         assert report["actions"] == ["signed-restart:watchdog", "signed-restart:scanner", "signed-restart:blackbox"]
+        from angerona.resilience.recovery_state import RecoveryStateStore
+        nonce_state = RecoveryStateStore(
+            "inert-core-restart-nonces",
+            path=root / "ipc/supervisor-state.inert-core.json.restart-nonces.json",
+            key=bytes(range(32)),
+        ).load()
+        # The real child persists admission before each recovery effect. Read
+        # its authenticated state after live supervision, without racing the
+        # active consumer by reopening restart inbox files after publication.
+        assert len(nonce_state["restart_nonces"]) == 3
+        receipt["durable_restart_nonces"] = len(nonce_state["restart_nonces"])
         for role in ("watchdog", "scanner", "blackbox"):
             record = heartbeat.HeartbeatReader(role, path=root / "heartbeats" / (role + ".hb"), key_raw=bytes(range(32))).read()
             retained.append(helper.ReadOnlyGeneration(int(record["pid"]), role))

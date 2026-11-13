@@ -170,7 +170,11 @@ def test_c10_threat_dependency_closure_and_unknown_acl_are_fail_closed(
         "angerona.resilience.supervisor:ProcessSupervisor._authenticated_record",
         "angerona.resilience.supervisor:ProcessSupervisor._verified_peer_state",
     } <= set(engine._targets)
-    assert engine.arm() == engine.expected_count == 49
+    assert engine.arm() == engine.expected_count
+    # Authenticated policy/acknowledgement and peer-lock dependencies expand
+    # the mandatory closure; additional coverage must remain admissible.
+    assert engine.expected_count >= 73
+    assert engine.unresolved == {}
     monkeypatch.setattr(threat_module, "is_active_threat", lambda _event: False)
     assert any(expected in finding for finding in engine.check())
 
@@ -193,7 +197,11 @@ def test_c10_peer_gate_reassignment_is_detected(
     monkeypatch: pytest.MonkeyPatch, target: str,
 ) -> None:
     engine = SelfIntegrityEngine()
-    assert engine.arm() == engine.expected_count == 49
+    assert engine.arm() == engine.expected_count
+    # Authenticated policy/acknowledgement and peer-lock dependencies expand
+    # the mandatory closure; additional coverage must remain admissible.
+    assert engine.expected_count >= 73
+    assert engine.unresolved == {}
     module, qualified = target.split(":", 1)
     owner = importlib.import_module(module)
     parents = qualified.split(".")

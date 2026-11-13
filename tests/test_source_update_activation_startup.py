@@ -333,34 +333,62 @@ def test_optional_query_close_failure_keeps_real_startup_pass_ready_without_owne
     # No real query handle is leaked and no assistant/application is launched.
     result = run_ps(tmp_path, r'''
 $script:closeCalls=0;$script:assistantReady=$false;$script:activationComplete=$false;$script:released=$false
+$script:cacheChecks=0;$script:cachePrefix='';$script:SourceStartupCriticalMode=$true
 $script:uncertain=[pscustomobject]@{}
 $script:uncertain|Add-Member ScriptMethod Dispose {$script:closeCalls++;throw 'controlled query-close acknowledgement failure'}
 function Assert-SourceStartupBoundary([string]$Root){}
-function Initialize-SourceStartupStorage {return $env:TEST_SCRATCH}
-function Get-CanonicalSourceStartupStorage {return $env:TEST_SCRATCH}
+function Get-CanonicalSourceStartupStorage {return (Join-Path $env:TEST_SCRATCH 'private-canonical-source')}
+New-PrivateRepairDirectory (Get-CanonicalSourceStartupStorage)
+function Initialize-SourceStartupStorage {return (Get-CanonicalSourceStartupStorage)}
 function Enter-RepairLease([string]$Root){return [pscustomobject]@{inert=$true}}
 function Exit-RepairLease($Lease){$script:released=$true}
 function Assert-NoPendingRepair([string]$Root){}
-function New-SourceStartupTemporary {return $env:TEST_SCRATCH}
-function New-RepairChildEnvironment {return @{ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID=('f'*32)}}
+function New-RepairChildEnvironment([string]$Scratch) {
+    return @{ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID=('f'*32);TEMP=$Scratch;TMP=$Scratch}
+}
+function Assert-FixtureCacheLease([string]$Prefix,[string]$Root,[string]$Scratch) {
+    Assert-SourceStartupCachePrefix $Prefix $Root $Scratch
+    $key=[IO.Path]::GetFullPath($Root)+'|'+[IO.Path]::GetFullPath((Get-CanonicalSourceStartupStorage))+'|preflight'
+    $context=$script:SourceStartupCriticalWorkspaces[$key]
+    if(!$context -or $context.Path -cne $Scratch -or !$context.Guard.CanRead -or $context.Guard.CanWrite -or
+       ![Object]::ReferenceEquals($context.Guard,$script:SourceStartupScratchLease)){
+        throw 'The optional observer fixture lost the actual retained preflight scratch lease.'
+    }
+    if($script:cachePrefix -and $script:cachePrefix -cne $Prefix){throw 'The startup pass changed its fresh-cache prefix.'}
+    $script:cachePrefix=$Prefix;$script:cacheChecks++
+}
 function New-SourceActivationLaunch([string]$Root){Close-SourceActivationQueries @($script:uncertain) -OptionalStartup}
 function Initialize-OwnedRepairProcess {}
-function Invoke-OwnedRepairProcess {return 0}
+function Invoke-OwnedRepairProcess {
+    param($FilePath,$Arguments,$WorkingDirectory,$Environment,$TimeoutSeconds,$LogPath)
+    if($Arguments.Count -lt 3 -or $Arguments[0] -cne '-B' -or $Arguments[1] -cne '-X' -or
+       !$Arguments[2].StartsWith('pycache_prefix=',[StringComparison]::Ordinal)){
+        throw 'The inert read-only probe lost fresh-cache interpreter options.'
+    }
+    if($Environment['TMP'] -cne $Environment['TEMP']){throw 'The read-only probe scratch paths diverged.'}
+    Assert-FixtureCacheLease $Arguments[2].Substring('pycache_prefix='.Length) $WorkingDirectory $Environment['TEMP']
+    return 0
+}
 function Test-SourceStartupShellClosed {return $false}
 function Complete-SourceActivationLaunch {$script:activationComplete=$true}
 function Invoke-SourceStartupAssistant {
-    param($Python,$Root,$Environment,$Scratch,[switch]$SoftwareRenderer,[switch]$NoStartupWindow)
+    param($Python,$Root,$Environment,$Scratch,[switch]$SoftwareRenderer,[switch]$NoStartupWindow,$FreshCachePrefix)
     if($Environment.ContainsKey('ANGERONA_SOURCE_ACTIVATION_LAUNCH_ID')){throw 'A failed optional observer leaked an owner expectation.'}
+    Assert-FixtureCacheLease $FreshCachePrefix $Root $Scratch
     $script:assistantReady=$true;return 0
 }
 $fixtureRoot=Join-Path $env:TEST_SCRATCH 'source'
 [void][IO.Directory]::CreateDirectory((Join-Path $fixtureRoot 'venv\Scripts'))
 [IO.File]::WriteAllBytes((Join-Path $fixtureRoot 'venv\Scripts\python.exe'),[byte[]]@())
-$code=Invoke-SourceStartupPass -Root $fixtureRoot
-Write-Output ('RESULT:'+(@{code=$code;ready=$script:assistantReady;activation=$script:activationComplete
-    close_calls=$script:closeCalls;lease_released=$script:released}|ConvertTo-Json -Compress))
+try {
+    $code=Invoke-SourceStartupPass -Root $fixtureRoot
+    Write-Output ('RESULT:'+(@{code=$code;ready=$script:assistantReady;activation=$script:activationComplete
+        close_calls=$script:closeCalls;lease_released=$script:released;cache_checks=$script:cacheChecks
+        cache_absent=!(Test-Path -LiteralPath $script:cachePrefix)}|ConvertTo-Json -Compress))
+} finally { Close-SourceStartupCriticalWorkspaces }
 ''')
-    assert result == {"code": 0, "ready": True, "activation": False, "close_calls": 1, "lease_released": True}
+    assert result == {"code": 0, "ready": True, "activation": False, "close_calls": 1,
+                      "lease_released": True, "cache_checks": 4, "cache_absent": True}
 
 
 def test_real_launcher_handles_must_retire_after_ack_before_reconcile_can_continue(tmp_path):

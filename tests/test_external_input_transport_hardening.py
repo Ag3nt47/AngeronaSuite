@@ -129,8 +129,12 @@ def test_public_connection_pins_numeric_peer_and_retains_tls_hostname(monkeypatc
     request = urllib.request.Request("https://api.example:8443/private")
     factory = url_policy._public_connection_factory(
         request, url_policy.PUBLIC_HTTPS_POLICY, http.client.HTTPSConnection)
-    connection = factory("api.example:8443", timeout=3, context=SimpleNamespace(wrap_socket=wrap))
+    context = SimpleNamespace(
+        wrap_socket=wrap, verify_mode=ssl.CERT_REQUIRED, check_hostname=True,
+    )
+    connection = factory("api.example:8443", timeout=3, context=context)
     try:
+        assert connection._context is context
         connection.connect()
         assert connection.host == "api.example"
         assert sockets[0].peer == (address, 8443)
@@ -141,10 +145,26 @@ def test_public_connection_pins_numeric_peer_and_retains_tls_hostname(monkeypatc
     assert sockets[0].closed
 
 
-def test_default_public_tls_context_keeps_certificate_and_hostname_checks():
+def test_default_public_tls_context_keeps_certificate_and_hostname_checks(monkeypatch):
     handler = url_policy._PublicHTTPSHandler(url_policy.PUBLIC_HTTPS_POLICY)
-    assert handler._context.verify_mode == ssl.CERT_REQUIRED
-    assert handler._context.check_hostname is True
+    contexts = []
+
+    def observe_connection(factory, request, **kwargs):
+        # Python 3.10/3.11 defer default context creation to HTTPSConnection;
+        # newer urllib versions may create it on the handler. Inspect the
+        # effective connection context without opening any network socket.
+        connection = factory(request.host, timeout=3, **kwargs)
+        try:
+            contexts.append(connection._context)
+        finally:
+            connection.close()
+
+    monkeypatch.setattr(handler, "do_open", observe_connection)
+    handler.https_open(urllib.request.Request("https://api.example/check"))
+
+    assert len(contexts) == 1
+    assert contexts[0].verify_mode == ssl.CERT_REQUIRED
+    assert contexts[0].check_hostname is True
 
 
 def test_numeric_peer_mismatch_closes_socket(monkeypatch):

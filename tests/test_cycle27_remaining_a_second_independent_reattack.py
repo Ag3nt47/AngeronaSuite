@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from deception_private_fixture import seed_existing_static_canaries
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from angerona.core.durable_outbox import DurableOutbox
@@ -453,7 +454,9 @@ def _isolated_deception(tmp_path: Path) -> tuple[DeceptionModule, EventBus]:
     module._soar = module._shared / "soar-events.jsonl"
     bus = EventBus()
     module.bind(bus)
+    seed_existing_static_canaries(module._base)
     module._plant()
+    assert len(module._canaries) == 3, module._canary_hold_details
     return module, bus
 
 
