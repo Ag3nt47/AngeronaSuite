@@ -161,6 +161,9 @@ The [current source companion](docs/releases/v1.15.1.md) and
   while other Core workers continue. Scanner GUI shutdown follows authenticated
   STOP and verified cleanup. AI provider self-tests explain unverified installation
   write custody and retain FAIL; that result is not a malware verdict.
+- **Quieter persistence review:** ordinary scheduled-task runtime-state changes
+  no longer repeat configuration alerts when every selected definition field
+  matches. Real definition changes and uncertain evidence remain visible.
 - **Native file reliability:** corrected the Windows rename-buffer boundary
   used for atomic private-file updates. Diagnostics retain the original OS
   error, and native build discovery selects one compiler path.

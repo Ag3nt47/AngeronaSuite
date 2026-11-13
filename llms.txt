@@ -44,6 +44,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - AI provider self-test explanations are clearer, but required per-machine write
   custody that is unverified remains FAIL. A read-only host assessment confirmed
   that uncertainty; no malware/compromise verdict or ACL rewrite follows.
+- Scheduled-task comparisons ignore only distinct Ready/Running/Queued states
+  when all strictly validated selected fields match. Other definition changes,
+  disabled/unknown states, incomplete records and duplicate identities remain
+  drift or unknown. Raw snapshots, baselines and alerts are unchanged. The
+  focused source/baseline cohort passed 164 cases; this is not whole-task-XML
+  coverage or a trust grant for any named application.
 - Windows native private-file renames include an explicit UTF-16 terminator
   inside the supplied buffer while preserving counted filenames, native errno
   identity, ACLs and retained-handle publication. The old encoding reproduced

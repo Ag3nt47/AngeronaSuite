@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import stat
 import subprocess
@@ -70,6 +71,122 @@ _MAX_REPORTED_CHANGES = 10_000
 _MAX_COLLECTOR_OUTPUT_BYTES = 8 * 1024 * 1024
 _MAX_COLLECTOR_RECORDS = 5_000
 _MAX_RECORD_BYTES = 64 * 1024
+
+_TRANSIENT_TASK_STATES = frozenset({"Ready", "Running", "Queued"})
+_MAX_TASK_JSON_DEPTH = 8
+_NULL = type(None)
+_TASK_TEXT = (str, _NULL)
+_TASK_BOOL = (bool, _NULL)
+_TASK_ENUM = (str, int, _NULL)
+_TASK_ACTION_FIELDS = {name: _TASK_TEXT for name in (
+    "Execute", "Arguments", "WorkingDirectory", "ClassId", "Data",
+)}
+_TASK_TRIGGER_FIELDS = {name: _TASK_TEXT for name in (
+    "StartBoundary", "EndBoundary", "ExecutionTimeLimit", "UserId", "Delay", "RandomDelay",
+)}
+_TASK_TRIGGER_FIELDS["Enabled"] = _TASK_BOOL
+_TASK_PRINCIPAL_FIELDS = {name: _TASK_TEXT for name in ("UserId", "GroupId", "DisplayName")}
+_TASK_PRINCIPAL_FIELDS.update({"LogonType": _TASK_ENUM, "RunLevel": _TASK_ENUM})
+_TASK_SETTINGS_FIELDS = {name: _TASK_BOOL for name in (
+    "Enabled", "Hidden", "AllowDemandStart", "RunOnlyIfIdle", "RunOnlyIfNetworkAvailable",
+    "StartWhenAvailable", "WakeToRun",
+)}
+_TASK_SETTINGS_FIELDS.update({
+    "ExecutionTimeLimit": _TASK_TEXT, "MultipleInstances": _TASK_ENUM,
+    "RestartCount": (int, _NULL), "RestartInterval": _TASK_TEXT,
+})
+_TASK_TOP_FIELDS = frozenset({
+    "id", "state", "author", "description", "actions", "triggers", "principal", "settings",
+})
+
+
+def _unique_task_object(pairs: list[tuple[str, object]]) -> dict:
+    record = {}
+    for key, value in pairs:
+        if key in record:
+            raise ValueError("scheduled-task JSON contains a duplicate key")
+        record[key] = value
+    return record
+
+
+def _reject_task_constant(_value: str) -> None:
+    raise ValueError("scheduled-task JSON contains a nonfinite number")
+
+
+def _finite_task_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("scheduled-task JSON contains a nonfinite number")
+    return number
+
+
+def _load_task_json(value: str, *, limit: int) -> object:
+    """Bound and strictly decode collected task JSON without erasing ambiguity."""
+    if type(value) is not str or len(value) > limit or len(value.encode("utf-8")) > limit:
+        raise ValueError("scheduled-task JSON exceeds its byte bound")
+    depth = 0
+    quoted = False
+    escaped = False
+    for character in value:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_TASK_JSON_DEPTH:
+                raise ValueError("scheduled-task JSON exceeds its depth bound")
+        elif character in "]}":
+            depth -= 1
+    return json.loads(value, object_pairs_hook=_unique_task_object,
+                      parse_constant=_reject_task_constant, parse_float=_finite_task_float)
+
+
+def _selected_task_object(value: object, fields: dict) -> bool:
+    return (type(value) is dict and set(value) == set(fields)
+            and all(type(value[name]) in allowed for name, allowed in fields.items()))
+
+
+def _task_definition(value: str, entry: str) -> tuple[str, str] | None:
+    """Project only complete selected collector fields; raw evidence is unchanged.
+
+    This is not a complete Windows task XML definition or a trust decision.
+    Unknown shapes and incomplete/depth-truncated records retain raw drift.
+    """
+    try:
+        row = _load_task_json(value, limit=_MAX_RECORD_BYTES)
+        if (type(row) is not dict or set(row) != _TASK_TOP_FIELDS
+                or type(row["id"]) is not str or not row["id"].strip()
+                or len(row["id"]) > 512 or row["id"] != entry
+                or type(row["state"]) is not str or row["state"] not in _TRANSIENT_TASK_STATES
+                or type(row["author"]) is not str or type(row["description"]) is not str):
+            return None
+        for name, fields in (("actions", _TASK_ACTION_FIELDS), ("triggers", _TASK_TRIGGER_FIELDS)):
+            rows = row[name]
+            if type(rows) is not list or not all(_selected_task_object(item, fields) for item in rows):
+                return None
+        if (not _selected_task_object(row["principal"], _TASK_PRINCIPAL_FIELDS)
+                or not _selected_task_object(row["settings"], _TASK_SETTINGS_FIELDS)):
+            return None
+        state = row.pop("state")
+        # Canonical serialization preserves bool/int/float distinctions that
+        # Python mapping equality would otherwise collapse (True == 1).
+        return state, json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (TypeError, ValueError, UnicodeError, RecursionError):
+        return None
+
+
+def _only_transient_task_state_changed(before: str, after: str, entry: str) -> bool:
+    previous = _task_definition(before, entry)
+    current = _task_definition(after, entry)
+    return (previous is not None and current is not None
+            and previous[0] != current[0] and previous[1] == current[1])
+
 
 _SCHEDULED_TASK_QUERY = r"""
 $ErrorActionPreference='Stop'
@@ -467,7 +584,7 @@ class PersistenceSweepModule(BaseModule):
             )
             return
         try:
-            decoded = json.loads(out or "[]")
+            decoded = _load_task_json(out or "[]", limit=_MAX_COLLECTOR_OUTPUT_BYTES)
             rows = decoded if isinstance(decoded, list) else [decoded]
             if len(rows) > _MAX_COLLECTOR_RECORDS:
                 self._surface_unknown(
@@ -486,6 +603,8 @@ class PersistenceSweepModule(BaseModule):
                 canonical = json.dumps(row, sort_keys=True, separators=(",", ":"))
                 if len(canonical.encode("utf-8")) > _MAX_RECORD_BYTES:
                     raise ValueError(f"scheduled-task record exceeds bound: {task_id[:80]}")
+                if task_id in names:
+                    raise ValueError("scheduled-task inventory contains a duplicate identity")
                 names.add(task_id)
                 self._values[f"ScheduledTask\x00{task_id}"] = canonical
                 self._values[f"ScheduledTask\x00{task_id}\x00mitre"] = "T1053.005"
@@ -584,12 +703,15 @@ class PersistenceSweepModule(BaseModule):
 
     @staticmethod
     def _diff(
-        baseline: Dict[str, str], current: Dict[str, str]
+        baseline: Dict[str, str], current: Dict[str, str], *, surface: str = ""
     ) -> tuple[set[str], set[str], set[str]]:
         before = set(baseline)
         after = set(current)
         modified = {
             name for name in before & after if baseline[name] != current[name]
+            and not (surface == "ScheduledTask" and _only_transient_task_state_changed(
+                baseline[name], current[name], name
+            ))
         }
         return after - before, modified, before - after
 
@@ -605,13 +727,46 @@ class PersistenceSweepModule(BaseModule):
             {"same": "1", "changed": "old", "gone": "x"},
             {"same": "1", "changed": "new", "added": "y"},
         )
+        # Independent, complete selected collector fixture: do not derive its
+        # fields from the validator maps, or schema regressions could self-confirm.
+        task_entry = r"\SyntheticPersistenceSelfTest"
+        task = {
+            "id": task_entry, "state": "Ready", "author": "Synthetic self-test",
+            "description": "No host task is queried, created or changed.",
+            "actions": [{"Execute": "synthetic-self-test.exe", "Arguments": "--probe",
+                         "WorkingDirectory": "", "ClassId": None, "Data": None}],
+            "triggers": [{"Enabled": True, "StartBoundary": None, "EndBoundary": None,
+                          "ExecutionTimeLimit": None, "UserId": "SyntheticUser",
+                          "Delay": "PT1M", "RandomDelay": None}],
+            "principal": {"UserId": "SyntheticUser", "LogonType": 3, "RunLevel": 0,
+                          "GroupId": None, "DisplayName": None},
+            "settings": {"Enabled": True, "Hidden": False, "AllowDemandStart": True,
+                         "ExecutionTimeLimit": "PT1H", "MultipleInstances": 0,
+                         "RestartCount": 0, "RestartInterval": None, "RunOnlyIfIdle": False,
+                         "RunOnlyIfNetworkAvailable": False, "StartWhenAvailable": True,
+                         "WakeToRun": False},
+        }
+        task_baseline = {task_entry: json.dumps(task, sort_keys=True)}
+        running_task = {**task, "state": "Running"}
+        changed_task = {**running_task, "actions": [
+            {**task["actions"][0], "Execute": "synthetic-replacement.exe"}
+        ]}
+        task_diffs = tuple(self._diff(
+            task_baseline, {task_entry: json.dumps(record, sort_keys=True)},
+            surface="ScheduledTask",
+        ) for record in (running_task, changed_task, {**task, "state": "Disabled"}))
         ok = (a[0] == Severity.CRITICAL and b[0] == Severity.HIGH
               and c[0] == Severity.MEDIUM and d[0] == Severity.CRITICAL
               and added == {"added"} and modified == {"changed"}
-              and removed == {"gone"})
+              and removed == {"gone"}
+              and task_diffs == ((set(), set(), set()),
+                                 (set(), {task_entry}, set()),
+                                 (set(), {task_entry}, set())))
         return (ok, "persistence classifier verified (encoded-PS + Winlogon hijack CRITICAL, "
-                    "temp-path HIGH, clean-default not escalated)"
-                if ok else f"classifier failed: a={a} b={b} c={c} d={d}")
+                    "temp-path HIGH, clean-default not escalated); selected scheduled-task "
+                    "state/action/Disabled drift probes verified (synthetic only; no host collection)"
+                if ok else f"persistence self-test failed: a={a} b={b} c={c} d={d}; "
+                           f"selected scheduled-task drift probes={task_diffs}")
 
     def run(self) -> None:
         self.emit("Building an unreviewed persistence startup reference…", Severity.INFO)
@@ -725,7 +880,7 @@ class PersistenceSweepModule(BaseModule):
                 self.set_health(75, "startup reference remains unreviewed")
             for surface, records in current.items():
                 base = self._baseline.get(surface, {})
-                added, modified, removed = self._diff(base, records)
+                added, modified, removed = self._diff(base, records, surface=surface)
                 for change, entries in (("added", added), ("modified", modified)):
                     for entry in entries:
                         val = records.get(entry, "")

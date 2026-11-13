@@ -7,6 +7,7 @@ This maintenance update adds:
 • Tighter local IPC and mobile-command admission, plus more precise alert acknowledgements.
 • Optional native third-watchdog monitoring, off by default, with separate heartbeat and signature indicators.
 • Signing-review settings, bounded helper preparation and safer handling when native cleanup cannot be verified.
+• Fewer repeated scheduled-task alerts, while preserving real configuration changes and uncertain evidence.
 • Updated source documentation explaining what changed and what still needs acceptance.
 
 The dashboard connects live evidence, SpywareGuard, investigation tools, MITRE ATT&CK views and defensive validation. Optional local AI can help explain evidence without becoming response authority.

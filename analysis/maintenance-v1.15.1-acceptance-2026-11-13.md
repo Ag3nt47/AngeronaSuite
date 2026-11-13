@@ -19,6 +19,7 @@ or live protection of the operator's actual Core generation.
 | Peer STOP and scanner shutdown | 12 pytest checks passed | Includes a PowerShell fixture exercising 48 supplied rows; these are not 48 extra pytest tests |
 | Heartbeat and native leases | 45 passed, 1 skip | One additional reparse case passed separately; skips remain explicit coverage gaps |
 | Red Team current-version integration | 80 passed | Focused startup diagnostics and owned-admission fixtures; standalone title reads the suite version |
+| Scheduled-task state and baseline | 164 passed | Private-profile comparison, real loop and existing baseline/hash regressions; selected-field scope only |
 | Native Go suite | 93 top-level tests passed, 1 export-only skip | Full go vet completed with exit 0; fixture acceptance is separate from installed deployment |
 
 The actual ordinary-user Go observer also produced two authenticated advancing
@@ -109,6 +110,31 @@ The unsigned PC bundle was rebuilt from all 17 current recorded source inputs.
 Its image and metadata hashes match. A valid --validate-only call remained
 inactive with exit 5 before installed authority access. No signing, enrollment,
 service activation or saved setting change followed from this maintenance.
+
+## Scheduled task comparison follow-up
+
+Full-mode review exposed a general false-repeat path: scheduler runtime state
+was serialized alongside the selected persistence definition. The corrected
+comparison excludes only distinct Ready/Running/Queued states after strict
+64 KiB, depth, duplicate-key, finite-number and selected-schema validation.
+Other collected fields and raw baselines are unchanged. A collector ambiguity
+remains unknown; other surfaces continue. All 164 focused cases passed with
+correct PC module origins, unchanged source pins and closed diagnostic owners.
+
+The final module Self-Test independently covers state/action/disabled drift;
+fault-injection checks reject both kinds of comparison regression. A separate
+actual read-only collector completed with source pins and native retirement
+verified. An earlier collector smoke wrapper incorrectly selected generic test
+collection and reached its 90-second diagnostic budget; that scope is not
+accepted. The corrected collector-only run is retained separately.
+
+The specific live review candidate had truncated prior/current stored values.
+Its actual change cannot be attributed to runtime state from that evidence.
+No old alert was cleared, no application was allowlisted and no baseline was
+approved or reset. A consistent ledger snapshot was retained privately before
+external exact-generation maintenance. No protected STOP, control-key rewrite
+or policy/ACL change was asserted. Fresh changed-source observation and final
+exact-commit publication/hosted results retain separate acceptance receipts.
 
 ## Fresh PC source observation
 
