@@ -4,12 +4,24 @@
 
 ### Restart-loop follow-up (2026-11-12)
 
-Linux unit checks only; not run on Windows.
+Windows/Python 3.12 offline validation (2026-11-12): 151 unique focused
+cases passed. The full run recorded 16,234 passed, 68 skipped and two
+failures: an unchanged native beacon fixture read its JSON before the writer
+closed, and an unchanged PowerShell logging fixture exceeded its 60-second
+timeout. Both positive beacon tests now verify watcher retirement before
+parsing, preserving their event, PID and engine-alive assertions. The complete
+beacon file and exact PowerShell test then passed together (71 cases, exit 0),
+with the PowerShell test and timeout unchanged. The full suite was not repeated
+after this fixture-only synchronization fix.
+
+Scoped Ruff 0.16.0, the 48-file recovery manifest and launcher pins, and
+documentation-drift checks passed. These results do not establish live or
+elevated host behavior; no STOP authority was provisioned or dead-man hold armed.
 
 - Priority-sensor relaunch now actually triggers: the restart-pressure hint
   the watchdog sets for a relaunched Core was removed by the sidecar
   environment allow-list before it reached the Core.
-- The crash sweep no longer descends into junctions or other reparse points
+- The crash sweep skips junctions and other reparse-point entries observed
   under the temp directory.
 - The startup-recovery manifest and launcher pins match the hardened files
   again, so the source launcher's verifier no longer sees them as drift.
@@ -51,10 +63,12 @@ elevated instance.
   time budget, the live GUI test matches the isolated probe command, launcher
   tests use an absolute path, and two autonomy fakes accept the new argument.
 
-### Live triage follow-up (2026-11-11, not yet validated on Windows)
+### Live triage follow-up (2026-11-11; initial validation scope)
 
-These source changes passed Python syntax checks only. Focused and full gates
-have not run. Findings: `analysis/hardening-v1.15-2026-11-11-live-triage.md`.
+Initially these source changes passed Python syntax checks only; focused and
+full gates had not run. Later Windows offline results for the combined tree
+are recorded above; live and elevated behavior remains unverified.
+Findings: `analysis/hardening-v1.15-2026-11-11-live-triage.md`.
 
 - Packet Sniffer: allow worker startup before the capture window and give the
   module first-cycle/work budgets longer than one capture cycle. The 30-second

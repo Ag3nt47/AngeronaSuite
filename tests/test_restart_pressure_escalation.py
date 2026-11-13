@@ -1,6 +1,10 @@
 """Restart-loop bypass: paced kills that dodge 3-in-60 s SAFE_MODE still escalate."""
 from __future__ import annotations
 
+import os
+
+import pytest
+
 from angerona.core.module_manager import ModuleManager
 from angerona.resilience import supervisor as supervisor_module
 from angerona.resilience.supervisor import Component, ProcessSupervisor
@@ -35,6 +39,47 @@ def test_pressure_hint_survives_the_sidecar_environment_allowlist():
     assert child["ANGERONA_RECOVERY_PRESSURE"] == "attack"
     assert child["ANGERONA_SUPERVISED_RECOVERY"] == "1"
     assert "ANGERONA_UNREVIEWED" not in child
+
+
+@pytest.mark.parametrize("flag,pressure,expected_pressure", [
+    ("1", "elevated", "elevated"),
+    ("1", "attack", "attack"),
+    ("1", None, None),
+    ("1", "", None),
+    ("1", "unreviewed", None),
+    ("1", "ATTACK", None),
+    ("1", "attack\n", None),
+    (None, "attack", None),
+    ("0", "attack", None),
+    ("true", "attack", None),
+])
+def test_privileged_bootstrap_carries_only_a_closed_supervised_pressure_hint(
+    monkeypatch, flag, pressure, expected_pressure,
+):
+    from angerona.core import privilege
+
+    original = dict(os.environ)
+    with monkeypatch.context() as patch:
+        patch.setattr(privilege.sys, "platform", "win32")
+        patch.setattr(privilege, "_minimal_environment", lambda _: {"SYSTEMROOT": "fixture"})
+        patch.setattr(privilege, "_validated_watchdog_context", lambda _: {})
+        try:
+            os.environ.clear()
+            if flag is not None:
+                os.environ["ANGERONA_SUPERVISED_RECOVERY"] = flag
+            if pressure is not None:
+                os.environ["ANGERONA_RECOVERY_PRESSURE"] = pressure
+            privilege.sanitize_privileged_bootstrap_environment()
+            actual = dict(os.environ)
+        finally:
+            os.environ.clear()
+            os.environ.update(original)
+    expected = {"SYSTEMROOT": "fixture"}
+    if flag == "1":
+        expected["ANGERONA_SUPERVISED_RECOVERY"] = "1"
+    if expected_pressure is not None:
+        expected["ANGERONA_RECOVERY_PRESSURE"] = expected_pressure
+    assert actual == expected
 
 
 def test_paced_kills_every_61_seconds_escalate_to_attack_without_safe_mode():

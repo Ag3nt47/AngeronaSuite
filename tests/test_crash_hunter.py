@@ -4,8 +4,11 @@ from __future__ import annotations
 import ast
 import json
 import os
+import subprocess
 import time
 from pathlib import Path
+
+import pytest
 
 from angerona.resilience import crash_hunter
 from angerona.resilience.crash_hunter import CrashHunter
@@ -119,3 +122,37 @@ def test_sweep_never_descends_into_a_linked_directory(tmp_path):
         return  # Link creation is not permitted on this host.
     rows = crash_hunter._temp_drops(time.time() - 60, time.monotonic() + 5, root)
     assert [Path(row["path"]).name for row in rows] == ["local.cmd"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Native Windows junction traversal")
+def test_sweep_skips_a_native_windows_junction_and_preserves_its_target(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "outside.exe"
+    sentinel.write_bytes(b"inert junction-target sentinel")
+    sentinel_before = sentinel.read_bytes(), sentinel.stat().st_mtime_ns
+    root = tmp_path / "temp"
+    root.mkdir()
+    (root / "local.cmd").write_text("inert", encoding="utf-8")
+    link = root / "linked-directory"
+    command_processor = Path(os.environ["SystemRoot"]) / "System32" / "cmd.exe"
+    try:
+        created = subprocess.run(
+            [str(command_processor), "/d", "/c", "mklink", "/J", str(link), str(outside)],
+            capture_output=True, timeout=10, creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        assert created.returncode == 0, created.stderr.decode(errors="replace")
+        assert link.lstat().st_file_attributes & 0x400
+        assert not link.is_symlink()  # This is the Windows case is_symlink alone missed.
+        rows = crash_hunter._temp_drops(time.time() - 60, time.monotonic() + 5, root)
+        assert [Path(row["path"]).name for row in rows] == ["local.cmd"]
+        assert (sentinel.read_bytes(), sentinel.stat().st_mtime_ns) == sentinel_before
+    finally:
+        if os.path.lexists(link):
+            # Remove only this fixture's junction, never recurse through its target.
+            assert link.parent.resolve() == root.resolve()
+            assert root.resolve().is_relative_to(tmp_path.resolve())
+            assert link.lstat().st_file_attributes & 0x400
+            os.rmdir(link)
+    assert not os.path.lexists(link)
+    assert (sentinel.read_bytes(), sentinel.stat().st_mtime_ns) == sentinel_before

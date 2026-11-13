@@ -5,10 +5,40 @@ Date: 2026-11-09
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## PENDING (2026-11-11 live triage — source applied, NOT validated on Windows)
+## HANDOFF FOLLOW-UP (2026-11-12 — Windows offline validation)
 
-- Read `analysis/hardening-v1.15-2026-11-11-live-triage.md` first. Syntax
-  checks only; no pytest, selfcheck, GUI launch, Red Team run or publication.
+- Imported exactly the two user-supplied v2 follow-up commits on `df4e9e6`:
+  `c919b6f` and `790a817`. The full private watchdog outline and reference-only
+  v1 diff remain outside git; the reference diff was not applied.
+- Added native Windows junction coverage with the outside target preserved,
+  plus a closed-value supervised-recovery bootstrap environment matrix.
+  The overlapping startup (133) and crash/pressure (25) cohorts cover 151
+  unique passing focused cases. Scoped Ruff 0.16.0, all 48 recovery-manifest
+  entries, both launcher pins and documentation drift passed.
+- Full Windows/Python 3.12.10 run: 16,234 passed, 68 skipped, two failed
+  (16,304 collected; exit 1; normal unconfigure and Python exit completed).
+  The native beacon fixture read an exclusively created output before its
+  synchronous writer closed it. Both positive tests now wait for verified
+  watcher retirement before parsing, retaining every original assertion.
+  The other failure was a 60-second PowerShell diagnostic-fixture timeout;
+  its test and production helpers are unchanged from `df4e9e6`. Concurrent
+  read-only PowerShell delays were observed, without a proven root cause.
+  The full beacon file and exact unchanged PowerShell test passed together
+  afterwards: 71 cases, exit 0, with completed unconfigure and Python exit.
+  The full suite was not repeated after the beacon fixture-only change.
+- The previously failing base-CI Python 3.13 native Ollama retirement case
+  passed here on 3.12. This does not establish 3.10/3.13 compatibility or
+  replace those dated CI failures with a green result.
+- No live Angerona restart, elevated path, STOP provisioning, AutoLogger
+  apply or real firewall change was performed. The third Go watchdog is
+  still an unbuilt outline. Earlier live-triage observations below remain
+  dated findings and are not superseded by this offline validation.
+
+## PENDING LIVE TRIAGE (2026-11-11 — original findings; later offline results above)
+
+- Read `analysis/hardening-v1.15-2026-11-11-live-triage.md` first. At that
+  point only syntax checks had run: no pytest, selfcheck, GUI launch,
+  Red Team run or publication. Later offline validation is recorded above.
 - Changed: `core/uiwatchdog.py` (startup budget), `blackbox_recorder.py`,
   `modules/file_integrity.py` (known-folder roots), `core/ollama_lifecycle.py`
   and `modules/ai_triage.py` (startup wait), `modules/forensics.py`,
@@ -59,7 +89,7 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - `core/service_recovery.py`: installer step for SCM failure actions on
   `AngeronaProtection` (restart 5 s/5 s/30 s, 24 h reset, non-crash
   failures) plus read-only `verify()`. Logon tasks now use RestartCount 999.
-- Follow-up 2026-11-12 (Linux unit checks only): `core/privilege.py` now
+- Follow-up 2026-11-12 (Windows offline results recorded above): `core/privilege.py` now
   carries `ANGERONA_RECOVERY_PRESSURE` through the sidecar environment
   allow-list; before this the hint was dropped and priority-sensor relaunch
   never triggered outside tests. The crash sweep treats junctions and other

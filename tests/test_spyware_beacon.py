@@ -357,17 +357,18 @@ def test_independent_watcher_survives_exact_parent_exit(independent_watcher):
     case.engine.process.kill()
     case.engine.wait(time.monotonic() + 5.0)
     _wait_for(output.exists)
+    # Existence precedes the synchronous sender closing its buffered JSON file.
+    _watcher_result(case, "SPYWARE_ENGINE_EXIT")
     event = json.loads(output.read_text())
     assert event == {"rule_code": "SPYWARE_ENGINE_EXIT", "severity": "CRITICAL", "pid": case.engine_pid}
-    _watcher_result(case, "SPYWARE_ENGINE_EXIT")
 
 
 def test_independent_watcher_reports_stalled_heartbeat(independent_watcher):
     case, _settings, output = independent_watcher
     _wait_for(output.exists)
     assert case.engine.process.poll() is None
-    assert json.loads(output.read_text())["rule_code"] == "SPYWARE_HEARTBEAT_LOST"
     _watcher_result(case, "SPYWARE_HEARTBEAT_LOST")
+    assert json.loads(output.read_text())["rule_code"] == "SPYWARE_HEARTBEAT_LOST"
     assert case.engine.process.poll() is None
 
 
