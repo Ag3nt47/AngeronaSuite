@@ -726,6 +726,7 @@ def test_native_os_lifecycle_retires_harmless_server_runner_and_preserves_unrela
     )
     server = unrelated = None
     observed_handles = []
+    console_hosts = {}
     checked = []
     source_close_started = False
     close_native_values = {"wait_results": [], "active_processes": None}
@@ -761,9 +762,22 @@ def test_native_os_lifecycle_retires_harmless_server_runner_and_preserves_unrela
             observed_handles.append(handle)
             assert win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
         if server_exited:
+            import psutil
+
+            # The server's own console host leaves the Job a few milliseconds
+            # after the server. Hold that exact member (its PID cannot be
+            # reused) and let it leave before the retirement cut is taken.
+            for pid in sorted(native_pids - set(expected_pids)):
+                if psutil.Process(pid).ppid() == server.pid:
+                    console_hosts[pid] = win32api.OpenProcess(0x00100000, False, pid)
             release.write_bytes(b"exit only this harmless fixture server")
             assert type(server.wait(timeout=8.0)) is int
             assert type(server.poll()) is int
+            settled = time.monotonic() + 5.0
+            while console_hosts.keys() & set(win32job.QueryInformationJobObject(
+                    server._job._handle, win32job.JobObjectBasicProcessIdList)):
+                assert time.monotonic() < settled, "Exited server's console host stayed in the Job"
+                threading.Event().wait(0.005)
             assert win32event.WaitForSingleObject(observed_handles[1], 0) == win32event.WAIT_TIMEOUT
             accounting = win32job.QueryInformationJobObject(server._job._handle,
                 win32job.JobObjectBasicAccountingInformation)
@@ -838,7 +852,7 @@ def test_native_os_lifecycle_retires_harmless_server_runner_and_preserves_unrela
             child.wait(timeout=5.0)
             child.wait_tree(timeout=5.0)
             actual_close(child)
-        for handle in observed_handles:
+        for handle in (*observed_handles, *console_hosts.values()):
             handle.Close()
 
 

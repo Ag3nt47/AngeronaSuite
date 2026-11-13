@@ -33,6 +33,11 @@ elevated host behavior; no STOP authority was provisioned or dead-man hold armed
   the same handle in that interpreter's widths. Verified on Python 3.12 with a
   forced legacy comparison; not run on 3.10 or 3.11 locally.
 - CI: the Python 3.11 job gets the 75-minute limit Python 3.10 already has.
+- Test fixture only: the native Ollama retirement test with an already-exited
+  server now waits for that server's own console host to leave the Job before
+  retirement starts. On hosted Python 3.11 and 3.13 it left between the cut
+  and termination, and retirement correctly failed closed. Product behaviour
+  is unchanged: a member leaving in that window still reports incomplete.
 
 ### Restart-loop and STOP hardening (2026-11-11)
 
