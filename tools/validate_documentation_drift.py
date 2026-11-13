@@ -11,6 +11,7 @@ import subprocess
 import sys
 import zlib
 from pathlib import Path, PurePosixPath
+from typing import Callable
 from urllib.parse import unquote, urlsplit
 
 
@@ -25,6 +26,7 @@ FINAL_RE = re.compile(
 IMAGE_RE = re.compile(r"!\[[^\]]*\]\(\s*(?P<target><[^>]+>|[^)\s]+)")
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 MAX_PUBLIC_IMAGE_BYTES = 16 * 1024 * 1024
+GitRunner = Callable[[Path, tuple[str, ...]], subprocess.CompletedProcess[str]]
 MAX_VERSION_METADATA_BYTES = 2 * 1024 * 1024
 STABLE_VERSION_RE = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 
@@ -214,28 +216,35 @@ def local_readme_image_targets(readme: str) -> tuple[list[str], list[str]]:
     return targets, errors
 
 
-def _git_tracks(root: Path, relative: str) -> bool | None:
-    """Return tracking state, or None when *root* is not a Git worktree."""
+def _standalone_git(root: Path, arguments: tuple[str, ...]) -> subprocess.CompletedProcess[str]:
+    """Ordinary CLI fallback; publication supplies its admitted transport instead."""
 
-    probe = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=root,
         capture_output=True,
         text=True,
         check=False,
+        timeout=30.0,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    if probe.returncode != 0:
-        return None
+
+
+def _git_tracks(
+    root: Path, relative: str, *, git_runner: GitRunner | None = None,
+) -> bool | None:
+    """Return tracking state, or None when the repository cannot be verified."""
+
+    run = git_runner if git_runner is not None else _standalone_git
     try:
+        probe = run(root, ("rev-parse", "--show-toplevel"))
+        if probe.returncode != 0:
+            return None
         if Path(probe.stdout.strip()).resolve() != root.resolve():
             return None
-    except OSError:
+        tracked = run(root, ("ls-files", "--error-unmatch", "--", relative))
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    tracked = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--error-unmatch", "--", relative],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
     return tracked.returncode == 0
 
 
@@ -330,7 +339,9 @@ def validate_png_payload(payload: bytes) -> tuple[int, int]:
     return width, height
 
 
-def _validate_local_readme_images(root: Path, readme: str) -> list[str]:
+def _validate_local_readme_images(
+    root: Path, readme: str, *, git_runner: GitRunner | None = None,
+) -> list[str]:
     targets, errors = local_readme_image_targets(readme)
     if not targets:
         errors.append("README.md: require at least one local public image")
@@ -347,9 +358,11 @@ def _validate_local_readme_images(root: Path, readme: str) -> list[str]:
         if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
             errors.append(f"README.md: image escapes repository or is not a file: {relative}")
             continue
-        tracked = _git_tracks(root, relative)
+        tracked = _git_tracks(root, relative, git_runner=git_runner)
         if tracked is False:
             errors.append(f"README.md: image is not tracked by Git: {relative}")
+        elif tracked is None:
+            errors.append(f"README.md: Git image tracking is unavailable: {relative}")
         try:
             size = resolved.stat().st_size
             payload = resolved.read_bytes()
@@ -371,7 +384,7 @@ def _validate_local_readme_images(root: Path, readme: str) -> list[str]:
     return errors
 
 
-def validate(root: Path) -> list[str]:
+def validate(root: Path, *, git_runner: GitRunner | None = None) -> list[str]:
     errors: list[str] = []
     readme_path = root / "README.md"
     try:
@@ -428,7 +441,7 @@ def validate(root: Path) -> list[str]:
         if not re.search(pattern, readme, re.IGNORECASE | re.DOTALL):
             errors.append(f"README.md: missing {label} claim")
 
-    errors.extend(_validate_local_readme_images(root, readme))
+    errors.extend(_validate_local_readme_images(root, readme, git_runner=git_runner))
 
     prose = _normalized_prose(readme)
     for acronym, expansion in ACRONYMS.items():

@@ -90,6 +90,16 @@ def _git(
     return result
 
 
+def _documentation_git(
+    root: Path, arguments: tuple[str, ...],
+) -> subprocess.CompletedProcess[str]:
+    """Keep documentation queries inside the already admitted publication transport."""
+
+    if _ACTIVE_GIT_BOUNDARY.get() is None:
+        raise PublicationError("documentation tracking requires an active trusted Git boundary")
+    return _git(root, *arguments, check=False)
+
+
 _FULL_TREE_STATUS_TIMEOUT = 120.0
 
 
@@ -557,7 +567,7 @@ def _publish_with_trusted_git(
             f"GitHub default branch is {default_branch!r}, expected {public_branch!r}"
         )
 
-    documentation_errors = validate(root)
+    documentation_errors = validate(root, git_runner=_documentation_git)
     if documentation_errors:
         raise PublicationError(
             "offline publication validation failed: " + "; ".join(documentation_errors)

@@ -45,6 +45,16 @@ shutdown. Maintenance process ownership recognizes at most 16 harmless Python
 prefix switches before its known entry point. A -c command or unknown entry is
 not confused with an owned Angerona process.
 
+## Publication transport follow-up
+
+The guarded publisher's documentation check previously attempted ambient Git
+after the publication transport had already admitted a pinned runtime. The
+check now receives that same active transport for repository and image-tracking
+queries. Missing tracking is an explicit failure; the standalone command remains
+hidden and bounded. Fifteen inert admission cases, all 35 documentation checks
+and the existing clean-snapshot publisher fixture passed on the PC checkout.
+These offline checks do not replace exact-commit public publication receipts.
+
 ## AI provider self-test and host assessment
 
 The self-test explanation now distinguishes provider availability from verified

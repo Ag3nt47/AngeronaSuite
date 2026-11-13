@@ -131,7 +131,7 @@ def test_publisher_rechecks_clean_snapshot_after_network_verification(
         "https://github.com/Ag3nt47/AngeronaSuite.git",
     )
 
-    monkeypatch.setattr(publisher, "validate", lambda _root: [])
+    monkeypatch.setattr(publisher, "validate", lambda _root, **_kwargs: [])
     # This miniature README repository isolates snapshot orchestration. PW04
     # has separate real-manifest/pin admission tests, with no network fixture.
     monkeypatch.setattr(publisher, "_assert_recovery_bundle", lambda _root: None)
