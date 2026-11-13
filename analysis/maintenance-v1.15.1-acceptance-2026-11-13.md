@@ -55,6 +55,14 @@ hidden and bounded. Fifteen inert admission cases, all 35 documentation checks
 and the existing clean-snapshot publisher fixture passed on the PC checkout.
 These offline checks do not replace exact-commit public publication receipts.
 
+Hosted native CI then exposed an unavailable auto-discovered compiler path
+after the Go tests and vet passed. Build discovery now selects one ApplicationInfo
+before assigning its scalar path. A real PowerShell discovery fixture passed
+with two private inert executable names, both PATH orders, an explicit path and
+missing-compiler refusal. It executes no fake image and records the host's
+single/multiple-match behavior without assuming the hosted runner's value.
+The corrected hosted build retains its own acceptance result.
+
 ## AI provider self-test and host assessment
 
 The self-test explanation now distinguishes provider availability from verified
@@ -75,6 +83,23 @@ The full offscreen harness completed 28 phases and retained one failed phase. Al
 The new signing screenshot renders the actual widgets with explicitly synthetic values and registered system fonts. It contains no host data and starts no inspection or export workers.
 
 Guarded exact-commit publication, public image identity, current-head hosted checks and any actual Core-generation observation retain their own receipts. This document does not replace those proofs or claim live protection.
+
+## Fresh PC source observation
+
+The canonical hidden-console Safe Startup launch completed its initial painted
+and responding dashboard handshake on the PC checkout. The actual Core was
+identified independently from the virtual-environment launcher by its native
+creation time and image. Four read-only samples over one minute retained that
+same Core generation, advancing Core and watchdog progress, scanner status and
+two fresh aggregate reports identifying version 1.15.1. Diagnostic query owners
+retired with their handles closed; saved Live Debug remained disabled.
+
+This was a Chill-mode Source Observe session, not installed Protect acceptance.
+Source-update ownership remained unavailable, and the optional native monitor
+reported source-disabled as expected. Existing HIGH review evidence was
+preserved. There were no active critical alerts in the sampled aggregate;
+that is not a clean-device or complete-coverage verdict. Startup readiness,
+peer liveness, telemetry continuity and protection authority remain distinct.
 
 A real validly signed and enrolled positive deployment remains unaccepted.
 The optional observer shares the Core job and has no independent recovery.

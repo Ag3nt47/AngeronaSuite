@@ -11,7 +11,10 @@ $ErrorActionPreference = 'Stop'
 $sourceRoot = Split-Path -Parent $PSScriptRoot
 $moduleRoot = Join-Path $sourceRoot 'frz/watchdog3'
 if ([string]::IsNullOrWhiteSpace($GoExecutable)) {
-    $GoExecutable = (Get-Command go.exe -CommandType Application -ErrorAction Stop).Source
+    # Select the ApplicationInfo before assigning its scalar path to [string].
+    # Multiple PATH matches must never be joined into one nonexistent filename.
+    $goCommand = @(Get-Command go.exe -CommandType Application -ErrorAction Stop)[0]
+    $GoExecutable = $goCommand.Source
 }
 $GoExecutable = [IO.Path]::GetFullPath($GoExecutable)
 if (-not (Test-Path -LiteralPath $GoExecutable -PathType Leaf)) { throw 'Go compiler is unavailable.' }
