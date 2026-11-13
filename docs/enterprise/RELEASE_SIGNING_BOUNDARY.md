@@ -1,5 +1,10 @@
 # Release signing boundary
 
+For publisher account enrollment and the current native watchdog service-host
+and installer preparation support, see
+[Windows service and signing setup](WINDOWS_SERVICE_ONBOARDING.md). Its request
+generator and diagnostic report do not provision the authority described here.
+
 ## Current state: publication disabled
 
 The repository release workflow deliberately stops after it uploads three

@@ -218,4 +218,6 @@ func runCommand(arguments []string, stdout, stderr io.Writer, host commandHost) 
 	return 0
 }
 
-func main() { os.Exit(runCommand(os.Args[1:], os.Stdout, os.Stderr, nativeCommandHost())) }
+func main() {
+	os.Exit(dispatchWatchdogCommand(os.Args[1:], os.Stdout, os.Stderr, nativeCommandHost(), nativeWatchdogService))
+}

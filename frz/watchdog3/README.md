@@ -71,6 +71,21 @@ unsigned. The existing protected publisher/installer remains the authority for
 production signing, registration, startup and removal. This change does not
 create a task/service on the development computer.
 
+The exclusive `--service` entry hosts this supervisor through the real Windows
+SCM dispatcher as `AngeronaWatchdog3`. It admits only its actual own-process
+LocalSystem/Session-0 registration, exact installed image and arguments, type-0
+service SID policy and protected custody. A console invocation has no fallback.
+SCM stop/shutdown cancels the existing runner and waits for its return before
+reporting stopped. SCM running describes the dispatcher, not sensor health or
+successful recovery. No engine admission rule is relaxed.
+
+The [Windows service and signing guide](../../docs/enterprise/WINDOWS_SERVICE_ONBOARDING.md)
+explains publisher enrollment, the read-only readiness report and the inert
+installer review request. A certificate alone does not complete deployment:
+MSIX's declarative service account choices cannot express the engine's existing
+restricted virtual-account profile. The separate governed installer and signed
+clean-VM acceptance remain required; neither is supplied by a manifest edit.
+
 The fixed configuration is selected through the native Windows ProgramData
 known-folder API: `Angerona/watchdog3/config.json`. Its directory and file must
 be controlled by Administrators/SYSTEM, with read access for the operating

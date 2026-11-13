@@ -1,9 +1,42 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
 Version: 1.15.0
-Date: 2026-11-09
+Date: 2026-11-13
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
+
+## WINDOWS SERVICE PREPARATION (2026-11-13 — not deployed)
+
+- The native watchdog now has an exclusive `--service` entry for SCM name
+  `AngeronaWatchdog3`. It proves its actual own-process SYSTEM/Session-0
+  registration, exact image/arguments, type-0 SID policy and protected image
+  custody before running the existing guarded supervisor. SCM running means
+  dispatcher responsiveness, never engine sensor health. Stop/shutdown cancels
+  and awaits the actual supervisor return; console service entry has no fallback.
+- The engine remains `AngeronaProtection`, `NT SERVICE\AngeronaProtection`,
+  restricted service SID type 3. Its package/token/process/state guards are
+  unchanged. MSIX desktop6:Service's built-in account choices cannot represent
+  this profile. A separately governed installer and actual signed-package VM
+  acceptance remain missing; registration or a publisher certificate alone
+  would not close that gap. No host service, task, trust or key was provisioned.
+- `tools/Get-AngeronaServiceReadiness.ps1 -AsJson` reports read-only bounded
+  observations and always leaves activation unverified. It does not execute a
+  candidate, elevate, inspect secret bytes or modify native state. Local cert
+  absence does not exclude external HSM/cloud signing.
+- `tools/prepare_windows_service_request.py` writes a canonical, explicitly
+  UNTRUSTED planning request for a supplied source commit, never runtime config
+  or an installer. It cannot enroll publisher/package pins, create keys, sign
+  or install. The release workflow's external-authority stop gate stays intact.
+- Publisher enrollment, final-signing order and deployment acceptance steps:
+  `docs/enterprise/WINDOWS_SERVICE_ONBOARDING.md`. Public trust signing needs
+  account-owner identity verification; no development self-signing workaround
+  or exportable CI signing secret has been introduced.
+- Final Windows checks: full native Go suite and go vet passed; 130 selected
+  Python/installer/policy/interoperability cases passed, one directory-symlink
+  case skipped because creation was unavailable. The rebuilt unsigned native
+  executable exited zero for --version, refused console --service with exit 1
+  and missing installed configuration with exit 3; all probe generations
+  retired. No watchdog config directory or service installation was created.
 
 ## NATIVE THIRD WATCHDOG (2026-11-13 — Go development build)
 

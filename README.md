@@ -140,7 +140,8 @@ Further reading: [current release notes](docs/releases/v1.15.0.md) · [security 
   and uses bounded recovery attempts after failed exits. It needs no Python runtime. Development builds are
   unsigned; protected publisher signing and installer registration are required
   before deployment. Source runs do not auto-start it.
-  [Build, behavior and deployment limits](frz/watchdog3/README.md).
+  [Build, behavior and deployment limits](frz/watchdog3/README.md) ·
+  [Windows signing and service setup](docs/enterprise/WINDOWS_SERVICE_ONBOARDING.md).
 - **Harder to switch off:** after a one-time setup, STOP and resume need
   Windows administrator approval, and an old STOP cannot be replayed. Repeated
   forced restarts are counted over minutes, hours and a day, raise a Critical
