@@ -161,12 +161,17 @@ The [current source companion](docs/releases/v1.15.1.md) and
   while other Core workers continue. Scanner GUI shutdown follows authenticated
   STOP and verified cleanup. AI provider self-tests explain unverified installation
   write custody and retain FAIL; that result is not a malware verdict.
+- **Native file reliability:** corrected the Windows rename-buffer boundary
+  used for atomic private-file updates. Diagnostics retain the original OS
+  error, and native build discovery selects one compiler path.
 - **Security review candidate:** stronger source-archive checks, recovery-profile
   parity, local control and IPC admission, mobile PIN attempt accounting and
   exact expiring acknowledgements. Unsafe POSIX binary installation and new
   Windows deception writes are held pending reviewed replacements. Focused
-  offline checks have passed; live acceptance and fresh hosted CI remain
-  outstanding. Native cleanup uncertainty holds further admission, and streamed
+  offline checks and a fresh Source Observe session have separate acceptance
+  records; installed protection remains unverified. The CI badge reports hosted
+  status for the public revision. Native cleanup uncertainty holds further
+  admission, and streamed
   source-input checks bound optional helper preparation. A real signed positive
   deployment remains unverified. [Patches and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md).
 - **Native third watchdog:** a separate Windows Go executable monitors the

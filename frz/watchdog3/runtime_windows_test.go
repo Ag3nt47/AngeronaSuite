@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,11 +13,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -503,5 +506,161 @@ func TestNativeCleanupFailurePropagatesAndHoldsFurtherAllocation(t *testing.T) {
 				t.Fatal("held output appeared", err)
 			}
 		})
+	}
+}
+
+// This bounded diagnostic compares the original counted-but-unterminated Win32
+// rename encoding with an explicit terminator. Bytes beyond dwBufferSize contain
+// an invalid filename suffix, so an implementation reading beyond the supplied
+// counted extent cannot accidentally find a convenient zero in allocator padding.
+// Only private inert fixture files are created, renamed and deleted by handle.
+func TestNativeRenameCountedBufferBoundaryDiagnostic(t *testing.T) {
+	root := nativeFixture(t)
+	bareFailures := 0
+	for padding := 0; padding < 16; padding++ {
+		target := filepath.Join(root, "diagnostics", "rename-boundary-"+strings.Repeat("x", padding)+".json")
+		for _, terminated := range []bool{false, true} {
+			func() {
+				source := filepath.Join(root, "diagnostics", "rename-source.bin")
+				parents, err := holdParents(source)
+				if err != nil {
+					t.Fatal("diagnostic parent hold", err)
+				}
+				defer func() {
+					if err := retireParents(parents); err != nil {
+						t.Error("diagnostic parent close", err)
+					}
+				}()
+				attrs, err := privateAttributes()
+				if err != nil {
+					t.Fatal("diagnostic attributes", err)
+				}
+				handle, err := openPlain(source, windows.GENERIC_WRITE|windows.READ_CONTROL|windows.DELETE, windows.FILE_SHARE_READ, windows.CREATE_NEW, false, attrs)
+				if err != nil {
+					t.Fatal("diagnostic source create", err)
+				}
+				defer func() {
+					if err := deleteHeld(handle); err != nil {
+						t.Error("diagnostic exact-object delete", err)
+					}
+					if err := retireNative(handle); err != nil {
+						t.Error("diagnostic exact-object close", err)
+					}
+				}()
+				name, err := windows.UTF16FromString(target)
+				if err != nil {
+					t.Fatal(err)
+				}
+				name = name[:len(name)-1]
+				offset := int(unsafe.Sizeof(uintptr(0)))
+				lengthOffset := offset + int(unsafe.Sizeof(uintptr(0)))
+				nameOffset := lengthOffset + 4
+				reportedSize := nameOffset + 2*len(name)
+				if terminated {
+					reportedSize += 2
+				}
+				backing := make([]byte, reportedSize+18)
+				binary.LittleEndian.PutUint32(backing[lengthOffset:], uint32(2*len(name)))
+				for index, ch := range name {
+					binary.LittleEndian.PutUint16(backing[nameOffset+index*2:], ch)
+				}
+				for index := reportedSize; index < len(backing)-2; index += 2 {
+					binary.LittleEndian.PutUint16(backing[index:], '|')
+				}
+				err = windows.SetFileInformationByHandle(handle, windows.FileRenameInfo, &backing[0], uint32(reportedSize))
+				runtime.KeepAlive(backing)
+				t.Logf("rename boundary terminated=%t name_units=%d supplied_bytes=%d error=%v", terminated, len(name), reportedSize, err)
+				if err != nil {
+					if terminated || !errors.Is(err, windows.ERROR_INVALID_NAME) {
+						t.Fatal("unexpected native rename diagnostic error", err)
+					}
+					bareFailures++
+					if _, statErr := os.Stat(target); !errors.Is(statErr, os.ErrNotExist) {
+						t.Fatal("rejected counted rename created a target", statErr)
+					}
+					return
+				}
+				if _, err := os.Stat(target); err != nil {
+					t.Fatal("native rename missed its exact counted target", err)
+				}
+			}()
+		}
+	}
+	t.Logf("rename boundary old_encoding_invalid_name=%d cases=16 explicit_terminated_passed=16", bareFailures)
+}
+
+func TestNativeRenameInformationIncludesAnExplicitTerminator(t *testing.T) {
+	cases := []struct {
+		path string
+		name []uint16
+	}{
+		{path: "C:\\a\\x", name: []uint16{'C', ':', '\\', 'a', '\\', 'x'}},
+		{path: "C:\\a\\😀", name: []uint16{'C', ':', '\\', 'a', '\\', 0xd83d, 0xde00}},
+	}
+	offset := int(unsafe.Sizeof(uintptr(0)))
+	lengthOffset := offset + int(unsafe.Sizeof(uintptr(0)))
+	nameOffset := lengthOffset + 4
+	for _, item := range cases {
+		for _, replace := range []bool{false, true} {
+			buffer, err := encodeRenameInformation(item.path, replace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(buffer) != nameOffset+2*(len(item.name)+1) {
+				t.Fatal("rename buffer does not include exactly one UTF16 terminator")
+			}
+			if binary.LittleEndian.Uint32(buffer[lengthOffset:]) != uint32(2*len(item.name)) {
+				t.Fatal("counted rename length includes the terminator or counts UTF8 bytes")
+			}
+			flag := uint32(0)
+			if replace {
+				flag = 1
+			}
+			if binary.LittleEndian.Uint32(buffer[:4]) != flag {
+				t.Fatal("replace flag changed")
+			}
+			for _, value := range buffer[4:lengthOffset] {
+				if value != 0 {
+					t.Fatal("reserved padding or root directory handle is nonzero")
+				}
+			}
+			for index, expected := range item.name {
+				if binary.LittleEndian.Uint16(buffer[nameOffset+2*index:]) != expected {
+					t.Fatal("rename changed the exact UTF16 filename")
+				}
+			}
+			if binary.LittleEndian.Uint16(buffer[len(buffer)-2:]) != 0 {
+				t.Fatal("rename terminator is outside the supplied extent")
+			}
+		}
+	}
+	if _, err := encodeRenameInformation("C:\\a\\bad\x00name", true); err == nil {
+		t.Fatal("embedded NUL was admitted")
+	}
+}
+
+func TestNativePrivateWriteUsesExplicitRenameTerminator(t *testing.T) {
+	root := nativeFixture(t)
+	for padding := 0; padding < 16; padding++ {
+		path := filepath.Join(root, "diagnostics", "production-"+strings.Repeat("x", padding)+"-🛡.json")
+		for _, expected := range []string{"first", "replaced"} {
+			if err := writePrivateFile(path, []byte(expected)); err != nil {
+				t.Fatal("production atomic rename", err)
+			}
+			raw, err := readPrivateFile(path, 64)
+			if err != nil || string(raw) != expected {
+				t.Fatal("production atomic rename did not preserve exact content", string(raw), err)
+			}
+		}
+	}
+}
+
+func TestPrivateWriteStepErrorPreservesNativeIdentity(t *testing.T) {
+	if err := privateWriteStepError("publish-rename", nil); err != nil {
+		t.Fatal("successful cleanup became a failure", err)
+	}
+	err := privateWriteStepError("publish-rename", windows.ERROR_INVALID_NAME)
+	if !errors.Is(err, windows.ERROR_INVALID_NAME) || !strings.Contains(err.Error(), "private file write publish-rename") {
+		t.Fatal("native failure lost its phase or errors.Is identity", err)
 	}
 }

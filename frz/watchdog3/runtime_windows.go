@@ -385,29 +385,34 @@ func checkHeldPrivateParent(parents []windows.Handle) error {
 	return checkCustody(parents[len(parents)-1], false, true)
 }
 
-func renameHeld(handle windows.Handle, path string, replace bool) error {
+// Keep an explicit UTF16 terminator within the supplied Win32 buffer even
+// though FileNameLength excludes it. Some Windows builds reject the counted-only
+// form when a nonzero suffix follows its extent; do not rely on allocator zeros.
+func encodeRenameInformation(path string, replace bool) ([]byte, error) {
 	name, err := windows.UTF16FromString(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	name = name[:len(name)-1]
 	// FILE_RENAME_INFO: BOOLEAN/flags32, aligned HANDLE, DWORD byte length,
 	// UTF16 name. The retained source object is renamed without reopening it.
 	offset := int(unsafe.Sizeof(uintptr(0)))
-	if offset == 8 {
-		offset = 8
-	} else {
-		offset = 4
-	}
 	lengthOffset := offset + int(unsafe.Sizeof(uintptr(0)))
 	nameOffset := lengthOffset + 4
 	buffer := make([]byte, nameOffset+2*len(name))
 	if replace {
 		binary.LittleEndian.PutUint32(buffer, 1)
 	}
-	binary.LittleEndian.PutUint32(buffer[lengthOffset:], uint32(2*len(name)))
+	binary.LittleEndian.PutUint32(buffer[lengthOffset:], uint32(2*(len(name)-1)))
 	for i, ch := range name {
 		binary.LittleEndian.PutUint16(buffer[nameOffset+i*2:], ch)
+	}
+	return buffer, nil
+}
+
+func renameHeld(handle windows.Handle, path string, replace bool) error {
+	buffer, err := encodeRenameInformation(path, replace)
+	if err != nil {
+		return err
 	}
 	return windows.SetFileInformationByHandle(handle, windows.FileRenameInfo, &buffer[0], uint32(len(buffer)))
 }
@@ -417,60 +422,69 @@ func deleteHeld(handle windows.Handle) error {
 	return windows.SetFileInformationByHandle(handle, windows.FileDispositionInfo, &value, 1)
 }
 
+func privateWriteStepError(step string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("private file write %s: %w", step, err)
+}
+
 func writePrivateFile(path string, raw []byte) (resultErr error) {
 	if len(raw) > maximumOutputBytes {
 		return errors.New("output exceeds byte bound")
 	}
 	if err := checkPrivateParent(path); err != nil {
-		return err
+		return privateWriteStepError("parent-check", err)
 	}
 	parents, err := holdParents(path)
 	if err != nil {
-		return err
+		return privateWriteStepError("parent-hold", err)
 	}
-	defer func() { resultErr = errors.Join(resultErr, retireParents(parents)) }()
+	defer func() {
+		resultErr = errors.Join(resultErr, privateWriteStepError("parent-close", retireParents(parents)))
+	}()
 	if err := checkHeldPrivateParent(parents); err != nil {
-		return err
+		return privateWriteStepError("parent-custody", err)
 	}
 	if old, err := openHeld(path, windows.GENERIC_READ, windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE, false, false, true); err == nil {
 		if err := old.Close(); err != nil {
-			return err
+			return privateWriteStepError("prior-close", err)
 		}
 	} else if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return privateWriteStepError("prior-open", err)
 	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return err
+		return privateWriteStepError("nonce", err)
 	}
 	temporary := filepath.Join(filepath.Dir(path), ".watchdog3-"+hex.EncodeToString(nonce[:])+".tmp")
 	attrs, err := privateAttributes()
 	if err != nil {
-		return err
+		return privateWriteStepError("attributes", err)
 	}
 	h, err := openPlain(temporary, windows.GENERIC_WRITE|windows.READ_CONTROL|windows.DELETE, windows.FILE_SHARE_READ, windows.CREATE_NEW, false, attrs)
 	if err != nil {
-		return err
+		return privateWriteStepError("temporary-open", err)
 	}
 	f := os.NewFile(uintptr(h), temporary)
 	published := false
 	defer func() {
 		if !published {
-			resultErr = errors.Join(resultErr, holdCustody(deleteHeld(h)))
+			resultErr = errors.Join(resultErr, privateWriteStepError("temporary-delete", holdCustody(deleteHeld(h))))
 		}
-		resultErr = errors.Join(resultErr, retireFile(f))
+		resultErr = errors.Join(resultErr, privateWriteStepError("temporary-close", retireFile(f)))
 	}()
 	if err := checkCustody(h, false, true); err != nil {
-		return err
+		return privateWriteStepError("temporary-custody", err)
 	}
 	if _, err := f.Write(raw); err != nil {
-		return err
+		return privateWriteStepError("payload-write", err)
 	}
 	if err := f.Sync(); err != nil {
-		return err
+		return privateWriteStepError("payload-sync", err)
 	}
 	if err := renameHeld(h, path, true); err != nil {
-		return err
+		return privateWriteStepError("publish-rename", err)
 	}
 	published = true
 	return nil

@@ -17,6 +17,9 @@
 - Gate optional monitor native work on successful worker start through a single-use
   event; hold an uncertain owner while other Core workers continue. Queue scanner
   GUI quit only after authenticated STOP and successful cleanup.
+- Include an explicit UTF-16 terminator in native atomic rename buffers without
+  changing counted filenames or weakening custody. Preserve phase-specific OS
+  errors and select one scalar Go compiler path for native builds.
 - Recognize bounded harmless Python prefixes during maintenance ownership checks
   without treating -c commands or unknown entries as owned workers.
 - Explain AI provider installation-custody failures accurately; required unverified

@@ -19,7 +19,7 @@ or live protection of the operator's actual Core generation.
 | Peer STOP and scanner shutdown | 12 pytest checks passed | Includes a PowerShell fixture exercising 48 supplied rows; these are not 48 extra pytest tests |
 | Heartbeat and native leases | 45 passed, 1 skip | One additional reparse case passed separately; skips remain explicit coverage gaps |
 | Red Team current-version integration | 80 passed | Focused startup diagnostics and owned-admission fixtures; standalone title reads the suite version |
-| Native Go suite | 89 top-level tests passed, 1 export-only skip | Full go vet completed with exit 0; fixture acceptance is separate from installed deployment |
+| Native Go suite | 93 top-level tests passed, 1 export-only skip | Full go vet completed with exit 0; fixture acceptance is separate from installed deployment |
 
 The actual ordinary-user Go observer also produced two authenticated advancing
 progress frames in a confined fixture. Its exact image pin, Job ownership and
@@ -83,6 +83,32 @@ The full offscreen harness completed 28 phases and retained one failed phase. Al
 The new signing screenshot renders the actual widgets with explicitly synthetic values and registered system fonts. It contains no host data and starts no inspection or export workers.
 
 Guarded exact-commit publication, public image identity, current-head hosted checks and any actual Core-generation observation retain their own receipts. This document does not replace those proofs or claim live protection.
+
+## Native atomic rename follow-up
+
+A controlled native A/B comparison reproduced ERROR_INVALID_NAME in all 16
+counted-only rename buffers with nonzero suffix bytes outside the supplied
+extent. All 16 explicitly terminated variants succeeded. The production encoder
+now includes its UTF-16 terminator inside the supplied buffer while keeping
+FileNameLength exclusive of that terminator. Path, ACL, handle and replacement
+admission remain unchanged. Native errno identity is preserved under literal
+operation labels; existing underlying error details remain private.
+
+The final native suite passed 93 top-level tests with one explicit export-only
+skip, and Go vet exited 0. Both scopes verified current source pins and native
+retirement. A longer two-case stress scope reached its 240-second diagnostic
+budget after 59 completed passing iterations; it is retained as incomplete,
+not a completed 50-round acceptance. Its sampled pending CreateProcess call
+does not identify a deadlock or prove the cause of the longer duration.
+
+A separate bounded repeat completed three rounds of each originally failing
+case, six passes, with unchanged source pins and verified native retirement.
+This smaller completed scope does not replace the retained extended timeout.
+
+The unsigned PC bundle was rebuilt from all 17 current recorded source inputs.
+Its image and metadata hashes match. A valid --validate-only call remained
+inactive with exit 5 before installed authority access. No signing, enrollment,
+service activation or saved setting change followed from this maintenance.
 
 ## Fresh PC source observation
 

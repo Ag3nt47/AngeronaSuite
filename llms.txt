@@ -44,6 +44,12 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - AI provider self-test explanations are clearer, but required per-machine write
   custody that is unverified remains FAIL. A read-only host assessment confirmed
   that uncertainty; no malware/compromise verdict or ACL rewrite follows.
+- Windows native private-file renames include an explicit UTF-16 terminator
+  inside the supplied buffer while preserving counted filenames, native errno
+  identity, ACLs and retained-handle publication. The old encoding reproduced
+  16 invalid-name failures versus 16 terminated successes. The final native
+  suite passed 93 top-level tests with one explicit skip and Go vet; the dated
+  acceptance note separately retains a budget-incomplete extended stress scope.
 - Accepted scoped maintenance gates and the actual ordinary-user diagnostic
   observer/unsigned-inspection exercise are recorded in
   analysis/maintenance-v1.15.1-acceptance-2026-11-13.md. The endpoint was a
