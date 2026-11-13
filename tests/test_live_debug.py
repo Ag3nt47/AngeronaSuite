@@ -668,6 +668,29 @@ def test_native_multi_client_live_events_and_timeout_recovery(native_service):
     try:
         assert next_kind(first, "coverage")["state"] == "live"
         assert next_kind(second, "coverage")["state"] == "live"
+        # The new accepted-reader audit is real data, not idle traffic. Verify
+        # its exact authenticated original before retaining the timeout checks.
+        audit_signatures = []
+        for client in (first, second):
+            audit = next_kind(client, "event")
+            assert audit["module"] == "Live Debug" and audit["severity"] == "INFO"
+            assert audit["message"] == "Live diagnostic reader connection observed."
+            assert audit["original_integrity_verified"] is True
+            originals = [event for event in native_service.bus.recent(20)
+                         if event.hmac_sig == audit["original_hmac"]]
+            assert len(originals) == 1 and native_service.bus.verify(originals[0])
+            details = originals[0].details
+            assert details["live_debug_client_audit"] is True
+            assert details["response_authorized"] is False
+            assert details["active_attack"] is False
+            assert details["client_identity_complete"] is False
+            assert details["pid_status"] in {"observed", "unavailable"}
+            if details["pid_status"] == "observed":
+                assert details["pid"] == os.getpid()
+            else:
+                assert details["pid"] is None and details["attribution_error_type"]
+            audit_signatures.append(audit["original_hmac"])
+        assert audit_signatures[0] == audit_signatures[1]
         for _ in range(5):
             assert first.read(0.01) is None
         native_service.bus.publish(Event("Fixture Sensor", "synthetic integration event", Severity.CRITICAL,

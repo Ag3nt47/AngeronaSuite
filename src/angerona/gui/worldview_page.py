@@ -40,7 +40,8 @@ def _card(title: str) -> tuple[QFrame, QVBoxLayout]:
     f = QFrame()
     f.setStyleSheet("QFrame{background:#0f1720;border:1px solid #1e2a3a;border-radius:8px;}")
     lay = QVBoxLayout(f)
-    t = QLabel(title); t.setStyleSheet("color:#f59e0b;font-weight:bold;")
+    t = QLabel(); t.setTextFormat(Qt.TextFormat.PlainText); t.setText(title)
+    t.setStyleSheet("color:#f59e0b;font-weight:bold;")
     lay.addWidget(t)
     return f, lay
 
@@ -59,20 +60,21 @@ class WorldViewDialog(QDialog):
 
         root = QVBoxLayout(self)
         banner = QLabel(""); banner.setAlignment(Qt.AlignCenter)
+        banner.setTextFormat(Qt.TextFormat.PlainText)
         banner.setStyleSheet("font-weight:bold;padding:4px;")
         self._banner = banner
         root.addWidget(banner)
 
         mf, self._ml = _card("1 · HOST-TO-SUITE RESOURCE MATRIX")
-        self._matrix = QLabel("…"); self._matrix.setTextFormat(Qt.RichText)
+        self._matrix = QLabel("…"); self._matrix.setTextFormat(Qt.TextFormat.PlainText)
         self._ml.addWidget(self._matrix); root.addWidget(mf)
 
         ef, self._el = _card("2 · TELEMETRY SALIENCY / BLINDING DETECTOR")
-        self._eps = QLabel("…"); self._eps.setTextFormat(Qt.RichText)
+        self._eps = QLabel("…"); self._eps.setTextFormat(Qt.TextFormat.PlainText)
         self._el.addWidget(self._eps); root.addWidget(ef)
 
         of, self._ol = _card("3 · LOCAL AI DEEP DIAGNOSTICS (Ollama)")
-        self._ollama = QLabel("…"); self._ollama.setTextFormat(Qt.RichText)
+        self._ollama = QLabel("…"); self._ollama.setTextFormat(Qt.TextFormat.PlainText)
         self._ol.addWidget(self._ollama); root.addWidget(of)
 
         # Fast metrics (psutil only) refresh at 1 Hz on the GUI thread.
@@ -108,9 +110,9 @@ class WorldViewDialog(QDialog):
         if m.get("available"):
             h, s = m["host"], m["suite"]
             self._matrix.setText(
-                f"<b>HOST</b>  RAM {h['used_ram_pct']}% of {h['total_ram_gb']} GB · "
-                f"CPU {h['cpu_pct']}% ({h['cpu_logical']} logical) · {h['processes']} procs<br>"
-                f"<b>ANGERONA</b>  RSS {s['rss_mb']} MB ({s['rss_pct_of_host']}% of host) · "
+                f"HOST  RAM {h['used_ram_pct']}% of {h['total_ram_gb']} GB · "
+                f"CPU {h['cpu_pct']}% ({h['cpu_logical']} logical) · {h['processes']} procs\n"
+                f"ANGERONA  RSS {s['rss_mb']} MB ({s['rss_pct_of_host']}% of host) · "
                 f"CPU {s['cpu_pct']}% · {s['threads']} module threads")
         else:
             self._matrix.setText(f"unavailable — {m.get('reason','')}")
@@ -118,8 +120,9 @@ class WorldViewDialog(QDialog):
         # 2 · EPS / blinding
         e = self._engine.eps_gauge(self._event_count_fn())
         colour = "#ef4444" if e["alarm"] else ("#f59e0b" if e["blinding_suspected"] else "#22c55e")
+        self._eps.setStyleSheet(f"color:{colour};")
         self._eps.setText(
-            f"internal <b style='color:{colour}'>{e['internal_eps']} EPS</b> · "
+            f"internal {e['internal_eps']} EPS · "
             f"host ctx-switch rate {e['host_ctx_switch_rate']}/s · "
             f"host active: {e['host_active']}")
         if e["alarm"]:
@@ -145,7 +148,7 @@ class WorldViewDialog(QDialog):
         """Slot — called on the GUI thread when the worker finishes."""
         if o.get("available"):
             self._ollama.setText(
-                f"model <b>{o.get('model','?')}</b> · VRAM {o.get('vram_mb','?')} MB · "
+                f"model {o.get('model','?')} · VRAM {o.get('vram_mb','?')} MB · "
                 f"{o.get('tokens_per_sec','?')} tok/s · queue {o.get('queue','?')}")
         else:
             self._ollama.setText(f"Ollama offline — {o.get('reason','not running')}")

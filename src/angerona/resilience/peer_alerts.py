@@ -22,18 +22,21 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import math
 import os
 import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Iterable, Optional
+from typing import Callable, Optional
 
 _CONTEXT = b"angerona-peer-alert-outbox-v1\0"
 _GENESIS = "0" * 64
 _MAX_LINE = 4096
 _MAX_FILE = 256 * 1024
 _MAX_DRAIN = 256
+_MAX_SCAN_LINES = 4096
+_MAX_CURSOR = 4096
 _LEVELS = ("MEDIUM", "HIGH", "CRITICAL")
 
 
@@ -78,13 +81,34 @@ def _bounded_details(details: object) -> dict:
     return safe
 
 
-def _read_lines(path: Path) -> list[bytes]:
+def _read_page(path: Path) -> tuple[list[bytes], list[str]]:
     try:
         with path.open("rb") as stream:
-            raw = stream.read(_MAX_FILE + _MAX_LINE)
+            raw = stream.read(_MAX_FILE + _MAX_LINE + 1)
+    except FileNotFoundError:
+        return [], []
     except OSError:
-        return []
-    return [line for line in raw.split(b"\n") if line.strip()]
+        return [], ["unreadable-page"]
+    gaps = []
+    if len(raw) > _MAX_FILE:
+        gaps.append("page-byte-budget")
+    raw = raw[:_MAX_FILE + _MAX_LINE]
+    rows = raw.split(b"\n")
+    if len(rows) > _MAX_SCAN_LINES:
+        gaps.append("page-line-budget")
+    lines = []
+    for line in rows[:_MAX_SCAN_LINES]:
+        if not line.strip():
+            continue
+        if len(line) > _MAX_LINE:
+            gaps.append("record-byte-budget")
+            continue
+        lines.append(line)
+    return lines, gaps
+
+
+def _read_lines(path: Path) -> list[bytes]:
+    return _read_page(path)[0]
 
 
 class PeerAlertOutbox:
@@ -99,25 +123,28 @@ class PeerAlertOutbox:
         self._prev = self._recover_tail()
 
     def _recover_tail(self) -> str:
-        for line in reversed(_read_lines(self.path)):
-            try:
-                record = json.loads(line)
-                if hmac.compare_digest(_mac(self._key, record), str(record.get("mac", ""))):
-                    return str(record["mac"])
-            except (ValueError, KeyError, TypeError):
-                continue
-            break
+        # A crash can occur after rotation moved the live file but before the
+        # next append. The retained page still owns that predecessor.
+        for path in (self.path, self.path.with_suffix(".jsonl.1")):
+            for line in reversed(_read_lines(path)):
+                try:
+                    record = json.loads(line)
+                    if hmac.compare_digest(_mac(self._key, record), str(record.get("mac", ""))):
+                        return str(record["mac"])
+                except (ValueError, KeyError, TypeError, RecursionError, OverflowError):
+                    continue
         return _GENESIS
 
-    def _rotate_if_needed(self, incoming: int) -> None:
+    def _rotate_if_needed(self, incoming: int) -> bool:
         try:
             size = self.path.stat().st_size
         except FileNotFoundError:
-            return
+            return False
         if size + incoming <= _MAX_FILE:
-            return
+            return False
         os.replace(self.path, self.path.with_suffix(".jsonl.1"))
-        self._prev = _GENESIS
+        # Retain the authenticated predecessor across the file boundary.
+        return True
 
     def append(self, level: str, msg: str, details: Optional[dict] = None) -> Optional[dict]:
         level = str(level).upper()
@@ -160,73 +187,164 @@ class PeerAlertOutbox:
 
 
 class PeerAlertReader:
-    """Core-side verifier. Yields each authenticated record exactly once."""
+    """Bounded verifier with explicit publication acknowledgement.
+
+    A lost retained cursor is a coverage gap, never permission to replay the
+    complete retained log as fresh evidence. Authenticated originals stay on disk.
+    """
 
     def __init__(self, *, key_raw: Optional[bytes] = None, path: Optional[Path] = None) -> None:
         self._key = _derive(key_raw)
         self.path = Path(path) if path is not None else outbox_path()
         self._cursor_path = self.path.with_suffix(".cursor")
         self._seen = self._load_cursor()
+        self._pending: list[dict] = []
+        self._checkpoints: dict[int, str] = {}
+        self._diagnostics: dict[int, str] = {}
+        self._reported_diagnostic = ""
 
     def _load_cursor(self) -> str:
         try:
-            value = json.loads(self._cursor_path.read_text(encoding="utf-8"))
+            with self._cursor_path.open("rb") as stream:
+                raw = stream.read(_MAX_CURSOR + 1)
+            if len(raw) > _MAX_CURSOR:
+                return "!unavailable"
+            value = json.loads(raw)
             mac, tag = str(value["mac"]), str(value["tag"])
             expected = hmac.new(self._key, b"cursor\0" + mac.encode(), hashlib.sha256).hexdigest()
-            if hmac.compare_digest(expected, tag):
+            if len(mac) == 64 and hmac.compare_digest(expected, tag):
                 return mac
-        except (OSError, ValueError, KeyError, TypeError):
+        except FileNotFoundError:
+            return ""
+        except (OSError, ValueError, KeyError, TypeError, RecursionError, OverflowError):
             pass
-        return ""
+        return "!unavailable"
 
     def _store_cursor(self, mac: str) -> None:
         tag = hmac.new(self._key, b"cursor\0" + mac.encode(), hashlib.sha256).hexdigest()
         temporary = self._cursor_path.with_name(self._cursor_path.name + "." + secrets.token_hex(4) + ".tmp")
-        temporary.write_text(json.dumps({"mac": mac, "tag": tag}), encoding="utf-8")
-        os.replace(temporary, self._cursor_path)
+        try:
+            temporary.write_text(json.dumps({"mac": mac, "tag": tag}), encoding="utf-8")
+            os.replace(temporary, self._cursor_path)
+        finally:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+    def peek(self) -> list[dict]:
+        """Return a retained page; it remains pending until each publish succeeds."""
+        if self._pending:
+            return list(self._pending)
+        verified, gaps = [], []
+        broken = 0
+        previous = None
+        observed = set()
+        fingerprint = hashlib.sha256()
+        for path in (self.path.with_suffix(".jsonl.1"), self.path):
+            lines, page_gaps = _read_page(path)
+            gaps.extend(page_gaps)
+            first = True
+            for line in lines:
+                fingerprint.update(line)
+                try:
+                    record = json.loads(line)
+                    ok = (isinstance(record, dict)
+                          and record.get("level") in _LEVELS
+                          and type(record.get("ts")) in (int, float) and math.isfinite(record["ts"])
+                          and type(record.get("details")) is dict
+                          and isinstance(record.get("id"), str)
+                          and isinstance(record.get("source"), str)
+                          and isinstance(record.get("msg"), str)
+                          and hmac.compare_digest(_mac(self._key, record), str(record.get("mac", ""))))
+                except (ValueError, KeyError, TypeError, RecursionError, OverflowError):
+                    ok = False
+                if not ok:
+                    broken += 1
+                    continue
+                mac, prior = record["mac"], record["prev"]
+                if mac in observed:
+                    broken += 1
+                    continue
+                if first:
+                    # Rotation preserves chain continuity. Only the oldest
+                    # retained page can have an unavailable predecessor.
+                    if previous is not None and prior != previous:
+                        broken += 1
+                        continue
+                    if previous is None and prior not in (_GENESIS, self._seen):
+                        gaps.append("unanchored-retained-prefix")
+                    first = False
+                elif prior != previous:
+                    broken += 1
+                    continue
+                observed.add(mac)
+                previous = mac
+                verified.append(record)
+        start = 0
+        checkpoint = ""
+        if self._seen:
+            located = next((i for i, record in enumerate(verified) if record["mac"] == self._seen), None)
+            follows_cursor = (bool(verified) and verified[0]["prev"] == self._seen
+                              and not broken and not gaps)
+            if located is not None:
+                # Earlier retained history can have an unavailable prefix, but
+                # the acknowledged row anchors every validated successor.
+                gaps = [gap for gap in gaps if gap != "unanchored-retained-prefix"]
+                start = located + 1
+            elif follows_cursor:
+                # Rotation may retire the cursor row while retaining its signed
+                # immediate successor. Its predecessor MAC proves continuity.
+                start = 0
+            else:
+                gaps.append("acknowledged-cursor-not-retained")
+                # Do not turn old signed rows into new events when continuity
+                # is unknown. A successfully published gap may establish a new
+                # checkpoint at the retained tail for subsequent fresh rows.
+                checkpoint = verified[-1]["mac"] if verified else ""
+                start = len(verified)
+        fresh = verified[start:start + _MAX_DRAIN]
+        diagnostic = fingerprint.hexdigest() + ":" + str(broken) + ":" + ",".join(sorted(set(gaps)))
+        if (broken or gaps) and diagnostic != self._reported_diagnostic:
+            report = {
+                "id": "tamper" if broken else "gap", "ts": round(time.time(), 3),
+                "source": "peer-alert-outbox", "level": "HIGH",
+                "msg": (f"Peer watchdog alert outbox failed authentication/order ({broken} record(s))"
+                        if broken else "Peer watchdog alert outbox coverage is incomplete"),
+                "details": {"unauthenticated_records": broken, "coverage_gaps": sorted(set(gaps)),
+                            "complete": False, "path": str(self.path), "response_authorized": False},
+            }
+            # Keep the total page budget, including the diagnostic.
+            fresh = [report, *fresh[:_MAX_DRAIN - 1]]
+            self._diagnostics[id(report)] = diagnostic
+            if checkpoint:
+                self._checkpoints[id(report)] = checkpoint
+        self._pending = fresh
+        return list(fresh)
+
+    def ack(self, record: dict) -> None:
+        """Advance only after this exact pending record was published successfully."""
+        if not self._pending or self._pending[0] is not record:
+            raise ValueError("Peer alert acknowledgement is out of order")
+        mac = record.get("mac") or self._checkpoints.get(id(record))
+        if mac:
+            self._store_cursor(mac)
+            self._seen = mac
+        diagnostic = self._diagnostics.pop(id(record), None)
+        if diagnostic is not None:
+            self._reported_diagnostic = diagnostic
+        self._checkpoints.pop(id(record), None)
+        self._pending.pop(0)
 
     def drain(self) -> list[dict]:
-        """Return new authenticated records, plus one synthetic tamper record if
-        the chain is broken. Advances the cursor only past verified records."""
-        lines: Iterable[bytes] = (
-            _read_lines(self.path.with_suffix(".jsonl.1")) + _read_lines(self.path)
-        )
-        verified: list[dict] = []
-        broken = 0
-        prev: Optional[str] = None
-        for line in lines:
-            try:
-                record = json.loads(line)
-                ok = (isinstance(record, dict)
-                      and hmac.compare_digest(_mac(self._key, record), str(record.get("mac", ""))))
-            except (ValueError, KeyError, TypeError):
-                ok = False
-            if not ok:
-                broken += 1
-                prev = None
-                continue
-            if prev is not None and record["prev"] not in (prev, _GENESIS):
-                broken += 1
-            prev = record["mac"]
-            verified.append(record)
-        start = 0
-        if self._seen:
-            for index, record in enumerate(verified):
-                if record["mac"] == self._seen:
-                    start = index + 1
-                    break
-        fresh = verified[start:start + _MAX_DRAIN]
-        if fresh:
-            self._seen = fresh[-1]["mac"]
-            self._store_cursor(self._seen)
-        if broken:
-            fresh.append({
-                "id": "tamper", "ts": round(time.time(), 3), "source": "peer-alert-outbox",
-                "level": "HIGH",
-                "msg": f"Peer watchdog alert outbox failed authentication ({broken} record(s))",
-                "details": {"unauthenticated_records": broken, "path": str(self.path)},
-            })
-        return fresh
+        """Compatibility consumer: returning a page counts as its acknowledgement.
+
+        Runtime publishers must use peek/ack so failed delivery remains pending.
+        """
+        records = self.peek()
+        for record in records:
+            self.ack(record)
+        return records
 
 
 def self_test() -> tuple[bool, str]:

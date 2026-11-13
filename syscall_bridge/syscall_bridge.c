@@ -1,44 +1,18 @@
 /*
- * syscall_bridge.c — Indirect Syscall Bridge for Angerona SYS module.
+ * Historical syscall bridge implementation retained for source review only.
  *
- * Python extension (CPython ≥ 3.10, x86-64 Windows).
- * Build:
- *     cd AngeronaSuite/syscall_bridge
- *     python setup.py build_ext --inplace
- *     copy syscall_bridge*.pyd ..\src\angerona\modules\
+ * UNSUPPORTED: ordinary setup and direct native compilation are deliberately
+ * held. Angerona does not admit this extension; its separate ctypes/psutil
+ * fallback remains explicitly degraded and has no native hook-bypass assurance.
  *
- * Purpose
- * ───────
- * Standard SOAR containment (process-kill / suspend) calls kernel32.dll
- * functions that route through ntdll.dll in user-mode.  An adversary that
- * hooks NtTerminateProcess / NtSuspendProcess inside the Python process's
- * loaded ntdll will silently no-op those calls, letting a malicious process
- * survive even after Angerona issues a kill.
- *
- * This module bypasses hooked user-mode DLLs using **indirect syscalls**:
- *   1. Open a pristine copy of ntdll.dll from C:\Windows\System32\ on disk
- *      (not the in-memory, potentially-hooked copy).
- *   2. Locate the target export (e.g. NtTerminateProcess) and read its first
- *      5 bytes to extract the System Service Number (SSN):
- *         mov eax, <SSN>   →  B8 xx xx xx xx
- *   3. Find the `syscall; ret` gadget inside the CLEAN in-memory ntdll
- *      (not the start of the function — the gadget itself is never hooked).
- *   4. Build a minimal stub at runtime that:
- *         mov eax, <SSN>
- *         jmp <gadget>        ; syscall; ret
- *      Allocate it as RWX, call it.
- *
- * Security notes
- * ──────────────
- * • Reading SSN from disk avoids trusting the in-memory export table.
- * • Jumping to the syscall gadget inside ntdll means the CPU transitions
- *   directly to kernel mode via a real ntdll instruction pointer — satisfying
- *   Call Stack Spoofing mitigations (CET shadow stack, KernelCet).
- * • This module only calls NT process management functions.  It does NOT
- *   implement shellcode, injection, or memory write primitives.
- * • All allocations are freed after the call; no persistent RWX regions.
- * • Build with /GS (stack canaries) and /DYNAMICBASE /NXCOMPAT.
+ * Unresolved review findings include an incompatible file-buffer protection,
+ * incorrect x64 prologue/stub assumptions, unchecked allocation failures and
+ * insufficient PE offset bounds. The implementation below is not corrected or
+ * certified. No CET, kernel protection or containment efficacy is established.
+ * See README.md for the replacement boundary and required native validation.
  */
+
+#error "ANGERONA_NATIVE_BRIDGE_BUILD_HELD: unsupported historical source; see README.md"
 
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>

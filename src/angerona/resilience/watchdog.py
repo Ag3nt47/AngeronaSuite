@@ -162,6 +162,32 @@ def _source_review_loop(supervisor, stopped):
             check()
 
 
+
+def _finish_deadman(owner, supervisor, writer, publish, reason):
+    """Keep pulses responsive while the one owner retires bounded STOP work."""
+    owner.request_stop(reason)
+    pulse_unavailable_reported = False
+    while not owner.done and not owner.shutdown_expired(grace=2.0):
+        if supervisor.heartbeat_allowed():
+            try:
+                writer = _refresh_heartbeat(writer)
+            except Exception:
+                if not pulse_unavailable_reported:
+                    pulse_unavailable_reported = True
+                    publish("MEDIUM", "Watchdog pulse unavailable during bounded dead-man cleanup; health is unverified.",
+                            {"deadman": "cleanup_pending", "heartbeat_unavailable": True,
+                             "disposition": "health", "response_authorized": False})
+        time.sleep(0.1)
+    if not owner.join(timeout=0.0):
+        snapshot = owner.snapshot()
+        publish("CRITICAL" if snapshot.get("owned_rule_evidence") else "MEDIUM",
+                "Dead-man shutdown ended without owner retirement; rule cleanup remains unresolved.",
+                {"deadman": "cleanup_unresolved", "cleanup_pending": True,
+                 "worker_retired": False, "owned_rule_evidence": bool(snapshot.get("owned_rule_evidence")),
+                 "enforcement_verified": False, "response_authorized": False, "disposition": "health"})
+    return writer
+
+
 def main(argv: list[str] | None = None) -> int:
     token_hex = os.environ.get("ANGERONA_WATCHDOG_TOKEN", "")
     try:
@@ -264,23 +290,28 @@ def main(argv: list[str] | None = None) -> int:
     deadman = None
     if forward_event is not None and "core" in sup.components:
         try:  # Off unless an administrator signed the opt-in policy.
-            from angerona.resilience.deadman import DeadMan
-            deadman = DeadMan(forward_event)
+            from angerona.resilience.deadman import DeadManOwner
+            deadman = DeadManOwner(forward_event)
+            deadman.start()
         except Exception:
             deadman = None
     deadman_state = "disabled"
+    shutdown_reason = "watchdog shutdown"
     n = 0
     while not stop["v"]:
         n += 1
-        if sup.heartbeat_allowed():
+        supervision_current = sup.heartbeat_allowed()
+        if supervision_current:
             beat = _refresh_heartbeat(beat)
         if _standdown_requested():
+            shutdown_reason = "authenticated stand-down"
             if deadman is not None:
-                deadman.tick("stopped", standdown=True)
+                deadman.request_stop(shutdown_reason)
             break
         if deadman is not None and n % 6 == 0:
             try:
-                deadman_state = deadman.tick(sup.components["core"].last_state)
+                deadman.submit(sup.components["core"].last_state if supervision_current else "unknown")
+                deadman_state = deadman.snapshot()["state"]
             except Exception:
                 pass
         if n % 6 == 0:   # ~ every 3s
@@ -295,12 +326,16 @@ def main(argv: list[str] | None = None) -> int:
                 "restart_pressure": {k: c.pressure_level for k, c in sup.components.items()
                                      if c.pressure_level},
                 "deadman": deadman_state,
+                "deadman_work": deadman.snapshot() if deadman is not None else {},
                 "source_integrity": source_state,
                 "supervision_progress": progress,
             })
         time.sleep(0.5)
 
-    diag.write_status("watchdog", "stopped", {})
+    if deadman is not None:
+        beat = _finish_deadman(deadman, sup, beat, forward_event, shutdown_reason)
+    diag.write_status("watchdog", "stopped", {
+        "deadman_work": deadman.snapshot() if deadman is not None else {}})
     source_stopped.set()
     source_thread.join(timeout=1.0)
     beat.close()

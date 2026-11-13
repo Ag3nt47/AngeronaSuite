@@ -22,6 +22,7 @@ def _run(command: str, data: dict | None = None) -> dict | list:
         [str(trusted_powershell_path()), "-NoProfile", "-NonInteractive", "-Command", command],
         input=json.dumps(data or {}), capture_output=True, text=True,
         env=environment, timeout=30, check=False,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout.lstrip("\ufeff"))

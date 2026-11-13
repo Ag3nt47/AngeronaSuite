@@ -1,6 +1,58 @@
 # Changelog
 
+## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
+
+- Apply the reviewed recovery, source-update, authentication, alert and memory
+  detection hardening described in the dated 29-item review below.
+- Bundle the native third watchdog with an optional ordinary-user unsigned mode,
+  off by default, explicit reduced-protection status and real heartbeat evidence.
+- Require explicit signing and protected own-image enrollment before installed
+  console or SCM supervision; signing alone grants no other service authority.
+- Add Watchdog settings, exact-image signature indicators, safe selected-file
+  inspection and untrusted signing-update requests. No source UAC or trust import.
+- Retain unknown native handle/provider cleanup under a sticky quarantine;
+  bound streamed observer source admission and keep independent unsigned
+  recovery explicitly unavailable. A real signed positive deployment remains
+  unaccepted by this maintenance review.
+- Gate optional monitor native work on successful worker start through a single-use
+  event; hold an uncertain owner while other Core workers continue. Queue scanner
+  GUI quit only after authenticated STOP and successful cleanup.
+- Recognize bounded harmless Python prefixes during maintenance ownership checks
+  without treating -c commands or unknown entries as owned workers.
+- Explain AI provider installation-custody failures accurately; required unverified
+  write protection remains FAIL and does not establish malware or compromise.
+- Put current source companions ahead of the preserved older Word/PDF manual
+  body in the readable manual. No newly rendered 1.15.1 Word edition is claimed.
+- Preserve the limitations and dated evidence in the
+  [1.15.1 version notes](docs/releases/v1.15.1.md).
+
 ## 1.15.0 — community workspaces and security maintenance (2026-11-09)
+
+### Security worklist review candidate (2026-11-13)
+
+- Bind source archive staging to reconstructed Git tree objects and the exact
+  file/blob inventory; hold historical-HEAD recovery when managed source lineage
+  is present or uncertain. Canonical GitHub remains the supplier.
+- Check all 55 recovery-profile members, manifest bytes and four launcher pins
+  before publication; use fresh private bytecode paths on normal source startup.
+- Harden local control custody, STOP/restart admission, bounded corrupt-state
+  recovery, ring cursors and publish-before-ACK peer delivery.
+- Add mutual IPC admission, persistent mobile PIN attempt limits, verified IMAP
+  TLS, advisory inbox deduplication and exact expiring alert acknowledgements.
+- Recognize executable-writable memory despite Windows protection modifiers,
+  retain full raw flags and keep process-identity/response gates unchanged.
+- Constrain model/feed rendering and reviewed background commands; harden Ollama
+  model/package admission and retire broad legacy installation/kill helpers.
+- Hold the dormant syscall bridge before packaging helpers or direct native
+  compilation; preserve its defective historical implementation for review.
+  Normal suite packaging and its explicitly degraded fallback are separate.
+- Hold unsafe POSIX binary installation and new Windows deception mutations
+  before effects; existing source setup and exact static monitoring remain
+  separate capabilities. Held actions do not count as working protection.
+- Accepted final offline selfcheck: 29 phases passed, 70 module passes and 16
+  explicit module skips. Hosted CI, exact-revision live acceptance and the
+  remaining architectural/native gaps retain their separate status. See the
+  [29-item patch and residual exposure report](docs/releases/security-worklist-review-2026-11-13.md).
 
 ### Native third watchdog (2026-11-13; development build)
 

@@ -28,6 +28,9 @@ PROTOCOL = "angerona-live-debug-v1"
 MAX_FRAME_BYTES = 32 * 1024
 MAX_TEXT = 8192
 MAX_CLIENTS = 4
+CLIENT_AUDIT_HISTORY = 64
+CLIENT_AUDIT_INTERVAL_SECONDS = 30.0
+CLIENT_AUDIT_COUNT_MAX = (1 << 63) - 1
 PIPE_WRITE_BATCH_BYTES = 64 * 1024
 LOG_READ_BYTES = 64 * 1024
 LOG_INITIAL_BYTES = 128 * 1024
@@ -197,6 +200,23 @@ def _decode(raw: bytes) -> dict:
 def _birth(pid: int) -> float:
     import psutil
     return float(psutil.Process(pid).create_time())
+
+
+def _observed_pipe_client_pid(handle) -> dict:
+    """Observe the pipe's reported PID; never attest process birth/image/trust.
+
+    Win32 contract: BOOL GetNamedPipeClientProcessId(HANDLE, PULONG). Reuse
+    pywin32's native binding, retaining pointer-sized HANDLE and ULONG output:
+    https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-getnamedpipeclientprocessid
+    """
+    try:
+        import win32pipe
+        pid = win32pipe.GetNamedPipeClientProcessId(handle)
+        if type(pid) is not int or not 0 < pid <= 0xFFFFFFFF:
+            raise ValueError("invalid OS pipe client PID")
+    except Exception as error:
+        return {"pid": None, "pid_status": "unavailable", "error_type": sanitize_text(type(error).__name__, 48)}
+    return {"pid": pid, "pid_status": "observed", "error_type": ""}
 
 
 def _pipe_attributes():
@@ -480,6 +500,7 @@ class _NamedPipeServer:
         import win32pipe
         while not self.stop_event.is_set():
             connected = False
+            audit_token = None
             try:
                 try:
                     pipe.connect_server(1.0)
@@ -487,6 +508,9 @@ class _NamedPipeServer:
                     continue
                 connected = True
                 self.service._client_delta(1)
+                audit = getattr(self.service, "_client_connected", None)
+                if callable(audit):
+                    audit_token = audit(pipe.handle)
                 pipe.write(_encode(self.service._hello()))
                 cursor = 0
                 last_heartbeat = time.monotonic()
@@ -513,6 +537,9 @@ class _NamedPipeServer:
             finally:
                 if connected:
                     self.service._client_delta(-1)
+                    audit = getattr(self.service, "_client_disconnected", None)
+                    if audit_token is not None and callable(audit):
+                        audit(audit_token)
                 if not self.stop_event.is_set():
                     try:
                         win32pipe.DisconnectNamedPipe(pipe.handle)
@@ -692,6 +719,12 @@ class LiveDebugService:
         self._dropped = 0
         self._reported_dropped = 0
         self._client_count = 0
+        self._client_audit_active = [None] * MAX_CLIENTS
+        self._client_audit_recent = deque(maxlen=CLIENT_AUDIT_HISTORY)
+        self._client_audit_connections = self._client_audit_unavailable = 0
+        self._client_audit_evicted = self._client_audit_capacity_gaps = 0
+        self._client_audit_suppressed = self._client_audit_publication_failures = 0
+        self._client_audit_due = 0.0
         self._error = ""
         self._shutdown_pending = False
         self._logs: dict[str, dict] = {}
@@ -704,6 +737,7 @@ class LiveDebugService:
                         pid=os.getpid(), birth=self.birth, run_id=self.run_id, cursor=self._cursor,
                         first_seq=self._history[0]["seq"] if self._history else self._cursor + 1,
                         queue_dropped=self._dropped, client_count=self._client_count,
+                        client_audit=self.client_audit_snapshot(limit=MAX_CLIENTS),
                         error=self._error, transport="windows-outbound-named-pipe",
                         shutdown_pending=self._shutdown_pending,
                         history_size=self._history.maxlen, queued=self._queue.qsize())
@@ -716,6 +750,94 @@ class LiveDebugService:
     def _client_delta(self, count):
         with self._lock:
             self._client_count = max(0, self._client_count + count)
+
+    def _retain_client_audit(self, record):
+        # Called with _lock held. Exact bounded observations, no forensic files.
+        if len(self._client_audit_recent) == self._client_audit_recent.maxlen:
+            self._client_audit_evicted = min(CLIENT_AUDIT_COUNT_MAX, self._client_audit_evicted + 1)
+        self._client_audit_recent.append(record)
+
+    def client_audit_snapshot(self, limit: int = 8) -> dict:
+        """Bounded advisory copy; PID observation grants no reader authority.
+
+        Memory-only audit and existing write deadlines cannot guarantee slot
+        fairness against draining/reconnecting same-SID readers. Existing free
+        text remains best-effort redacted, rather than a confidentiality proof.
+        """
+        limit = max(0, min(CLIENT_AUDIT_HISTORY, int(limit)))
+        with self._lock:
+            return dict(active=[dict(row) for entry in self._client_audit_active
+                                if entry is not None for _token, row in (entry,)],
+                recent=[dict(row) for row in list(self._client_audit_recent)[-limit:]] if limit else [],
+                connections_observed=self._client_audit_connections,
+                attribution_unavailable=self._client_audit_unavailable,
+                active_capacity_gaps=self._client_audit_capacity_gaps,
+                recent_records_evicted=self._client_audit_evicted,
+                audit_publications_suppressed=self._client_audit_suppressed,
+                audit_publication_failures=self._client_audit_publication_failures,
+                count_capped=any(value == CLIENT_AUDIT_COUNT_MAX for value in (
+                    self._client_audit_connections, self._client_audit_unavailable,
+                    self._client_audit_evicted, self._client_audit_capacity_gaps,
+                    self._client_audit_suppressed, self._client_audit_publication_failures)),
+                identity_scope="OS-reported PID only; birth/image/trust not verified",
+                response_authorized=False)
+
+    def _client_connected(self, handle):
+        # Query once, on the existing pipe worker, before exporting the hello.
+        # Missing attribution never invents a reader allowlist or changes ACLs.
+        observation = _observed_pipe_client_pid(handle)
+        token = object()
+        now = time.monotonic()
+        with self._lock:
+            self._client_audit_connections = min(CLIENT_AUDIT_COUNT_MAX, self._client_audit_connections + 1)
+            if observation["pid_status"] != "observed":
+                self._client_audit_unavailable = min(CLIENT_AUDIT_COUNT_MAX, self._client_audit_unavailable + 1)
+            slot = next((index for index, value in enumerate(self._client_audit_active) if value is None), None)
+            row = {**observation, "connection_number": self._client_audit_connections,
+                   "slot": slot, "phase": "connected", "ts": time.time(),
+                   "identity_complete": False, "advisory_only": True, "response_authorized": False}
+            if slot is None:
+                self._client_audit_capacity_gaps = min(CLIENT_AUDIT_COUNT_MAX, self._client_audit_capacity_gaps + 1)
+            else:
+                self._client_audit_active[slot] = (token, row)
+            self._retain_client_audit(row)
+            publish = now >= self._client_audit_due
+            suppressed = self._client_audit_suppressed
+            if publish:
+                self._client_audit_due = now + CLIENT_AUDIT_INTERVAL_SECONDS
+                self._client_audit_suppressed = 0
+            else:
+                self._client_audit_suppressed = min(CLIENT_AUDIT_COUNT_MAX, suppressed + 1)
+        if publish:
+            self._publish_client_audit(row, suppressed)
+        return token
+
+    def _publish_client_audit(self, row, suppressed):
+        # One INFO publication per interval, outside the view lock. Its normal
+        # exporter copy never invokes connection admission or republishes it.
+        try:
+            from .eventbus import Event, Severity
+            self.bus.publish(Event("Live Debug", "Live diagnostic reader connection observed.",
+                Severity.INFO, time.time(), {"live_debug_client_audit": True, "pid": row["pid"],
+                    "pid_status": row["pid_status"], "attribution_error_type": row["error_type"],
+                    "connection_number": row["connection_number"], "client_identity_complete": False,
+                    "suppressed_connections": suppressed, "count_unit": "accepted connections",
+                    "identity_scope": "OS-reported PID only; birth/image/trust not verified",
+                    "disposition": "observation", "active_attack": False, "response_authorized": False}))
+        except Exception:
+            with self._lock:
+                self._client_audit_publication_failures = min(
+                    CLIENT_AUDIT_COUNT_MAX, self._client_audit_publication_failures + 1)
+
+    def _client_disconnected(self, token):
+        with self._lock:
+            for slot, entry in enumerate(self._client_audit_active):
+                if entry is not None and entry[0] is token:
+                    self._client_audit_active[slot] = None
+                    self._retain_client_audit({**entry[1], "phase": "disconnected", "ts": time.time()})
+                    return True
+        # A duplicate/stale callback can never clear a replacement session.
+        return False
 
     def start(self) -> bool:
         # Native startup may block outside the view lock. Serialize ownership

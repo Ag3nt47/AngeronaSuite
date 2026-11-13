@@ -170,36 +170,96 @@ def test_safe_mode_survives_supervisor_restart_and_manual_reset(
     assert second._state_store.component("core")["safe_mode"] is False
 
 
-def test_tampered_state_fails_closed_until_authenticated_manual_restart(
+def test_tampered_state_preserves_original_through_budgeted_and_manual_recovery(
     tmp_path, monkeypatch
 ) -> None:
-    from angerona.resilience import shutdown_token, supervisor
-    from angerona.resilience.recovery_state import RecoveryStateStore
+    from types import SimpleNamespace
 
+    from angerona.resilience import shutdown_token, supervisor
+    from angerona.resilience.recovery_state import RecoveryStateError, RecoveryStateStore
+
+    wall, mono = [100.0], [0.0]
     key = bytes(range(32))
     path = tmp_path / "state.json"
-    store = RecoveryStateStore("watchdog", path=path, key=key)
+    store = RecoveryStateStore("watchdog", path=path, key=key, clock=lambda: wall[0])
     store.clear_component("core")
     tampered = json.loads(path.read_text(encoding="utf-8"))
     tampered["components"]["core"]["last_state"] = "dead"
     path.write_text(json.dumps(tampered), encoding="utf-8")
+    original = path.read_bytes()
 
+    class Reader:
+        def __init__(self, _name):
+            pass
+
+        def read(self):
+            return None
+
+    monkeypatch.setenv("ANGERONA_DIAG_DIR", str(tmp_path / "diagnostics"))
     monkeypatch.setattr(shutdown_token, "_load_key", lambda: key)
     monkeypatch.setattr(shutdown_token, "is_standdown_requested", lambda: False)
+    monkeypatch.setattr(supervisor.hb, "HeartbeatReader", Reader)
     sup = supervisor.ProcessSupervisor(
-        state_namespace="watchdog",
-        state_store=store,
+        state_namespace="watchdog", state_store=store,
+        clock=lambda: wall[0], monotonic_clock=lambda: mono[0],
+        initial_backoff_s=1.0, max_backoff_s=8.0,
     )
-    component = sup.add("core", ["core"])
-    assert component.safe_mode is True
-    assert component.state_fault is True
+    notices, launches = [], []
+    sup.on_event = lambda level, message, details: notices.append((level, message, details))
+    component = sup.add("core", ["core"], max_failures=2, window_s=600.0)
+    assert component.safe_mode is False and component.state_fault is True
+    assert path.read_bytes() == original
 
-    monkeypatch.setattr(sup, "_pop_restart_requests", lambda: {"core"})
+    # Keep real admission/backoff logic, with inert launch and waiter boundaries.
+    monkeypatch.setattr(sup, "_pop_restart_requests", lambda: set())
+    monkeypatch.setattr(sup, "_assess", lambda _component: "dead")
     monkeypatch.setattr(sup, "_capture_recovery_snapshot", lambda *_args: None)
+    monkeypatch.setattr(sup, "_arm_startup", lambda _component: None)
+    monkeypatch.setattr(supervisor, "try_claim_spawn", lambda _name: True)
+    monkeypatch.setattr(supervisor, "threading", SimpleNamespace(
+        Thread=lambda **_kwargs: SimpleNamespace(start=lambda: None)))
+
+    def launch(*_args, **_kwargs):
+        launches.append(mono[0])
+        return SimpleNamespace(pid=4242, poll=lambda: 0)
+
+    monkeypatch.setattr(supervisor, "spawn_detached", launch)
+    assert sup.tick()["core"] == "backoff(durability_gap)"
+    assert list(component._failures) == [100.0] and not launches
+    wall[0], mono[0] = 159.9, 59.9
+    assert sup.tick()["core"] == "backoff(durability_gap)"
+    assert not launches and path.read_bytes() == original
+
+    wall[0], mono[0] = 160.0, 60.0
+    monkeypatch.setattr(shutdown_token, "is_standdown_requested", lambda: True)
+    assert sup.tick()["core"] == "standdown"
+    monkeypatch.setattr(shutdown_token, "is_standdown_requested", lambda: False)
+    sup.launch_guard = lambda _component: False
+    assert sup.tick()["core"] == "source-integrity-held"
+    assert not launches and list(component._failures) == [100.0]
+    sup.launch_guard = None
+    wall[0], mono[0] = 161.0, 61.0
+    assert sup.tick()["core"] == "respawned(dead)"
+    assert launches == [61.0] and path.read_bytes() == original
+
+    # Failed persistence cannot erase the process-local crash budget either.
+    wall[0], mono[0] = 162.0, 62.0
+    assert sup.tick()["core"] == "safe_mode"
+    assert component.safe_mode and list(component._failures) == [100.0, 162.0]
+    assert len(component._pressure) == 2 and launches == [61.0]
+    gaps = [details for _level, _message, details in notices
+            if details.get("in_memory_recovery_budget") is True]
+    assert len(gaps) == 1 and gaps[0]["original_preserved"] is True
+    assert gaps[0]["response_authorized"] is False
+
+    # This seam represents a command already admitted by the signed parser.
+    monkeypatch.setattr(sup, "_pop_restart_requests", lambda: {"core"})
     monkeypatch.setattr(sup, "_terminate", lambda _component: True)
-    monkeypatch.setattr(sup, "_spawn", lambda _component: True)
     assert sup.tick()["core"] == "manual_restart"
-    assert store.component("core")["state_fault"] is False
+    assert launches == [61.0, 62.0] and not component.safe_mode
+    assert component.state_fault is True and path.read_bytes() == original
+    with pytest.raises(RecoveryStateError, match="authentication"):
+        store.component("core")
 
 
 def test_recovery_snapshot_is_bounded_authenticated_and_path_free(

@@ -11,7 +11,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractButton, QDialog, QDialogButtonBox, QLabel, QPlainTextEdit,
-    QSizePolicy, QVBoxLayout,
+    QSizePolicy, QVBoxLayout, QToolButton,
 )
 
 
@@ -183,6 +183,7 @@ class ComponentHeartbeatStrip(QAbstractButton):
 
     details_requested = Signal()
     snapshot_changed = Signal()
+    signing_settings_requested = Signal()
 
     def __init__(self, parent=None, *, clock=time.monotonic) -> None:
         super().__init__(parent)
@@ -198,6 +199,14 @@ class ComponentHeartbeatStrip(QAbstractButton):
         self._source = None
         self._details_dialog = None
         self._description = ""
+        self._signing_source = None
+        self._signature_description = ""
+        self._signature_marker = QToolButton(self)
+        self._signature_marker.setObjectName("ThirdWatchdogSignatureMarker")
+        self._signature_marker.setFixedSize(16, 16)
+        self._signature_marker.setText("✕")
+        self._signature_marker.setStyleSheet("QToolButton {color:#f87171; border:0; padding:0; min-height:0; min-width:0; font-size:11px;}")
+        self._signature_marker.clicked.connect(self.signing_settings_requested.emit)
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(500)
         self._poll_timer.timeout.connect(self.refresh_snapshot)
@@ -214,6 +223,34 @@ class ComponentHeartbeatStrip(QAbstractButton):
         self._model = ComponentHeartbeatModel()
         self.refresh_snapshot()
 
+    def set_signing_source(self, supplier) -> None:
+        """Copy cached signer metadata; this supplier must perform no I/O."""
+        self._signing_source = supplier if callable(supplier) else None
+        self._refresh_signature()
+
+    def _refresh_signature(self) -> None:
+        from angerona.core.watchdog_signing import signing_indicator
+        try:
+            supplied = self._signing_source() if self._signing_source is not None else {}
+        except Exception:
+            supplied = {}
+        view = signing_indicator(supplied)
+        self._signature_marker.setText("✓" if view.verified else "✕")
+        self._signature_marker.setStyleSheet(
+            "QToolButton {color:" + ("#22c55e" if view.verified else "#f87171")
+            + "; border:0; padding:0; min-height:0; min-width:0; font-size:11px;}")
+        self._signature_marker.setAccessibleName("Third watchdog " + view.label)
+        if view.tooltip != self._signature_description:
+            self._signature_description = view.tooltip
+            self._signature_marker.setToolTip("<p>" + html.escape(view.tooltip).replace("\n", "<br>") + "</p>")
+        self._signature_marker.move(max(0, self.width() - 18), 0)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        marker = getattr(self, "_signature_marker", None)
+        if marker is not None:
+            marker.move(max(0, self.width() - 18), 0)
+
     def refresh_snapshot(self) -> None:
         now = self._clock()
         try:
@@ -221,6 +258,7 @@ class ComponentHeartbeatStrip(QAbstractButton):
             self._model.publish(records, now)
         except Exception:
             self._model.publish((), now, failure="Heartbeat publication is unavailable.")
+        self._refresh_signature()
         self._sync_presentation(now)
 
     def snapshot(self) -> tuple[ComponentHeartbeatView, ...]:
@@ -237,6 +275,7 @@ class ComponentHeartbeatStrip(QAbstractButton):
                          f"  Generation: {record.generation_id or 'unavailable'}",
                          f"  Real heartbeat age: {age}; deadline: {deadline}",
                          f"  Reason: {record.reason or 'Recent real heartbeat received.'}", ""))
+        rows.extend(("Third watchdog signing", self._signature_description, ""))
         return "\n".join(rows)
 
     def _sync_presentation(self, now: float) -> None:
@@ -291,19 +330,28 @@ class ComponentHeartbeatStrip(QAbstractButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.fillRect(self.rect(), QColor("#101925"))
-        visible = records[:4]
+        # Keep the four existing lanes and give the third watchdog its own
+        # visible lane. Missing evidence stays a red flatline.
+        third = next((row for row in records if row.role == "watchdog3"), None)
+        if third is None:
+            third = ComponentHeartbeatView("watchdog3", "", None, None, None,
+                "unavailable", "No third-watchdog heartbeat has been published.", False)
+        visible = (*records[:4], third)
         cell = self.width() / max(1, len(visible))
         font = painter.font()
         font.setPointSizeF(max(6.5, min(8.0, font.pointSizeF() - 1)))
         painter.setFont(font)
-        labels = {"core": "Core", "watchdog": "Watch", "scanner": "Scan", "blackbox": "BlackBox"}
+        labels = {"core": "Core", "watchdog": "Watch", "scanner": "Scan",
+                  "blackbox": "BB", "watchdog3": "3rd"}
         for index, record in enumerate(visible):
             left, right = index * cell + 4, (index + 1) * cell - 4
             painter.setPen(QColor("#9fb1c7"))
             label = labels.get(record.role, record.role)
-            if index == 3 and len(records) > 4:
-                label = f"BB +{len(records) - 4}"
-            painter.drawText(QRectF(left, 0, right - left, 15), Qt.AlignCenter, label)
+            extras = sum(row.role not in (*EXPECTED_ROLES, "watchdog3") for row in records)
+            if index == 3 and extras:
+                label = f"BB +{extras}"
+            label_right = right - 16 if record.role == "watchdog3" else right
+            painter.drawText(QRectF(left, 0, max(1, label_right - left), 15), Qt.AlignCenter, label)
             painter.setPen(QPen(QColor("#28df94" if record.fresh else "#ff5363"), 1.5))
             baseline = 28.0
             path = QPainterPath(QPointF(left, baseline))

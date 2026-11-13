@@ -130,14 +130,17 @@ def test_pressure_refresh_never_turns_unauthenticated_frames_into_delivery(tmp_p
             expected = [] if corruption == "wrong-key" else list(range(1, 7))
             assert [frame["seq"] for frame in frames] == expected
             assert reader.authentication_failures == (7 if corruption == "wrong-key" else 1)
-            assert writer.occupancy == 0 and writer.drops == 0
-            assert writer.backpressure is False
+            # Rejected bytes alone cannot acknowledge unread originals.
+            assert writer.occupancy == (7 if corruption == "wrong-key" else 0)
+            assert writer.drops == 0
+            assert writer.backpressure is (corruption == "wrong-key")
         with ipc_ring.RingReader(path, _SLOTS, _SLOT_BYTES, key=_KEY) as reader:
             assert writer.write(b"authenticated-after-gap", sensor_id=7)
             frames = reader.read_batch()
-            assert [(frame["seq"], frame["payload"]) for frame in frames] == [
-                (7, b"authenticated-after-gap")
-            ]
+            expected = ([(index, f"fixture-{index}".encode()) for index in range(7)]
+                        if corruption == "wrong-key" else [])
+            expected.append((7, b"authenticated-after-gap"))
+            assert [(frame["seq"], frame["payload"]) for frame in frames] == expected
             assert reader.authentication_failures == 0
 
 
@@ -265,11 +268,14 @@ def test_actual_scanner_loop_resumes_after_two_barrier_controlled_drains(tmp_pat
         started = True
         for high_turn, low_turn in ((0, 1), (2, 3)):
             assert gate.arrived[high_turn].wait(_WAIT_SECONDS)
-            assert writer.occupancy == 7
-            assert host._events == high_turn // 2
-            assert host._dropped == high_turn // 2 + 1
+            assert writer.occupancy == 8
+            assert host._events == high_turn + 1
+            assert host._dropped == 0
             assert sensor.enrichment[-1] is False
-            assert len(reader.read_batch()) == 7
+            high_frames = reader.read_batch()
+            assert len(high_frames) == 8
+            assert ipc_ring.decode_sensor_payload(
+                scanner.SENSOR_PROC, high_frames[-1]["payload"])["pid"] == 1000 + high_turn + 1
             assert _persisted_pressure(writer) == 1
             gate.release[high_turn].set()
             assert gate.arrived[low_turn].wait(_WAIT_SECONDS)
@@ -277,8 +283,8 @@ def test_actual_scanner_loop_resumes_after_two_barrier_controlled_drains(tmp_pat
             assert len(frames) == 1
             record = ipc_ring.decode_sensor_payload(scanner.SENSOR_PROC, frames[0]["payload"])
             assert record["pid"] == 1000 + low_turn + 1
-            assert host._events == low_turn // 2 + 1
-            assert host._dropped == low_turn // 2 + 1  # Earlier shedding is not erased/replayed.
+            assert host._events == low_turn + 1
+            assert host._dropped == 0  # All raw frames survive advisory pressure.
             if low_turn == 1:
                 _fill(writer, 7)  # Exclusive handoff while the producer is gated.
                 gate.release[low_turn].set()

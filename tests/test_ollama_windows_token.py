@@ -88,7 +88,11 @@ class FakeNative:
 
 
 @pytest.fixture
-def fixture_native(tmp_path):
+def fixture_native(tmp_path, monkeypatch):
+    from angerona.core import ollama_model_paths
+
+    # Fixed-drive native proof is independently covered with virtual mappings.
+    monkeypatch.setattr(ollama_model_paths, "_windows_fixed_drive", lambda _anchor: True)
     image = tmp_path / "ollama.exe"
     image.write_bytes(b"inert fixture")
     return FakeNative(image)

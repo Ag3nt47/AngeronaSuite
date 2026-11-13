@@ -110,12 +110,17 @@ _AUTHENTICODE_SCRIPT = (
 
 def _authenticode_status(path: str) -> str:
     """Return Authenticode status without embedding *path* in PowerShell code."""
-    env = os.environ.copy()
+    from angerona.core.privilege import (
+        sanitized_child_environment, trusted_powershell_path, trusted_windows_directories,
+    )
+    native = trusted_windows_directories()[1]
+    env = sanitized_child_environment()
     env["ANGERONA_AUTHENTICODE_PATH"] = os.fspath(path)
     return subprocess.check_output(
-        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+        [str(trusted_powershell_path()), "-NoProfile", "-NonInteractive", "-Command",
          _AUTHENTICODE_SCRIPT],
-        timeout=4, stderr=subprocess.DEVNULL, text=True, env=env,
+        timeout=4, stderr=subprocess.DEVNULL, text=True, env=env, cwd=str(native),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     ).strip()
 
 THREAT = {
@@ -1630,7 +1635,10 @@ class DashboardCards(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
         self.c_modules = StatCard("Modules running")
-        self.c_alerts = StatCard("Alerts (24h)")
+        self.c_alerts = StatCard("Events (24h)")
+        self.c_alerts.setToolTip(
+            "Includes routine INFO telemetry, detections and coverage reports. "
+            "Active threats appear in the adjacent tiles.")
         self.c_crit = StatCard("Active critical (10m)")
         self.c_threat = StatCard("Active HIGH/CRITICAL (10m)")
         self._normal_threat_snapshot = None
@@ -1807,10 +1815,10 @@ class DashboardCards(QWidget):
         _show_nonmodal_from(
             self.c_alerts,
             lambda: EventsWindow(
-                "Alerts — last 24 hours",
+                "Events — last 24 hours",
                 self.bus,
                 self.storage,
-                min_sev=Severity.LOW,
+                min_sev=Severity.INFO,
                 parent=self.window(),
             ),
             "#38bdf8",
@@ -1947,7 +1955,7 @@ def _fill_event_table(table: QTableWidget, events: list) -> None:
 # ── Alerts / Critical drill-down window ───────────────────────────────────────
 class EventsWindow(QDialog):
     """A standalone window listing events at/above a severity over the last 24h.
-    Used for both the Alerts tile (min_sev=LOW) and Critical tile (CRITICAL)."""
+    Used for the Events tile (min_sev=INFO) and Critical tile (CRITICAL)."""
     MAX_ROWS = 500
 
     def __init__(self, title, bus, storage, min_sev=Severity.LOW,
@@ -9432,6 +9440,7 @@ class SettingsDialog(QDialog):
         "Overview": ("src/angerona/gui/pages.py", "def _tab_overview"),
         "Information": ("src/angerona/gui/pages.py", "def _tab_information"),
         "General": ("src/angerona/gui/pages.py", "def _tab_general"),
+        "Watchdog": ("src/angerona/gui/watchdog_settings.py", "class WatchdogSettingsPanel"),
         "System": ("src/angerona/gui/pages.py", "def _tab_system"),
         "Adversary Combat": (
             "src/angerona/gui/pages.py",
@@ -9516,6 +9525,9 @@ class SettingsDialog(QDialog):
         tabs.addTab(_scroll(self._tab_information()), "Information")
         tabs.addTab(_scroll(self._tab_general()), "General")
         tabs.addTab(_scroll(self._tab_system()),  "System")
+        from angerona.gui.watchdog_settings import WatchdogSettingsPanel
+        self._watchdog_settings = WatchdogSettingsPanel(config, self)
+        tabs.addTab(_scroll(self._watchdog_settings), "Watchdog")
         tabs.addTab(_scroll(self._tab_adversary_combat()), "Adversary Combat")
         tabs.addTab(_scroll(self._tab_enterprise()), "Enterprise")
         tabs.addTab(_scroll(self._tab_integrations()), "Integrations")
@@ -9610,6 +9622,9 @@ class SettingsDialog(QDialog):
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
+        watchdog_controls = getattr(self, "_watchdog_settings", None)
+        if watchdog_controls is not None:
+            watchdog_controls.shutdown()
         self._detach_update_controller()
         self._detach_combat_parent_signal()
         super().done(result)
@@ -9632,6 +9647,9 @@ class SettingsDialog(QDialog):
         reader = getattr(self, "_update_check_reader", None)
         if reader is not None:
             reader.close()
+        watchdog_controls = getattr(self, "_watchdog_settings", None)
+        if watchdog_controls is not None:
+            watchdog_controls.shutdown()
         self._detach_update_controller()
         self._detach_combat_parent_signal()
         super().closeEvent(event)
@@ -9700,6 +9718,9 @@ class SettingsDialog(QDialog):
         thread = getattr(reader, "thread", None)
         if thread is not None:
             workers.append(thread)
+        watchdog_controls = getattr(self, "_watchdog_settings", None)
+        if watchdog_controls is not None:
+            workers.extend(watchdog_controls.reader_threads)
         startup_controls = getattr(self, "_installed_startup_controls", None)
         startup_thread = getattr(getattr(startup_controls, "_reader", None), "thread", None)
         if startup_thread is not None:
@@ -9722,6 +9743,12 @@ class SettingsDialog(QDialog):
                 signal.disconnect(self._on_combat_activation_status)
             except (RuntimeError, TypeError):
                 pass
+
+    def focus_watchdog_signing(self) -> None:
+        self._select_tab("Watchdog")
+        panel = getattr(self, "_watchdog_settings", None)
+        if panel is not None:
+            QTimer.singleShot(0, panel.focus_signing)
 
     def _find_setting(self, query: str) -> None:
         """Jump to the most relevant settings area without hiding any controls."""
@@ -12353,22 +12380,40 @@ class SettingsDialog(QDialog):
         self._mob_dest.setPlaceholderText("+15557654321")
         grid.addWidget(self._mob_dest, 4, 1, 1, 2)
 
-        grid.addWidget(QLabel("Hardware PIN (4-digit):"), 5, 0)
+        grid.addWidget(QLabel("Remote response PIN (6–12 digits):"), 5, 0)
         self._mob_pin = QLineEdit()
         self._mob_pin.setEchoMode(QLineEdit.Password)
-        self._mob_pin.setMaxLength(4)
-        self._mob_pin.setPlaceholderText("•••• (leave blank to keep existing)")
-        try:
-            from PySide6.QtGui import QIntValidator
-            self._mob_pin.setValidator(QIntValidator(0, 9999, self._mob_pin))
-        except Exception:
-            pass
+        self._mob_pin.setMaxLength(12)
+        self._mob_pin.setPlaceholderText("Enter locally to enroll or rearm")
+        self._mob_pin_confirm = QLineEdit()
+        self._mob_pin_confirm.setEchoMode(QLineEdit.Password)
+        self._mob_pin_confirm.setMaxLength(12)
+        self._mob_pin_confirm.setPlaceholderText("Repeat the response PIN")
+        from PySide6.QtCore import QRegularExpression
+        from PySide6.QtGui import QRegularExpressionValidator
+        for field in (self._mob_pin, self._mob_pin_confirm):
+            field.setValidator(QRegularExpressionValidator(QRegularExpression("[0-9]{0,12}"), field))
         grid.addWidget(self._mob_pin, 5, 1, 1, 2)
+        grid.addWidget(QLabel("Confirm response PIN:"), 6, 0)
+        grid.addWidget(self._mob_pin_confirm, 6, 1, 1, 2)
+        self._mob_rearm = QPushButton("Save PIN and rearm remote commands…")
+        self._mob_rearm.clicked.connect(self._save_mobile_pin)
+        grid.addWidget(self._mob_rearm, 7, 1, 1, 2)
+        self._mob_auth_status = QLabel(
+            "Local rearm required for new or legacy credentials. Existing PINs are preserved; "
+            "four-digit PINs cannot authorize remote changes."
+        )
+        self._mob_auth_status.setTextFormat(Qt.PlainText)
+        self._mob_auth_status.setWordWrap(True)
+        grid.addWidget(self._mob_auth_status, 8, 0, 1, 3)
         lay.addLayout(grid)
 
         note = QLabel(
             "The PIN uses current-user DPAPI on Windows, Keychain on macOS, or "
-            "Secret Service on Linux. Type HELP from your phone for the command menu."
+            "Secret Service on Linux. General Save leaves the PIN and attempt counter untouched. "
+            "Use the separate local rearm button after saving connection settings. "
+            "Ten failed PIN attempts hold remote changes until local rearm. "
+            "Signal identity, delivery and response authority remain separate checks."
         )
         note.setWordWrap(True); note.setStyleSheet("color: #94a3b8; font-size: 11px;")
         lay.addWidget(note)
@@ -12381,6 +12426,8 @@ class SettingsDialog(QDialog):
             self._mob_host,
             self._mob_dest,
             self._mob_pin,
+            self._mob_pin_confirm,
+            self._mob_rearm,
         ]
         def _lock(on: bool) -> None:
             for f in self._mob_fields:
@@ -12616,30 +12663,64 @@ class SettingsDialog(QDialog):
             return False
 
     def _save_mobile_pin(self) -> None:
-        pin = self._mob_pin.text().strip()
-        if not pin:
+        """Explicit host-only enrollment/reset; never reached by Signal ARM."""
+        from angerona.core.mobile_command_auth import MobileCommandAuthorization
+
+        pin = self._mob_pin.text()
+        confirmation = self._mob_pin_confirm.text()
+        if re.fullmatch(r"[0-9]{6,12}", pin) is None or pin != confirmation:
+            QMessageBox.warning(self, "Mobile PIN not saved",
+                                "Enter the same 6–12 ASCII digits in both PIN fields.")
             return
-        if not re.fullmatch(r"\d{4}", pin):
-            QMessageBox.warning(
-                self, "PIN save failed", "The response PIN must contain exactly 4 digits."
-            )
+        fields = {
+            "cli": (self._mob_cli, "mobile_signal_cli"),
+            "sha256": (self._mob_sha256, "mobile_signal_cli_sha256"),
+            "publisher": (self._mob_publisher, "mobile_signal_cli_publisher"),
+            "host": (self._mob_host, "mobile_host_number"),
+            "dest": (self._mob_dest, "mobile_dest_number"),
+        }
+        scope = {name: str(getattr(self._cfg, attr, "") or "")
+                 for name, (_field, attr) in fields.items()}
+        if (not getattr(self._cfg, "mobile_enabled", False)
+                or any((field.text().strip().casefold() if name == "sha256" else field.text().strip())
+                       != (scope[name].casefold() if name == "sha256" else scope[name])
+                       for name, (field, _attr) in fields.items())):
+            QMessageBox.warning(self, "Save connection settings first",
+                                "Save the enabled Mobile Integration and its connection fields first, "
+                                "then use this separate local PIN and rearm action.")
+            return
+        if QMessageBox.question(
+                self, "Rearm mobile commands",
+                "Save this response PIN and reset the cumulative PIN failure limit for the saved "
+                "mobile connection? Previous response tokens and administrative nonces will be invalid. "
+                "This does not trust a Signal identity, verify delivery, or bypass response policy.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         try:
-            from angerona.core.config import write_env_keys
-
-            # Use the canonical cross-platform protected map.  Clear the legacy
-            # nested-DPAPI slot only after the new value has been accepted by the
-            # OS store; the bridge still reads it for existing installations.
-            write_env_keys({
-                "ANGERONA_MOBILE_PIN": pin,
-                "ANGERONA_MOBILE_PIN_DPAPI": "",
-            })
+            auth = MobileCommandAuthorization(getattr(self._cfg, "data_dir", None), scope=scope)
+            result = auth.rearm_local(pin, confirmation)
+            if not result.ready:
+                self._mob_auth_status.setText(result.reason)
+                QMessageBox.warning(self, "Mobile authorization held", result.reason)
+                return
+            self._mob_auth_status.setText("PIN enrollment verified. Prior mobile tokens and nonces are invalid.")
             self._mob_pin.clear()
-        except Exception as exc:
-            QMessageBox.warning(
-                self, "PIN save failed",
-                f"Could not save the PIN to the protected credential store: {exc}",
-            )
+            self._mob_pin_confirm.clear()
+            # The live worker may have a conservative uncertain-write latch.
+            # Refresh its view only after this distinct local enrollment verified.
+            try:
+                manager = getattr(self.parent(), "manager", None)
+                bridge = getattr(manager, "modules", {}).get("Mobile Response Bridge")
+                refresh = getattr(bridge, "_accept_local_rearm", None)
+                if callable(refresh):
+                    refresh(result.generation)
+            except Exception:
+                self._mob_auth_status.setText("PIN saved; running bridge refresh is unverified. Review or restart the bridge locally.")
+        except Exception:
+            self._mob_auth_status.setText("Protected mobile authorization could not be verified; review locally before retrying.")
+            QMessageBox.warning(self, "Mobile authorization held",
+                                "The protected enrollment could not complete verification. "
+                                "Review the local credential store before retrying; no remote command was sent.")
 
     def _reset_usb_pin(self) -> bool:
         """Explicitly confirm a protected reset; never approve attached media."""
@@ -12718,6 +12799,9 @@ class SettingsDialog(QDialog):
         # All widget values are copied into a detached Config first. Nothing
         # live, persisted, protected, or scheduled changes during validation.
         candidate = copy.deepcopy(self._cfg)
+        watchdog_controls = getattr(self, "_watchdog_settings", None)
+        if watchdog_controls is not None:
+            candidate.watchdog3_unsigned_enabled = watchdog_controls.unsigned_enabled.isChecked()
         candidate.selftest_timeout_seconds = self._selftest_settings.time_budget.currentData()
         candidate.selftest_auto_recover_modules = self._selftest_settings.auto_recovery_modules()
         if self._fleet_service_chk.isChecked():
@@ -12991,14 +13075,6 @@ class SettingsDialog(QDialog):
             )
             self._select_tab("Integrations")
             return
-        mobile_pin = self._mob_pin.text().strip()
-        if mobile_pin and not re.fullmatch(r"\d{4}", mobile_pin):
-            self._select_tab("Mobile Integration")
-            QMessageBox.warning(
-                self, "PIN save failed",
-                "The response PIN must contain exactly 4 digits.",
-            )
-            return
         try:
             candidate.validate_mobile_settings()
         except ValueError as exc:
@@ -13037,11 +13113,6 @@ class SettingsDialog(QDialog):
             "ANGERONA_TEAMS_APP_PASSWORD", ""
         ):
             secret_updates["ANGERONA_TEAMS_APP_PASSWORD"] = teams_password
-        if mobile_pin:
-            secret_updates.update({
-                "ANGERONA_MOBILE_PIN": mobile_pin,
-                "ANGERONA_MOBILE_PIN_DPAPI": "",
-            })
 
         protected_before: dict[str, str] | None = None
         secure_store_touched = bool(
@@ -13203,6 +13274,10 @@ class SettingsDialog(QDialog):
                     restore_names = set(protected_before) | set(secret_updates) | {
                         "ANGERONA_ARIA_PUSH_URL"
                     }
+                    # Mobile attempts and explicit local rearm can advance while
+                    # ordinary settings save; never replay their old snapshot.
+                    from angerona.core.mobile_command_auth import MOBILE_AUTH_SECRET_NAMES
+                    restore_names.difference_update(MOBILE_AUTH_SECRET_NAMES)
                     config_module.write_env_keys({
                         name: protected_before.get(name, "")
                         for name in restore_names
@@ -13257,8 +13332,6 @@ class SettingsDialog(QDialog):
             "ANGERONA_TEAMS_APP_PASSWORD": teams_password,
         }
         self._bridge_key.clear()
-        if mobile_pin:
-            self._mob_pin.clear()
         if callable(self._apply_theme):
             try:
                 self._apply_theme(self._cfg.theme)

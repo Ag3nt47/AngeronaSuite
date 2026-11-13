@@ -14,7 +14,16 @@ from angerona.core import ollama_lifecycle as lifecycle
 
 
 @pytest.fixture(autouse=True)
-def isolate_startup(monkeypatch):
+def isolate_startup(monkeypatch, tmp_path):
+    from angerona.core import privilege, ollama_model_paths
+
+    monkeypatch.setattr(privilege, "sanitized_child_environment",
+                        lambda *_a, **_k: {"USERPROFILE": str(tmp_path), "HOME": str(tmp_path), "PATH": "fixture-interpreter"})
+    monkeypatch.setattr(privilege, "trusted_windows_directories",
+                        lambda: (tmp_path / "Windows", tmp_path / "System32"))
+    monkeypatch.setattr(ollama_model_paths, "_windows_fixed_drive", lambda _anchor: True)
+    monkeypatch.setattr(lifecycle, "_windows_image_location", lambda _path: True)
+    monkeypatch.setattr(lifecycle, "_account_model_home", lambda: str(tmp_path))
     monkeypatch.setattr(lifecycle, "_startup_attempts", OrderedDict())
     monkeypatch.setattr(lifecycle, "_startup_lock", threading.RLock())
     monkeypatch.setattr(lifecycle, "_startup_launch_lock", threading.Lock())

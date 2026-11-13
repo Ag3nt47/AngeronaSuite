@@ -33,6 +33,8 @@ injectable (``token_fn`` / ``reply_fn``) so ``self_test`` never touches the netw
 from __future__ import annotations
 
 import json
+import re
+from collections import OrderedDict
 import os
 import threading
 import time
@@ -62,16 +64,12 @@ _TOKEN_SCOPE = "https://api.botframework.com/.default"
 # OpenID metadata for validating tokens the Bot Connector sends us.
 _OPENID_URL = "https://login.botframework.com/v1/.well-known/openidconfiguration"
 _MAX_ACTIVITY_BYTES = 64 * 1024
-_SERVICE_HOST_SUFFIXES = (
-    ".trafficmanager.net",
-    ".botframework.com",
-    ".teams.microsoft.com",
-)
-_SERVICE_POLICY = host_policy(
-    "Microsoft Bot Framework service",
-    {"trafficmanager.net", "botframework.com", "teams.microsoft.com"},
-    allow_subdomains=True,
-)
+# Exact Teams service hosts; tenant-owned trafficmanager siblings are not trusted.
+_SERVICE_HOSTS = frozenset({
+    "smba.trafficmanager.net", "smba.infra.gcc.teams.microsoft.com",
+    "smba.infra.gov.teams.microsoft.us", "smba.infra.dod.teams.microsoft.us",
+})
+_SERVICE_POLICY = host_policy("Microsoft Teams service", _SERVICE_HOSTS)
 _LOGIN_POLICY = host_policy(
     "Microsoft Bot Framework OAuth",
     {"login.microsoftonline.com"},
@@ -87,16 +85,23 @@ _JWKS_POLICY = host_policy(
 )
 
 
-def _trusted_service_url(value: str) -> bool:
-    """Only send bearer tokens to HTTPS Bot Framework service hosts."""
+def _service_identity(value: str) -> str:
+    if type(value) is not str or not value or len(value) > 2048 or any(ord(c) < 33 for c in value):
+        return ""
     try:
         parsed = urllib.parse.urlsplit(value)
         host = (parsed.hostname or "").lower().rstrip(".")
-        return (parsed.scheme == "https" and parsed.username is None and
-                parsed.password is None and any(
-                    host.endswith(suffix) for suffix in _SERVICE_HOST_SUFFIXES))
-    except Exception:
-        return False
+        if (parsed.scheme != "https" or parsed.username is not None or parsed.password is not None
+                or parsed.port not in (None, 443) or host not in _SERVICE_HOSTS
+                or parsed.query or parsed.fragment or "\\" in parsed.path):
+            return ""
+        return "https://" + host + parsed.path.rstrip("/")
+    except (ValueError, UnicodeError):
+        return ""
+
+
+def _trusted_service_url(value: str) -> bool:
+    return bool(_service_identity(value))
 
 
 class TeamsBot:
@@ -126,6 +131,12 @@ class TeamsBot:
         self._request_slots = threading.BoundedSemaphore(16)
         self._connection_slots = threading.BoundedSemaphore(16)
         self.last_error = ""
+        self._keys_lock = threading.Lock()
+        self._keys = None
+        self._keys_until = 0.0
+        self._keys_retry_at = 0.0
+        self._activity_lock = threading.Lock()
+        self._activities = OrderedDict()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
     def start(self) -> bool:
@@ -171,12 +182,6 @@ class TeamsBot:
                     )
                 )
                 peer = str(self.client_address[0] if self.client_address else "")
-                if not bot._verify_auth(
-                    self.headers.get("Authorization", ""),
-                    peer_host=peer,
-                    forwarded=forwarded,
-                ):
-                    self.send_response(401); self.end_headers(); return
                 try:
                     length = int(self.headers.get("Content-Length", "0") or 0)
                     if length < 0 or length > _MAX_ACTIVITY_BYTES:
@@ -185,6 +190,11 @@ class TeamsBot:
                     activity = json.loads(raw.decode("utf-8", "replace") or "{}")
                 except Exception:
                     self.send_response(400); self.end_headers(); return
+                if not bot._verify_auth(
+                    self.headers.get("Authorization", ""), peer_host=peer,
+                    forwarded=forwarded, service_url=activity.get("serviceUrl") if type(activity) is dict else None,
+                ):
+                    self.send_response(401); self.end_headers(); return
                 try:
                     bot.handle_activity(activity)
                 except Exception as exc:
@@ -246,24 +256,47 @@ class TeamsBot:
         """Process one Bot Framework activity. Answers a 'message' from an allowed
         sender via the ARIA handler and posts the reply back. Returns the reply
         activity that was sent (or None). Public so self_test can drive it."""
-        if not isinstance(activity, dict) or activity.get("type") != "message":
+        if (type(activity) is not dict or activity.get("type") != "message"
+                or activity.get("channelId") != "msteams"):
             return None
         frm = activity.get("from") or {}
-        sender_id = str(frm.get("aadObjectId") or frm.get("id") or "").strip().lower()
+        if type(frm) is not dict:
+            return None
+        sender_id = str(frm.get("aadObjectId") or "").strip().lower()
         if not self.allowed or sender_id not in self.allowed:
             return None                        # not an allow-listed operator
         text = str(activity.get("text") or "").strip()
         if not text:
             return None
+        conversation = activity.get("conversation")
+        identifier = activity.get("id")
+        service = _service_identity(activity.get("serviceUrl"))
+        if (not service or type(conversation) is not dict
+                or type(conversation.get("id")) is not str or not 1 <= len(conversation["id"]) <= 512
+                or type(identifier) is not str or not 1 <= len(identifier) <= 512):
+            self.last_error = "Teams activity identity or service URL is unavailable"
+            return None
+        activity_key = (sender_id, service, conversation["id"], identifier)
+        now = time.monotonic()
+        with self._activity_lock:
+            while self._activities and now - next(iter(self._activities.values())) > 600:
+                self._activities.popitem(last=False)
+            if activity_key in self._activities:
+                return None
+            if len(self._activities) >= 4096:
+                self._activities.popitem(last=False)
+            self._activities[activity_key] = now
         reply_text = ""
         if self.handler is not None:
             try:
                 reply_text = str(self.handler(text))
             except Exception as exc:
                 reply_text = f"(ARIA error: {exc})"
-        if not reply_text:
-            return None
-        return self._reply(activity, reply_text)
+        reply = self._reply(activity, reply_text) if reply_text else None
+        if reply is None:
+            with self._activity_lock:
+                self._activities.pop(activity_key, None)
+        return reply
 
     def _reply(self, activity: dict, text: str) -> Optional[dict]:
         service_url = str(activity.get("serviceUrl") or "").rstrip("/")
@@ -279,7 +312,7 @@ class TeamsBot:
             "replyToId": activity.get("id"),
             "text": text[:3500],
         }
-        url = f"{service_url}/v3/conversations/{urllib.parse.quote(conv)}/activities"
+        url = f"{service_url}/v3/conversations/{urllib.parse.quote(conv, safe='')}/activities"
         try:
             token = self._get_token()
             if self._reply_fn is not None:      # test / custom transport
@@ -340,6 +373,7 @@ class TeamsBot:
         *,
         peer_host: str = "",
         forwarded: bool = False,
+        service_url: str | None = None,
     ) -> bool:
         """Fail CLOSED. Full validation (signature via JWKS, audience == App ID,
         issuer, expiry) when PyJWT is available; otherwise only the explicit dev
@@ -356,31 +390,59 @@ class TeamsBot:
                 self.last_error = "PyJWT not installed; refusing unauthenticated Teams traffic"
             return dev_allowed
         try:
-            import jwt                          # PyJWT
-            with safe_urlopen(_OPENID_URL, policy=_OPENID_POLICY, timeout=10) as response:
-                meta = json.loads(
-                    read_bounded(response, 1024 * 1024).decode("utf-8", "replace")
-                )
-            jwks_uri = str(meta["jwks_uri"])
-            validate_url(jwks_uri, _JWKS_POLICY)
-            with safe_urlopen(jwks_uri, policy=_JWKS_POLICY, timeout=10) as response:
-                jwks = json.loads(
-                    read_bounded(response, 2 * 1024 * 1024).decode("utf-8", "replace")
-                )
-            key_id = str(jwt.get_unverified_header(token).get("kid") or "")
-            key_record = next(
-                item for item in (jwks.get("keys") or [])
-                if isinstance(item, dict) and str(item.get("kid") or "") == key_id
-            )
+            import jwt
+            if len(token) > 16384 or token.count(".") != 2:
+                raise ValueError("invalid bounded JWT shape")
+            # Reject malformed/unexpected algorithms before any metadata request.
+            header = jwt.get_unverified_header(token)
+            key_id = header.get("kid") if type(header) is dict else None
+            if (type(key_id) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", key_id)
+                    or header.get("alg") != "RS256"):
+                raise ValueError("invalid JWT header")
+            keys = self._verification_keys()
+            key_record = next(item for item in keys if item.get("kid") == key_id)
             signing_key = jwt.PyJWK.from_dict(key_record)
-            issuer = str(meta.get("issuer") or "https://api.botframework.com")
-            jwt.decode(token, signing_key.key, algorithms=["RS256"],
-                       audience=self.app_id, issuer=issuer,
-                       options={"require": ["exp", "iss", "aud"]})
+            claims = jwt.decode(token, signing_key.key, algorithms=["RS256"],
+                audience=self.app_id, issuer="https://api.botframework.com",
+                options={"require": ["exp", "iss", "aud"]})
+            actual = _service_identity(service_url)
+            supplied = [claims[name] for name in ("serviceurl", "serviceUrl") if name in claims]
+            if not actual or not supplied or any(_service_identity(value) != actual for value in supplied):
+                raise ValueError("JWT service URL does not match activity")
             return True
         except Exception as exc:
-            self.last_error = f"inbound JWT rejected: {exc}"
+            self.last_error = "inbound JWT rejected: " + type(exc).__name__
             return dev_allowed
+
+    def _verification_keys(self):
+        # Bounded shared public-key cache: malformed or unknown-kid traffic must
+        # not trigger two outbound requests for each inbound activity.
+        with self._keys_lock:
+            now = time.monotonic()
+            if self._keys is not None and now < self._keys_until:
+                return self._keys
+            if now < self._keys_retry_at:
+                raise ValueError("verification metadata retry is cooling down")
+            try:
+                with safe_urlopen(_OPENID_URL, policy=_OPENID_POLICY, timeout=10) as response:
+                    meta = json.loads(read_bounded(response, 1024 * 1024).decode("utf-8"))
+                if meta.get("issuer", "https://api.botframework.com") != "https://api.botframework.com":
+                    raise ValueError("unexpected Connector issuer")
+                jwks_uri = str(meta["jwks_uri"])
+                validate_url(jwks_uri, _JWKS_POLICY)
+                with safe_urlopen(jwks_uri, policy=_JWKS_POLICY, timeout=10) as response:
+                    jwks = json.loads(read_bounded(response, 2 * 1024 * 1024).decode("utf-8"))
+                keys = jwks.get("keys")
+                if (type(keys) is not list or not 1 <= len(keys) <= 32
+                        or any(type(item) is not dict or item.get("kty") != "RSA"
+                               or item.get("alg", "RS256") != "RS256"
+                               or item.get("use", "sig") != "sig" for item in keys)):
+                    raise ValueError("unsupported signing key document")
+                self._keys, self._keys_until = keys, now + 300.0
+                return keys
+            except Exception:
+                self._keys_retry_at = now + 30.0
+                raise
 
     # ── Self-test (no network: injected token/reply transports) ────────────────
     def self_test(self) -> "tuple[bool, str]":
@@ -403,7 +465,7 @@ class TeamsBot:
                             allowed_users=["op-aad-id"],
                            handler=handler, token_fn=fake_token, reply_fn=fake_reply)
 
-            base = {"type": "message", "serviceUrl": "https://smba.trafficmanager.net/",
+            base = {"type": "message", "channelId": "msteams", "serviceUrl": "https://smba.trafficmanager.net/",
                     "conversation": {"id": "conv1"}, "id": "act1",
                     "recipient": {"id": "bot"}, "text": "how do I enable voice?"}
 

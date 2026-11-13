@@ -68,6 +68,16 @@ def module_selftest_lock(mod):
         return lock
 
 
+def _deception_creation_hold_reason(mod, detail: str) -> Optional[str]:
+    """Recognize only the bundled Windows diagnostic's exact capability hold."""
+    if os.name != "nt":
+        return None
+    from angerona.modules.deception import DECEPTION_WINDOWS_CREATION_HELD, DeceptionModule
+    if type(mod) is DeceptionModule and detail == DECEPTION_WINDOWS_CREATION_HELD:
+        return detail
+    return None
+
+
 def run_module_selftest(mod, timeout: float = 15.0) -> tuple[bool, str]:
     """Run one inspector check under the drill's shared limits and lock."""
     timeout = float(timeout)
@@ -77,7 +87,27 @@ def run_module_selftest(mod, timeout: float = 15.0) -> tuple[bool, str]:
         from angerona.core.ollama_lifecycle import ollama_blocked
         if ollama_blocked():
             return False, "SKIP: local AI is off in Chill Mode; switch Chill off manually for an active check"
-    return SelfTestRunner._test_module(mod, timeout, optional_kernel_policy=False)
+    evidence: dict = {}
+    ok, detail = SelfTestRunner._test_module(
+        mod, timeout, optional_kernel_policy=False, evidence=evidence,
+    )
+    held = None if ok else _deception_creation_hold_reason(mod, detail)
+    checks = evidence.get("checks", ())
+    # Direct inspectors retain the same failure precedence as a complete drill.
+    # An exact hold without completed result evidence is still no SKIP authority.
+    if held and any(check.get("check") == "result_contract"
+                    and check.get("status") == "PASS" for check in checks) and any(
+        check.get("check") == "active_test" and check.get("status") == "FAIL"
+        and check.get("detail") == held for check in checks
+    ):
+        defects = [check for check in checks
+                   if check.get("status") == "FAIL" and check.get("check") != "active_test"]
+        if defects:
+            return False, "contract check failed: " + "; ".join(
+                str(check["check"]) + " — " + str(check.get("detail", "")) for check in defects
+            ) + "; native diagnostic held: " + held
+        return False, "SKIP: " + held
+    return ok, detail
 
 
 def _bounded_call(callback, permits, timeout: float, *, name: str, admission_deadline=None, on_slow=None):
@@ -739,6 +769,9 @@ class SelfTestRunner:
 
     @staticmethod
     def _optional_skip_reason(mod, detail: str, policy: dict) -> Optional[str]:
+        held = _deception_creation_hold_reason(mod, detail)
+        if held:
+            return held
         # A known optional/disabled driver can report fixture success without
         # live coverage. A selected driver's missing handle is a real failure.
         if getattr(mod, "CODE", "") == "KRNL":

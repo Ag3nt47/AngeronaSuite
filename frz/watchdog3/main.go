@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var watchdogVersion = "1.0.0"
+var watchdogVersion = "1.15.1"
 
 type retainedNativeProcess struct{ process *peerHandle }
 
@@ -26,6 +26,7 @@ func (p *retainedNativeProcess) Present() (bool, error) { return p.process.Prese
 func (p *retainedNativeProcess) Close() error           { return p.process.Close() }
 
 type commandHost struct {
+	AdmitSelf              func() (io.Closer, error)
 	ProgramData            func() (string, error)
 	ReadAdmin              func(string, int) ([]byte, error)
 	ReadPrivate            func(string, int) ([]byte, error)
@@ -40,7 +41,7 @@ type commandHost struct {
 }
 
 func nativeCommandHost() commandHost {
-	host := commandHost{ProgramData: programDataDirectory, ReadAdmin: readAdminFile, ReadPrivate: readPrivateFile, CheckAdminDirectory: checkAdminDirectory, CheckPrivateDirectory: checkPrivateDirectory, EnsurePrivateDirectory: ensurePrivateDirectory, ValidateService: validatePinnedService, Harden: hardenSelf, AcquireInstance: acquireInstance}
+	host := commandHost{AdmitSelf: nativeSelfActivation, ProgramData: programDataDirectory, ReadAdmin: readAdminFile, ReadPrivate: readPrivateFile, CheckAdminDirectory: checkAdminDirectory, CheckPrivateDirectory: checkPrivateDirectory, EnsurePrivateDirectory: ensurePrivateDirectory, ValidateService: validatePinnedService, Harden: hardenSelf, AcquireInstance: acquireInstance}
 	host.IO = func(configPath string, initial []byte) runnerIO {
 		digest := sha256.Sum256(initial)
 		return runnerIO{
@@ -123,6 +124,12 @@ func runCommand(arguments []string, stdout, stderr io.Writer, host commandHost) 
 		fmt.Fprintln(stdout, "Angerona watchdog3 "+watchdogVersion+" (native Go)")
 		return 0
 	}
+	activation, err := openCommandActivation(host)
+	if err != nil {
+		fmt.Fprintln(stderr, "Watchdog3 inactive: explicit end-user signing and enrollment are required.")
+		return inactiveSigningExit
+	}
+	defer closeCommandActivation(activation, stderr, &exitCode)
 	programData, err := host.ProgramData()
 	if err != nil {
 		fmt.Fprintln(stderr, "Watchdog3 held: native ProgramData is unavailable.")

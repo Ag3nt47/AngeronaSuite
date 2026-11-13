@@ -270,21 +270,23 @@ def test_cancel_during_enrichment_does_not_emit_or_consume_cooldown(scanner, mon
 def test_existing_cooldown_precedes_hash_and_enrichment_but_never_skips_memory_scan(scanner, monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(memory.time, "time", lambda: now[0])
-    scanner._seen[(101, 900.0)] = now[0]
     scanner._k32.birth = 900.0
     scanner._k32.query = lambda address: (0, 8192, memory.PAGE_EXECUTE_READWRITE) if address == 0 else None
     hashes, enrichments = [], []
     monkeypatch.setattr(scanner, "_bound_image_identity", lambda _handle: hashes.append(1) or {})
     monkeypatch.setattr(scanner, "_enrich_process", lambda _pid: enrichments.append(1) or {})
+    # Admit an actual inert observation: timestamps without matching evidence
+    # cannot suppress a new or evicted process observation.
+    assert scanner._scan_pid(101, "fixture.exe", ()).scanned
     for instant in (1000.0, 1299.999):
         now[0] = instant
         assert scanner._scan_pid(101, "fixture.exe", ()).scanned
-    assert scanner._k32.queries == 4
-    assert hashes == enrichments == []
-    now[0] = 1300.0
-    assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    assert scanner._k32.queries == 6
     assert hashes == enrichments == [1]
-    assert len(scanner._bus.recent(10)) == 1
+    now[0] = 1000.0 + memory._UNCHANGED_REPEAT_S
+    assert scanner._scan_pid(101, "fixture.exe", ()).scanned
+    assert hashes == enrichments == [1, 1]
+    assert len(scanner._bus.recent(10)) == 2
 
 
 def test_reused_pid_has_independent_cooldown_bound_to_scanned_handle(scanner, monkeypatch):
@@ -299,7 +301,9 @@ def test_reused_pid_has_independent_cooldown_bound_to_scanned_handle(scanner, mo
     assert len(hashes) == 2
     events = scanner._bus.recent(10)
     assert sorted(event.details["process_create_time"] for event in events) == [100.0, 200.0]
-    assert set(scanner._seen) == {(101, 100.0), (101, 200.0)}
+    assert set(scanner._seen) == {
+        (101, 116444736000000000 + int(birth * 10000000)) for birth in (100.0, 200.0)
+    }
 
 
 def test_missing_birth_evidence_cannot_create_pid_only_cooldown(scanner, monkeypatch):

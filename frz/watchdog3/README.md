@@ -2,9 +2,16 @@
 
 `watchdog3.exe` is a standalone Windows amd64 Go program. It needs no Python
 interpreter, Qt, shell, network connection, or background package manager.
-It observes and recovers the already installed `AngeronaProtection` service
-through the native Windows Service Control Manager (SCM). It never installs,
-reconfigures, stops or terminates that service.
+Its signed, explicitly enrolled operational mode observes and recovers the
+already installed `AngeronaProtection` service through the native Windows
+Service Control Manager (SCM). It never installs, reconfigures, stops or
+terminates that service. An unsigned bundle cannot enter this operational mode.
+
+A separate optional ordinary-user observer is off by default. When explicitly
+enabled, it monitors the admitted Core generation through inherited,
+authenticated progress messages. It grants no service, firewall, containment,
+process-termination or privileged recovery authority. Its UI status describes
+reduced protection, and signature verification is reported separately.
 
 ## Build and test
 
@@ -64,10 +71,67 @@ verify these as observation-only evidence; the service does not claim a Python
 pair or an alert-drain worker it has not started. Output is bounded. A full or invalid outbox reports
 an evidence gap; it is not silently cleared to restore a green status.
 
+## Signing admission and read-only inspection
+
+Before any installed configuration or private authority key is read, every
+operational entry requires a retained own-image signing lease. This includes
+normal console startup, `--validate-only` and the exclusive `--service` entry,
+before the SCM dispatcher starts. Missing enrollment, unsigned or mismatched
+bytes, unavailable native verification, and uncertain native cleanup refuse
+activation (exit 5). Signing never replaces existing STOP, service, process
+identity, account, ACL, configuration or generation checks.
+
+The separate fixed native ProgramData path is
+`Angerona/watchdog3/activation.json`. It is **not** part of the six-field engine
+configuration. Its file and directories require administrator custody, and its
+closed record has exactly these five fields:
+
+```json
+{
+  "schema": 1,
+  "enabled": true,
+  "watchdog_sha256": "REPLACE_WITH_FINAL_SIGNED_FILE_SHA256",
+  "certificate_sha256": "REPLACE_WITH_DER_LEAF_CERTIFICATE_SHA256",
+  "publisher": "REPLACE_WITH_EXACT_NATIVE_DIAGNOSTIC_PUBLISHER"
+}
+```
+
+These placeholders are intentionally invalid. The independent governed
+installer must enroll the final signed bytes and the exact reviewed leaf
+certificate/publisher. The watchdog neither learns these pins from the current
+file nor creates keys, installs trust, provisions enrollment or repairs ACLs.
+Signing or changing the image requires a separately reviewed enrollment update.
+A prepared request from Settings is an untrusted report, not activation.
+
+The own image and enrollment file stay open without write/delete sharing
+through runtime admission. Native Authenticode verification uses the retained
+file handle and exact verified leaf from the same WinTrust provider state,
+followed by a machine-context code-signing chain/policy check. Current-user
+trust alone cannot grant activation. URL retrieval, AIA and root auto-update
+are disabled; unavailable cached revocation evidence holds verification.
+Unknown provider cleanup quarantines its input owners and exact file handle
+until process exit and prevents later native admission; it is never retried.
+
+`--version`, `--help`, `--signing-status` and
+`--inspect-signing C:\Selected\watchdog3.exe` remain diagnostic entries. The
+selected executable is read through a bounded fixed-local, no-reparse file
+lease and is **never executed**. Inspection does not read engine configuration,
+private authority keys or activation enrollment; it cannot start SCM or grant
+operational authority. The bounded schema-1 JSON reports the file SHA-256,
+verified leaf SHA-256, exact Go-canonical publisher, certificate expiry and
+reason, with `activation_eligible: false` and
+`activation_status: "not-assessed-by-diagnostic"`.
+
+A successful inspection is a signing snapshot of those held bytes. It does not
+prove installed enrollment, running generation, continuous revocation freshness
+or sensor health. The optional observer binds its cached own-image snapshot to
+its admitted executable digest and actual process generation separately.
+
 ## Installed deployment
 
-Source checkouts do **not** auto-start this executable. A development build is
-unsigned. The existing protected publisher/installer remains the authority for
+Source checkouts do **not** auto-start signed operational supervision. A
+development build is unsigned. The separate reduced observer requires its own
+explicit opt-in and cannot use installed supervisory authority. The existing protected publisher/installer remains the authority for
 production signing, registration, startup and removal. This change does not
 create a task/service on the development computer.
 

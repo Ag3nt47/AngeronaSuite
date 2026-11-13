@@ -22,6 +22,8 @@ import zipfile
 
 import pytest
 
+from source_archive_fixture import SourceArchiveFetch
+
 from test_app_owned_process_composition import (
     composition as composition, context as context,
     inert_child_factory as inert_child_factory, inert_owner as inert_owner,
@@ -352,7 +354,7 @@ def _stage(sample, target=_FIRST):
         return {"status": "ahead", "base_commit": {"sha": left},
                 "merge_base_commit": {"sha": left}}
     return source_stage.prepare_source_update(sample.root, sample.state / "stages", target,
-        fetch=fetch, download=sample.archives.__getitem__)
+        fetch=SourceArchiveFetch(sample.archives, fetch), download=sample.archives.__getitem__)
 
 
 def _plan(sample, target=_FIRST):

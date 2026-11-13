@@ -136,7 +136,10 @@ class RecoveryStateStore:
         record = self.load()["components"].get(safe_name(name), {})
         if not isinstance(record, dict):
             raise RecoveryStateError("invalid component recovery record")
-        maximum = float(self._clock()) + 7 * 24 * 3600
+        now = float(self._clock())
+        if not math.isfinite(now) or now < 0:
+            raise RecoveryStateError("recovery clock is unavailable")
+        maximum = now + 7 * 24 * 3600
         failures = record.get("failures", [])
         if not isinstance(failures, list) or len(failures) > _MAX_FAILURES_PER_COMPONENT:
             raise RecoveryStateError("invalid recovery failure history")
@@ -153,12 +156,12 @@ class RecoveryStateStore:
             "failures": cleaned_failures,
             "pressure": [_finite_timestamp(value, maximum=maximum) for value in pressure],
             "safe_mode": bool(record.get("safe_mode", False)),
-            "safe_mode_since": _finite_timestamp(
+            "safe_mode_since": min(now, _finite_timestamp(
                 record.get("safe_mode_since", 0.0), maximum=maximum
-            ),
-            "next_restart_at": _finite_timestamp(
+            )),
+            "next_restart_at": min(now + 60.0, _finite_timestamp(
                 record.get("next_restart_at", 0.0), maximum=maximum
-            ),
+            )),
             "last_state": str(record.get("last_state") or "unknown")[:24],
             "last_diagnostic_sha256": digest,
             "state_fault": bool(record.get("state_fault", False)),
@@ -185,37 +188,78 @@ class RecoveryStateStore:
                 ),
                 "state_fault": bool(record.get("state_fault", False)),
             }
-            document["updated_at"] = float(self._clock())
-            document["hmac_sha256"] = hmac.new(
-                self._authority(), _canonical(document), hashlib.sha256
-            ).hexdigest()
-            encoded = json.dumps(
-                document,
-                sort_keys=True,
-                separators=(",", ":"),
-                ensure_ascii=True,
-            ).encode("utf-8")
-            if len(encoded) > _MAX_DOCUMENT_BYTES:
-                raise RecoveryStateError("recovery state exceeds its size limit")
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            temp = self.path.with_suffix(
-                self.path.suffix + f".tmp.{os.getpid()}.{threading.get_ident()}"
-            )
+            self._write_document(document)
+
+    def consume_restart_nonce(self, nonce: str, stamp: int, *, now: float,
+                              max_age_s: float = 30.0, future_skew_s: float = 5.0,
+                              maximum: int = 256) -> bool:
+        """Persist one command use before effects, under the existing HMAC.
+
+        A single writer owns this namespace. This is not an independent rollback
+        anchor against replacement of the complete matching local state/key.
+        """
+        if (not re.fullmatch(r"[0-9a-f]{32}", nonce) or type(stamp) is not int
+                or type(now) not in (int, float) or not math.isfinite(now) or now <= 0
+                or not -future_skew_s <= now - stamp <= max_age_s):
+            raise RecoveryStateError("invalid restart nonce or clock")
+        with self._lock:
+            document = self.load()
+            history = document.get("restart_nonces", {})
+            previous = document.get("restart_nonce_clock", 0.0)
+            if (type(history) is not dict or len(history) > maximum
+                    or type(previous) not in (int, float) or not math.isfinite(previous)
+                    or previous < 0 or now + future_skew_s < previous):
+                raise RecoveryStateError("restart nonce state or wall clock is unavailable")
+            retained = {}
+            for seen, value in history.items():
+                if (type(seen) is not str or not re.fullmatch(r"[0-9a-f]{32}", seen)
+                        or type(value) is not int or value <= 0
+                        or value > now + future_skew_s):
+                    raise RecoveryStateError("restart nonce history is invalid")
+                if now - value <= max_age_s + future_skew_s:
+                    retained[seen] = value
+            if nonce in retained:
+                return False
+            if len(retained) >= maximum:
+                raise RecoveryStateError("restart nonce budget is full")
+            retained[nonce] = stamp
+            document["restart_nonces"] = retained
+            document["restart_nonce_clock"] = max(now, previous)
+            self._write_document(document)
+            return True
+
+    def _write_document(self, document: dict) -> None:
+        document["updated_at"] = float(self._clock())
+        document["hmac_sha256"] = hmac.new(
+            self._authority(), _canonical(document), hashlib.sha256
+        ).hexdigest()
+        encoded = json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        if len(encoded) > _MAX_DOCUMENT_BYTES:
+            raise RecoveryStateError("recovery state exceeds its size limit")
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp = self.path.with_suffix(
+            self.path.suffix + f".tmp.{os.getpid()}.{threading.get_ident()}"
+        )
+        try:
+            with open(temp, "wb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+            replace_with_retry(temp, self.path)
             try:
-                with open(temp, "wb") as handle:
-                    handle.write(encoded)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                replace_with_retry(temp, self.path)
-                try:
-                    os.chmod(self.path, 0o600)
-                except OSError:
-                    pass
-            finally:
-                try:
-                    temp.unlink()
-                except FileNotFoundError:
-                    pass
+                os.chmod(self.path, 0o600)
+            except OSError:
+                pass
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
 
     def clear_component(self, name: str, *, authenticated_reset: bool = False) -> None:
         cleared = {

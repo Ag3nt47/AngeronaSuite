@@ -40,10 +40,32 @@ function Test-AngeronaProcessOwnership {
             'angerona.resilience.status_ui',
             'angerona.resilience.watchdog'
         )
+        # Normalize only a closed, bounded set of harmless CPython prefixes.
+        # Do not search past -c, stdin, unknown flags or their code text for a
+        # familiar module/script name. Native image/generation checks still
+        # belong to the caller; this predicate only recognizes the invocation.
+        $entryIndex = 1
+        for ($prefixCount = 0; $prefixCount -lt 16; $prefixCount++) {
+            if ($entryIndex -ge $tokens.Count) { return $false }
+            $prefix = [string]$tokens[$entryIndex]
+            if ($prefix -cin @('-u', '-B', '-E', '-I', '-s', '-S', '-P', '-O', '-OO', '-q')) {
+                $entryIndex++
+                continue
+            }
+            if ($prefix -cin @('-X', '-W')) {
+                if ($entryIndex + 1 -ge $tokens.Count -or
+                    [string]::IsNullOrWhiteSpace([string]$tokens[$entryIndex + 1])) {
+                    return $false
+                }
+                $entryIndex += 2
+                continue
+            }
+            break
+        }
         if (
-            $tokens.Count -ge 3 -and
-            $tokens[1] -ceq '-m' -and
-            $tokens[2] -cin $approvedModules
+            $entryIndex + 1 -lt $tokens.Count -and
+            $tokens[$entryIndex] -ceq '-m' -and
+            $tokens[$entryIndex + 1] -cin $approvedModules
         ) {
             if ($suiteInterpreter) { return $true }
             # Windows venv launchers retain a redirector parent while the real
@@ -82,17 +104,18 @@ function Test-AngeronaProcessOwnership {
             [IO.Path]::GetFullPath((Join-Path $rootPath 'src\angerona\__main__.py')),
             [IO.Path]::GetFullPath((Join-Path $rootPath 'blackbox_recorder.py'))
         )
-        for ($i = 1; $i -lt $tokens.Count; $i++) {
-            $token = [string]$tokens[$i]
-            if ($token -in @('-W', '-X')) { $i++; continue }
-            if ($token.StartsWith('-')) { continue }
-            if ([IO.Path]::GetExtension($token) -notin @('.py', '.pyw')) { return $false }
-            if (-not [IO.Path]::IsPathRooted($token)) { return $false }
-            $script = [IO.Path]::GetFullPath($token)
-            return [bool]($approvedScripts | Where-Object {
-                $script.Equals($_, [StringComparison]::OrdinalIgnoreCase)
-            })
+        if ([IO.Path]::GetFileName($exe) -notin @('python.exe', 'pythonw.exe')) {
+            return $false
         }
+        if ($entryIndex -ge $tokens.Count) { return $false }
+        $token = [string]$tokens[$entryIndex]
+        if ($token.StartsWith('-')) { return $false }
+        if ([IO.Path]::GetExtension($token) -notin @('.py', '.pyw')) { return $false }
+        if (-not [IO.Path]::IsPathRooted($token)) { return $false }
+        $script = [IO.Path]::GetFullPath($token)
+        return [bool]($approvedScripts | Where-Object {
+            $script.Equals($_, [StringComparison]::OrdinalIgnoreCase)
+        })
     } catch { }
     return $false
 }

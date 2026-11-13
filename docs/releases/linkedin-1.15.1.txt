@@ -1,0 +1,21 @@
+Angerona 1.15.1 focuses on a practical goal: making local security monitoring more dependable, easier to review and clearer about its limits.
+
+Angerona brings endpoint detection and response (EDR), network detection and response (NDR), and security orchestration, automation and response (SOAR) into one open-source desktop suite.
+
+This maintenance update adds:
+• Stronger source-update and recovery checks that preserve evidence and operator settings.
+• Tighter local IPC and mobile-command admission, plus more precise alert acknowledgements.
+• Optional native third-watchdog monitoring, off by default, with separate heartbeat and signature indicators.
+• Signing-review settings, bounded helper preparation and safer handling when native cleanup cannot be verified.
+• Updated source documentation explaining what changed and what still needs acceptance.
+
+The dashboard connects live evidence, SpywareGuard, investigation tools, MITRE ATT&CK views and defensive validation. Optional local AI can help explain evidence without becoming response authority.
+
+This is a user-mode source preview. The optional unsigned watchdog provides reduced monitoring, not independent Core recovery. Signed deployment and the Source Observe network-containment gap remain explicit in the release notes.
+
+The screenshots and demos use synthetic data.
+
+Explore the demos, read the current limits and try the reviewed source:
+https://github.com/Ag3nt47/AngeronaSuite
+
+#CyberSecurity #OpenSource #EDR #NDR #SOAR #BlueTeam #DetectionEngineering

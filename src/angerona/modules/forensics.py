@@ -339,17 +339,21 @@ class ForensicsModule(BaseModule):
             raise ValueError("original process birth is later than its evidence")
         return identity
 
-    def _held(self, reason, pid=None):
+    def _held(self, reason, pid=None, *, identity=None):
         self.set_health(45, reason)
-        # Every High observation that is not active evidence reaches this
-        # path. Health always reflects the latest reason; the bus alert for an
-        # identical reason and process is repeated at most every 15 minutes and
-        # carries the number of identical holds it stands for.
+        # Admission supplies the authenticated original generation; a refused
+        # or unavailable identity stays explicit and never queries a current PID.
+        pid = pid if type(pid) is int and 4 < pid <= 0xFFFFFFFF else None
+        birth_ticks = None
+        if identity is not None:
+            pid, _seconds, birth_ticks = identity
+        # Health reflects every hold. Only the diagnostic notification repeats
+        # at most every 15 minutes within one unresolved generation/reason.
         now = time.monotonic()
         recent = getattr(self, "_held_recent", None)
         if recent is None:
             recent = self._held_recent = {}
-        key = (str(reason), pid)
+        key = (str(reason), pid, birth_ticks)
         last, suppressed = recent.get(key, (None, 0))
         if last is not None and 0 <= now - last < _HELD_REPEAT_S:
             recent[key] = (last, suppressed + 1)
@@ -360,8 +364,21 @@ class ForensicsModule(BaseModule):
         recent[key] = (now, 0)
         self.emit("Forensic capture held: " + reason, Severity.MEDIUM, pid=pid,
                   complete=False, disposition="health", response_authorized=False,
+                  process_birth_ticks=str(birth_ticks) if birth_ticks is not None else None,
+                  hold_identity_source="authenticated-original-event" if birth_ticks is not None else "unavailable",
                   repeats_since_last_report=suppressed,
                   forensic_retirement=retirement_snapshot())
+
+    def _resolve_held_capture(self, identity):
+        # A fully completed and retired capture ends this process's diagnostic
+        # hold episode. Unknown births, delivery gaps and other generations remain.
+        pid, _seconds, ticks = identity
+        if ticks is None:
+            return
+        recent = getattr(self, "_held_recent", {})
+        for key in tuple(recent):
+            if key[1] == pid and key[2] == ticks:
+                del recent[key]
 
     @staticmethod
     def forensic_capture_snapshot():
@@ -380,14 +397,18 @@ class ForensicsModule(BaseModule):
                 for event in events:
                     if event.module == self.name or event.severity < Severity.HIGH:
                         continue
+                    details = getattr(event, "details", None)
+                    pid = details.get("pid") if type(details) is dict else None
+                    identity = None
                     try:
-                        pid, seconds, ticks = self._admit(event)
+                        identity = self._admit(event)
+                        pid, seconds, ticks = identity
                         if self._capture_needed(pid, event.details):
                             result = self._capture(pid, expected_create_time=seconds, event=event)
                             if not result.get("complete"):
                                 self._captured.pop((pid, ticks), None)
                     except Exception as exc:
-                        self._held(str(exc)[:180])
+                        self._held(str(exc)[:180], pid, identity=identity)
             self.mark_cycle_complete()
 
     @staticmethod
@@ -421,6 +442,7 @@ class ForensicsModule(BaseModule):
 
     def _capture(self, pid, expected_create_time=None, *, event=None):
         result = {"complete": False, "reason": "capture held", "encrypted": False}
+        target = None
         try:
             target = self._admit(event)
             if target[0] != pid or type(expected_create_time) not in {int, float} or expected_create_time != target[1]:
@@ -476,11 +498,13 @@ class ForensicsModule(BaseModule):
             self.emit("Encrypted forensic capture " + ("finished" if result["complete"] else "retained partial evidence"),
                 Severity.INFO if result["complete"] else Severity.MEDIUM, **result,
                 disposition="observation", response_authorized=False)
+            if result["complete"]:
+                self._resolve_held_capture(target)
         except Exception as exc:
             result["complete"] = False
             result["reason"] = str(exc)[:180]
             result["forensic_retirement"] = retirement_snapshot()
-            self._held(result["reason"], pid)
+            self._held(result["reason"], pid, identity=target)
         return result
 
     def _dump_memory_strings(self, retained, writer, *, event):

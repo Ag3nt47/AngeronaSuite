@@ -9,7 +9,7 @@ Responsibilities (deliberately thin — the core is the brain):
   * Collect: a low-overhead process-creation sensor (psutil table diff). More
     sensors can be added; each just emits raw frames.
   * Forward: write raw frames into the ring; if the ring signals backpressure,
-    down-sample at the source (drop INFO-level churn) to shield the core.
+    omit optional enrichment; raw observations are still forwarded.
   * Stay alive & visible: beat the shared-memory heartbeat every loop, and write
     an atomic ``status`` diagnostic the BlackBox can read.
   * Cooperate: exit cleanly when a signed stand-down token is present; echo a
@@ -29,7 +29,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 from angerona.resilience import ipc_ring
 from angerona.resilience import heartbeat as hb
@@ -46,6 +46,7 @@ SCHEMA = 1
 # backpressure transitions still force an immediate update.
 STATUS_INTERVAL_S = 30.0
 PING_POLL_INTERVAL_S = 2.0
+RING_RETRY_INTERVAL_S = 30.0
 
 
 _COMMAND_SECRET_PATTERNS = (
@@ -134,8 +135,8 @@ class RawProcessSensor:
         if self._seeded:
             for pid in sorted(current - self._known):
                 if not enrich:
-                    # The host counts these INFO frames as shed load. Do not
-                    # query executable/command-line evidence merely to drop it.
+                    # Preserve raw additions while omitting optional metadata.
+                    # An unauthenticated consumer ACK cannot veto telemetry.
                     frames.append(json.dumps({"type": "process_creation", "pid": pid}).encode())
                     continue
                 try:
@@ -182,19 +183,66 @@ class ScannerHost:
         if not math.isfinite(interval) or interval <= 0:
             raise ValueError("Scanner interval must be a finite positive number")
         self.interval = max(0.05, interval)
-        self.ring = ipc_ring.RingWriter(ipc_ring.ring_path(ring_name))
-        self.beat = hb.HeartbeatWriter(hb.COMPONENT_SCANNER if hasattr(hb, "COMPONENT_SCANNER")
-                                       else "scanner", token_raw=token_raw)
-        self.sensors = [RawProcessSensor()]
-        self._events = 0
-        self._dropped = 0
+        self.ring = None
+        self._ring_name = ring_name
+        self._ring_state, self._ring_error = "unmeasured", ""
+        self._ring_retry_at = 0.0
+        self._ring_close_failed = False
+        self._ring_failures = 0
+        self._ring_drops = 0
+        self._events = self._dropped = self._enrichment_omitted = 0
         self._stop = False
+        self._shutdown_started = False
+        # Set only by the worker after authenticated operator STOP admission.
+        # A stopped/failed worker alone must not close the diagnostic window.
+        self._authenticated_standdown = False
         self._stop_event = threading.Event()
         self._run_claim = threading.Lock()
-        self._last_status = 0.0
-        self._last_ping_poll = 0.0
+        self._last_status = self._last_ping_poll = 0.0
         self._last_ping = ""
-        self._last_backpressure = bool(self.ring.backpressure)
+        self._last_backpressure = False
+        self._last_ring_state = "unmeasured"
+        self.sensors = [RawProcessSensor()]
+        self._connect_ring(time.monotonic())
+        try:
+            self.beat = hb.HeartbeatWriter(hb.COMPONENT_SCANNER if hasattr(hb, "COMPONENT_SCANNER")
+                                           else "scanner", token_raw=token_raw)
+        except BaseException as original:
+            try:
+                self._close_ring()
+            except BaseException as cleanup:
+                raise original from cleanup
+            raise
+        self._last_backpressure = self._pressure(time.monotonic())
+
+    def _ring_fault(self, operation: str, error: Exception, now: float, *, advisory=False):
+        self._ring_failures += 1
+        self._ring_state = "degraded" if advisory else "unavailable"
+        self._ring_error = operation + "/" + type(error).__name__
+        if not advisory:
+            self._ring_retry_at = now + RING_RETRY_INTERVAL_S
+
+    def _connect_ring(self, now: float) -> bool:
+        if self.ring is None and not self._ring_close_failed and now >= self._ring_retry_at:
+            try:
+                self.ring = ipc_ring.RingWriter(ipc_ring.ring_path(self._ring_name))
+                self._ring_drops = self.ring.drops
+            except Exception as error:
+                self._ring_fault("attach", error, now)
+            else:
+                self._ring_state, self._ring_error = "available", ""
+        return self.ring is not None and now >= self._ring_retry_at
+
+    def _pressure(self, now: float) -> bool:
+        if not self._connect_ring(now):
+            return True
+        try:
+            return bool(self.ring.backpressure)
+        except Exception as error:
+            # A malformed ACK is not permission to discard the raw event. The
+            # admitted writer validates layout and uses its own sequence below.
+            self._ring_fault("pressure", error, now, advisory=True)
+            return True
 
     # ping: the core writes a nonce here; we echo it into status_scanner.json.
     @staticmethod
@@ -207,36 +255,43 @@ class ScannerHost:
         except Exception:
             return ""
 
+    def _coverage(self) -> dict:
+        return {"state": self._ring_state, "reason": self._ring_error,
+                "rejection_observations": self._ring_failures,
+                "unforwarded_observations": self._dropped,
+                "close_unresolved": self._ring_close_failed,
+                "initial_continuity_verified": False,
+                "state_scope": "ring transport; heartbeat measures loop progress",
+                "collector_efficacy_verified": False,
+                "freshness_scope": "admitted process lifetime; v2 restart rollback unverified",
+                "response_authorized": False}
+
     def _write_status(self, ping: str | None = None) -> None:
         if ping is None:
             ping = self._last_ping
-        diag.write_status("scanner", "running", {
+        diag.write_status("scanner", "running" if self._ring_state == "available" else "degraded", {
             "events_forwarded": self._events, "dropped": self._dropped,
-            "ring_backpressure": self.ring.backpressure,
-            "ring_drops": self.ring.drops, "last_ping": ping,
-            "interval_s": self.interval,
-            # Sensors this scanner process controls (shown in the window's Info tab).
+            "ring_backpressure": self._last_backpressure,
+            "ring_drops": self._ring_drops, "last_ping": ping,
+            "drop_unit": "oversize/overwrite opportunities; consumer ACK is unauthenticated",
+            "enrichment_omitted": self._enrichment_omitted,
+            "ring_coverage": self._coverage(), "interval_s": self.interval,
             "sensors": [f"{type(s).__name__} (sensor_id={getattr(s, 'sensor_id', '?')})"
                         for s in self.sensors],
         })
 
     def _maybe_write_status(self, now: float) -> bool:
-        """Write diagnostics periodically or immediately on meaningful change."""
         ping_changed = False
         if now - self._last_ping_poll >= PING_POLL_INTERVAL_S:
             ping = self._read_ping()
             self._last_ping_poll = now
             if ping != self._last_ping:
-                self._last_ping = ping
-                ping_changed = True
-
-        backpressure = bool(self.ring.backpressure)
-        backpressure_changed = backpressure != self._last_backpressure
-        if backpressure_changed:
-            self._last_backpressure = backpressure
-
-        if (ping_changed or backpressure_changed
-                or now - self._last_status >= STATUS_INTERVAL_S):
+                self._last_ping, ping_changed = ping, True
+        backpressure = self._pressure(now)
+        changed = (backpressure != self._last_backpressure
+                   or self._ring_state != self._last_ring_state)
+        self._last_backpressure, self._last_ring_state = backpressure, self._ring_state
+        if ping_changed or changed or now - self._last_status >= STATUS_INTERVAL_S:
             self._write_status()
             self._last_status = now
             return True
@@ -248,44 +303,84 @@ class ScannerHost:
         try:
             self._last_ping = self._read_ping()
             self._write_status()
-            self._last_status = time.monotonic()
-            self._last_ping_poll = self._last_status
+            self._last_status = self._last_ping_poll = time.monotonic()
             while not self._stop:
-                if tok.is_standdown_requested():
-                    break                               # graceful maintenance exit
-                downsample = self.ring.backpressure
+                if tok.is_standdown_requested() is True:
+                    self._authenticated_standdown = True
+                    break
+                now = time.monotonic()
+                downsample = self._pressure(now)
+                self._last_backpressure = downsample
                 for sensor in self.sensors:
                     frames = (sensor.poll(enrich=not downsample)
                               if isinstance(sensor, RawProcessSensor) else sensor.poll())
                     for frame in frames:
                         if self._stop:
                             break
-                        if downsample:
+                        if downsample and isinstance(sensor, RawProcessSensor):
+                            self._enrichment_omitted += 1
+                        if not self._connect_ring(now):
                             self._dropped += 1
                             continue
-                        if self.ring.write(frame, schema_ver=SCHEMA, sensor_id=sensor.sensor_id):
+                        try:
+                            stored = self.ring.write(frame, schema_ver=SCHEMA, sensor_id=sensor.sensor_id)
+                            self._ring_drops = self.ring.drops
+                        except Exception as error:
+                            self._ring_fault("write", error, now)
+                            self._dropped += 1
+                            continue
+                        self._ring_state, self._ring_error = "available", ""
+                        if stored:
                             self._events += 1
                         else:
                             self._dropped += 1
+                # Process progress is separate from explicitly degraded coverage.
                 self.beat.beat()
                 self._maybe_write_status(time.monotonic())
                 self._stop_event.wait(self.interval)
         finally:
             self._shutdown()
 
+    def _close_ring(self) -> None:
+        if self.ring is not None and not self._ring_close_failed:
+            try:
+                self.ring.close()
+            except Exception as error:
+                # One exact close attempt; retain the owner on ambiguous failure.
+                self._ring_close_failed = True
+                self._ring_fault("close", error, time.monotonic())
+                raise
+            else:
+                self.ring = None
+
     def _shutdown(self) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         try:
-            diag.write_status("scanner", "stopped",
-                              {"events_forwarded": self._events, "dropped": self._dropped})
+            self.beat.close()
         finally:
             try:
-                self.beat.close()
+                self._close_ring()
             finally:
-                self.ring.close()
+                diag.write_status("scanner", "stopped", {
+                    "events_forwarded": self._events, "dropped": self._dropped,
+                    "ring_coverage": self._coverage()})
 
     def stop(self) -> None:
         self._stop = True
         self._stop_event.set()
+
+
+def _run_gui_worker(host: ScannerHost, on_authenticated_stop: Callable[[], None]) -> None:
+    """Queue GUI retirement only after verified STOP and completed cleanup.
+
+    Unexpected failure or ambiguous native cleanup leaves the diagnostic window
+    available. This callback carries no STOP, restart or response authority.
+    """
+    host.run()
+    if host._authenticated_standdown is True:
+        on_authenticated_stop()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -305,6 +400,7 @@ def main(argv: list[str] | None = None) -> int:
     if os.environ.get("ANGERONA_SCANNER_UI", "1") not in ("0", "false", "no", "off"):
         try:
             from PySide6.QtWidgets import QApplication, QMainWindow
+            from PySide6.QtCore import QObject, Signal, Qt
             from angerona.resilience import status_ui
             app = QApplication.instance() or QApplication(sys.argv)
             qss = status_ui._qss()
@@ -324,7 +420,17 @@ def main(argv: list[str] | None = None) -> int:
             win.showMinimized()
             # Finish all fallible GUI preparation before starting the sensor.
             # A presentation failure must never start a second host.run loop.
-            worker = threading.Thread(target=host.run, name="TelemetryScanner", daemon=True)
+            class _IntentionalStop(QObject):
+                requested = Signal()
+
+            intentional_stop = _IntentionalStop(app)
+            # A token can be admitted before app.exec(). Explicitly queue quit
+            # so that early STOP is delivered once the event loop starts.
+            intentional_stop.requested.connect(app.quit, Qt.ConnectionType.QueuedConnection)
+            worker = threading.Thread(
+                target=_run_gui_worker, args=(host, intentional_stop.requested.emit),
+                name="TelemetryScanner", daemon=True,
+            )
             worker.start()
             rc = app.exec()
             host.stop()

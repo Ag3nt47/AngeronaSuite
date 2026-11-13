@@ -1,48 +1,38 @@
-"""core/alert_ack.py — acknowledge / ignore individual alerts.
+"""Reversible, expiring acknowledgements of exact authenticated alert records.
 
-The dashboard threat level is driven by recent HIGH/CRITICAL events. Some of
-those are false positives or already-handled. This lets the operator ACKNOWLEDGE
-(ignore) a specific alert from the Resolve Center: the alert is flagged and kept
-with a history, and — crucially — EXCLUDED from the threat-level calculation, so
-cleaning up false alerts actually brings the posture back to Secure. Every ack is
-revertable.
-
-Alerts are matched by a stable signature (module + normalised message), so an
-ack also suppresses future identical repeats of a known-benign alert. Store at
-``shared_logs/alert_acks.json``. Local-only; no network.
+Legacy normalized-message/class rows stay visible for review, but never suppress
+active threats. Receipts use the existing per-install bus.key; no key is created
+here. A process that owns that same user/key can forge or replay local receipts.
+This is local authenticity and bounded scope, not same-SID or rollback defence.
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
-import re
+import math
+import os
+import stat
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from angerona.core.data_paths import data_dir
 
-# Volatile tokens that make otherwise-identical alerts look unique (per-run canary
-# IDs, hashes, counters). Normalising them means ignoring ONE alert also suppresses
-# future repeats of the same CLASS — e.g. a flood of DRILLCANARY_<hex> / "N
-# consecutive canaries missed" collapses to a single ignorable signature. IP
-# addresses are deliberately preserved (they're semantically meaningful).
-_UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
-_HEX_RE  = re.compile(r"(?=[0-9a-f]*\d)[0-9a-f]{8,}")   # hex run that contains a digit
-_INT_RE  = re.compile(r"(?<![\d.])\d+(?![\d.])")         # standalone int, not an IP octet
-
-
-def _normalize_msg(msg: str) -> str:
-    msg = " ".join((msg or "").strip().lower().split())
-    msg = _UUID_RE.sub("<uuid>", msg)
-    msg = _HEX_RE.sub("<hex>", msg)
-    msg = _INT_RE.sub("<n>", msg)
-    return msg[:160]
-
-_LOCK = threading.Lock()
-_CACHE: set[str] | None = None
-_CACHE_MTIME: float = -1.0
-_REPO_ROOT: Path | None = None
+_SCHEMA = "angerona.alert-acks/v2"
+_SCOPE = "exact-authenticated-record/v1"
+_DOMAIN = b"Angerona.AlertAck.v2\0"
+DEFAULT_TTL_S = 3600.0
+MAX_TTL_S = 24 * 3600.0
+_MAX_BYTES = 2 * 1024 * 1024
+_MAX_RECORDS = 4096
+_MAX_HISTORY = 128
+_LOCK = threading.RLock()
+# Retained names for diagnostic/test compatibility; authorization is not cached
+# by mtime, and expiry is evaluated against the current clock on every snapshot.
+_CACHE = None
+_CACHE_MTIME = -1.0
 
 
 def _repo_root() -> Path:
@@ -53,144 +43,234 @@ def _store_path() -> Path:
     return _repo_root() / "shared_logs" / "alert_acks.json"
 
 
+def _canonical(value) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+                      allow_nan=False, default=str).encode("utf-8")
+
+
+def _pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            raise ValueError("duplicate acknowledgement field")
+        result[key] = value
+    return result
+
+
+def _read_plain(path: Path, maximum: int) -> bytes:
+    for node in (*reversed(path.parents), path):
+        info = node.lstat()
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ValueError("acknowledgement path is redirected")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > maximum:
+        raise ValueError("acknowledgement input is not bounded single-link data")
+    with path.open("rb") as stream:
+        raw = stream.read(maximum + 1)
+    if len(raw) > maximum:
+        raise ValueError("acknowledgement input exceeds its byte bound")
+    return raw
+
+
+def _key_for_store(path: Path) -> bytes | None:
+    try:
+        key = bytes.fromhex(_read_plain(path.parent.parent / "bus.key", 128).decode("ascii").strip())
+    except Exception:
+        return None
+    return key if len(key) == 32 else None
+
+
 def signature(ev) -> str:
-    """Stable CLASS signature for an event: module + normalised message (volatile
-    per-run tokens stripped), so ignoring one alert clears its whole class."""
-    module = str(getattr(ev, "module", "") or "")
-    msg = _normalize_msg(str(getattr(ev, "message", "") or ""))
-    return hashlib.sha256(f"{module}|{msg}".encode("utf-8", "replace")).hexdigest()[:24]
+    """Identity of one complete EventBus record; changed evidence is a new record."""
+    body = {name: getattr(ev, name, None) for name in
+            ("module", "message", "severity", "ts", "details", "hmac_sig", "mesh_sig", "mesh_peer")}
+    return "event-v2:" + hashlib.sha256(_canonical(body)).hexdigest()
 
 
-def _legacy_signature(ev) -> str:
-    """Pre-1.9.4 identifier retained only to honor existing acknowledgements."""
-    module = str(getattr(ev, "module", "") or "")
-    msg = _normalize_msg(str(getattr(ev, "message", "") or ""))
-    return hashlib.sha1(  # compatibility lookup, explicitly non-security
-        f"{module}|{msg}".encode("utf-8", "replace"),
-        usedforsecurity=False,
-    ).hexdigest()[:16]
+def _rows(value) -> dict:
+    if type(value) is not dict or len(value) > _MAX_RECORDS:
+        raise ValueError("acknowledgement record count is invalid")
+    for sig, row in value.items():
+        if (type(sig) is not str or len(sig) > 128 or type(row) is not dict
+                or type(row.get("history", [])) is not list or len(row.get("history", [])) > _MAX_HISTORY):
+            raise ValueError("acknowledgement record is invalid")
+    return value
 
 
-def _signatures(ev) -> set[str]:
-    return {signature(ev), _legacy_signature(ev)}
+def _load_at(path: Path, key: bytes | None) -> tuple[dict, str, bytes]:
+    try:
+        raw = _read_plain(path, _MAX_BYTES)
+    except FileNotFoundError:
+        return {}, "missing", b""
+    except Exception:
+        return {}, "invalid", b""
+    try:
+        doc = json.loads(raw, object_pairs_hook=_pairs)
+        if type(doc) is not dict:
+            raise ValueError("acknowledgements must be an object")
+        if doc.get("schema") != _SCHEMA:
+            legacy = {sig: dict(row, scope="legacy-class-review-required") for sig, row in _rows(doc).items()}
+            return legacy, "legacy-review-required", raw
+        if set(doc) != {"schema", "records", "updated_at", "hmac"}:
+            raise ValueError("invalid acknowledgement schema")
+        records = _rows(doc["records"])
+        body = {name: value for name, value in doc.items() if name != "hmac"}
+        expected = hmac.new(key, _DOMAIN + _canonical(body), hashlib.sha256).hexdigest() if key else ""
+        if not expected or type(doc["hmac"]) is not str or not hmac.compare_digest(doc["hmac"], expected):
+            return records, "unverified", raw
+        return records, "verified", raw
+    except Exception:
+        return {}, "invalid", raw
 
 
 def load() -> dict:
-    p = _store_path()
-    if not p.exists():
-        return {}
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    path = _store_path()
+    return _load_at(path, _key_for_store(path))[0]
 
 
-def _save(data: dict) -> None:
-    global _CACHE, _CACHE_MTIME
-    p = _store_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    _CACHE = {s for s, r in data.items() if r.get("acked")}
+def _new_file(path: Path, raw: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _save_at(path: Path, records: dict, key: bytes | None, previous: tuple[dict, str, bytes]) -> None:
+    if key is None:
+        raise ValueError("Acknowledgement signing key is unavailable; the alert remains active.")
+    _rows(records)
+    _old, integrity, original = previous
+    if integrity in {"invalid", "unverified"}:
+        raise ValueError("Existing acknowledgement integrity is unknown; preserve and review it before changes.")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from angerona.core.source_sandbox import _hold_plain_directories
+    from angerona.core.atomic_io import replace_with_retry
+    with _hold_plain_directories(path.parent):
+        if integrity == "legacy-review-required":
+            archive = path.with_name(path.name + ".legacy-" + hashlib.sha256(original).hexdigest() + ".json")
+            if archive.exists():
+                if _read_plain(archive, _MAX_BYTES) != original:
+                    raise ValueError("Preserved acknowledgement history changed.")
+            else:
+                _new_file(archive, original)
+        body = {"schema": _SCHEMA, "records": records, "updated_at": time.time()}
+        doc = dict(body, hmac=hmac.new(key, _DOMAIN + _canonical(body), hashlib.sha256).hexdigest())
+        encoded = _canonical(doc)
+        if len(encoded) > _MAX_BYTES:
+            raise ValueError("Acknowledgement storage capacity requires review; history was preserved.")
+        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".pending")
+        try:
+            _new_file(temporary, encoded)
+            replace_with_retry(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def _active(sig: str, record: dict, now: float) -> bool:
     try:
-        _CACHE_MTIME = p.stat().st_mtime
-    except Exception:
-        _CACHE_MTIME = time.time()
+        issued, expires = float(record["acked_at"]), float(record["expires_at"])
+        return (sig.startswith("event-v2:") and record.get("scope") == _SCOPE and record.get("acked") is True
+                and math.isfinite(issued) and math.isfinite(expires) and issued <= now + 30
+                and now < expires <= issued + MAX_TTL_S)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
 
 
 def acked_signatures() -> set[str]:
-    """Cached set of currently-acked signatures; reloads only when the file changes.
-    Cheap enough to call from threat_level() on every dashboard refresh."""
-    global _CACHE, _CACHE_MTIME
-    p = _store_path()
-    try:
-        mtime = p.stat().st_mtime if p.exists() else -1.0
-    except Exception:
-        mtime = -1.0
-    if _CACHE is None or mtime != _CACHE_MTIME:
-        data = load()
-        _CACHE = {s for s, r in data.items() if r.get("acked")}
-        _CACHE_MTIME = mtime
-    return _CACHE
+    path = _store_path()
+    records, integrity, _raw = _load_at(path, _key_for_store(path))
+    now = time.time()
+    return {sig for sig, record in records.items() if _active(sig, record, now)} if integrity == "verified" else set()
 
 
 def is_acked(ev) -> bool:
-    return bool(_signatures(ev) & acked_signatures())
-
-
-def ack(ev, reason: str = "") -> dict:
-    """Acknowledge/ignore *ev* (and future identical alerts). Returns its record."""
-    sig = signature(ev)
-    with _LOCK:
-        data = load()
-        rec = data.setdefault(sig, {
-            "module": str(getattr(ev, "module", "") or ""),
-            "sample": str(getattr(ev, "message", "") or "")[:200],
-            "acked": False, "history": [],
-        })
-        rec["acked"] = True
-        rec["reason"] = reason or rec.get("reason", "")
-        rec["history"].append(_event("ack", reason))
-        _save(data)
-        return rec
-
-
-def unack(sig_or_ev, reason: str = "") -> dict:
-    """Revert an acknowledgement (accepts a signature string or an event)."""
-    sig = sig_or_ev if isinstance(sig_or_ev, str) else signature(sig_or_ev)
-    with _LOCK:
-        data = load()
-        rec = data.setdefault(sig, {"module": "", "sample": "", "acked": False, "history": []})
-        rec["acked"] = False
-        rec["history"].append(_event("unack", reason))
-        _save(data)
-        return rec
-
-
-def acked_records() -> list[dict]:
-    return [{"sig": s, **r} for s, r in load().items() if r.get("acked")]
-
-
-def filter_active(events: list) -> list:
-    """Return only events whose signature is NOT acknowledged."""
-    return [event for event in events if not is_acked(event)]
+    return signature(ev) in acked_signatures()
 
 
 def _event(action: str, reason: str) -> dict:
     now = time.time()
-    return {"action": action, "ts": now,
-            "iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
-            "reason": reason or ""}
+    return {"action": action, "ts": now, "iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "reason": str(reason or "")[:1024]}
+
+
+def _ack_at(ev, reason, ttl_s, path: Path, key: bytes | None) -> dict:
+    if type(ttl_s) not in (int, float) or not math.isfinite(ttl_s) or not 1 <= ttl_s <= MAX_TTL_S:
+        raise ValueError("Acknowledgement duration must be 1 second to 24 hours.")
+    from angerona.core.eventbus import BusAuthority
+    try:
+        verified = key is not None and BusAuthority(key).verify(ev)
+    except Exception:
+        verified = False
+    if not verified:
+        raise ValueError("This exact alert record could not be authenticated; it remains active.")
+    with _LOCK:
+        previous = _load_at(path, key)
+        records = previous[0]
+        sig = signature(ev)
+        record = dict(records.get(sig, {"module": str(ev.module), "sample": str(ev.message)[:200], "history": []}))
+        if len(record["history"]) >= _MAX_HISTORY:
+            raise ValueError("Acknowledgement history capacity requires review.")
+        now = time.time()
+        record.update(acked=True, scope=_SCOPE, acked_at=now, expires_at=now + ttl_s,
+                      reason=str(reason or "")[:1024])
+        record["history"] = [*record["history"], _event("ack", reason)]
+        records[sig] = record
+        _save_at(path, records, key, previous)
+        return record
+
+
+def ack(ev, reason: str = "", *, ttl_s: float = DEFAULT_TTL_S) -> dict:
+    path = _store_path()
+    return _ack_at(ev, reason, ttl_s, path, _key_for_store(path))
+
+
+def unack(sig_or_ev, reason: str = "") -> dict:
+    sig = sig_or_ev if isinstance(sig_or_ev, str) else signature(sig_or_ev)
+    path = _store_path()
+    with _LOCK:
+        key = _key_for_store(path)
+        previous = _load_at(path, key)
+        records = previous[0]
+        record = dict(records.get(sig, {"module": "", "sample": "", "history": []}))
+        if len(record["history"]) >= _MAX_HISTORY:
+            raise ValueError("Acknowledgement history capacity requires review.")
+        record.update(acked=False, history=[*record["history"], _event("unack", reason)])
+        records[sig] = record
+        _save_at(path, records, key, previous)
+        return record
+
+
+def acked_records() -> list[dict]:
+    path = _store_path()
+    records, integrity, _raw = _load_at(path, _key_for_store(path))
+    now = time.time()
+    return [{**record, "module": str(record.get("module", ""))[:200],
+             "sample": str(record.get("sample", ""))[:200], "reason": str(record.get("reason", ""))[:1024],
+             "sig": sig, "integrity": integrity,
+             "active": integrity == "verified" and _active(sig, record, now),
+             "review_required": integrity != "verified" or record.get("scope") != _SCOPE}
+            for sig, record in records.items() if record.get("acked")]
+
+
+def filter_active(events: list) -> list:
+    acknowledged = acked_signatures()
+    return [event for event in events if signature(event) not in acknowledged]
 
 
 def self_test() -> tuple[bool, str]:
-    """Round-trip ack→filter→unack against an isolated temp store."""
+    """Private signed-record round trip; never swaps live storage or loads a key."""
+    import dataclasses
     import tempfile
-    global _store_path, _CACHE, _CACHE_MTIME
-    orig = _store_path
-
-    class _Ev:
-        def __init__(self, module, message):
-            self.module, self.message = module, message
-
-    with tempfile.TemporaryDirectory() as td:
-        (Path(td) / "shared_logs").mkdir()
-        _store_path = lambda: Path(td) / "shared_logs" / "alert_acks.json"  # type: ignore
-        _CACHE = None; _CACHE_MTIME = -1.0
-        try:
-            e1 = _Ev("BEAC", "Possible C2 beacon: evil.exe → 1.2.3.4")
-            e2 = _Ev("FIM", "file changed: notes.txt")
-            e1b = _Ev("BEAC", "Possible C2 beacon: evil.exe → 1.2.3.4")  # identical repeat
-            ack(e1, "known test host")
-            a = is_acked(e1) and is_acked(e1b)           # repeat also suppressed
-            b = not is_acked(e2)
-            active = filter_active([e1, e2, e1b])
-            filtered_ok = active == [e2]
-            unack(e1, "re-open")
-            c = not is_acked(e1)
-            ok = a and b and filtered_ok and c
-            return ok, ("ack suppresses alert + identical repeats, filter + revert verified"
-                        if ok else f"failed: a={a} b={b} filt={filtered_ok} c={c}")
-        finally:
-            _store_path = orig  # type: ignore
-            _CACHE = None; _CACHE_MTIME = -1.0
+    from angerona.core.eventbus import BusAuthority, Event, Severity
+    key = bytes(range(32))
+    event = Event("ACK self-test", "inert signed fixture", Severity.HIGH)
+    event = dataclasses.replace(event, hmac_sig=BusAuthority(key).sign(event))
+    later = dataclasses.replace(event, ts=event.ts + 1)
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "shared_logs" / "alert_acks.json"
+        _ack_at(event, "private test", 60, path, key)
+        records, integrity, _raw = _load_at(path, key)
+        ok = integrity == "verified" and _active(signature(event), records[signature(event)], time.time())
+        ok = ok and signature(later) not in records
+        return ok, "Exact authenticated alert receipt verified; changed record stays active."

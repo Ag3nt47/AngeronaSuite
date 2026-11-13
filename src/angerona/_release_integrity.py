@@ -16,3 +16,7 @@ FRZ_WATCHDOG_PUBLISHER = ""
 # never auto-started from source. These must describe its signed final bytes.
 WATCHDOG3_SHA256 = ""
 WATCHDOG3_PUBLISHER = ""
+
+# Byte identity for the separately opted-in, ordinary-user unsigned monitor.
+# This is a corruption pin, not signing/enrollment or privileged authority.
+WATCHDOG3_BUNDLE_SHA256 = ""

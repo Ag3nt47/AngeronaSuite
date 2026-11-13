@@ -245,7 +245,7 @@ $tokens = $null; $issues = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile(
     $env:ANGERONA_TEST_INSTALLER, [ref]$tokens, [ref]$issues)
 if ($issues.Count) { throw ($issues | Out-String) }
-$names = @('Assert-SafeRelativePath', 'Assert-NotReparse', 'New-ProtectedAcl',
+$names = @('Assert-SafeRelativePath', 'Assert-SafeReleaseDestination', 'Assert-NotReparse', 'New-ProtectedAcl',
     'Write-ReleaseRecoveryNotice', 'Invoke-ReleasePayloadReplacement')
 foreach ($name in $names) {
     $found = @($ast.FindAll({
@@ -262,6 +262,14 @@ $outer = @($ast.EndBlock.Statements | Where-Object {
 if ($outer.Count -ne 1 -or $outer[0].CatchClauses.Count -ne 1 -or
         $null -eq $outer[0].Finally) {
     throw 'The exact production error/cleanup boundary could not be selected.'
+}
+
+# Native installed ACL ownership is tested independently. This preservation
+# fixture admits only its private target tree; all real path traversal and
+# replacement logic in Assert-SafeReleaseDestination still runs unchanged.
+function Assert-ProtectedPath {
+    param([string]$Path, [bool]$Directory)
+    Assert-FixturePath $Path
 }
 
 # Override only filesystem operation boundaries for controlled fixture faults.

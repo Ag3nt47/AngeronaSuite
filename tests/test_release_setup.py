@@ -506,13 +506,12 @@ def test_posix_installer_is_local_user_scoped_and_has_safe_uninstall() -> None:
     assert "tools/verify_wheelhouse.py" in installer
     assert "--no-build-isolation --no-deps" in installer
     assert "systemctl --user enable --now" in installer
-    assert 'if [ "$(id -u)" -eq 0 ]' in release_installer
-    assert "XDG_DATA_HOME" in release_installer
-    assert "Angerona.app" in release_installer
-    assert "install -m 0755" in release_installer
+    # POSIX binary installation is held until authenticated outer-archive
+    # bytes can be bound to the exact copied payload. Source setup stays intact.
+    assert "HELD: authenticated Linux/macOS binary installation is not available." in release_installer
+    assert "archive-to-payload binding is not implemented" in release_installer
+    assert "No application files, launchers or preferences were changed." in release_installer
     assert "angerona-setup" in installer
-    assert "angerona-setup" in release_installer
-    assert "--args --setup" in release_installer
     assert '"$HOME/.local/bin/angerona-setup"' in uninstall
     assert "NoNewPrivileges=yes" in unit
     assert "ProtectSystem=strict" in unit

@@ -269,7 +269,11 @@ def test_ipc_restart_retires_accept_and_connection_helpers(
 
         client = socket.create_connection((ipc_guard._HOST, port), timeout=5.0)
         client.settimeout(5.0)
-        assert client.recv(256).startswith(b"CHALLENGE ")
+        from angerona.core import engine_transport
+        hello = {"protocol": ipc_guard._AUTH_PROTOCOL, "nonce": "a" * 32}
+        engine_transport.send(client, hello, ipc_guard._AUTH_FRAME)
+        proof = engine_transport.receive(client, ipc_guard._AUTH_FRAME)
+        assert engine_transport._verify(proof, module._key, ipc_guard._SERVER_DOMAIN)["nonce"] == hello["nonce"]
         assert _wait_until(lambda: len(old_generation.helpers) == 1)
         old_helpers = list(old_generation.helpers)
 

@@ -1,23 +1,17 @@
-"""setup.py — Build the syscall_bridge CPython extension.
+"""Held historical syscall bridge extension recipe.
 
-Usage (from AngeronaSuite/syscall_bridge/):
-    python setup.py build_ext --inplace
-    # Produces: syscall_bridge.cpython-310-win_amd64.pyd
-
-Then copy the .pyd into AngeronaSuite/src/angerona/modules/ so the SYS module
-can import it.
-
-Requires:
-    Windows x86-64
-    Visual Studio Build Tools (MSVC) or cl.exe on PATH
-    Python 3.10+ dev headers (normally included with CPython on Windows)
-
-Compiler flags:
-    /GS       — stack canary (buffer overrun protection)
-    /DYNAMICBASE /NXCOMPAT — ASLR + DEP
-    /O2       — optimise
-    /W3       — warnings
+This unsupported native implementation is retained for source review only.
+Every setup command stops before importing packaging or compiler helpers.
+Normal Angerona package builds and its explicitly degraded fallback are separate.
+See README.md for unresolved correctness issues and replacement requirements.
 """
+
+raise SystemExit(
+    "ANGERONA_NATIVE_BRIDGE_BUILD_HELD: the historical syscall bridge is "
+    "unsupported and must not be built or installed. See syscall_bridge/README.md."
+)
+
+# Historical recipe retained for review only; unreachable after the build hold.
 from setuptools import setup, Extension
 
 module = Extension(

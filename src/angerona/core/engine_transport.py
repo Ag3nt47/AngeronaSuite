@@ -2,7 +2,8 @@
 
 The private discovery record is a same-user credential, not a privilege grant.
 No pickle, HTTP, shell, dynamic method dispatch, or arbitrary file requests are
-accepted. Every connection has a fresh server challenge and one response.
+accepted. Every connection has two fresh nonces and server proof before a
+client-authenticated request; version 1 is not accepted.
 """
 from __future__ import annotations
 
@@ -20,10 +21,17 @@ import threading
 import time
 from typing import Callable
 
-PROTOCOL = "angerona-local-engine-v1"
+PROTOCOL = "angerona-local-engine-v2"
 MAX_REQUEST = 8192
 MAX_RESPONSE = 1024 * 1024
 TIMEOUT = 3.0
+PREAUTH_TIMEOUT = 1.0
+MAX_HELLO = 512
+MAX_PREAUTH = 8
+MAX_EXCHANGES = 4
+_HELLO_DOMAIN = b"engine-v2-server-hello\0"
+_REQUEST_DOMAIN = b"engine-v2-request\0"
+_RESPONSE_DOMAIN = b"engine-v2-response\0"
 
 
 class EngineError(RuntimeError):
@@ -58,33 +66,46 @@ def decode(raw: bytes) -> dict:
     return value
 
 
-def _read(sock: socket.socket, count: int) -> bytes:
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise EngineError("Engine exchange deadline exceeded")
+    return remaining
+
+
+def _read(sock: socket.socket, count: int, *, deadline: float | None = None) -> bytes:
     output = bytearray()
-    deadline = time.monotonic() + TIMEOUT
+    deadline = time.monotonic() + TIMEOUT if deadline is None else deadline
     while len(output) < count:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise EngineError("Engine read deadline exceeded")
-        sock.settimeout(remaining)
+        sock.settimeout(_remaining(deadline))
         chunk = sock.recv(count - len(output))
         if not chunk:
             raise EngineError("Engine connection closed")
+        _remaining(deadline)
         output.extend(chunk)
     return bytes(output)
 
 
-def receive(sock: socket.socket, limit: int) -> dict:
-    size = struct.unpack("!I", _read(sock, 4))[0]
+def receive(sock: socket.socket, limit: int, *, deadline: float | None = None) -> dict:
+    deadline = time.monotonic() + TIMEOUT if deadline is None else deadline
+    size = struct.unpack("!I", _read(sock, 4, deadline=deadline))[0]
     if not 1 <= size <= limit:
         raise EngineError("Engine message exceeds its byte limit")
-    return decode(_read(sock, size))
+    return decode(_read(sock, size, deadline=deadline))
 
 
-def send(sock: socket.socket, message: dict, limit: int) -> None:
+def send(sock: socket.socket, message: dict, limit: int, *, deadline: float | None = None) -> None:
     payload = canonical(message)
     if len(payload) > limit:
         raise EngineError("Engine message exceeds its byte limit")
+    sock.settimeout(_remaining(time.monotonic() + TIMEOUT if deadline is None else deadline))
     sock.sendall(struct.pack("!I", len(payload)) + payload)
+    if deadline is not None:
+        _remaining(deadline)
+
+
+def _nonce(value: object, length: int) -> bool:
+    return type(value) is str and len(value) == length and all(char in "0123456789abcdef" for char in value)
 
 
 def _mac(key: bytes, domain: bytes, body: dict) -> str:
@@ -95,7 +116,7 @@ def _verify(message: dict, key: bytes, domain: bytes) -> dict:
     if set(message) != {"body", "mac"} or not isinstance(message["body"], dict):
         raise EngineError("Invalid authenticated envelope")
     signature = message["mac"]
-    if (not isinstance(signature, str) or len(signature) != 64
+    if (not _nonce(signature, 64)
             or not hmac.compare_digest(signature, _mac(key, domain, message["body"]))):
         raise EngineError("Engine authentication failed")
     return message["body"]
@@ -256,7 +277,11 @@ def read_discovery(directory: Path) -> dict:
 
 
 class EngineServer:
-    """At most four authenticated exchanges; one request per connection."""
+    """Finite unauthenticated admission is separate from authenticated dispatch.
+
+    Loopback floods can still deny availability. This boundary limits retained
+    resources and prevents idle peers from occupying the four dispatch slots.
+    """
 
     def __init__(self, directory: Path, dispatch: Callable[[dict], dict]):
         self.directory = private_directory(directory)
@@ -264,23 +289,92 @@ class EngineServer:
         self.instance = secrets.token_hex(16)
         self.key = secrets.token_bytes(32)
         self.stop_event = threading.Event()
+        self._lock = threading.RLock()
+        self._clients: set[socket.socket] = set()
+        self._unclosed_clients: set[socket.socket] = set()
+        self._closing_clients: set[socket.socket] = set()
+        self._workers: set[threading.Thread] = set()
+        self._preauth_active = self._dispatch_active = 0
+        self._rejected = self._worker_failures = 0
+        self.last_error = ""
+        self._retirement_error = ""
+        self._listener_failed = False
+        self._listener_close_attempted = False
+        self.preauth_slots = threading.BoundedSemaphore(MAX_PREAUTH)
+        self.slots = threading.BoundedSemaphore(MAX_EXCHANGES)
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        if os.name == "nt":
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        self.socket.bind(("127.0.0.1", 0))
-        self.socket.listen(4)
-        self.socket.settimeout(0.25)
-        self.slots = threading.BoundedSemaphore(4)
+        try:
+            if os.name == "nt":
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            self.socket.bind(("127.0.0.1", 0))
+            self.socket.listen(MAX_PREAUTH)
+            self.socket.settimeout(0.25)
+        except BaseException:
+            self.socket.close()
+            raise
         self.thread = threading.Thread(target=self._loop, name="EngineIPC", daemon=True)
+
+    def admission_snapshot(self) -> dict:
+        with self._lock:
+            pending = sum(thread.is_alive() for thread in self._workers)
+            listener_pending = self.stop_event.is_set() and self.thread.is_alive()
+            busy = (self._preauth_active >= MAX_PREAUTH or self._dispatch_active >= MAX_EXCHANGES
+                    or bool(self._closing_clients))
+            if self._retirement_error or self._worker_failures or self._listener_failed:
+                reason = self._retirement_error or self.last_error
+            else:
+                reason = "Engine admission capacity is busy; retry is required" if busy else ""
+            return {"state": "held" if self._retirement_error else
+                    "closing" if self.stop_event.is_set() and (pending or self._closing_clients or listener_pending) else
+                    "closed" if self.stop_event.is_set() else
+                    "degraded" if self._worker_failures or self._listener_failed else "busy" if busy else "ready",
+                    "preauth_pending": self._preauth_active,
+                    "authenticated_pending": self._dispatch_active,
+                    "preauth_limit": MAX_PREAUTH, "dispatch_limit": MAX_EXCHANGES,
+                    "rejected": self._rejected, "worker_start_failures": self._worker_failures,
+                    "retirement_pending": pending, "listener_pending": listener_pending,
+                    "closing_connections": len(self._closing_clients),
+                    "unclosed_connections": len(self._unclosed_clients),
+                    "reason": reason}
+
+    def _retire_client(self, client: socket.socket, *, shutdown: bool = False) -> None:
+        with self._lock:
+            if (client not in self._clients or client in self._unclosed_clients
+                    or client in self._closing_clients):
+                return  # One exact object owner; unknown close is never retried.
+            self._closing_clients.add(client)
+        try:
+            if shutdown:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            client.close()
+        except OSError:
+            with self._lock:
+                self._clients.add(client)
+                self._unclosed_clients.add(client)
+                self._retirement_error = "Engine connection retirement is unconfirmed; admission is held"
+                self.stop_event.set()
+        else:
+            with self._lock:
+                self._clients.discard(client)
+        finally:
+            with self._lock:
+                self._closing_clients.discard(client)
 
     def start(self) -> None:
         import psutil
-        write_discovery(self.directory, {
-            "protocol": PROTOCOL, "port": self.socket.getsockname()[1],
-            "instance": self.instance, "key": self.key.hex(), "pid": os.getpid(),
-            "created": psutil.Process().create_time(),
-        })
-        self.thread.start()
+        try:
+            write_discovery(self.directory, {
+                "protocol": PROTOCOL, "port": self.socket.getsockname()[1],
+                "instance": self.instance, "key": self.key.hex(), "pid": os.getpid(),
+                "created": psutil.Process().create_time(),
+            })
+            self.thread.start()
+        except BaseException:
+            self.close()
+            raise
 
     def _loop(self) -> None:
         while not self.stop_event.is_set():
@@ -289,27 +383,73 @@ class EngineServer:
             except socket.timeout:
                 continue
             except OSError:
+                if not self.stop_event.is_set():
+                    with self._lock:
+                        self._listener_failed = True
+                        self.last_error = "Engine listener exited unexpectedly; control admission is unavailable"
                 break
-            if not self.slots.acquire(blocking=False):
-                client.close()
+            with self._lock:
+                self._clients.add(client)
+            deadline = time.monotonic() + PREAUTH_TIMEOUT
+            if not self.preauth_slots.acquire(blocking=False):
+                with self._lock:
+                    self._rejected += 1
+                    self.last_error = "Engine pre-auth admission is busy; retry is required"
+                self._retire_client(client)
                 continue
-            threading.Thread(target=self._serve, args=(client,),
-                             name="EngineExchange", daemon=True).start()
+            with self._lock:
+                if self.stop_event.is_set():
+                    self.preauth_slots.release()
+                    self._retire_client(client)
+                    break
+                self._clients.add(client)
+                self._preauth_active += 1
+                worker = None
+                try:
+                    worker = threading.Thread(target=self._serve, args=(client, deadline),
+                                              name="EngineExchange", daemon=True)
+                    self._workers.add(worker)
+                    worker.start()
+                except Exception:
+                    if worker is not None:
+                        self._workers.discard(worker)
+                    self._preauth_active -= 1
+                    self.preauth_slots.release()
+                    self._worker_failures += 1
+                    self.last_error = "Engine admission worker could not start; exchange refused"
+                    self._retire_client(client)
 
-    def _serve(self, client: socket.socket) -> None:
+    def _serve(self, client: socket.socket, deadline: float | None = None) -> None:
+        preauth_owned, dispatch_owned = True, False
         try:
-            with client:
-                client.settimeout(TIMEOUT)
-                challenge = secrets.token_hex(32)
-                send(client, {"protocol": PROTOCOL, "instance": self.instance,
-                              "challenge": challenge}, MAX_REQUEST)
-                request = _verify(receive(client, MAX_REQUEST), self.key, b"request\0")
-                if (set(request) != {"instance", "challenge", "nonce", "request"}
-                        or request["instance"] != self.instance
-                        or request["challenge"] != challenge
-                        or not isinstance(request["nonce"], str) or len(request["nonce"]) != 32
-                        or not isinstance(request["request"], dict)):
-                    raise EngineError("Engine exchange identity mismatch")
+            deadline = time.monotonic() + PREAUTH_TIMEOUT if deadline is None else deadline
+            hello = receive(client, MAX_HELLO, deadline=deadline)
+            if (set(hello) != {"protocol", "instance", "nonce"}
+                    or hello["protocol"] != PROTOCOL or hello["instance"] != self.instance
+                    or not _nonce(hello["nonce"], 32) or self.stop_event.is_set()):
+                raise EngineError("Engine admission identity mismatch")
+            challenge = secrets.token_hex(32)
+            server_proof = dict(hello, challenge=challenge)
+            send(client, _wrap(server_proof, self.key, _HELLO_DOMAIN), MAX_REQUEST, deadline=deadline)
+            request = _verify(receive(client, MAX_REQUEST, deadline=deadline), self.key, _REQUEST_DOMAIN)
+            if (set(request) != {"instance", "challenge", "nonce", "request"}
+                    or request["instance"] != self.instance or request["challenge"] != challenge
+                    or request["nonce"] != hello["nonce"] or not isinstance(request["request"], dict)):
+                raise EngineError("Engine exchange identity mismatch")
+            with self._lock:
+                if self.stop_event.is_set():
+                    raise EngineError("Engine admission is closing")
+                dispatch_owned = self.slots.acquire(blocking=False)
+                if dispatch_owned:
+                    self._dispatch_active += 1
+                else:
+                    self._rejected += 1
+                self._preauth_active -= 1
+                self.preauth_slots.release()
+                preauth_owned = False
+            if not dispatch_owned:
+                body = {"ok": False, "error": "Engine authenticated dispatch is busy; retry is required"}
+            else:
                 try:
                     result = self.dispatch(request["request"])
                     body = {"ok": True, "result": result}
@@ -317,18 +457,45 @@ class EngineServer:
                     body = {"ok": False, "error": "Request rejected: invalid operation or parameters"}
                 except Exception:
                     body = {"ok": False, "error": "Engine operation failed; inspect engine health"}
-                body.update(instance=self.instance, nonce=request["nonce"], challenge=challenge)
-                send(client, _wrap(body, self.key, b"response\0"), MAX_RESPONSE)
+            body.update(instance=self.instance, nonce=request["nonce"], challenge=challenge)
+            send(client, _wrap(body, self.key, _RESPONSE_DOMAIN), MAX_RESPONSE)
         except (OSError, EngineError):
-            pass
+            with self._lock:
+                self._rejected += 1
         finally:
-            self.slots.release()
+            self._retire_client(client)
+            with self._lock:
+                if preauth_owned:
+                    self._preauth_active -= 1
+                    self.preauth_slots.release()
+                if dispatch_owned:
+                    self._dispatch_active -= 1
+                    self.slots.release()
+                self._workers.discard(threading.current_thread())
 
     def close(self) -> None:
         self.stop_event.set()
-        self.socket.close()
-        if self.thread.ident is not None:
-            self.thread.join(timeout=1.0)
+        with self._lock:
+            close_listener = not self._listener_close_attempted
+            self._listener_close_attempted = True
+        if close_listener:
+            try:
+                self.socket.close()
+            except OSError:
+                self._retirement_error = "Engine listener retirement is unconfirmed"
+        with self._lock:
+            clients = [client for client in self._clients if client not in self._unclosed_clients]
+        for client in clients:
+            self._retire_client(client, shutdown=True)
+        deadline = time.monotonic() + 1.0
+        current = threading.current_thread()
+        if self.thread.ident is not None and self.thread is not current:
+            self.thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        with self._lock:
+            workers = list(self._workers)
+        for worker in workers:
+            if worker is not current:
+                worker.join(timeout=max(0.0, deadline - time.monotonic()))
         try:
             if read_discovery(self.directory)["instance"] == self.instance:
                 (self.directory / "endpoint.json").unlink()
@@ -349,14 +516,18 @@ def exchange(directory: Path, request: dict) -> dict:
     nonce = secrets.token_hex(16)
     try:
         with socket.create_connection(("127.0.0.1", record["port"]), timeout=TIMEOUT) as client:
-            hello = receive(client, MAX_REQUEST)
-            if (set(hello) != {"protocol", "instance", "challenge"}
+            deadline = time.monotonic() + PREAUTH_TIMEOUT
+            send(client, {"protocol": PROTOCOL, "instance": record["instance"], "nonce": nonce},
+                 MAX_HELLO, deadline=deadline)
+            hello = _verify(receive(client, MAX_REQUEST, deadline=deadline), key, _HELLO_DOMAIN)
+            if (set(hello) != {"protocol", "instance", "nonce", "challenge"}
                     or hello["protocol"] != PROTOCOL or hello["instance"] != record["instance"]
-                    or not isinstance(hello["challenge"], str) or len(hello["challenge"]) != 64):
-                raise EngineError("Engine challenge identity mismatch")
+                    or hello["nonce"] != nonce or not _nonce(hello["challenge"], 64)):
+                raise EngineError("Engine server proof identity mismatch")
             send(client, _wrap({"instance": record["instance"], "challenge": hello["challenge"],
-                                "nonce": nonce, "request": request}, key, b"request\0"), MAX_REQUEST)
-            body = _verify(receive(client, MAX_RESPONSE), key, b"response\0")
+                                "nonce": nonce, "request": request}, key, _REQUEST_DOMAIN),
+                 MAX_REQUEST, deadline=deadline)
+            body = _verify(receive(client, MAX_RESPONSE), key, _RESPONSE_DOMAIN)
     except OSError as exc:
         raise EngineError("Engine is unavailable; protection status is unknown") from exc
     if (body.get("instance") != record["instance"] or body.get("nonce") != nonce

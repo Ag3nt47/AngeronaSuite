@@ -667,10 +667,9 @@ function New-SourceStartupTemporary([string]$Root, [string]$Storage,
 }
 
 function Test-SourceStartupFreshCacheRequired {
-    if($FreshSourceCache){return $true}
-    $path=Join-Path (Get-CanonicalSourceStartupStorage) 'github-updates\applied-base.json'
-    try {Assert-SourceStartupPath $path;return [bool](Test-Path -LiteralPath $path)}
-    catch {return $true} # Unknown update evidence never re-enables legacy cache reads.
+    # Every canonical source launch excludes in-tree bytecode before the first
+    # helper import, including ordinary launches without an update receipt.
+    return $true
 }
 function Assert-SourceStartupCachePrefix([string]$Prefix,[string]$Root,[string]$Scratch) {
     $storage=Get-CanonicalSourceStartupStorage
@@ -704,7 +703,7 @@ function Invoke-SourceStartupAssistant([string]$Python, [string]$Root,
     if($FreshCachePrefix){
         Assert-SourceStartupCachePrefix $FreshCachePrefix $Root $Scratch
         $arguments=@('-B','-X',('pycache_prefix='+$FreshCachePrefix))+$arguments
-    } elseif(Test-SourceStartupFreshCacheRequired){throw 'Updated source requires a fresh private cache prefix before helper imports.'}
+    } elseif(Test-SourceStartupFreshCacheRequired){throw 'Canonical source startup requires a fresh private cache prefix before helper imports.'}
     if ($SoftwareRenderer) { $arguments += '--software-renderer' }
     if ($NoStartupWindow) { $arguments += '--no-startup-window' }
     $savedTemp, $savedTmp = $env:TEMP, $env:TMP
@@ -1020,7 +1019,7 @@ function Invoke-SourceStartupLoop([string]$Root, [switch]$SetupOnly) {
         if ($enabled -and $code -eq 1 -and $script:StartupDiagnosticRoot -and !$SetupOnly) {
             $automaticSourceRetry = $true
             $restored = $false
-            foreach ($sourceStrategy in @('last-ready', 'github-head', 'github-parent')) {
+            foreach ($sourceStrategy in @('last-ready', 'github-head')) {
                 if (!$githubEnabled -and $sourceStrategy.StartsWith('github-')) { continue }
                 if ($sourceStrategies.ContainsKey($sourceStrategy)) { continue }
                 $sourceStrategies[$sourceStrategy] = $true

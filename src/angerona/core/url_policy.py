@@ -7,9 +7,12 @@ Every redirect is revalidated under the same policy.
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
+import math
 import socket
+import time
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable, Iterable
@@ -160,9 +163,9 @@ def validate_url(
     else:
         # is_global excludes loopback, private, link-local, multicast,
         # unspecified, documentation, and other special-purpose ranges.
-        if addresses and any(not address.is_global for address in addresses):
+        if addresses and any(not address.is_global or address.is_multicast for address in addresses):
             raise UrlPolicyError("external destination resolved outside the public Internet")
-        if literal is not None and not literal.is_global:
+        if literal is not None and (not literal.is_global or literal.is_multicast):
             raise UrlPolicyError("external destination is not globally routable")
     return host
 
@@ -266,7 +269,110 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
             newurl = _pin_loopback_url(newurl)
         else:
             validate_url(newurl, self._policy)
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _url_origin(req.full_url) != _url_origin(newurl):
+            # Unknown integration headers may also contain secrets. Carry only
+            # ordinary negotiation headers to a separately admitted origin.
+            safe = {"accept", "accept-encoding", "accept-language", "user-agent"}
+            redirected.headers = {
+                key: value for key, value in redirected.headers.items()
+                if key.casefold() in safe
+            }
+        return redirected
+
+
+def _url_origin(url: str) -> tuple[str, str, int]:
+    parsed = urlsplit(url)
+    scheme = parsed.scheme.casefold()
+    return scheme, _normalized_host(parsed.hostname or ""), parsed.port or (443 if scheme == "https" else 80)
+
+
+def _public_socket(addresses, port, timeout, source_address):
+    """Connect numeric admitted peers without asking DNS a second time."""
+    deadline = time.monotonic() + timeout
+    last_error = None
+    for address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("public connection deadline expired")
+        family = socket.AF_INET6 if address.version == 6 else socket.AF_INET
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        try:
+            sock.settimeout(remaining)
+            if source_address is not None:
+                sock.bind(source_address)
+            sock.connect((str(address), port))
+            if ipaddress.ip_address(sock.getpeername()[0]) != address:
+                raise UrlPolicyError("connected peer differs from the admitted public address")
+            return sock
+        except OSError as exc:
+            sock.close()
+            last_error = exc
+        except BaseException:
+            sock.close()
+            raise
+    if last_error is not None:
+        raise last_error
+    raise UrlPolicyError("no admitted public connection address")
+
+
+def _public_connection_factory(request, policy, connection_type):
+    if request.has_proxy() or request._tunnel_host:
+        # Preserve configured routing. A proxy that resolves the target itself
+        # cannot prove this client's admitted numeric destination.
+        raise UrlPolicyError("configured proxy cannot guarantee public numeric peer admission")
+    records = []
+
+    def capture(host, port, **kwargs):
+        resolved = socket.getaddrinfo(host, port, **kwargs)
+        records.extend(resolved)
+        return resolved
+
+    host = validate_url(request.full_url, policy, resolver=capture)
+    _scheme, _host, port = _url_origin(request.full_url)
+    try:
+        addresses = (ipaddress.ip_address(host),)
+    except ValueError:
+        addresses = _resolved_addresses(host, port, lambda *_args, **_kwargs: records)
+
+    def factory(authority, timeout, **kwargs):
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise UrlPolicyError("public connection requires a finite positive timeout")
+        connection = connection_type(authority, timeout=timeout, **kwargs)
+        if _normalized_host(connection.host) != host or connection.port != port:
+            raise UrlPolicyError("connection authority differs from the admitted origin")
+
+        def connect_numeric(target, socket_timeout, source_address=None):
+            if _normalized_host(target[0]) != host or target[1] != port:
+                raise UrlPolicyError("connection target differs from the admitted origin")
+            return _public_socket(addresses, port, socket_timeout, source_address)
+
+        # Keep the original connection hostname for Host and TLS SNI/certificate
+        # verification. Only this instance's socket connector uses numeric peers.
+        connection._create_connection = connect_numeric
+        return connection
+
+    return factory
+
+
+class _PublicHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, policy):
+        super().__init__()
+        self._policy = policy
+
+    def http_open(self, request):
+        factory = _public_connection_factory(request, self._policy, http.client.HTTPConnection)
+        return self.do_open(factory, request)
+
+
+class _PublicHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, policy):
+        super().__init__()
+        self._policy = policy
+
+    def https_open(self, request):
+        factory = _public_connection_factory(request, self._policy, http.client.HTTPSConnection)
+        return self.do_open(factory, request, context=self._context)
 
 
 def safe_urlopen(
@@ -337,6 +443,8 @@ def safe_urlopen(
         # Never let HTTP_PROXY/HTTPS_PROXY redirect local prompts, telemetry, or
         # model responses through an inherited proxy configuration.
         handlers.append(urllib.request.ProxyHandler({}))
+    else:
+        handlers.extend((_PublicHTTPHandler(policy), _PublicHTTPSHandler(policy)))
     handlers.append(_PolicyRedirectHandler(policy))
     opener = urllib.request.build_opener(*handlers)
     enforce_chill_lock()  # Mode may have changed during ownership verification.

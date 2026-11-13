@@ -1317,8 +1317,7 @@ class _AiFixWorker(QThread):
 
 
 class CrashInspector(QWidget):
-    """Right-side panel: paste a traceback line → open the file (elevating if
-    needed) → show the exact failing line (in RED) with line numbers, and ask an
+    """Read a permitted traceback source file, show its failing line, and ask an
     AI how to fix it."""
 
     def __init__(self) -> None:
@@ -1400,7 +1399,7 @@ class CrashInspector(QWidget):
         if err:
             self.status.setText(f"⚠ {err}")
             if "Permission" in (err or ""):
-                self._offer_elevation()
+                self._explain_access_denied()
             return
         self.status.setText(f"{path} — line {line}  ({len(lines)} lines total)")
         lo = 0 if full else max(0, line - 13)
@@ -1427,18 +1426,11 @@ class CrashInspector(QWidget):
             self.code.moveCursor(QTextCursor.Down)
         self.code.ensureCursorVisible()
 
-    def _offer_elevation(self) -> None:
-        if QMessageBox.question(
-            self, "Access denied",
-            "Reading that file was blocked by Windows. Re-launch the Black Box as "
-            "Administrator to read protected files?") != QMessageBox.Yes:
-            return
-        try:
-            ctypes.windll.shell32.ShellExecuteW(
-                None, "runas", sys.executable,
-                f'"{os.path.abspath(__file__)}" --show', str(APP_DIR), 1)
-        except Exception as exc:
-            self.status.setText(f"Could not elevate: {exc}")
+    def _explain_access_denied(self) -> None:
+        self.status.setText(
+            "Windows denied this read. Inspect a permitted copy of the file or use the verified "
+            "installed security console. Source Black Box diagnostics cannot relaunch as Administrator."
+        )
 
     def code_question(self) -> None:
         path, line = self._parse()
@@ -2227,6 +2219,26 @@ class SoarEventsTab(QWidget):
         return "SOAR Queue:\n" + ("\n".join(rows) or "(empty)")
 
 
+_FW_DETAIL_SCRIPT = (
+    "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
+    "$id=$env:ANGERONA_BB_RULE_ID;$mode=$env:ANGERONA_BB_RULE_MATCH;"
+    "if([string]::IsNullOrEmpty($id)-or $id.Length -gt 4096){throw 'Invalid rule identifier'};"
+    "if($mode -ceq 'name'){"
+    "$r=Get-NetFirewallRule -Name $id -ErrorAction Stop | Where-Object {$_.Name -ceq $id} | Select-Object -First 1"
+    "}elseif($mode -ceq 'display'){"
+    "$r=Get-NetFirewallRule -DisplayName $id -ErrorAction Stop | Where-Object {$_.DisplayName -ceq $id} | Select-Object -First 1"
+    "}else{throw 'Invalid rule matching mode'};"
+    "if($null -eq $r){throw 'Exact rule is unavailable'};"
+    "$app=$r|Get-NetFirewallApplicationFilter;$port=$r|Get-NetFirewallPortFilter;"
+    "$addr=$r|Get-NetFirewallAddressFilter;"
+    "[PSCustomObject]@{Description=[string]$r.Description;Profile=[string]$r.Profile;"
+    "Program=[string]$app.Program;Protocol=[string]$port.Protocol;"
+    "LocalPort=($port.LocalPort -join ', ');RemotePort=($port.RemotePort -join ', ');"
+    "LocalAddress=($addr.LocalAddress -join ', ');RemoteAddress=($addr.RemoteAddress -join ', ')}"
+    "|ConvertTo-Json -Compress"
+)
+
+
 class _FwDetailWorker(QThread):
     """Fetch extended firewall-rule details off the UI thread."""
     done = Signal(dict)
@@ -2242,28 +2254,11 @@ class _FwDetailWorker(QThread):
             self.done.emit(result)
             return
         try:
-            import subprocess as _sub
-            safe = self._rule_id.replace("'", "''")
-            flag = "-DisplayName" if self._use_display else "-Name"
-            cmd = (
-                f"$r = Get-NetFirewallRule {flag} '{safe}' -ErrorAction Stop | Select-Object -First 1; "
-                f"$app  = $r | Get-NetFirewallApplicationFilter; "
-                f"$port = $r | Get-NetFirewallPortFilter; "
-                f"$addr = $r | Get-NetFirewallAddressFilter; "
-                f"[PSCustomObject]@{{"
-                f"  Description   = [string]$r.Description; "
-                f"  Profile       = [string]$r.Profile; "
-                f"  Program       = [string]$app.Program; "
-                f"  Protocol      = [string]$port.Protocol; "
-                f"  LocalPort     = ($port.LocalPort  -join ', '); "
-                f"  RemotePort    = ($port.RemotePort -join ', '); "
-                f"  LocalAddress  = ($addr.LocalAddress  -join ', '); "
-                f"  RemoteAddress = ($addr.RemoteAddress -join ', ') "
-                f"}} | ConvertTo-Json -Compress"
-            )
-            out = _sub.check_output(
-                ["powershell", "-NoProfile", "-Command", cmd],
-                timeout=10, stderr=_sub.DEVNULL, text=True,
+            out = _read_firewall_command(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", _FW_DETAIL_SCRIPT],
+                timeout=10,
+                query_environment={"ANGERONA_BB_RULE_ID": self._rule_id,
+                                   "ANGERONA_BB_RULE_MATCH": "display" if self._use_display else "name"},
             )
             d = json.loads(out)
             result = {
@@ -2472,7 +2467,8 @@ _MAX_FIREWALL_RULES = 2000
 _MAX_FIREWALL_VISIBLE_RULES = 500
 
 
-def _read_firewall_command(command: list[str], *, timeout: float) -> str:
+def _read_firewall_command(command: list[str], *, timeout: float,
+                           query_environment: dict[str, str] | None = None) -> str:
     """Collect a fixed read-only query without unbounded ``communicate`` output."""
     import subprocess
     import threading
@@ -2482,6 +2478,18 @@ def _read_firewall_command(command: list[str], *, timeout: float) -> str:
 
     if not math.isfinite(timeout) or not 0 < timeout <= 15:
         raise ValueError("Firewall query needs a bounded deadline")
+    query_values = {}
+    if query_environment is not None:
+        if (command != ["powershell", "-NoProfile", "-NonInteractive", "-Command", _FW_DETAIL_SCRIPT]
+                or type(query_environment) is not dict
+                or set(query_environment) != {"ANGERONA_BB_RULE_ID", "ANGERONA_BB_RULE_MATCH"}):
+            raise ValueError("Unsupported firewall query environment")
+        identifier, match = query_environment["ANGERONA_BB_RULE_ID"], query_environment["ANGERONA_BB_RULE_MATCH"]
+        if (type(identifier) is not str or not identifier or "\0" in identifier
+                or len(identifier.encode("utf-8")) > 4096 or type(match) is not str
+                or match not in {"name", "display"}):
+            raise ValueError("Invalid firewall rule query data")
+        query_values = dict(query_environment)
     captured = bytearray()
     done, overflow, failed = threading.Event(), threading.Event(), threading.Event()
     process = job = reader = None
@@ -2500,6 +2508,7 @@ def _read_firewall_command(command: list[str], *, timeout: float) -> str:
                                  else system / "netsh.exe")
                 kwargs["cwd"] = str(system)
                 kwargs["env"] = sanitized_child_environment(source={})
+                kwargs["env"].update(query_values)
             kwargs["creationflags"] = (
                 subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
                 | subprocess.CREATE_NEW_PROCESS_GROUP | 0x00000004  # CREATE_SUSPENDED

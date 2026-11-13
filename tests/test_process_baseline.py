@@ -17,6 +17,13 @@ from angerona.core.process_baseline import (
 from angerona.core import process_baseline as baseline_module
 
 
+@pytest.fixture(autouse=True)
+def _private_process_policy_key(monkeypatch):
+    # This suite exercises baseline behavior with an explicit inert install key.
+    # It never reads or creates the host policy authority.
+    monkeypatch.setattr(process_allowlist, "_policy_key", lambda _data=None: b"p" * 32)
+
+
 def _assessment(path: str, *, signed: bool = True, trusted: bool = True):
     candidate = Path(path)
     info = candidate.stat()
@@ -98,12 +105,14 @@ def test_hash_bound_trust_fails_after_executable_replacement(tmp_path) -> None:
 def test_scanner_event_name_is_understood_by_trust_policy(tmp_path) -> None:
     executable = tmp_path / "scanner-name.exe"
     executable.write_bytes(b"scanner")
-    process_allowlist.add(path=str(executable), data_dir=tmp_path)
+    approved = process_allowlist.add(path=str(executable), data_dir=tmp_path)
     event = Event(
         "Telemetry Scanner",
         "process creation",
-        details={"name": executable.name, "exe": str(executable)},
+        details={"name": executable.name, "exe": str(executable), "pid": 123,
+                 "process_create_time": 123.5, "image_sha256": approved["sha256"]},
     )
+    event = dataclasses.replace(event, hmac_sig=BusAuthority(b"p" * 32).sign(event))
     assert process_allowlist.event_process(event) == (
         executable.name,
         str(executable),

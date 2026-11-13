@@ -159,12 +159,31 @@ def verified_breach(event, bus, modules, *, now=None, require_fresh=True) -> Ver
         kind = details.get("finding_code") or details.get("kind") or details.get("event_type")
         if type(kind) is not str or not 1 <= len(kind) <= 100:
             return None
-        # The stable identity excludes timestamps/message text and still binds
-        # a new process generation, file digest or peer to a new case.
+        report_id = details.get("report_id")
+        if report_id is not None and (type(report_id) is not str
+                or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", report_id)):
+            return None
+        # Host-only findings need an incident identifier. Otherwise lifting one
+        # divergence would permanently suppress every later divergence case.
+        has_subject = (bool(report_id)
+                       or any(type(value) is str and _HASH.fullmatch(value)
+                              for value in (exact_hash, matched_hash))
+                       or bool(type(details.get("path")) is str and details["path"])
+                       or (type(details.get("pid")) is int and details["pid"] > 0
+                           and type(details.get("process_create_time")) in (int, float)
+                           and math.isfinite(details["process_create_time"])
+                           and details["process_create_time"] > 0)
+                       or any(key != "host" and value for key, value in contract["targets"].items()))
+        if not has_subject:
+            return None
+        # Stable identities retain the original process/file case contract;
+        # report identifiers additionally bind successive host-only incidents.
         identity = {"producer": event.module, "kind": kind,
                     "targets": contract["targets"], "observed_sha256": exact_hash,
                     "matched_sha256": matched_hash, "path": details.get("path"),
                     "pid": details.get("pid"), "process_create_time": details.get("process_create_time")}
+        if report_id is not None:
+            identity["report_id"] = report_id
         raw = json.dumps(identity, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         case_id = hashlib.sha256(b"angerona-confirmed-breach-v1\0" + raw).hexdigest()[:32]
         return VerifiedBreachEvidence(case_id, copy.deepcopy(event), actions)

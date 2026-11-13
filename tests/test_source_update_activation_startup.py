@@ -805,6 +805,7 @@ $tmp=Join-Path $script:cacheData 'tmp';New-PrivateRepairDirectory $tmp
 $scratch=Join-Path $tmp 'startup-temp.critical-preflight';New-PrivateRepairDirectory $scratch
 $FreshSourceCache=$false
 $before=Test-SourceStartupFreshCacheRequired
+$script:seenArguments=@()
 try{[void](Invoke-SourceStartupAssistant -Python $env:TEST_PYTHON -Root $root -Environment @{} -Scratch $scratch)}catch{}
 $ordinary=@($script:seenArguments)
 $state=Join-Path $script:cacheData 'github-updates';New-PrivateRepairDirectory $state
@@ -819,8 +820,8 @@ try{[void](Invoke-SourceStartupAssistant -Python $env:TEST_PYTHON -Root $root -E
 Write-Output ('RESULT:'+(@{before=$before;after=$after;ordinary=$ordinary;updated=$updated;prefix=$first
     distinct=($first -cne $second);absent=(!(Test-Path -LiteralPath $first) -and !(Test-Path -LiteralPath $second));missing_held=$missingHeld}|ConvertTo-Json -Depth 4 -Compress))
 ''')
-    assert result["before"] is False and result["after"] is True
-    assert result["ordinary"] == ["-m", "angerona.startup", "--chill"]
+    assert result["before"] is True and result["after"] is True
+    assert result["ordinary"] == []  # Missing cache held before any helper import.
     assert result["updated"] == ["-B", "-X", "pycache_prefix=" + result["prefix"], "-m", "angerona.startup", "--chill"]
     assert result["distinct"] is result["absent"] is result["missing_held"] is True
 

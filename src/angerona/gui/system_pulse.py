@@ -42,9 +42,12 @@ def _wifi_signal_windows() -> int | None:
     if sys.platform != "win32":
         return None
     try:
+        from angerona.core.privilege import sanitized_child_environment, trusted_windows_directories
+        native = trusted_windows_directories()[1]
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         result = subprocess.run(
-            ["netsh", "wlan", "show", "interfaces"],
+            [str(native / "netsh.exe"), "wlan", "show", "interfaces"],
+            cwd=str(native), env=sanitized_child_environment(),
             capture_output=True,
             text=True,
             errors="replace",

@@ -248,11 +248,11 @@ def _launch(native, image, environment, deadline, *, check_cancelled=None):
         environment = dict(environment)
         models = native.model_directory(launch_token)
         if models is not None and models != "":
-            if (not isinstance(models, str) or len(models) > 4096
-                    or any(ord(character) < 32 for character in models)
-                    or not Path(models).is_absolute()):
-                raise ValueError(_UNAVAILABLE)
-            environment["OLLAMA_MODELS"] = models
+            from angerona.core.ollama_model_paths import validate_model_directory
+
+            # Linked-user overrides have the same fixed/local/no-reparse rule;
+            # invalid explicit preferences remain unchanged and visibly held.
+            environment["OLLAMA_MODELS"] = validate_model_directory(models)
         if time.monotonic() >= deadline:
             raise TimeoutError
         if check_cancelled is not None:

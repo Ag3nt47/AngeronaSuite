@@ -12,6 +12,8 @@ from contextlib import contextmanager, nullcontext
 
 import pytest
 
+from source_archive_fixture import SourceArchiveFetch
+
 from angerona.core import file_lease
 from angerona.updater import source_stage as stage
 from angerona.core.startup_recovery import (
@@ -142,7 +144,7 @@ def _budget_fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(stage, "_git", lambda root, args: ("a" * 40).encode() if args[0] == "rev-parse" else b"")
     monkeypatch.setattr(stage, "source_inventory", lambda root: tuple(sorted(user)))
     compare = {"status": "ahead", "base_commit": {"sha": "a" * 40}, "merge_base_commit": {"sha": "a" * 40}}
-    return source, state, archives, compare
+    return source, state, archives, SourceArchiveFetch(archives, compare)
 
 
 @pytest.mark.parametrize("limit_kind", ["candidate", "transaction", "disk"])
@@ -159,7 +161,7 @@ def test_combined_candidate_and_exact_disk_budget_hold_before_any_blob_or_candid
     else:
         monkeypatch.setattr(stage.shutil, "disk_usage", lambda root: SimpleNamespace(free=16 * 1024 * 1024 + 21))
     with pytest.raises(stage.SourceStageError, match="budget|space"):
-        stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare, download=archives.__getitem__)
+        stage.prepare_source_update(source, state, TARGET, fetch=compare, download=archives.__getitem__)
     stages = list(state.glob("source-*"))
     assert len(stages) == (0 if limit_kind == "disk" else 1)
     if stages:
@@ -201,9 +203,9 @@ def test_third_retained_candidate_holds_before_git_download_and_preserves_readon
 
 def test_first_and_second_preparations_are_admitted_but_never_activate(tmp_path, monkeypatch):
     source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
-    first = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+    first = stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                         download=archives.__getitem__)
-    second = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+    second = stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                          download=archives.__getitem__)
     assert first.stage_id != second.stage_id
     assert first.activation_status == second.activation_status == "not_authorized"
@@ -297,7 +299,7 @@ def test_reserve_drop_after_download_preserves_originals_and_preparing_evidence(
         return archives[revision]
 
     with pytest.raises(stage.SourceStageError, match="free-space reserve"):
-        stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare, download=download)
+        stage.prepare_source_update(source, state, TARGET, fetch=compare, download=download)
     assert downloaded == ["a" * 40]
     retained = list(state.glob("source-*"))
     assert len(retained) == 1 and (retained[0] / "intent.json").is_file()
@@ -309,7 +311,7 @@ def test_planned_directory_and_file_entry_budget_precedes_payload_writes(tmp_pat
     source, state, archives, compare = _budget_fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(stage, "MAX_STAGE_OUTPUT_ENTRIES", 9)
     with pytest.raises(stage.SourceStageError, match="output entry budget"):
-        stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+        stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                     download=archives.__getitem__)
     retained = list(state.glob("source-*"))
     assert len(retained) == 1 and not (retained[0] / "candidate").exists()
@@ -345,7 +347,7 @@ def _prepared_conflict(tmp_path, monkeypatch):
         for name, content in incoming.items():
             output.writestr(name, content)
     archives[TARGET] = raw.getvalue()
-    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+    result = stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                          download=archives.__getitem__)
     assert result.conflicts == ("a",)
     return source, state, state / result.stage_id, result
@@ -482,7 +484,7 @@ def test_competing_preparation_cannot_reserve_the_last_slot_twice(tmp_path, monk
         yield
 
     monkeypatch.setattr(stage, "source_git_session", retained_git)
-    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda _path: compare,
+    result = stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                          download=archives.__getitem__)
 
     assert entered and result.status == "prepared"

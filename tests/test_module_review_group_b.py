@@ -178,15 +178,49 @@ def test_mobile_eco_only_changes_explicit_release_safe_capabilities(monkeypatch)
     assert all(mod._throttle == 1.0 for mod in targets.values())
 
 
-def test_mobile_alert_burst_has_bounded_authority_and_constant_rate_state(monkeypatch):
+def test_mobile_review_alerts_never_allocate_tokens_or_probe_targets(monkeypatch):
     bridge = mobile_bridge.MobileResponseBridge()
     sent = []
-    probes = []
     monkeypatch.setattr(bridge, "_send", lambda message: sent.append(message) or True)
-    monkeypatch.setattr(bridge, "_bind_process_target", lambda *_: probes.append(1) or None)
+    monkeypatch.setattr(bridge, "_bind_process_target", lambda *_: pytest.fail("review input probed a process"))
+    monkeypatch.setattr(bridge, "_prepare_rollback_artifact", lambda *_: pytest.fail("review input prepared recovery"))
+    monkeypatch.setattr(bridge, "_mobile_auth_status", lambda: pytest.fail("unsigned input read command authority"))
+    monkeypatch.setattr(mobile_bridge.time, "time", lambda: 1000.0)
+    event = Event("inert", "review input", Severity.HIGH, details={"disposition": "observation"})
+    for _ in range(1000):
+        bridge._gate_alert(event)
+    assert bridge.pending_alerts == {}
+    assert len(bridge._digest) == 15
+    assert bridge._digest_count == 1000 - mobile_bridge._FLOOD_MAX
+    assert len(sent) == mobile_bridge._FLOOD_MAX
+    assert all("no token issued" in line for line in bridge._digest)
+
+
+def test_mobile_alert_burst_has_bounded_exact_authority_and_constant_rate_state(monkeypatch):
+    bridge = mobile_bridge.MobileResponseBridge()
+    bus = EventBus()
+    bus.arm(BusAuthority(b"bounded-mobile-authority-key" * 2))
+    bridge.bind(bus)
+    bridge._config = SimpleNamespace(mobile_dest_number="+13035550100")
+    bus.publish(Event("inert", "active fixture alert", Severity.HIGH,
+                      details={"pid": 4242, "active_attack": True, "response_authorized": True}))
+    event = bus.recent(1)[0]
+    assert bus.verify(event)
+    status = mobile_bridge.MobileCommandStatus(
+        ready=True, reason="inert local enrollment", generation="a" * 64,
+        scope_digest="b" * 64,
+    )
+    sent = []
+    probes = []
+    monkeypatch.setattr(bridge, "_mobile_auth_status", lambda: status)
+    monkeypatch.setattr(bridge, "_send", lambda message: sent.append(message) or True)
+    def target(*_args):
+        probes.append(1)
+        return {"pid": 4242, "process_create_time": 100.0,
+                "exe": r"C:\fixtures\inert.exe", "name": "inert.exe"}
+    monkeypatch.setattr(bridge, "_bind_process_target", target)
     monkeypatch.setattr(bridge, "_prepare_rollback_artifact", lambda *_: None)
     monkeypatch.setattr(mobile_bridge.time, "time", lambda: 1000.0)
-    event = SimpleNamespace(details={}, module="inert", message="alert", severity=Severity.HIGH)
     bridge._gate_alert(event)
     first_token, first_info = next(iter(bridge.pending_alerts.items()))
     for _ in range(999):
@@ -196,10 +230,12 @@ def test_mobile_alert_burst_has_bounded_authority_and_constant_rate_state(monkey
     assert len(bridge._alert_times) == mobile_bridge._FLOOD_MAX + 1
     assert len(bridge._digest) == 15
     assert bridge.pending_alerts[first_token] is first_info
+    assert first_info["allowed_actions"] == ("KILL", "SUSPEND", "MUTE")
+    assert first_info["authorization_generation"] == status.generation
+    assert first_info["operator_identity"] == "+13035550100"
     assert bridge._digest_count == 1000 - mobile_bridge._FLOOD_MAX
     bridge._flush_digest()
     assert f"{1000 - mobile_bridge._MAX_PENDING_ALERTS} alert(s) received no new" in sent[-1]
-
 
 def test_mobile_expiry_burst_keeps_audits_but_batches_phone_notification(monkeypatch):
     bridge = mobile_bridge.MobileResponseBridge()
@@ -222,6 +258,9 @@ def test_mobile_expiry_burst_keeps_audits_but_batches_phone_notification(monkeyp
     events = bus.recent(300)
     assert len(events) == 255
     assert all(event.details["response_authorized"] is False for event in events)
+    assert all(event.severity == Severity.INFO for event in events)
+    assert all(event.details["event_type"] == "mobile_token_expiry" for event in events)
+    assert all("soar_action" not in event.details for event in events)
     assert all(bus.verify(event) for event in events)
 
 

@@ -19,6 +19,7 @@ if __package__ in {None, ""}:  # Allow direct execution from the repository.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools.validate_documentation_drift import validate  # noqa: E402
+from tools.build_startup_recovery_manifest import check_recovery_bundle  # noqa: E402
 from tools.publication_transport import (  # noqa: E402
     PublicationTransportError,
     TrustedGitBoundary,
@@ -433,6 +434,14 @@ def _assert_local_snapshot(root: Path, expected_head: str) -> None:
         raise PublicationError("working tree changed during publication")
 
 
+def _assert_recovery_bundle(root: Path) -> None:
+    """Refuse stale operational recovery bytes or launcher pins before egress."""
+    try:
+        check_recovery_bundle(root)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise PublicationError("offline recovery-bundle publication precondition failed: " + str(exc)) from exc
+
+
 def _assert_publication_boundary(
     root: Path,
     expected_head: str,
@@ -440,6 +449,7 @@ def _assert_publication_boundary(
 ) -> None:
     _assert_local_snapshot(root, expected_head)
     _assert_origin_configuration(root, expected_configuration)
+    _assert_recovery_bundle(root)
 
 
 def _guarded_network_operation(

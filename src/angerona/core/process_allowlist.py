@@ -11,6 +11,7 @@ import hashlib
 import hmac
 import json
 import math
+import ntpath
 import os
 import re
 import stat
@@ -33,14 +34,54 @@ _MAX_POLICY_BYTES = 2 * 1024 * 1024
 _MAX_POLICY_ENTRIES = 4096
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _ENTRY_FIELDS = frozenset(
-    {"id", "name", "path", "sha256", "publisher", "source", "added_at"}
+    {"id", "name", "path", "sha256", "publisher", "source", "added_at", "reviewed"}
 )
 
 # Immutable normalized rows are safe to reuse for a complete evaluation batch.
 # Each item is ``(case-folded basename, normalized exact path, SHA-256)``.
-# A blank digest is a legacy path-only approval and remains visible so the
+# A blank digest is a legacy discovery row and remains visible so the
 # operator can re-approve it without silently changing existing policy.
-PolicySnapshot = tuple[tuple[str, str, str], ...]
+class PolicySnapshot(tuple):
+    """Immutable policy rows and one batch's authentication key (not exported).
+
+    The key shares the existing same-user bus.key boundary. It authenticates
+    producer-supplied event evidence; no filesystem hashing occurs per UI event.
+    """
+    def __new__(cls, rows=(), *, event_key=None):
+        result = super().__new__(cls, rows)
+        result.event_key = event_key
+        return result
+
+
+_POLICY_DOMAIN = b"Angerona.ProcessAllowlist.v3\0"
+
+
+def _policy_key(data_dir=None) -> bytes | None:
+    try:
+        path = _data_dir(data_dir) / "bus.key"
+        if _is_reparse(path) or path.stat().st_size > 128 or path.stat().st_nlink != 1:
+            return None
+        with path.open("rb") as handle:
+            encoded = handle.read(129)
+        if len(encoded) > 128:
+            return None
+        key = bytes.fromhex(encoded.decode("ascii").strip())
+        return key if len(key) == 32 else None
+    except Exception:
+        return None
+
+
+def _canonical_policy(doc: dict) -> bytes:
+    return json.dumps(doc, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _policy_authentic(doc: dict, data_dir=None) -> bool:
+    key = _policy_key(data_dir)
+    if not key or type(doc.get("hmac")) is not str:
+        return False
+    body = {name: value for name, value in doc.items() if name != "hmac"}
+    expected = hmac.new(key, _POLICY_DOMAIN + _canonical_policy(body), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(doc["hmac"], expected)
 
 
 def _data_dir(data_dir=None) -> Path:
@@ -63,7 +104,8 @@ def policy_path(data_dir=None) -> Path:
 
 
 def _normal_path(value: str) -> str:
-    value = os.path.expandvars(os.path.expanduser(str(value or "").strip().strip('"')))
+    # Match literal observed paths; caller environment must not redirect an approval.
+    value = str(value or "").strip().strip('"')
     return os.path.normcase(os.path.normpath(value)) if value else ""
 
 
@@ -174,9 +216,8 @@ def _load(data_dir=None) -> list[dict]:
     except OSError:
         stamp = -1
     with _LOCK:
-        cached = _CACHE.get(key)
-        if cached and cached[0] == stamp:
-            return [dict(x) for x in cached[1]]
+        # Authenticate current document bytes per batch. mtime alone cannot
+        # authorize policy after an equal-size edit with restored timestamps.
         try:
             if (
                 path.stat().st_size > _MAX_POLICY_BYTES
@@ -184,11 +225,16 @@ def _load(data_dir=None) -> list[dict]:
                 or _is_reparse(path.parent)
             ):
                 raise ValueError("trusted-process policy path is unsafe")
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            with path.open("rb") as handle:
+                encoded = handle.read(_MAX_POLICY_BYTES + 1)
+            if len(encoded) > _MAX_POLICY_BYTES:
+                raise ValueError("trusted-process policy grew beyond its byte bound")
+            raw = json.loads(encoded)
             if (
                 not isinstance(raw, dict)
-                or set(raw) != {"version", "updated_at", "entries"}
-                or raw.get("version") not in (1, 2)
+                or set(raw) != ({"version", "updated_at", "entries", "hmac"}
+                                if raw.get("version") == 3 else {"version", "updated_at", "entries"})
+                or raw.get("version") not in (1, 2, 3)
                 or isinstance(raw.get("updated_at"), bool)
                 or not isinstance(raw.get("updated_at"), (int, float))
                 or not math.isfinite(float(raw["updated_at"]))
@@ -196,6 +242,7 @@ def _load(data_dir=None) -> list[dict]:
                 or len(raw["entries"]) > _MAX_POLICY_ENTRIES
             ):
                 raise ValueError("trusted-process policy schema is invalid")
+            authenticated = raw.get("version") == 3 and _policy_authentic(raw, data_dir)
             rows = []
             for item in raw["entries"]:
                 if not isinstance(item, dict) or not set(item) <= _ENTRY_FIELDS:
@@ -239,6 +286,9 @@ def _load(data_dir=None) -> list[dict]:
                         "publisher": publisher,
                         "source": source,
                         "added_at": float(added_at),
+                        "reviewed": bool(authenticated and item.get("reviewed") is True),
+                        "_policy_authenticated": authenticated,
+                        "review_required": not authenticated or item.get("reviewed") is not True,
                     }
                 )
         except Exception:
@@ -255,7 +305,33 @@ def _write(rows: Iterable[dict], data_dir=None) -> None:
     items = list(rows)
     if len(items) > _MAX_POLICY_ENTRIES:
         raise ValueError("trusted-process policy exceeds its entry bound")
-    payload = {"version": 2, "updated_at": time.time(), "entries": items}
+    key = _policy_key(data_dir)
+    if key is None:
+        raise ValueError("Process policy signing key is unavailable; no approval was saved.")
+    if path.exists():
+        with path.open("rb") as handle:
+            original = handle.read(_MAX_POLICY_BYTES + 1)
+        if len(original) > _MAX_POLICY_BYTES:
+            raise ValueError("Existing process policy exceeds its byte bound; it was preserved.")
+        previous = json.loads(original)
+        if previous.get("version") == 3 and not _policy_authentic(previous, data_dir):
+            raise ValueError("Existing process policy integrity is unknown; preserve and review it.")
+        if previous.get("version") in (1, 2):
+            archive = path.with_name(path.name + ".legacy-" + hashlib.sha256(original).hexdigest() + ".json")
+            if archive.exists():
+                if archive.read_bytes() != original:
+                    raise ValueError("Preserved process policy history changed.")
+            else:
+                with archive.open("xb") as handle:
+                    handle.write(original); handle.flush(); os.fsync(handle.fileno())
+    stored = []
+    for row in items:
+        item = {name: row[name] for name in _ENTRY_FIELDS if name in row}
+        item["reviewed"] = bool(row.get("_reviewed_now") or
+                                row.get("_policy_authenticated") and row.get("reviewed"))
+        stored.append(item)
+    payload = {"version": 3, "updated_at": time.time(), "entries": stored}
+    payload["hmac"] = hmac.new(key, _POLICY_DOMAIN + _canonical_policy(payload), hashlib.sha256).hexdigest()
     encoded = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
     if len(encoded) > _MAX_POLICY_BYTES:
         raise ValueError("trusted-process policy exceeds its size bound")
@@ -284,19 +360,20 @@ def entries(data_dir=None) -> list[dict]:
 def policy_snapshot(data_dir=None) -> PolicySnapshot:
     """Return one reusable, immutable view of the current trusted policy.
 
-    Batch consumers should call this once, then pass it to :func:`is_allowed`
-    or :func:`is_event_allowed`; this avoids a policy-path stat and row cloning
-    for every process/event while retaining the existing mtime invalidation at
-    the start of each batch.
+    Batch consumers call this once, then pass it to active predicates. Only
+    authenticated, explicitly reviewed digest-bound rows enter the snapshot.
+    Event checks verify signed producer evidence in memory; legacy rows remain
+    visible through entries() for explicit review.
     """
-    return tuple(
+    return PolicySnapshot((
         (
             _normal_name(row.get("name", "")),
             _normal_path(row.get("path", "")),
             str(row.get("sha256", "")).casefold(),
         )
         for row in _load(data_dir)
-    )
+        if row.get("_policy_authenticated") and row.get("reviewed") and row.get("sha256") and row.get("path")
+    ), event_key=_policy_key(data_dir))
 
 
 def add(
@@ -310,13 +387,15 @@ def add(
 ) -> dict:
     """Trust an exact executable path, or add a non-path basename hint.
 
-    Basename-only entries are intentionally useful only when an event genuinely
-    has no executable path.  A path-rich event must match an exact approved
-    path, so a renamed executable in another directory cannot inherit trust.
+    Basename-only and missing-file entries remain discovery hints. Active
+    suppression requires a reviewed exact path, current digest and authenticated
+    policy; pathless telemetry never inherits executable trust.
     Existing local files are also bound to their current SHA-256; replacing the
     file at an approved path invalidates trust until explicit re-approval.
     """
     clean_path = str(path or "").strip().strip('"')
+    if clean_path and not (os.path.isabs(clean_path) or ntpath.isabs(clean_path)):
+        clean_path = os.path.abspath(clean_path)
     clean_name = Path(clean_path).name if clean_path else Path(str(name or "").strip()).name
     if not clean_name:
         raise ValueError("Enter a process name or select an executable.")
@@ -356,7 +435,8 @@ def add(
         if _normal_name(row.get("name", "")) == norm_name and _normal_path(row.get("path", "")) == norm_path:
             # Re-approving an existing exact path upgrades legacy path-only
             # policy or accepts a deliberate publisher/version change.
-            changed = False
+            changed = not row.get("_policy_authenticated") or not row.get("reviewed")
+            row["_reviewed_now"] = bool(bound_digest and clean_path)
             for key, value in (
                 ("sha256", bound_digest),
                 ("publisher", clean_publisher),
@@ -377,6 +457,7 @@ def add(
         "publisher": clean_publisher,
         "source": clean_source,
         "added_at": time.time(),
+        "_reviewed_now": bool(bound_digest and clean_path),
     }
     rows.append(row)
     _write(rows, data_dir)
@@ -394,30 +475,12 @@ def remove(entry_id: str, data_dir=None) -> bool:
 
 def is_allowed(name: str = "", path: str = "", data_dir=None,
                policy: PolicySnapshot | None = None) -> bool:
-    norm_name = _normal_name(name or path)
-    norm_path = _normal_path(path)
-    if not norm_name and not norm_path:
-        return False
-    rows = policy_snapshot(data_dir) if policy is None else policy
-    for row in rows:
-        # Accept historical two-field snapshots supplied by old in-process
-        # consumers during an upgrade; new snapshots always carry the digest.
-        row_name, row_path = row[0], row[1]
-        row_digest = row[2] if len(row) >= 3 else ""
-        if row_path:
-            if norm_path and norm_path == row_path:
-                if row_digest:
-                    try:
-                        return executable_sha256(path) == row_digest
-                    except (OSError, ValueError):
-                        return False
-                return True
-        # A basename-only row is a fallback for pathless telemetry, never a
-        # wildcard over an observed path.  Exact-path entries (including the
-        # Proton defaults) retain their existing behavior.
-        elif not norm_path and norm_name and norm_name == row_name:
-            return True
-    return False
+    """Active trust requires the exact currently hashed executable.
+
+    Basename/path-only and old two-field rows remain discovery history, not
+    authorization. Use entries() for display and explicit reviewed reapproval.
+    """
+    return is_digest_pinned_allowed(name, path, data_dir, policy)
 
 
 def is_digest_pinned_allowed(
@@ -434,7 +497,7 @@ def is_digest_pinned_allowed(
     """
     norm_name = _normal_name(name or path)
     norm_path = _normal_path(path)
-    if not norm_name or not norm_path:
+    if (not norm_name or not norm_path or not (os.path.isabs(path) or ntpath.isabs(path))):
         return False
     rows = policy_snapshot(data_dir) if policy is None else policy
     for row in rows:
@@ -467,8 +530,31 @@ def event_process(event) -> tuple[str, str]:
 
 def is_event_allowed(event, data_dir=None,
                      policy: PolicySnapshot | None = None) -> bool:
-    name, path = event_process(event)
-    return is_allowed(name, path, data_dir, policy) if (name or path) else False
+    """Verify producer-bound digest/generation without per-event filesystem I/O."""
+    rows = policy_snapshot(data_dir) if policy is None else policy
+    key = getattr(rows, "event_key", None)
+    if key is None:
+        return False
+    from angerona.core.eventbus import BusAuthority, is_remote_observe_only
+    try:
+        if is_remote_observe_only(event) or not BusAuthority(key).verify(event):
+            return False
+        details = event.details
+        pid = details.get("pid")
+        birth = details.get("process_birth_ticks", details.get("process_create_time"))
+        digest = str(details.get("image_sha256") or details.get("process_sha256") or details.get("sha256") or "").lower()
+        if (type(pid) is not int or pid <= 0 or type(birth) not in (int, float)
+                or not math.isfinite(birth) or birth <= 0 or not _SHA256.fullmatch(digest)):
+            return False
+        name, path = event_process(event)
+        if not (os.path.isabs(path) or ntpath.isabs(path)):
+            return False
+        norm_name, norm_path = _normal_name(name or path), _normal_path(path)
+        return any(row_name == norm_name and row_path and row_path == norm_path
+                   and hmac.compare_digest(row_digest, digest)
+                   for row_name, row_path, row_digest in rows)
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
 
 
 def running_processes() -> list[dict]:

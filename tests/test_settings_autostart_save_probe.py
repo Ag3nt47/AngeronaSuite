@@ -328,3 +328,62 @@ def test_settings_rows_save_spyware_budget_without_changing_standalone_range(tmp
         assert saved["spyware_scan_timeout_seconds"] == 7200
     finally:
         dialog.close()
+
+
+def test_failed_general_save_preserves_concurrent_mobile_rearm_and_failure_state():
+    """Execute the real rollback handler without constructing or querying Settings."""
+    import ast
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    path = Path(__file__).parents[1] / "src/angerona/gui/pages.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    settings = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "SettingsDialog")
+    save = next(node for node in settings.body if isinstance(node, ast.FunctionDef) and node.name == "_save")
+    handler = next(node for node in ast.walk(save)
+                   if isinstance(node, ast.ExceptHandler) and node.body
+                   and isinstance(node.body[0], ast.AnnAssign)
+                   and isinstance(node.body[0].target, ast.Name)
+                   and node.body[0].target.id == "rollback_errors")
+    scaffold = ast.parse("def _run_real_rollback():\n    try:\n        raise RuntimeError('inert settings failure')\n    except Exception:\n        pass\n")
+    scaffold.body[0].body[0].handlers = [copy.deepcopy(handler)]
+    ast.fix_missing_locations(scaffold)
+    mobile_names = ("ANGERONA_MOBILE_PIN", "ANGERONA_MOBILE_PIN_DPAPI", "ANGERONA_MOBILE_AUTH_STATE")
+    old = {"OPENAI_API_KEY": "old-provider-fixture", mobile_names[0]: "482137",
+           mobile_names[1]: "legacy-protected-fixture", mobile_names[2]: "prior-counter-generation"}
+    # Represent the concurrent local rearm/failure after the old snapshot and
+    # after Settings wrote its own provider key, before it reports a failure.
+    protected = {"OPENAI_API_KEY": "new-provider-fixture", mobile_names[0]: "963852",
+                 mobile_names[1]: "new-local-generation", mobile_names[2]: "new-counter-with-another-failure"}
+    writes, restored, warnings = [], [], []
+
+    def write(updates):
+        writes.append(dict(updates))
+        for name, value in updates.items():
+            if value:
+                protected[name] = value
+            else:
+                protected.pop(name, None)
+
+    config = SimpleNamespace(autostart_enabled=True)
+    namespace = {
+        "self": SimpleNamespace(_cfg=config), "protected_before": old,
+        "secret_updates": {"OPENAI_API_KEY": "new-provider-fixture"},
+        "config_module": SimpleNamespace(write_env_keys=write),
+        "_restore_settings_bytes": lambda: restored.append("settings"),
+        "autostart_changed": False, "config_before": {"autostart_enabled": False},
+        "environment_before": {}, "os": os,
+        "QMessageBox": SimpleNamespace(
+            warning=lambda _parent, title, _message: warnings.append(title),
+            critical=lambda *_: pytest.fail("unexpected incomplete rollback"),
+        ),
+    }
+    exec(compile(scaffold, str(path), "exec"), namespace)
+    namespace["_run_real_rollback"]()
+    assert protected["OPENAI_API_KEY"] == "old-provider-fixture"
+    assert protected[mobile_names[0]] == "963852"
+    assert protected[mobile_names[1]] == "new-local-generation"
+    assert protected[mobile_names[2]] == "new-counter-with-another-failure"
+    assert writes and all(not (set(update) & set(mobile_names)) for update in writes)
+    assert config.autostart_enabled is False and restored == ["settings"]
+    assert warnings == ["Settings not saved"]

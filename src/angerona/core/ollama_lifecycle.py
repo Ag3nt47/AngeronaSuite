@@ -48,6 +48,29 @@ class OllamaAttestationError(RuntimeError):
     """Raised when Angerona cannot bind Ollama to an expected local process."""
 
 
+class OllamaProviderUnavailable(OllamaAttestationError):
+    """A fixed, locally generated provider-admission hold; no response text."""
+
+    def __init__(self, code: str = "image") -> None:
+        self.code = code if code in {"image", "package", "signing", "pending"} else "image"
+        super().__init__(self.code)
+
+
+def provider_hold_detail(code: object) -> str:
+    """Describe a local admission hold without reflecting untrusted error text."""
+    details = {
+        "image": "Local AI is held: no recognized trusted Ollama installation is available. The dashboard can remain open.",
+        "package": "Local AI is held: protected installation and DLL-tree custody could not be verified. Per-user writable installations are unsupported; settings and models were preserved.",
+        "signing": "Local AI is held: machine-trusted code-signing evidence could not be verified. No independent publisher pin is claimed; settings and models were preserved.",
+        "pending": "Local AI package verification is pending on a worker. The dashboard can remain open.",
+    }
+    fallback = (
+        "Local AI provider verification is held. The dashboard can remain open; "
+        "settings and models were preserved."
+    )
+    return details.get(code, fallback) if type(code) is str else fallback
+
+
 @dataclass(frozen=True, slots=True)
 class OllamaServiceAttestation:
     pid: int
@@ -166,12 +189,43 @@ def _expected_ollama_paths() -> tuple[Path, ...]:
     return tuple(candidates)
 
 
+# This is a machine-context platform-chain check, not an independently pinned
+# Ollama certificate. Per-user roots and an attractive display name are insufficient.
+_OLLAMA_MACHINE_SIGNER_SCRIPT = r"""$ErrorActionPreference='Stop';
+$PSModuleAutoLoadingPreference='None';
+$env:PSModulePath=[IO.Path]::Combine($PSHOME,'Modules');
+$security=[IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Security','Microsoft.PowerShell.Security.psd1');
+Microsoft.PowerShell.Core\Import-Module -Name $security -ErrorAction Stop;
+$s=Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $env:ANGERONA_NATIVE_PATH;
+if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate){exit 1};
+$p=$s.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false);
+if(-not [string]::Equals($p,'Ollama Inc.',[System.StringComparison]::OrdinalIgnoreCase)){exit 1};
+$chain=[System.Security.Cryptography.X509Certificates.X509Chain]::new($true);
+$roots=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root','LocalMachine');
+$sha=[System.Security.Cryptography.SHA256]::Create();
+try {
+ $chain.ChainPolicy.VerificationFlags=[System.Security.Cryptography.X509Certificates.X509VerificationFlags]::NoFlag;
+ $chain.ChainPolicy.RevocationMode=[System.Security.Cryptography.X509Certificates.X509RevocationMode]::Offline;
+ $chain.ChainPolicy.UrlRetrievalTimeout=[TimeSpan]::FromSeconds(2);
+ [void]$chain.ChainPolicy.ApplicationPolicy.Add([Security.Cryptography.Oid]::new('1.3.6.1.5.5.7.3.3'));
+ if(-not $chain.Build($s.SignerCertificate) -or $chain.ChainElements.Count -lt 2 -or $chain.ChainElements.Count -gt 16){exit 1};
+ $root=$chain.ChainElements[$chain.ChainElements.Count-1].Certificate;
+ $rootHash=[BitConverter]::ToString($sha.ComputeHash($root.RawData));
+ $roots.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly -bor [Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly);
+ if($roots.Certificates.Count -gt 2048){exit 1};
+ foreach($candidate in $roots.Certificates){if([BitConverter]::ToString($sha.ComputeHash($candidate.RawData)) -ceq $rootHash){exit 0}};
+ exit 1;
+} finally {$sha.Dispose();$roots.Dispose();$chain.Dispose()}"""
+
+
 @lru_cache(maxsize=16)
 def _windows_image_signature_valid(
-    path_text: str, device: int, inode: int, size: int, modified_ns: int, changed_ns: int
+    path_text: str, device: int, inode: int, size: int, modified_ns: int, changed_ns: int,
+    proof_epoch: float = 0.0,
 ) -> bool:
-    # All identity fields intentionally participate in the bounded cache key.
-    del device, inode, size, modified_ns, changed_ns
+    # The captured epoch prevents an in-flight old proof from repopulating a
+    # cleared cache under a newer machine-trust observation window.
+    del device, inode, size, modified_ns, changed_ns, proof_epoch
     from angerona.core.privilege import (
         sanitized_child_environment,
         trusted_powershell_path,
@@ -185,17 +239,11 @@ def _windows_image_signature_valid(
             return False
         environment = sanitized_child_environment(source={})
         environment["ANGERONA_NATIVE_PATH"] = path_text
+        environment["PSModulePath"] = str(powershell.parent / "Modules")
         result = subprocess.run(
             [
                 str(powershell), "-NoProfile", "-NonInteractive", "-Command",
-                "$ErrorActionPreference='Stop';"
-                "$s=Microsoft.PowerShell.Security\\Get-AuthenticodeSignature "
-                "-LiteralPath $env:ANGERONA_NATIVE_PATH;"
-                "if($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate){exit 1};"
-                "$p=$s.SignerCertificate.GetNameInfo("
-                "[System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,$false);"
-                "if([string]::Equals($p,'Ollama Inc.',"
-                "[System.StringComparison]::OrdinalIgnoreCase)){exit 0};exit 1",
+                _OLLAMA_MACHINE_SIGNER_SCRIPT,
             ],
             cwd=str(system), env=environment, stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -214,46 +262,155 @@ def _image_identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
     )
 
 
+def _windows_image_location(path: Path) -> bool:
+    from angerona.core.ollama_package_custody import image_location_allowed
+
+    return image_location_allowed(path)
+
+
 def _unredirected_image(path: Path) -> bool:
-    """Reject symbolic links and Windows junctions in every image component."""
-    for component in (path, *path.parents):
-        info = component.lstat()
-        if stat.S_ISLNK(info.st_mode) or (
-            int(getattr(info, "st_file_attributes", 0)) & _REPARSE_ATTRIBUTE
-        ):
+    """Observe parents from the drive out, before accessing any child below them."""
+    try:
+        for component in (*reversed(path.parents), path):
+            info = component.lstat()
+            if stat.S_ISLNK(info.st_mode) or (
+                int(getattr(info, "st_file_attributes", 0)) & _REPARSE_ATTRIBUTE
+            ):
+                return False
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+_IMAGE_ADMISSION_LOCAL = threading.local()
+_IMAGE_ADMISSION_LOCK = threading.RLock()
+_IMAGE_ADMISSION_CACHE: OrderedDict[tuple, float] = OrderedDict()
+_IMAGE_ADMISSION_TTL = 30.0
+_SIGNATURE_CACHE_CHECKED_AT = 0.0
+
+
+def _image_admission_issue() -> str:
+    return getattr(_IMAGE_ADMISSION_LOCAL, "reason", "Local Ollama provider trust is unavailable.")
+
+
+def _on_gui_thread() -> bool:
+    # Never import Qt or start a GUI merely to check this boundary.
+    qt = getattr(sys, "modules", {}).get("PySide6.QtCore")
+    if qt is None:
+        return False
+    try:
+        app = qt.QCoreApplication.instance()
+        return app is not None and qt.QThread.currentThread() == app.thread()
+    except Exception:
+        return True
+
+
+def _remember_image_admission(key: tuple, expires: float) -> bool:
+    with _IMAGE_ADMISSION_LOCK:
+        # Use the calling worker's captured proof windows. Another worker may
+        # have advanced the global signer epoch while this one was paused.
+        if not math.isfinite(expires) or time.monotonic() >= expires:
             return False
-    return True
+        _IMAGE_ADMISSION_CACHE[key] = expires
+        _IMAGE_ADMISSION_CACHE.move_to_end(key)
+        while len(_IMAGE_ADMISSION_CACHE) > 16:
+            _IMAGE_ADMISSION_CACHE.popitem(last=False)
+        return True
 
 
 def _trusted_ollama_image(path: Path) -> bool:
-    """Require a recognized installation and an authenticated platform image."""
+    """Bind a recognized image to protected package and platform trust snapshots.
+
+    Windows package checks run on workers. A GUI may reuse a matching image
+    snapshot for at most 30 seconds; no continuous loaded-DLL attestation,
+    independent publisher pin, or protection from an administrator is claimed.
+    """
+    global _SIGNATURE_CACHE_CHECKED_AT
+    key = None
+    _IMAGE_ADMISSION_LOCAL.reason = "Local Ollama executable is not a recognized trusted provider."
+    _IMAGE_ADMISSION_LOCAL.code = "image"
     try:
-        if sys.platform == "win32" and not _unredirected_image(path):
+        if sys.platform == "win32" and (not _windows_image_location(path) or not _unredirected_image(path)):
             return False
         image = path.resolve(strict=True)
         info = image.stat()
-        if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+        if (not stat.S_ISREG(info.st_mode) or path.is_symlink()
+                or getattr(info, "st_nlink", 1) != 1):
             return False
         expected = {
             candidate.resolve(strict=True)
             for candidate in _expected_ollama_paths()
-            if candidate.is_file() and not candidate.is_symlink()
-            and (sys.platform != "win32" or _unredirected_image(candidate))
+            if (sys.platform != "win32" or (_windows_image_location(candidate) and _unredirected_image(candidate)))
+            and candidate.is_file() and not candidate.is_symlink()
         }
         if image not in expected:
             return False
         if sys.platform == "win32":
             identity = _image_identity(info)
-            return (
-                _windows_image_signature_valid(str(image), *identity)
+            key = (str(image), identity)
+            if _on_gui_thread():
+                with _IMAGE_ADMISSION_LOCK:
+                    expires = _IMAGE_ADMISSION_CACHE.get(key, 0.0)
+                if time.monotonic() < expires:
+                    return True
+                _IMAGE_ADMISSION_LOCAL.code = "pending"
+                _IMAGE_ADMISSION_LOCAL.reason = (
+                    "Ollama package verification is pending on a worker; local AI remains held."
+                )
+                return False
+            from angerona.core.ollama_package_custody import assess_package
+
+            package_started = time.monotonic()
+            package = assess_package(image)
+            if not package.accepted:
+                _IMAGE_ADMISSION_LOCAL.code = "package"
+                _IMAGE_ADMISSION_LOCAL.reason = (
+                    "Ollama installation protection is unverified ("
+                    + package.reason + "). A protected per-machine installation is required; "
+                    "saved settings and models were not changed."
+                )
+                with _IMAGE_ADMISSION_LOCK:
+                    _IMAGE_ADMISSION_CACHE.pop(key, None)
+                return False
+            # Re-evaluate locally available certificate-root/revocation evidence rather
+            # than trusting an unchanged file's signing result indefinitely.
+            now = time.monotonic()
+            with _IMAGE_ADMISSION_LOCK:
+                if now - _SIGNATURE_CACHE_CHECKED_AT >= _IMAGE_ADMISSION_TTL:
+                    clear = getattr(_windows_image_signature_valid, "cache_clear", None)
+                    if callable(clear):
+                        clear()
+                    _SIGNATURE_CACHE_CHECKED_AT = now
+                proof_epoch = _SIGNATURE_CACHE_CHECKED_AT
+            expires = min(package_started, proof_epoch) + _IMAGE_ADMISSION_TTL
+            accepted = (
+                _windows_image_signature_valid(str(image), *identity, proof_epoch)
                 and _unredirected_image(path)
                 and path.resolve(strict=True) == image
                 and _image_identity(image.stat()) == identity
             )
-        # On POSIX there is no portable Authenticode equivalent in the Python
-        # runtime. Accept only a root-owned image that group/other cannot write.
+            if accepted:
+                if _remember_image_admission(key, expires):
+                    return True
+                # A newer worker may already have published a valid snapshot.
+                # This expired worker holds its own result without erasing it.
+                _IMAGE_ADMISSION_LOCAL.code = "pending"
+                _IMAGE_ADMISSION_LOCAL.reason = "Ollama package verification snapshot expired; worker verification is required."
+                return False
+            if not accepted:
+                _IMAGE_ADMISSION_LOCAL.code = "signing"
+                _IMAGE_ADMISSION_LOCAL.reason = (
+                    "Ollama machine-context code-signing verification is unavailable; local AI remains held."
+                )
+                with _IMAGE_ADMISSION_LOCK:
+                    _IMAGE_ADMISSION_CACHE.pop(key, None)
+            return bool(accepted)
+        # POSIX custody remains root-owned image and no group/other write.
         return info.st_uid == 0 and not (stat.S_IMODE(info.st_mode) & 0o022)
-    except (OSError, PermissionError, ValueError):
+    except (OSError, PermissionError, ValueError, RuntimeError):
+        if key is not None:
+            with _IMAGE_ADMISSION_LOCK:
+                _IMAGE_ADMISSION_CACHE.pop(key, None)
         return False
 
 
@@ -372,13 +529,18 @@ def attest_ollama_service(
         process = psutil.Process(pid)
         first_time = float(process.create_time())
         reported_image = Path(process.exe())
-        first_image = reported_image.resolve(strict=True)
+        # Admission must precede resolve/stat: an untrusted reported UNC or
+        # junction image must not cause network filesystem access during review.
         if not _trusted_ollama_image(reported_image):
-            raise OllamaAttestationError("local Ollama executable is not trusted")
+            raise OllamaProviderUnavailable(getattr(_IMAGE_ADMISSION_LOCAL, "code", "image"))
+        first_image = reported_image.resolve(strict=True)
+        current_image = Path(process.exe())
         if (
             not process.is_running()
             or float(process.create_time()) != first_time
-            or Path(process.exe()).resolve(strict=True) != first_image
+            or current_image != reported_image
+            or not _unredirected_image(current_image)
+            or current_image.resolve(strict=True) != first_image
         ):
             raise OllamaAttestationError("local Ollama process identity changed")
     except OllamaAttestationError:
@@ -831,8 +993,24 @@ def _startup_port_present(host: str) -> bool:
     return False
 
 
+def _account_model_home() -> str:
+    """POSIX default comes from this process account, never inherited HOME."""
+    from angerona.core.ollama_model_paths import ModelDirectoryError
+
+    try:
+        import pwd
+
+        value = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, OSError, KeyError, AttributeError) as exc:
+        raise ModelDirectoryError("The operating-system account home is unavailable.") from exc
+    if not isinstance(value, str) or not value:
+        raise ModelDirectoryError("The operating-system account home is unavailable.")
+    return value
+
+
 def _startup_environment(host: str) -> dict[str, str]:
-    from angerona.core.privilege import sanitized_child_environment
+    from angerona.core.privilege import sanitized_child_environment, trusted_windows_directories
+    from angerona.core.ollama_model_paths import default_model_directory, validate_model_directory
 
     # Do not forward API credentials, proxy controls, load paths, or arbitrary
     # OLLAMA_* policy overrides. Retain the operator's explicit model storage.
@@ -855,11 +1033,20 @@ def _startup_environment(host: str) -> dict[str, str]:
     if vulkan in {"0", "false", "1", "true"}:
         environment["OLLAMA_VULKAN"] = "1" if vulkan in {"1", "true"} else "0"
     model_directory = os.environ.get("OLLAMA_MODELS", "")
-    if (model_directory and len(model_directory) <= 4096
-            and not any(ord(character) < 32 for character in model_directory)
-            and Path(model_directory).is_absolute()):
-        environment["OLLAMA_MODELS"] = model_directory
-    if sys.platform != "win32":
+    # An explicit rejected path stays unchanged in the caller/settings. Never
+    # silently fall back to another drive, UNC share or implicit junction.
+    if not model_directory and sys.platform != "win32":
+        environment["HOME"] = _account_model_home()
+    environment["OLLAMA_MODELS"] = (
+        validate_model_directory(model_directory) if model_directory
+        else default_model_directory(environment)
+    )
+    if sys.platform == "win32":
+        _windows, system = trusted_windows_directories()
+        # The generic child environment also supports Python sidecars. Ollama
+        # must not search that potentially user-writable interpreter directory.
+        environment["PATH"] = str(system)
+    else:
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     return environment
 
@@ -872,12 +1059,15 @@ def _spawn_ollama_service(host: str, deadline: float, *, verified=None):
     from angerona.core.source_sandbox import _hold_plain_directories
 
     elevated = is_admin()
+    _IMAGE_ADMISSION_LOCAL.code = "image"
     if sys.platform != "win32" and (elevated or os.geteuid() == 0):
         raise ValueError("Start Ollama from a normal user session; automatic AI startup cannot run elevated.")
     for candidate in _expected_ollama_paths():
         if time.monotonic() >= deadline:
             raise TimeoutError
-        if not candidate.is_file() or not _unredirected_image(candidate):
+        if sys.platform == "win32" and not _windows_image_location(candidate):
+            continue
+        if not _unredirected_image(candidate) or not candidate.is_file():
             continue
         with ExitStack() as stack:
             stack.enter_context(_hold_plain_directories(candidate.parent))
@@ -924,7 +1114,7 @@ def _spawn_ollama_service(host: str, deadline: float, *, verified=None):
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 close_fds=True, start_new_session=True,
             )
-    raise ValueError("No trusted Ollama installation was found. Install Ollama using its official installer.")
+    raise OllamaProviderUnavailable(getattr(_IMAGE_ADMISSION_LOCAL, "code", "image"))
 
 
 def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
@@ -1030,10 +1220,19 @@ def _run_startup(key, attempt, *, stop_event=None, progress=None, timeout=30.0):
     except TimeoutError:
         return _notify_startup(attempt, "failed", "Timed out", attempt.status.percent,
                                "Ollama did not become ready within the startup deadline.", progress)
+    except OllamaProviderUnavailable as exc:
+        return _notify_startup(attempt, "failed", "Provider verification held", attempt.status.percent,
+                               provider_hold_detail(exc.code), progress)
     except OllamaAttestationError:
         return _notify_startup(attempt, "failed", "Ownership check failed", attempt.status.percent,
                                "The local AI listener could not be verified; automatic startup stopped.", progress)
     except ValueError as exc:
+        from angerona.core.ollama_model_paths import ModelDirectoryError
+
+        if isinstance(exc, ModelDirectoryError) or isinstance(exc.__cause__, ModelDirectoryError):
+            return _notify_startup(attempt, "failed", "Model storage held", attempt.status.percent,
+                                   "The configured model directory is not a verified local plain path. "
+                                   "The setting was preserved; review OLLAMA_MODELS. The dashboard can remain open.", progress)
         # Only our fixed validation messages are safe to display. Model/API
         # errors must not copy attacker-controlled response text into the UI.
         detail = str(exc) if str(exc) in {

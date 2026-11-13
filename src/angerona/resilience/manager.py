@@ -152,7 +152,7 @@ def _cmdline_probe(*needles: str, expected_argv=None) -> Callable[[], bool]:
 class ResilienceManager:
     def __init__(self, bus=None, heartbeat_interval: float = 0.5,
                  ring_interval: float = 0.5, start_watchdog: bool = True,
-                 with_ui: bool = True, on_frame: Optional[Callable[[dict], None]] = None):
+                 with_ui: bool = True, on_frame: Optional[Callable[[dict], None]] = None, config=None):
         self.bus = bus
         self.heartbeat_interval = heartbeat_interval
         self.ring_interval = ring_interval
@@ -160,7 +160,18 @@ class ResilienceManager:
         self.with_ui = with_ui
         self.on_frame = on_frame
         self._core_beat = hb.HeartbeatWriter("core")
+        self._unsigned_watchdog_enabled = getattr(config, "watchdog3_unsigned_enabled", False) is True
+        self._unsigned_watchdog = None
+        self._unsigned_watchdog_start_failure = None
         self._reader: Optional[ipc_ring.RingReader] = None
+        self._ring_retry_at = 0.0
+        self._ring_unretired_reader = None
+        self._ring_gap_observations = 0
+        self._ring_gap_reason = ""
+        self._ring_coverage = {"state": "unmeasured", "initial_continuity_verified": False,
+                               "rejection_observations": 0, "missed_frames_lower_bound": 0,
+                               "close_unresolved": False, "state_scope": "ring transport",
+                               "freshness_scope": "process-local; v2 restart rollback unverified"}
         self._sup = ProcessSupervisor(
             poll_interval=1.0,
             on_event=self._sup_event,
@@ -179,6 +190,33 @@ class ResilienceManager:
         self._source_guard_lock = threading.Lock()
         self._source_integrity = {"state": "pending", "reason": "Source seal not captured"}
         self._owned_core_pid = os.getpid() if os.name == "nt" else None
+
+    def _start_optional_native_watchdog(self) -> None:
+        """An optional monitor must never prevent existing Core resilience startup."""
+        if not getattr(self, "_unsigned_watchdog_enabled", False):
+            return
+        try:
+            from angerona.resilience.native_watchdog import UnsignedWatchdogMonitor, third_watchdog_status
+            self._unsigned_watchdog = UnsignedWatchdogMonitor(self._core_beat)
+            if self._unsigned_watchdog.start() is True:
+                self._unsigned_watchdog_start_failure = None
+                return
+            failure = third_watchdog_status()
+            failure.update(state="unavailable", heartbeat_verified=False)
+        except Exception as error:
+            failure = {"state": "unavailable", "heartbeat_verified": False,
+                       "mode": "unsigned-observe", "reduced_protection": True,
+                       "response_authorized": False, "recovery_available": False,
+                       "reason": "Optional native monitor could not start; existing Core resilience continues: "
+                                 + (str(error) or type(error).__name__)[:256]}
+            # Import/construction failures also need an explicit cached UI state.
+            # Keep the local failure even if the optional module/cache is broken.
+            try:
+                from angerona.resilience.native_watchdog import _cache_observe
+                _cache_observe(**failure)
+            except Exception:
+                pass
+        self._unsigned_watchdog_start_failure = dict(failure)
 
     def _prepare_source_guard(self) -> None:
         """Bind peer launches to this source session without approving new code."""
@@ -245,19 +283,22 @@ class ResilienceManager:
 
     def _publish(self, module: str, message: str, level: str = "INFO", details: dict | None = None):
         if self.bus is None:
-            return
+            return False
         try:
             from angerona.core.eventbus import Event, Severity
             sev = getattr(Severity, level if level in ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
                           else "INFO", Severity.INFO)
             self.bus.publish(Event(module, message, sev, time.time(), details or {}))
+            return True
         except Exception:
-            pass
+            return False
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:
         self._stop.clear()
-        self._reader = ipc_ring.RingReader(ipc_ring.ring_path("telemetry"))
+        # Optional ring admission runs on its worker; corrupt transport must
+        # not prevent heartbeat/supervision startup. Never reset existing bytes.
+        self._ring_retry_at = 0.0
 
         # Publish core liveness BEFORE the watchdog process is allowed to assess
         # us. The previous ordering spawned the watchdog first; during a busy boot
@@ -269,6 +310,7 @@ class ResilienceManager:
         # core remains observable and continues consuming scanner frames.
         self._spawn_thread(self._ring_loop, "ring-drain")
         self._spawn_thread(self._status_loop, "core-status")
+        self._start_optional_native_watchdog()
 
         self._prepare_source_guard()
         if self._source_guard is not None:
@@ -391,32 +433,85 @@ class ResilienceManager:
                 self.stop()
                 return
 
+    def _record_ring_gap(self, reason: str, *, missed: int = 0) -> None:
+        self._ring_gap_observations = getattr(self, "_ring_gap_observations", 0) + 1
+        coverage = getattr(self, "_ring_coverage", {})
+        coverage.update(initial_continuity_verified=False,
+                        rejection_observations=self._ring_gap_observations,
+                        missed_frames_lower_bound=coverage.get("missed_frames_lower_bound", 0) + missed)
+        self._ring_coverage = coverage
+        total = self._ring_gap_observations
+        if reason != getattr(self, "_ring_gap_reason", "") or total <= 3 or total & (total - 1) == 0:
+            self._publish("Resilience Manager", "Telemetry ring coverage is incomplete: " + reason,
+                          "HIGH", {**coverage, "reason": reason,
+                                   "count_unit": "rejection/retry observations, not distinct events",
+                                   "disposition": "health", "active_attack": False,
+                                   "response_authorized": False})
+        self._ring_gap_reason = reason
+
+    def _admit_ring_reader(self) -> bool:
+        if self._closed or self._ring_unretired_reader is not None:
+            raise ipc_ring.FrameError("Telemetry reader admission is closed")
+        candidate = ipc_ring.RingReader(ipc_ring.ring_path("telemetry"))
+        with self._shutdown_lock:
+            if not self._closed and not self._stop.is_set():
+                self._reader = candidate
+                return True
+            try:
+                candidate.close()
+            except Exception as error:
+                # Do not lose a late owned mapping or retry an ambiguous close.
+                self._ring_unretired_reader = candidate
+                self._ring_coverage.update(state="unavailable", close_unresolved=True)
+                self._record_ring_gap("late reader close/" + type(error).__name__)
+            return False
+
     def _ring_loop(self):
         while not self._stop.wait(self.ring_interval):
-            before = (
-                int(getattr(self._reader, "authentication_failures", 0))
-                if self._reader is not None else 0
-            )
-            try:
-                batch = self._reader.read_batch(2048) if self._reader else []
-            except Exception:
-                batch = []
-            after = (
-                int(getattr(self._reader, "authentication_failures", before))
-                if self._reader is not None else before
-            )
+            now = time.monotonic()
+            retry_at = getattr(self, "_ring_retry_at", 0.0)
+            if self._reader is None and now >= retry_at:
+                try:
+                    admitted = self._admit_ring_reader()
+                except Exception as error:
+                    self._ring_retry_at = now + 30.0
+                    self._ring_coverage["state"] = "unavailable"
+                    self._record_ring_gap("reader admission/" + type(error).__name__)
+                else:
+                    if not admitted:
+                        return
+                    self._ring_coverage["state"] = "available"
+            if self._stop.is_set():
+                return
+            before = int(getattr(self._reader, "authentication_failures", 0))
+            batch = []
+            if self._reader is not None and now >= getattr(self, "_ring_retry_at", 0.0):
+                try:
+                    batch = self._reader.read_batch(2048)
+                except Exception as error:
+                    # Retain this exact reader and its authenticated high-water.
+                    # Recreating it on bad bytes would erase replay protection.
+                    self._ring_retry_at = now + 30.0
+                    self._ring_coverage["state"] = "unavailable"
+                    self._record_ring_gap("reader observation/" + type(error).__name__)
+                else:
+                    self._ring_coverage["state"] = "available"
+            after = int(getattr(self._reader, "authentication_failures", before))
             if after > before:
-                self._record_ipc_rejection(
-                    after - before,
-                    "frame authentication, sequence, or ring-header integrity",
-                )
+                self._ring_coverage["state"] = "degraded"
+                self._record_ring_gap("rejected frame/header observations")
+                self._record_ipc_rejection(after - before,
+                    "frame authentication, sequence, or ring-header integrity observations")
             for fr in batch:
+                missed = fr.get("missed", 0)
+                if type(missed) is int and missed > 0:
+                    self._record_ring_gap("authenticated sequence gap", missed=missed)
                 self.frames_ingested += 1
                 self._handle_frame(fr)
             self._drain_peer_alerts()
 
     def _drain_peer_alerts(self) -> None:
-        """Republish authenticated peer-watchdog alerts (bounded, ~every 2 s)."""
+        """Publish each independent outbox before acknowledging its cursor."""
         now = time.monotonic()
         if now < getattr(self, "_peer_alert_due", 0.0):
             return
@@ -425,30 +520,47 @@ class ResilienceManager:
             if getattr(self, "_peer_alerts", None) is None:
                 from angerona.resilience.peer_alerts import PeerAlertReader
                 self._peer_alerts = PeerAlertReader()
-            records = self._peer_alerts.drain()
+            records = self._peer_alerts.peek()
         except Exception:
             records = []
         for record in records:
             details = dict(record.get("details") or {})
+            details.pop("response_contract", None)
             details.update(peer_alert=True, observed_ts=record.get("ts"),
-                           peer_source=record.get("source"))
-            self._publish("Peer Watchdog", str(record.get("msg", "")),
-                          str(record.get("level", "HIGH")), details)
-        # The native supervisor has one independent chain/cursor; its failure
-        # cannot prevent ingestion from the existing Python peer's outbox.
+                           peer_source=record.get("source"), peer_record_id=record.get("id"),
+                           peer_record_mac=record.get("mac"), disposition="observation",
+                           active_attack=False, response_authorized=False)
+            if not self._publish("Peer Watchdog", str(record.get("msg", "")),
+                                 str(record.get("level", "HIGH")), details):
+                break
+            try:
+                self._peer_alerts.ack(record)
+            except Exception:
+                # A delivered but unacknowledged row may repeat; retain its
+                # original id/MAC so consumers can identify that delivery gap.
+                break
+        # One independent native chain/cursor cannot block Python peer delivery.
         try:
             if getattr(self, "_native_peer_alerts", None) is None:
                 from angerona.resilience.native_watchdog import NativeAlertReader
                 self._native_peer_alerts = NativeAlertReader()
-            records = self._native_peer_alerts.drain()
+            records = self._native_peer_alerts.peek()
         except Exception:
             records = []
         for record in records:
             details = dict(record.get("details") or {})
+            details.pop("response_contract", None)
             details.update(peer_alert=True, native_watchdog=True,
-                           observed_ts=record.get("ts"), peer_source=record.get("source"))
-            self._publish("Native Third Watchdog", str(record.get("msg", "")),
-                          str(record.get("level", "HIGH")), details)
+                           observed_ts=record.get("ts"), peer_source=record.get("source"),
+                           peer_record_id=record.get("id"), peer_record_mac=record.get("mac"),
+                           disposition="observation", active_attack=False, response_authorized=False)
+            if not self._publish("Native Third Watchdog", str(record.get("msg", "")),
+                                 str(record.get("level", "HIGH")), details):
+                break
+            try:
+                self._native_peer_alerts.ack(record)
+            except Exception:
+                break
 
     def _record_ipc_rejection(self, count: int, reason: str) -> None:
         self.frames_rejected += max(1, int(count))
@@ -459,7 +571,9 @@ class ResilienceManager:
                 f"Authenticated IPC input rejected ({reason}); "
                 f"{total} rejected frame(s) this run.",
                 "HIGH",
-                {"rejected_frames": total, "reason": reason},
+                {"rejected_frames": total, "reason": reason,
+                 "count_unit": "rejection observations, not distinct events",
+                 "disposition": "health", "active_attack": False, "response_authorized": False},
             )
 
     def _handle_frame(self, fr: dict) -> bool:
@@ -485,10 +599,13 @@ class ResilienceManager:
         while not self._stop.wait(3.0):
             state = self._source_integrity.get("state")
             progress = self._sup.supervision_status()
-            degraded = state in {"changed", "unavailable"} or progress["state"] not in {"starting", "running"}
+            degraded = (state in {"changed", "unavailable"}
+                        or progress["state"] not in {"starting", "running"}
+                        or self._ring_coverage["state"] != "available")
             diag.write_status("core", "degraded" if degraded else "running", {
                 "frames_ingested": self.frames_ingested,
                 "frames_rejected": self.frames_rejected,
+                "ring_coverage": dict(self._ring_coverage),
                 "supervised": list(self._sup.components.keys()),
                 "safe_mode": [n for n, c in self._sup.components.items() if c.safe_mode],
                 "source_integrity": dict(self._source_integrity),
@@ -498,7 +615,13 @@ class ResilienceManager:
 
     def _native_watchdog_status(self) -> dict:
         """Observe on the status worker, never in a GUI refresh or core launch."""
+        failure = getattr(self, "_unsigned_watchdog_start_failure", None)
+        if type(failure) is dict:
+            return dict(failure)
         try:
+            if getattr(self, "_unsigned_watchdog_enabled", False):
+                from angerona.resilience.native_watchdog import third_watchdog_status
+                return third_watchdog_status()
             if getattr(self, "_native_watchdog_observer", None) is None:
                 from angerona.resilience.native_watchdog import NativeWatchdogObserver
                 self._native_watchdog_observer = NativeWatchdogObserver()
@@ -508,7 +631,18 @@ class ResilienceManager:
 
     def component_heartbeats(self) -> tuple[dict, ...]:
         cache = self._component_heartbeat_cache
-        return cache.snapshot() if cache is not None else ()
+        rows = cache.snapshot() if cache is not None else ()
+        if getattr(self, "_unsigned_watchdog_enabled", False):
+            failure = getattr(self, "_unsigned_watchdog_start_failure", None)
+            if type(failure) is dict:
+                row = {"role": "watchdog3", "state": "unavailable", "generation_id": "",
+                       "pid": 0, "last_heartbeat_monotonic": None, "deadline_seconds": 10.0,
+                       "reason": failure.get("reason", "Optional native monitor did not start")}
+            else:
+                from angerona.resilience.native_watchdog import third_watchdog_heartbeat
+                row = third_watchdog_heartbeat()
+            rows = (*rows, row)
+        return rows
 
     def owned_process_identities(self) -> tuple:
         """Cached native context; no process/file query or lock on callers."""
@@ -781,6 +915,9 @@ class ResilienceManager:
 
     def request_stop(self) -> None:
         self._stop.set()
+        monitor = getattr(self, "_unsigned_watchdog", None)
+        if monitor is not None:
+            monitor.request_stop()
         external = getattr(self, "_source_update_controller", None)
         if external is not None:
             try:
@@ -795,6 +932,9 @@ class ResilienceManager:
     def stop(self, terminate_children: bool = False) -> None:
         self.request_stop()
         with self._shutdown_lock:
+            monitor = getattr(self, "_unsigned_watchdog", None)
+            if monitor is not None:
+                monitor.stop()
             try:
                 self._sup.stop(terminate_children=terminate_children)
             finally:

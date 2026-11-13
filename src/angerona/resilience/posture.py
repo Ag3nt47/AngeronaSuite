@@ -74,6 +74,13 @@ def _service_row(service: dict) -> dict:
 
 def _native_watchdog_row(status: Optional[dict]) -> dict:
     state = status.get("state") if isinstance(status, dict) else None
+    if state in {"active-unsigned", "active-reduced"}:
+        return _row("watchdog3", "Native third watchdog", "Active ordinary-user observation with reduced "
+                    "protection. Signature status is separate from liveness. It shares Core's failure domain "
+                    "and has no independent restart, response or service authority.", "warn")
+    if state == "disabled":
+        return _row("watchdog3", "Native third watchdog", "Optional ordinary-user monitor is off. "
+                    "Signed installed supervision is configured separately.", "off")
     if state == "observed":
         return _row("watchdog3", "Native third watchdog", "Core reports an authenticated native "
                     "heartbeat. Recovery behavior and installer trust are not verified here.", "ok")

@@ -923,9 +923,15 @@ class ProcessMonitorModule(BaseModule):
                                       events=creation_events)
             complete = self._set_process_health(snapshot, identity_gaps, len(live))
             self._observe_fresh_diagnostic("coverage", generation=generation)
+            if (self._last_coverage.get("fresh") is True
+                    and self._last_coverage.get("counts_valid") is True):
+                # The PID-only quiet boundary belongs to initial enrichment,
+                # not full collector health. Protected PID0/4 birth gaps must
+                # not suppress a later generation reusing a startup PID.
+                # Exact identities in _seen retain repeat/partial-poll dedup.
+                self._initial_pid_baseline = None
             if complete:
                 self._seen = live
-                self._initial_pid_baseline = None
                 self._names = names
             else:
                 # Absence from a partial inventory is not process exit. Retain

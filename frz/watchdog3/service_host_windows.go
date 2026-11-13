@@ -151,7 +151,8 @@ func admitNativeWatchdogHost(ctx context.Context) (result io.Closer, resultErr e
 		return result, errors.New("watchdog own image is not a native PE")
 	}
 	// Recheck SCM PID membership while the exact native process and protected
-	// image remain held. The signed installer owns publisher/image approval.
+	// image remain held. Mandatory self-signing admission separately holds the
+	// exact enrolled final image and verified machine-context publisher identity.
 	confirmed, err := nativeServiceStatus(service)
 	if err != nil || confirmed.State != windows.SERVICE_RUNNING || confirmed.PID != peer.PID || confirmed.Type != windows.SERVICE_WIN32_OWN_PROCESS {
 		return result, errors.New("watchdog SCM generation changed during admission")
@@ -328,7 +329,13 @@ func runWatchdogService(dispatch watchdogDispatcher, admit func(context.Context)
 	return code, err
 }
 
-func nativeWatchdogService() int {
+func nativeWatchdogService() (exitCode int) {
+	activation, activationErr := nativeSelfActivation()
+	if activationErr != nil {
+		fmt.Fprintln(os.Stderr, "Watchdog3 service inactive: explicit signing enrollment is required.")
+		return inactiveSigningExit
+	}
+	defer closeCommandActivation(activation, os.Stderr, &exitCode)
 	code, err := runWatchdogService(svc.Run, admitNativeWatchdogHost, func(ctx context.Context) int {
 		host := nativeCommandHost()
 		host.Run = func(config configuration, controlRoot string, key []byte, ops runnerIO) error {
@@ -346,13 +353,29 @@ func nativeWatchdogService() int {
 	return code
 }
 
-func dispatchWatchdogCommand(arguments []string, stdout, stderr io.Writer, host commandHost, service func() int) int {
+func dispatchWatchdogCommand(arguments []string, stdout, stderr io.Writer, host commandHost, service func() int) (exitCode int) {
+	if len(arguments) > 0 {
+		switch arguments[0] {
+		case "--observe":
+			return runObserveCommand(arguments[1:], stdout, stderr)
+		case "--inspect-signing":
+			return runSigningDiagnostic(arguments[1:], false, stdout, stderr, nativeSigningInspectionHost())
+		case "--signing-status":
+			return runSigningDiagnostic(arguments[1:], true, stdout, stderr, nativeSigningInspectionHost())
+		}
+	}
 	for _, argument := range arguments {
 		if argument == "--service" {
 			if len(arguments) != 1 || service == nil {
 				fmt.Fprintln(stderr, "The fixed service entry cannot be combined with other arguments.")
 				return 2
 			}
+			activation, err := openCommandActivation(host)
+			if err != nil {
+				fmt.Fprintln(stderr, "Watchdog3 service inactive: explicit end-user signing and enrollment are required.")
+				return inactiveSigningExit
+			}
+			defer closeCommandActivation(activation, stderr, &exitCode)
 			return service()
 		}
 	}

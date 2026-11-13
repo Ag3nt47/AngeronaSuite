@@ -128,7 +128,7 @@ func TestWatchdogServiceEntryIsExclusiveAndConsoleVersionUnchanged(t *testing.T)
 	calls := 0
 	service := func() int { calls++; return 7 }
 	var out, errs bytes.Buffer
-	if code := dispatchWatchdogCommand([]string{"--service"}, &out, &errs, commandHost{}, service); code != 7 || calls != 1 {
+	if code := dispatchWatchdogCommand([]string{"--service"}, &out, &errs, commandHost{AdmitSelf: func() (io.Closer, error) { return inertCloser{}, nil }}, service); code != 7 || calls != 1 {
 		t.Fatal("fixed service dispatch changed", code, calls)
 	}
 	for _, arguments := range [][]string{{"--service", "--version"}, {"--version", "--service"}, {"--service", "--config", `C:\x`}, {"--service", "--service"}, {"--service=true"}} {

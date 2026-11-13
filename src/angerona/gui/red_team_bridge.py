@@ -1172,8 +1172,9 @@ class RedTeamBridge(QObject):
         self._closing = False
         self._failure_cancelled = False
         self._starting_at = time.monotonic()
+        from angerona import __version__ as suite_version
         initial = dict(data_dir=str(self.parent_view.config.data_dir), default_target=self.default_target,
-            stylesheet=self.parent_view._qss(), version="1.15.0")
+            stylesheet=self.parent_view._qss(), version=suite_version)
         owner = RedTeamToolOwner(lambda kind, payload, nonce:
             self._incoming.emit((owner, owner._epoch), kind, payload, nonce), initialize=initial,
             native_diagnostic_hold=self._native_diagnostic_hold)

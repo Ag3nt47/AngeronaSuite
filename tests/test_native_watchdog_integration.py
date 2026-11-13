@@ -487,16 +487,20 @@ def test_broken_python_peer_outbox_does_not_block_native_alert_ingestion(monkeyp
     PeerAlertOutbox(source="watchdog3", key_raw=KEY, path=path).append("HIGH", "Both peers unavailable")
     manager = ResilienceManager.__new__(ResilienceManager)
     class Broken:
-        def drain(self):
+        def peek(self):
             raise OSError("fixture Python chain held")
     manager._peer_alerts = Broken()
     manager._native_peer_alerts = native.NativeAlertReader(_data_dir=tmp_path)
     published = []
-    manager._publish = lambda *args: published.append(args)
+    def publish(*args):
+        published.append(args)
+        return True
+    manager._publish = publish
     manager._drain_peer_alerts()
     assert len(published) == 1 and published[0][:3] == (
         "Native Third Watchdog", "Both peers unavailable", "HIGH")
     assert published[0][3]["native_watchdog"] is True
+    assert manager._native_peer_alerts.peek() == []
 
 
 def test_native_posture_row_never_confuses_observation_with_recovery_proof():

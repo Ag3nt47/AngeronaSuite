@@ -212,6 +212,9 @@ _TARGETS = (
     "angerona.core.commands:CommandConsole.run",        # console control path
     "angerona.resilience.heartbeat:HeartbeatWriter.beat",  # liveness attestation
     "angerona.core.process_allowlist:is_allowed",       # trust decisions
+    "angerona.core.process_allowlist:is_event_allowed", # signed producer evidence
+    "angerona.core.alert_ack:signature",                 # exact alert identity
+    "angerona.core.alert_ack:acked_signatures",          # authenticated, expiring receipts
     "angerona.resilience.source_guard:SourceGuard.check",
     "angerona.resilience.supervisor:ProcessSupervisor._launch_allowed",
     "angerona.resilience.supervisor:ProcessSupervisor.heartbeat_allowed",
@@ -229,7 +232,9 @@ _DEPENDENCIES: dict[str, tuple[str, ...]] = {
         "angerona.resilience.supervisor:ProcessSupervisor._is_running",
         "angerona.resilience.supervisor:ProcessSupervisor._assess",
         "angerona.resilience.supervisor:ProcessSupervisor._authenticated_record",
+        "angerona.resilience.supervisor:ProcessSupervisor._authenticated_record_locked",
         "angerona.resilience.supervisor:ProcessSupervisor._verified_peer_state",
+        "angerona.resilience.supervisor:ProcessSupervisor._verified_peer_state_locked",
     ),
     "angerona.resilience.supervisor:ProcessSupervisor._launch_allowed": (
         "angerona.resilience.supervisor:ProcessSupervisor._spawn_locked",
@@ -259,6 +264,36 @@ _DEPENDENCIES: dict[str, tuple[str, ...]] = {
     ),
     "angerona.resilience.heartbeat:HeartbeatWriter.beat": (
         "angerona.resilience.heartbeat:proof_for",
+    ),
+    "angerona.core.process_allowlist:is_event_allowed": (
+        "angerona.core.process_allowlist:event_process",
+        "angerona.core.process_allowlist:_normal_name",
+        "angerona.core.process_allowlist:_normal_path",
+        "angerona.core.process_allowlist:policy_snapshot",
+        "angerona.core.process_allowlist:PolicySnapshot.__new__",
+        "angerona.core.process_allowlist:_load",
+        "angerona.core.process_allowlist:_policy_authentic",
+        "angerona.core.process_allowlist:_canonical_policy",
+        "angerona.core.process_allowlist:_policy_key",
+        "angerona.core.process_allowlist:_data_dir",
+        "angerona.core.process_allowlist:_is_reparse",
+        "angerona.core.eventbus:BusAuthority.verify",
+        "angerona.core.eventbus:BusAuthority.sign",
+        "angerona.core.eventbus:is_remote_observe_only",
+    ),
+    "angerona.core.alert_ack:signature": (
+        "angerona.core.alert_ack:_canonical",
+    ),
+    "angerona.core.alert_ack:acked_signatures": (
+        "angerona.core.alert_ack:_store_path",
+        "angerona.core.alert_ack:_repo_root",
+        "angerona.core.alert_ack:_load_at",
+        "angerona.core.alert_ack:_read_plain",
+        "angerona.core.alert_ack:_key_for_store",
+        "angerona.core.alert_ack:_rows",
+        "angerona.core.alert_ack:_pairs",
+        "angerona.core.alert_ack:_canonical",
+        "angerona.core.alert_ack:_active",
     ),
     "angerona.core.process_allowlist:is_allowed": (
         "angerona.core.process_allowlist:is_digest_pinned_allowed",

@@ -2,11 +2,15 @@
 Word source SHA256: 23cba784068a77a6459f1986f1dc7de8bf46b6e52615caacc431786a6aac85c8
 Coverage: 5549 text nodes; 5187 paragraphs; 86 tables; 12 figures. -->
 
-Current manual version **1.15.0** · Revision **9 November 2026**
+Current source maintenance **1.15.1** · **13 November 2026**
 
-[Download PDF](../Angerona_Master_Manual.pdf) · [Download Word](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · [Repository guide](../README.md)
+[Latest 1.15.1 source companion](releases/v1.15.1.md) · [Security patches and remaining exposure](releases/security-worklist-review-2026-11-13.md)
 
-Source maintenance revision **9 November 2026**: [Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), [recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). These companion chapters provide additional source and recovery context.
+The Word/PDF manual edition is older: **1.15.0** · **9 November 2026**. The body below is an exact readable export of that edition, not a rewritten 1.15.1 Word manual. Read the source companions first for current maintenance changes, watchdog modes, action holds and validation limits.
+
+[Download older PDF edition](../Angerona_Master_Manual.pdf) · [Download older Word edition](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · [Repository guide](../README.md)
+
+Earlier source maintenance companion **9 November 2026**: [Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), [recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). These companion chapters provide additional source and recovery context.
 
 This complete readable export follows the Word manual in document order. Dated validation and version-history sections retain their original scope; the current operator workflows and complete references precede the final update history.
 

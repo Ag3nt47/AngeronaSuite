@@ -247,6 +247,7 @@ _MAX_BASELINE_BYTES = 32 * 1024 * 1024
 _MAX_SCAN_FILES = 100_000
 _MAX_FILE_BYTES = 1024 * 1024 * 1024
 _MAX_SCAN_CONTENT_BYTES = 8 * 1024 * 1024 * 1024
+_MAX_SCAN_SECONDS = 300.0  # Cooperative; a blocked filesystem call is unbounded.
 _FSCTL_READ_FILE_USN_DATA = 0x000900EB
 _WINDOWS_USN_OUTPUT_BYTES = 1024
 
@@ -425,10 +426,12 @@ class FileIntegrityModule(BaseModule):
         super().__init__()
         self._baseline: Dict[str, str] = {}
         self._driver_baseline: set = set()   # basenames of *.sys in DRIVER_DIR
-        # path -> (mtime_ns, size) as of the last time we actually hashed it.
-        # Lets _scan() skip re-hashing files that haven't changed, instead of
-        # re-reading + SHA-256'ing every watched file on every single cycle.
+        # Stable object identity/change token plus its separately paired digest.
+        # Reuse requires both to still match the adopted baseline; an incomplete
+        # scan may observe new content without adopting that root.
         self._stat_cache: Dict[str, Tuple[int, int, int, int, int]] = {}
+        # A stat tuple alone cannot borrow a different adopted baseline digest.
+        self._stat_cache_digests: Dict[str, str] = {}
         self._assurance_issuer: DetectorReceiptIssuer | None = None
         self._last_scan_receipt: dict[str, object] = {
             "complete": False,
@@ -449,6 +452,9 @@ class FileIntegrityModule(BaseModule):
         self._scan_work = threading.local()
         self._incomplete_scan_attempts = 0
         self._scan_retry_floor = 0.0
+        self._coverage_notice_digest = ""
+        self._coverage_notice_at = 0.0
+        self._coverage_suppressed = 0
 
     def bind_assurance_receipt_issuer(self, issuer: DetectorReceiptIssuer) -> None:
         self._assurance_issuer = issuer
@@ -760,13 +766,26 @@ class FileIntegrityModule(BaseModule):
             raise OSError(ctypes.get_last_error(), "GetFileInformationByHandleEx")
         return int(info.ChangeTime)
 
+    def _scan_resource_limit(self) -> str:
+        deadline = getattr(self._scan_work, "deadline", None)
+        if deadline is not None and time.monotonic() >= deadline:
+            return "global scan deadline exhausted"
+        progress = getattr(self._scan_work, "progress", None)
+        if progress is not None:
+            if progress["bytes"] >= _MAX_SCAN_CONTENT_BYTES:
+                return "global content-byte budget exhausted"
+            root_limit = getattr(self._scan_work, "root_byte_limit", None)
+            if root_limit is not None and progress["bytes"] >= root_limit:
+                return "root content-byte share exhausted"
+        return ""
+
     def _hash(self, path: str) -> str:
         # Antivirus/indexer metadata touches can race the first identity sample
         # on Windows. Retry a small fixed number of times, but accept only one
         # individually stable, handle-bound read.
         stop_event = getattr(self._scan_work, "stop_event", self.generation_stop_event())
         for _attempt in range(3):
-            if stop_event.is_set():
+            if stop_event.is_set() or self._scan_resource_limit():
                 return ""
             digest = self._hash_once(path)
             if digest:
@@ -796,14 +815,28 @@ class FileIntegrityModule(BaseModule):
                 opened_change = self._handle_change_token(f.fileno())
                 opened_usn = self._handle_usn(f.fileno())
                 chunks_read = 0
+                file_bytes_read = 0
                 while not stop_event.is_set():
+                    if file_bytes_read == opened.st_size:
+                        break
+                    if self._scan_resource_limit():
+                        return ""
                     if not self.background_checkpoint(chunks_read, batch_size=128):
                         return ""
-                    chunk = f.read(65536)
+                    progress = getattr(self._scan_work, "progress", None)
+                    read_budget = 65536
+                    if progress is not None:
+                        read_budget = min(read_budget, _MAX_SCAN_CONTENT_BYTES - progress["bytes"],
+                            getattr(self._scan_work, "root_byte_limit", _MAX_SCAN_CONTENT_BYTES)
+                            - progress["bytes"])
+                    if read_budget <= 0:
+                        return ""
+                    chunk = f.read(read_budget)
                     if not chunk:
                         break
                     h.update(chunk)
                     chunks_read += 1
+                    file_bytes_read += len(chunk)
                     self._report_scan_work(bytes_read=len(chunk))
                 if stop_event.is_set():
                     return ""
@@ -907,6 +940,9 @@ class FileIntegrityModule(BaseModule):
 
     def _scan(self) -> Dict[str, str]:
         self._scan_work.stop_event = self.generation_stop_event()
+        self._scan_work.deadline = time.monotonic() + _MAX_SCAN_SECONDS
+        self._scan_work.invocation_files = 0
+        self._scan_work.invocation_estimated_bytes = 0
         self._scan_work.progress = {
             "bytes": 0,
             "files": 0,
@@ -931,6 +967,9 @@ class FileIntegrityModule(BaseModule):
         finally:
             if hasattr(self._scan_work, "transient_leaf_disappearances"):
                 del self._scan_work.transient_leaf_disappearances
+            for name in ("deadline", "root_byte_limit", "invocation_files", "invocation_estimated_bytes"):
+                if hasattr(self._scan_work, name):
+                    delattr(self._scan_work, name)
             del self._scan_work.progress
             del self._scan_work.stop_event
 
@@ -951,6 +990,7 @@ class FileIntegrityModule(BaseModule):
             scan_generation = self._scan_generation
             baseline_at_start = dict(self._baseline)
             stat_cache_at_start = dict(self._stat_cache)
+            cached_digests_at_start = dict(self._stat_cache_digests)
 
         snap: Dict[str, str] = {}
         new_stat_cache: Dict[str, Tuple[int, int, int, int, int]] = {}
@@ -958,15 +998,20 @@ class FileIntegrityModule(BaseModule):
         error_count_total = 0
         transient_leaf_disappearances = 0
         covered_roots: list[str] = []
+        root_coverage: list[dict[str, object]] = []
+        root_first_error = ""
+        root_blocking_object = ""
         visited = 0
         hashed = 0
         reused = 0
         content_bytes = 0
         stopped_for_budget = False
 
-        def _error(message: str) -> None:
-            nonlocal error_count_total
+        def _error(message: str, blocking_object: str = "") -> None:
+            nonlocal error_count_total, root_first_error, root_blocking_object
             error_count_total += 1
+            if not root_first_error:
+                root_first_error, root_blocking_object = message[:500], blocking_object[:500]
             if len(errors) < 32:
                 errors.append(message[:500])
 
@@ -982,125 +1027,167 @@ class FileIntegrityModule(BaseModule):
             return False
 
         scan_roots = self._canonical_roots()
-        for root in scan_roots:
-            if stop_event.is_set():
-                _error("scan stopped before coverage completed")
-                stopped_for_budget = True
-                break
-            root_path = Path(root)
+        invocation_files = getattr(self._scan_work, "invocation_files", 0)
+        invocation_bytes = getattr(self._scan_work, "invocation_estimated_bytes", 0)
+        for root_index, root in enumerate(scan_roots):
+            root_first_error = root_blocking_object = ""
             root_error_count = error_count_total
+            root_visited, root_bytes = visited, content_bytes
+            root_budget_exhausted = False
+            root_path = Path(root)
+
+            def _finish_root() -> None:
+                nonlocal root_budget_exhausted, stopped_for_budget
+                deadline_now = getattr(self._scan_work, "deadline", None)
+                if (stop_event.is_set() or deadline_now is not None and time.monotonic() >= deadline_now):
+                    if not root_first_error:
+                        _error("scan stopped before coverage completed" if stop_event.is_set()
+                               else "global scan deadline exhausted", str(root_path))
+                    stopped_for_budget = root_budget_exhausted = True
+                root_complete = error_count_total == root_error_count and not root_budget_exhausted
+                if root_complete:
+                    covered_roots.append(str(root_path))
+                root_coverage.append({"root": str(root_path), "complete": root_complete,
+                    "reason": root_first_error or "complete", "blocking_object": root_blocking_object,
+                    "files_visited": visited - root_visited,
+                    "content_bytes_hashed": content_bytes - root_bytes,
+                    "budget_exhausted": root_budget_exhausted})
+
+            deadline = getattr(self._scan_work, "deadline", None)
+            if stop_event.is_set() or deadline is not None and time.monotonic() >= deadline:
+                stopped_for_budget = root_budget_exhausted = True
+                _error("scan stopped before coverage completed" if stop_event.is_set()
+                       else "global scan deadline exhausted; root not measured", str(root_path))
+                _finish_root()
+                continue
+            remaining_roots = len(scan_roots) - root_index
+            available_files = max(0, _MAX_SCAN_FILES - invocation_files - visited)
+            available_bytes = max(0, _MAX_SCAN_CONTENT_BYTES - invocation_bytes - content_bytes)
+            root_file_share = available_files // remaining_roots
+            root_byte_share = available_bytes // remaining_roots
+            progress = getattr(self._scan_work, "progress", None)
+            if progress is not None:
+                actual_remaining = max(0, _MAX_SCAN_CONTENT_BYTES - progress["bytes"])
+                self._scan_work.root_byte_limit = progress["bytes"] + min(
+                    root_byte_share, actual_remaining // remaining_roots)
+            if not available_files:
+                stopped_for_budget = root_budget_exhausted = True
+                _error("global file inventory budget exhausted; root not measured", str(root_path))
+                _finish_root()
+                continue
             try:
-                if (
-                    not root_path.is_dir()
-                    or root_path.is_symlink()
-                    or _is_reparse_point(root_path)
-                ):
-                    _error(f"watch root unavailable or unsafe: {root_path}")
+                if (not root_path.is_dir() or root_path.is_symlink()
+                        or _is_reparse_point(root_path)):
+                    _error(f"watch root unavailable or unsafe: {root_path}", str(root_path))
+                    _finish_root()
                     continue
             except OSError as exc:
-                _error(f"watch root unreadable: {root_path}: {exc}")
+                _error(f"watch root unreadable: {root_path}: {exc}", str(root_path))
+                _finish_root()
                 continue
 
             def _walk_error(exc: OSError) -> None:
-                _error(f"directory traversal failed: {exc}")
+                _error(f"directory traversal failed: {exc}", str(getattr(exc, "filename", "") or root_path))
 
-            for dirpath, directories, files in os.walk(
-                root_path, followlinks=False, onerror=_walk_error
-            ):
-                if stop_event.is_set():
-                    _error("scan stopped before coverage completed")
-                    stopped_for_budget = True
+            for dirpath, directories, files in os.walk(root_path, followlinks=False, onerror=_walk_error):
+                if stop_event.is_set() or deadline is not None and time.monotonic() >= deadline:
+                    _error("scan stopped before coverage completed" if stop_event.is_set()
+                           else "global scan deadline exhausted", str(dirpath))
+                    stopped_for_budget = root_budget_exhausted = True
                     break
                 directory = Path(dirpath)
                 safe_directories: list[str] = []
                 for name in directories:
-                    if stop_event.is_set():
+                    if stop_event.is_set() or deadline is not None and time.monotonic() >= deadline:
+                        _error("scan stopped before coverage completed" if stop_event.is_set()
+                               else "global scan deadline exhausted", str(directory))
+                        stopped_for_budget = root_budget_exhausted = True
                         break
                     child = directory / name
                     try:
                         if child.is_symlink() or _is_reparse_point(child):
-                            _error(f"linked/reparse directory excluded: {child}")
+                            _error(f"linked/reparse directory excluded: {child}", str(child))
                             continue
                         safe_directories.append(name)
                     except OSError as exc:
-                        _error(f"directory identity failed: {child}: {exc}")
+                        _error(f"directory identity failed: {child}: {exc}", str(child))
                     self._report_scan_work()
                 directories[:] = safe_directories
                 for file_index, fn in enumerate(files):
                     self.background_checkpoint(file_index, batch_size=16)
-                    if stop_event.is_set():
-                        _error("scan stopped before coverage completed")
-                        stopped_for_budget = True
-                        break
                     full = os.path.join(dirpath, fn)
+                    if stop_event.is_set() or deadline is not None and time.monotonic() >= deadline:
+                        _error("scan stopped before coverage completed" if stop_event.is_set()
+                               else "global scan deadline exhausted", full)
+                        stopped_for_budget = root_budget_exhausted = True
+                        break
+                    if visited - root_visited >= root_file_share:
+                        _error("root file inventory share exhausted: " + full, full)
+                        stopped_for_budget = root_budget_exhausted = True
+                        break
+                    visited += 1  # Rejected metadata also consumes enumeration budget.
                     st = self._stat(full)
                     self._report_scan_work(files=1)
                     if st is None:
                         _vanished(full)
-                        _error(f"file metadata unavailable: {full}")
+                        _error(f"file metadata unavailable: {full}", full)
                         continue
-                    visited += 1
-                    if visited > _MAX_SCAN_FILES:
-                        _error(f"file inventory exceeded {_MAX_SCAN_FILES}")
-                        stopped_for_budget = True
-                        break
                     try:
                         info = os.lstat(full)
                         attributes = getattr(info, "st_file_attributes", 0)
-                        reparse = getattr(
-                            stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400
-                        )
-                        if (
-                            not stat.S_ISREG(info.st_mode)
-                            or stat.S_ISLNK(info.st_mode)
-                            or bool(attributes & reparse)
-                        ):
-                            _error(f"non-regular/link file excluded: {full}")
+                        reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+                        if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+                                or bool(attributes & reparse)):
+                            _error(f"non-regular/link file excluded: {full}", full)
                             continue
                         if info.st_size > _MAX_FILE_BYTES:
-                            _error(f"file exceeds per-object hash budget: {full}")
+                            _error(f"file exceeds per-object hash budget: {full}", full)
                             continue
                     except OSError as exc:
                         _vanished(full)
-                        _error(f"file identity failed: {full}: {exc}")
+                        _error(f"file identity failed: {full}: {exc}", full)
                         continue
                     cached_st = stat_cache_at_start.get(full)
-                    if (
-                        st[4] > 0
-                        and cached_st == st
-                        and full in baseline_at_start
-                        and not self._is_high_value(full)
-                    ):
+                    if (st[4] > 0 and cached_st == st and full in baseline_at_start
+                            and cached_digests_at_start.get(full) == baseline_at_start[full]
+                            and not self._is_high_value(full)):
                         digest = baseline_at_start[full]
                         reused += 1
                     else:
-                        if content_bytes + max(0, st[2]) > _MAX_SCAN_CONTENT_BYTES:
-                            _error("scan content-byte budget exhausted")
-                            stopped_for_budget = True
+                        if content_bytes - root_bytes + max(0, st[2]) > root_byte_share:
+                            _error("root content-byte share exhausted: " + full, full)
+                            stopped_for_budget = root_budget_exhausted = True
                             break
                         digest = self._hash(full)
                         content_bytes += max(0, st[2])
                         hashed += 1
-                        if stop_event.is_set():
-                            _error("scan stopped before coverage completed")
-                            stopped_for_budget = True
+                        if stop_event.is_set() or deadline is not None and time.monotonic() >= deadline:
+                            _error("scan stopped before coverage completed" if stop_event.is_set()
+                                   else "global scan deadline exhausted", full)
+                            stopped_for_budget = root_budget_exhausted = True
                             break
                         if not digest:
+                            limit = self._scan_resource_limit()
+                            if limit:
+                                _error(limit + ": " + full, full)
+                                stopped_for_budget = root_budget_exhausted = True
+                                break
                             _vanished(full)
-                            _error(f"stable content hash unavailable: {full}")
+                            _error(f"stable content hash unavailable: {full}", full)
                     if digest:
-                        snap[full] = digest
-                        new_stat_cache[full] = st
-                if stopped_for_budget:
+                        snap[full], new_stat_cache[full] = digest, st
+                if root_budget_exhausted:
                     break
                 if stop_event.is_set():
-                    _error("scan stopped before coverage completed")
-                    stopped_for_budget = True
+                    _error("scan stopped before coverage completed", str(dirpath))
+                    stopped_for_budget = root_budget_exhausted = True
                     break
-            if error_count_total == root_error_count and not stopped_for_budget:
-                covered_roots.append(str(root_path))
-            if stopped_for_budget:
-                break
+            _finish_root()
+
+        self._scan_work.invocation_files = invocation_files + visited
+        self._scan_work.invocation_estimated_bytes = invocation_bytes + content_bytes
+        if hasattr(self._scan_work, "root_byte_limit"):
+            del self._scan_work.root_byte_limit
 
         completed_monotonic_ns = time.monotonic_ns()
         self._scan_work.transient_leaf_disappearances = transient_leaf_disappearances
@@ -1113,6 +1200,8 @@ class FileIntegrityModule(BaseModule):
             "completed_monotonic_ns": completed_monotonic_ns,
             "watch_roots_sha256": _fim_proof_digest(scan_roots),
             "covered_roots": sorted(covered_roots),
+            "root_coverage": root_coverage,
+            "deadline_scope": "cooperative checks; individual filesystem I/O may block",
             "complete": complete,
             "reason": "complete" if complete else errors[0],
             "files_visited": visited,
@@ -1163,6 +1252,7 @@ class FileIntegrityModule(BaseModule):
         )
         with self._scan_proof_lock:
             self._stat_cache = new_stat_cache
+            self._stat_cache_digests = dict(snap)
             self._last_scan_receipt = {
                 **receipt,
                 "coverage_sha256": coverage_sha256,
@@ -1172,10 +1262,31 @@ class FileIntegrityModule(BaseModule):
         return result
 
     def _record_scan_outcome(self) -> None:
-        if self._last_scan_receipt.get("complete") is True:
+        receipt = self._last_scan_receipt
+        if receipt.get("complete") is True:
+            self._coverage_notice_digest = ""
+            self._coverage_suppressed = 0
             self._incomplete_scan_attempts = 0
             self._scan_retry_floor = 0.0
             return
+        blocked = [dict(row) for row in receipt.get("root_coverage", ())
+                   if isinstance(row, dict) and row.get("complete") is not True]
+        examples = [{"root": row.get("root", ""), "reason": row.get("reason", ""),
+                     "blocking_object": row.get("blocking_object", "")} for row in blocked[:32]]
+        signature = _fim_proof_digest({"examples": examples, "blocked_root_count": len(blocked),
+                                       "reason": receipt.get("reason", "unknown")})
+        now = time.monotonic()
+        if signature != self._coverage_notice_digest or now - self._coverage_notice_at >= 900.0:
+            self.emit("FIM coverage incomplete: " + str(receipt.get("reason", "unknown")),
+                      Severity.HIGH, blocked_roots=examples, blocked_root_count=len(blocked),
+                      omitted_blocked_roots=max(0, len(blocked) - len(examples)),
+                      complete=False, suppressed_observations=self._coverage_suppressed,
+                      count_unit="scan coverage opportunities, not distinct file changes",
+                      disposition="health", active_attack=False, response_authorized=False)
+            self._coverage_notice_digest, self._coverage_notice_at = signature, now
+            self._coverage_suppressed = 0
+        else:
+            self._coverage_suppressed += 1
         self._incomplete_scan_attempts = min(self._incomplete_scan_attempts + 1, 5)
         self._scan_retry_floor = min(
             300.0, 30.0 * (2 ** (self._incomplete_scan_attempts - 1))
@@ -1350,6 +1461,7 @@ class FileIntegrityModule(BaseModule):
             baseline = context["baseline"]
             if (
                 not isinstance(receipt, dict)
+                or receipt.get("complete") is not True
                 or not isinstance(identities, dict)
                 or not isinstance(baseline, dict)
             ):
@@ -1402,9 +1514,13 @@ class FileIntegrityModule(BaseModule):
         except (OSError, RuntimeError, TypeError, ValueError):
             return {}
 
-    def _evaluate_snapshot(self, current: Dict[str, str]) -> None:
-        """Emit exact create/delete/change results against the retained baseline."""
+    def _evaluate_snapshot(self, current: Dict[str, str], *, adopt_covered: bool = False,
+                           emit_changes: bool = True) -> None:
+        """Evaluate current producer-covered roots; adopt only those exact roots."""
         scan_context = self._claim_scan_evaluation(current)
+        if adopt_covered and scan_context is None:
+            # Legacy mappings and retained flags cannot grant partial adoption.
+            return
         current_view = dict(current)
         def _observed_practice_proof(path: str) -> dict[str, object]:
             # Only the exact scan custody can describe the object observed.
@@ -1426,16 +1542,20 @@ class FileIntegrityModule(BaseModule):
                 "observed_content_sha256": current_view[path],
             }
 
-        active_roots = [
-            os.path.normcase(os.path.abspath(root)) for root in watch_roots()
-        ]
+        active_roots = sorted({os.path.normcase(os.path.abspath(root)) for root in watch_roots()},
+                              key=len, reverse=True)
+        covered = ({os.path.normcase(os.path.abspath(root))
+                    for root in scan_context["receipt"]["covered_roots"]}
+                   if scan_context is not None else set(active_roots))
 
         def _still_watched(path: str) -> bool:
             candidate = os.path.normcase(os.path.abspath(path))
             for root in active_roots:
                 try:
                     if os.path.commonpath((candidate, root)) == root:
-                        return True
+                        # The most specific watch owns its files. A covered
+                        # parent never authorizes an incomplete nested root.
+                        return root in covered
                 except ValueError:
                     continue
             return False
@@ -1473,8 +1593,9 @@ class FileIntegrityModule(BaseModule):
                 return {}
 
         base_keys = {path for path in self._baseline if _still_watched(path)}
-        cur_keys = set(current_view)
-        for path in cur_keys - base_keys:
+        cur_keys = {path for path in current_view if _still_watched(path)}
+        for path in (cur_keys - base_keys if emit_changes else ()):
+
             observed = _observed_practice_proof(path)
             if _registered_benign_noise(path, **observed):
                 continue
@@ -1507,14 +1628,14 @@ class FileIntegrityModule(BaseModule):
                     **_combat_file_contract(path, **observed),
                     **{**observed, **receipt},
                 )
-        for path in base_keys - cur_keys:
+        for path in (base_keys - cur_keys if emit_changes else ()):
             self.emit(
                 f"Watched file deleted: {path}",
                 Severity.HIGH,
                 path=path,
                 **_combat_file_contract(path, allow_host_isolation=True),
             )
-        for path in base_keys & cur_keys:
+        for path in (base_keys & cur_keys if emit_changes else ()):
             if self._baseline[path] == current_view[path]:
                 continue
             observed = _observed_practice_proof(path)
@@ -1548,6 +1669,16 @@ class FileIntegrityModule(BaseModule):
                     **{**observed, **receipt},
                 )
 
+        if adopt_covered and scan_context is not None:
+            with self._scan_proof_lock:
+                # Events may run synchronous callbacks. Never overwrite a
+                # concurrently replaced baseline with this earlier generation.
+                if dict(self._baseline) == scan_context["baseline"]:
+                    retained = {path: digest for path, digest in self._baseline.items()
+                                if not _still_watched(path)}
+                    retained.update({path: current_view[path] for path in cur_keys})
+                    self._baseline = retained
+
     def self_test(self) -> tuple[bool, str]:
         a = self._driver_alert(r"C:\x\rtcore64.sys")                # known-vulnerable
         b = self._driver_alert(r"C:\x\angerona_byovd_drill.sys")    # benign drill
@@ -1572,6 +1703,9 @@ class FileIntegrityModule(BaseModule):
                 if ok else f"failed: a={a} b={b} c={c} hv={hv} nv={nv}")
 
     def run(self) -> None:
+        with self._scan_proof_lock:
+            self._stat_cache.clear()
+            self._stat_cache_digests.clear()
         self.emit("Loading reviewed file-integrity baseline…", Severity.INFO)
         approved = self._load_approved_baseline()
         if approved is not None:
@@ -1585,8 +1719,8 @@ class FileIntegrityModule(BaseModule):
             return
         self._publish_assurance_receipts()
         current_drivers = self._list_driver_names()
-        if approved is not None and bool(self._last_scan_receipt.get("complete")):
-            self._evaluate_snapshot(current)
+        if approved is not None:
+            self._evaluate_snapshot(current, adopt_covered=True)
             if self._driver_collection_ok:
                 for name in current_drivers - self._driver_baseline:
                     alert = self._driver_alert(name)
@@ -1601,6 +1735,7 @@ class FileIntegrityModule(BaseModule):
                         path=os.path.join(DRIVER_DIR, name),
                     )
         else:
+            self._evaluate_snapshot(current, adopt_covered=True, emit_changes=False)
             # Candidate state is useful for immediate change detection but is
             # never described as trusted and is never persisted automatically.
             self.emit(
@@ -1609,8 +1744,6 @@ class FileIntegrityModule(BaseModule):
                 Severity.MEDIUM,
                 baseline_status=self._baseline_status,
             )
-        if bool(self._last_scan_receipt.get("complete")):
-            self._baseline = dict(current)
         if self._driver_collection_ok:
             self._driver_baseline = current_drivers
         self._record_scan_outcome()
@@ -1642,8 +1775,6 @@ class FileIntegrityModule(BaseModule):
             if self.stopping:
                 break
             self._publish_assurance_receipts()
-            if bool(self._last_scan_receipt.get("complete")):
-                self._evaluate_snapshot(current)
-                self._baseline = dict(current)
+            self._evaluate_snapshot(current, adopt_covered=True)
             self._record_scan_outcome()
             self._set_coverage_health()

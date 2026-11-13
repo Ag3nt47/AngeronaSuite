@@ -35,6 +35,7 @@ import platform
 import re
 import threading
 import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -54,6 +55,34 @@ from angerona.core.url_policy import (
 
 _KEV_URL = ("https://www.cisa.gov/sites/default/files/feeds/"
             "known_exploited_vulnerabilities.json")
+_KEV_CVE_ID = re.compile(r"CVE-[0-9]{4}-[0-9]{4,32}\Z")
+_KEV_MAX_RECORDS = 20_000
+_KEV_FIELD_LIMITS = {"vendorProject": 512, "product": 512, "vulnerabilityName": 2048,
+                     "dateAdded": 32, "requiredAction": 8192, "dueDate": 32,
+                     "knownRansomwareCampaignUse": 32}
+
+
+def _kev_record(record: object) -> dict:
+    """Accept bounded feed text as data before correlation or persistence."""
+    if type(record) is not dict or type(record.get("cveID")) is not str or not _KEV_CVE_ID.fullmatch(record["cveID"]):
+        raise ValueError("KEV record has an invalid CVE identifier")
+    result = {"cveID": record["cveID"]}
+    for field, maximum in _KEV_FIELD_LIMITS.items():
+        value = record.get(field)
+        if value is None:
+            value = ""
+        if (type(value) is not str or len(value) > maximum
+                or any(unicodedata.category(char)[0] == "C" and char not in "\r\n\t" for char in value)):
+            raise ValueError("KEV record contains invalid or oversized " + field)
+        result[field] = value
+    return result
+
+
+def _parse_kev(payload: object) -> list[dict]:
+    records = payload.get("vulnerabilities") if type(payload) is dict else None
+    if type(records) is not list or len(records) > _KEV_MAX_RECORDS:
+        raise ValueError("KEV feed has an invalid or oversized vulnerability inventory")
+    return [_kev_record(record) for record in records]
 
 # Coarse product/vendor -> MITRE technique hints (KEV records don't carry ATT&CK).
 _MITRE_HINTS = {
@@ -366,8 +395,8 @@ class IntelSyncModule(BaseModule):
         req = urllib.request.Request(_KEV_URL, headers={"User-Agent": "AngeronaSuite/INTL"})
         policy = host_policy("CISA KEV catalog", {"www.cisa.gov"})
         with safe_urlopen(req, policy=policy, timeout=30) as r:
-            data = json.loads(read_bounded(r, 16 * 1024 * 1024).decode("utf-8", "ignore"))
-        return data.get("vulnerabilities", []) if isinstance(data, dict) else []
+            data = json.loads(read_bounded(r, 16 * 1024 * 1024).decode("utf-8"))
+        return _parse_kev(data)
 
     @staticmethod
     def _host_tokens() -> set[str]:
@@ -390,8 +419,11 @@ class IntelSyncModule(BaseModule):
     @classmethod
     def match_kev(cls, kev: list[dict], tokens: set[str]) -> list[dict]:
         """Correlate vendor/product tokens; installed-version applicability is unverified."""
+        if type(kev) is not list or len(kev) > _KEV_MAX_RECORDS:
+            raise ValueError("KEV correlation inventory is invalid or oversized")
         matches = []
         for rec in kev:
+            rec = _kev_record(rec)
             hay = f"{rec.get('vendorProject','')} {rec.get('product','')}".lower()
             hit = next((t for t in tokens if len(t) >= 4 and t in hay), None)
             if not hit:

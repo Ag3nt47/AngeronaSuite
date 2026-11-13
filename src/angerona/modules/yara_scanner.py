@@ -203,6 +203,7 @@ class YaraScannerModule(BaseModule):
         self._cursor_state_status = "unloaded"
         self._coverage_snapshot: dict[str, dict[str, object]] = {}
         self._last_coverage_alert = ""
+        self._reload_failure = None
 
     def _repo_root(self) -> Path:
         return resource_root()
@@ -255,6 +256,27 @@ class YaraScannerModule(BaseModule):
             scanner = None
             raise
         return scanner
+
+    def _report_reload_failure(self, rules, error: Exception) -> None:
+        """Bound repeated coverage notices without skipping activation retries."""
+        now = time.monotonic()
+        reason = str(error)
+        fingerprint = (type(error), reason)
+        previous = self._reload_failure
+        if previous is not None and previous[0] is rules and previous[1] == fingerprint:
+            repeats = previous[3] + 1
+            if now - previous[2] < 900.0:
+                self._reload_failure = (rules, fingerprint, previous[2], repeats)
+                return
+        else:
+            repeats = 0
+        self.emit(
+            f"YARA scanner reload rejected: {reason}", Severity.HIGH,
+            disposition="health", finding_code="yara.rules.reload-rejected",
+            response_authorized=False, repeats_since_last_report=repeats,
+            repeat_interval_seconds=900,
+        )
+        self._reload_failure = (rules, fingerprint, now, 0)
 
     def bind_redteam_receipt_capability(self, capability, *, expected=None):
         # Revocation touches plain state only; native retirement stays on owner.
@@ -1079,6 +1101,7 @@ class YaraScannerModule(BaseModule):
             matches = None
 
     def run(self) -> None:
+        self._reload_failure = None
         replacement = None
         control_scanner = None
         control_capability = None
@@ -1120,11 +1143,22 @@ class YaraScannerModule(BaseModule):
                     except Exception as exc:
                         self.last_error = str(exc)
                         self.set_health(20, "reloaded YARA rules could not be activated")
-                        self.emit(f"YARA scanner reload rejected: {exc}", Severity.HIGH)
+                        self._report_reload_failure(active_rules, exc)
                         self.sleep(_scan_interval())
                         continue
                     scanner = replacement
                     compiled = active_rules
+                # Successful activation (or return to the still-active rules)
+                # ends the failure episode; a later recurrence reports at once.
+                if self._reload_failure is not None:
+                    self.emit(
+                        "YARA rule activation available again; reload failure episode ended.",
+                        Severity.INFO, disposition="health", response_authorized=False,
+                        finding_code="yara.rules.reload-recovered",
+                        repeats_since_last_report=self._reload_failure[3],
+                    )
+                    self._reload_failure = None
+                    self.last_error = ""
                 normal_scanner = scanner
                 if community_runtime is not None:
                     normal_scanner = community_runtime.compose(scanner)

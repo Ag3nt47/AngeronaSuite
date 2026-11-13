@@ -6,11 +6,13 @@ import pytest
 
 from angerona.core.eventbus import BusAuthority, EventBus, Severity
 from angerona.modules import deception
+from deception_private_fixture import private_canary_io
 
 
 def _module(tmp_path: Path, monkeypatch) -> deception.DeceptionModule:
     monkeypatch.delenv("ANGERONA_USER_FOLDER_DECEPTION", raising=False)
     monkeypatch.setattr(deception, "_repo_root", lambda: tmp_path)
+    private_canary_io(monkeypatch, tmp_path)
     module = deception.DeceptionModule()
     module.bind(EventBus())
     return module
@@ -107,6 +109,7 @@ def test_disposable_selftest_never_swaps_a_real_running_sensor_generation(
     diagnostic = None
     outcome = []
     sleeps = []
+    windows_hold = deception.os.name == "nt"
 
     def controlled_sleep(_seconds):
         sleeps.append(True)
@@ -119,6 +122,7 @@ def test_disposable_selftest_never_swaps_a_real_running_sensor_generation(
 
     def retained_plant(self, **kwargs):
         if threading.current_thread() is diagnostic:
+            assert not windows_hold, "Windows diagnostic must hold before planting"
             entered.set()
             assert finish_test.wait(5), "Fixture must release its actual diagnostic call"
             assert self is not module
@@ -137,7 +141,12 @@ def test_disposable_selftest_never_swaps_a_real_running_sensor_generation(
         diagnostic = threading.Thread(target=lambda: outcome.append(module.self_test()),
                                       name="inert-deception-selftest")
         diagnostic.start()
-        assert entered.wait(5)
+        if windows_hold:
+            diagnostic.join(5)
+            assert not diagnostic.is_alive() and not entered.is_set()
+            assert outcome == [(False, deception.DECEPTION_WINDOWS_CREATION_HELD)]
+        else:
+            assert entered.wait(5)
         _assert_live_canaries_unchanged(module, before)
         target = module._base / "backup_keys.txt"
         if mutate_live:
@@ -183,7 +192,9 @@ def test_disposable_selftest_never_swaps_a_real_running_sensor_generation(
         finish_test.set()
         diagnostic.join(5)
         assert not diagnostic.is_alive()
-        assert outcome == [(True, "disposable secret-free canary lifecycle passed")]
+        expected = ((False, deception.DECEPTION_WINDOWS_CREATION_HELD) if windows_hold else
+                    (True, "disposable secret-free canary lifecycle passed"))
+        assert outcome == [expected]
         _assert_live_canaries_unchanged(module, detected)
         assert worker.is_alive() and module.lifecycle_generation == generation
     finally:
@@ -200,7 +211,7 @@ def test_disposable_selftest_never_swaps_a_real_running_sensor_generation(
 
 
 @pytest.mark.parametrize("fault,expected", [
-    ("enrollment", "disposable canary enrollment failed: slot1:PermissionError"),
+    ("enrollment", "disposable canary enrollment failed: slot1:CanaryHeld"),
     ("count", "canary count contract failed: expected=3; observed=2"),
     ("path", "canary path contract failed"),
     ("names", "canary names contract failed"),
@@ -213,12 +224,12 @@ def test_disposable_selftest_keeps_real_contract_failures_and_live_evidence(
     module._plant()
     before = _live_canary_state(module)
     real_plant = deception.DeceptionModule._plant
-    real_snapshot = deception.DeceptionModule._canary_snapshot
+    real_snapshot = deception.deception_io._snapshot
 
-    def refused_snapshot(path):
+    def refused_snapshot(session, leaf, path, **kwargs):
         if path.parent != module._base and path.name == deception.CANARY_NAMES[0]:
             raise PermissionError("private fixture path and secret must never be disclosed")
-        return real_snapshot(path)
+        return real_snapshot(session, leaf, path, **kwargs)
 
     def faulted_plant(self, **kwargs):
         assert self is not module
@@ -239,8 +250,13 @@ def test_disposable_selftest_keeps_real_contract_failures_and_live_evidence(
             assert getattr(target.stat(), "st_file_attributes", 0) & 0x06 == protected
 
     if fault == "enrollment":
-        monkeypatch.setattr(deception.DeceptionModule, "_canary_snapshot", staticmethod(refused_snapshot))
+        monkeypatch.setattr(deception.deception_io, "_snapshot", refused_snapshot)
     monkeypatch.setattr(deception.DeceptionModule, "_plant", faulted_plant)
+    # The existing private adapter admits only this pytest root. Exercise the
+    # portable diagnostic contracts explicitly, without weakening Windows holds.
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(deception, "os", SimpleNamespace(name="posix", environ=deception.os.environ))
     assert module.self_test() == (False, expected)
     assert "secret" not in expected and str(tmp_path) not in expected
     _assert_live_canaries_unchanged(module, before)

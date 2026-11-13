@@ -97,14 +97,21 @@ def test_discovery_is_private_and_never_exposed_in_status(running):
     assert record["key"] not in repr(client)
 
 
+def raw_server_hello(sock, record, nonce):
+    transport.send(sock, {"protocol": transport.PROTOCOL, "instance": record["instance"],
+                          "nonce": nonce}, transport.MAX_HELLO)
+    return transport._verify(transport.receive(sock, transport.MAX_REQUEST),
+                             bytes.fromhex(record["key"]), transport._HELLO_DOMAIN)
+
+
 def test_actual_challenge_authentication_rejects_wrong_key_without_dispatch(running):
     _control, _manager, server, client = running
     record = read_discovery(server.directory)
     with socket.create_connection(("127.0.0.1", record["port"]), timeout=2) as sock:
-        hello = transport.receive(sock, 8192)
+        hello = raw_server_hello(sock, record, "a" * 32)
         body = {"instance": hello["instance"], "challenge": hello["challenge"],
                 "nonce": "a" * 32, "request": {"operation": "stop_engine", "confirmation": "stop-protection"}}
-        transport.send(sock, transport._wrap(body, b"x" * 32, b"request\0"), 8192)
+        transport.send(sock, transport._wrap(body, b"x" * 32, transport._REQUEST_DOMAIN), 8192)
         assert sock.recv(1) == b""
     assert client.status()["state"] == "ready"
 
@@ -114,13 +121,13 @@ def test_replay_is_rejected_on_a_new_connection(running):
     record = read_discovery(server.directory)
     key = bytes.fromhex(record["key"])
     with socket.create_connection(("127.0.0.1", record["port"]), timeout=2) as sock:
-        hello = transport.receive(sock, 8192)
+        hello = raw_server_hello(sock, record, "b" * 32)
         request = transport._wrap({"instance": server.instance, "challenge": hello["challenge"],
-                                   "nonce": "b" * 32, "request": {"operation": "status"}}, key, b"request\0")
+                                   "nonce": "b" * 32, "request": {"operation": "status"}}, key, transport._REQUEST_DOMAIN)
         transport.send(sock, request, 8192)
-        assert transport.receive(sock, transport.MAX_RESPONSE)["body"]["ok"] is True
+        assert transport._verify(transport.receive(sock, transport.MAX_RESPONSE), key, transport._RESPONSE_DOMAIN)["ok"] is True
     with socket.create_connection(("127.0.0.1", record["port"]), timeout=2) as sock:
-        fresh = transport.receive(sock, 8192)
+        fresh = raw_server_hello(sock, record, "b" * 32)
         assert fresh["challenge"] != hello["challenge"]
         transport.send(sock, request, 8192)
         assert sock.recv(1) == b""
@@ -131,7 +138,7 @@ def test_frame_bounds_fail_before_body_allocation(running):
     _control, _manager, server, client = running
     record = read_discovery(server.directory)
     with socket.create_connection(("127.0.0.1", record["port"]), timeout=2) as sock:
-        transport.receive(sock, 8192)
+        raw_server_hello(sock, record, "c" * 32)
         sock.sendall(struct.pack("!I", 2**31))
         assert sock.recv(1) == b""
     assert client.status()["state"] == "ready"

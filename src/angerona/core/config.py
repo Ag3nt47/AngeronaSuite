@@ -161,6 +161,39 @@ def _port_setting(value: object, default: int) -> int:
     return port if 1 <= port <= 65535 else default
 
 
+
+def _note_settings_issue(cfg, name: str) -> None:
+    cfg.settings_degraded = True
+    cfg.settings_issues = tuple(dict.fromkeys((*cfg.settings_issues, name)))[:32]
+
+
+def _loaded_integer(data: dict, name: str, default: int, cfg, *, low=1, high=65535) -> int:
+    if name not in data:
+        return default
+    value = data[name]
+    try:
+        if type(value) not in (int, str) or type(value) is str and len(value) > 12:
+            raise ValueError("invalid integer setting")
+        parsed = int(value)
+        if not low <= parsed <= high:
+            raise ValueError("integer setting outside its range")
+        return parsed
+    except (TypeError, ValueError, OverflowError):
+        _note_settings_issue(cfg, name)
+        return default
+
+
+def settings_load_warning(cfg):
+    """Bounded advisory only; never export malformed values or grant response."""
+    if not getattr(cfg, "settings_degraded", False):
+        return None
+    from angerona.core.eventbus import Event, Severity
+    return Event("Settings", "Saved settings need review; invalid values were held and the original file was preserved.",
+                 Severity.HIGH, details={"disposition": "health", "active_attack": False,
+                    "response_authorized": False, "settings_degraded": True,
+                    "fields": list(cfg.settings_issues), "automatic_save_held": True})
+
+
 def _https_feed_setting(value: object) -> str:
     text = _bounded_setting(value, "", 2048)
     if not text:
@@ -224,7 +257,8 @@ def _settings_document(raw: str) -> tuple[dict, bool]:
             for name in ("spyware_scan_auto_enabled", "spyware_scan_auto_scope")
         )
         duplicate_community_policy = {
-            name for name in ("community_rules_enabled", "community_playbooks_enabled")
+            name for name in ("community_rules_enabled", "community_playbooks_enabled",
+                              "watchdog3_unsigned_enabled")
             if sum(key == name for key, _value in pairs) > 1
         }
         return values
@@ -233,7 +267,8 @@ def _settings_document(raw: str) -> tuple[dict, bool]:
     if type(data) is not dict:
         raise ValueError("Settings must be a JSON object.")
     for name in duplicate_community_policy:
-        data[name] = False  # Ambiguous opt-in cannot authorize runtime packages.
+        # Malformed watchdog consent is also advertised as degraded below.
+        data[name] = None if name == "watchdog3_unsigned_enabled" else False
     return data, duplicate_scan_policy
 
 
@@ -257,6 +292,8 @@ def write_env_keys(updates: dict) -> Path:
 @dataclass
 class Config:
     data_dir: Path = field(default_factory=_data_dir)
+    settings_degraded: bool = field(default=False, init=False, repr=False)
+    settings_issues: tuple[str, ...] = field(default=(), init=False, repr=False)
     ollama_host: str = "http://localhost:11434"
     ollama_model: str = "llama3"
     github_repo: str = "Ag3nt47/AngeronaSuite"  # canonical update source
@@ -281,6 +318,7 @@ class Config:
     autostart_enabled: bool = True              # platform-native per-user logon startup
     eco_mode: bool = True                        # start in network-first Chill Mode for all-day low-impact protection
     blackbox_enabled: bool = True                # auto-launch the decoupled Black Box diagnostic recorder at startup
+    watchdog3_unsigned_enabled: bool = False     # optional ordinary-user third watchdog; no Protect authority
     live_debug_enabled: bool = False             # opt-in same-user, outbound-only diagnostic pipe
     identity_session_collection_enabled: bool = False  # read-only Windows Security channel
     browser_extension_inventory_enabled: bool = False  # manifest metadata only; no browser contents
@@ -678,7 +716,10 @@ class Config:
             cfg.startup_recovery_enabled = False
             cfg.startup_recovery_github_enabled = False
             try:
-                raw_settings = cfg.settings_path.read_text(encoding="utf-8")
+                with cfg.settings_path.open("r", encoding="utf-8") as stream:
+                    raw_settings = stream.read(64 * 1024 + 1)
+                if len(raw_settings) > 64 * 1024 or len(raw_settings.encode("utf-8")) > 64 * 1024:
+                    raise ValueError("settings exceed the bounded load size")
                 (cfg.startup_recovery_enabled,
                  cfg.startup_recovery_github_enabled) = _startup_recovery_settings(raw_settings)
                 data, duplicate_scan_policy = _settings_document(raw_settings)
@@ -725,7 +766,13 @@ class Config:
                     ))
                 cfg.theme = data.get("theme", cfg.theme)
                 cfg.accent = data.get("accent", cfg.accent)
-                cfg.module_states = data.get("module_states", {})
+                module_states = data.get("module_states", {})
+                if (type(module_states) is not dict or len(module_states) > 256
+                        or any(type(key) is not str or not 1 <= len(key) <= 160
+                               or type(value) is not bool for key, value in module_states.items())):
+                    _note_settings_issue(cfg, "module_states")
+                    module_states = {}
+                cfg.module_states = module_states
                 test_timeout = data.get("selftest_timeout_seconds")
                 if type(test_timeout) is int and test_timeout in SELFTEST_TIMEOUTS:
                     cfg.selftest_timeout_seconds = test_timeout
@@ -740,6 +787,10 @@ class Config:
                 cfg.eco_mode = _bool_setting(data, "eco_mode", cfg.eco_mode)
                 cfg.blackbox_enabled = _bool_setting(
                     data, "blackbox_enabled", cfg.blackbox_enabled)
+                cfg.watchdog3_unsigned_enabled = _bool_setting(
+                    data, "watchdog3_unsigned_enabled", cfg.watchdog3_unsigned_enabled)
+                if "watchdog3_unsigned_enabled" in data and type(data["watchdog3_unsigned_enabled"]) is not bool:
+                    _note_settings_issue(cfg, "watchdog3_unsigned_enabled")
                 cfg.live_debug_enabled = _bool_setting(
                     data, "live_debug_enabled", cfg.live_debug_enabled)
                 cfg.identity_session_collection_enabled = _bool_setting(
@@ -806,7 +857,7 @@ class Config:
                 cfg.ai_provider_order = data.get("ai_provider_order", cfg.ai_provider_order)
                 cfg.mcp_enabled = _bool_setting(
                     data, "mcp_enabled", cfg.mcp_enabled)
-                cfg.mcp_port    = int(data.get("mcp_port", cfg.mcp_port))
+                cfg.mcp_port = _loaded_integer(data, "mcp_port", cfg.mcp_port, cfg)
                 cfg.jarvis_control_enabled = _bool_setting(
                     data, "jarvis_control_enabled", cfg.jarvis_control_enabled)
                 try:
@@ -994,14 +1045,15 @@ class Config:
                     data, "aria_inbox_enabled", cfg.aria_inbox_enabled)
                 cfg.aria_imap_host        = data.get("aria_imap_host", cfg.aria_imap_host)
                 cfg.aria_imap_user        = data.get("aria_imap_user", cfg.aria_imap_user)
-                cfg.aria_inbox_interval_min = int(data.get("aria_inbox_interval_min", cfg.aria_inbox_interval_min))
+                cfg.aria_inbox_interval_min = _loaded_integer(
+                    data, "aria_inbox_interval_min", cfg.aria_inbox_interval_min, cfg, high=1440)
                 cfg.aria_research_egress = _bool_setting(
                     data, "aria_research_egress", cfg.aria_research_egress)
                 cfg.teams_bot_enabled = _bool_setting(
                     data, "teams_bot_enabled", cfg.teams_bot_enabled)
                 cfg.teams_app_id          = data.get("teams_app_id", cfg.teams_app_id)
                 cfg.teams_allowed_users   = data.get("teams_allowed_users", cfg.teams_allowed_users)
-                cfg.teams_bot_port        = int(data.get("teams_bot_port", cfg.teams_bot_port))
+                cfg.teams_bot_port = _loaded_integer(data, "teams_bot_port", cfg.teams_bot_port, cfg)
                 # Authentication bypasses are never restored from disk.
                 cfg.teams_bot_skip_auth = False
                 cfg.ollama_keep_alive     = data.get("ollama_keep_alive", cfg.ollama_keep_alive)
@@ -1107,7 +1159,14 @@ class Config:
                 cfg.entropy_pool_enabled = _bool_setting(
                     data, "entropy_pool_enabled", cfg.entropy_pool_enabled)
             except Exception:
-                pass
+                _note_settings_issue(cfg, "settings_document")
+                # A partial document cannot silently restore automatic response
+                # defaults. Sensors/UI continue and the saved bytes stay intact.
+                cfg.adversary_combat_enabled = False
+                cfg.breach_auto_isolate_enabled = False
+                cfg.spyware_auto_contain = False
+                cfg.mobile_enabled = False
+                cfg.teams_bot_enabled = False
         # OLLAMA_HOST env var (set by the D-drive Ollama install) wins.
         cfg.ollama_host = os.environ.get("OLLAMA_HOST", cfg.ollama_host)
         # Publish the AI consult order to the environment so engines/ai_consult.py
@@ -1251,9 +1310,13 @@ class Config:
             raise ValueError("breach_lifted_cases must contain at most 32 exact case identities")
 
     def save(self) -> None:
+        if self.settings_degraded:
+            raise ValueError("Saved settings are degraded; review and reload the preserved settings file before saving.")
         for name in ("startup_recovery_enabled", "startup_recovery_github_enabled"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a boolean")
+        if type(self.watchdog3_unsigned_enabled) is not bool:
+            raise ValueError("watchdog3_unsigned_enabled must be a boolean")
         self.validate_shadow_storage_settings()
         self.validate_normal_log_settings()
         self.validate_telemetry_storage_settings()
@@ -1292,6 +1355,7 @@ class Config:
                     "autostart_enabled": self.autostart_enabled,
                     "eco_mode":          self.eco_mode,
                     "blackbox_enabled":  self.blackbox_enabled,
+                    "watchdog3_unsigned_enabled": self.watchdog3_unsigned_enabled,
                     "live_debug_enabled": self.live_debug_enabled,
                     "identity_session_collection_enabled": self.identity_session_collection_enabled,
                     "browser_extension_inventory_enabled": self.browser_extension_inventory_enabled,

@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -99,11 +101,25 @@ def _paths(root: Optional[Path]) -> Paths:
     return Paths(control_dir(root))
 
 
+def _authority_residues(paths: Paths) -> tuple[Path, ...]:
+    return (paths.public, paths.private, paths.epoch, paths.command,
+            paths.root / "deadman.json", paths.public.with_name(paths.public.name + ".tmp"))
+
+
 def provisioned(root: Optional[Path] = None) -> bool:
     try:
-        return _paths(root).public.exists()
-    except OSError:
+        paths = _paths(root)
+        for leaf in _authority_residues(paths):
+            try:
+                leaf.lstat()  # A dangling/inaccessible residue is not absence.
+                return True
+            except FileNotFoundError:
+                pass
+        if root is None:
+            _verified_production_paths(paths, require_root=False)
         return False
+    except Exception:
+        return root is None  # Unknown production custody cannot reopen legacy STOP.
 
 
 # ── crypto helpers ───────────────────────────────────────────────────────────
@@ -142,27 +158,24 @@ def _write_signed(path: Path, body: dict, private, *, enforce_acl: bool = False)
     document["sig"] = private.sign(_canonical(document)).hex()
     raw = json.dumps(document, separators=(",", ":")).encode("utf-8")
     temporary = path.with_name(path.name + "." + secrets.token_hex(6) + ".tmp")
-    with open(temporary, "xb") as stream:
-        stream.write(raw)
-        stream.flush()
-        os.fsync(stream.fileno())
-    if enforce_acl:
-        _grant_read(temporary)
+    _create_authority_file(temporary, raw, enforce_acl=enforce_acl, public_read=True)
     os.replace(temporary, path)
     return document
 
 
 # ── ACL posture ──────────────────────────────────────────────────────────────
-_WRITE_MASK = 0x0002 | 0x0004 | 0x0040 | 0x00040000 | 0x00080000 | 0x10000000 | 0x40000000
+_WRITE_MASK = 0x0002 | 0x0004 | 0x0010 | 0x0040 | 0x0100 | 0x00010000 | 0x00040000 | 0x00080000 | 0x10000000 | 0x40000000
+_SECRET_READ_MASK = 0x0001 | 0x80000000 | 0x10000000
+_ANCESTOR_REPLACE_MASK = 0x0040 | 0x00010000 | 0x00040000 | 0x00080000 | 0x10000000
 _TRUSTED_SIDS = {"S-1-5-18", "S-1-5-32-544", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"}
 
 
-def user_writable(path: Path) -> Optional[bool]:
+def user_writable(path: Path, *, _mask: int = _WRITE_MASK) -> Optional[bool]:
     """True if any non-admin principal may write ``path``; None if unknown."""
     if os.name != "nt":
         try:
             st = path.stat()
-            return st.st_uid != 0 or bool(st.st_mode & 0o022)
+            return st.st_uid != 0 or bool(st.st_mode & (0o077 if _mask == _SECRET_READ_MASK else 0o022))
         except OSError:
             return None
     try:
@@ -171,34 +184,140 @@ def user_writable(path: Path) -> Optional[bool]:
         return None
     try:
         descriptor = win32security.GetNamedSecurityInfo(
-            str(path), win32security.SE_FILE_OBJECT, win32security.DACL_SECURITY_INFORMATION)
+            str(path), win32security.SE_FILE_OBJECT,
+            win32security.DACL_SECURITY_INFORMATION | win32security.OWNER_SECURITY_INFORMATION)
+        owner = descriptor.GetSecurityDescriptorOwner()
+        if owner is None or win32security.ConvertSidToStringSid(owner) not in _TRUSTED_SIDS:
+            return True  # Owners retain WRITE_DAC even when the DACL looks restricted.
         dacl = descriptor.GetSecurityDescriptorDacl()
         if dacl is None:
             return True  # NULL DACL grants everyone full access.
         for index in range(dacl.GetAceCount()):
             (ace_type, _flags), mask, sid = dacl.GetAce(index)[:3]
-            if ace_type != 0:  # ACCESS_ALLOWED_ACE_TYPE only
+            if _flags & 0x08:  # INHERIT_ONLY does not grant rights on this object.
                 continue
-            if mask & _WRITE_MASK and win32security.ConvertSidToStringSid(sid) not in _TRUSTED_SIDS:
+            if ace_type == 1:  # Denials cannot add authority; allowed rights stay conservative.
+                continue
+            if ace_type != 0:
+                return None  # Object/callback/unknown ACE evaluation is unavailable.
+            if mask & _mask and win32security.ConvertSidToStringSid(sid) not in _TRUSTED_SIDS:
                 return True
         return False
     except Exception:
         return None
 
 
+def _plain_authority_path(path: Path) -> bool:
+    """Inspect the lexical name; never resolve an attacker-selected reparse point."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        raise ValueError("control authority contains a redirected path")
+    if not stat.S_ISDIR(info.st_mode) and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+        raise ValueError("control authority requires plain single-link files")
+    return True
+
+
+def _verified_production_paths(paths: Paths, *, require_root: bool = True) -> None:
+    base = _known_program_data().absolute()
+    expected = base / ("Angerona" if os.name == "nt" else "angerona") / "control"
+    if paths.root.absolute() != expected:
+        raise ValueError("control authority is outside the fixed known-folder namespace")
+    for ancestor in reversed((base, *base.parents)):
+        if not _plain_authority_path(ancestor) or user_writable(
+                ancestor, _mask=_ANCESTOR_REPLACE_MASK) is not False:
+            raise ValueError("control authority namespace owner or replacement rights are unsafe or unknown")
+    for current in (expected.parent, expected):
+        exists = _plain_authority_path(current)
+        if not exists:
+            if require_root:
+                raise ValueError("control authority directory is missing")
+            continue
+        if not current.is_dir() or user_writable(current) is not False:
+            raise ValueError("control authority directory owner or ACL is unsafe or unknown")
+
+
+def _windows_authority_attributes(*, directory: bool, public_read: bool):
+    import pywintypes
+    import win32security
+    inheritance = "OICI" if directory else ""
+    users = "(A;;0x1200a9;;;BU)" if directory else "(A;;FR;;;BU)" if public_read else ""
+    descriptor = win32security.ConvertStringSecurityDescriptorToSecurityDescriptor(
+        "O:BAG:BAD:P" + f"(A;{inheritance};FA;;;SY)(A;{inheritance};FA;;;BA)" + users,
+        win32security.SDDL_REVISION_1)
+    attributes = pywintypes.SECURITY_ATTRIBUTES()
+    attributes.SECURITY_DESCRIPTOR = descriptor
+    return attributes
+
+
+def _prepare_production_directory(paths: Paths) -> None:
+    _verified_production_paths(paths, require_root=False)
+    for directory in (paths.root.parent, paths.root):
+        if not _plain_authority_path(directory):
+            if os.name == "nt":
+                import win32file
+                win32file.CreateDirectory(str(directory), _windows_authority_attributes(
+                    directory=True, public_read=True))
+            else:
+                directory.mkdir(mode=0o755)
+        _verified_production_paths(paths, require_root=False)
+    _verified_production_paths(paths)
+
+
+def _create_authority_file(path: Path, raw: bytes, *, enforce_acl: bool, public_read: bool) -> None:
+    if enforce_acl and os.name == "nt":
+        import win32con
+        import win32file
+        handle = win32file.CreateFile(str(path), win32con.GENERIC_WRITE, 0,
+            _windows_authority_attributes(directory=False, public_read=public_read),
+            win32con.CREATE_NEW, win32con.FILE_ATTRIBUTE_NORMAL | win32con.FILE_FLAG_OPEN_REPARSE_POINT, None)
+        try:
+            _error, written = win32file.WriteFile(handle, raw)
+            if _error != 0 or written != len(raw):
+                raise OSError("control authority write was incomplete")
+            win32file.FlushFileBuffers(handle)
+        finally:
+            handle.Close()
+        return
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                 0o644 if public_read else 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _verified_issuer(paths: Paths, *, enforce: bool) -> None:
+    if enforce:
+        _verified_production_paths(paths)
+        for leaf in (paths.private, paths.public, paths.epoch):
+            if not _plain_authority_path(leaf) or user_writable(leaf) is not False:
+                raise ValueError("control authority signing-file owner or ACL is unsafe or unknown")
+        if user_writable(paths.private, _mask=_SECRET_READ_MASK) is not False:
+            raise ValueError("control authority private key read access is unsafe or unknown")
+
+
 # ── verification (unelevated core) ───────────────────────────────────────────
 def status(root: Optional[Path] = None) -> dict:
     """Describe authority posture. Never raises."""
-    paths = _paths(root)
-    if not provisioned(root):
-        return {"state": "unprovisioned", "stop_active": False}
+    try:
+        paths = _paths(root)
+        if not provisioned(root):
+            return {"state": "unprovisioned", "stop_active": False}
+    except Exception as exc:
+        return {"state": "compromised", "stop_active": False, "error": type(exc).__name__}
     try:
         # Callers cannot redirect the production root (no environment input);
         # explicit roots are test fixtures and skip the host ACL judgement.
-        acl = ([user_writable(p) for p in (paths.root, paths.public, paths.epoch)]
+        if root is None:
+            _verified_production_paths(paths)
+        checked = (paths.root, paths.public, paths.epoch) + ((paths.command,) if paths.command.exists() else ())
+        acl = ([user_writable(p) if _plain_authority_path(p) else None for p in checked]
                if root is None else [False])
-        if any(value is True for value in acl):
-            raise ValueError("control directory is writable by non-administrators")
+        if any(value is not False for value in acl):
+            raise ValueError("control authority ownership or ACL could not be verified")
         public = _public_key(paths)
         epoch = _read_signed(paths.epoch, public)
         if epoch.get("kind") != "epoch" or not isinstance(epoch.get("epoch"), int):
@@ -278,26 +397,32 @@ def provision(root: Optional[Path] = None, *, require_admin: bool = True) -> dic
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     paths = _paths(root)
     enforce = root is None  # ACLs apply to the real ProgramData authority only.
-    paths.root.mkdir(parents=True, exist_ok=True)
-    if paths.public.exists():
-        raise FileExistsError("stop authority is already provisioned; it is never rotated silently")
+    if enforce:
+        _prepare_production_directory(paths)
+    else:
+        paths.root.mkdir(parents=True, exist_ok=True)
+    for existing in _authority_residues(paths):
+        try:
+            existing.lstat()
+        except FileNotFoundError:
+            continue
+        raise FileExistsError("stop authority or interrupted authority files already exist; they are never rotated silently")
     # Lock the directory before the private key exists: ProgramData's inherited
     # ACL grants Users read, which must never cover the key even briefly.
     if enforce:
         _restrict(paths)
+        _verified_production_paths(paths)
     private = Ed25519PrivateKey.generate()
     pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                 serialization.NoEncryption())
-    with open(paths.private, "xb") as stream:
-        stream.write(pem)
+    _create_authority_file(paths.private, pem, enforce_acl=enforce, public_read=False)
     public_raw = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
     _write_signed(paths.epoch, {"kind": "epoch", "epoch": 1, "ts": time.time()}, private,
                   enforce_acl=enforce)
     # The public key is written last: its presence is what marks "provisioned".
     temporary = paths.public.with_name(paths.public.name + ".tmp")
-    temporary.write_text(public_raw.hex(), encoding="ascii")
-    if enforce:
-        _grant_read(temporary)
+    _create_authority_file(temporary, public_raw.hex().encode("ascii"),
+                           enforce_acl=enforce, public_read=True)
     os.replace(temporary, paths.public)
     return status(root)
 
@@ -312,6 +437,7 @@ def issue(kind: str, reason: str, *, root: Optional[Path] = None, minutes: float
     if not reason or len(reason) > 256 or any(ord(c) < 32 for c in reason):
         raise ValueError("reason must be 1-256 printable characters")
     paths = _paths(root)
+    _verified_issuer(paths, enforce=root is None)
     private, public = _private_key(paths), _public_key(paths)
     epoch = _read_signed(paths.epoch, public)["epoch"]
     now = time.time()
@@ -329,6 +455,7 @@ def resume(*, root: Optional[Path] = None, require_admin: bool = True) -> dict:
     if require_admin and not is_admin():
         raise AdminApprovalRequired("RESUME requires an elevated administrator")
     paths = _paths(root)
+    _verified_issuer(paths, enforce=root is None)
     private, public = _private_key(paths), _public_key(paths)
     current = _read_signed(paths.epoch, public)["epoch"]
     _write_signed(paths.epoch, {"kind": "epoch", "epoch": current + 1, "ts": time.time()}, private,
@@ -353,6 +480,7 @@ def set_deadman(enabled: bool, threshold_s: float = 300.0, *, root: Optional[Pat
     if not DEADMAN_MIN_S <= threshold <= DEADMAN_MAX_S:
         raise ValueError("dead-man threshold must be 120-3600 seconds")
     paths = _paths(root)
+    _verified_issuer(paths, enforce=root is None)
     return _write_signed(paths.root / "deadman.json",
                          {"kind": "deadman", "enabled": bool(enabled), "threshold_s": threshold,
                           "ts": time.time()}, _private_key(paths), enforce_acl=root is None)
@@ -376,11 +504,21 @@ def deadman_policy(root: Optional[Path] = None) -> Optional[dict]:
 
 # ── UAC bridge (called from the unelevated core/GUI) ─────────────────────────
 def _helper_command(action: str) -> tuple[str, str]:
-    if getattr(sys, "frozen", False):
-        return sys.executable, f"--control-authority {action}"
-    executable = Path(sys.executable)
-    windowless = executable.with_name("pythonw.exe")
-    return str(windowless if windowless.exists() else executable), f"-m angerona.resilience.control_authority {action}"
+    if not getattr(sys, "frozen", False):
+        raise AdminApprovalRequired("Administrator control requires the verified installed Windows package; source Python cannot be elevated by this control.")
+    from angerona.core.windows_package_identity import (
+        require_current_package_image, verify_current_msix_authority,
+    )
+    authority = verify_current_msix_authority()
+    if not authority.trusted:
+        raise AdminApprovalRequired(authority.reason)
+    try:
+        executable = require_current_package_image("Angerona.exe")
+    except Exception as exc:
+        raise AdminApprovalRequired("The installed control image could not be verified.") from exc
+    if not executable.is_absolute() or executable.name.casefold() != "angerona.exe":
+        raise AdminApprovalRequired("The installed control image is not the required Angerona console.")
+    return str(executable), subprocess.list2cmdline(["--control-authority", action])
 
 
 def request_elevated(action: str, timeout_s: float = 300.0) -> int:
@@ -392,6 +530,8 @@ def request_elevated(action: str, timeout_s: float = 300.0) -> int:
         raise ValueError("unsupported control action")
     if os.name != "nt":
         raise AdminApprovalRequired("run the control helper with sudo on this platform")
+    if not math.isfinite(timeout_s) or not 0 < timeout_s <= 3600:
+        raise ValueError("control helper timeout must be finite and within one hour")
     from ctypes import wintypes
 
     class SHELLEXECUTEINFOW(ctypes.Structure):
@@ -403,19 +543,35 @@ def request_elevated(action: str, timeout_s: float = 300.0) -> int:
                     ("hIconOrMonitor", wintypes.HANDLE), ("hProcess", wintypes.HANDLE)]
 
     executable, parameters = _helper_command(action)
+    from angerona.core.privilege import sanitize_privileged_bootstrap_environment
+    sanitize_privileged_bootstrap_environment()
     info = SHELLEXECUTEINFOW(cbSize=ctypes.sizeof(SHELLEXECUTEINFOW), fMask=0x00000040 | 0x00000400,
-                             lpVerb="runas", lpFile=executable, lpParameters=parameters, nShow=0)
-    if not ctypes.windll.shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
+                             lpVerb="runas", lpFile=executable, lpParameters=parameters,
+                             lpDirectory=str(Path(executable).parent), nShow=0)
+    shell32, kernel32 = ctypes.windll.shell32, ctypes.windll.kernel32
+    shell32.ShellExecuteExW.argtypes = [ctypes.POINTER(SHELLEXECUTEINFOW)]
+    shell32.ShellExecuteExW.restype = wintypes.BOOL
+    # Process handles are pointer-sized; an untyped ctypes call can truncate
+    # them. A failed exit query must never become the initialized success 0.
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel32.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    if not shell32.ShellExecuteExW(ctypes.byref(info)) or not info.hProcess:
         raise AdminApprovalRequired("administrator approval was declined")
-    kernel32 = ctypes.windll.kernel32
     try:
         if kernel32.WaitForSingleObject(info.hProcess, int(timeout_s * 1000)) != 0:
             raise AdminApprovalRequired("the elevated control helper did not finish")
         code = wintypes.DWORD()
-        kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code))
-        return int(code.value)
+        if not kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(code)):
+            raise AdminApprovalRequired("the elevated control helper exit could not be verified")
     finally:
-        kernel32.CloseHandle(info.hProcess)
+        closed = kernel32.CloseHandle(info.hProcess)
+    if not closed:
+        raise AdminApprovalRequired("the elevated control helper handle could not be retired")
+    return int(code.value)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

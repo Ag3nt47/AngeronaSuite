@@ -203,25 +203,22 @@ def test_native_refuses_reparse_ancestor_before_open(native, monkeypatch):
     assert native.handles == [] and native.sets == []
 
 
-def test_only_missing_dependency_selects_legacy_fallback(tmp_path, monkeypatch):
+def test_missing_dependency_does_not_trust_environment_acl_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(secure_store.sys, "platform", "win32")
     monkeypatch.setitem(sys.modules, "win32api", None)
     monkeypatch.setenv("SystemRoot", str(tmp_path))
-    monkeypatch.setenv("USERNAME", "fixture-user")
-    monkeypatch.setenv("USERDOMAIN", "fixture-domain")
+    monkeypatch.setenv("USERNAME", "untrusted-user")
+    monkeypatch.setenv("USERDOMAIN", "untrusted-domain")
     utility = tmp_path / "System32/icacls.exe"
     utility.parent.mkdir()
     utility.write_bytes(b"inert")
     target = tmp_path / "credential"
-    target.write_bytes(b"inert")
+    target.write_bytes(b"preserved DPAPI fixture")
     calls = []
     monkeypatch.setattr(secure_store.subprocess, "run", lambda *a, **k: calls.append((a, k)))
     assert secure_store._private_acl(target) is None
-    assert len(calls) == 1 and "/inheritance:r" in calls[0][0][0]
-    assert "fixture-domain\\fixture-user:(F)" in calls[0][0][0]
-    monkeypatch.setattr(secure_store, "_path_traverses_reparse", lambda _path: True)
-    secure_store._private_acl(target)
-    assert len(calls) == 1
+    assert calls == []
+    assert target.read_bytes() == b"preserved DPAPI fixture"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Actual Windows file security descriptors")

@@ -652,3 +652,99 @@ def test_operational_bootstrap_source_is_never_snapshot_or_rollback_content(stor
     store.recover("last-ready", exclusive_startup=True)
     assert all((store.root / relative).read_bytes() == b"new independently verified operational bundle\n"
                for relative in recovery.OPERATIONAL_SOURCE)
+
+
+@pytest.mark.parametrize("marker", ["applied-base.json", "activation-pending.json"])
+@pytest.mark.parametrize("strategy", ["last-ready", "github-head", "github-parent"])
+def test_managed_activation_lineage_never_uses_old_head_or_ready_snapshot(store, monkeypatch, marker, strategy):
+    capture_ready(store)
+    modify(store, b"VERSION = 'newer-managed-source-with-failure'\n")
+    updates = store.state.parent / "github-updates"
+    recovery.private_directory(updates)
+    marker_path = updates / marker
+    marker_path.write_bytes(b'{"target_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}')
+    source_before = recovery.inventory(store.root)
+    state_before = {path.name: path.read_bytes() for path in store.state.iterdir() if path.is_file()}
+    monkeypatch.setattr(recovery, "github_candidate", lambda *_args: pytest.fail("managed lineage must not query old Git HEAD"))
+    with pytest.raises(recovery.Held, match="Managed source lineage.*operator review"):
+        store.recover(strategy, exclusive_startup=True)
+    assert recovery.inventory(store.root) == source_before
+    assert {path.name: path.read_bytes() for path in store.state.iterdir() if path.is_file()} == state_before
+    assert marker_path.read_bytes().startswith(b'{"target_revision"')
+
+
+@pytest.mark.parametrize("unknown", ["denied-directory", "denied-marker", "not-directory"])
+def test_unknown_managed_lineage_custody_holds_only_historical_effects(store, monkeypatch, unknown):
+    updates = store.state.parent / "github-updates"
+    before = recovery.inventory(store.root)
+    if unknown == "not-directory":
+        updates.write_bytes(b"preserve unexpected object")
+    else:
+        recovery.private_directory(updates)
+        lstat = Path.lstat
+        denied = updates if unknown == "denied-directory" else updates / "applied-base.json"
+
+        def guarded(path, *args, **kwargs):
+            if path == denied:
+                raise PermissionError("fixture custody unavailable")
+            return lstat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "lstat", guarded)
+    with pytest.raises(recovery.Held, match="lineage is unavailable|directory is not plain"):
+        store.recover("last-ready", exclusive_startup=True)
+    assert recovery.inventory(store.root) == before
+    assert not (store.state / "index.json").exists()
+
+
+def test_managed_lineage_does_not_block_readonly_inspection_fingerprint_or_ready_capture(store):
+    updates = store.state.parent / "github-updates"
+    recovery.private_directory(updates)
+    (updates / "applied-base.json").write_bytes(b"malformed but preserved for review")
+    observed = recovery.inspect_state(store.root, store.state)
+    assert observed["launch_held"] is False and observed["requires_mutation"] is False
+    fingerprint = recovery.fingerprint(store.root, [])
+    assert fingerprint["source_digest"] == recovery.digest(recovery.inventory(store.root))
+    assert capture_ready(store)["outcome"] == "snapshot-recorded"
+    assert (updates / "applied-base.json").read_bytes() == b"malformed but preserved for review"
+
+
+def test_lineage_appearing_during_candidate_fetch_holds_before_any_source_replacement(store, monkeypatch):
+    modify(store, b"VERSION = 'failed-but-preserve'\n")
+    before = recovery.inventory(store.root)
+    target = dict(before, **{"src/angerona/app.py": b"VERSION = 'older'\n"})
+
+    def candidate(*_args):
+        updates = store.state.parent / "github-updates"
+        recovery.private_directory(updates)
+        (updates / "activation-pending.json").write_bytes(b"new pending activation")
+        return target, "b" * 40
+
+    monkeypatch.setattr(recovery, "github_candidate", candidate)
+    with pytest.raises(recovery.Held, match="Managed source lineage"):
+        store.recover("github-head", exclusive_startup=True)
+    assert recovery.inventory(store.root) == before
+    assert not (store.state / "transaction.pending.json").exists()
+    failed = store.load("index.json")["failed"]
+    assert store.unarchive(failed) == before
+
+
+def test_managed_lineage_hold_is_actionable_without_holding_independent_startup_ui(store, capsys):
+    updates = store.state.parent / "github-updates"
+    recovery.private_directory(updates)
+    (updates / "applied-base.json").write_bytes(b"operator review evidence")
+    result = recovery.main(["--root", str(store.root), "--state-root", str(store.state),
+                            "--action", "recover", "--strategy", "github-head", "--exclusive-startup"])
+    assert result == 1
+    observed = json.loads(capsys.readouterr().out)
+    assert observed["launch_held"] is False and observed["changed"] is False
+    assert "Preserved Git HEAD may predate applied source" in observed["message"]
+    assert "operator review" in observed["message"]
+
+
+def test_unattended_source_recovery_has_no_parent_downgrade_strategy():
+    root = Path(__file__).resolve().parents[1]
+    supervisor = (root / "tools/Invoke-AngeronaSourceStartup.ps1").read_text(encoding="utf-8")
+    assert "foreach ($sourceStrategy in @('last-ready', 'github-head'))" in supervisor
+    assert "foreach ($sourceStrategy in @('last-ready', 'github-head', 'github-parent'))" not in supervisor
+    # Parent selection remains an explicit diagnostic CLI choice, still subject
+    # to the managed-lineage barrier. This is not pre-overwrite consent.

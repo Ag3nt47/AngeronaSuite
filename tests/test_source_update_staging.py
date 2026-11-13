@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from source_archive_fixture import SourceArchiveFetch
+
 from angerona.updater import source_stage as stage
 from angerona.core.startup_recovery import (
     RECOVERY_COHERENCE_FILES, RECOVERY_MANIFEST_PATH, RECOVERY_VERIFIER_PATH,
@@ -54,7 +56,7 @@ def fixture(tmp_path: Path, monkeypatch, base, user, incoming):
     monkeypatch.setattr(stage, "_git", lambda root, args: (BASE + "\n").encode() if args[0] == "rev-parse" else b"")
     archives = {BASE: archive(base, BASE), TARGET: archive(incoming, TARGET)}
     compare = {"status": "ahead", "base_commit": {"sha": BASE}, "merge_base_commit": {"sha": BASE}}
-    return source, state, archives, compare
+    return source, state, archives, SourceArchiveFetch(archives, compare)
 
 
 @pytest.mark.parametrize("base,user,incoming,action,expected", [
@@ -107,7 +109,7 @@ def test_preparation_preserves_custom_code_deletions_and_conflict_sides_without_
     user = {"code.py": b"a=10\nb=2\nc=3\nd=4\n", "custom.py": b"custom=True\n", "conflict.txt": b"user"}
     incoming = {"code.py": b"a=1\nb=2\nc=3\nd=40\n", "deleted.txt": b"keep?", "conflict.txt": b"remote", "new.py": b"new=True\n"}
     source, state, archives, compare = fixture(tmp_path, monkeypatch, base, user, incoming)
-    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare, download=archives.__getitem__)
+    result = stage.prepare_source_update(source, state, TARGET, fetch=compare, download=archives.__getitem__)
     assert result.status == "conflicts" and result.conflicts == ("conflict.txt",)
     candidate = state / result.stage_id / "candidate"
     assert (candidate / "code.py").read_bytes() == b"a=10\nb=2\nc=3\nd=40\n"
@@ -143,7 +145,7 @@ def test_managed_preparation_does_not_depend_on_windows_mkdir_mode(tmp_path, mon
     state = data / "github-updates"
     stages = state / "stages"
     result = stage.prepare_source_update(source, stages, TARGET,
-                                         fetch=lambda _path: compare, download=archives.__getitem__)
+                                         fetch=compare, download=archives.__getitem__)
     assert result.status == "prepared"
     assert private_directory(state, create=False)
     assert private_directory(stages / result.stage_id, create=False)
@@ -203,7 +205,7 @@ def test_cancellation_after_intent_retains_cancelled_evidence_and_original(tmp_p
         return archives[revision]
 
     with pytest.raises(stage.SourceStageError, match="cancelled"):
-        stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare,
+        stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                     download=download, cancelled=lambda: cancelled[0])
     assert (source / "code.py").read_bytes() == b"a=2\n"
     intents = list(state.glob("source-*/intent.json"))
@@ -216,7 +218,7 @@ def test_diverged_or_unknown_base_is_held_before_download(tmp_path, monkeypatch)
     source, state, archives, compare = fixture(tmp_path, monkeypatch, {"a": b"a"}, {"a": b"a"}, {"a": b"b"})
     compare["status"] = "diverged"
     with pytest.raises(stage.SourceStageError, match="ancestry"):
-        stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare,
+        stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                     download=lambda revision: pytest.fail("divergence must not download"))
 
 
@@ -228,13 +230,13 @@ def test_changed_source_during_download_holds_candidate(tmp_path, monkeypatch) -
         return archives[revision]
 
     with pytest.raises(stage.SourceStageError, match="changed during"):
-        stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare, download=download)
+        stage.prepare_source_update(source, state, TARGET, fetch=compare, download=download)
     assert (source / "a").read_bytes() == b"concurrent edit"
 
 
 def test_candidate_tampering_and_syntax_failures_are_reported_truthfully(tmp_path, monkeypatch) -> None:
     source, state, archives, compare = fixture(tmp_path, monkeypatch, {"a.py": b"a=1\n"}, {"a.py": b"a=1\n"}, {"a.py": b"def broken(\n"})
-    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare, download=archives.__getitem__)
+    result = stage.prepare_source_update(source, state, TARGET, fetch=compare, download=archives.__getitem__)
     root = state / result.stage_id
     report = stage.validate_source_candidate(root, result.manifest_sha256)
     assert report["static_checks"] == "failed" and report["syntax_errors"] == [{"path": "a.py", "error_type": "SyntaxError"}]
@@ -248,7 +250,7 @@ def test_entire_deleted_tracked_directory_remains_deleted(tmp_path, monkeypatch)
     user = {}
     incoming = {"removed/subdirectory/file.py": b"old=True\n"}
     source, state, archives, compare = fixture(tmp_path, monkeypatch, base, user, incoming)
-    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare, download=archives.__getitem__)
+    result = stage.prepare_source_update(source, state, TARGET, fetch=compare, download=archives.__getitem__)
     assert result.status == "prepared"
     assert not (state / result.stage_id / "candidate" / "removed").exists()
     manifest = json.loads((state / result.stage_id / "manifest.json").read_bytes())
@@ -262,7 +264,7 @@ def _resolution_recovery_fixture(tmp_path, monkeypatch, *, user_content=b"local 
     user = {} if user_content is None else {name: user_content}
     incoming = {name: b"upstream chosen bytes"}
     source, state, archives, compare = fixture(tmp_path, monkeypatch, base, user, incoming)
-    result = stage.prepare_source_update(source, state, TARGET, fetch=lambda path: compare,
+    result = stage.prepare_source_update(source, state, TARGET, fetch=compare,
                                          download=archives.__getitem__)
     root = state / result.stage_id
     originals = (stage.snapshot_local(source, tuple(sorted(user))), (root / "manifest.json").read_bytes(),
@@ -591,7 +593,7 @@ def test_actual_control_staging_merges_disjoint_comments_and_retains_source(tmp_
     source, state, archives, compare = fixture(tmp_path, monkeypatch, base, user, incoming)
     original = (source / name).read_bytes()
     result = stage.prepare_source_update(source, state, TARGET,
-        fetch=lambda _path: compare, download=archives.__getitem__)
+        fetch=compare, download=archives.__getitem__)
     assert result.status == "prepared" and result.conflicts == ()
     candidate = state / result.stage_id / "candidate"
     assert (candidate / name).read_bytes() == prefix + control + suffix

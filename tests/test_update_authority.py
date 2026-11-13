@@ -200,7 +200,9 @@ def test_operator_verifier_binds_hash_filename_repository_and_attestation():
     text = (ROOT / "Verify-Angerona-Release.ps1").read_text(encoding="utf-8")
     assert "Ag3nt47/AngeronaSuite" in text
     assert "Get-FileHash -LiteralPath $stagedArtifact -Algorithm SHA256" in text
-    assert "attestation verify $stagedArtifact --repo $repository" in text
+    assert "Assert-ReleaseBuildAttestation $ghPath $stagedArtifact $releaseVersion" in text
+    assert "--signer-workflow 'Ag3nt47/AngeronaSuite/.github/workflows/release.yml'" in text
+    assert "--source-ref ('refs/tags/v'+$checkedVersion) --deny-self-hosted-runners" in text
     assert "FileAttributes]::ReparsePoint" in text
     assert "GitHub CLI is required" in text
     assert "Get-AuthenticodeSignature -LiteralPath $stagedArtifact" in text

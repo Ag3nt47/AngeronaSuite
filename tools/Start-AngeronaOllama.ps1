@@ -1,27 +1,24 @@
 <#
 .SYNOPSIS
-  Prepare the local Ollama service for Angerona: update it, bind it to
-  loopback, start it, and wait until its API really answers.
-
+  Compatibility entrypoint for Angerona's governed local AI controls.
 .DESCRIPTION
-  Angerona only uses an Ollama listener it can bind to one trusted process on
-  127.0.0.1. Two host conditions defeat that:
-    * OLLAMA_HOST set to 0.0.0.0 / [::] (a wildcard listener, also reachable
-      from the network without authentication), and
-    * a cold start whose GPU discovery keeps the API silent for minutes,
-      far beyond Angerona's own startup budget.
-  This script starts the signed Ollama image on loopback and waits (default
-  seven minutes) for /api/version before Angerona is launched.
-
-  Nothing is downloaded by this script itself. The optional update step asks
-  winget to upgrade the official Ollama.Ollama package and re-verifies the
-  publisher signature afterwards.
-
-.PARAMETER WaitSeconds     How long to wait for the API (30-1800, default 420).
-.PARAMETER SkipUpdate      Do not check for an Ollama update.
-.PARAMETER FixHostBinding  Persist OLLAMA_HOST=127.0.0.1:11434 for this user
-                           when the stored value is a wildcard address.
-.PARAMETER LaunchAngerona  Run start-angerona.bat after Ollama is ready.
+  Angerona now owns optional AI startup, listener attestation and process
+  retirement inside the application. This wrapper does not prepare a separate
+  daemon, change saved environment settings, install software or download models.
+  Open the Upgrade Console in Angerona to review governed model packs.
+  With -LaunchAngerona, normal source startup is delegated immediately; optional
+  AI availability does not decide whether that startup is attempted. The source
+  supervisor retains its normal verification and recovery holds. An interrupted
+  source activation still requires start-angerona.bat for its original-capsule
+  recovery route. This editable source wrapper is not an independent trust anchor.
+.PARAMETER WaitSeconds
+  Accepted for compatibility; there is no separate AI wait in this wrapper.
+.PARAMETER SkipUpdate
+  Accepted for compatibility; this wrapper does not update software.
+.PARAMETER FixHostBinding
+  Accepted for compatibility; this wrapper leaves stored settings unchanged.
+.PARAMETER LaunchAngerona
+  Delegate to the fixed normal source startup supervisor.
 #>
 [CmdletBinding()]
 param(
@@ -31,173 +28,79 @@ param(
     [switch]$LaunchAngerona
 )
 $ErrorActionPreference = 'Stop'
-$Loopback = '127.0.0.1:11434'
-$Repo = Split-Path -Parent $PSScriptRoot
 
-$diag = Join-Path $env:LOCALAPPDATA 'Angerona\SourceData\diagnostics'
-if (-not (Test-Path -LiteralPath $diag -PathType Container)) { $diag = $env:TEMP }
-$Log = Join-Path $diag 'ollama-launch.log'
-function Write-Step([string]$Text, [string]$Color = 'Gray') {
-    $line = '[{0}] {1}' -f (Get-Date -Format 's'), $Text
-    Write-Host $line -ForegroundColor $Color
-    try { Add-Content -LiteralPath $Log -Value $line -Encoding UTF8 } catch { }
+Write-Host 'Optional AI is managed inside Angerona. Use its Upgrade Console for governed model packs.'
+if ($PSBoundParameters.ContainsKey('WaitSeconds') -or $SkipUpdate -or $FixHostBinding) {
+    Write-Warning 'Legacy preparation options are accepted but do not change software, saved settings or other processes.'
+}
+if (-not $LaunchAngerona) {
+    Write-Host 'Use -LaunchAngerona or start-angerona.bat to open the dashboard. No AI readiness or protection is asserted here.'
+    exit 0
 }
 
-function Find-OllamaExe {
-    $found = @()
-    $keys = @(
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{44E83376-CE68-45EB-8FC1-393500EB558C}_is1',
-        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{44E83376-CE68-45EB-8FC1-393500EB558C}_is1'
-    )
-    foreach ($key in $keys) {
+$repo = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+if ($repo -notmatch '^[A-Za-z]:\\' -or $repo.StartsWith('\\')) {
+    throw 'Normal source startup requires a fixed local repository path.'
+}
+# Reject redirected DOS devices before asking the filesystem provider for any item.
+# A unique private native type avoids accepting a caller-preloaded helper type.
+$driveGuardName = 'AngeronaOllamaDriveGuard_' + [Guid]::NewGuid().ToString('N')
+$driveGuardSource = @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+public static class __GUARD_NAME__ {
+    [DllImport("kernel32.dll", EntryPoint="QueryDosDeviceW", CharSet=CharSet.Unicode,
+        ExactSpelling=true, SetLastError=true)]
+    private static extern uint QueryDosDevice(string deviceName,
+        [Out, MarshalAs(UnmanagedType.LPArray, ArraySubType=UnmanagedType.U2, SizeParamIndex=2)]
+        char[] targetPath, uint capacity);
+    public static bool IsDirectFixed(string root) {
         try {
-            $dir = (Get-ItemProperty -LiteralPath $key -ErrorAction Stop).InstallLocation
-            if ($dir) { $found += (Join-Path $dir.Trim('"') 'ollama.exe') }
-        } catch { }
-    }
-    $found += (Join-Path $env:LOCALAPPDATA 'Programs\Ollama\ollama.exe')
-    $found += (Join-Path $env:ProgramFiles 'Ollama\ollama.exe')
-    foreach ($candidate in $found) {
-        if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            return (Get-Item -LiteralPath $candidate).FullName
-        }
-    }
-    return $null
-}
-
-function Test-OllamaSignature([string]$Path) {
-    $sig = Get-AuthenticodeSignature -LiteralPath $Path
-    if ($sig.Status -ne 'Valid' -or $null -eq $sig.SignerCertificate) { return $false }
-    $name = $sig.SignerCertificate.GetNameInfo(
-        [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-    return [string]::Equals($name, 'Ollama Inc.', [System.StringComparison]::OrdinalIgnoreCase)
-}
-
-function Test-Wildcard([string]$Value) {
-    if (-not $Value) { return $false }
-    $v = $Value.Trim().ToLowerInvariant() -replace '^https?://', ''
-    return ($v -match '^(0\.0\.0\.0|\[::\]|::|\*)(:\d+)?/?$')
-}
-
-function Get-OllamaVersion {
-    try {
-        $r = Invoke-RestMethod -Uri "http://$Loopback/api/version" -TimeoutSec 5 -Method Get
-        if ($r.version) { return [string]$r.version }
-    } catch { }
-    return $null
-}
-
-function Stop-InstalledOllama([string]$InstallDir) {
-    # Only processes whose image lives in the verified install directory.
-    $prefix = $InstallDir.TrimEnd('\') + '\'
-    Get-Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.Path -and $_.Path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)
-    } | ForEach-Object {
-        Write-Step ("Stopping {0} (pid {1})" -f $_.ProcessName, $_.Id)
-        try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { Write-Step "  could not stop: $($_.Exception.Message)" 'Yellow' }
-    }
-    Start-Sleep -Seconds 2
-}
-
-Write-Step '--- Angerona Ollama preparation ---' 'Cyan'
-$exe = Find-OllamaExe
-if (-not $exe) { Write-Step 'Ollama is not installed in a registered or standard location.' 'Red'; exit 2 }
-if (-not (Test-OllamaSignature $exe)) { Write-Step "Refusing unsigned or non-Ollama image: $exe" 'Red'; exit 3 }
-$installDir = Split-Path -Parent $exe
-Write-Step "Ollama image: $exe (publisher signature valid)"
-
-# 1. Host binding ------------------------------------------------------------
-$stored = [Environment]::GetEnvironmentVariable('OLLAMA_HOST', 'User')
-$machine = [Environment]::GetEnvironmentVariable('OLLAMA_HOST', 'Machine')
-$mustRestart = $false
-if (Test-Wildcard $stored) {
-    Write-Step "User OLLAMA_HOST is '$stored': the API is exposed on every network interface." 'Yellow'
-    if ($FixHostBinding) {
-        [Environment]::SetEnvironmentVariable('OLLAMA_HOST', $Loopback, 'User')
-        Write-Step "User OLLAMA_HOST set to $Loopback." 'Green'
-    } else {
-        Write-Step 'Re-run with -FixHostBinding to make loopback permanent. This run uses loopback only for the process it starts.' 'Yellow'
-    }
-    $mustRestart = $true
-}
-if (Test-Wildcard $machine) {
-    Write-Step "Machine-level OLLAMA_HOST is '$machine'. Change it from an elevated prompt; this script does not." 'Yellow'
-    $mustRestart = $true
-}
-$env:OLLAMA_HOST = $Loopback
-
-# 2. Update ------------------------------------------------------------------
-if (-not $SkipUpdate) {
-    $winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if ($winget) {
-        Write-Step 'Checking for an Ollama update through winget...'
-        $listing = (& $winget.Source list --id Ollama.Ollama -e --upgrade-available --accept-source-agreements 2>&1 | Out-String)
-        if ($LASTEXITCODE -eq 0 -and $listing -match 'Ollama\.Ollama') {
-            Write-Step 'Update available; stopping Ollama and upgrading.' 'Cyan'
-            Stop-InstalledOllama $installDir
-            & $winget.Source upgrade --id Ollama.Ollama -e --silent --accept-source-agreements --accept-package-agreements 2>&1 |
-                ForEach-Object { Write-Step "  winget: $_" }
-            $exe = Find-OllamaExe
-            if (-not $exe -or -not (Test-OllamaSignature $exe)) {
-                Write-Step 'Ollama image failed signature verification after the update.' 'Red'; exit 4
-            }
-            $installDir = Split-Path -Parent $exe
-            # The installer may start its own tray app with the stored host value.
-            $mustRestart = $true
-            Write-Step "Update finished. Image: $exe" 'Green'
-        } else {
-            Write-Step 'No Ollama update is offered.'
-        }
-    } else {
-        Write-Step 'winget is unavailable; update check skipped.' 'Yellow'
+            if (root == null || root.Length != 3 || root[1] != ':' || root[2] != '\\' ||
+                !((root[0] >= 'A' && root[0] <= 'Z') || (root[0] >= 'a' && root[0] <= 'z')))
+                return false;
+            char[] target = new char[2048];
+            uint written = QueryDosDevice(root.Substring(0, 2), target, (uint)target.Length);
+            if (written == 0 || written > (uint)target.Length) return false;
+            string[] mappings = new string(target, 0, (int)written).Split(
+                new char[] {'\0'}, StringSplitOptions.RemoveEmptyEntries);
+            if (mappings.Length != 1 || !Regex.IsMatch(mappings[0],
+                @"\A\\Device\\HarddiskVolume[0-9]+\z", RegexOptions.CultureInvariant,
+                TimeSpan.FromMilliseconds(100))) return false;
+            return new DriveInfo(root).DriveType == DriveType.Fixed;
+        } catch { return false; }
     }
 }
+'@
+$driveGuard = Add-Type -TypeDefinition ($driveGuardSource.Replace('__GUARD_NAME__', $driveGuardName)) -PassThru
+$driveRoot = [IO.Path]::GetPathRoot($repo)
+if (-not $driveGuard::IsDirectFixed($driveRoot)) {
+    throw 'Normal source startup requires a direct fixed local volume; mapped, SUBST and ambiguous drives are refused.'
+}
 
-# 3. Start on loopback -------------------------------------------------------
-$version = Get-OllamaVersion
-if ($mustRestart -or -not $version) {
-    if ($mustRestart) { Stop-InstalledOllama $installDir }
-    if (-not (Get-OllamaVersion)) {
-        Write-Step "Starting 'ollama serve' on $Loopback."
-        Start-Process -FilePath $exe -ArgumentList 'serve' -WindowStyle Hidden | Out-Null
+$startup = Join-Path $repo 'tools\Invoke-AngeronaSourceStartup.ps1'
+$ancestors = [Collections.Generic.List[string]]::new()
+$cursor = [IO.Path]::GetDirectoryName($startup)
+while ($cursor) {
+    $ancestors.Add($cursor)
+    $cursor = [IO.Path]::GetDirectoryName($cursor)
+}
+# Inspect only children of already checked ancestors, starting at the drive root.
+# These snapshots do not replace the normal supervisor's own source custody.
+for ($index = $ancestors.Count - 1; $index -ge 0; $index--) {
+    $ancestor = Get-Item -LiteralPath ($ancestors[$index]) -Force -ErrorAction Stop
+    if (-not $ancestor.PSIsContainer -or ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'A source startup ancestor is redirected or is not a directory.'
     }
 }
-
-# 4. Wait for a real answer --------------------------------------------------
-$deadline = (Get-Date).AddSeconds($WaitSeconds)
-$version = $null
-$next = Get-Date
-while ((Get-Date) -lt $deadline) {
-    $version = Get-OllamaVersion
-    if ($version) { break }
-    if ((Get-Date) -ge $next) {
-        $left = [int]($deadline - (Get-Date)).TotalSeconds
-        Write-Step "Waiting for the Ollama API (GPU discovery can take minutes)... ${left}s left"
-        $next = (Get-Date).AddSeconds(30)
-    }
-    Start-Sleep -Seconds 3
+$startupItem = Get-Item -LiteralPath $startup -Force -ErrorAction Stop
+if ($startupItem.PSIsContainer -or ($startupItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $startupItem.LinkType -eq 'HardLink') {
+    throw 'The fixed source startup file is redirected; use the normal reviewed launcher.'
 }
-if (-not $version) {
-    Write-Step "Ollama did not answer on $Loopback within $WaitSeconds seconds. See $env:LOCALAPPDATA\Ollama\server.log" 'Red'
-    exit 5
-}
-Write-Step "Ollama $version is answering on $Loopback." 'Green'
-
-$wild = Get-NetTCPConnection -State Listen -LocalPort 11434 -ErrorAction SilentlyContinue |
-    Where-Object { $_.LocalAddress -in @('0.0.0.0', '::') }
-if ($wild) {
-    Write-Step 'A wildcard listener is still present on port 11434; Angerona will refuse it.' 'Yellow'
-}
-
-# 5. Hand over ---------------------------------------------------------------
-$env:ANGERONA_OLLAMA_STARTUP_SECONDS = '120'
-if ($LaunchAngerona) {
-    $start = Join-Path $Repo 'start-angerona.bat'
-    if (Test-Path -LiteralPath $start -PathType Leaf) {
-        Write-Step 'Launching Angerona.' 'Cyan'
-        & $env:ComSpec /c "`"$start`""
-    } else {
-        Write-Step "start-angerona.bat not found in $Repo" 'Red'; exit 6
-    }
-}
-exit 0
+Write-Host 'Delegating to normal Angerona source startup. AI admission remains owned by the application.'
+$global:LASTEXITCODE = 0
+& $startup -RepositoryRoot $repo
+exit $LASTEXITCODE

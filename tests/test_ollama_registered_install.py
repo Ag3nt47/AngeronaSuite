@@ -101,6 +101,14 @@ def _windows_image_fixture(tmp_path, monkeypatch, *, registered=True):
     image = tmp_path / "Custom Ollama" / "ollama.exe"
     image.parent.mkdir()
     image.write_bytes(b"fixture-image")
+    from angerona.core import ollama_package_custody
+
+    # This fixture isolates registration/signature/identity ordering; native
+    # package custody is exercised by its dedicated fake-backed test module.
+    monkeypatch.setattr(ollama_package_custody, "assess_package",
+                        lambda _path: ollama_package_custody.PackageCustody(True, "inert-protected-snapshot", 1))
+    monkeypatch.setattr(ollama_lifecycle, "_windows_image_location", lambda _path: True)
+    monkeypatch.setattr(ollama_lifecycle, "_on_gui_thread", lambda: False)
     monkeypatch.setattr(ollama_lifecycle, "sys", SimpleNamespace(platform="win32"))
     monkeypatch.setattr(privilege, "_windows_known_folder", lambda _csidl: tmp_path / "defaults")
     monkeypatch.setattr(
@@ -120,7 +128,8 @@ def test_custom_candidate_still_requires_ollama_signature(tmp_path, monkeypatch,
 
     monkeypatch.setattr(ollama_lifecycle, "_windows_image_signature_valid", signature)
     assert ollama_lifecycle._trusted_ollama_image(image) is signed
-    assert calls == [(str(image.resolve()), ollama_lifecycle._image_identity(image.stat()))]
+    assert calls == [(str(image.resolve()), (*ollama_lifecycle._image_identity(image.stat()),
+                                           ollama_lifecycle._SIGNATURE_CACHE_CHECKED_AT))]
 
 
 def test_unregistered_executable_is_rejected_without_signature_probe(tmp_path, monkeypatch):
@@ -195,7 +204,8 @@ def test_publisher_verification_uses_inbox_powershell_and_literal_path(
         assert "$s.Status -ne 'Valid'" in command[-1]
         assert "'Ollama Inc.'" in command[-1]
         assert "::Equals(" in command[-1] and "::SimpleName" in command[-1]
-        assert kwargs["env"] == {"SAFE": "1", "ANGERONA_NATIVE_PATH": path_text}
+        assert kwargs["env"] == {"SAFE": "1", "ANGERONA_NATIVE_PATH": path_text,
+                                 "PSModulePath": str(tmp_path / "Modules")}
         assert kwargs["cwd"] == str(tmp_path)
         assert kwargs["timeout"] == 15
         assert kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL

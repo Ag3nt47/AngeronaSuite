@@ -113,6 +113,7 @@ def test_inference_client_approval_requires_exact_path_and_current_digest(
 ) -> None:
     executable = tmp_path / "python.exe"
     executable.write_bytes(b"reviewed exact client")
+    (tmp_path / "bus.key").write_text(bytes(range(32)).hex(), encoding="ascii")
     row = process_allowlist.add(
         path=str(executable),
         data_dir=tmp_path,

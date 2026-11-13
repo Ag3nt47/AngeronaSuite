@@ -27,7 +27,14 @@ def test_previously_missing_module_selftests_are_offline_and_pass() -> None:
         SOARModule(),
     )
     results = {module.name: module.self_test() for module in modules}
-    assert all(ok for ok, _detail in results.values()), results
+    from angerona.modules import deception
+
+    for module in modules:
+        result = results[module.name]
+        if type(module) is DeceptionModule and deception.os.name == "nt":
+            assert result == (False, deception.DECEPTION_WINDOWS_CREATION_HELD), results
+        else:
+            assert result[0] is True, results
 
 
 def test_every_builtin_v12_contract_has_a_module_specific_selftest() -> None:

@@ -940,9 +940,42 @@ class RecoveryStore:
             # over newly edited source. Complete originals remain in the archive.
             raise
 
+    def require_unmanaged_lineage(self):
+        """Hold historical rollback when managed source currency cannot be proved.
+
+        Activation deliberately preserves Git HEAD. Reading only that HEAD, or
+        accepting an unverified target_revision from a receipt, can downgrade
+        newer applied source. This independent helper does not import possibly
+        failed application code to authenticate the activation transaction.
+        Normal startup, inspection and ready snapshots remain available.
+        """
+        try:
+            updates = absolute(self.state.parent / "github-updates")
+            try:
+                plain(updates.lstat(), directory=True)
+            except FileNotFoundError:
+                return
+            if os.name == "nt":
+                _windows_private(updates)
+            elif updates.stat().st_uid != os.geteuid() or stat.S_IMODE(updates.stat().st_mode) & 0o077:
+                raise Held("Managed source lineage custody is not private; historical recovery requires operator review")
+            for name in ("applied-base.json", "activation-pending.json"):
+                try:
+                    (updates / name).lstat()
+                except FileNotFoundError:
+                    continue
+                raise Held("Managed source lineage requires operator review before historical recovery: "
+                           + name + " is present. Preserved Git HEAD may predate applied source; "
+                           "no old-HEAD, parent or ready-snapshot rollback was selected. "
+                           "Use the source-update recovery review; existing source and records remain preserved.")
+        except OSError as error:
+            raise Held("Managed source lineage is unavailable; historical source recovery is held "
+                       "without replacing source or erasing records. Review github-updates custody.") from error
+
     def recover(self, strategy, *, exclusive_startup=False, expected_id=None, failure_detail=""):
         if not exclusive_startup:
             raise Held("The parent must hold its startup lease and prove runtime retirement before source restoration")
+        self.require_unmanaged_lineage()
         self.guard_pending()
         current = inventory(self.root)
         index = self.load("index.json", dict(schema=1, ready=[], failed=None))
@@ -1002,6 +1035,7 @@ class RecoveryStore:
         report.update(strategy=strategy, target_revision=revision,
                       startup_error=str(report.get("startup_error") or failure_detail)[:4096],
                       message="A source recovery candidate is available; preserved edits can be reviewed after a verified launch.")
+        self.require_unmanaged_lineage()
         return self._publish(current, target, report, index)
 
     def decision(self, choice, *, expected_id):

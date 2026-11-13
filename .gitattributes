@@ -9,3 +9,5 @@ frz/watchdog3/** text eol=lf
 installer/windows-install-contract.json text eol=lf
 # This profile is authenticated by an exact compile-time SHA-256.
 tools/publication_git_runtime_profile.json text eol=lf
+# The readable Word export is compared byte-for-byte with its deterministic exporter.
+docs/master-manual.md text eol=lf

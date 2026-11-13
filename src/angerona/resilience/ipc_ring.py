@@ -11,13 +11,16 @@ Design
     * Each frame carries a versioned, authenticated record:
         [schema_ver u16, sensor_id u16, seq u64, payload, HMAC-SHA256]
       The protected per-install authority binds the complete record. Wrong-key,
-      stale/replayed, out-of-position, unknown-schema, and modified frames are
+      replayed within one reader lifetime, out-of-position, unknown-schema, and modified frames are
       discarded before JSON parsing or EventBus publication.
     * Bounded with backpressure: if the producer laps the consumer, the OLDEST
       frames are overwritten (ring semantics) and a drop counter increments — the
       newest telemetry is always preserved and the core is never stalled.
     * A backpressure flag is raised when occupancy crosses `BACKPRESSURE_FRAC`, so
-      sensors can down-sample low-priority events at the source (DRES-style).
+      sensors can omit optional enrichment, without dropping raw observations.
+    * V2 has no authenticated producer incarnation or durable independent cursor.
+      Fresh attachment/full-file rollback freshness is unverified; local counters
+      and reader high-water protect only the admitted object lifetime.
 
 Note: this Python implementation defines the on-disk/mmap CONTRACT. A compiled
 Rust/Go/C scanner can write the identical layout for zero-copy performance; the
@@ -421,9 +424,12 @@ class _RingBase:
             opened = os.fstat(descriptor)
             if not stat.S_ISREG(opened.st_mode):
                 raise ValueError("IPC ring must be a regular file")
-            reset = create or created or opened.st_size < self._total
-            if reset:
+            # Existing bytes are evidence, including truncated/stale layouts.
+            # Only exclusive creation grants initialization authority.
+            if created:
                 os.ftruncate(descriptor, self._total)
+            elif opened.st_size != self._total:
+                raise FrameError("IPC ring existing size failed integrity validation")
             self._f = os.fdopen(descriptor, "r+b", buffering=0)
         except Exception:
             os.close(descriptor)
@@ -431,16 +437,9 @@ class _RingBase:
         owned_file, owned_map = self._f, None
         try:
             self._mm = owned_map = mmap.mmap(owned_file.fileno(), self._total)
-            m, v, sc, ss, *_ = self._read_header()
-            if (
-                reset
-                or m != _MAGIC
-                or v != _VERSION
-                or sc != self.slot_count
-                or ss != self.slot_size
-            ):
-                # Re-initialise on layout mismatch (e.g., first attach to a stale file).
+            if created:
                 self._init_header()
+            self._validated_header()
         except BaseException as original:
             cleanup_error = None
             for resource in (owned_map, owned_file):
@@ -470,6 +469,22 @@ class _RingBase:
 
     def _read_header(self):
         return struct.unpack(_HDR_FMT, self._mm[0:_HDR_SIZE])
+
+    def _validated_header(self, *, check_cursor: bool = True):
+        header = self._read_header()
+        magic, version, slots, size, w, r, _drops, _bp = header
+        if (magic != _MAGIC or version != _VERSION or slots != self.slot_count
+                or size != self.slot_size or check_cursor and w < r):
+            raise FrameError("IPC ring header failed integrity validation")
+        return header
+
+    def _frame_at(self, sequence: int) -> dict:
+        off = self._slot_off(sequence)
+        (length,) = struct.unpack_from(_SLOT_LEN_FMT, self._mm, off)
+        if not _REC_HDR + _MAC_SIZE <= length <= self.slot_size - 4:
+            raise FrameError("IPC ring record length failed integrity validation")
+        return decode_frame(self._key, bytes(self._mm[off + 4:off + 4 + length]),
+                            expected_sequence=sequence)
 
     def _write_field(self, offset_in_hdr: int, fmt: str, *vals) -> None:
         struct.pack_into(fmt, self._mm, offset_in_hdr, *vals)
@@ -507,153 +522,185 @@ class _RingBase:
 
 
 class RingWriter(_RingBase):
-    """Single producer. Writes raw frames; overwrites oldest under pressure."""
+    """Single producer; only admitted local counters select signed sequences.
 
-    def __init__(
-        self,
-        path: Optional[Path] = None,
-        slot_count: int = DEFAULT_SLOT_COUNT,
-        slot_size: int = DEFAULT_SLOT_SIZE,
-        *,
-        key: bytes | None = None,
-    ):
-        super().__init__(
-            path or ring_path(),
-            slot_count,
-            slot_size,
-            create=False,
-            key=key,
-        )
+    The consumer cursor is unauthenticated enrichment/overwrite accounting, not
+    evidence of delivery. Existing v2 state has no cross-restart freshness proof.
+    """
 
-    def write(
-        self,
-        payload: bytes,
-        schema_ver: int = _SCHEMA_VERSION,
-        sensor_id: int = 0,
-    ) -> bool:
-        """Write one frame. Returns True if stored, False if the payload is too
-        large for a slot (dropped). Never blocks."""
-        w = self.write_seq
-        rec = encode_frame(
-            self._key,
-            payload,
-            schema_ver=schema_ver,
-            sensor_id=sensor_id,
-            sequence=w,
-        )
+    def __init__(self, path: Optional[Path] = None,
+                 slot_count: int = DEFAULT_SLOT_COUNT, slot_size: int = DEFAULT_SLOT_SIZE,
+                 *, key: bytes | None = None):
+        super().__init__(path or ring_path(), slot_count, slot_size, create=False, key=key)
+        try:
+            header = self._validated_header()
+            self._next_write, self._last_ack, self._drop_count = header[4:7]
+            if self._next_write >= (1 << 64) - 1:
+                raise FrameError("IPC ring sequence budget is exhausted")
+            if self._next_write:
+                # Bound initial sequence admission to a retained authenticated
+                # tail. A whole matching v2 rollback remains indistinguishable.
+                self._frame_at(self._next_write - 1)
+            elif any(struct.unpack_from(_SLOT_LEN_FMT, self._mm, self._slot_off(i))[0]
+                     for i in range(self.slot_count)):
+                raise FrameError("IPC ring empty header has retained records")
+            self.header_rejections = 0
+            self.rejected_header = None  # First rejected 64 bytes, memory-only/private.
+        except BaseException as original:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise original from cleanup
+            raise
+
+    def _note_header(self) -> None:
+        self.header_rejections = min((1 << 64) - 1, self.header_rejections + 1)
+        if self.rejected_header is None:
+            self.rejected_header = bytes(self._mm[:_HDR_PAD])
+
+    def _consumer_position(self, *, strict: bool = False) -> int:
+        try:
+            _m, _v, _sc, _ss, advertised_w, r, _d, _bp = self._validated_header(check_cursor=False)
+        except FrameError:
+            self._note_header()
+            raise
+        invalid = (advertised_w != self._next_write or _d != self._drop_count
+                   or not self._last_ack <= r <= self._next_write)
+        if invalid:
+            self._note_header()
+            if strict:
+                raise FrameError("IPC ring header failed integrity validation")
+        # Never sign an advertised sequence or let a malformed ACK veto raw
+        # writes. Re-publish only this admitted writer's counter continuity.
+        return r if self._last_ack <= r <= self._next_write else self._last_ack
+
+    @property
+    def write_seq(self) -> int:
+        return self._next_write
+
+    @property
+    def drops(self) -> int:
+        return self._drop_count
+
+    @property
+    def occupancy(self) -> int:
+        return self._next_write - self._consumer_position()
+
+    def write(self, payload: bytes, schema_ver: int = _SCHEMA_VERSION,
+              sensor_id: int = 0) -> bool:
+        """Store raw telemetry without blocking; oversize records return False."""
+        r = self._consumer_position()
+        w = self._next_write
+        if w >= (1 << 64) - 1:
+            raise FrameError("IPC ring sequence budget is exhausted")
+        rec = encode_frame(self._key, payload, schema_ver=schema_ver,
+                           sensor_id=sensor_id, sequence=w)
         if len(rec) + 4 > self.slot_size:
             self._bump_drops()
             return False
-        r = self.read_seq
-        # Lapping the consumer → advance read_seq (overwrite oldest) + count a drop.
         if w - r >= self.slot_count:
-            self._advance_read(w - self.slot_count + 1)
+            r = w - self.slot_count + 1
             self._bump_drops()
+        if self.read_seq != r:
+            self._write_field(24, "<Q", r)
+        self._last_ack = r
         off = self._slot_off(w)
         struct.pack_into(_SLOT_LEN_FMT, self._mm, off, len(rec))
-        self._mm[off + 4: off + 4 + len(rec)] = rec
-        self._write_field(16, "<Q", w + 1)          # write_seq (@16) += 1
-        self._set_backpressure(self.occupancy / self.slot_count >= BACKPRESSURE_FRAC)
+        self._mm[off + 4:off + 4 + len(rec)] = rec
+        self._next_write = w + 1
+        self._write_field(16, "<Q", self._next_write)
+        self._write_field(32, "<Q", self._drop_count)
+        self._set_backpressure((self._next_write - r) / self.slot_count >= BACKPRESSURE_FRAC)
         return True
 
-    def _advance_read(self, new_read: int) -> None:
-        self._write_field(24, "<Q", new_read)       # read_seq field @ offset 24
-
     def _bump_drops(self) -> None:
-        self._write_field(32, "<Q", self.drops + 1)  # drops field @ offset 32
+        self._drop_count = min((1 << 64) - 1, self._drop_count + 1)
+        self._write_field(32, "<Q", self._drop_count)
 
     def _set_backpressure(self, on: bool) -> None:
-        self._write_field(40, "<I", 1 if on else 0)  # bpflag @ offset 40
+        self._write_field(40, "<I", int(on))
 
     @property
     def backpressure(self) -> bool:
-        # The consumer may have drained since the last write. Only the producer
-        # refreshes this advisory flag; the reader never writes offset 40.
-        magic, version, slots, size, w, r, _drops, _bp = self._read_header()
-        if (
-            magic != _MAGIC
-            or version != _VERSION
-            or slots != self.slot_count
-            or size != self.slot_size
-            or w < r
-        ):
-            raise FrameError("IPC ring header failed integrity validation")
-        on = (w - r) / self.slot_count >= BACKPRESSURE_FRAC
+        # This advisory decision may omit enrichment, never the raw observation.
+        r = self._consumer_position(strict=True)
+        self._last_ack = r
+        on = (self._next_write - r) / self.slot_count >= BACKPRESSURE_FRAC
         self._set_backpressure(on)
         return on
 
 
 class RingReader(_RingBase):
-    """Single consumer. Reads all frames since the last read position."""
+    """One consumer with a process-local authenticated sequence high-water.
 
-    def __init__(
-        self,
-        path: Optional[Path] = None,
-        slot_count: int = DEFAULT_SLOT_COUNT,
-        slot_size: int = DEFAULT_SLOT_SIZE,
-        *,
-        key: bytes | None = None,
-    ):
-        super().__init__(
-            path or ring_path(),
-            slot_count,
-            slot_size,
-            create=False,
-            key=key,
-        )
-        self.authentication_failures = 0
+    Shared read_seq is used once on admission, then only published as an ACK.
+    Fresh admission/full v2 rollback continuity remains explicitly unverified.
+    """
+
+    def __init__(self, path: Optional[Path] = None,
+                 slot_count: int = DEFAULT_SLOT_COUNT, slot_size: int = DEFAULT_SLOT_SIZE,
+                 *, key: bytes | None = None):
+        super().__init__(path or ring_path(), slot_count, slot_size, create=False, key=key)
+        try:
+            header = self._validated_header()
+            if header[4]:
+                # Bound initial ACK/counter admission to an authenticated tail.
+                # This does not attest a fresh producer incarnation in v2.
+                self._frame_at(header[4] - 1)
+            self._next_sequence = header[5]
+        except BaseException as original:
+            try:
+                self.close()
+            except BaseException as cleanup:
+                raise original from cleanup
+            raise
+        self._scan_sequence = self._next_sequence
+        self.authentication_failures = 0  # Rejection observations, not unique events.
+        self.missed_frames = 0
+        self.initial_continuity_verified = False
+
+    @property
+    def next_sequence(self) -> int:
+        return self._next_sequence
 
     def read_batch(self, max_frames: int = 1024) -> list[dict]:
-        """Return up to max_frames frames as dicts:
-        {schema, sensor_id, seq, payload, missed}. `missed` is set on the first
-        frame if the producer lapped us (we fast-forward to avoid reading torn
-        slots)."""
+        """Return authenticated frames with explicit sequence-gap lower bounds.
+
+        Invalid slots/advertised counters cannot advance the local high-water.
+        At most min(max_frames, slot_count) candidate slots are inspected.
+        """
         if type(max_frames) is not int or not 1 <= max_frames <= MAX_SLOT_COUNT:
             raise ValueError("IPC batch limit is outside the ring budget")
-        frame_budget = min(max_frames, self.slot_count)
-        out: list[dict] = []
-        magic, version, slots, size, w, r, _drops, _bp = self._read_header()
-        if (
-            magic != _MAGIC
-            or version != _VERSION
-            or slots != self.slot_count
-            or size != self.slot_size
-            or w < r
-        ):
+        try:
+            _m, _v, _sc, _ss, w, shared_r, _d, _bp = self._validated_header(check_cursor=False)
+            if w < self._next_sequence:
+                raise FrameError("IPC ring header failed integrity validation")
+        except FrameError:
             self.authentication_failures += 1
-            raise FrameError("IPC ring header failed integrity validation")
-        missed = 0
-        # If we fell more than a full lap behind, skip to the oldest still-intact.
-        if w - r > self.slot_count:
-            missed = (w - self.slot_count) - r
-            r = w - self.slot_count
-        scanned = 0
-        while r < w and scanned < frame_budget:
+            raise
+        if shared_r < self._next_sequence or shared_r > w:
+            self.authentication_failures += 1
+        candidate = max(self._next_sequence, w - self.slot_count)
+        if candidate <= self._scan_sequence < w:
+            candidate = self._scan_sequence
+        scanned, out = 0, []
+        while candidate < w and scanned < min(max_frames, self.slot_count):
             scanned += 1
-            off = self._slot_off(r)
-            (rec_len,) = struct.unpack_from(_SLOT_LEN_FMT, self._mm, off)
-            if (
-                rec_len < _REC_HDR + _MAC_SIZE
-                or rec_len > self.slot_size - 4
-            ):
-                self.authentication_failures += 1
-                r += 1
-                continue
-            rec = bytes(self._mm[off + 4: off + 4 + rec_len])
             try:
-                frame = decode_frame(
-                    self._key,
-                    rec,
-                    expected_sequence=r,
-                )
+                frame = self._frame_at(candidate)
             except FrameError:
                 self.authentication_failures += 1
-                r += 1
-                continue
-            frame["missed"] = missed if not out else 0
-            out.append(frame)
-            r += 1
-        self._write_field(24, "<Q", r)               # persist new read_seq (@24)
+            else:
+                missed = candidate - self._next_sequence
+                frame["missed"] = missed
+                self.missed_frames = min((1 << 64) - 1, self.missed_frames + missed)
+                out.append(frame)
+                self._next_sequence = candidate + 1
+            candidate += 1
+        # Rejected bytes alone never acknowledge genuine observations we have
+        # not authenticated. Corrupt tails remain pending until a signed successor.
+        self._scan_sequence = candidate if candidate < w else self._next_sequence
+        self._write_field(24, "<Q", self._next_sequence)
         return out
 
 

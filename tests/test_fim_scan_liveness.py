@@ -117,6 +117,11 @@ def test_missing_root_retries_full_scan_slowly_but_preserves_fast_driver_checks(
     module, watched = _module(tmp_path, monkeypatch, missing_root=True)
     target = watched / "policy.txt"
     target.write_text("synthetic", encoding="utf-8")
+    retained_path = str(tmp_path / "missing-internal-root" / "prior-policy.txt")
+    retained_digest = "b" * 64
+    module._baseline_status = "approved"
+    monkeypatch.setattr(module, "_load_approved_baseline",
+                        lambda: ({retained_path: retained_digest}, set()))
     monkeypatch.setattr(fim, "_combat_intervals", lambda: (0.5, 1.0))
     monkeypatch.setattr(module, "emit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "_publish_assurance_receipts", lambda: None)
@@ -151,7 +156,10 @@ def test_missing_root_retries_full_scan_slowly_but_preserves_fast_driver_checks(
     assert module._scan_retry_floor == 30
     assert module.health == 35
     assert "full-scan retry in 30s" in module.health_note
-    assert module._baseline == {}
+    assert module._baseline == {
+        retained_path: retained_digest,
+        str(target): fim.hashlib.sha256(b"synthetic").hexdigest(),
+    }  # Covered sibling admitted; the unmeasured root retains its exact old entry.
     assert module._last_scan_receipt["complete"] is False
     assert not module._baseline_path.exists()
 

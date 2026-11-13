@@ -173,6 +173,10 @@ class AngeronaApp:
         self.bus.subscribe(self.flight_recorder_worker.submit)
         self._startup_events_ready = True
         self._flush_startup_degradations()
+        from angerona.core.config import settings_load_warning
+        settings_warning = settings_load_warning(self.config)
+        if settings_warning is not None:
+            self.bus.publish(settings_warning)
 
         # Disposable diagnostics have independent, optional retention. The GUI
         # only queues bounded text; directory custody and cleanup stay here.
@@ -1112,6 +1116,7 @@ class AngeronaApp:
                                   if source_owner is not None else {})
                 self._resilience = start_resilience(
                     self.bus,
+                    config=self.config,
                     with_ui=not bool(
                         getattr(
                             self.config,

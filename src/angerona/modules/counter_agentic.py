@@ -39,6 +39,10 @@ _STALE_AFTER = 60.0
 # peer host or listener/client role is reported immediately.
 _PORT_GENERATION_REALERT_AFTER = 3600.0
 _PORT_GENERATION_KEYS_MAX = 1024
+_PORT_ENDPOINT_KEYS_MAX = 4096
+# Keep the latest exact-endpoint role as long as hourly generation history;
+# the short emission cooldown must not erase a visible role transition.
+_PORT_ENDPOINT_RETENTION = 2 * _PORT_GENERATION_REALERT_AFTER
 _MAX_LINEAGES = 256
 _MAX_CHILDREN = 1024
 _MAX_EVENTS_PER_POLL = 512
@@ -169,7 +173,9 @@ class CounterAgenticModule(BaseModule):
         self._sysmon_live = False
         self._behavior_binding = None
         self._port_alerted: dict[tuple, float] = {}
+        self._port_endpoint_roles: dict[tuple, bool] = {}
         self._port_generation_alerted: dict[tuple, list] = {}
+        self._port_policy_snapshot = None
         self._detections = 0
         self._agent_integrity_store = None
         self._agent_integrity_due = 0.0
@@ -427,6 +433,13 @@ class CounterAgenticModule(BaseModule):
             policy = ()
             snapshot_complete = False
             snapshot_error = f"trusted-process policy unavailable: {exc}"[:500]
+        if policy != self._port_policy_snapshot:
+            # A changed effective approval policy starts fresh observation
+            # episodes; a revoked approval must not inherit an older cooldown.
+            self._port_alerted.clear()
+            self._port_endpoint_roles.clear()
+            self._port_generation_alerted.clear()
+            self._port_policy_snapshot = policy
         port_connections = 0
         identity_failures = 0
         unexpected = 0
@@ -452,26 +465,37 @@ class CounterAgenticModule(BaseModule):
             executable = ""
             created: float | None = None
             identity_error = ""
+            identity_complete = False
             try:
                 process = psutil.Process(pid)
                 created = float(process.create_time())
+                if not math.isfinite(created) or created <= 0:
+                    raise ValueError("process birth is unavailable or invalid")
                 pname = str(process.name() or "<unnamed>")[:260]
                 executable = str(process.exe() or "")[:32767]
                 if not executable:
                     raise ValueError("process executable path is unavailable")
                 if float(process.create_time()) != created:
                     raise ValueError("process generation changed during lookup")
+                identity_complete = True
             except Exception as exc:
                 identity_failures += 1
                 identity_error = str(exc)[:500] or "process identity unavailable"
+                # A first-read annotation must never become verified identity
+                # after the second birth read failed or observed PID reuse.
+                created, executable = None, ""
             allowed = bool(
-                created is not None
-                and executable
+                identity_complete
                 and is_digest_pinned_allowed(
                     pname, executable, policy=policy
                 )
             )
-            if not allowed:
+            if allowed:
+                # Current bytes were checked against the exact pinned policy.
+                # Resolve only this verified subject's repeat history, so a
+                # later digest mismatch reports again even without a policy edit.
+                self._resolve_port_subject((pid, created, executable.casefold()))
+            else:
                 unexpected += 1
                 key = (
                     pid,
@@ -481,33 +505,48 @@ class CounterAgenticModule(BaseModule):
                     raddr,
                 )
                 now = time.time()
-                dedup_window = _STALE_AFTER if created is not None else 10.0
-                if now - self._port_alerted.get(key, 0.0) < dedup_window:
-                    continue
                 raw_status = c.get("status")
+                listener = isinstance(raw_status, str) and raw_status == "LISTEN"
+                prior_role = self._port_endpoint_roles.get(key)
+                role_changed = prior_role is not None and prior_role != listener
+                dedup_window = _STALE_AFTER if identity_complete else 10.0
+                last_endpoint_report = self._port_alerted.get(key)
+                if (not role_changed and last_endpoint_report is not None
+                        and 0 <= now - last_endpoint_report < dedup_window):
+                    continue
                 generation_key = None
+                same_sweep = False
                 suppressed_repeats = 0
-                if created is not None and executable:
+                if identity_complete:
                     generation_key = (
                         pid, created, executable.casefold(),
                         laddr.rsplit(":", 1)[0], raddr.rsplit(":", 1)[0],
                         local_match, remote_match,
-                        isinstance(raw_status, str) and raw_status == "LISTEN",
+                        listener,
                     )
                     prior = self._port_generation_alerted.get(generation_key)
                     same_sweep = prior is not None and prior[2] == self._port_sweep
-                    if (prior is not None and not same_sweep
+                    if (prior is not None and not same_sweep and not role_changed
                             and 0 <= now - prior[0] < _PORT_GENERATION_REALERT_AFTER):
+                        # This counts report opportunities, including later
+                        # polls of one socket, never distinct connections.
                         prior[1] += 1
                         continue
                     if not same_sweep:
                         suppressed_repeats = prior[1] if prior is not None else 0
-                        if len(self._port_generation_alerted) >= _PORT_GENERATION_KEYS_MAX:
-                            oldest = min(self._port_generation_alerted,
-                                         key=lambda item: self._port_generation_alerted[item][0])
-                            del self._port_generation_alerted[oldest]
-                        self._port_generation_alerted[generation_key] = [now, 0, self._port_sweep]
+                if key not in self._port_alerted and len(self._port_alerted) >= _PORT_ENDPOINT_KEYS_MAX:
+                    oldest = min(self._port_alerted, key=self._port_alerted.get)
+                    self._discard_port_endpoint(oldest)
                 self._port_alerted[key] = now
+                self._port_endpoint_roles[key] = listener
+                if generation_key is not None and (not same_sweep
+                        or generation_key not in self._port_generation_alerted):
+                    if (generation_key not in self._port_generation_alerted
+                            and len(self._port_generation_alerted) >= _PORT_GENERATION_KEYS_MAX):
+                        oldest = min(self._port_generation_alerted,
+                                     key=lambda item: self._port_generation_alerted[item][0])
+                        del self._port_generation_alerted[oldest]
+                    self._port_generation_alerted[generation_key] = [now, 0, self._port_sweep]
                 self._detections += 1
                 socket_status = _socket_advisory_text(raw_status, 64) or "UNKNOWN"
                 matched_endpoint = (
@@ -537,10 +576,11 @@ class CounterAgenticModule(BaseModule):
                     socket_role=socket_role,
                     socket_metadata_advisory=True,
                     suppressed_repeats=suppressed_repeats,
+                    suppressed_repeats_unit="emission-opportunities",
                     disposition="observation",
                     process_create_time=created,
                     process_path=executable,
-                    process_identity_complete=created is not None and bool(executable),
+                    process_identity_complete=identity_complete,
                     identity_error=identity_error,
                     authorization_policy="exact-path-sha256-operator-approval",
                     response_authorized=False,
@@ -557,6 +597,31 @@ class CounterAgenticModule(BaseModule):
             "; ".join(errors)[:500],
         )
 
+    def _resolve_port_subject(self, subject):
+        # Both maps have hard limits; no current-PID lookup or learned approval.
+        for key in tuple(self._port_alerted):
+            if key[:3] == subject:
+                self._discard_port_endpoint(key)
+        for key in tuple(self._port_generation_alerted):
+            if key[:3] == subject:
+                del self._port_generation_alerted[key]
+
+    def _discard_port_endpoint(self, key):
+        self._port_alerted.pop(key, None)
+        self._port_endpoint_roles.pop(key, None)
+        # Losing the latest endpoint role also loses authority to apply an
+        # older hourly history to a returning socket in either role. Eviction
+        # can permit another report; it must not hide a role transition.
+        pid, created, executable, local, remote = key
+        prefix = (
+            pid, created, executable,
+            local.rsplit(":", 1)[0], remote.rsplit(":", 1)[0],
+            bool(local and local.rsplit(":", 1)[-1] == str(self._inference_port)),
+            bool(remote and remote.rsplit(":", 1)[-1] == str(self._inference_port)),
+        )
+        for listener in (False, True):
+            self._port_generation_alerted.pop(prefix + (listener,), None)
+
     # ── housekeeping ─────────────────────────────────────────────────────────
     def _prune(self) -> None:
         now = time.time()
@@ -572,8 +637,8 @@ class CounterAgenticModule(BaseModule):
             if now - ts > 4 * _STALE_AFTER:
                 del self._alerted[key]
         for key, ts in list(self._port_alerted.items()):
-            if now - ts > 4 * _STALE_AFTER:
-                del self._port_alerted[key]
+            if now - ts > _PORT_ENDPOINT_RETENTION:
+                self._discard_port_endpoint(key)
         for key, state in list(self._port_generation_alerted.items()):
             if now - state[0] > 2 * _PORT_GENERATION_REALERT_AFTER:
                 del self._port_generation_alerted[key]

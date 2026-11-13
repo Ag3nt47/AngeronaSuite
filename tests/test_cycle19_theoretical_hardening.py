@@ -52,14 +52,27 @@ def test_signal_identity_is_explicit_and_canonical() -> None:
     assert _signal_identity("anonymous") == ""
 
 
-def test_mobile_pin_uses_cross_platform_protected_store_delivery(monkeypatch) -> None:
-    bridge = MobileResponseBridge()
-    monkeypatch.setenv("ANGERONA_MOBILE_PIN", "4821")
-    monkeypatch.delenv("ANGERONA_MOBILE_PIN_DPAPI", raising=False)
-    assert bridge._pin() == "4821"
-    monkeypatch.setenv("ANGERONA_MOBILE_PIN", "not-a-pin")
-    assert bridge._pin() is None
+def test_mobile_pin_reads_only_strict_protected_store_and_holds_legacy_values(monkeypatch, tmp_path) -> None:
+    from angerona.core import mobile_command_auth as auth_module
+    from test_cycle29_mobile_typed_authorization import _protected_store
 
+    values = _protected_store(monkeypatch, tmp_path)
+    values.update({auth_module.MOBILE_PIN_SECRET: "482137",
+                   auth_module.LEGACY_MOBILE_PIN_SECRET: "preserved-legacy-ciphertext"})
+    bridge = MobileResponseBridge()
+    bridge._config = SimpleNamespace(
+        data_dir=tmp_path, mobile_signal_cli=r"C:\fixtures\signal-cli.exe",
+        mobile_signal_cli_sha256="a" * 64,
+        mobile_signal_cli_publisher="CN=Inert Signal Fixture",
+        mobile_host_number="+13035550101", mobile_dest_number="+13035550100",
+    )
+    monkeypatch.setenv("ANGERONA_MOBILE_PIN", "0000")
+    monkeypatch.setenv("ANGERONA_MOBILE_PIN_DPAPI", "not-protected-authority")
+    assert bridge._pin() == "482137"
+    values[auth_module.MOBILE_PIN_SECRET] = "4821"
+    monkeypatch.setenv("ANGERONA_MOBILE_PIN", "999999")
+    assert bridge._pin() is None
+    assert values[auth_module.LEGACY_MOBILE_PIN_SECRET] == "preserved-legacy-ciphertext"
 
 def test_mobile_bridge_rejects_missing_or_wrong_sender(monkeypatch) -> None:
     bridge = MobileResponseBridge()

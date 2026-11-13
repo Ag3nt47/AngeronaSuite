@@ -100,16 +100,29 @@ def _parse_interface(text: str) -> Optional[dict]:
     }
 
 
+def _netsh_interfaces() -> str:
+    """Read WLAN state through the OS-owned utility without PATH/cwd lookup."""
+    from angerona.core.privilege import sanitized_child_environment, trusted_windows_directories
+
+    native = trusted_windows_directories()[1]
+    return check_output_hidden(
+        [str(native / "netsh.exe"), "wlan", "show", "interfaces"],
+        cwd=str(native),
+        env=sanitized_child_environment(source={}),
+        stdin=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        shell=False,
+        timeout=10,
+        text=True,
+        errors="replace",
+    )
+
+
 def _query_netsh() -> Optional[dict]:
     """Run `netsh wlan show interfaces` and return parsed data for the first connected interface."""
     try:
-        out = check_output_hidden(
-            ["netsh", "wlan", "show", "interfaces"],
-            timeout=10,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            errors="replace",
-        )
+        out = _netsh_interfaces()
     except Exception:
         return None
     return _parse_interface(out)
@@ -118,13 +131,7 @@ def _query_netsh() -> Optional[dict]:
 def _query_wlan() -> _WLANQuery:
     """Distinguish a successful disconnected observation from collector failure."""
     try:
-        out = check_output_hidden(
-            ["netsh", "wlan", "show", "interfaces"],
-            timeout=10,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            errors="replace",
-        )
+        out = _netsh_interfaces()
     except Exception as exc:
         return _WLANQuery("error", None, str(exc)[:300])
     parsed = _parse_interface(out)

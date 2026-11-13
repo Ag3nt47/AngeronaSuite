@@ -48,7 +48,7 @@ def test_listener_failure_cannot_be_overwritten_with_health_100(monkeypatch) -> 
     listener = _BrokenListener()
     monkeypatch.setattr(ipc_guard, "_load_or_create_key", lambda _path: b"k" * 32)
     monkeypatch.setattr(ipc_guard.socket, "socket", lambda *_args: listener)
-    monkeypatch.setattr(ipc_guard, "authenticate", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "_probe_exchange", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(module, "sleep", lambda _seconds: None)
 
     with pytest.raises(RuntimeError, match="listener accept failed"):

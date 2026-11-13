@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import urllib.request
+from html import escape
 from pathlib import Path
 from typing import Optional
 
@@ -51,6 +53,13 @@ from angerona.core.ollama_lifecycle import effective_keep_alive
 _OLLAMA_HOST  = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
 _OLLAMA_MODEL = os.environ.get("ANGERONA_MODEL", "llama3")
 _OLLAMA_TIMEOUT = 60.0   # seconds — CVE analysis is a larger prompt than triage
+_CVE_ID = re.compile(r"CVE-[0-9]{4}-[0-9]{4,32}\Z")
+
+
+def _nvd_url(value) -> str | None:
+    if type(value) is str and _CVE_ID.fullmatch(value):
+        return "https://nvd.nist.gov/vuln/detail/" + value
+    return None
 
 _AI_SYSTEM_PROMPT = """\
 You are a senior Windows security engineer advising a security operations team.
@@ -136,7 +145,7 @@ class CveCard(QFrame):
         is_driver = _is_driver_cve(rec)
         rans = str(rec.get("ransomware") or "—")
         due  = str(rec.get("due_date") or "—")
-        cve  = rec.get("cve") or "Unknown CVE"
+        cve  = str(rec.get("cve") or "Unknown CVE")[:128]
 
         # Card left-border accent: red for ransomware-known, amber for driver, blue otherwise
         if rans.strip().lower() == "known":
@@ -158,9 +167,16 @@ class CveCard(QFrame):
 
         # ── Title row ────────────────────────────────────────────────────
         title_row = QHBoxLayout()
-        cve_lbl = QLabel(f"<a href='https://nvd.nist.gov/vuln/detail/{cve}' "
-                         f"style='color:#38bdf8; font-weight:800; font-size:14px;'>{cve}</a>")
-        cve_lbl.setOpenExternalLinks(True)
+        cve_lbl = QLabel()
+        url = _nvd_url(cve)
+        if url is not None:
+            cve_lbl.setTextFormat(Qt.TextFormat.RichText)
+            cve_lbl.setText(f"<a href='{escape(url, quote=True)}' "
+                            f"style='color:#38bdf8; font-weight:800; font-size:14px;'>{escape(cve)}</a>")
+            cve_lbl.setOpenExternalLinks(True)
+        else:
+            cve_lbl.setTextFormat(Qt.TextFormat.PlainText)
+            cve_lbl.setText(cve)
         cve_lbl.setTextInteractionFlags(
             Qt.TextInteractionFlag.LinksAccessibleByMouse |
             Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -187,7 +203,9 @@ class CveCard(QFrame):
         # ── Vulnerability name ────────────────────────────────────────────
         name = rec.get("name") or ""
         if name:
-            name_lbl = QLabel(name)
+            name_lbl = QLabel()
+            name_lbl.setTextFormat(Qt.TextFormat.PlainText)
+            name_lbl.setText(str(name))
             name_lbl.setWordWrap(True)
             name_lbl.setStyleSheet("color:#f1f5f9; font-weight:600; font-size:12px;")
             lay.addWidget(name_lbl)
@@ -203,7 +221,9 @@ class CveCard(QFrame):
             kl.setSpacing(1)
             k = QLabel(key.upper())
             k.setStyleSheet("color:#64748b; font-size:10px; letter-spacing:1px; font-weight:700;")
-            v = QLabel(val or "—")
+            v = QLabel()
+            v.setTextFormat(Qt.TextFormat.PlainText)
+            v.setText(str(val or "—"))
             v.setWordWrap(True)
             v.setStyleSheet(f"color:{color}; font-size:12px; font-weight:600;")
             kl.addWidget(k)
@@ -231,7 +251,9 @@ class CveCard(QFrame):
                 "color:#64748b; font-size:10px; letter-spacing:1px; font-weight:700;")
             lay.addWidget(action_hdr)
 
-            action_lbl = QLabel(action)
+            action_lbl = QLabel()
+            action_lbl.setTextFormat(Qt.TextFormat.PlainText)
+            action_lbl.setText(str(action))
             action_lbl.setWordWrap(True)
             action_lbl.setStyleSheet("color:#cbd5e1; font-size:12px;")
             action_lbl.setTextInteractionFlags(

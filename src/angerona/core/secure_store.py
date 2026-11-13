@@ -43,6 +43,9 @@ _LINUX_SECRET_ACCOUNT = "runtime-secrets-v1"
 _NON_ENVIRONMENT_SECRETS = frozenset({
     "SPYWAREGUARD_ARCHIVE_KEY",
     "ANGERONA_USB_PIN",
+    "ANGERONA_MOBILE_PIN",
+    "ANGERONA_MOBILE_PIN_DPAPI",
+    "ANGERONA_MOBILE_AUTH_STATE",
     # This token authorizes a loopback control plane in an elevated process.
     # Consumers must read it directly from the OS-protected store so a launcher,
     # parent process, or stale shell can never inject control authority.
@@ -348,15 +351,14 @@ def _private_acl_matches(descriptor, owner: str, trustees: frozenset[str], secur
 
 
 class _NativeACLUnavailable(ImportError):
-    """Only import-time absence can select the legacy Windows fallback."""
+    """Import-time absence leaves the optional ACL layer unavailable."""
 
 
 def _native_private_acl(path: Path) -> None:
     """Apply and freshly verify private Windows custody on one retained inode.
 
-    Only a missing optional Windows API dependency permits the legacy fallback.
-    Available native APIs rejecting an unsafe path or failed proof must never
-    fall through to a less constrained path-based mutation.
+    Missing native APIs leave this optional protection unverified. Rejected paths
+    and failed proofs must never fall through to path-based command mutation.
     """
     try:
         import win32api
@@ -440,36 +442,12 @@ def _private_acl(path: Path) -> None:
     try:
         _native_private_acl(Path(path))
         return
-    except _NativeACLUnavailable:
-        # The optional Windows extra may be absent in a source checkout.
-        pass
     except Exception:
-        # Preserve the best-effort API, without retrying a failed security proof
-        # through the old path-based command. DPAPI remains mandatory upstream.
+        # Missing native APIs and failed custody proofs both leave ACL protection
+        # unverified. Never run an environment-selected utility or grant an
+        # environment-named principal. DPAPI remains mandatory upstream; this
+        # best-effort helper does not claim that a private DACL was established.
         return
-    try:
-        info = Path(path).lstat()
-        if (_path_traverses_reparse(path) or not stat.S_ISREG(info.st_mode)
-                or getattr(info, "st_nlink", 1) != 1):
-            return
-        user = os.environ.get("USERNAME", "").strip()
-        domain = os.environ.get("USERDOMAIN", "").strip()
-        principal = f"{domain}\\{user}" if domain and user else user
-        if not principal:
-            return
-        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-        icacls = (system_root / "System32" / "icacls.exe").resolve()
-        if not icacls.is_file():
-            return
-        subprocess.run(
-            [str(icacls), str(path), "/inheritance:r", "/grant:r",
-             f"{principal}:(F)", "*S-1-5-18:(F)", "*S-1-5-32-544:(F)"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            timeout=15, check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
-    except (OSError, subprocess.SubprocessError):
-        pass
 
 
 def _read_macos_secret_map(*, strict: bool = False) -> dict[str, str]:

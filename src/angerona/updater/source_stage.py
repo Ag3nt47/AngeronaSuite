@@ -335,6 +335,104 @@ def read_source_archive(raw: bytes, revision: str, *, remaining_bytes: int = MAX
     return _validate_tree(tree)
 
 
+def _git_object_sha(kind: bytes, raw: bytes) -> str:
+    return hashlib.sha1(kind + b" " + str(len(raw)).encode("ascii") + b"\0" + raw).hexdigest()
+
+
+def _git_tree_files(revision: str, fetch: Callable[[str], dict],
+                    cancelled: Callable[[], bool]) -> dict[str, tuple[int, str]]:
+    """Prove Git object consistency; canonical GitHub HTTPS remains the supplier.
+
+    This is not a maintainer signature or an independent anti-rollback witness.
+    Rebuilding every tree object prevents a metadata row from merely claiming
+    an unrelated immutable tree ID while ZIP bytes are accepted against it.
+    """
+    if cancelled():
+        raise SourceStageError("source staging was cancelled")
+    commit = fetch(f"git/commits/{revision}")
+    if (type(commit) is not dict or commit.get("sha") != revision
+            or type(commit.get("tree")) is not dict
+            or type(commit["tree"].get("sha")) is not str
+            or not _SHA.fullmatch(commit["tree"]["sha"])):
+        raise SourceStageError("canonical Git commit identity is unavailable")
+    tree_id = commit["tree"]["sha"]
+    if cancelled():
+        raise SourceStageError("source staging was cancelled")
+    tree = fetch(f"git/trees/{tree_id}?recursive=1")
+    if (type(tree) is not dict or tree.get("sha") != tree_id
+            or tree.get("truncated") is not False or type(tree.get("tree")) is not list
+            or len(tree["tree"]) > MAX_FILES * 2):
+        raise SourceStageError("canonical Git tree is incomplete or exceeds its entry budget")
+    records, folded, files = {}, set(), {}
+    total = 0
+    for row in tree["tree"]:
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        if type(row) is not dict:
+            raise SourceStageError("canonical Git tree entry is invalid")
+        name = safe_relative(row.get("path"))
+        try:
+            name.encode("utf-8", errors="strict")
+        except UnicodeError as error:
+            raise SourceStageError("canonical Git tree path is not UTF-8") from error
+        if name.casefold() in folded:
+            raise SourceStageError("canonical Git tree contains duplicate or case-aliased paths")
+        folded.add(name.casefold())
+        kind, mode, object_id = row.get("type"), row.get("mode"), row.get("sha")
+        if (type(kind) is not str or type(mode) is not str
+                or type(object_id) is not str or not _SHA.fullmatch(object_id)
+                or (kind, mode) not in {("tree", "040000"), ("blob", "100644"), ("blob", "100755")}):
+            raise SourceStageError("canonical Git tree contains an unsupported object")
+        records[name] = (kind, mode, object_id)
+        if kind == "blob":
+            size = row.get("size")
+            if type(size) is not int or not 0 <= size <= MAX_FILE_BYTES:
+                raise SourceStageError("canonical Git blob exceeds its byte budget")
+            files[name] = (size, object_id)
+            total += size
+            if len(files) > MAX_FILES or total > MAX_TREE_BYTES:
+                raise SourceStageError("canonical Git tree exceeds its file or byte budget")
+    children = {"": []}
+    for name, (kind, mode, object_id) in records.items():
+        parent, _, leaf = name.rpartition("/")
+        if parent and (parent not in records or records[parent][0] != "tree"):
+            raise SourceStageError("canonical Git tree has a missing or aliased parent")
+        children.setdefault(parent, []).append((leaf, kind, mode, object_id))
+        if kind == "tree":
+            children.setdefault(name, [])
+    for directory in sorted(children, key=lambda name: name.count("/") + bool(name), reverse=True):
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        raw = bytearray()
+        rows = sorted(children[directory], key=lambda row: row[0].encode("utf-8") + (b"/" if row[1] == "tree" else b""))
+        for leaf, kind, mode, object_id in rows:
+            raw.extend(("40000" if kind == "tree" else mode).encode("ascii") + b" "
+                       + leaf.encode("utf-8") + b"\0" + bytes.fromhex(object_id))
+        expected = tree_id if not directory else records[directory][2]
+        if _git_object_sha(b"tree", bytes(raw)) != expected:
+            raise SourceStageError("canonical Git tree object digest differs from its entries")
+    return files
+
+
+def read_verified_source_archive(raw: bytes, revision: str, *, fetch: Callable[[str], dict] = github_json,
+                                 remaining_bytes: int = MAX_TRANSACTION_BYTES,
+                                 cancelled: Callable[[], bool] = lambda: False) -> dict[str, bytes]:
+    """Admit exact archive blobs only after immutable Git tree consistency checks."""
+    if type(revision) is not str or not _SHA.fullmatch(revision):
+        raise SourceStageError("a full canonical source revision is required")
+    expected = _git_tree_files(revision, fetch, cancelled)
+    contents = read_source_archive(raw, revision, remaining_bytes=remaining_bytes, cancelled=cancelled)
+    if set(contents) != set(expected):
+        raise SourceStageError("source archive file set differs from the canonical Git tree")
+    for name, data in contents.items():
+        if cancelled():
+            raise SourceStageError("source staging was cancelled")
+        size, object_id = expected[name]
+        if len(data) != size or _git_object_sha(b"blob", data) != object_id:
+            raise SourceStageError("source archive blob differs from the canonical Git tree")
+    return contents
+
+
 def download_source_archive(revision: str) -> bytes:
     if not isinstance(revision, str) or not _SHA.fullmatch(revision):
         raise SourceStageError("invalid source revision")
@@ -697,7 +795,7 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
             if not isinstance(base_archive, bytes) or not 1 <= len(base_archive) <= MAX_ARCHIVE_BYTES:
                 raise SourceStageError("invalid source archive identity or size")
             base_archive_sha = hashlib.sha256(base_archive).hexdigest()
-            base = read_source_archive(base_archive, base_revision,
+            base = read_verified_source_archive(base_archive, base_revision, fetch=fetch,
                                        remaining_bytes=MAX_TRANSACTION_BYTES - captured_bytes, cancelled=cancelled)
             del base_archive
             if applied is not None and {name: _digest(raw) for name, raw in base.items()} != applied["upstream"]:
@@ -710,7 +808,7 @@ def prepare_source_update(source_root: Path, staging_root: Path, target_revision
             if not isinstance(target_archive, bytes) or not 1 <= len(target_archive) <= MAX_ARCHIVE_BYTES:
                 raise SourceStageError("invalid source archive identity or size")
             target_archive_sha = hashlib.sha256(target_archive).hexdigest()
-            incoming = read_source_archive(target_archive, target_revision,
+            incoming = read_verified_source_archive(target_archive, target_revision, fetch=fetch,
                                            remaining_bytes=MAX_TRANSACTION_BYTES - captured_bytes, cancelled=cancelled)
             del target_archive
             captured_bytes += sum(map(len, incoming.values()))

@@ -18,7 +18,9 @@ explain evidence and propose next steps.
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-115)** · **[Master Manual](docs/master-manual.md)** ([PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1150)**
+**Current source preview: 1.15.1** · [Maintenance release notes](docs/releases/v1.15.1.md)
+
+**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1151)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1151)**
 
 ## See Angerona in action
 
@@ -55,6 +57,15 @@ perform no host actions.
 | [![Red Team overall progress and caught versus missed checks with synthetic demonstration data](assets/screenshots/red-team-progress-demo.png)](docs/security-flow.md) | [![Verified step diagnostics and proposed next steps with synthetic demonstration data](assets/screenshots/red-team-diagnostics-demo.png)](docs/security-flow.md) |
 | [![Final Red Team outcome badge with synthetic demonstration data](assets/screenshots/red-team-passing-demo.png)](docs/security-flow.md) | [![Component heartbeat EKGs with synthetic demonstration data](assets/screenshots/component-heartbeats-demo.png)](docs/live-debug-harness.md) |
 | [![Stable heartbeat detail review with synthetic demonstration data](assets/screenshots/heartbeat-details-demo.png)](docs/live-debug-harness.md) | DEMO only: simulation outcomes do not establish real-world detection coverage. |
+
+<details>
+<summary>New in 1.15.1: optional watchdog heartbeat and signing controls (DEMO)</summary>
+
+[![Synthetic 1.15.1 watchdog demo with an opted-in unsigned monitor, separate heartbeat and signature indicator, explicit reduced protection and signing-review controls](assets/screenshots/watchdog-signing-demo.png)](docs/releases/v1.15.1.md#third-watchdog-modes)
+
+Synthetic values only. The unsigned monitor is off by default and has no independent Core recovery or privileged authority.
+
+</details>
 
 ## Suite at a glance
 
@@ -123,27 +134,53 @@ and separate installation staging require additional space.
 | macOS source setup | 0.50–0.75 GB | 1.5–3 GB |
 | Linux source setup | 0.30–0.50 GB | 1–2 GB |
 
-## Current development: v1.15.0
+## Current development: v1.15.1
 
 **Source preview.** A genuine Source Observe network-containment gap remains
-open. Controlled response validation passed. A combined SpywareGuard/Zero-Breach
-run finished with findings and incomplete coverage; it is not a clean-PC verdict.
+open. Earlier controlled response validation and a combined SpywareGuard/Zero-Breach
+run remain dated evidence. That scan had findings and incomplete coverage; it
+is not a clean-PC verdict or live acceptance of this maintenance revision.
 Controlled results and remaining coverage limits are documented in the
-[current release notes](docs/releases/v1.15.0.md).
+[current release notes](docs/releases/v1.15.1.md).
 
-Further reading: [current release notes](docs/releases/v1.15.0.md) · [security fixes and residual exposure report (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
+Further reading: [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [current release notes](docs/releases/v1.15.1.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
 
-## What's new in 1.15
+The downloadable Word/PDF manual is the earlier **1.15.0 / 9 November** edition.
+The [current source companion](docs/releases/v1.15.1.md) and
+[readable manual introduction](docs/master-manual.md) explain the 1.15.1 changes.
 
+## What's new in 1.15.1
+
+- **Third-watchdog choices:** optional ordinary-user monitoring is off by default
+  and clearly marked reduced protection. A separate signature check opens new
+  Watchdog settings for signer details and reviewed signing-update requests.
+  Installed protection still requires explicit signing and enrollment. The
+  optional observer shares the Core job and does not provide independent recovery.
+- **Clearer failure handling:** an optional watchdog worker cannot perform native
+  work before successful thread admission; an uncertain start holds that helper
+  while other Core workers continue. Scanner GUI shutdown follows authenticated
+  STOP and verified cleanup. AI provider self-tests explain unverified installation
+  write custody and retain FAIL; that result is not a malware verdict.
+- **Security review candidate:** stronger source-archive checks, recovery-profile
+  parity, local control and IPC admission, mobile PIN attempt accounting and
+  exact expiring acknowledgements. Unsafe POSIX binary installation and new
+  Windows deception writes are held pending reviewed replacements. Focused
+  offline checks have passed; live acceptance and fresh hosted CI remain
+  outstanding. Native cleanup uncertainty holds further admission, and streamed
+  source-input checks bound optional helper preparation. A real signed positive
+  deployment remains unverified. [Patches and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md).
 - **Native third watchdog:** a separate Windows Go executable monitors the
   installed protection service, honors authenticated STOP and normal SCM stops,
   and uses bounded recovery attempts after failed exits. It needs no Python runtime. Development builds are
   unsigned; protected publisher signing and installer registration are required
-  before deployment. Source runs do not auto-start it.
+  before protected deployment. Optional unsigned user-session monitoring is
+  separately enabled in Watchdog settings and is off by default.
   [Build, behavior and deployment limits](frz/watchdog3/README.md) ·
   [Windows signing and service setup](docs/enterprise/WINDOWS_SERVICE_ONBOARDING.md).
-- **Harder to switch off:** after a one-time setup, STOP and resume need
-  Windows administrator approval, and an old STOP cannot be replayed. Repeated
+- **Authenticated shutdown and bounded recovery:** enrolled administrator STOP
+  and resume use the installed authority boundary. Local epoch and nonce checks
+  reject stale commands within that boundary; whole-store rollback and same-user
+  source keys remain limits. Source helpers cannot elevate the mutable checkout. Repeated
   forced restarts are counted over minutes, hours and a day, raise a Critical
   restart-loop alert and bring the key sensors back first; every restart
   reports how long protection was down. The Watchdog monitor shows this

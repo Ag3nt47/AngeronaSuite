@@ -1,9 +1,137 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.15.0
+Version: 1.15.1
 Date: 2026-11-13
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
+
+## LATEST (v1.15.1 — security maintenance and watchdog modes)
+
+- The PC source checkout is the authoritative maintenance copy; GitHub receives
+  its exact reviewed commit through the guarded publisher. Read the 1.15.1
+  version notes and dated worklist report for scope and remaining gaps.
+- Optional unsigned third-watchdog monitoring is OFF by default. It is an
+  ordinary-user reduced-protection mode with real generation-bound progress,
+  no privileged service/firewall/containment authority and explicit recovery
+  availability limits. The current helper shares the Core job lifetime and
+  reports independent recovery unavailable. It never supplies installed
+  Protect authority.
+- Installed/SCM supervision requires native own-image signature verification
+  and protected final-byte/certificate enrollment before private authority
+  reads, writes or service dispatch. Signing alone is insufficient.
+- The third-watchdog signature marker is separate from its EKG: green check
+  only for verified exact-image signature metadata, red cross for unsigned or
+  unverified. Clicking it opens Watchdog signing settings. A stale signed
+  process still flatlines; PID presence is not heartbeat proof.
+- Selected signed files are inspected as data by the reviewed helper, never
+  executed. Signing-update requests are explicitly UNTRUSTED; a separately
+  governed installer must reverify and apply enrollment. Source UI never
+  elevates mutable checkout code or imports certificates/trust roots.
+- Unknown native retirement retains provider/file owners under a sticky custody
+  hold, refuses later native admission and never retries an uncertain close.
+  Optional observer source admission streams at most 256 directory entries,
+  at most 128 recorded inputs, 2 MiB per source and a 32 MiB image, with a
+  five-second checked budget between steps. This is not OS-call cancellation.
+- A real successfully signed/enrolled positive deployment remains unaccepted;
+  mocks and unsigned native fixtures cannot establish that case. The readable
+  manual introduces current 1.15.1 source companions; Word/PDF remains the
+  older 1.15.0 / 9 November edition, with its original body and dated evidence.
+- Optional monitor startup uses a single-use Event; native work is admitted only
+  after Thread.start returns successfully. Unknown start stays sticky-held while
+  other Core workers continue. Scanner GUI quit is queued only after authenticated
+  STOP and successful cleanup. Maintenance ownership accepts at most 16 harmless
+  Python prefix switches and rejects -c/unknown-entry confusion.
+- AI provider self-test explanations are clearer, but required per-machine write
+  custody that is unverified remains FAIL. A read-only host assessment confirmed
+  that uncertainty; no malware/compromise verdict or ACL rewrite follows.
+- Accepted scoped maintenance gates and the actual ordinary-user diagnostic
+  observer/unsigned-inspection exercise are recorded in
+  analysis/maintenance-v1.15.1-acceptance-2026-11-13.md. The endpoint was a
+  diagnostic Core only. Final syntax/selfcheck/provider/interoperability,
+  publication and hosted receipts retain separate result slots.
+- Earlier 1.15.0 validation and deployed-authority limits below remain dated
+  evidence; no new hosted success or live coverage follows from those records.
+
+## CURRENT REVIEW (v1.15.1 — 13 November security candidate)
+
+- Version 1.15.1 integrates the reviewed worklist candidate, initially based on
+  commit 3291279, with authoritative PC baseline fd378df and the signing/mode
+  changes. Prior checks do not establish exact-commit live acceptance or new
+  green hosted checks. Read
+  `docs/releases/security-worklist-review-2026-11-13.md`,
+  `analysis/security-worklist-progress-2026-11-13.md` and the scoped independent
+  source audit before interpreting earlier completion statements.
+- Recovery now has 55 exact members in the builder, PowerShell verifier and
+  application literal profile; CI and publisher require all three plus the
+  manifest and four unique batch pins to agree. Canonical source startup uses
+  a fresh private bytecode prefix before helper import. Earlier 48-member
+  historical records below do not describe this candidate.
+- Source ZIP staging reconstructs Git subtree IDs and requires the exact file
+  set and blob hashes. Managed-lineage evidence holds automatic historical-HEAD
+  rollback, and unattended GitHub-parent fallback was removed. Canonical GitHub
+  remains the supplier; independent signing, runtime generation freshness and
+  direct-target current-main proof are not implemented.
+- Local authority checks use fixed KnownFolder paths, owner/DACL/ancestry custody
+  and ACL-before-key publication. Stopped heartbeat flags alone cannot grant
+  stand-down. Restart claims have bounded freshness and consumed nonces. Corrupt
+  bookkeeping and ring headers have bounded degraded recovery paths; unknown
+  native process custody never authorizes termination. Outboxes use verified
+  peek, accepted EventBus publish, then exact ACK; observations grant no response.
+- Mobile self/health/review feedback is filtered before authentication and token
+  allocation. Protected-store-only 6–12-digit PIN state uses cumulative durable
+  attempt charges, backoff and local rearm after ten failures. Nonces/tokens burn
+  before comparison. Signal identity-key proof and whole-store freshness remain open.
+- Engine protocol v2 uses mutual role-separated proof, 8 pre-auth slots with one
+  absolute 1-second deadline and 4 separate dispatch slots. Exact close ownership
+  is atomic. AUTH codec checks do not certify live routing. Mail has verified TLS,
+  bounded I/O and in-memory delivered-message dedup; observations remain advisory.
+  ACKs are authenticated, exact and expiring; process suppression requires authenticated
+  target/digest policy. Legacy broad rows cannot become suppression authority.
+  Reviewed feed/model UI is literal/escaped.
+- Ollama admission has bounded protected-package/DLL custody, fixed-local model
+  path checks and machine-context signing-chain/root checks. Legacy broad-kill,
+  download/install/persistence helpers are retired. Writable per-user installs
+  may be held; no ACL rewrite, invented publisher fingerprint, actual vendor-PKI
+  acceptance or lifetime model-root lease is claimed. Foreign/shared daemon
+  image identity does not prove its model/cloud/environment settings.
+- Deliberate unavailable capabilities: POSIX automatic binary installation holds
+  before mutation; reviewed source setup remains separate. All new Windows legacy
+  deception mutations hold before effect pending an object-relative provider.
+  Existing exact static canaries retain read-only monitoring. Typed Windows hold
+  is SKIP, never PASS; genuine contract, crash, timeout and worker failures stay FAIL.
+  Dormant syscall-bridge setup exits before packaging helpers and its C file
+  rejects direct compilation;32 entry/fallback-boundary cases passed. The
+  historical native algorithms remain uncorrected, uncompiled and unadmitted.
+- Live Debug adds bounded advisory OS client-PID audit with explicit loss; no
+  image/birth/trust or response inference. Same-SID readers, fairness and best-effort
+  free-text confidentiality remain limits. FIM admits covered roots independently
+  and binds stat cache to the verified baseline digest. Process Monitor retires
+  PID-only startup suppression after fresh valid-count inventory. Memory region
+  classification masks the base protection byte, retaining full raw flags in
+  evidence/repeat identity; 126 regression cases passed. No new traversal, native
+  payload read or response authority follows from that metadata check.
+- Scoped gates include 332 Ollama fake-boundary cases plus 2 private native leases,
+  134 self-test precedence cases and 26 callable-integrity cases. The source report
+  lists the other overlapping cohorts; do not sum them into a suite total. Broad
+  activation/coherence attempts exceeded diagnostic budgets and are not green.
+  Two representative real-flush cases passed; no production durability was removed.
+  Final trusted-path WLAN fixtures passed 16 cases. Offscreen selfcheck passed all 29
+  phases, with 70 module PASS/16 module SKIP across 86 modules plus one pipeline PASS.
+  Thirteen widget owners, 13 readers and eight Python workers retired; Qt closed.
+  The 30-step inert Red Team fixture is not live detector/containment evidence.
+  Whole-source syntax 1655 verified; late WLAN files compiled in their gates.
+  Fresh runtime acceptance remains pending.
+- Original native Go test image passed 63 top-level cases with 1 export-only skip
+  locally and on a verified real C-drive short alias, unchanged source/image.
+  The empty owned C fixture was removed after closed custody. Hosted missing-spawnlock failure remains
+  unexplained. All Python matrix jobs now request pinned Go 1.27.4, pending hosted CI.
+- Source-profile same-user keys, whole-root rollback, administrator/kernel tampering,
+  production PPL/ELAM/WDAC, optional native driver defects and Source Observe
+  network enforcement remain outside the established protection boundary. The native
+  syscall bridge is already hard-held with degraded health 55; its fallback self-test
+  is descriptive, not operation efficacy proof. Dormant C defects remain unpatched.
+  No real UAC/firewall/service/driver activation, Signal send, operator-secret
+  access or Ollama provider launch/stop/download occurred in these review gates.
 
 ## WINDOWS SERVICE PREPARATION (2026-11-13 — not deployed)
 

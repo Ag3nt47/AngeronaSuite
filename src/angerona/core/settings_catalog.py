@@ -35,6 +35,13 @@ AREAS = (
         "Local configuration", True,
     ),
     SettingsArea(
+        "watchdog", "Watchdog",
+        "Third-watchdog reduced mode, current signature and future signing updates.",
+        ("watchdog", "third watchdog", "watchdog3", "unsigned", "signing",
+         "certificate", "certificate expiry", "reduced protection", "signage"),
+        "Local metadata; optional reduced mode is off by default; no protected enrollment", True,
+    ),
+    SettingsArea(
         "combat", "Adversary Combat",
         "Unattended blocking, containment, quarantine, host isolation, honeypots and undo.",
         ("adversary combat", "autonomous response", "standing authority",

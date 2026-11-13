@@ -36,7 +36,7 @@ def _runtime(tmp_path, monkeypatch):
 def test_query_distinguishes_disconnect_from_collector_failure(monkeypatch) -> None:
     monkeypatch.setattr(
         wlan_monitor,
-        "check_output_hidden",
+        "_netsh_interfaces",
         lambda *_args, **_kwargs: "    State : disconnected\n",
     )
     assert wlan_monitor._query_wlan().status == "disconnected"
@@ -44,7 +44,7 @@ def test_query_distinguishes_disconnect_from_collector_failure(monkeypatch) -> N
     def fail(*_args, **_kwargs):
         raise OSError("netsh unavailable")
 
-    monkeypatch.setattr(wlan_monitor, "check_output_hidden", fail)
+    monkeypatch.setattr(wlan_monitor, "_netsh_interfaces", fail)
     failed = wlan_monitor._query_wlan()
     assert failed.status == "error"
     assert "unavailable" in failed.reason

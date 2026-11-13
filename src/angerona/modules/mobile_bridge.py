@@ -42,6 +42,11 @@ from typing import Optional
 
 from angerona.core.eventbus import Event, is_remote_observe_only
 from angerona.core.module_base import BaseModule, Severity
+from angerona.core.threat import event_disposition
+from angerona.core.mobile_command_auth import (
+    MobileCommandAuthorization, MobileCommandStatus, MOBILE_AUTH_SECRET_NAMES,
+    MOBILE_PIN_SECRET, LEGACY_MOBILE_PIN_SECRET,
+)
 from angerona.core.mobile_cli_custody import (
     begin_signal_call, end_signal_call,
     request_signal_stop, resume_signal_admission, retain_signal_custody,
@@ -59,10 +64,8 @@ except Exception:   # pragma: no cover
     def neutralize_telemetry(text: str, max_len: int = 4000) -> str:  # type: ignore
         return str(text)[:max_len].replace("\n", " ")
 
-# Entropy must match what the Settings save used when DPAPI-wrapping the PIN.
-_PIN_ENTROPY = b"Angerona-MOBILE-PIN-v1"
-_PIN_ENV = "ANGERONA_MOBILE_PIN_DPAPI"     # legacy base64(DPAPI blob) from OS store
-_PORTABLE_PIN_ENV = "ANGERONA_MOBILE_PIN"  # delivered by the protected OS store
+_PIN_ENV = LEGACY_MOBILE_PIN_SECRET  # compatibility name for child-environment checks only
+_PORTABLE_PIN_ENV = MOBILE_PIN_SECRET  # never read as an authorization source
 
 _TTL_SECONDS = 600.0        # token lifetime (10 min)
 _TTL_SWEEP_S = 10.0         # cleanup cadence
@@ -155,6 +158,8 @@ class _AdminChallenge:
     expires_monotonic: float
     request_message_id: str
     allowed_actions: tuple[str, ...]
+    authorization_generation: str = ""
+    scope_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -495,6 +500,10 @@ class MobileResponseBridge(BaseModule):
             str, _PendingCombatRequest
         ] = OrderedDict()
         self._receipt_authority_fault = ""
+        self._command_auth = None
+        self._command_auth_scope = None
+        self._auth_audit_started = None
+        self._auth_audit_count = 0
 
     def bind_manager(self, manager) -> None:
         self._manager = manager
@@ -521,25 +530,48 @@ class MobileResponseBridge(BaseModule):
             "publisher": getattr(c, "mobile_signal_cli_publisher", "") or "",
         }
 
-    def _pin(self) -> Optional[str]:
-        """Read a four-digit PIN delivered by the protected OS credential store.
+    def _command_authorization(self) -> MobileCommandAuthorization:
+        cfg = self._cfg()
+        scope = {**cfg, "host": _signal_identity(cfg["host"]),
+                 "dest": _signal_identity(cfg["dest"])}
+        root = getattr(self._config, "data_dir", None)
+        identity = (str(root), tuple(sorted(scope.items())))
+        if self._command_auth is None or self._command_auth_scope != identity:
+            self._command_auth = MobileCommandAuthorization(root, scope=scope)
+            self._command_auth_scope = identity
+        return self._command_auth
 
-        The legacy nested-DPAPI value remains readable for existing Windows
-        installations. Linux Secret Service and macOS Keychain use the canonical
-        value so the mobile gate has the same semantics on every platform.
-        """
-        portable = os.environ.get(_PORTABLE_PIN_ENV, "").strip()
-        if re.fullmatch(r"[0-9]{4}", portable):
-            return portable
-        blob_b64 = os.environ.get(_PIN_ENV, "")
-        if not blob_b64:
-            return None
+    def _mobile_auth_status(self) -> MobileCommandStatus:
         try:
-            import base64
-            from angerona.modules.hardware_crypto import unprotect
-            raw = unprotect(base64.b64decode(blob_b64), _PIN_ENTROPY)
-            value = raw.decode("utf-8").strip() if raw else ""
-            return value if re.fullmatch(r"[0-9]{4}", value) else None
+            return self._command_authorization().status()
+        except Exception:
+            return MobileCommandStatus(
+                ready=False, reason="Protected mobile authorization unavailable; local rearm required",
+                generation="", scope_digest="", failures=0, retry_after_s=0.0, locked=True,
+            )
+
+    def _accept_local_rearm(self, generation: str) -> None:
+        """Refresh only a separately verified local enrollment; this never rearms storage."""
+        previous = self._command_auth
+        previous_scope = self._command_auth_scope
+        self._command_auth = None
+        try:
+            status = self._command_authorization().status()
+            if (not status.ready or not generation
+                    or not hmac.compare_digest(status.generation, generation)):
+                raise ValueError("Protected local mobile enrollment could not be rebound")
+        except Exception:
+            self._command_auth = previous
+            self._command_auth_scope = previous_scope
+            raise
+        self._retire_prior_authorizations(status)
+        self._auth_failures.clear()
+        self._auth_locked_until = 0.0
+
+    def _pin(self) -> Optional[str]:
+        """Read only a strong PIN from the protected store; never ambient env."""
+        try:
+            return self._command_authorization().read_pin()
         except Exception:
             return None
 
@@ -754,7 +786,7 @@ class MobileResponseBridge(BaseModule):
         ):
             return "arguments-invalid", -1, b""
         environment = sanitized_child_environment(source={})
-        if _PIN_ENV in environment or _PORTABLE_PIN_ENV in environment:
+        if any(name in environment for name in MOBILE_AUTH_SECRET_NAMES):
             return "environment-invalid", -1, b""
         return run_signal_cli(argv, environment, cwd=str(Path(sealed.identity.path).parent),
                               timeout=timeout, max_output=_MAX_CLI_OUTPUT)
@@ -1008,34 +1040,66 @@ class MobileResponseBridge(BaseModule):
             events, _overflow = self.poll_bus_events(priority=True)
         except Exception:
             return
-        now = time.time()
+        cached_auth_status = None
+
+        def auth_status():
+            nonlocal cached_auth_status
+            # Deferred until the alert has authenticated actionable authority.
+            # Commands still reread protected state for their own PIN attempt.
+            if cached_auth_status is None:
+                cached_auth_status = self._mobile_auth_status()
+            return cached_auth_status
+
         for ev in events:
-            if ev.severity < Severity.HIGH or ev.module in ("Console", "Self-Test"):
+            details = ev.details if isinstance(ev.details, dict) else {}
+            if (ev.severity < Severity.HIGH
+                    or ev.module in ("Console", "Self-Test", self.name)
+                    or details.get("disposition") == "health"
+                    or event_disposition(ev) == "health"):
                 continue
             if self._is_muted(ev.module):
                 continue
-            self._gate_alert(ev)
+            self._gate_alert(ev, auth_status=auth_status)
 
-    def _gate_alert(self, ev) -> None:
+    def _retire_prior_authorizations(self, status) -> None:
+        if not status.generation:
+            return
+        retired = [token for token, info in tuple(self.pending_alerts.items())
+                   if info.get("authorization_generation") != status.generation
+                   or info.get("authorization_scope") != status.scope_digest]
+        for token in retired:
+            self.pending_alerts.pop(token, None)
+        challenge = self._admin_challenge
+        if challenge is not None and (
+                challenge.authorization_generation != status.generation
+                or challenge.scope_digest != status.scope_digest):
+            self._admin_challenge = None
+        if retired:
+            self.emit(
+                "Prior mobile response tokens retired after local authorization changed; no action taken",
+                Severity.INFO, event_type="mobile_authorization_retired",
+                disposition="audit", audit_only=True, response_authorized=False,
+                retired_count=len(retired), active_attack=False,
+            )
+        # Pending Combat receipts remain available for read-only reconciliation;
+        # a local rearm cannot rewrite an already admitted action's outcome.
+
+    def _gate_alert(self, ev, *, auth_status=None) -> None:
         details = ev.details if isinstance(ev.details, dict) else {}
+        if (ev.module == self.name or details.get("disposition") == "health"
+                or event_disposition(ev) == "health"):
+            return
         pid = details.get("pid")
         module = neutralize_telemetry(str(ev.module), 80)
         threat = neutralize_telemetry(str(ev.message), 200)
-        if len(self.pending_alerts) >= _MAX_PENDING_ALERTS:
-            # Already-issued, exact-scope tokens remain valid until use/expiry.
-            # Preserve the alert in the phone digest and local bus without doing
-            # another process/artifact probe or retaining unbounded authority.
-            self._token_admission_drops += 1
-            self._deliver_alert_line(
-                f"🚨 [{ev.severity.label}] {module} (PID {pid}) — {threat}\n"
-                "No new response token: pending authorization capacity reached. "
-                "Review this alert on the host."
-            )
-            return
-        process_target = self._bind_process_target(pid, details)
-        rollback_artifact = self._prepare_rollback_artifact(ev)
+        line = f"🚨 [{ev.severity.label}] {module} (PID {pid}) — {threat}"
         response_eligible = (
-            not is_remote_observe_only(ev)
+            event_disposition(ev) == "active"
+            and details.get("response_authorized") is not False
+            and details.get("audit_only") is not True
+            and isinstance(details.get("disposition", ""), str)
+            and details.get("disposition") not in ("health", "audit", "observation", "exposure", "practice", "directive")
+            and not is_remote_observe_only(ev)
             and self._bus is not None
             and getattr(self._bus, "integrity_enabled", False)
         )
@@ -1044,41 +1108,53 @@ class MobileResponseBridge(BaseModule):
                 response_eligible = bool(self._bus.verify(ev))
             except Exception:
                 response_eligible = False
-        action = "RESPOND" if response_eligible and (process_target or rollback_artifact) else "REVIEW"
+        if not response_eligible:
+            self._deliver_alert_line(line + "\nREVIEW ONLY — no authenticated local response authority; no token issued.")
+            return
+        status = auth_status() if callable(auth_status) else auth_status
+        if status is None:
+            status = self._mobile_auth_status()
+        self._retire_prior_authorizations(status)
+        if not status.ready:
+            self._deliver_alert_line(line + "\nREVIEW ONLY — " + status.reason + "; no token issued.")
+            return
+        if len(self.pending_alerts) >= _MAX_PENDING_ALERTS:
+            self._token_admission_drops += 1
+            self._deliver_alert_line(
+                line + "\nNo new response token: pending authorization capacity reached. Review on the host."
+            )
+            return
+        # Review-only, health and unauthenticated inputs never probe a process
+        # or prepare a recovery artifact, and cannot occupy response capacity.
+        process_target = self._bind_process_target(pid, details)
+        rollback_artifact = self._prepare_rollback_artifact(ev)
+        commands = []
+        if process_target:
+            commands.extend(("KILL", "SUSPEND"))
+        if rollback_artifact:
+            commands.append("ROLLBACK")
+        if not commands:
+            self._deliver_alert_line(line + "\nREVIEW ONLY — no exact response target; no token issued.")
+            return
         token = self._new_token()
         self.pending_alerts[token] = {
             "pid": process_target.get("pid") if process_target else None,
-            "process_create_time": (
-                process_target.get("process_create_time") if process_target else None
-            ),
+            "process_create_time": process_target.get("process_create_time") if process_target else None,
             "exe": process_target.get("exe") if process_target else None,
             "process_name": process_target.get("name") if process_target else None,
-            "rollback_artifact": rollback_artifact,
-            "response_eligible": response_eligible,
+            "rollback_artifact": rollback_artifact, "response_eligible": True,
             "source_event_hmac": str(getattr(ev, "hmac_sig", "") or ""),
-            "action": action,
-            "module": ev.module,
-            "timestamp": time.time(),
+            "action": "RESPOND", "module": ev.module, "timestamp": time.time(),
             "operator_identity": _signal_identity(self._cfg().get("dest", "")),
+            "allowed_actions": tuple((*commands, "MUTE")),
+            "expires_monotonic": time.monotonic() + _TTL_SECONDS,
+            "authorization_generation": status.generation,
+            "authorization_scope": status.scope_digest,
         }
-        commands = []
-        if response_eligible and process_target:
-            commands.extend(("KILL", "SUSPEND"))
-        if response_eligible and rollback_artifact:
-            commands.append("ROLLBACK")
-        allowed_actions = tuple((*commands, "MUTE"))
-        self.pending_alerts[token]["allowed_actions"] = allowed_actions
-        self.pending_alerts[token]["expires_monotonic"] = (
-            time.monotonic() + _TTL_SECONDS
+        self._deliver_alert_line(
+            line + f"\nRequest {'/'.join(commands)} {token} <PIN> · MUTE {token} <PIN>. "
+            "Execution still requires the exact consumer's authority and verified receipt."
         )
-        command_text = (
-            "/".join(commands) + f" {token} <PIN>"
-            if commands
-            else "REVIEW ONLY — no exact response target"
-        )
-        line = (f"🚨 [{ev.severity.label}] {module} (PID {pid}) — {threat}\n"
-                f"Token {token}: {command_text}  ·  MUTE {token} <PIN>")
-        self._deliver_alert_line(line)
 
     def _deliver_alert_line(self, line: str) -> None:
         # Rate-limit: >_FLOOD_MAX alerts in the window → aggregate into a digest.
@@ -1161,15 +1237,13 @@ class MobileResponseBridge(BaseModule):
             expired += 1
             if len(token_samples) < 3:
                 token_samples.append(token)
-            pid = info.get("pid")
-            if pid:
-                self._emit_mitigation(
-                    "SUSPEND",
-                    pid,
-                    reason=f"token {token} expired",
-                    directive_authorized=False,
-                    event_type="mobile_token_expiry",
-                )
+            self.emit(
+                "Mobile response token expired; no action taken", Severity.INFO,
+                event_type="mobile_token_expiry", disposition="health", audit_only=True,
+                response_authorized=False, directive_authorized=False, active_attack=False,
+                token_sha256=hashlib.sha256(token.encode("utf-8")).hexdigest(),
+                target_pid=info.get("pid"),
+            )
         if expired:
             # A burst must not become hundreds of sealed CLI subprocesses when
             # its tokens expire. Keep each local audit and send one summary.
@@ -1230,6 +1304,10 @@ class MobileResponseBridge(BaseModule):
     ) -> bool:
         """Consume one authenticated transport envelope identity exactly once."""
         self._prune_command_authority()
+        status = self._mobile_auth_status()
+        if not status.ready:
+            self._spoof(body, "mobile commands held: " + status.reason)
+            return False
         if self._lockout_remaining() > 0:
             self._spoof(body, "mobile mutation authorization is locked")
             return False
@@ -1269,6 +1347,10 @@ class MobileResponseBridge(BaseModule):
             message_id=message_id, sent_at=sent_at, body=body
         ):
             return
+        status = self._mobile_auth_status()
+        if not status.ready:
+            self._spoof(body, "mobile commands held: " + status.reason)
+            return
         now = time.monotonic()
         token = secrets.token_hex(32)
         self._admin_challenge = _AdminChallenge(
@@ -1278,17 +1360,26 @@ class MobileResponseBridge(BaseModule):
             expires_monotonic=now + _ADMIN_NONCE_TTL_SECONDS,
             request_message_id=str(message_id).casefold(),
             allowed_actions=("ECO_ON", "ECO_OFF", "LOCKDOWN"),
+            authorization_generation=status.generation,
+            scope_digest=status.scope_digest,
         )
         self._send(
             f"Fresh administrative nonce (single-use, "
             f"{int(_ADMIN_NONCE_TTL_SECONDS)}s): {token}"
         )
 
-    def _pin_authorized(self, pin: str, *, body: str) -> bool:
-        if not self._pin_ok(pin):
-            self._record_auth_failure(body, "mobile PIN verification failed")
+    def _pin_authorized(self, pin: str, *, body: str, generation: str) -> bool:
+        try:
+            result = self._command_authorization().verify_pin(
+                pin, expected_generation=generation,
+            )
+        except Exception:
+            self._spoof(body, "protected mobile authorization held; local review/rearm required")
             return False
-        self._auth_failures.clear()
+        if not result.authorized:
+            self._record_auth_failure(body, result.reason)
+            return False
+        # A correct PIN never clears the persistent cumulative failure floor.
         return True
 
     def _authorize_admin_change(
@@ -1301,33 +1392,40 @@ class MobileResponseBridge(BaseModule):
         message_id: str,
         sent_at: float | None,
         body: str,
-    ) -> bool:
+    ) -> tuple[str, str] | None:
         challenge = self._admin_challenge
         now = time.monotonic()
         if challenge is None or now >= challenge.expires_monotonic:
             self._admin_challenge = None
             self._record_auth_failure(body, "missing or expired administrative nonce")
-            return False
+            return None
         if action not in challenge.allowed_actions:
             self._record_auth_failure(body, "administrative nonce action mismatch")
-            return False
+            return None
         if not hmac.compare_digest(_signal_identity(sender), challenge.sender):
             self._record_auth_failure(body, "administrative nonce sender mismatch")
-            return False
-        if not hmac.compare_digest(token.casefold(), challenge.token):
+            return None
+        if (not isinstance(token, str) or not _SHA256_RE.fullmatch(token.casefold())
+                or not hmac.compare_digest(token.casefold(), challenge.token)):
             self._record_auth_failure(body, "administrative nonce mismatch")
-            return False
+            return None
+        # Burn the exact matched nonce before any PIN comparison or storage I/O.
+        self._admin_challenge = None
+        status = self._mobile_auth_status()
+        if (not status.ready or challenge.authorization_generation != status.generation
+                or challenge.scope_digest != status.scope_digest):
+            self._spoof(body, "administrative authorization changed or is held; request a fresh nonce after local review")
+            return None
         if not self._consume_fresh_message(
             message_id=message_id, sent_at=sent_at, body=body
         ):
-            return False
-        if not self._pin_authorized(pin, body=body):
-            return False
+            return None
+        if not self._pin_authorized(pin, body=body, generation=challenge.authorization_generation):
+            return None
         if self._bus is None or not getattr(self._bus, "integrity_enabled", False):
             self._record_auth_failure(body, "signed change receipt authority unavailable")
-            return False
-        self._admin_challenge = None
-        return True
+            return None
+        return challenge.authorization_generation, challenge.scope_digest
 
     def _authorize_alert_change(
         self,
@@ -1339,30 +1437,37 @@ class MobileResponseBridge(BaseModule):
         message_id: str,
         sent_at: float | None,
         body: str,
-    ) -> bool:
+    ) -> dict | None:
         info = self.pending_alerts.get(token)
         if not isinstance(info, dict):
             self._record_auth_failure(body, "unknown alert authorization token")
-            return False
+            return None
         allowed = tuple(str(value) for value in info.get("allowed_actions", ()))
         expires = float(info.get("expires_monotonic", 0.0) or 0.0)
         if action not in allowed or time.monotonic() >= expires:
             self._record_auth_failure(body, "expired or out-of-scope alert token")
-            return False
+            return None
         operator = str(info.get("operator_identity") or "")
         if not operator or not hmac.compare_digest(_signal_identity(sender), operator):
             self._record_auth_failure(body, "alert token sender mismatch")
-            return False
+            return None
+        # Remove authority before verification. A failed PIN can never reuse it.
+        self.pending_alerts.pop(token, None)
+        status = self._mobile_auth_status()
+        if (not status.ready or info.get("authorization_generation") != status.generation
+                or info.get("authorization_scope") != status.scope_digest):
+            self._spoof(body, "alert authorization changed or is held; request a fresh token after local review")
+            return None
         if not self._consume_fresh_message(
             message_id=message_id, sent_at=sent_at, body=body
         ):
-            return False
-        if not self._pin_authorized(pin, body=body):
-            return False
+            return None
+        if not self._pin_authorized(pin, body=body, generation=status.generation):
+            return None
         if self._bus is None or not getattr(self._bus, "integrity_enabled", False):
             self._record_auth_failure(body, "signed change receipt authority unavailable")
-            return False
-        return True
+            return None
+        return info
 
     def _emit_change_receipt(
         self,
@@ -1511,7 +1616,7 @@ class MobileResponseBridge(BaseModule):
             state = args[0].upper() if args else ""
             if len(args) != 3 or state not in ("ON", "OFF"):
                 return self._record_auth_failure(body, "bad ECO authorization shape")
-            if self._authorize_admin_change(
+            authorization = self._authorize_admin_change(
                 f"ECO_{state}",
                 args[1],
                 args[2],
@@ -1519,13 +1624,14 @@ class MobileResponseBridge(BaseModule):
                 message_id=message_id,
                 sent_at=sent_at,
                 body=body,
-            ):
-                return self._eco(state == "ON", args[1])
+            )
+            if authorization is not None:
+                return self._eco(state == "ON", args[1], authorization=authorization)
             return None
         if cmd == "LOCKDOWN":
             if len(args) != 2:
                 return self._record_auth_failure(body, "bad LOCKDOWN authorization shape")
-            if self._authorize_admin_change(
+            authorization = self._authorize_admin_change(
                 "LOCKDOWN",
                 args[0],
                 args[1],
@@ -1533,36 +1639,21 @@ class MobileResponseBridge(BaseModule):
                 message_id=message_id,
                 sent_at=sent_at,
                 body=body,
-            ):
-                return self._lockdown(args[0])
+            )
+            if authorization is not None:
+                return self._lockdown(args[0], authorization=authorization)
             return None
-        if cmd in ("KILL", "SUSPEND", "ROLLBACK"):
-            if len(args) == 2 and self._authorize_alert_change(
-                cmd,
-                args[0],
-                args[1],
-                sender=sender,
-                message_id=message_id,
-                sent_at=sent_at,
-                body=body,
-            ):
-                return self._gated(cmd, args[0])
+        if cmd in ("KILL", "SUSPEND", "ROLLBACK", "MUTE"):
             if len(args) != 2:
                 return self._record_auth_failure(body, f"bad {cmd} authorization shape")
-            return None
-        if cmd == "MUTE":
-            if len(args) == 2 and self._authorize_alert_change(
-                "MUTE",
-                args[0],
-                args[1],
-                sender=sender,
-                message_id=message_id,
-                sent_at=sent_at,
-                body=body,
-            ):
-                return self._mute(args[0])
-            if len(args) != 2:
-                return self._record_auth_failure(body, "bad MUTE authorization shape")
+            info = self._authorize_alert_change(
+                cmd, args[0], args[1], sender=sender,
+                message_id=message_id, sent_at=sent_at, body=body,
+            )
+            if info is not None:
+                if cmd == "MUTE":
+                    return self._mute(args[0], authorized_info=info)
+                return self._gated(cmd, args[0], authorized_info=info)
             return None
         # Not a built-in command → hand it to ARIA for a conversational answer.
         # The sender is already verified as the operator (checked at the top), so
@@ -1577,25 +1668,34 @@ class MobileResponseBridge(BaseModule):
                 return self._send(f"🤖 ARIA: {str(reply)[:1200]}")
         return self._spoof(body, "unknown command")
 
-    def _pin_ok(self, given: str) -> bool:
-        pin = self._pin()
-        return bool(pin) and hmac.compare_digest(given.strip(), pin)
-
     def _token_ok(self, token: str) -> bool:
         return token in self.pending_alerts
 
     def _spoof(self, body: str, why: str) -> None:
-        h = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16]
+        # One global bucket prevents unique sender/body values creating unbounded
+        # state or a bus/Signal feedback storm. No sender or PIN text is retained.
+        now = time.monotonic()
+        previous_count = self._auth_audit_count
+        if self._auth_audit_started is not None and now - self._auth_audit_started < _FLOOD_WINDOW:
+            self._auth_audit_count = min(self._auth_audit_count + 1, 2**63 - 1)
+            return
+        self._auth_audit_started = now
+        self._auth_audit_count = 1
+        digest = hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:16]
         self.emit(
-            f"Spoof/Unauthorized Access Attempt ({why}) — msg_sha={h}",
-            Severity.HIGH,
-            reason=why,
-            msg_sha256=h,
-            disposition="health",
-            event_type="mobile_auth_failure",
-            response_authorized=False,
-            audit_only=True,
+            "Mobile authorization attempt held; repeated attempts are counted locally",
+            Severity.HIGH, reason=str(why)[:240], msg_sha256=digest,
+            attempt_count=1, previous_window_attempts=previous_count,
+            disposition="health", event_type="mobile_auth_failure",
+            response_authorized=False, active_attack=False, audit_only=True,
         )
+
+    def _authorization_current(self, generation: str, scope_digest: str) -> bool:
+        status = self._mobile_auth_status()
+        return bool(status.ready and isinstance(generation, str) and isinstance(scope_digest, str)
+                    and _SHA256_RE.fullmatch(generation) and _SHA256_RE.fullmatch(scope_digest)
+                    and hmac.compare_digest(status.generation, generation)
+                    and hmac.compare_digest(status.scope_digest, scope_digest))
 
     # ── Command implementations ────────────────────────────────────────────────
     def _status_text(self) -> str:
@@ -1620,15 +1720,24 @@ class MobileResponseBridge(BaseModule):
                 rss = p.memory_info().rss / (1024 * 1024)
                 threads = p.num_threads()
             vm = psutil.virtual_memory()
+            auth = self._mobile_auth_status()
             return (f"🛠️ DIAG snapshot\nProc CPU {cpu:.0f}% · RSS {rss:.0f} MB · "
                     f"{threads} threads\nHost RAM {vm.percent:.0f}% used\n"
+                    f"Mobile authorization: {auth.reason}; cumulative failures {auth.failures}/10; "
+                    f"retry delay {auth.retry_after_s:.0f}s.\n"
+                    "Signal peer identity/delivery and native response authority remain separate checks.\n"
                     "(Full Black Box bundle available on the host tray app.)")
         except Exception as exc:
             return f"DIAG unavailable: {exc}"
 
-    def _eco(self, on: bool, token: str) -> None:
+    def _eco(self, on: bool, token: str, *, authorization: tuple[str, str] | None = None) -> None:
         """Interface the Adaptive Resource Governor: ON = heavy throttle (passive),
         OFF = restore full cadence."""
+        if authorization is not None and not self._authorization_current(*authorization):
+            self._emit_change_receipt("ECO_ON" if on else "ECO_OFF", token, outcome="rejected",
+                                      details={"reason": "local mobile authorization changed or is held"})
+            self._send("Mobile ECO held: local authorization changed; no throttling was changed.")
+            return
         level = 6.0 if on else 1.0
         prior: list[tuple[str, BaseModule, float]] = []
         gov = None
@@ -2132,7 +2241,12 @@ class MobileResponseBridge(BaseModule):
                 )
             self._pending_combat_requests.pop(request_id, None)
 
-    def _lockdown(self, token: str = "") -> None:
+    def _lockdown(self, token: str = "", *, authorization: tuple[str, str] | None = None) -> None:
+        if authorization is not None and not self._authorization_current(*authorization):
+            self._emit_change_receipt("LOCKDOWN", token, outcome="rejected",
+                                      details={"reason": "local mobile authorization changed or is held"})
+            self._send("Mobile LOCKDOWN held: local authorization changed; no new isolation was requested.")
+            return
         ok, receipt = self._execute_combat("LOCKDOWN", {}, token=token)
         if ok is True:
             proof = self._emit_change_receipt(
@@ -2177,8 +2291,15 @@ class MobileResponseBridge(BaseModule):
                 f"({self._receipt_phrase(proof)})."
             )
 
-    def _gated(self, cmd: str, token: str) -> None:
-        info = self.pending_alerts.pop(token, None)   # single-use
+    def _gated(self, cmd: str, token: str, *, authorized_info: dict | None = None) -> None:
+        info = authorized_info if authorized_info is not None else self.pending_alerts.pop(token, None)
+        if authorized_info is not None and not self._authorization_current(
+                str(info.get("authorization_generation", "")),
+                str(info.get("authorization_scope", ""))):
+            self._emit_change_receipt(cmd, token, outcome="rejected",
+                                      details={"reason": "local mobile authorization changed or is held"})
+            self._send("Mobile response held: local authorization changed; no new action was requested.")
+            return
         if not info:
             return
         pid = info.get("pid")
@@ -2268,8 +2389,15 @@ class MobileResponseBridge(BaseModule):
             return True, str(artifact.get("artifact_id") or "")
         return False, "exact artifact postcondition was not verified"
 
-    def _mute(self, token: str) -> None:
-        info = self.pending_alerts.pop(token, None) or {}
+    def _mute(self, token: str, *, authorized_info: dict | None = None) -> None:
+        info = authorized_info if authorized_info is not None else self.pending_alerts.pop(token, None) or {}
+        if authorized_info is not None and not self._authorization_current(
+                str(info.get("authorization_generation", "")),
+                str(info.get("authorization_scope", ""))):
+            self._emit_change_receipt("MUTE", token, outcome="rejected",
+                                      details={"reason": "local mobile authorization changed or is held"})
+            self._send("Mobile MUTE held: local authorization changed; no mute was applied.")
+            return
         module = info.get("module", "")
         if module:
             self._muted[module] = time.time() + 15 * 60
@@ -2388,8 +2516,13 @@ class MobileResponseBridge(BaseModule):
                     self._last_sweep = now
                     self._sweep_tokens()
                 self._flush_digest()
+                auth_status = self._mobile_auth_status()
                 if self._receipt_authority_fault:
                     self.set_health(0, self._receipt_authority_fault)
+                elif not auth_status.ready:
+                    self.set_health(60, auth_status.reason)
+                elif self._lockout_remaining() > 0:
+                    self.set_health(60, "mobile protocol authorization temporarily held; local rearm can reset it")
                 elif self._cli_failures:
                     failures = "; ".join(
                         f"{purpose}: {detail}"

@@ -33,6 +33,8 @@ from angerona.core.url_policy import (
 )
 from angerona.core.ollama_lifecycle import (
     OllamaAttestationError,
+    OllamaProviderUnavailable,
+    provider_hold_detail,
     chill_active,
     ollama_blocked,
     effective_keep_alive,
@@ -530,6 +532,8 @@ class AITriageModule(BaseModule):
             detail = (
                 f"Ollama is reachable, but configured model '{model}' is not installed"
             )
+        except OllamaProviderUnavailable as exc:
+            detail = provider_hold_detail(exc.code)
         except OllamaAttestationError as exc:
             detail = f"Ollama listener attestation failed: {str(exc)[:500]}"
         except Exception as exc:

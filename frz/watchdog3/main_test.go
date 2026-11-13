@@ -32,6 +32,7 @@ func commandFixture(t *testing.T) (*runnerFixture, commandHost, *int) {
 	}
 	mutations := new(int)
 	host := commandHost{
+		AdmitSelf:   func() (io.Closer, error) { return inertCloser{}, nil },
 		ProgramData: func() (string, error) { return base, nil }, ReadAdmin: f.read, ReadPrivate: f.read,
 		CheckAdminDirectory: func(path string) error { return f.ops().CheckAdminDirectory(path) }, CheckPrivateDirectory: func(string) error { return nil },
 		EnsurePrivateDirectory: func(string) error { *mutations++; return nil }, ValidateService: func(configuration) error { return nil }, Harden: func() error { *mutations++; return nil },

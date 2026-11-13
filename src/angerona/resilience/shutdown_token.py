@@ -34,6 +34,29 @@ OPERATOR_STOP_CONTRACT_VERSION = 1
 _ADMIN_CACHE: dict = {"until": 0.0, "active": False}
 
 
+class _UnavailableAdminAuthority:
+    """Probe failures keep legacy STOP closed without asserting an active STOP."""
+    unavailable = True
+
+    class AdminApprovalRequired(RuntimeError):
+        pass
+
+    @staticmethod
+    def stop_active():
+        return False
+
+    @staticmethod
+    def status():
+        return {"state": "compromised", "stop_active": False, "error": "authority-unavailable"}
+
+    @classmethod
+    def request_elevated(cls, *_args, **_kwargs):
+        raise cls.AdminApprovalRequired("Administrator control authority could not be verified.")
+
+
+_UNAVAILABLE_ADMIN_AUTHORITY = _UnavailableAdminAuthority()
+
+
 def _admin_authority():
     """Return the control_authority module once an admin authority exists.
 
@@ -48,12 +71,15 @@ def _admin_authority():
         from angerona.resilience import control_authority
         authority = control_authority if control_authority.provisioned() else None
     except Exception:
-        authority = None
+        authority = _UNAVAILABLE_ADMIN_AUTHORITY
     _ADMIN_CACHE.update(probe_until=now + 2.0, authority=authority)
     return authority
 
 
 def _admin_stop_active(authority) -> bool:
+    if getattr(authority, "unavailable", False):
+        _ADMIN_CACHE.update(until=0.0, active=False)
+        return False
     now = time.monotonic()
     if now < _ADMIN_CACHE["until"]:
         return bool(_ADMIN_CACHE["active"])
@@ -64,6 +90,10 @@ def _admin_stop_active(authority) -> bool:
 
 def _admin_resume(authority, *, strict: bool) -> None:
     _ADMIN_CACHE["until"] = 0.0
+    if getattr(authority, "unavailable", False):
+        if strict:
+            raise RuntimeError("Administrator control authority could not be verified.")
+        return
     if not authority.stop_active():
         return
     try:

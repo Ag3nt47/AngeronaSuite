@@ -190,6 +190,13 @@ def decode_snapshot(value: dict) -> ProcessSnapshot:
                            value["enumeration_complete"])
 
 
+# Serialize constructor admission: an unknown CloseHandle outcome quarantines
+# exactly one constructor owner and blocks new query-handle allocations. The
+# retained Popen handle is borrowed and always remains caller-owned.
+_PIN_CONSTRUCTOR_LOCK = threading.Lock()
+_PIN_CONSTRUCTOR_QUARANTINE = None
+
+
 class _Pin:
     """Exact owned Windows kernel object, or the unreaped direct POSIX child."""
     def __init__(self, pid: int, *, process: subprocess.Popen | None = None):
@@ -198,16 +205,37 @@ class _Pin:
         self.closed = False
         self.close_failed = False
         self.proof = None
+        self._constructor_quarantined = False
         if os.name == "nt":
+            global _PIN_CONSTRUCTOR_QUARANTINE
             from angerona.core.windows_process_lease import _Native
-            self.native = _Native()
-            self.handle = self.native.open(pid, 0x1000 | 0x100000 | 0x100 | 1, False)
-            self.identity = self.native.object_identity(self.handle)
-            if process is not None and self.identity != self.native.object_identity(int(process._handle)):
-                self.native.close(self.handle)
-                self.handle = None
-                raise InventoryWorkerError("spawned process object changed")
-            self.birth = str(self.identity[1])
+            with _PIN_CONSTRUCTOR_LOCK:
+                if _PIN_CONSTRUCTOR_QUARANTINE is not None:
+                    raise InventoryCustodyCloseError("Prior process-pin constructor cleanup remains held")
+                self.native = _Native()
+                try:
+                    self.handle = self.native.open(pid, 0x1000 | 0x100000 | 0x100 | 1, False)
+                    self.identity = self.native.object_identity(self.handle)
+                    if process is not None and self.identity != self.native.object_identity(int(process._handle)):
+                        raise InventoryWorkerError("spawned process object changed")
+                    self.birth = str(self.identity[1])
+                except BaseException:
+                    # Assignment to the caller has not happened. This owner must
+                    # therefore retire its exact new query handle itself. Never
+                    # close the separately retained Popen process handle.
+                    if self.handle is not None:
+                        try:
+                            self.native.close(self.handle)
+                        except BaseException as close_error:
+                            self.close_failed = True
+                            self._constructor_quarantined = True
+                            _PIN_CONSTRUCTOR_QUARANTINE = self
+                            raise InventoryCustodyCloseError(
+                                "Process-pin constructor handle cleanup remains held"
+                            ) from close_error
+                        self.handle = None
+                    self.closed = True
+                    raise
         else:
             import psutil
             self.native = None
@@ -272,6 +300,8 @@ class _Pin:
         return True
 
     def release_unadmitted(self) -> None:
+        if getattr(self, "_constructor_quarantined", False):
+            raise InventoryCustodyCloseError("Quarantined process-pin close must not be retried")
         if self.handle is not None:
             handle, self.handle = self.handle, None
             self.native.close(handle)

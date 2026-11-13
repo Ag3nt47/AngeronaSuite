@@ -34,17 +34,18 @@ def test_self_test_does_not_erase_concurrent_production_counter_updates(
 ) -> None:
     module = IpcGuardModule()
     module.accepted = 7
-    original_serve = module._serve_conn
+    original_probe = module._probe_exchange
 
-    def serve_with_live_activity(*args, **kwargs):
-        original_serve(*args, **kwargs)
+    def probe_with_live_activity(*args, **kwargs):
+        result = original_probe(*args, **kwargs)
         # Model a production authorization completing while the isolated test
         # is in flight. The self-test must never restore an older snapshot over
         # this independently-owned observation.
         with module.state_lock:
             module.accepted += 1
+        return result
 
-    monkeypatch.setattr(module, "_serve_conn", serve_with_live_activity)
+    monkeypatch.setattr(module, "_probe_exchange", probe_with_live_activity)
 
     ok, detail = module.self_test()
 

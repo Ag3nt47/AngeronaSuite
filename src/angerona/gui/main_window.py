@@ -935,6 +935,10 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._dashboard_footer, 1)
         from angerona.gui.component_heartbeat import ComponentHeartbeatStrip
         self.component_heartbeat_strip = ComponentHeartbeatStrip(self)
+        self.component_heartbeat_strip.signing_settings_requested.connect(
+            self._open_watchdog_signing_settings)
+        self.component_heartbeat_strip.set_signing_source(
+            self._third_watchdog_signing_snapshot)
         self.statusBar().addPermanentWidget(self.component_heartbeat_strip)
         from angerona.gui.responsiveness_monitor import ResponsivenessMonitor
         self._responsiveness_monitor = ResponsivenessMonitor(self._dashboard_footer, self)
@@ -4461,7 +4465,8 @@ class MainWindow(QMainWindow):
                         try:
                             self.bus.publish(Event("ARIA Inbox", message, sev, time.time(), details))
                         except Exception:
-                            pass
+                            return False
+                        return True
                     _mins = float(getattr(self.config, "aria_inbox_interval_min", 5) or 5)
                     self.aria_inbox = InboxWatcher(
                         host=_ih, user=_iu, password=_ip,
@@ -6546,6 +6551,20 @@ class MainWindow(QMainWindow):
 
     def _open_settings(self) -> None:
         self._show_settings()
+
+    @staticmethod
+    def _third_watchdog_signing_snapshot() -> dict:
+        try:
+            from angerona.resilience.native_watchdog import third_watchdog_status
+            value = third_watchdog_status()
+            return value if type(value) is dict else {}
+        except Exception:
+            return {}
+
+    def _open_watchdog_signing_settings(self) -> None:
+        dialog = self._show_settings("Watchdog")
+        if dialog is not None:
+            dialog.focus_watchdog_signing()
 
     def _open_voice_settings(self) -> None:
         self._show_settings("ARIA")

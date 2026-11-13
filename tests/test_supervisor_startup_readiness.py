@@ -112,17 +112,77 @@ def test_owned_missing_first_heartbeat_does_not_become_three_startup_crashes(har
     assert not any(level == "CRITICAL" for level, *_ in h.notices)
 
 
-def test_exact_deadline_holds_once_without_killing_or_duplicating_slow_child(harness):
+def test_exact_deadline_retires_owned_child_before_budgeted_replacement(harness, monkeypatch):
     h = harness
-    h.mono[0] = h.component._startup.deadline
-    for elapsed in (0, 1, 1000):
-        h.mono[0] += elapsed
-        assert h.instance.tick()["core"] == "startup-timeout"
-        assert h.instance._spawn(h.component) is False
-    assert len(h.launches) == 1 and h.launches[0].terminations == 0
-    assert not h.component._failures and not h.component.safe_mode
+    child, attempt = h.launches[0], h.component._startup
+    h.mono[0], h.wall[0] = attempt.deadline, 1180.0
+    retirement = []
+    terminate, wait, wait_tree, close = child.terminate, child.wait, child.wait_tree, child.close
+
+    def terminate_owned():
+        retirement.append("terminate")
+        terminate()
+
+    def wait_owned(timeout=None):
+        receipt = wait(timeout=timeout)
+        assert type(receipt) is int and receipt == 0
+        retirement.append(("wait", receipt))
+        return receipt
+
+    def wait_owned_tree(timeout=None):
+        wait_tree(timeout=timeout)
+        retirement.append("wait-tree")
+
+    def close_owned():
+        close()
+        assert child.identity is None
+        retirement.append("close")
+
+    monkeypatch.setattr(child, "terminate", terminate_owned)
+    monkeypatch.setattr(child, "wait", wait_owned)
+    monkeypatch.setattr(child, "wait_tree", wait_owned_tree)
+    monkeypatch.setattr(child, "close", close_owned)
+
+    # Expiry grants no permission to bypass operator intent or source custody.
+    monkeypatch.setattr(supervisor.tok, "is_standdown_requested", lambda: True)
+    assert h.instance.tick()["core"] == "standdown"
+    monkeypatch.setattr(supervisor.tok, "is_standdown_requested", lambda: False)
+    h.instance.launch_guard = lambda _component: False
+    assert h.instance.tick()["core"] == "startup-retirement-held"
+    assert not retirement and not h.component._failures
+    assert h.component.proc is child and h.component._startup is attempt
+    h.instance.launch_guard = None
+
+    assert h.instance.tick()["core"] == "backoff(dead)"
+    assert retirement == ["terminate", ("wait", 0), "wait-tree", "close"]
+    assert child.terminations == 1 and child.code == 0
+    assert h.component.proc is None and h.component._startup is None
+    assert attempt.failure_recorded and h.component._retained_exit_proven
+    assert list(h.component._failures) == [1180.0] and len(h.component._pressure) == 1
+    assert h.component.next_restart_at == 1181.0 and not h.component.safe_mode
+    for elapsed in (0.0, 0.5):
+        h.mono[0], h.wall[0] = attempt.deadline + elapsed, 1180.0 + elapsed
+        assert h.instance.tick()["core"] == "backoff(dead)"
+    assert len(h.launches) == 1 and child.terminations == 1
+    assert list(h.component._failures) == [1180.0] and len(h.component._pressure) == 1
+
+    launch = supervisor.spawn_detached
+
+    def launch_after_retirement(*args, **kwargs):
+        assert retirement == ["terminate", ("wait", 0), "wait-tree", "close"]
+        assert h.component.proc is None and child.identity is None
+        return launch(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "spawn_detached", launch_after_retirement)
+    h.mono[0], h.wall[0] = attempt.deadline + 1.0, 1181.0
+    assert h.instance.tick()["core"] == "respawned(dead)"
+    assert len(h.launches) == 2 and h.component.proc is h.launches[1]
+    assert h.component._startup is not attempt and h.instance._assess(h.component) == "starting"
+    assert child.terminations == 1 and list(h.component._failures) == [1180.0]
     held = [row for row in h.notices if row[2].get("startup_state")]
+    retired = [row for row in h.notices if row[2].get("startup_retired")]
     assert len(held) == 1 and held[0][2]["startup_state"] == "startup-timeout"
+    assert len(retired) == 1 and retired[0][2]["response_authorized"] is False
 
 
 @pytest.mark.parametrize("exit_code", [0, 1, -9], ids=["clean", "failure", "signal"])

@@ -16,23 +16,28 @@ from angerona.shark.aar_report import _matches
 
 
 class ProcessAllowlistTests(unittest.TestCase):
-    def test_exact_path_and_name_policy(self):
+    def test_missing_path_and_basename_rows_are_reviewable_discovery_only(self):
         with tempfile.TemporaryDirectory() as td:
             data = Path(td)
+            (data / "bus.key").write_text(bytes(range(32)).hex(), encoding="ascii")
             process_allowlist.add(path=r"C:\Program Files\Proton\ProtonVPN.Client.exe",
                                   data_dir=data)
-            self.assertTrue(process_allowlist.is_allowed(
+            self.assertFalse(process_allowlist.is_allowed(
                 "ProtonVPN.Client.exe",
                 r"C:\Program Files\Proton\ProtonVPN.Client.exe", data))
             self.assertFalse(process_allowlist.is_allowed(
                 "ProtonVPN.Client.exe", r"C:\Temp\ProtonVPN.Client.exe", data))
             process_allowlist.add(name="ProtonVPNService.exe", data_dir=data)
-            self.assertTrue(process_allowlist.is_allowed("protonvpnservice.EXE", data_dir=data))
+            self.assertFalse(process_allowlist.is_allowed("protonvpnservice.EXE", data_dir=data))
             self.assertFalse(process_allowlist.is_allowed(
                 "ProtonVPNService.exe", r"C:\Temp\ProtonVPNService.exe", data))
             event = Event("Memory Injection Scanner", "test", Severity.HIGH,
                           details={"proc_name": "ProtonVPNService.exe"})
-            self.assertTrue(process_allowlist.is_event_allowed(event, data))
+            self.assertFalse(process_allowlist.is_event_allowed(event, data))
+            visible = process_allowlist.entries(data)
+            self.assertEqual(len(visible), 2)
+            self.assertTrue(all(row["review_required"] for row in visible))
+            self.assertEqual(process_allowlist.policy_snapshot(data), ())
             path_rich_event = Event(
                 "Memory Injection Scanner", "test", Severity.HIGH,
                 details={"proc_name": "ProtonVPNService.exe",

@@ -80,8 +80,11 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
         # required=True and therefore take the hardened path below.
         if not required:
             return False
-        system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-        icacls = system_root / "System32" / "icacls.exe"
+        from .privilege import sanitized_child_environment, trusted_windows_directories
+
+        _windows, system = trusted_windows_directories()
+        icacls = system / "icacls.exe"
+        environment = sanitized_child_environment(source={})
         if not icacls.is_file():
             raise RuntimeError("icacls.exe unavailable")
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -112,6 +115,9 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
         for operation, command in zip(("owner", "DACL"), commands, strict=True):
             result = subprocess.run(
                 command,
+                stdin=subprocess.DEVNULL,
+                env=environment,
+                cwd=str(system),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=20,
@@ -122,6 +128,8 @@ def secure_sensitive_file(path: Path, *, required: bool = False) -> bool:
                 raise RuntimeError(
                     f"icacls {operation} update failed with exit {result.returncode}"
                 )
+        if not sensitive_file_is_protected(target):
+            raise RuntimeError("Protected key ACL readback failed")
         return True
     except Exception:
         if required or service is not None:

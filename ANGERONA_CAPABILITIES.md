@@ -1,11 +1,26 @@
 # Angerona Capabilities
 
-Current development version: **v1.15.0**. This is a present-tense capability and boundary
+Current development version: **v1.15.1**. This is a present-tense capability and boundary
 summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
 or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
+
+The [1.15.1 security maintenance update](docs/releases/v1.15.1.md) applies the
+reviewed recovery, authentication, source-delivery and alert reliability fixes.
+It adds an optional unsigned ordinary-user third-watchdog mode, off by default,
+with explicit reduced-protection status and signing-review settings. Signed
+installed operation still needs verified own-image signing and protected
+enrollment; signature, liveness and response authority remain separate. The
+optional observer shares the Core job lifetime and supplies no independent
+recovery. Sticky native-cleanup holds and bounded source-input admission keep
+unverified helper state explicit. A real signed positive deployment remains
+unaccepted; the Word/PDF manual is the older 1.15.0 edition, supplemented by
+the current source companions. Optional worker admission isolates failed starts,
+scanner GUI quit follows authenticated STOP and cleanup, and bounded interpreter
+prefix parsing preserves exact maintenance ownership. AI provider self-tests
+explain required write-custody failures without hiding them or inferring malware.
 
 The 1.15.0 hardening milestone adds provider-specific canary context, WER
 precursor correlation, program-firewall identity custody, independent freshness

@@ -137,7 +137,13 @@ def test_spoof_burst_and_expiry_are_non_response_health_audits(tmp_path, monkeyp
     }
     bridge._sweep_tokens()
 
-    assert len(emitted) == 4
+    assert len(emitted) == 2
+    assert bridge._auth_audit_count == 3
+    spoof, expiry = emitted
+    assert spoof.severity == Severity.HIGH
+    assert expiry.severity == Severity.INFO
+    assert expiry.details["event_type"] == "mobile_token_expiry"
+    assert all("soar_action" not in event.details for event in emitted)
     assert all(event.details["response_authorized"] is False for event in emitted)
     assert all(event.details["disposition"] == "health" for event in emitted)
 

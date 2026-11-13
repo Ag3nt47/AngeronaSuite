@@ -8,9 +8,9 @@ directly:
     · Research), with the same session actions as the Live Alerts rows.
   • Allow    — confirms a reversible 15-minute exact-rule/pattern suppression.
   • Block    — confirms submission of a verified process to Combat containment.
-  • Ignore   — acknowledges the alert (and future identical repeats) so it is
-    EXCLUDED from the threat level — the way to clear false positives. Every
-    ignore is revertable from the "Ignored" viewer.
+  • Ignore   — acknowledges this exact authenticated record for one hour.
+    New detections and changed evidence remain active. Acknowledgements can be
+    restored from the "Ignored" viewer.
 
 When this list is empty, no unresolved active HIGH/CRITICAL threats are shown.
 Exposures and protection readiness may still need review. Read side only;
@@ -182,6 +182,7 @@ class ResolveCenter(QDialog):
         self._sub.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self._sub)
         self._status = QLabel("Loading alerts…")
+        self._status.setTextFormat(Qt.TextFormat.PlainText)
         self._status.setStyleSheet("color:#9aa4b2;")
         root.addWidget(self._status)
 
@@ -461,8 +462,13 @@ class ResolveCenter(QDialog):
             self._status.setText(ap._status.text())
 
     def _ignore(self, ev) -> None:
-        alert_ack.ack(ev, "operator ignore (Resolve Center — false positive / handled)")
+        try:
+            alert_ack.ack(ev, "operator ignore (Resolve Center — false positive / handled)")
+        except ValueError as exc:
+            self._status.setText("Acknowledgement held; the alert remains active. " + str(exc)[:240])
+            return
         self._invalidate_snapshot()
+        self._status.setText("Acknowledged this exact record for one hour. New detections and changed evidence remain active.")
 
     def _ignore_all_shown(self) -> None:
         evs = self._events()
@@ -470,19 +476,40 @@ class ResolveCenter(QDialog):
             return
         if QMessageBox.question(
                 self, "Ignore all shown",
-                f"Ignore all {len(evs)} active CRITICAL/HIGH alert(s)? They stay listed (with "
-                "history) and can be reverted, but stop affecting the threat level. Repeats of "
-                "each class are also suppressed.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                f"Acknowledge these {len(evs)} exact active CRITICAL/HIGH alert records for one hour? "
+                "New detections and changed evidence remain active. "
+                "History is retained and acknowledgements can be restored.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
                 ) != QMessageBox.StandardButton.Yes:
             return
         seen = set()
+        acknowledged = held = 0
+        failure = ""
         for ev in evs:
-            sig = alert_ack.signature(ev)
-            if sig in seen:
-                continue
-            seen.add(sig)
-            alert_ack.ack(ev, "mass-ignore via Resolve Center")
+            try:
+                sig = alert_ack.signature(ev)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                alert_ack.ack(ev, "mass-ignore via Resolve Center")
+                acknowledged += 1
+            except ValueError as exc:
+                held += 1
+                failure = str(exc)[:240]
+        if acknowledged:
+            self._invalidate_snapshot()
+        self._status.setText(f"Acknowledged {acknowledged} exact record(s) for one hour; {held} held. "
+                             + ("Held records remain active. " + failure if held else
+                                "New detections and changed evidence remain active."))
+
+    def _unignore(self, signature, dialog):
+        try:
+            alert_ack.unack(signature)
+        except ValueError as exc:
+            self._status.setText("Acknowledgement restore held. " + str(exc)[:240])
+            return
+        dialog.accept()
         self._invalidate_snapshot()
 
     def _show_ignored(self) -> None:
@@ -491,8 +518,8 @@ class ResolveCenter(QDialog):
         if self.styleSheet():
             dlg.setStyleSheet(self.styleSheet())
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(f"{len(recs)} ignored alert signature(s). Un-ignore to let them "
-                           "affect the threat level again."))
+        v.addWidget(QLabel(f"{len(recs)} acknowledgement history record(s), including records that need review. "
+                           "Restore a current acknowledgement to let that exact alert affect the threat level again."))
         tbl = QTableWidget(len(recs), 4)
         tbl.setHorizontalHeaderLabels(["Module", "Sample", "Reason", ""])
         tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
@@ -501,11 +528,13 @@ class ResolveCenter(QDialog):
         for r, rec in enumerate(recs):
             tbl.setItem(r, 0, QTableWidgetItem(rec.get("module", "")))
             tbl.setItem(r, 1, QTableWidgetItem(rec.get("sample", "")))
-            tbl.setItem(r, 2, QTableWidgetItem(rec.get("reason", "")))
+            reason = rec.get("reason", "")
+            if rec.get("review_required") is True:
+                reason = "Review required — " + str(reason)
+            tbl.setItem(r, 2, QTableWidgetItem(reason))
             sig = rec.get("sig")
             btn = self._btn("Un-ignore", "#334155", "#e2e8f0",
-                            lambda s=sig, d=dlg: (alert_ack.unack(s), d.accept(),
-                                                  self._invalidate_snapshot()))
+                            lambda s=sig, d=dlg: self._unignore(s, d))
             wrap = QWidget(); wl = QHBoxLayout(wrap); wl.setContentsMargins(4, 1, 4, 1)
             wl.addWidget(btn); tbl.setCellWidget(r, 3, wrap)
         v.addWidget(tbl, 1)

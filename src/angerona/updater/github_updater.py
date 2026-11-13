@@ -30,6 +30,7 @@ CANONICAL_ORIGIN = f"https://github.com/{CANONICAL_REPOSITORY}.git"
 DAILY_SECONDS = 24 * 60 * 60
 MANUAL_MIN_SECONDS = 60
 MAX_METADATA_BYTES = 512 * 1024
+MAX_GIT_METADATA_BYTES = 8 * 1024 * 1024
 MAX_STATE_BYTES = 16 * 1024
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _VERSION = re.compile(r"^v?(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$")
@@ -69,14 +70,16 @@ def _repository(repo: str) -> str:
 
 def github_json(path: str) -> dict:
     """Only internal fixed-shape API paths may reach the canonical repository."""
-    if not re.fullmatch(r"(?:branches/main|releases/latest|compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40})", path):
+    git_metadata = re.fullmatch(r"git/(?:commits/[0-9a-f]{40}|trees/[0-9a-f]{40}\?recursive=1)", path)
+    if not git_metadata and not re.fullmatch(r"(?:branches/main|releases/latest|compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40})", path):
         raise ValueError("unsupported GitHub update endpoint")
+    maximum = MAX_GIT_METADATA_BYTES if git_metadata else MAX_METADATA_BYTES
     req = urllib.request.Request(
         f"https://api.github.com/repos/{CANONICAL_REPOSITORY}/{path}",
         headers={"Accept": "application/vnd.github+json", "User-Agent": "Angerona-Updater"},
     )
     with safe_urlopen(req, policy=_GITHUB_POLICY, timeout=15) as response:
-        return _json(read_bounded(response, MAX_METADATA_BYTES), MAX_METADATA_BYTES)
+        return _json(read_bounded(response, maximum), maximum)
 
 
 @dataclass(frozen=True)

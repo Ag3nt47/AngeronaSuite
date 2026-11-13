@@ -80,8 +80,8 @@ _BUILTIN_GUIDANCE = {
         "briefing works but AI enrichment is absent, test AI Triage separately."
     ),
     "deception": (
-        "Check write access to the configured canary location and verify the enrolled marker "
-        "inventory. Use the disposable canary diagnostic to verify a repair."
+        "Review admitted canary identities and mutation/deletion coverage. Windows new "
+        "deployment and its disposable diagnostic are held pending a safe native provider."
     ),
     "detection_runtime": (
         "Check per-lane queue pressure, drops and observe-mode authority. Trace saturation to "

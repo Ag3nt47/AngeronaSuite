@@ -63,6 +63,11 @@ _PRESSURE_RANK = {"": 0, "elevated": 1, "attack": 2}
 # slow constructor must not become three purported crashes in a few seconds.
 _STARTUP_HEARTBEAT_SECONDS = 180.0
 _SUPERVISION_PROGRESS_SECONDS = 60.0
+_MAX_RESTART_BYTES = 4096
+_RESTART_MAX_AGE_S = 30.0
+_RESTART_FUTURE_SKEW_S = 5.0
+_RESTART_NONCES_MAX = 256
+_DURABILITY_RETRY_S = 60.0
 _VALID_RESTART_TARGETS = {
     "core", "scanner", "blackbox", "watchdog", "watchdog_ui", "scanner_ui", "*",
 }
@@ -171,6 +176,57 @@ def _venv_redirector(process, expected):
                 str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
 
 
+class _RetainedPeerExit:
+    """Query/SYNCHRONIZE handle only; no process mutation or PID fallback."""
+
+    def __init__(self, lease, role):
+        self.identity, self.role = lease.identity, role
+        self._native, self._handle = lease._native, lease._handle
+        self.close_failed = False
+        self._lock = threading.Lock()
+        lease._handle = None  # Explicit ownership transfer; lease no longer closes it.
+
+    def exited(self):
+        with self._lock:
+            return self._exited_locked()
+
+    def _exited_locked(self):
+        if self._handle is None or self.close_failed:
+            return None
+        try:
+            signaled = self._native.wait(self._handle, 0)
+            if type(signaled) is not bool:
+                return None
+            if not signaled:
+                return False
+            if self._native.object_identity(self._handle) != (self.identity.pid, self.identity.birth_ticks):
+                return None
+            code = self._native.exit_code(self._handle)
+            return True if type(code) is int and 0 <= code <= 0xFFFFFFFF else None
+        except Exception:
+            return None
+
+    def close(self):
+        with self._lock:
+            return self._close_locked()
+
+    def _close_locked(self):
+        if self._handle is None:
+            return not self.close_failed
+        handle, self._handle = self._handle, None
+        try:
+            self._native.close(handle)
+            return True
+        except Exception:
+            # Never retry an ambiguous CloseHandle against a possibly reused value.
+            self.close_failed = True
+            return False
+
+
+class _PeerIdentity(dict):
+    native_exit_owner = None
+
+
 def _heartbeat_process_identity(component, record):
     """Observe one exact peer generation with query-only native custody.
 
@@ -193,11 +249,25 @@ def _heartbeat_process_identity(component, record):
     if os.name == "nt":
         from angerona.core.windows_process_lease import WindowsProcessLease
 
+        result = _PeerIdentity(identity)
         with WindowsProcessLease(pid, identity["birth"], identity["image"],
                                  lifetime=5.0, query_only=True) as lease:
             if _invocation_identity(process, expected) != identity:
                 raise ValueError("Heartbeat invocation changed during observation")
             lease.validate(alive=True)
+            prior = getattr(component, "_peer_exit_owner", None)
+            if (prior is not None and prior.identity != lease.identity
+                    and not getattr(component, "_peer_exit_close_failed", False)):
+                if prior.close():
+                    component._peer_exit_owner = prior = None
+                else:
+                    component._peer_exit_close_failed = True
+            if (type(lease).__module__ == "angerona.core.windows_process_lease"
+                    and type(lease).__name__ == "WindowsProcessLease" and lease.query_only is True
+                    and type(getattr(lease, "_handle", None)) is int and lease._handle > 0
+                    and not getattr(component, "_peer_exit_close_failed", False) and prior is None):
+                result.native_exit_owner = _RetainedPeerExit(lease, expected)
+        return result
     elif _invocation_identity(process, expected) != identity:
         raise ValueError("Heartbeat invocation changed during observation")
     return identity
@@ -365,48 +435,56 @@ def _spawnlock_path(name: str) -> Path:
 
 
 def try_claim_spawn(name: str, ttl: float = 15.0) -> bool:
-    """Atomically claim the right to spawn `name`. Returns False if another
-    supervisor already holds a fresh claim (so we don't double-spawn)."""
+    """Bounded atomic claim; either old or future-dated stale files expire."""
     p = _spawnlock_path(name)
     with _SPAWN_LOCK_ERRORS_GUARD:
         _SPAWN_LOCK_ERRORS.pop(name, None)
-    created = False
-    fd: int | None = None
-    try:
-        fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        created = True
-        os.write(fd, f"{os.getpid()} {time.time()}".encode())
-        os.close(fd)
-        fd = None
-        return True
-    except FileExistsError:
+    if not math.isfinite(ttl) or ttl <= 0:
+        raise ValueError("spawn claim TTL must be finite and positive")
+    # A racing peer can replace/remove a claim repeatedly. Do not recurse on
+    # attacker-writable bookkeeping, or a lifecycle tick can exhaust the stack.
+    for _attempt in range(3):
+        created = False
+        fd: int | None = None
         try:
-            if time.time() - p.stat().st_mtime > ttl:   # stale lock → steal it
+            fd = os.open(str(p), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            created = True
+            body = f"{os.getpid()} {time.time()}".encode()
+            if os.write(fd, body) != len(body):
+                raise OSError("spawn claim write was incomplete")
+            os.close(fd)
+            fd = None
+            return True
+        except FileExistsError:
+            try:
+                age = time.time() - p.stat().st_mtime
+                if math.isfinite(age) and abs(age) <= ttl:
+                    return False
                 p.unlink()
-                return try_claim_spawn(name, ttl)
-        except FileNotFoundError:
-            return try_claim_spawn(name, ttl)
+                continue
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                with _SPAWN_LOCK_ERRORS_GUARD:
+                    _SPAWN_LOCK_ERRORS[name] = type(exc).__name__
+                return False
         except Exception as exc:
             with _SPAWN_LOCK_ERRORS_GUARD:
                 _SPAWN_LOCK_ERRORS[name] = type(exc).__name__
-        return False
-    except Exception as exc:
-        # A lock I/O failure cannot safely grant spawn authority: doing so lets
-        # both supervisors launch the same component. Record a bounded diagnostic
-        # and let the next supervisor tick retry.
-        with _SPAWN_LOCK_ERRORS_GUARD:
-            _SPAWN_LOCK_ERRORS[name] = type(exc).__name__
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-        if created:
-            try:
-                p.unlink()
-            except OSError:
-                pass
-        return False
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            if created:
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
+            return False
+    with _SPAWN_LOCK_ERRORS_GUARD:
+        _SPAWN_LOCK_ERRORS[name] = "SpawnClaimContentionLimit"
+    return False
 
 
 def spawn_lock_error(name: str) -> str:
@@ -502,6 +580,10 @@ class _StartupAttempt:
     heartbeat_rejected: bool = False
     clock_rejected: bool = False
     held_notified: bool = False
+    failure_recorded: bool = False
+    retirement_pending: bool = False
+    next_retirement_at: float = 0.0
+    retirement_notice: bool = False
 
 
 @dataclass
@@ -527,6 +609,11 @@ class Component:
     last_state: str = "unknown"
     last_diagnostic_sha256: str = ""
     state_fault: bool = False
+    _durability_next_at: Optional[float] = field(default=None, repr=False)
+    _persist_retry_at: Optional[float] = field(default=None, repr=False)
+    _peer_exit_owner: object = field(default=None, repr=False)
+    _peer_exit_close_failed: bool = False
+    _retained_exit_proven: bool = False
     restarts: int = 0
     adopted: bool = False
     adopted_identity: Optional[dict] = None
@@ -555,7 +642,8 @@ class ProcessSupervisor:
                  initial_backoff_s: float = 1.0,
                  max_backoff_s: float = 60.0,
                  launch_guard: Optional[Callable[[Component], bool]] = None):
-        if initial_backoff_s <= 0 or max_backoff_s < initial_backoff_s:
+        if (not math.isfinite(initial_backoff_s) or not math.isfinite(max_backoff_s)
+                or initial_backoff_s <= 0 or max_backoff_s < initial_backoff_s):
             raise ValueError("invalid supervisor restart backoff")
         self.components: dict[str, Component] = {}
         self.poll_interval = poll_interval
@@ -564,6 +652,7 @@ class ProcessSupervisor:
         self._monotonic_clock = monotonic_clock
         self.initial_backoff_s = float(initial_backoff_s)
         self.max_backoff_s = float(max_backoff_s)
+        self._durability_interval_s = max(_DURABILITY_RETRY_S, self.max_backoff_s)
         if launch_guard is not None and not callable(launch_guard):
             raise ValueError("supervisor launch guard must be callable")
         self._launch_guard = launch_guard
@@ -580,6 +669,9 @@ class ProcessSupervisor:
         self._tick_count = 0
         self._tick_completed_at = None
         self._tick_error = ""
+        self._restart_seen: dict[str, float] = {}
+        self._restart_monotonic = None
+        self._restart_nonce_store = None
         try:
             started = monotonic_clock()
             self._progress_started = (started if type(started) in (int, float)
@@ -650,22 +742,17 @@ class ProcessSupervisor:
                 c._pressure.extend(record.get("pressure", []))
                 c.pressure_level = self._pressure_level(c)[0]
                 c.safe_mode = record["safe_mode"]
-                c.safe_mode_since = record["safe_mode_since"]
-                c.next_restart_at = record["next_restart_at"]
+                c.safe_mode_since = min(record["safe_mode_since"], self._clock())
+                c.next_restart_at = min(record["next_restart_at"], self._clock() + self.max_backoff_s)
                 c.last_state = record["last_state"]
                 c.last_diagnostic_sha256 = record["last_diagnostic_sha256"]
-                c.state_fault = record["state_fault"]
+                c.state_fault = False
+                if record["state_fault"]:
+                    self._durability_gap(c, "previous-state-fault")
             except RecoveryStateError as exc:
-                c.safe_mode = True
-                c.safe_mode_since = self._clock()
-                c.state_fault = True
-                self._emit(
-                    "CRITICAL",
-                    f"{name} recovery state failed authentication; automatic "
-                    "respawns are paused until an authenticated manual restart.",
-                    component=name,
-                    error=type(exc).__name__,
-                )
+                # Preserve unauthenticated originals in place. Unknown durable
+                # history is a coverage gap, not indefinite STOP authority.
+                self._durability_gap(c, type(exc).__name__)
         self.components[name] = c
         return c
 
@@ -737,13 +824,29 @@ class ProcessSupervisor:
             return self._verified_peer_state_locked(c, record)
 
     def _verified_peer_state_locked(self, c: Component, record: dict) -> str:
-        if not record.get("flags"):
-            return "stopped"
         pid = int(record.get("pid", 0))
+        if not record.get("flags"):
+            # A producer closing its heartbeat is not authenticated STOP intent.
+            # Only a previously verified adopted generation may turn this into
+            # death/relaunch; a live or unknown peer never gains kill authority.
+            known = c._heartbeat_identity or c.adopted_identity
+            verified = (isinstance(known, dict) and known.get("pid") == pid
+                        and record["ts_ns"] / 1e9 >= known.get("birth", float("inf")))
+            if verified and not hb.pid_alive(pid):
+                return "dead"
+            if c.identity_notice != "stopped-without-authority":
+                c.identity_notice = "stopped-without-authority"
+                self._emit("HIGH", f"{c.name}: stopped heartbeat without authenticated stand-down; "
+                           "a live or unverified process is held, and a verified exit will be recovered.",
+                           component=c.name, heartbeat_identity="stopped-without-authority",
+                           disposition="observation", response_authorized=False)
+            return "stopped" if verified else "identity-unverified"
         if not hb.pid_alive(pid):
             return "dead"
         try:
             identity = _heartbeat_process_identity(c, record)
+            self._accept_peer_exit_owner(c, identity)
+            c._retained_exit_proven = False
             now = self._monotonic_clock()
             if (type(now) not in (int, float) or not math.isfinite(now)
                     or now < 0 or c._heartbeat_checked_at is not None
@@ -779,6 +882,46 @@ class ProcessSupervisor:
         if age >= c.stale_after_s or now - c._heartbeat_progress_at >= c.stale_after_s:
             return "suspended"
         return "alive" if c._heartbeat_advanced else "heartbeat-pending"
+
+    def _accept_peer_exit_owner(self, c, identity):
+        incoming = getattr(identity, "native_exit_owner", None)
+        if incoming is None:
+            return
+        if c._peer_exit_owner is not None and not self._close_peer_exit_owner(c):
+            incoming.close()
+            return
+        c._peer_exit_owner = incoming
+        c._retained_exit_proven = False
+
+    def _close_peer_exit_owner(self, c):
+        with c._heartbeat_lock:
+            return self._close_peer_exit_owner_locked(c)
+
+    def _close_peer_exit_owner_locked(self, c):
+        if c._peer_exit_close_failed:
+            return False
+        owner = c._peer_exit_owner
+        if owner is None:
+            return not c._peer_exit_close_failed
+        if owner.close():
+            c._peer_exit_owner = None
+            return True
+        c._peer_exit_close_failed = True
+        self._emit("HIGH", f"{c.name}: retained query-handle closure is unproven; new peer capture is held.",
+                   component=c.name, response_authorized=False, disposition="health")
+        return False
+
+    def _retained_peer_exited(self, c):
+        if c._retained_exit_proven:
+            return True
+        owner = c._peer_exit_owner
+        expected = tuple(str(part) for part in c.argv if c.name != "core" or part != "--chill")
+        if owner is None or owner.role != expected or c._peer_exit_close_failed:
+            return None
+        result = owner.exited()
+        if result is True:
+            c._retained_exit_proven = True
+        return result
 
     def _is_running(self, c: Component) -> bool:
         if c.running_probe is not None:
@@ -868,15 +1011,18 @@ class ProcessSupervisor:
             if pending != "dead":
                 return False  # Keep uncertain/expired custody; do not duplicate it.
             c._startup = None
-        if rec and auth != "authenticated":
+        if rec and auth != "authenticated" and not c._retained_exit_proven:
             if hb.pid_alive(int(rec.get("pid", 0))):
                 self._report_auth_state(c, auth)
                 return False
-        if rec and auth == "authenticated" and isinstance(c.reader, hb.HeartbeatReader):
+        if (rec and auth == "authenticated" and isinstance(c.reader, hb.HeartbeatReader)
+                and not c._retained_exit_proven):
             if self._verified_peer_state(c, rec) not in ("dead", "stopped"):
                 # A first sample, uncertain identity or frozen live peer must
                 # never become permission to start a competing instance.
                 return False
+        if not self._durability_retry_due(c):
+            return False
         if not try_claim_spawn(c.name):
             error = spawn_lock_error(c.name)
             if error:
@@ -903,7 +1049,18 @@ class ProcessSupervisor:
                 env["ANGERONA_SUPERVISED_RECOVERY"] = "1"
                 if c.pressure_level:
                     env["ANGERONA_RECOVERY_PRESSURE"] = c.pressure_level
+            if (c._retained_exit_proven and c.proc is not None
+                    and getattr(c.proc, "owns_descendants", False) and not self._terminate(c)):
+                return False
+            if c._peer_exit_owner is not None and not self._close_peer_exit_owner(c):
+                return False
+            if c.state_fault:
+                now = self._progress_now()
+                if now is None:
+                    return False
+                c._durability_next_at = now + self._durability_interval_s
             c.proc = spawn_detached(c.argv, env=env, window=c.window)
+            c._retained_exit_proven = False
             if self._respawn_blocked():
                 self._terminate(c)
                 return False
@@ -955,6 +1112,7 @@ class ProcessSupervisor:
         with self._lifecycle_lock:
             if c.proc is proc:
                 c._dead = True
+                c._retained_exit_proven = True
 
     def _startup_clock(self) -> Optional[float]:
         try:
@@ -1100,21 +1258,24 @@ class ProcessSupervisor:
                 c.safe_mode = False
                 c.safe_mode_since = 0.0
                 c.next_restart_at = 0.0
-                c.state_fault = False
                 c._failures.clear()
                 if self._state_store is not None:
                     try:
                         self._state_store.clear_component(
                             name,
-                            authenticated_reset=True,
+                            authenticated_reset=False,
                         )
+                        c.state_fault = False
+                        c._durability_next_at = None
+                        c._persist_retry_at = None
                     except Exception as exc:
-                        self._emit(
-                            "HIGH",
-                            f"{name}: manual restart could not reset durable state.",
-                            component=name,
-                            error=type(exc).__name__,
-                        )
+                        self._durability_gap(c, type(exc).__name__)
+                if c.state_fault:
+                    retry_now = self._progress_now()
+                    if retry_now is None:
+                        actions[name] = "manual_restart_held(clock)"
+                        continue
+                    c._durability_next_at = retry_now  # Fresh authenticated manual intent, not auto retry.
                 if not self._terminate(c):
                     actions[name] = "manual_restart_failed"
                     self._emit(
@@ -1140,7 +1301,6 @@ class ProcessSupervisor:
                         else _SAFE_MODE_COOLDOWN)
             if (
                 c.safe_mode
-                and not c.state_fault
                 and now - c.safe_mode_since >= cooldown
             ):
                 c.safe_mode = False
@@ -1155,11 +1315,24 @@ class ProcessSupervisor:
             if state_changed:
                 c.last_state = state
             actions[name] = state
+            if state in ("startup-timeout", "startup-retirement-held"):
+                if self._retire_expired_startup(c):
+                    state = c.last_state = "dead"
+                    state_changed = True
+                    actions[name] = "backoff(startup-timeout)"
+                else:
+                    actions[name] = "startup-retirement-held"
+                    continue
             if standdown:
                 if state_changed:
                     self._persist(c)
                 continue
             if state in ("dead", "suspended") and not c.safe_mode:
+                if c.next_restart_at and not self._durability_retry_due(c):
+                    actions[name] = "backoff(durability_gap)"
+                    if state_changed:
+                        self._persist(c)
+                    continue
                 if c.next_restart_at and now < c.next_restart_at:
                     actions[name] = f"backoff({state})"
                     if state_changed:
@@ -1199,10 +1372,12 @@ class ProcessSupervisor:
                     )
                     c.next_restart_at = now + delay
                     if not self._persist(c):
-                        c.safe_mode = True
-                        c.safe_mode_since = now
-                        c.state_fault = True
-                        actions[name] = "safe_mode(persistence_fault)"
+                        self._emit("HIGH", f"{name}: {state} observed without authenticated stand-down; "
+                                   "durable bookkeeping is unavailable and recovery follows the capped in-memory budget.",
+                                   component=name, unexpected_stop=True, observed_state=state,
+                                   durable_recovery_state=False, original_preserved=True,
+                                   disposition="health", response_authorized=False)
+                        actions[name] = "backoff(durability_gap)"
                         continue
                     actions[name] = f"backoff({state})"
                     # This branch is reached only with no authenticated
@@ -1229,7 +1404,7 @@ class ProcessSupervisor:
                         actions[name] = "termination_failed"
                         continue
                 spawned = self._spawn(c)
-                c.next_restart_at = 0.0
+                c.next_restart_at = (0.0 if spawned else now + self.initial_backoff_s)
                 if spawned and c.down_since:
                     gap = max(0.0, now - c.down_since)
                     c.down_since = 0.0
@@ -1252,6 +1427,74 @@ class ProcessSupervisor:
             elif state_changed:
                 self._persist(c)
         return actions
+
+    def _retire_owned_startup(self, c):
+        proc = c.proc
+        if self._startup_process_state(c) not in ("live", "dead"):
+            return False
+        if getattr(proc, "owns_descendants", False):
+            return self._terminate(c)  # Existing retained private-Job path only.
+        if os.name == "nt" or type(proc) is not subprocess.Popen or not proc._child_created:
+            return False
+        # POSIX permits only the unreaped direct Popen child. Never enter the
+        # adopted/heartbeat-PID termination fallback when it has already exited.
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    code = proc.wait(timeout=3.0)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    code = proc.wait(timeout=3.0)
+            else:
+                code = proc.wait(timeout=0.0)
+            if type(code) is not int:
+                return False
+            c.proc = None
+            c._dead = True
+            c._startup = None
+            return True
+        except Exception:
+            return False
+
+    def _retire_expired_startup(self, c):
+        attempt = c._startup
+        now = self._startup_clock()
+        if (attempt is None or now is None or now < attempt.next_retirement_at
+                or self._startup_process_state(c) not in ("live", "dead")):
+            return False
+        if not self._launch_allowed(c) or self._respawn_blocked():
+            return False
+        if not attempt.failure_recorded:
+            attempt.failure_recorded = True
+            self._record_unexpected_stop(c, "startup-timeout")
+            if self._register_failure(c):
+                c.safe_mode = True
+                c.safe_mode_since = self._clock()
+            self._capture_recovery_snapshot(c, "startup-timeout")
+            self._persist(c)
+        attempt.retirement_pending = True
+        attempt.next_retirement_at = now + self.max_backoff_s
+        if not self._launch_allowed(c) or self._respawn_blocked():
+            return False
+        # _startup_process_state proved the same owned Job/Popen objects. This
+        # invokes only their existing retirement path, never a heartbeat PID.
+        if not self._retire_owned_startup(c):
+            if not attempt.retirement_notice:
+                attempt.retirement_notice = True
+                self._emit("HIGH", f"{c.name}: expired owned startup retirement remains unproven; replacement held.",
+                           component=c.name, startup_retirement_pending=True, response_authorized=False)
+            return False
+        c._startup = None
+        c._dead = True
+        c._retained_exit_proven = True
+        c.next_restart_at = (0.0 if c.safe_mode else self._clock() + min(
+            self.max_backoff_s, self.initial_backoff_s * (2 ** max(0, len(c._failures) - 1))))
+        self._persist(c)
+        self._emit("HIGH", f"{c.name}: expired owned startup retired; replacement follows the existing recovery budget.",
+                   component=c.name, unexpected_stop=True, observed_state="startup-timeout",
+                   startup_retired=True, response_authorized=False)
+        return True
 
     def _capture_recovery_snapshot(self, c: Component, state: str) -> None:
         heartbeat = None
@@ -1286,32 +1529,53 @@ class ProcessSupervisor:
                 error=type(exc).__name__,
             )
 
+    def _durability_gap(self, c, error):
+        fresh = not c.state_fault
+        c.state_fault = True
+        now = self._progress_now()
+        if c._durability_next_at is None and now is not None:
+            c._durability_next_at = now + self._durability_interval_s
+        if fresh:
+            self._emit("HIGH", f"{c.name}: durable recovery bookkeeping is unavailable; "
+                       "original state is preserved and automatic recovery uses a capped in-memory budget.",
+                       component=c.name, error=error, durable_recovery_state=False,
+                       in_memory_recovery_budget=True, original_preserved=True,
+                       minimum_retry_s=self._durability_interval_s, disposition="health", response_authorized=False)
+
+    def _durability_retry_due(self, c):
+        if not c.state_fault:
+            return True
+        now = self._progress_now()
+        if now is None:
+            return False
+        if c._durability_next_at is None:
+            c._durability_next_at = now + self._durability_interval_s
+        return now >= c._durability_next_at
+
     def _persist(self, c: Component) -> bool:
         if self._state_store is None:
             return True
+        now = self._progress_now()
+        if c.state_fault and (now is None or c._persist_retry_at is not None and now < c._persist_retry_at):
+            return False
+        if now is not None:
+            c._persist_retry_at = now + self._durability_interval_s
         try:
             self._state_store.update_component(
                 c.name,
-                {
-                    "failures": list(c._failures),
-                    "pressure": list(c._pressure),
-                    "safe_mode": c.safe_mode,
-                    "safe_mode_since": c.safe_mode_since,
-                    "next_restart_at": c.next_restart_at,
-                    "last_state": c.last_state,
-                    "last_diagnostic_sha256": c.last_diagnostic_sha256,
-                    "state_fault": c.state_fault,
-                },
+                {"failures": list(c._failures), "pressure": list(c._pressure),
+                 "safe_mode": c.safe_mode, "safe_mode_since": c.safe_mode_since,
+                 "next_restart_at": c.next_restart_at, "last_state": c.last_state,
+                 "last_diagnostic_sha256": c.last_diagnostic_sha256, "state_fault": False},
             )
+            if c.state_fault:
+                self._emit("MEDIUM", f"{c.name}: durable recovery bookkeeping is available again.",
+                           component=c.name, durable_recovery_state=True, disposition="health", response_authorized=False)
+            c.state_fault = False
+            c._durability_next_at = None
             return True
         except Exception as exc:
-            self._emit(
-                "HIGH",
-                f"{c.name}: durable recovery state could not be saved; automatic "
-                "restart is paused to prevent an unbudgeted crash loop.",
-                component=c.name,
-                error=type(exc).__name__,
-            )
+            self._durability_gap(c, type(exc).__name__)
             return False
 
     # ── manual restart (operator-triggered, cross-process via a command file) ──
@@ -1334,8 +1598,12 @@ class ProcessSupervisor:
             try:
                 if not p.exists():
                     continue
-                raw = p.read_text(encoding="utf-8")
+                with p.open("rb") as stream:
+                    raw = stream.read(_MAX_RESTART_BYTES + 1)
                 p.unlink()
+                if len(raw) > _MAX_RESTART_BYTES:
+                    self._emit("HIGH", "Rejected oversized restart command.", component="supervisor")
+                    continue
             except Exception:
                 continue
             try:
@@ -1345,10 +1613,17 @@ class ProcessSupervisor:
                 ts = int(cmd.get("ts", 0))
                 targets = cmd.get("targets", [])
                 sig = str(cmd.get("sig", ""))
-                if not isinstance(targets, list):
+                if (not isinstance(cmd, dict) or not isinstance(targets, list)
+                        or len(targets) > len(_VALID_RESTART_TARGETS)
+                        or not all(type(target) is str and target in _VALID_RESTART_TARGETS for target in targets)
+                        or len(nonce) != 32 or any(char not in "0123456789abcdef" for char in nonce)
+                        or type(cmd.get("ts")) is not int):
                     continue
-                # A restart is immediate; ignore anything older than 30s.
-                if _t.time() - ts > 30:
+                # Both old and future-dated commands are outside this immediate
+                # action contract. A captured nonce is admitted at most once.
+                now = _t.time()
+                age = now - ts
+                if not -_RESTART_FUTURE_SKEW_S <= age <= _RESTART_MAX_AGE_S:
                     continue
                 payload = f"{nonce}\x00{ts}\x00{','.join(str(x) for x in targets)}"
                 expected = hmac.new(_tok._load_key(), payload.encode("utf-8"),
@@ -1361,6 +1636,35 @@ class ProcessSupervisor:
                         component="supervisor",
                     )
                     continue
+                try:
+                    monotonic = self._monotonic_clock()
+                    if (type(monotonic) not in (int, float) or not math.isfinite(monotonic)
+                            or monotonic < 0 or self._restart_monotonic is not None
+                            and monotonic < self._restart_monotonic):
+                        raise RecoveryStateError("restart monotonic clock unavailable")
+                    self._restart_monotonic = monotonic
+                    if self._state_store is None:
+                        raise RecoveryStateError("durable restart nonce state is unavailable")
+                    if self._restart_nonce_store is None:
+                        # Separate authenticated document: a corrupt component
+                        # history must not disable its authorized manual repair.
+                        path = self._state_store.path
+                        self._restart_nonce_store = RecoveryStateStore(
+                            safe_name(self.state_namespace + "-restart-nonces"),
+                            path=path.with_name(path.name + ".restart-nonces.json"),
+                            key=self._state_store._key, clock=self._clock)
+                    admitted = self._restart_nonce_store.consume_restart_nonce(
+                        nonce, ts, now=now, max_age_s=_RESTART_MAX_AGE_S,
+                        future_skew_s=_RESTART_FUTURE_SKEW_S, maximum=_RESTART_NONCES_MAX)
+                    if not admitted:
+                        self._emit("HIGH", "Rejected replayed restart command.", component="supervisor")
+                        continue
+                except Exception as exc:
+                    self._emit("HIGH", "Optional restart request held: durable nonce admission unavailable.",
+                               component="supervisor", error=type(exc).__name__,
+                               disposition="observation", response_authorized=False)
+                    continue
+                self._restart_seen = {nonce: ts}  # Bounded diagnostic only; durable state decides.
                 valid = {
                     str(n).strip() for n in targets
                     if str(n).strip() == "*" or str(n).strip() in self.components
@@ -1380,6 +1684,8 @@ class ProcessSupervisor:
         # Heartbeat-less components (BlackBox): liveness is the process probe.
         if c.running_probe is not None:
             return "alive" if self._is_running(c) else "dead"
+        if c._startup is not None and c._startup.retirement_pending:
+            return "startup-retirement-held"
         # A returned proc.wait() (real process exit) is authoritative for death.
         if c._dead:
             return "dead"
@@ -1391,7 +1697,13 @@ class ProcessSupervisor:
                 return self._startup_state(c, record_missing=True) if c._startup is not None else "dead"
             if c._startup is not None:
                 c._startup.heartbeat_rejected = True
+                startup = self._startup_state(c, record_missing=False)
+                if startup == "startup-timeout":
+                    self._report_auth_state(c, auth)
+                    return startup
             self._report_auth_state(c, auth)
+            if self._retained_peer_exited(c) is True:
+                return "dead"
             return "legacy_unverified" if auth == "legacy" else f"unauthenticated_{auth}"
         self._report_auth_state(c, auth)
         hb_state = (self._verified_peer_state(c, rec)
@@ -1461,7 +1773,7 @@ class ProcessSupervisor:
         now = self._clock()
         while c._failures and now - c._failures[0] > c.window_s:
             c._failures.popleft()
-        if c.safe_mode and not c.state_fault and not c._failures:
+        if c.safe_mode and not c._failures:
             c.safe_mode = False
             self._emit("INFO", f"{c.name} left SAFE_MODE (healthy again).", component=c.name)
 
@@ -1571,6 +1883,8 @@ class ProcessSupervisor:
             if terminate_children:
                 for c in self.components.values():
                     self._terminate(c)
+            for c in self.components.values():
+                self._close_peer_exit_owner(c)
         thread = self._thread
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2.0)

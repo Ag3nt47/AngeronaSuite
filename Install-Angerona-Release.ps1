@@ -8,10 +8,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $programFiles = [Environment]::GetFolderPath('ProgramFiles')
-$target = [IO.Path]::GetFullPath((Join-Path $programFiles 'Angerona'))
-$trustedInstaller = Join-Path $target 'Install-Angerona-Release.ps1'
-$trustedVerifier = Join-Path $target 'Verify-Angerona-Release.ps1'
-$trustedAuthorizationVerifier = Join-Path $target 'AngeronaReleaseVerifier.exe'
+$target = [IO.Path]::GetFullPath([IO.Path]::Combine($programFiles,'Angerona'))
+$trustedInstaller = [IO.Path]::Combine($target,'Install-Angerona-Release.ps1')
+$trustedVerifier = [IO.Path]::Combine($target,'Verify-Angerona-Release.ps1')
+$trustedAuthorizationVerifier = [IO.Path]::Combine($target,'AngeronaReleaseVerifier.exe')
 $requiredEvidence = @(
     'Angerona.exe',
     'AngeronaStartup.exe',
@@ -45,6 +45,148 @@ $installedCustodyNames = @(
     'release-trust.json',
     'release-files.sha256'
 )
+
+
+# This script is an editable trust anchor, not a hardware/security-service root.
+# Custody rejects unrelated writers and environment-selected helpers. A local
+# administrator or a writer of this bootstrap can replace the bootstrap itself.
+function Assert-ReleaseAuthorityAcl($Acl, [string]$Label, [bool]$Ancestor) {
+    $approved = @('S-1-5-18', 'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $owner = $Acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin $approved) { throw "Release authority has an untrusted owner: $Label" }
+    $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+        $Acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $descriptor.DiscretionaryAcl) {
+        throw "Release authority has an unrestricted DACL: $Label"
+    }
+    $mask = [Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    # A drive's create-subdirectory permission cannot replace an existing,
+    # independently protected child. Leaf authority may permit no such writer.
+    if (!$Ancestor) { $mask = $mask -bor [Security.AccessControl.FileSystemRights]::AppendData }
+    foreach ($rule in $Acl.GetAccessRules($true, $true,
+            [Security.Principal.SecurityIdentifier])) {
+        if (($rule.PropagationFlags -band
+                [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
+        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                ([long]$rule.FileSystemRights -band [long]$mask) -ne 0 -and
+                $rule.IdentityReference.Value -notin $approved) {
+            throw "Release authority permits an unrelated writer: $Label"
+        }
+    }
+}
+
+function Assert-ReleaseAuthorityPath([string]$Path, [switch]$AllowSystemHardlinks) {
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full -notmatch '^[A-Za-z]:\\' -or $full.StartsWith('\\')) {
+        throw 'Release authority requires a fixed local absolute path.'
+    }
+    $cursor = $full; $leaf = $true; $count = 0
+    while ($cursor) {
+        if (++$count -gt 64) { throw 'Release authority ancestry exceeds its bound.' }
+        $before = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if ((!$leaf -and !$before.PSIsContainer) -or ($leaf -and $before.PSIsContainer) -or
+                ![string]::Equals($before.FullName, $cursor, [StringComparison]::OrdinalIgnoreCase) -or
+                ($before.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Release authority is redirected or has an invalid type: $cursor"
+        }
+        if ($before.PSObject.Properties.Name -contains 'LinkType' -and
+                ![string]::IsNullOrEmpty([string]$before.LinkType) -and
+                !($leaf -and $AllowSystemHardlinks -and $before.LinkType -eq 'HardLink')) {
+            throw "Release authority is linked: $cursor"
+        }
+        $length = if ($before.PSIsContainer) { -1L } else { [long]$before.Length }
+        $write = $before.LastWriteTimeUtc.Ticks; $attributes = $before.Attributes
+        $acl = Get-Acl -LiteralPath $cursor -ErrorAction Stop
+        Assert-ReleaseAuthorityAcl $acl $cursor (!$leaf)
+        $after = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        $afterLength = if ($after.PSIsContainer) { -1L } else { [long]$after.Length }
+        if (![string]::Equals($after.FullName, $cursor, [StringComparison]::OrdinalIgnoreCase) -or
+                $after.Attributes -ne $attributes -or $after.LastWriteTimeUtc.Ticks -ne $write -or
+                $afterLength -ne $length -or [bool]$after.PSIsContainer -ne [bool]$before.PSIsContainer) {
+            throw 'Release authority changed during custody inspection.'
+        }
+        $cursor = [IO.Path]::GetDirectoryName($cursor); $leaf = $false
+    }
+}
+
+function Get-ReleaseSystemPowerShell {
+    $hostPath = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    Assert-ReleaseAuthorityPath $hostPath -AllowSystemHardlinks
+    return $hostPath
+}
+
+function Initialize-ReleaseChildEnvironment {
+    if (![Environment]::Is64BitOperatingSystem -or ![Environment]::Is64BitProcess) {
+        throw 'Angerona win64 upgrades require the native 64-bit Windows host.'
+    }
+    $system = [Environment]::SystemDirectory
+    $windows = [IO.Directory]::GetParent($system).FullName
+    $safe = @{
+        SystemRoot=$windows; WINDIR=$windows
+        SystemDrive=[IO.Path]::GetPathRoot($windows).TrimEnd('\')
+        ComSpec=[IO.Path]::Combine($system,'cmd.exe'); PATHEXT='.COM;.EXE;.BAT;.CMD'
+        PATH=($system+';'+$windows+';'+[IO.Path]::Combine($system,'Wbem')+';'+[IO.Path]::Combine($system,'WindowsPowerShell\v1.0'))
+        PSModulePath=[IO.Path]::Combine($system,'WindowsPowerShell\v1.0\Modules')
+    }
+    foreach ($pair in @(@('ProgramFiles','ProgramFiles'), @('ProgramFiles(x86)','ProgramFilesX86'),
+            @('ProgramData','CommonApplicationData'), @('USERPROFILE','UserProfile'),
+            @('LOCALAPPDATA','LocalApplicationData'), @('APPDATA','ApplicationData'))) {
+        $value = [Environment]::GetFolderPath([Environment+SpecialFolder]$pair[1])
+        if ([string]::IsNullOrWhiteSpace($value) -or $value -notmatch '^[A-Za-z]:\\') {
+            throw ('Windows could not establish a trusted '+$pair[0]+' directory.')
+        }
+        $safe[$pair[0]] = $value
+    }
+    $safe.ProgramW6432 = $safe.ProgramFiles
+    $safe.TEMP = [IO.Path]::Combine($safe.LOCALAPPDATA,'Temp'); $safe.TMP = $safe.TEMP
+    # Exact allowlist: inherited module/profiler/proxy/gh configuration and
+    # credentials cannot select code or a verification endpoint in child tools.
+    foreach ($name in @([Environment]::GetEnvironmentVariables().Keys)) {
+        [Environment]::SetEnvironmentVariable([string]$name, $null, 'Process')
+    }
+    foreach ($name in $safe.Keys) {
+        [Environment]::SetEnvironmentVariable([string]$name, [string]$safe[$name], 'Process')
+    }
+}
+
+function ConvertTo-ReleaseProcessArgument([string]$Value) {
+    if ($Value.Contains([string][char]0) -or $Value.Contains([string][char]10) -or
+            $Value.Contains([string][char]13)) { throw 'Release argument contains a control character.' }
+    # Windows CommandLineToArgvW quoting, including embedded quotes and trailing
+    # backslashes. Start-Process joins its array argument; pass ONE quoted string.
+    $encoded = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+    $encoded = [regex]::Replace($encoded, '(\\+)$', '$1$1')
+    return '"'+$encoded+'"'
+}
+
+function Open-ProtectedReleaseInstallLease([string]$TargetRoot) {
+    Assert-ProtectedPath $TargetRoot $true
+    $path = Join-Path $TargetRoot '.release-install.lock'
+    if (Test-Path -LiteralPath $path) { Assert-ProtectedPath $path $false }
+    # One fixed protected path across users, GUI/manual entry and staging roots.
+    # FileShare.Read denies another writable opener, including the same process.
+    # Do not delete/recreate the file: its retained object is the lease authority.
+    $lease = $null
+    try {
+        $lease = [IO.FileStream]::new($path, [IO.FileMode]::OpenOrCreate,
+            ([Security.AccessControl.FileSystemRights]::Read -bor
+                [Security.AccessControl.FileSystemRights]::Write),
+            [IO.FileShare]::Read, 4096, [IO.FileOptions]::None, (New-ProtectedAcl $false))
+        Assert-ProtectedPath $path $false
+        return $lease
+    } catch {
+        if ($null -ne $lease) { $lease.Dispose() }
+        throw ('Protected installation is busy or its lease custody is unavailable; ' +
+            'no candidate or release floor was changed. '+$_.Exception.Message)
+    }
+}
 
 function Assert-NotReparse([string]$Path) {
     $item = Get-Item -LiteralPath $Path -Force
@@ -107,6 +249,11 @@ function Assert-ProtectedAcl(
         [Security.AccessControl.FileSystemRights]::TakeOwnership
     )
     try {
+        $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new(
+            $Acl.GetSecurityDescriptorBinaryForm(), 0)
+        if ($null -eq $descriptor.DiscretionaryAcl) {
+            throw 'installed authority has an unrestricted NULL DACL'
+        }
         $owner = $Acl.GetOwner(
             [Security.Principal.SecurityIdentifier])
         [void]$owner.Translate([Security.Principal.NTAccount])
@@ -213,6 +360,28 @@ function Assert-SafeRelativePath([string]$Path) {
     }
 }
 
+
+function Assert-SafeReleaseDestination([string]$TargetRoot, [string]$RelativePath) {
+    Assert-SafeRelativePath $RelativePath
+    $root = [IO.Path]::GetFullPath($TargetRoot).TrimEnd('\')
+    $destination = [IO.Path]::GetFullPath([IO.Path]::Combine($root,$RelativePath.Replace('/','\')))
+    if (!$destination.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Release destination escaped its protected installation.'
+    }
+    Assert-ProtectedPath $root $true
+    $parts = $RelativePath.Split('/')
+    if ($parts.Count -gt 64) { throw 'Release destination ancestry exceeds its bound.' }
+    $cursor = $root
+    for ($index=0; $index -lt $parts.Count-1; $index++) {
+        $cursor = [IO.Path]::Combine($cursor,$parts[$index])
+        if (!(Test-Path -LiteralPath $cursor)) { break }
+        # An existing nested directory may select dependencies or redirect a
+        # later copy. Reject unsafe custody; never Set-Acl repair it in place.
+        Assert-ProtectedPath $cursor $true
+    }
+    if (Test-Path -LiteralPath $destination) { Assert-ProtectedPath $destination $false }
+}
+
 function Write-ReleaseRecoveryNotice([string]$Message) {
     # Recovery reporting must never replace the original installation error.
     try { Write-Warning -Message $Message -WarningAction Continue } catch {}
@@ -229,7 +398,7 @@ function Invoke-ReleasePayloadReplacement(
     # candidate. It grants no release or rollback authority of its own.
     $seenPaths = @{}
     foreach ($relative in $InstallPaths) {
-        Assert-SafeRelativePath $relative
+        Assert-SafeReleaseDestination $TargetRoot $relative
         $folded = $relative.ToLowerInvariant()
         if ($seenPaths.ContainsKey($folded)) {
             throw 'The verified installation path list contains a duplicate.'
@@ -266,7 +435,7 @@ function Invoke-ReleasePayloadReplacement(
             $RecoveryState.DestinationMutationAttempted = $true
             [void](New-Item -ItemType Directory -Path $destinationParent -Force)
         }
-        Assert-NotReparse $destinationParent
+        Assert-SafeReleaseDestination $TargetRoot $relative
         if ($hadPrevious) {
             Assert-NotReparse $destination
             $RecoveryState.DestinationMutationAttempted = $true
@@ -373,6 +542,16 @@ function Assert-InstalledCustody {
     return $certificate
 }
 
+Initialize-ReleaseChildEnvironment
+$releaseHost = Get-ReleaseSystemPowerShell
+$actualReleaseHost = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+if (![string]::Equals($actualReleaseHost, $releaseHost, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Protected upgrade requires the trusted native Windows PowerShell host.'
+}
+Assert-ReleaseAuthorityPath $trustedInstaller
+Assert-ReleaseAuthorityPath $trustedVerifier
+Assert-ReleaseAuthorityPath $trustedAuthorizationVerifier
+
 $publisherCertificate = Assert-InstalledCustody
 $runningInstaller = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 if (-not $runningInstaller.Equals(
@@ -399,29 +578,6 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw 'Administrator privileges are required.'
 }
 
-# The unelevated migration wrapper performs this same check before requesting
-# elevation. Repeat it in the elevated process immediately before any staging
-# directory or destination is created, so privilege handoff cannot carry stale
-# custody evidence into mutation.
-$publisherCertificate = Assert-InstalledCustody
-
-$archive = [IO.Path]::GetFullPath($ReleaseArchive)
-if ([IO.Path]::GetExtension($archive) -ine '.zip') {
-    throw 'The portable upgrade input must be the original Angerona release ZIP.'
-}
-if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
-    throw 'The portable release ZIP is missing.'
-}
-Assert-NotReparse $archive
-$archiveChecksum = $archive + '.sha256'
-if (-not (Test-Path -LiteralPath $archiveChecksum -PathType Leaf)) {
-    throw 'The portable release ZIP checksum is missing.'
-}
-Assert-NotReparse $archiveChecksum
-
-$stage = Join-Path $target ('.installing-' + [guid]::NewGuid().ToString('N'))
-[void](New-Item -ItemType Directory -Path $stage)
-Set-Acl -LiteralPath $stage -AclObject (New-ProtectedAcl $true)
 $recoveryState = [pscustomobject]@{
     Phase = 'pre-mutation-staging'
     DestinationMutationAttempted = $false
@@ -429,7 +585,33 @@ $recoveryState = [pscustomobject]@{
 }
 $upgradeFailure = $null
 $installedStartupPath = $null
+$stage = $null
+$installLease = $null
 try {
+    $installLease = Open-ProtectedReleaseInstallLease $target
+    # The unelevated migration wrapper performs this same check before requesting
+    # elevation. Repeat it in the elevated process immediately before any staging
+    # directory or destination is created, so privilege handoff cannot carry stale
+    # custody evidence into mutation.
+    $publisherCertificate = Assert-InstalledCustody
+
+    $archive = [IO.Path]::GetFullPath($ReleaseArchive)
+    if ([IO.Path]::GetExtension($archive) -ine '.zip') {
+        throw 'The portable upgrade input must be the original Angerona release ZIP.'
+    }
+    if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) {
+        throw 'The portable release ZIP is missing.'
+    }
+    Assert-NotReparse $archive
+    $archiveChecksum = $archive + '.sha256'
+    if (-not (Test-Path -LiteralPath $archiveChecksum -PathType Leaf)) {
+        throw 'The portable release ZIP checksum is missing.'
+    }
+    Assert-NotReparse $archiveChecksum
+
+    $stage = Join-Path $target ('.installing-' + [guid]::NewGuid().ToString('N'))
+    [void](New-Item -ItemType Directory -Path $stage)
+    Set-Acl -LiteralPath $stage -AclObject (New-ProtectedAcl $true)
     $stagedArchive = Join-Path $stage ([IO.Path]::GetFileName($archive))
     Copy-Item -LiteralPath $archive -Destination $stagedArchive
     Copy-Item -LiteralPath $archiveChecksum -Destination ($stagedArchive + '.sha256')
@@ -638,6 +820,18 @@ try {
     $installedStartupPath = Select-AuthenticatedReleaseStartup -TargetRoot $target `
         -ManifestPaths $authenticatedStartupPaths -Certificate $publisherCertificate
     Assert-AuthenticatedStartupBinding $installedStartupPath
+
+    $shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Angerona.lnk'
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($shortcutPath)
+    $shortcut.TargetPath = $installedStartupPath
+    $shortcut.WorkingDirectory = $target
+    $shortcut.IconLocation = (Join-Path $target 'Angerona.exe') + ',0'
+    $shortcut.Save()
+
+    Write-Host "Authorized Angerona upgrade files copied to $target; startup verification pending." `
+        -ForegroundColor Yellow
+    Start-Process -FilePath $installedStartupPath
 } catch {
     $upgradeFailure = $_
     if ($recoveryState.DestinationMutationAttempted) {
@@ -650,42 +844,34 @@ try {
     }
     throw
 } finally {
-    if ($recoveryState.DestinationMutationAttempted) {
-        # Preserve the complete protected stage on failure, unknown outcomes,
-        # AND apparent copy success. Start-Process is not a health receipt.
-        # Never delete a candidate, backup, or replaced generation by path/hash.
-        Write-ReleaseRecoveryNotice (
-            "Recovery material retained at $stage; state: $($recoveryState.Phase). " +
-            'Startup health and recovery reconciliation remain unverified.')
-    } else {
-        # No destination-side operation was attempted. Keep the existing
-        # protected pre-mutation staging cleanup; failed cleanup must not mask
-        # the primary verification/installation exception.
-        try {
-            $stageFull = [IO.Path]::GetFullPath($stage)
-            $targetPrefix = $target.TrimEnd('\') + '\'
-            if ($stageFull.StartsWith(
-                    $targetPrefix, [StringComparison]::OrdinalIgnoreCase) -and
-                    (Test-Path -LiteralPath $stageFull)) {
-                Assert-NotReparse $stageFull
-                Remove-Item -LiteralPath $stageFull -Recurse -Force
-            }
-        } catch {
-            if ($null -eq $upgradeFailure) { throw }
+    try {
+        if ($recoveryState.DestinationMutationAttempted) {
+            # Preserve the complete protected stage on failure, unknown outcomes,
+            # AND apparent copy success. Start-Process is not a health receipt.
+            # Never delete a candidate, backup, or replaced generation by path/hash.
             Write-ReleaseRecoveryNotice (
-                "Pre-mutation staging cleanup was not proven; retained path: $stage")
+                "Recovery material retained at $stage; state: $($recoveryState.Phase). " +
+                'Startup health and recovery reconciliation remain unverified.')
+        } elseif ($null -ne $stage) {
+            # No destination-side operation was attempted. Keep the existing
+            # protected pre-mutation staging cleanup; failed cleanup must not mask
+            # the primary verification/installation exception.
+            try {
+                $stageFull = [IO.Path]::GetFullPath($stage)
+                $targetPrefix = $target.TrimEnd('\') + '\'
+                if ($stageFull.StartsWith(
+                        $targetPrefix, [StringComparison]::OrdinalIgnoreCase) -and
+                        (Test-Path -LiteralPath $stageFull)) {
+                    Assert-NotReparse $stageFull
+                    Remove-Item -LiteralPath $stageFull -Recurse -Force
+                }
+            } catch {
+                if ($null -eq $upgradeFailure) { throw }
+                Write-ReleaseRecoveryNotice (
+                    "Pre-mutation staging cleanup was not proven; retained path: $stage")
+            }
         }
+    } finally {
+        if ($null -ne $installLease) { $installLease.Dispose(); $installLease = $null }
     }
 }
-
-$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Angerona.lnk'
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath = $installedStartupPath
-$shortcut.WorkingDirectory = $target
-$shortcut.IconLocation = (Join-Path $target 'Angerona.exe') + ',0'
-$shortcut.Save()
-
-Write-Host "Authorized Angerona upgrade files copied to $target; startup verification pending." `
-    -ForegroundColor Yellow
-Start-Process -FilePath $installedStartupPath

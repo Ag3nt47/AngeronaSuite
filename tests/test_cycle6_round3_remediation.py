@@ -146,6 +146,7 @@ def test_sensitive_key_acl_uses_separate_owner_and_dacl_commands(
         return type("Result", (), {"returncode": 0})()
 
     monkeypatch.setattr(hardening.subprocess, "run", completed)
+    monkeypatch.setattr(hardening, "sensitive_file_is_protected", lambda _path: True)
     assert hardening.secure_sensitive_file(tmp_path / "bus.key", required=True)
     assert len(calls) == 2
     assert "/setowner" in calls[0]

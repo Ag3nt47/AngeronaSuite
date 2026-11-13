@@ -132,6 +132,9 @@ def test_publisher_rechecks_clean_snapshot_after_network_verification(
     )
 
     monkeypatch.setattr(publisher, "validate", lambda _root: [])
+    # This miniature README repository isolates snapshot orchestration. PW04
+    # has separate real-manifest/pin admission tests, with no network fixture.
+    monkeypatch.setattr(publisher, "_assert_recovery_bundle", lambda _root: None)
     monkeypatch.setattr(
         publisher,
         "resolve_trusted_git_boundary",
@@ -588,6 +591,8 @@ def test_late_local_config_mutation_fails_before_fetch_or_push(
         publisher.CANONICAL_ORIGIN,
     )
     fetches: list[str] = []
+    # This miniature repository tests configuration mutation, not recovery bytes.
+    monkeypatch.setattr(publisher, "_assert_recovery_bundle", lambda _root: None)
     monkeypatch.setattr(
         publisher,
         "resolve_trusted_git_boundary",

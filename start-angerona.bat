@@ -1,5 +1,5 @@
 @echo off
-setlocal DisableDelayedExpansion
+setlocal EnableExtensions DisableDelayedExpansion
 set "ERRORLEVEL="
 REM ============================================================================
 REM  Angerona source checkout - one-click UNELEVATED Observe/development start.
@@ -12,9 +12,9 @@ REM  Standalone guarantee: this launcher starts Angerona components only.  The
 REM  optional authenticated JARVIS adapter is passive and never launches JARVIS.
 REM ============================================================================
 
-REM cmd.exe supplies __APPDIR__ from its own loaded image and ignores an
-REM inherited variable of the same name. Use that process-owned directory as
-REM the trust root before any executable lookup.
+REM Clear any inherited shadow before reading cmd.exe's dynamic image directory.
+REM The trusted command processor and this editable batch are bootstrap anchors.
+set "__APPDIR__="
 set "SAFE_SYSTEM32=%__APPDIR__%"
 if not exist "%SAFE_SYSTEM32%cmd.exe" exit /b 1
 for %%I in ("%SAFE_SYSTEM32%..") do set "SAFE_WINDOWS=%%~fI"
@@ -171,10 +171,10 @@ exit /b %ANGERONA_SOURCE_RC%
 # This readable payload is embedded in start-angerona.bat by the manifest builder
 # companion. The editable source batch file is its trust anchor, not an enclave.
 $ErrorActionPreference='Stop'
-$manifestSha='1532cd2039672b9581d8c3b9c8987ee6d74248ec184e6fcfa41f50df57d9cf33'
-$manifestBlob='bc7a12f7b3dcc3d3ee41cc1e2b63a570995cfe34'
-$verifierSha='07dfc7443179483a2d859bca5668960b9173abdd849f75513341dbff6b9298f9'
-$verifierBlob='6719896a3d14fd603e219041cc2014c44e9923e9'
+$manifestSha='0fa87bcd4b7caba1bb1f0e6649a5da877ec043606150e80c0cca3edb1d0b4bcc'
+$manifestBlob='cbbc354ed93be8109a8886756aaf4b30e23d9cd6'
+$verifierSha='284987c95d40394fcd28380db5f49cf1fa8f86d70082e3a7f867ff57369857ed'
+$verifierBlob='9c595f84b1b40b77b4aa3dc8fd6571007d854056'
 $root=[IO.Path]::GetFullPath($env:ANGERONA_INSTALL_ROOT).TrimEnd('\')
 $storage=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Angerona\SourceData'
 $script:BootstrapCanonicalStorage=$storage

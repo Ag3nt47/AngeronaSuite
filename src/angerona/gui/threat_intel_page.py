@@ -22,6 +22,7 @@ import json
 import math
 import time
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -46,6 +47,19 @@ _MAX_ANALYSIS_RECORD_NODES = 4096
 _MAX_ANALYSIS_RECORD_DEPTH = 16
 # A batch whose native wait is unresolved must survive parent destruction.
 _BATCH_DEFERRED_OWNERS: dict[int, object] = {}
+
+
+def _plain_notice(parent, title, text, icon=QMessageBox.Icon.Information):
+    notice = QMessageBox(parent)
+    notice.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+    notice.setWindowTitle(title)
+    notice.setIcon(icon)
+    notice.setStandardButtons(QMessageBox.StandardButton.Close)
+    notice.setWindowModality(Qt.WindowModality.NonModal)
+    notice.setTextFormat(Qt.TextFormat.PlainText)
+    notice.setText(str(text))
+    notice.show()
+    return notice
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +291,7 @@ class ThreatIntelDashboard(QDialog):
         hdr.addWidget(title, 1)
 
         self._ts_label = QLabel("Last sync: —")
+        self._ts_label.setTextFormat(Qt.TextFormat.PlainText)
         self._ts_label.setStyleSheet("color:#94a3b8; font-size:11px;")
         hdr.addWidget(self._ts_label)
 
@@ -360,6 +375,7 @@ class ThreatIntelDashboard(QDialog):
 
         # ── Footer stats ─────────────────────────────────────────────────
         self._footer = QLabel("No KEV data loaded.")
+        self._footer.setTextFormat(Qt.TextFormat.PlainText)
         self._footer.setStyleSheet("color:#94a3b8; font-size:11px;")
         lay.addWidget(self._footer)
 
@@ -568,7 +584,7 @@ class ThreatIntelDashboard(QDialog):
         hist = cve_ignore.history(cve)
         dlg = QDialog(self); dlg.setWindowTitle(f"Applicability history — {cve}"); dlg.resize(560, 360)
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(f"<b>{cve}</b> — flag/ignore audit trail "
+        v.addWidget(QLabel(f"<b>{escape(str(cve))}</b> — flag/ignore audit trail "
                            f"(currently {'IGNORED' if cve_ignore.is_ignored(cve) else 'active'}):"))
         txt = QTextEdit(); txt.setReadOnly(True)
         if hist:
@@ -613,7 +629,7 @@ class ThreatIntelDashboard(QDialog):
                     identities.append(identity)
                     seen.add(key)
         except (TypeError, ValueError, OverflowError) as exc:
-            QMessageBox.warning(self, "Record not analyzed", str(exc))
+            _plain_notice(self, "Record not analyzed", str(exc), QMessageBox.Icon.Warning)
             return
         if not items:
             return
@@ -1043,9 +1059,10 @@ class ThreatIntelDashboard(QDialog):
             return
         dlg = QDialog(self); dlg.setWindowTitle(f"Stage proposal — {cve}"); dlg.resize(680, 560)
         v = QVBoxLayout(dlg)
-        v.addWidget(QLabel(f"<b>❗ Potential fix for {cve}</b>"))
+        v.addWidget(QLabel(f"<b>❗ Potential fix for {escape(str(cve))}</b>"))
         if analysis.get("summary"):
-            s = QLabel(analysis["summary"]); s.setWordWrap(True); v.addWidget(s)
+            s = QLabel(); s.setTextFormat(Qt.TextFormat.PlainText)
+            s.setText(str(analysis["summary"])); s.setWordWrap(True); v.addWidget(s)
         if analysis.get("instructions"):
             v.addWidget(QLabel("<b>What this does:</b>"))
             ins = QTextEdit(); ins.setReadOnly(True); ins.setPlainText(analysis["instructions"])
@@ -1139,11 +1156,13 @@ class ThreatIntelDashboard(QDialog):
         self._load_and_render()
 
     def _revert_fix(self, cve: str) -> None:
-        if QMessageBox.question(
-                self, "Stage rollback proposal",
-                f"Stage the captured rollback text for {cve}? It will not be executed.",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                ) != QMessageBox.StandardButton.Yes:
+        confirmation = QMessageBox(self)
+        confirmation.setWindowTitle("Stage rollback proposal")
+        confirmation.setTextFormat(Qt.TextFormat.PlainText)
+        confirmation.setText(f"Stage the captured rollback text for {cve}? It will not be executed.")
+        confirmation.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        confirmation.setDefaultButton(QMessageBox.StandardButton.No)
+        if confirmation.exec() != QMessageBox.StandardButton.Yes:
             return
         self._start_proposal_job(cve)
 
@@ -1175,10 +1194,11 @@ class ThreatIntelDashboard(QDialog):
         ignored = cve_ignore.is_ignored(cve)
         state_txt = ("🚫 NOT APPLICABLE (temporarily excluded from threat level)"
                      if ignored else "active")
-        head = QLabel(f"<b>{name}</b><br><b>CVE:</b> {cve} &nbsp; "
-                      f"<b>Vendor:</b> {vendor} &nbsp; <b>Product:</b> {prod}<br>"
-                      f"<b>MITRE:</b> {mitre} &nbsp; <b>Ransomware:</b> {rans} &nbsp; "
-                      f"<b>Due:</b> {due} &nbsp; <b>State:</b> {state_txt}")
+        head = QLabel(f"<b>{escape(str(name))}</b><br><b>CVE:</b> {escape(str(cve))} &nbsp; "
+                      f"<b>Vendor:</b> {escape(str(vendor))} &nbsp; <b>Product:</b> {escape(str(prod))}<br>"
+                      f"<b>MITRE:</b> {escape(str(mitre))} &nbsp; <b>Ransomware:</b> {escape(str(rans))} &nbsp; "
+                      f"<b>Due:</b> {escape(str(due))} &nbsp; <b>State:</b> {state_txt}")
+        head.setTextFormat(Qt.TextFormat.RichText)
         head.setWordWrap(True); lay.addWidget(head)
 
         lay.addWidget(QLabel("<b>Required Remediation (CISA KEV):</b>"))
@@ -1202,6 +1222,7 @@ class ThreatIntelDashboard(QDialog):
         # ── AI fix analysis area ──
         lay.addWidget(QLabel("<b>AI fix analysis (local llama3, compared to your system):</b>"))
         fix_box = QLabel("Not analyzed yet."); fix_box.setWordWrap(True)
+        fix_box.setTextFormat(Qt.TextFormat.PlainText)
         fix_box.setStyleSheet("background:#0f172a; border:1px solid #334155; border-radius:5px;"
                               "padding:6px 8px; color:#cbd5e1;")
         lay.addWidget(fix_box)
@@ -1222,7 +1243,7 @@ class ThreatIntelDashboard(QDialog):
 
         def _render_analysis(a: dict):
             if a.get("fix_available"):
-                fix_box.setText(f"❗ <b>Potential fix available</b> (confidence "
+                fix_box.setText(f"❗ Potential fix available (confidence "
                                 f"{a.get('confidence',0):.0%}). {a.get('summary','')}")
                 fix_box.setStyleSheet("background:#052e1a; border:1px solid #10b981;"
                                       "border-radius:5px; padding:6px 8px; color:#86efac;")
@@ -1297,12 +1318,12 @@ class ThreatIntelDashboard(QDialog):
                 try:
                     result = self._intl.confirm(cve, run_verification=False)
                 except Exception as exc:
-                    QMessageBox.warning(self, "Stage Error", str(exc)); return
+                    _plain_notice(self, "Stage Error", str(exc), QMessageBox.Icon.Warning); return
             self._staged.append({
                 "cve": cve, "name": name, "vendor": vendor, "product": prod,
                 "remediation": result.get("remediation", rem),
                 "note": result.get("note", ""), "when": _time.strftime("%Y-%m-%d %H:%M:%S")})
-            QMessageBox.information(self, "Staged", f"{cve} staged for operator review.")
+            _plain_notice(self, "Staged", f"{cve} staged for operator review.")
             dlg.accept()
         b_confirm.clicked.connect(_confirm); b_close.clicked.connect(dlg.close)
         dlg.exec()

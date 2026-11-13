@@ -78,28 +78,45 @@ def test_restore_privacy_defaults_disables_mobile_in_ui_and_config(
     app.processEvents()
 
 
-def test_mobile_pin_uses_cross_platform_protected_store_key(
+def test_mobile_pin_enrollment_uses_explicit_local_protected_transaction(
     tmp_path, monkeypatch
 ) -> None:
+    from types import SimpleNamespace
+    from PySide6.QtWidgets import QLabel, QLineEdit, QMessageBox
+    from angerona.core import mobile_command_auth as auth_module
+    from test_cycle29_mobile_typed_authorization import _protected_store
+
     app = QApplication.instance() or QApplication([])
-    from angerona.core import config as config_module
-
-    updates: list[dict[str, str]] = []
-    monkeypatch.setattr(config_module, "write_env_keys", updates.append)
-    dialog = SettingsDialog(
-        Config(data_dir=tmp_path), lambda: None, lambda _theme: None
+    values = _protected_store(monkeypatch, tmp_path)
+    values["UNRELATED_FIXTURE_SECRET"] = "unchanged"
+    config = Config(data_dir=tmp_path)
+    config.mobile_enabled = True
+    config.mobile_signal_cli = r"C:\fixtures\signal-cli.exe"
+    config.mobile_signal_cli_sha256 = "a" * 64
+    config.mobile_signal_cli_publisher = "CN=Inert Signal Fixture"
+    config.mobile_host_number = "+15551112222"
+    config.mobile_dest_number = "+15553334444"
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_args, **_kwargs: warnings.append(True))
+    probe = SimpleNamespace(
+        _cfg=config, _mob_pin=QLineEdit("123456"), _mob_pin_confirm=QLineEdit("123456"),
+        _mob_cli=QLineEdit(config.mobile_signal_cli),
+        _mob_sha256=QLineEdit(config.mobile_signal_cli_sha256),
+        _mob_publisher=QLineEdit(config.mobile_signal_cli_publisher),
+        _mob_host=QLineEdit(config.mobile_host_number), _mob_dest=QLineEdit(config.mobile_dest_number),
+        _mob_auth_status=QLabel(),
     )
-    dialog._mob_pin.setText("1234")
-
-    dialog._save_mobile_pin()
-
-    assert updates == [
-        {"ANGERONA_MOBILE_PIN": "1234", "ANGERONA_MOBILE_PIN_DPAPI": ""}
-    ]
-    assert dialog._mob_pin.text() == ""
-    dialog.close()
+    SettingsDialog._save_mobile_pin(probe)
+    assert warnings == []
+    assert values[auth_module.MOBILE_PIN_SECRET] == "123456"
+    state = json.loads(values[auth_module.MOBILE_AUTH_STATE_SECRET])
+    assert state["failures"] == 0 and state["reservation"] is None
+    assert len(state["generation"]) == 64
+    assert values["UNRELATED_FIXTURE_SECRET"] == "unchanged"
+    assert probe._mob_pin.text() == probe._mob_pin_confirm.text() == ""
+    assert not (tmp_path / ".env").exists()
     app.processEvents()
-
 
 def test_information_tab_search_and_take_me_there(tmp_path) -> None:
     app = QApplication.instance() or QApplication([])

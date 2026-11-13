@@ -8,8 +8,9 @@ Technique — VirtualQueryEx loop:
   For each running PID we call ctypes VirtualQueryEx() in a loop, stepping
   through the process virtual address space in MEMORY_BASIC_INFORMATION chunks.
   If a region is:
-    • Protect == PAGE_EXECUTE_READWRITE (0x40)  → classic injectable shellcode
-    • Protect == PAGE_EXECUTE_WRITECOPY (0x80)  → rarer but seen with .NET trampolines
+    • (Protect & 0xFF) == PAGE_EXECUTE_READWRITE (0x40)
+    • (Protect & 0xFF) == PAGE_EXECUTE_WRITECOPY (0x80)
+      (higher-bit modifiers are retained in evidence and repeat identity)
     • Type    == MEM_PRIVATE (0x20000)           → not file-backed (no mapped DLL)
     • State   == MEM_COMMIT  (0x1000)            → actually resident in RAM
   that is flagged as suspicious.
@@ -20,7 +21,8 @@ False-positive mitigations:
     but the process is still scanned and still produces an event.
   • We skip our own PID (the Angerona process) to avoid self-flagging.
   • We require RegionSize ≥ 4096 bytes (ignores transient 1-page stubs).
-  • Re-alerts for the same handle-bound PID/creation time are suppressed for 300s.
+  • Identical observations for the same handle-bound process repeat hourly;
+    changed region protections or scan coverage are reported immediately.
 
 Privilege note:
   Opening remote processes with PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
@@ -59,6 +61,8 @@ from angerona.core.process_allowlist import (
 PAGE_EXECUTE_READWRITE  = 0x40
 PAGE_EXECUTE_WRITECOPY  = 0x80
 _RWX_PROTECTIONS        = frozenset({PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY})
+# WinNT page-access protection occupies the low byte; guard/cache/CFG bits modify it.
+_PROTECTION_BASE_MASK   = 0xFF
 MEM_COMMIT              = 0x1000
 MEM_PRIVATE             = 0x20000
 PROCESS_QUERY_INFORMATION = 0x0400
@@ -168,21 +172,26 @@ _MIN_REGION_BYTES = 4096
 
 def _is_suspicious_region(state: int, region_type: int, protection: int, size: int) -> bool:
     return (state == MEM_COMMIT and region_type == MEM_PRIVATE
-            and protection in _RWX_PROTECTIONS and size >= _MIN_REGION_BYTES)
+            and (protection & _PROTECTION_BASE_MASK) in _RWX_PROTECTIONS
+            and size >= _MIN_REGION_BYTES)
 
 
-# Per-PROCESS alert cooldown. A JIT-heavy app can hold dozens of anonymous RWX
-# regions across several PIDs; alerting per region produced hundreds of near-
-# identical alerts and froze the GUI. We now emit at most one aggregated alert
-# per process per this window.
+# The short cache lifetime bounds timestamps; suppression additionally requires
+# exact matching region and coverage metadata for the inspected generation.
 _DEDUP_TTL = 300.0
-# After a process generation has been reported, a later sweep that finds only
-# regions already reported for it is repeated hourly instead of every five
-# minutes. Any region not reported before is still reported at the ordinary
-# five-minute cadence, so new executable memory in a known JIT host is not
-# hidden by this window.
 _UNCHANGED_REPEAT_S = 3600.0
 _REPORTED_REGIONS_MAX = 4096
+_REPORTED_PROCESSES_MAX = 2048
+
+
+@dataclass(frozen=True, slots=True)
+class _ReportedMemoryObservation:
+    regions: frozenset[tuple[int, int, int]]
+    scan_complete: bool
+    limit_reason: str
+    reported_at: float
+    suppressed: int = 0
+
 
 # Ensure proper 64-bit padding/alignment for VirtualQueryEx
 if sys.maxsize > 2**32:
@@ -320,9 +329,12 @@ class MemInjectScannerModule(BaseModule):
         super().__init__()
         self._k32: Optional[ctypes.WinDLL] = None
         self._self_pid = os.getpid()
-        # pid → last aggregated-alert ts (per-process cooldown; also throttles the
-        # heavy psutil enrichment so it can't run every scan for the same process)
-        self._seen: dict[tuple[int, float], float] = {}
+        # Exact process generation → last report or suppressed opportunity.
+        # Matching region/coverage metadata below owns suppression authority.
+        self._seen: dict[tuple[int, int], float] = {}
+        self._reported_regions: dict[tuple[int, int], _ReportedMemoryObservation] = {}
+        self._repeat_stats = {"suppressed": 0, "cache_evicted": 0, "cache_expired": 0,
+                              "clean_resets": 0}
         self._coverage = ProcessCoverage()
 
     def run(self) -> None:
@@ -375,7 +387,12 @@ class MemInjectScannerModule(BaseModule):
             if not self._generation_active(stopped):
                 return False
             self._coverage = coverage
-            self.set_health(coverage.health, coverage.detail)
+            self.set_health(coverage.health, coverage.detail + (
+                f"; repeat_suppressed={self._repeat_stats['suppressed']}, "
+                f"repeat_cache_evicted={self._repeat_stats['cache_evicted']}, "
+                f"repeat_cache_expired={self._repeat_stats['cache_expired']}, "
+                f"repeat_cache_keys={len(self._reported_regions)}, "
+                f"repeat_clean_resets={self._repeat_stats['clean_resets']}"))
             self.mark_cycle_complete(interval_seconds=0.0)
             return True
 
@@ -580,19 +597,19 @@ class MemInjectScannerModule(BaseModule):
 
             # One aggregated alert per process (not one per region) — this is what
             # turned a JIT app's dozens of RWX regions into an alert storm.
-            birth = before.create_time if regions and before is not None and before.pid == pid and before.exit_filetime == 0 else None
-            cooldown_key = (pid, birth) if birth is not None else None
-            if regions and (
-                cooldown_key is None
-                or time.time() - self._seen.get(cooldown_key, 0.0) >= _DEDUP_TTL
+            birth_ticks = before.birth_filetime if regions and before is not None and before.pid == pid and before.exit_filetime == 0 else None
+            cooldown_key = (pid, birth_ticks) if birth_ticks is not None else None
+            if regions:
+                pending_image = {}
+            if regions and not self._unchanged_observation(
+                cooldown_key, self._region_signature(regions), not limit_reason,
+                limit_reason, time.time(),
             ):
                 # Resolve/hash the executable from this still-open process
                 # object only after a suspicious region exists. Ordinary
                 # processes pay no image-hash cost and no PID lookup can grant
                 # a pre-scan exclusion.
                 bound_image = self._bound_image_identity(handle)
-                if birth is not None:
-                    bound_image = {**bound_image, "process_create_time": birth}
                 if not self._generation_active(stopped):
                     return _PidScanResult(True, False, "cancelled")
                 pending_image = bound_image
@@ -620,13 +637,21 @@ class MemInjectScannerModule(BaseModule):
                     except Exception:
                         closed = False
 
+        identity = memory_identity_receipt(source="memory.windows.inject_scanner",
+            request_id=request_id, pid=pid, expected_create_time=None,
+            before=before, after=after, started_at=started_at, handle_closed=closed)
         if pending_image is not None:
-            identity = memory_identity_receipt(source="memory.windows.inject_scanner",
-                request_id=request_id, pid=pid, expected_create_time=None,
-                before=before, after=after, started_at=started_at, handle_closed=closed)
             self._alert(pid, proc_name, regions, process_policy,
                 bound_image=pending_image, memory_identity=identity,
                 scan_complete=not limit_reason, scan_limit_reason=limit_reason)
+        elif not regions and self._generation_active(stopped):
+            # An empty partial/unavailable read cannot resolve remembered
+            # positives. A complete empty scan must also bind the exact object.
+            if result.scanned and identity.bound and identity.pid == pid:
+                key = (pid, identity.before.birth_filetime)
+                if self._reported_regions.pop(key, None) is not None:
+                    self._repeat_stats["clean_resets"] += 1
+                self._seen.pop(key, None)
         if not self._generation_active(stopped):
             return _PidScanResult(bool(handle), False, "cancelled")
         return result
@@ -743,7 +768,7 @@ class MemInjectScannerModule(BaseModule):
         connections = ctx.get("connections", [])
         children = ctx.get("children", 0)
         dll_count = ctx.get("dll_count", 0)
-        prot_rwx = protect == PAGE_EXECUTE_READWRITE
+        prot_rwx = (protect & _PROTECTION_BASE_MASK) == PAGE_EXECUTE_READWRITE
 
         if any(t in name for t in ("svchost", "lsass", "winlogon", "csrss")):
             hint = "high-value system process targeted — likely privilege escalation vector"
@@ -797,6 +822,38 @@ class MemInjectScannerModule(BaseModule):
             return False
         return hmac.compare_digest(image_sha256, expected)
 
+    @staticmethod
+    def _region_signature(regions):
+        # Never retain arbitrary caller-sized evidence in the repeat cache.
+        if len(regions) > _REPORTED_REGIONS_MAX:
+            return None
+        try:
+            return frozenset((int(r[0]), int(r[1]), int(r[2])) for r in regions)
+        except (TypeError, ValueError, IndexError, OverflowError):
+            return None
+
+    def _unchanged_observation(self, key, signature, scan_complete, limit_reason, now):
+        if key is None or signature is None:
+            return False
+        prior = self._reported_regions.get(key)
+        if prior is not None:
+            return (signature == prior.regions and scan_complete == prior.scan_complete
+                    and limit_reason == prior.limit_reason
+                    and 0 <= now - prior.reported_at < _UNCHANGED_REPEAT_S)
+        return False
+
+    def _bound_repeat_cache(self):
+        while len(self._reported_regions) > _REPORTED_PROCESSES_MAX:
+            key = next(iter(self._reported_regions))
+            del self._reported_regions[key]
+            self._seen.pop(key, None)
+            self._repeat_stats["cache_evicted"] += 1
+        while len(self._seen) > _REPORTED_PROCESSES_MAX:
+            key = next(iter(self._seen))
+            del self._seen[key]
+            self._reported_regions.pop(key, None)
+            self._repeat_stats["cache_evicted"] += 1
+
     def _alert(
         self,
         pid,
@@ -817,40 +874,29 @@ class MemInjectScannerModule(BaseModule):
         identity_bound = (identity is not None and identity.bound and identity.pid == pid
                           and identity.source == "memory.windows.inject_scanner")
         birth = identity.before.create_time if identity_bound else None
-        cooldown_key = (
-            (pid, float(birth))
-            if type(birth) in (int, float) and math.isfinite(birth) and birth > 0
-            else None
-        )
-        if cooldown_key is not None and now - self._seen.get(cooldown_key, 0.0) < _DEDUP_TTL:
-            return
-        # Only exact scanned-object identity can own a cooldown. Missing birth
-        # evidence must not suppress a later process which reuses the same PID.
-        if cooldown_key is not None:
-            reported = self.__dict__.setdefault("_reported_regions", {})
-            try:
-                signature = frozenset((int(r[0]), int(r[1])) for r in regions)
-            except (TypeError, ValueError, IndexError):
-                signature = None
-            prior = reported.get(cooldown_key)
-            if (signature is not None and prior is not None and signature <= prior[0]
-                    and 0 <= now - prior[1] < _UNCHANGED_REPEAT_S):
-                # Nothing new for this exact generation: keep the short
-                # cooldown moving and leave the hourly report clock alone.
-                self._seen[cooldown_key] = now
-                return
+        # Float epoch seconds can merge adjacent native birth ticks. Repeat
+        # history and complete-clear resets retain the exact inspected FILETIME.
+        cooldown_key = (pid, identity.before.birth_filetime) if identity_bound else None
+        signature = self._region_signature(regions)
+        prior = self._reported_regions.get(cooldown_key)
+        if self._unchanged_observation(
+            cooldown_key, signature, scan_complete, scan_limit_reason, now,
+        ):
+            self._repeat_stats["suppressed"] += 1
             self._seen[cooldown_key] = now
-            if signature is not None:
-                known = signature if prior is None else (signature | prior[0])
-                if len(known) > _REPORTED_REGIONS_MAX:
-                    known = signature
-                reported[cooldown_key] = (known, now)
+            if prior is not None:
+                self._reported_regions[cooldown_key] = _ReportedMemoryObservation(
+                    prior.regions, prior.scan_complete, prior.limit_reason,
+                    prior.reported_at, prior.suppressed + 1)
+            self._bound_repeat_cache()
+            return
+        repeat_suppressed = prior.suppressed if prior is not None else 0
 
         # Largest region drives the technique prediction and the headline detail.
         base, size, protect = max(regions, key=lambda r: r[1])
         region_count = len(regions)
         prot_name = (
-            "PAGE_EXECUTE_READWRITE" if protect == PAGE_EXECUTE_READWRITE
+            "PAGE_EXECUTE_READWRITE" if (protect & _PROTECTION_BASE_MASK) == PAGE_EXECUTE_READWRITE
             else "PAGE_EXECUTE_WRITECOPY"
         )
         name_str = proc_name or f"PID {pid}"
@@ -858,9 +904,6 @@ class MemInjectScannerModule(BaseModule):
         # Deep enrichment triggered only upon detection
         ctx = self._enrich_process(pid)
         if not self._generation_active(stopped):
-            if cooldown_key is not None and self._seen.get(cooldown_key) == now:
-                self._seen.pop(cooldown_key, None)
-                self.__dict__.get("_reported_regions", {}).pop(cooldown_key, None)
             return
         # PID enrichment is advisory and may describe a later reused PID.
         # Neither it nor image enrichment can stand in for inspected-object proof.
@@ -902,10 +945,13 @@ class MemInjectScannerModule(BaseModule):
 
         with self._lifecycle_lock:
             if not self._generation_active(stopped):
-                if cooldown_key is not None and self._seen.get(cooldown_key) == now:
-                    self._seen.pop(cooldown_key, None)
-                    self.__dict__.get("_reported_regions", {}).pop(cooldown_key, None)
                 return
+            if cooldown_key is not None and signature is not None:
+                self._seen[cooldown_key] = now
+                self._reported_regions.pop(cooldown_key, None)
+                self._reported_regions[cooldown_key] = _ReportedMemoryObservation(
+                    signature, scan_complete, scan_limit_reason, now)
+                self._bound_repeat_cache()
             self.emit(
                 "\n".join(parts),
                 Severity.MEDIUM,
@@ -919,10 +965,13 @@ class MemInjectScannerModule(BaseModule):
                 region_size=size,
                 region_count=region_count,
                 protection=prot_name,
+                protection_raw=protect,
                 process_age_s=ctx.get("age_s"),
                 threads=ctx.get("threads"),
                 dll_count=ctx.get("dll_count"),
                 memory_map_enrichment=ctx.get("memory_map_enrichment", "unavailable"),
+                repeat_suppressed=repeat_suppressed,
+                repeat_cache_evicted=self._repeat_stats["cache_evicted"],
                 memory_scan_complete=scan_complete,
                 memory_scan_limit_reason=scan_limit_reason,
                 connections=ctx.get("connections", []),
@@ -942,24 +991,37 @@ class MemInjectScannerModule(BaseModule):
             )
 
     def _evict_stale_dedup(self):
-        """Remove expired dedup entries to prevent unbounded growth."""
-        cutoff = time.time() - _DEDUP_TTL
-        stale  = [k for k, ts in self._seen.items() if ts < cutoff]
-        for k in stale:
-            del self._seen[k]
-        reported = self.__dict__.get("_reported_regions")
-        if reported:
-            region_cutoff = time.time() - _UNCHANGED_REPEAT_S
-            for k in [k for k, state in reported.items() if state[1] < region_cutoff]:
-                del reported[k]
+        """Expire repeat history without granting trust or retaining paired gates."""
+        now = time.time()
+        for key in [key for key, ts in self._seen.items() if now - ts >= _DEDUP_TTL or now < ts]:
+            del self._seen[key]
+        for key, prior in list(self._reported_regions.items()):
+            if now - prior.reported_at >= _UNCHANGED_REPEAT_S or now < prior.reported_at:
+                del self._reported_regions[key]
+                self._seen.pop(key, None)
+                self._repeat_stats["cache_expired"] += 1
+        self._bound_repeat_cache()
 
     def self_test(self) -> tuple[bool, str]:
-        suspicious = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READWRITE, _MIN_REGION_BYTES)
-        ordinary = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, 0x04, _MIN_REGION_BYTES)  # PAGE_READWRITE
-        short = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, PAGE_EXECUTE_READWRITE, _MIN_REGION_BYTES - 1)
-        if not suspicious or ordinary or short:
-            return False, "Memory region sample failed RWX detection, clean control, or size boundary"
-        detail = "Offline memory region sample: committed private RWX flagged; ordinary RW and short regions ignored. "
+        # Independent modifiers, not a claim that every combination is allocatable.
+        modifiers = (0, 0x100, 0x200, 0x400, 0x40000000)  # guard, cache, write-combine, CFG
+        suspicious = all(
+            _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, protection | modifier, _MIN_REGION_BYTES)
+            for protection in (PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY)
+            for modifier in modifiers
+        )
+        ordinary = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, 0x04, _MIN_REGION_BYTES) or any(
+            _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, 0x20 | modifier, _MIN_REGION_BYTES)
+            for modifier in modifiers  # execute/read-only still lacks write permission
+        )
+        short = _is_suspicious_region(MEM_COMMIT, MEM_PRIVATE, 0x140, _MIN_REGION_BYTES - 1)
+        uncommitted = _is_suspicious_region(0x2000, MEM_PRIVATE, 0x140, _MIN_REGION_BYTES)
+        mapped = _is_suspicious_region(MEM_COMMIT, 0x40000, 0x140, _MIN_REGION_BYTES)
+        if not suspicious or ordinary or short or uncommitted or mapped:
+            return False, "Memory region sample failed base/modifier classification or state/type/size controls"
+        detail = ("Offline memory region sample: committed private RWX base protections and modifier controls passed; "
+                  "ordinary, uncommitted, mapped and short regions ignored. This sample does not establish "
+                  "live traversal coverage or injection efficacy. ")
         if self.status != "running":
             return True, detail + "Live native memory queries were not exercised."
         if self._k32 is None:

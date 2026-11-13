@@ -585,16 +585,14 @@ def test_ipc_ring_key_is_create_once_and_malformed_custody_fails(tmp_path, monke
         _load_or_create_key(path)
 
 
-def test_ipc_ring_reinitializes_legacy_layout_before_consumption(tmp_path):
+def test_ipc_ring_preserves_legacy_layout_without_reinitializing_evidence(tmp_path):
     key = b"i" * 32
     path = tmp_path / "legacy.ring"
-    writer = RingWriter(path, slot_count=8, slot_size=256, key=key)
-    writer._write_field(4, "<I", 1)
-    writer.close()
-
-    reader = RingReader(path, slot_count=8, slot_size=256, key=key)
-    try:
-        assert reader._read_header()[1] == 2
-        assert reader.read_batch() == []
-    finally:
-        reader.close()
+    with RingWriter(path, slot_count=8, slot_size=256, key=key) as writer:
+        assert writer.write(b"retained legacy-layout evidence", sensor_id=1)
+        writer._write_field(4, "<I", 1)
+    original = path.read_bytes()
+    for kind in (RingReader, RingWriter):
+        with pytest.raises(FrameError, match="header"):
+            kind(path, slot_count=8, slot_size=256, key=key)
+        assert path.read_bytes() == original

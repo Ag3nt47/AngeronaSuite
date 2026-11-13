@@ -213,7 +213,7 @@ class SpywareGuardModule(BaseModule):
         self._approved: OrderedDict[
             tuple[str, str], tuple[str, int, IndicatorReviewIdentity]
         ] = OrderedDict()
-        self._dedup: OrderedDict[str, float] = OrderedDict()
+        self._dedup: OrderedDict[str, tuple[str, float, int]] = OrderedDict()
         self._coverage: dict = {"host": "not-yet-scanned", "memory": "disabled",
                                 "responses": {"status": "not-collected", "current": False,
                                               "last_verified_at": None, "retained_rows": 0}}
@@ -232,7 +232,7 @@ class SpywareGuardModule(BaseModule):
         self._priority_scan_status = {"request_id": "", "state": "idle", "started_at": None,
                                       "finished_at": None, "coverage": {}, "error": ""}
         self._counts = {"findings": 0, "response_requests": 0, "reports": 0, "sandbox_runs": 0,
-                        "queue_dropped": 0}
+                        "queue_dropped": 0, "repeat_suppressed": 0, "repeat_cache_evicted": 0}
         self._receipt_ids: OrderedDict[str, float | None] = OrderedDict()
         self._response_rows: list[dict] = []
         self._upstream_events: OrderedDict[tuple[str, float], None] = OrderedDict()
@@ -1178,34 +1178,55 @@ class SpywareGuardModule(BaseModule):
             finding.pop("single_rule_host_fallback", None)
             response_already_requested = False
         kind = str(finding.get("kind", "spyware_evidence"))[:100]
+        severity = Severity.__members__.get(str(finding.get("severity", "MEDIUM")).upper(), Severity.MEDIUM)
+        # Re-evaluate native response eligibility before suppressing an advisory
+        # repeat: a fresh authorized sample must not inherit an old observation.
+        response = {} if response_already_requested else self._response(
+            finding, local_authority, native_sample=native_sample)
         identity = {key: finding.get(key) for key in
                     ("pid", "process_create_time", "remote_ip", "path", "evidence")}
-        token = hashlib.sha256(json.dumps([local_authority, kind, identity], sort_keys=True, default=str).encode()).hexdigest()
+        # Preserve native process generations that epoch float seconds merge.
+        # Grouping metadata grants no response authority and performs no lookup.
+        memory_receipt = parse_memory_identity(finding.get("memory_identity"))
+        if (memory_receipt is not None and memory_receipt.bound
+                and memory_receipt.pid == finding.get("pid")):
+            identity["memory_process_birth_filetime"] = memory_receipt.before.birth_filetime
+        incident_key = hashlib.sha256(json.dumps(
+            [local_authority, kind, identity], sort_keys=True, default=str).encode()).hexdigest()
+        classification = {key: finding.get(key) for key in (
+            "observed_content_sha256", "finding_kind", "classification_reason",
+            "response_eligible", "eligibility_reason", "detector_policy",
+            "threat_intel_corroborated", "active_attack", "disposition",
+            "memory_scan_complete", "memory_scan_limit_reason")}
+        token = hashlib.sha256(json.dumps(
+            [incident_key, severity.name, classification, bool(response), response_already_requested],
+            sort_keys=True, default=str).encode()).hexdigest()
         now = self._clock()
         with self._lock:
-            previous = self._dedup.get(token)
-            # A configuration exposure (unquoted service path, a startup
-            # entry in a transient directory) is a standing fact, not a new
-            # event every sweep. Repeat an identical exposure every six hours;
-            # response-eligible and active findings keep the 5-minute window.
+            previous = self._dedup.get(incident_key)
+            # Only equivalent observations share a window. Classification,
+            # severity, evidence and eligibility transitions are new reports.
             exposure_only = (finding.get("response_eligible") is False
                              and finding.get("finding_kind") == "exposure")
             window = 21600 if exposure_only else 300
-            if previous is not None and 0 <= now - previous < window:
+            if (previous is not None and previous[0] == token
+                    and 0 <= now - previous[1] < window):
+                self._dedup[incident_key] = (token, previous[1], previous[2] + 1)
+                self._counts["repeat_suppressed"] += 1
                 return
-            self._dedup[token] = now
-            self._dedup.move_to_end(token)
+            repeat_suppressed = previous[2] if previous is not None else 0
+            self._dedup[incident_key] = (token, now, 0)
+            self._dedup.move_to_end(incident_key)
             while len(self._dedup) > 2048:
                 self._dedup.popitem(last=False)
-        response = {} if response_already_requested else self._response(
-            finding, local_authority, native_sample=native_sample)
-        severity = Severity.__members__.get(str(finding.get("severity", "MEDIUM")).upper(), Severity.MEDIUM)
+                self._counts["repeat_cache_evicted"] += 1
         details = dict(finding)
         details.pop("summary", None)
         details.pop("severity", None)
         details.pop("response_contract", None)
         details.update(schema="angerona.spyware-guard.finding.v1", finding_code=kind,
-                       incident_id=token, actor_attribution="none", spyware_confirmed=False,
+                       incident_id=token, repeat_suppressed=repeat_suppressed,
+                       actor_attribution="none", spyware_confirmed=False,
                        response_authorized=False, response_authority="none",
                        active_attack=False, disposition="observation")
         if finding.get("response_eligible") is False and finding.get("finding_kind") == "exposure":
@@ -1229,6 +1250,11 @@ class SpywareGuardModule(BaseModule):
             try:
                 self._retain_native_hash_response(response_event, finding, native_sample)
             except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+                # Failed proof retention did not report an eligible response.
+                # A later valid sample must get a fresh admission opportunity.
+                with self._lock:
+                    if self._dedup.get(incident_key, (None,))[0] == token:
+                        self._dedup.pop(incident_key, None)
                 response = {}
                 response_event = None
                 details.pop("response_contract", None)
@@ -1545,6 +1571,23 @@ class SpywareGuardModule(BaseModule):
                     identity_detail = receipt.reason
                 coverage["memory.identity"] = {"status": "complete" if bound else "partial",
                     "detail": identity_detail}
+                # Coverage belongs to this collection, independently of object
+                # identity. Retain transitions even when positive regions match.
+                metadata_coverage = {source: state for source, state in coverage.items()
+                                     if source != "memory.identity"}
+                scan_complete = bool(metadata_coverage) and all(
+                    isinstance(state, dict) and state.get("status") == "complete"
+                    for state in coverage.values())
+                coverage_gaps = [] if metadata_coverage else ["Memory metadata coverage unavailable"]
+                for source, state in list(coverage.items())[:16]:
+                    if isinstance(state, dict) and state.get("status") == "complete":
+                        continue
+                    status = _progress_text(state.get("status"), 32) if isinstance(state, dict) else ""
+                    detail = _progress_text(state.get("detail"), 160) if isinstance(state, dict) else ""
+                    coverage_gaps.append(f"{_progress_text(source, 64)}: {status or 'unavailable'}" +
+                                         (f" ({detail})" if detail else ""))
+                scan_limit_reason = ("" if scan_complete else
+                    ("; ".join(coverage_gaps) or "Memory metadata coverage incomplete")[:512])
                 memory_coverage[str(pid)] = {"expected_process_create_time": row.get("create_time"),
                     "process_create_time": receipt.before.create_time if bound else None,
                     "coverage": coverage}
@@ -1552,6 +1595,8 @@ class SpywareGuardModule(BaseModule):
                     finding = dict(finding, pid=pid,
                         process_create_time=receipt.before.create_time if bound else None,
                         memory_identity=result.get("memory_identity"),
+                        memory_scan_complete=scan_complete,
+                        memory_scan_limit_reason=scan_limit_reason,
                         response_eligible=bound and finding.get("response_eligible") is not False,
                         eligibility_reason=coverage["memory.identity"]["detail"])
                     self._publish_memory(finding, memory_stopped)

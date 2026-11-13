@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import hashlib
 import re
-import time
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from angerona.core.eventbus import BusAuthority, EventBus
+from angerona.core import mobile_command_auth as auth_module
+from test_cycle29_mobile_typed_authorization import _protected_store
 from angerona.core.module_base import BaseModule
 from angerona.modules import mobile_bridge as mobile_module
 from angerona.modules.mobile_bridge import MobileResponseBridge
 
 
 _DEST = "+13035550100"
-_PIN = "4821"
+_PIN = "482137"
 
 
 def _message_id(label: str) -> str:
@@ -35,8 +36,15 @@ class _ThrottleTarget(BaseModule):
         return
 
 
-def _bridge(monkeypatch, *, modules: dict[str, object] | None = None):
-    monkeypatch.setenv("ANGERONA_MOBILE_PIN", _PIN)
+def _bridge(monkeypatch, tmp_path, *, modules: dict[str, object] | None = None):
+    _protected_store(monkeypatch, tmp_path)
+    clock = _FastClock()
+    monkeypatch.setattr(mobile_module, "time", clock)
+    monkeypatch.setattr(mobile_module, "MobileCommandAuthorization", lambda data_root, *, scope:
+                        auth_module.MobileCommandAuthorization(
+                            data_root, scope=scope, clock=lambda: mobile_module.time.time(),
+                            monotonic=lambda: mobile_module.time.monotonic()))
+    monkeypatch.setenv("ANGERONA_MOBILE_PIN", "0000")
     bus = EventBus()
     bus.arm(BusAuthority(b"b10-independent-reattack-key!!"))
     target = _ThrottleTarget()
@@ -47,12 +55,18 @@ def _bridge(monkeypatch, *, modules: dict[str, object] | None = None):
     }
     configured_modules.update(modules or {})
     manager = SimpleNamespace(
-        config=SimpleNamespace(mobile_dest_number=_DEST),
+        config=SimpleNamespace(
+            data_dir=tmp_path, mobile_signal_cli=r"C:\fixtures\signal-cli.exe",
+            mobile_signal_cli_sha256="a" * 64,
+            mobile_signal_cli_publisher="CN=Inert Signal Fixture",
+            mobile_host_number="+13035550101", mobile_dest_number=_DEST,
+        ),
         modules=configured_modules,
     )
     bridge = MobileResponseBridge()
     bridge.bind(bus)
     bridge.bind_manager(manager)
+    assert bridge._command_authorization().rearm_local(_PIN, _PIN).ready
     sent: list[str] = []
     monkeypatch.setattr(bridge, "_send", lambda message: sent.append(str(message)) or True)
     monkeypatch.setattr(bridge, "_soar_event", lambda *_args, **_kwargs: None)
@@ -72,15 +86,15 @@ def _arm(bridge: MobileResponseBridge, label: str, now: float) -> str:
 )
 @pytest.mark.parametrize("evidence", ("missing", "stale", "future", "replay"))
 def test_every_mutator_rejects_bad_transport_identity(
-    monkeypatch, command: str, evidence: str
+    monkeypatch, tmp_path, command: str, evidence: str
 ) -> None:
-    bridge, _bus, _target, _governor, _sent = _bridge(monkeypatch)
-    now = time.time()
+    bridge, _bus, _target, _governor, _sent = _bridge(monkeypatch, tmp_path)
+    now = mobile_module.time.time()
     effects: list[str] = []
-    monkeypatch.setattr(bridge, "_eco", lambda *_args: effects.append(command))
-    monkeypatch.setattr(bridge, "_lockdown", lambda *_args: effects.append(command))
-    monkeypatch.setattr(bridge, "_gated", lambda *_args: effects.append(command))
-    monkeypatch.setattr(bridge, "_mute", lambda *_args: effects.append(command))
+    monkeypatch.setattr(bridge, "_eco", lambda *_args, **_kwargs: effects.append(command))
+    monkeypatch.setattr(bridge, "_lockdown", lambda *_args, **_kwargs: effects.append(command))
+    monkeypatch.setattr(bridge, "_gated", lambda *_args, **_kwargs: effects.append(command))
+    monkeypatch.setattr(bridge, "_mute", lambda *_args, **_kwargs: effects.append(command))
 
     if command.startswith("ECO_") or command == "LOCKDOWN":
         token = _arm(bridge, f"arm-{command}-{evidence}", now)
@@ -94,8 +108,10 @@ def test_every_mutator_rejects_bad_transport_identity(
             "module": "Network Monitor",
             "allowed_actions": (command,),
             "operator_identity": _DEST,
-            "expires_monotonic": time.monotonic() + 60.0,
+            "expires_monotonic": mobile_module.time.monotonic() + 60.0,
             "response_eligible": True,
+            "authorization_generation": bridge._mobile_auth_status().generation,
+            "authorization_scope": bridge._mobile_auth_status().scope_digest,
         }
         body = f"{command} {token} {_PIN}"
 
@@ -109,16 +125,22 @@ def test_every_mutator_rejects_bad_transport_identity(
     elif evidence == "future":
         sent_at = now + mobile_module._COMMAND_FUTURE_SKEW_SECONDS + 0.01
     else:
-        bridge._seen_command_ids[message_id] = time.monotonic()
+        bridge._seen_command_ids[message_id] = mobile_module.time.monotonic()
 
+    assert bridge._mobile_auth_status().ready
     bridge._handle(_DEST, body, message_id=message_id, sent_at=sent_at)
 
     assert effects == []
+    assert bridge._mobile_auth_status().failures == 0
+    if command.startswith("ECO_") or command == "LOCKDOWN":
+        assert bridge._admin_challenge is None
+    else:
+        assert token not in bridge.pending_alerts
 
 
-def test_nonce_sender_scope_expiry_reuse_and_pin_lockout_hold(monkeypatch) -> None:
-    bridge, _bus, target, _governor, _sent = _bridge(monkeypatch)
-    now = time.time()
+def test_nonce_sender_scope_expiry_reuse_and_pin_lockout_hold(monkeypatch, tmp_path) -> None:
+    bridge, _bus, target, _governor, _sent = _bridge(monkeypatch, tmp_path)
+    now = mobile_module.time.time()
     token = _arm(bridge, "scope-arm", now)
 
     bridge._handle(
@@ -132,7 +154,7 @@ def test_nonce_sender_scope_expiry_reuse_and_pin_lockout_hold(monkeypatch) -> No
 
     bridge._admin_challenge = replace(
         bridge._admin_challenge,
-        expires_monotonic=time.monotonic() - 0.01,
+        expires_monotonic=mobile_module.time.monotonic() - 0.01,
     )
     bridge._handle(
         _DEST,
@@ -142,57 +164,60 @@ def test_nonce_sender_scope_expiry_reuse_and_pin_lockout_hold(monkeypatch) -> No
     )
     assert target._throttle == 1.0
 
-    token = _arm(bridge, "pin-arm", now)
+    # Expiry rejection above must not pre-consume the PIN loop's protocol budget.
+    mobile_module.time.wall += mobile_module._AUTH_FAILURE_WINDOW_SECONDS + 1
+    mobile_module.time.mono += mobile_module._AUTH_FAILURE_WINDOW_SECONDS + 1
     for index in range(mobile_module._AUTH_FAILURE_LIMIT):
-        bridge._handle(
-            _DEST,
-            f"ECO ON {token} 0000",
-            message_id=_message_id(f"bad-pin-independent-{index}"),
-            sent_at=now,
-        )
+        now = mobile_module.time.time()
+        token = _arm(bridge, f"pin-arm-{index}", now)
+        bridge._handle(_DEST, f"ECO ON {token} 000000",
+                       message_id=_message_id(f"bad-pin-independent-{index}"), sent_at=now)
+        assert bridge._admin_challenge is None
+        status = bridge._mobile_auth_status()
+        assert status.failures == index + 1 and status.retry_after_s > 0
+        if index + 1 < mobile_module._AUTH_FAILURE_LIMIT:
+            mobile_module.time.wall += status.retry_after_s + 1
+            mobile_module.time.mono += status.retry_after_s + 1
     assert bridge._lockout_remaining() > 0.0
-    bridge._handle(
-        _DEST,
-        f"ECO ON {token} {_PIN}",
-        message_id=_message_id("correct-pin-during-lockout"),
-        sent_at=now,
-    )
     assert target._throttle == 1.0
 
+    # Clearing only the old in-memory protocol throttle does not erase protected
+    # PIN failures. The earlier nonce remains burned; request a fresh one.
     bridge._auth_locked_until = 0.0
     bridge._auth_failures.clear()
-    bridge._handle(
-        _DEST,
-        f"ECO ON {token} {_PIN}",
-        message_id=_message_id("first-use"),
-        sent_at=now,
-    )
+    delay = bridge._mobile_auth_status().retry_after_s + 1
+    mobile_module.time.wall += delay
+    mobile_module.time.mono += delay
+    now = mobile_module.time.time()
+    fresh = _arm(bridge, "fresh-after-lockout", now)
+    assert fresh != token
+    bridge._handle(_DEST, f"ECO ON {fresh} {_PIN}",
+                   message_id=_message_id("first-use"), sent_at=now)
     assert target._throttle == 6.0
-    bridge._handle(
-        _DEST,
-        f"ECO OFF {token} {_PIN}",
-        message_id=_message_id("nonce-reuse"),
-        sent_at=now,
-    )
+    assert bridge._mobile_auth_status().failures == mobile_module._AUTH_FAILURE_LIMIT
+    bridge._handle(_DEST, f"ECO OFF {fresh} {_PIN}",
+                   message_id=_message_id("nonce-reuse"), sent_at=now)
     assert target._throttle == 6.0
 
 
 def test_alert_tokens_are_random_scoped_expiring_sender_bound_and_single_use(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
-    bridge, bus, _target, _governor, _sent = _bridge(monkeypatch)
+    bridge, bus, _target, _governor, _sent = _bridge(monkeypatch, tmp_path)
     generated = {bridge._new_token() for _ in range(256)}
     assert len(generated) == 256
     assert all(re.fullmatch(r"[0-9a-f]{64}", token) for token in generated)
 
-    now = time.time()
+    now = mobile_module.time.time()
     token = next(iter(generated))
     bridge.pending_alerts[token] = {
         "module": "Network Monitor",
         "allowed_actions": ("MUTE",),
         "operator_identity": _DEST,
-        "expires_monotonic": time.monotonic() + 60.0,
+        "expires_monotonic": mobile_module.time.monotonic() + 60.0,
         "response_eligible": False,
+        "authorization_generation": bridge._mobile_auth_status().generation,
+        "authorization_scope": bridge._mobile_auth_status().scope_digest,
     }
     bridge._handle(
         _DEST,
@@ -209,7 +234,7 @@ def test_alert_tokens_are_random_scoped_expiring_sender_bound_and_single_use(
     assert token in bridge.pending_alerts
     assert not bridge._is_muted("Network Monitor")
 
-    bridge.pending_alerts[token]["expires_monotonic"] = time.monotonic() - 0.01
+    bridge.pending_alerts[token]["expires_monotonic"] = mobile_module.time.monotonic() - 0.01
     bridge._handle(
         _DEST,
         f"MUTE {token} {_PIN}",
@@ -223,8 +248,10 @@ def test_alert_tokens_are_random_scoped_expiring_sender_bound_and_single_use(
         "module": "Network Monitor",
         "allowed_actions": ("MUTE",),
         "operator_identity": _DEST,
-        "expires_monotonic": time.monotonic() + 60.0,
+        "expires_monotonic": mobile_module.time.monotonic() + 60.0,
         "response_eligible": False,
+        "authorization_generation": bridge._mobile_auth_status().generation,
+        "authorization_scope": bridge._mobile_auth_status().scope_digest,
     }
     bridge._handle(
         _DEST,
@@ -266,12 +293,12 @@ class _RollbackFailureTarget:
 
 
 def test_eco_rejects_unmanaged_setter_without_any_partial_state_change(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
     failing = _RollbackFailureTarget()
     governor = SimpleNamespace(_level=4.0)
     bridge, bus, _target, _unused_governor, sent = _bridge(
-        monkeypatch,
+        monkeypatch, tmp_path,
         modules={
             "Adaptive Resource Governor": governor,
             "Failing Detector": failing,
@@ -279,7 +306,7 @@ def test_eco_rejects_unmanaged_setter_without_any_partial_state_change(
     )
     # Remove the default successful target so the fault is the first mutation.
     bridge._manager.modules.pop("Network Monitor")
-    now = time.time()
+    now = mobile_module.time.time()
     token = _arm(bridge, "rollback-arm", now)
 
     bridge._handle(
@@ -303,9 +330,9 @@ def test_eco_rejects_unmanaged_setter_without_any_partial_state_change(
 
 
 def test_bus_authority_loss_after_applied_change_is_reported_without_signed_claim(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
-    bridge, bus, target, governor, sent = _bridge(monkeypatch)
+    bridge, bus, target, governor, sent = _bridge(monkeypatch, tmp_path)
     original_emit = bridge._emit_change_receipt
 
     def lose_authority(*args, **kwargs):
@@ -315,7 +342,7 @@ def test_bus_authority_loss_after_applied_change_is_reported_without_signed_clai
         return original_emit(*args, **kwargs)
 
     monkeypatch.setattr(bridge, "_emit_change_receipt", lose_authority)
-    now = time.time()
+    now = mobile_module.time.time()
     token = _arm(bridge, "authority-arm", now)
 
     bridge._handle(
@@ -368,11 +395,11 @@ class _FastClock:
 
 
 def test_combat_timeout_is_pending_and_late_completion_is_reconciled(
-    monkeypatch,
+    monkeypatch, tmp_path,
 ) -> None:
     combat = _LateCombat()
     bridge, bus, _target, _governor, sent = _bridge(
-        monkeypatch, modules={"Adversary Combat": combat}
+        monkeypatch, tmp_path, modules={"Adversary Combat": combat}
     )
     clock = _FastClock()
     monkeypatch.setattr(mobile_module, "time", clock)
