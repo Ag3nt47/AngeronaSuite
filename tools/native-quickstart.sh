@@ -39,6 +39,30 @@ open_guide() {
         xdg-open "$1" >/dev/null 2>&1 || true
     fi
 }
+find_brew() {
+    BREW=
+    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -x "$candidate" ]; then
+            BREW=$candidate
+            PATH=$(dirname "$BREW"):$PATH
+            export PATH
+            return 0
+        fi
+    done
+    return 1
+}
+wait_for_macos_prerequisite() {
+    kind=$1
+    description=$2
+    while true; do
+        case "$kind" in
+            command-line-tools) xcode-select -p >/dev/null 2>&1 && return 0 ;;
+            homebrew) { [ -x /opt/homebrew/bin/brew ] || [ -x /usr/local/bin/brew ]; } && return 0 ;;
+            *) printf 'Unknown prerequisite: %s\n' "$kind" >&2; return 1 ;;
+        esac
+        ask "Finish installing $description, then choose Continue to resume this same Angerona setup." || return 1
+    done
+}
 find_python() {
     for candidate in "${PYTHON:-python3.12}" /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 /Library/Frameworks/Python.framework/Versions/3.12/bin/python3.12 python3; do
         if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(sys.version_info[:2] != (3, 12))' 2>/dev/null; then
@@ -62,7 +86,13 @@ ARCH=$(uname -m)
 INTEL_BUILD=0
 if [ "$OS" = Darwin ]; then
     MAC_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
-    [ "$MAC_MAJOR" -ge 14 ] || { printf '%s\n' 'macOS 14 Sonoma or newer is required by the reviewed dependencies.' >&2; exit 1; }
+    if [ "$MAC_MAJOR" -lt 14 ]; then
+        printf '%s\n' 'macOS 14 Sonoma or newer is required by the reviewed dependencies. Angerona did not install or change this Mac.' >&2
+        if ask 'This Mac needs macOS 14 Sonoma or newer for the reviewed Angerona runtime. Open Apple Software Update now?'; then
+            /usr/bin/open 'x-apple.systempreferences:com.apple.Software-Update-Settings.extension'
+        fi
+        exit 1
+    fi
     # A Rosetta terminal on Apple Silicon must use native arm64 Python/wheels.
     if [ "$ARCH" = x86_64 ] && [ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
         exec /usr/bin/arch -arm64 /bin/sh "$ROOT/tools/native-quickstart.sh" Darwin
@@ -72,26 +102,22 @@ if [ "$OS" = Darwin ]; then
         arm64) ;;
         *) printf 'Unsupported Mac architecture: %s\n' "$ARCH" >&2; exit 1 ;;
     esac
-    BREW=
-    for candidate in /opt/homebrew/bin/brew /usr/local/bin/brew; do
-        if [ -x "$candidate" ]; then BREW=$candidate; break; fi
-    done
-    if [ -n "$BREW" ]; then
-        PATH=$(dirname "$BREW"):$PATH
-        export PATH
+    # Intel's reviewed cryptography build needs Apple's compiler tools. Keep
+    # this launcher alive while the normal Apple installer runs so setup can
+    # resume without making the user find and open the source folder again.
+    if [ "$INTEL_BUILD" -eq 1 ] && ! xcode-select -p >/dev/null 2>&1; then
+        xcode-select --install >/dev/null 2>&1 || true
+        wait_for_macos_prerequisite command-line-tools 'Apple Command Line Tools' || exit 0
     fi
+    find_brew || true
     if ! find_python || [ "$INTEL_BUILD" -eq 1 ]; then
         if [ -z "$BREW" ]; then
-            printf '%s\n' 'Install Homebrew using its official instructions, then run this launcher again. No remote installer is run automatically.'
+            printf '%s\n' 'Homebrew is needed for the reviewed native prerequisites. No remote installer is run automatically.'
             open_guide https://docs.brew.sh/Installation
-            exit 1
+            wait_for_macos_prerequisite homebrew 'Homebrew from its official guide' || exit 0
+            find_brew || { printf '%s\n' 'Homebrew is still unavailable; no Angerona files were installed.' >&2; exit 1; }
         fi
         if [ "$INTEL_BUILD" -eq 1 ]; then
-            if ! xcode-select -p >/dev/null 2>&1; then
-                xcode-select --install
-                printf '%s\n' 'Finish Apple Command Line Tools installation, then run this launcher again.'
-                exit 1
-            fi
             ask 'Intel needs a native cryptography build. Install Python 3.12, Rust and OpenSSL with Homebrew, then build the pinned source? Compilation may take several minutes.' || exit 0
             "$BREW" install python@3.12 rust openssl@3
             OPENSSL_DIR=$("$BREW" --prefix openssl@3)
