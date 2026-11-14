@@ -275,3 +275,27 @@ Its entrypoint and Python atexit completed. The incomplete run remains cancelled
 it is not green or a demonstrated deadlock. All Python versions now have the
 same finite 75-minute job allowance. No test or native ownership check is removed.
 The subsequent exact-head matrix must establish its own results.
+
+
+## Exact-head CI policy fixture reconciliation
+
+The complete Python 3.13 lane for 81c0af5 reached all 17,949 collected cases and
+ended with 17,894 passes, 54 skips and one failure in the CI job-policy
+assertion. It still expected the earlier per-version 60/75-minute expression
+after the workflow was changed to 75 minutes for every version. Entrypoint,
+unconfigure and Python atexit completed; this is not an inferred shutdown hang.
+
+The fixture checks the current finite budget while retaining the full matrix,
+unabridged pytest/trace commands, explicit diagnostics opt-in and native-exit
+checks. The failed lane is preserved; a fresh exact-head matrix is required.
+Application source is unchanged by this CI-only correction. Live observations
+remain separately bound to their actual process generations.
+
+The corrected focused file passed all 27 in-process cases in 7.12 seconds,
+with exact PC tool origins, unchanged source pins and verified native diagnostic
+retirement. An earlier attempt reached all test bodies but failed during JUnit
+hostname generation: the restrictive harness refused Python platform metadata's
+optional Windows shell fallback. That attempt remains failed. The accepted
+rerun supplied only a fixed private JUnit hostname. Network, outside-write and
+unreviewed-child refusals stayed active; no product function or test body was
+replaced.
