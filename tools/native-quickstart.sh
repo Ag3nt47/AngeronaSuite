@@ -9,6 +9,7 @@ if [ "${1:-}" = --help ]; then
         'Launch this file as your normal desktop user. It detects prerequisites and guides installation.' \
         'Advanced unattended options: sh install-angerona.sh --help' \
         'macOS: Intel and Apple Silicon; macOS 14+ and native Python 3.12.' \
+        'Intel macOS 13 additionally offers a clearly labeled unsupported developer/Observe build.' \
         'Linux: x86_64 with Python 3.12 and glibc-compatible reviewed wheels.'
     exit 0
 fi
@@ -73,6 +74,19 @@ find_python() {
     done
     return 1
 }
+find_intel_prerequisites() {
+    command -v cargo >/dev/null 2>&1 || return 1
+    command -v rustc >/dev/null 2>&1 || return 1
+    for candidate in "${OPENSSL_DIR:-}" /usr/local/opt/openssl@3 /opt/homebrew/opt/openssl@3; do
+        if [ -n "$candidate" ] && [ -f "$candidate/include/openssl/ssl.h" ] && \
+                [ -f "$candidate/lib/libcrypto.a" ]; then
+            OPENSSL_DIR=$candidate
+            export OPENSSL_DIR
+            return 0
+        fi
+    done
+    return 1
+}
 
 printf '\n%s\n' 'Angerona — guided setup and launch' '[0%] Checking this machine.'
 LAUNCHER=$HOME/.local/bin/angerona
@@ -84,14 +98,28 @@ fi
 ask 'Install or repair Angerona for this account? Existing security history and validated runtimes are retained.' || exit 0
 ARCH=$(uname -m)
 INTEL_BUILD=0
+UNSUPPORTED_MACOS_DEV=0
 if [ "$OS" = Darwin ]; then
     MAC_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
     if [ "$MAC_MAJOR" -lt 14 ]; then
-        printf '%s\n' 'macOS 14 Sonoma or newer is required by the reviewed dependencies. Angerona did not install or change this Mac.' >&2
-        if ask 'This Mac needs macOS 14 Sonoma or newer for the reviewed Angerona runtime. Open Apple Software Update now?'; then
-            /usr/bin/open 'x-apple.systempreferences:com.apple.Software-Update-Settings.extension'
+        if [ "$MAC_MAJOR" -eq 13 ] && [ "$ARCH" = x86_64 ]; then
+            printf '%s\n' \
+                'This Intel Mac cannot use the reviewed macOS 14+ wheel set.' \
+                'Angerona can instead build the incompatible components from pinned source for Ventura.' \
+                'This remains an unsupported developer/Observe build and cannot claim Protect authority.' >&2
+            if ask 'Continue with the unsupported Intel Ventura developer build and retain every compatible protection component?'; then
+                UNSUPPORTED_MACOS_DEV=1
+            else
+                printf '%s\n' 'Angerona did not install or change this Mac.' >&2
+                exit 0
+            fi
+        else
+            printf '%s\n' 'macOS 14 Sonoma or newer is required by the reviewed dependencies. Angerona did not install or change this Mac.' >&2
+            if ask 'This Mac needs macOS 14 Sonoma or newer for the reviewed Angerona runtime. Open Apple Software Update now?'; then
+                /usr/bin/open 'x-apple.systempreferences:com.apple.Software-Update-Settings.extension'
+            fi
+            exit 1
         fi
-        exit 1
     fi
     # A Rosetta terminal on Apple Silicon must use native arm64 Python/wheels.
     if [ "$ARCH" = x86_64 ] && [ "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" = 1 ]; then
@@ -110,7 +138,13 @@ if [ "$OS" = Darwin ]; then
         wait_for_macos_prerequisite command-line-tools 'Apple Command Line Tools' || exit 0
     fi
     find_brew || true
-    if ! find_python || [ "$INTEL_BUILD" -eq 1 ]; then
+    PYTHON_READY=0
+    find_python && PYTHON_READY=1
+    INTEL_READY=1
+    if [ "$INTEL_BUILD" -eq 1 ] && ! find_intel_prerequisites; then
+        INTEL_READY=0
+    fi
+    if [ "$PYTHON_READY" -ne 1 ] || [ "$INTEL_READY" -ne 1 ]; then
         if [ -z "$BREW" ]; then
             printf '%s\n' 'Homebrew is needed for the reviewed native prerequisites. No remote installer is run automatically.'
             open_guide https://docs.brew.sh/Installation
@@ -153,7 +187,12 @@ if [ "$OS" = Darwin ]; then
     [ "$PY_ARCH" = "$ARCH" ] || { printf '%s\n' 'Python must match the native Mac architecture. Use native Homebrew Python 3.12.' >&2; exit 1; }
 fi
 if [ "$INTEL_BUILD" -eq 1 ]; then
-    /bin/sh "$ROOT/install-angerona.sh" --build-intel-crypto --no-autostart
+    if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+        /bin/sh "$ROOT/install-angerona.sh" --build-intel-crypto \
+            --unsupported-macos-dev --no-autostart
+    else
+        /bin/sh "$ROOT/install-angerona.sh" --build-intel-crypto --no-autostart
+    fi
 else
     /bin/sh "$ROOT/install-angerona.sh" --no-autostart
 fi

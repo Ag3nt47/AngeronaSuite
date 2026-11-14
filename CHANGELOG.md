@@ -2,6 +2,11 @@
 
 ## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
 
+- Add an explicit Intel macOS 13 unsupported developer/Observe install path.
+  The guided launcher detects Ventura, reuses or prompts for host prerequisites,
+  derives the compatible hash-locked wheel set, and builds pinned cryptography
+  50 and YARA-X 1.19.0 from verified source for deployment target 13. Launchers
+  retain a visible unsupported marker and never claim installed Protect authority.
 - Keep the macOS source quickstart open while Intel Command Line Tools and
   Homebrew prerequisites are completed, and open Apple Software Update directly
   when the reviewed macOS 14+ runtime requirement is not met.

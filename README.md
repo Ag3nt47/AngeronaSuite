@@ -121,6 +121,7 @@ response authority and actual live coverage differ.
 | Windows signed installed release | [Check Releases for an accepted signed package](https://github.com/Ag3nt47/AngeronaSuite/releases) | Use an available trusted-publisher `Angerona-<version>-win64.msix` and its adjacent SHA-256 file. It needs no Python or terminal setup. Signed Protect, native service acceptance and clean-VM release gates remain separate requirements. |
 | Windows source development | [Clone this repository](https://github.com/Ag3nt47/AngeronaSuite), then run `Install-Angerona.bat` as your ordinary user | Unelevated Observe/development in Chill Mode. Source startup cannot create signed installed Protect authority. |
 | macOS 14+ source | [Start-Angerona-macOS.command](Start-Angerona-macOS.command) | Observe preview; Intel, Apple Silicon and Rosetta detection. [Prerequisites](docs/NATIVE_INSTALL.md). |
+| Intel macOS 13 source development | [Start-Angerona-macOS.command](Start-Angerona-macOS.command) | Explicitly unsupported Observe/test build. The guided launcher offers compensating pinned YARA-X and cryptography source builds; it never claims installed Protect authority. [Limits and prerequisites](docs/NATIVE_INSTALL.md#intel-macos-13-ventura-unsupported-development-path). |
 | Linux source | [Start-Angerona-Linux.sh](Start-Angerona-Linux.sh) | Observe with optional explicitly configured eBPF. [Prerequisites and native scope](docs/NATIVE_INSTALL.md). |
 
 **Estimated download and disk space.** These planning ranges cover the app and
