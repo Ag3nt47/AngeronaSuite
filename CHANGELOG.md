@@ -2,6 +2,9 @@
 
 ## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
 
+- Keep the macOS source quickstart open while Intel Command Line Tools and
+  Homebrew prerequisites are completed, and open Apple Software Update directly
+  when the reviewed macOS 14+ runtime requirement is not met.
 - Apply the reviewed recovery, source-update, authentication, alert and memory
   detection hardening described in the dated 29-item review below.
 - Bundle the native third watchdog with an optional ordinary-user unsigned mode,
