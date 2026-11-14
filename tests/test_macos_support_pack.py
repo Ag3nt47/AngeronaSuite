@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -73,7 +74,8 @@ def test_install_verifies_and_enables(tmp_path: Path) -> None:
     receipt = pack.install(root, data, fetch=fetch, platform="darwin")
     assert set(receipt["modules"]) == {"macos_fixture.py", "macos_fixture.angerona.json"}
     assert (data / "modules/macos_fixture.py").read_bytes() == MODULE
-    assert (data / "macos-support/current/scripts/kill-all-angerona.sh").stat().st_mode & 0o111
+    if os.name != "nt":
+        assert (data / "macos-support/current/scripts/kill-all-angerona.sh").stat().st_mode & 0o111
     assert pack.verify_installed(root, data) == (True, "support pack 1.0.0 verified")
     state = pack.status(root, data, platform="darwin")
     assert state["enabled"] and state["current"] and not state["should_ask"]
