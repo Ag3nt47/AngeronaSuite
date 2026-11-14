@@ -89,6 +89,37 @@ export OPENSSL_DIR="$(brew --prefix openssl@3)"
 sh install-angerona.sh --build-intel-crypto --no-autostart
 ```
 
+## Optional macOS support pack
+
+After installation (and on later launches, until you answer), the macOS
+launcher offers an optional support pack from
+[Ag3nt47/Angerona-macOS-Support](https://github.com/Ag3nt47/Angerona-macOS-Support).
+Choosing **Cancel** skips it and is remembered; Angerona is unaffected.
+
+The pack adds seven macOS-specific observe/detect modules (persistence,
+security posture, unified-log authentication failures, kernel and system
+extensions, authorization plug-ins/PAM/sudoers, code-signature trust and local
+snapshot loss) and Mac versions of the Windows maintenance scripts. It does not
+change Angerona's own source and never requests administrator rights.
+
+Each file is downloaded from the commit pinned in
+`release/macos-support-pack.json` and must match its reviewed SHA-256 before
+anything is written. The modules are **unsigned**: at each start Angerona
+re-verifies the module folder, and only when it matches the pin exactly does it
+enable the unsigned-development override, printing a reduced-security notice.
+That override also permits in-app source editing. A changed module or any other
+drop-in keeps the override off.
+
+```sh
+python3.12 tools/macos_support_pack.py status
+python3.12 tools/macos_support_pack.py install
+python3.12 tools/macos_support_pack.py disable     # keep files, start normally
+python3.12 tools/macos_support_pack.py uninstall
+```
+
+Scripts are installed in
+`~/Library/Application Support/Angerona/macos-support/current/scripts/`.
+
 ## Linux
 
 Run **Start-Angerona-Linux.sh** in a terminal, or choose your file manager's

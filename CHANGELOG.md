@@ -2,6 +2,15 @@
 
 ## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
 
+- Offer an optional macOS support pack during guided macOS setup. Nothing is
+  downloaded without consent; declining is remembered. The pack, published
+  separately as Ag3nt47/Angerona-macOS-Support, adds seven macOS-only
+  observe/detect modules that compensate for Windows-only capabilities and Mac
+  counterparts of the Windows operational scripts. Every file is pinned by
+  `release/macos-support-pack.json` and verified before installation. Its
+  modules are unsigned, so they load only when the module folder matches the
+  pin exactly, through the development override, with a reduced-security
+  notice at every start. Manage it with `tools/macos_support_pack.py`.
 - Add an explicit Intel macOS 13 unsupported developer/Observe install path.
   The guided launcher detects Ventura, reuses or prompts for host prerequisites,
   derives the compatible hash-locked wheel set, and builds pinned cryptography

@@ -88,10 +88,29 @@ find_intel_prerequisites() {
     return 1
 }
 
+# Optional macOS support pack: asked only on macOS, only while the reviewed
+# revision is not installed and the user has not declined. Nothing downloads
+# without Continue; a failure never blocks Angerona.
+offer_macos_support_pack() {
+    [ "$OS" = Darwin ] || return 0
+    pack_python=${1:-}
+    [ -n "$pack_python" ] || return 0
+    "$pack_python" "$ROOT/tools/macos_support_pack.py" should-ask >/dev/null 2>&1 || return 0
+    if ask 'Optional: download the Angerona macOS support package from GitHub? It adds 7 macOS-specific detection modules (persistence, security posture, authentication log, extensions, authorization, code signatures, snapshots) and Mac versions of the Windows maintenance scripts. The modules are unsigned, so while enabled Angerona runs in a reduced-security development mode and shows a warning. Cancel skips it and does not ask again.'; then
+        "$pack_python" "$ROOT/tools/macos_support_pack.py" install || \
+            printf '%s\n' 'The support package was not installed. Angerona is unaffected. Retry later: tools/macos_support_pack.py install' >&2
+    else
+        "$pack_python" "$ROOT/tools/macos_support_pack.py" decline >/dev/null 2>&1 || true
+    fi
+}
+
 printf '\n%s\n' 'Angerona — guided setup and launch' '[0%] Checking this machine.'
 LAUNCHER=$HOME/.local/bin/angerona
 if [ -x "$LAUNCHER" ]; then
     if ask 'Launch the installed Angerona? Cancel/No continues to repair or reinstall.'; then
+        if [ "$OS" = Darwin ] && find_python; then
+            offer_macos_support_pack "$PYTHON"
+        fi
         exec "$LAUNCHER"
     fi
 fi
@@ -196,5 +215,6 @@ if [ "$INTEL_BUILD" -eq 1 ]; then
 else
     /bin/sh "$ROOT/install-angerona.sh" --no-autostart
 fi
+offer_macos_support_pack "$PYTHON"
 printf '%s\n' 'Setup completed. Startup-at-login and optional integrations are available in Full Setup.'
 exec "$HOME/.local/bin/angerona-setup"

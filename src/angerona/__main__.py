@@ -472,6 +472,13 @@ def main() -> int:
     from angerona.core.data_paths import configure_runtime_environment
     configure_runtime_environment()
 
+    if sys.platform == "darwin":
+        # Optional, user-consented macOS support pack. Enables its unsigned,
+        # SHA-256-pinned modules only after full verification, with a visible
+        # reduced-security notice; any failure leaves them off.
+        from angerona.platforms.macos.support_pack import apply_environment
+        apply_environment()
+
     if os.environ.get("ANGERONA_SUPERVISED_RECOVERY") == "1":
         from angerona.resilience.shutdown_token import (
             is_standdown_requested, signal_external_watchdog_stop,
