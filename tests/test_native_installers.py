@@ -289,6 +289,18 @@ def test_native_ci_and_installer_gate_launchers_on_real_gui_probe() -> None:
     assert "check_native_gui.py --install-system-libraries --yes" in workflow
 
 
+def test_macos_quickstart_keeps_one_session_for_supported_prerequisites() -> None:
+    launcher = (ROOT / "tools" / "native-quickstart.sh").read_text(encoding="utf-8")
+    assert "x-apple.systempreferences:com.apple.Software-Update-Settings.extension" in launcher
+    assert "Angerona did not install or change this Mac" in launcher
+    assert "wait_for_macos_prerequisite command-line-tools 'Apple Command Line Tools'" in launcher
+    assert "wait_for_macos_prerequisite homebrew 'Homebrew from its official guide'" in launcher
+    assert "Install Homebrew using its official instructions, then run this launcher again" not in launcher
+    assert launcher.index("xcode-select --install") < launcher.index(
+        "wait_for_macos_prerequisite command-line-tools 'Apple Command Line Tools'"
+    )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="native shell fixture runs in Linux/macOS CI")
 def test_failed_download_preserves_existing_runtime_and_launcher(tmp_path: Path) -> None:
     """Execute the installer through a deliberate download failure, without networking."""
