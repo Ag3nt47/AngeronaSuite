@@ -11,6 +11,12 @@ prerequisite setup, installs Angerona, and opens Full Setup. Future launches
 offer to open the installed application or repair it. An installed launcher is
 also available at `~/Applications/Angerona.command`.
 
+The same launcher stays open while Apple Command Line Tools or Homebrew are
+installed, then resumes its checks when you choose **Continue**. On an older
+Mac it can open Apple Software Update directly, but the supported macOS upgrade
+must finish before Angerona can install. Angerona never accepts an unreviewed
+runtime or disables Gatekeeper to bypass a prerequisite.
+
 If Finder says the script is not executable, open Terminal in the extracted
 folder and run:
 
