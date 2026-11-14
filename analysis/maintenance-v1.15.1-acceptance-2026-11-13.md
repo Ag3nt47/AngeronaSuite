@@ -211,3 +211,67 @@ This was operator maintenance, not an authenticated protected STOP. Settings,
 keys, policy, ACLs, baselines and original alerts were preserved. Guarded
 publication, new exact-head hosted checks and the subsequent normal Core
 observation retain their separate receipts.
+
+## Coverage classification and free-text downgrade follow-up
+
+A fresh native-bound PC observation returned a responsive, rendered main-window
+surface; it did not reproduce the earlier blank-window symptom. That private
+PrintWindow capture is not desktop truth or protection attestation, and HWND
+reuse remains an explicit observation limit. All probe GDI/native handles and
+its owned process retired. No window was restored, focused, clicked or changed.
+The saved report-slot preference was separately verified as Unlimited; its
+aggregate-byte, per-job, free-space and managed-inventory limits remain intact.
+
+The running dashboard showed a High assessment and an alert wake. Bounded raw
+ledger review found coverage warnings and separate network drift findings; those
+raw rows were not independently HMAC-authenticated and were not ACKed or changed.
+Independent source tracing then established two exact coverage-health contracts
+missing from the classifier: FIM blocked-root notices and zero-trust
+network.telemetry_incomplete. Both could reach HIGH-to-active fallback and wake
+Chill. DNS/DHCP/gateway drift remains separate and cannot be called benign from
+those retained changed-only records.
+
+A further source-traced weakness was the unanchored lifecycle-word filter: a
+genuine file-change path containing a health phrase could be downgraded before
+active evidence was considered. The replacement recognizes only the current
+BaseModule retry/quarantine envelopes with exact severity, fixed prefix/suffix,
+closed typed metadata and known snapshot outcomes. Real FIM changes beneath
+every former marker phrase, with and without explicit active metadata, remain
+active. Unknown/oversized/future lifecycle formats receive ordinary conservative
+classification. Existing practice, meta-module and exposure policies are not
+redesigned by this fix.
+
+The coverage recognizer requires each current producer's exact schema/message,
+typed finite bounds and consistent counters. Retained JSON and lexical absolute
+POSIX/Windows/UNC roots are tested without filesystem resolution. Severity,
+original bytes, warnings, baselines, ACKs and response authority are unchanged.
+Actual file changes, DNS/DHCP drift and CRITICAL gateway drift retain active
+classification and tested Chill wake behavior. A separate static STOP wording
+change removes the assumption that UAC was declined or protection continues;
+protected authorization and source elevation refusal remain unchanged.
+
+Before application, the new characterization cohort reproduced 64 expected
+assertion failures with 143 passes and one explicit held-file-rename skip. After
+application, the expanded current-source cohort passed 436 cases with that one
+explicit skip. Tests used actual private FIM producers, the real pure network
+evaluator/publisher, armed in-memory event authority and the actual Chill poll/
+signature path with only its final wake boundary captured. No host response or
+collector thread was started by those fixtures. Exact PC origins, source pins
+and native diagnostic retirement were verified; these overlapping scopes are
+not a whole-suite total. Independent reviews covered both the producer shapes
+and the lifecycle/file-path bypass.
+
+A consistent private ledger snapshot preceded external exact-generation
+maintenance. Ten source generations retired with their retained handles closed;
+independent post-discovery found no remaining owned process. This was operator
+maintenance, not a protected STOP or a control-key/ACL reset. Settings, baselines
+and original evidence were preserved. Fresh observation and final publication
+retain separate acceptance receipts.
+
+Hosted revision 86aa682 independently passed the complete Python 3.10, 3.11 and 3.13
+matrices (17,721 passes, 54 skips each). Python 3.12 reached 90% with 16,103 passes
+and 52 skips, no failed rows, then received the configured 60-minute cancellation.
+Its entrypoint and Python atexit completed. The incomplete run remains cancelled;
+it is not green or a demonstrated deadlock. All Python versions now have the
+same finite 75-minute job allowance. No test or native ownership check is removed.
+The subsequent exact-head matrix must establish its own results.

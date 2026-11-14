@@ -164,6 +164,13 @@ The [current source companion](docs/releases/v1.15.1.md) and
 - **Quieter persistence review:** ordinary scheduled-task runtime-state changes
   no longer repeat configuration alerts when every selected definition field
   matches. Real definition changes and uncertain evidence remain visible.
+- **Stronger alert classification:** incomplete file or network collection stays
+  a visible High coverage warning when its exact typed record identifies a
+  measurement gap. Real detections retain their threat handling. Filenames or
+  evidence text containing lifecycle phrases cannot hide genuine file changes.
+- **Accurate STOP notices:** an authorization hold explains that Angerona has
+  not exited and the notice cannot verify protection. It does not assume a
+  declined Windows prompt or bypass the protected shutdown boundary.
 - **Consistent scan evidence:** current file-scan coverage is validated at both
   receipt issuance and historical Red Team review. Missing or incomplete roots
   retain their coverage gap. Mobile send failures remain visible beside separate

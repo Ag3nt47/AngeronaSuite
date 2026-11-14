@@ -9,6 +9,8 @@ This maintenance update adds:
 • Signing-review settings, bounded helper preparation and safer handling when native cleanup cannot be verified.
 • Fewer repeated scheduled-task alerts, while preserving real configuration changes and uncertain evidence.
 • Consistent file-scan evidence validation and clearer mobile-health diagnostics.
+• Clearer coverage warnings and stricter alert classification: incomplete collection stays visible, while file names or alert prose alone cannot hide genuine detections as module-health messages.
+• Accurate shutdown-hold notices that explain unverified authorization without claiming protection is still active.
 • Updated source documentation explaining what changed and what still needs acceptance.
 
 The dashboard connects live evidence, SpywareGuard, investigation tools, MITRE ATT&CK views and defensive validation. Optional local AI can help explain evidence without becoming response authority.

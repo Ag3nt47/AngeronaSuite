@@ -41,7 +41,8 @@ jobs:
     name: Python ${{ matrix.python-version }}
     runs-on: windows-latest
     # Hosted Python 3.10 and 3.11 have reached the final test files at the 60-minute cap.
-    timeout-minutes: ${{ (matrix.python-version == '3.10' || matrix.python-version == '3.11') && 75 || 60 }}
+    # Full native/Qt suite reached 90% without failures before the 60m wall limit.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

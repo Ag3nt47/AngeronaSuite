@@ -9,6 +9,7 @@ window — raise the level. With nothing active, the state is SECURE.
 from __future__ import annotations
 
 import math
+from pathlib import PurePosixPath, PureWindowsPath
 import time
 
 from angerona.core.eventbus import Severity
@@ -35,16 +36,8 @@ _META_MODULES = {
     "SOAR Automation", "Active Response SOAR", "Adversary Combat",
 }
 
-# Message fingerprints of module-lifecycle / self-health events. These can be
-# emitted under a real detector's own module name (e.g. a sensor announcing it
-# has crashed), so they must be filtered by message, not just by module — that
-# way a genuine detection from the same module still counts.
-_HEALTH_MARKERS = (
-    "quarantined after", "keeps crashing", "left down after", "sensor blind",
-    "entered safe_mode", "pipeline regression", "could not catch",
-    "manual signature work", "restarts; manual attention",
-    "module crashed (attempt", "module failed to start", "module unavailable",
-)
+# Lifecycle health is recognized by exact producer contracts below.
+# Untrusted file paths and prose never gain health status by containing a word.
 
 _PRACTICE_MODULES = {
     "chaos",
@@ -92,8 +85,43 @@ _FLEET_UNBOUND_FIELDS = frozenset({
 
 
 def _is_health_noise(event) -> bool:
-    msg = (getattr(event, "message", "") or "").lower()
-    return any(mk in msg for mk in _HEALTH_MARKERS)
+    """Recognize current BaseModule crash envelopes, never detector prose.
+
+    File paths, commands and evidence text can contain lifecycle words. Only
+    the producer's anchored format, severity and exact bounded metadata count
+    as health; unknown legacy strings retain normal threat classification.
+    """
+    message = getattr(event, "message", None)
+    details = getattr(event, "details", None)
+    severity = getattr(event, "severity", None)
+    if (type(message) is not str or not 0 < len(message) <= 16384
+            or type(details) is not dict or type(severity) is not Severity
+            or type(details.get("traceback")) is not str
+            or not 0 < len(details["traceback"]) <= 500):
+        return False
+    if severity is Severity.HIGH and set(details) == {"traceback"}:
+        return message.startswith((
+            "Module crashed (attempt 1/3), restarting in 5s: ",
+            "Module crashed (attempt 2/3), restarting in 30s: ",
+        ))
+    if severity is not Severity.CRITICAL or set(details) != {"traceback", "crash_snapshot_outcome"}:
+        return False
+    outcome = details["crash_snapshot_outcome"]
+    if type(outcome) is not str or outcome not in (
+            "published", "published_finalization_gap", "published_durability_gap", "published_cleanup_gap",
+            "held_directory", "held_accounting", "held_storage_budget", "held_custody_unknown",
+            "held_space_unknown", "held_free_space", "held_capture_bound", "held_busy", "held_capture_text",
+            "held_capture", "held_write", "held_publication_unknown", "held_cleanup_gap"):
+        return False
+    note = (
+        "Crash snapshot published in diagnostics/." if outcome == "published"
+        else "Crash snapshot published; finalization remains unconfirmed." if outcome.startswith("published_")
+        else "Crash snapshot publication held for this process; native file-handle custody is unknown."
+        if outcome == "held_custody_unknown"
+        else f"Crash snapshot publication held or unconfirmed ({outcome})."
+    )
+    return (message.startswith("Module QUARANTINED after 3 crashes: ")
+            and message.endswith(". Sensor blind — " + note))
 
 
 def _is_self_or_drill(event) -> bool:
@@ -277,6 +305,96 @@ def _unavailable_collection_health(event, details: dict, module: str) -> bool:
         code == 5
         or (module == "app control decision evidence" and code == 15007)
     )
+
+
+def _bounded_coverage_notice_health(event, details: dict, module: str) -> bool:
+    """Recognize two fixed coverage-only producers, never a health label alone.
+
+    Severity and original evidence remain unchanged. These exact envelopes
+    describe unavailable measurement, not an observed attacker or response.
+    Unknown fields, malformed counts and other findings remain unclassified
+    here; ordinary active/exposure handling still decides their disposition.
+    """
+    message = getattr(event, "message", None)
+    if (type(details) is not dict
+            or type(getattr(event, "severity", None)) is not Severity
+            or event.severity is not Severity.HIGH
+            or type(message) is not str):
+        return False
+    if module == "file integrity monitor":
+        fixed = {
+            "complete": False, "disposition": "health", "active_attack": False,
+            "response_authorized": False,
+            "count_unit": "scan coverage opportunities, not distinct file changes",
+        }
+        if (set(details) != set(fixed) | {
+                "blocked_roots", "blocked_root_count", "omitted_blocked_roots",
+                "suppressed_observations"}
+                or any(type(details[key]) is not type(value) or details[key] != value
+                       for key, value in fixed.items())):
+            return False
+        roots = details["blocked_roots"]
+        count = details["blocked_root_count"]
+        omitted = details["omitted_blocked_roots"]
+        suppressed = details["suppressed_observations"]
+        if (type(roots) is not list
+                or type(count) is not int or not 0 < count <= 0x7fffffffffffffff
+                or type(omitted) is not int or omitted < 0
+                or type(suppressed) is not int or not 0 <= suppressed <= 0x7fffffffffffffff
+                or len(roots) != min(count, 32) or omitted != count - len(roots)):
+            return False
+        paths = []
+        for row in roots:
+            if (type(row) is not dict or set(row) != {"root", "reason", "blocking_object"}
+                    or type(row["root"]) is not str or not 0 < len(row["root"]) <= 32768
+                    or type(row["reason"]) is not str or not 0 < len(row["reason"]) <= 500
+                    or type(row["blocking_object"]) is not str or len(row["blocking_object"]) > 500
+                    or any("\x00" in row[key] for key in ("root", "reason", "blocking_object"))
+                    or not (PurePosixPath(row["root"]).is_absolute()
+                            or PureWindowsPath(row["root"]).is_absolute())):
+                return False
+            paths.append(row["root"])
+        return (paths == sorted(set(paths))
+                and message == "FIM coverage incomplete: " + roots[0]["reason"])
+    if module == "zero-trust network path monitor":
+        fixed = {
+            "schema": "angerona.network-trust-finding.v1",
+            "finding_type": "network.telemetry_incomplete", "trust_label": "untrusted",
+            "endpoint_resources_trusted": False, "local_network_identifiers_omitted": True,
+            "response_authorized": False, "response_authority": "observe-only",
+        }
+        if (set(details) != set(fixed) | {
+                "path_token", "link_kind", "evidence", "recommendations"}
+                or any(type(details[key]) is not type(value) or details[key] != value
+                       for key, value in fixed.items())
+                or message != ("Zero-trust network finding: required per-interface "
+                               "or address-family evidence is incomplete")
+                or type(details["path_token"]) is not str
+                or len(details["path_token"]) != 28
+                or not details["path_token"].startswith("tok_")
+                or any(char not in "0123456789abcdef" for char in details["path_token"][4:])
+                or type(details["link_kind"]) is not str
+                or details["link_kind"] not in ("wifi", "ethernet")
+                or type(details["recommendations"]) is not list
+                or details["recommendations"] != ["restore-network-inventory-sources", "keep-path-untrusted"]):
+            return False
+        evidence = details["evidence"]
+        if (type(evidence) is not dict or set(evidence) not in (
+                {"missing_sources"}, {"missing_sources", "baseline_gateway_evidence_unproven"})):
+            return False
+        missing = evidence["missing_sources"]
+        sources = {
+            "interfaces", "addresses", "dns", "dhcp", "routes-ipv4", "routes-ipv6",
+            "neighbors", "profile", "wireless", "gateway-identities-interface-bound",
+        }
+        if (type(missing) not in (list, tuple) or not 0 < len(missing) <= len(sources)
+                or any(type(item) is not str or item not in sources for item in missing)
+                or list(missing) != sorted(set(missing))):
+            return False
+        return ("baseline_gateway_evidence_unproven" not in evidence
+                or (evidence["baseline_gateway_evidence_unproven"] is True
+                    and "gateway-identities-interface-bound" in missing))
+    return False
 
 
 def _collection_health(details: dict, module: str) -> bool:
@@ -566,7 +684,8 @@ def event_disposition(event) -> str:
     if details.get("active_exploitation") is True or details.get("active_attack") is True:
         return "active"
     if (
-        _unavailable_collection_health(event, details, module)
+        _bounded_coverage_notice_health(event, details, module)
+        or _unavailable_collection_health(event, details, module)
         or _collection_health(details, module)
         or _coverage_health(details, module)
     ):

@@ -71,6 +71,21 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
   matches its Settings controls. Hosted fixture reconciliation retains native
   durable-replay checks and honest Windows deception creation holds.
 
+- Known FIM and zero-trust network collection gaps keep their original HIGH
+  warnings but use closed, typed producer envelopes for health classification.
+  A filename or free-text lifecycle phrase cannot downgrade genuine findings.
+  Only current BaseModule crash/quarantine envelopes gain lifecycle health;
+  unfamiliar formats retain ordinary conservative classification. Actual file,
+  DNS/DHCP and critical gateway changes still use their independent rules.
+- Held STOP feedback distinguishes unavailable authorization from assumed UAC
+  refusal and makes no continuing-protection claim. Protected STOP authority,
+  source elevation refusal, alerts, baselines and response gates are unchanged.
+- The 86aa hosted Python 3.10, 3.11 and 3.13 matrices passed 17,721 cases with 54
+  skips each. Python 3.12 reached 16,103 passes/52 skips with no failed cases
+  before its 60-minute job budget; it was interrupted, not accepted as green.
+  All Python lanes now have the same finite 75-minute budget. New-head hosted
+  checks and fresh changed-source observation retain separate receipts.
+
 ## CURRENT REVIEW (v1.15.1 — 13 November security candidate)
 
 - Version 1.15.1 integrates the reviewed worklist candidate, initially based on

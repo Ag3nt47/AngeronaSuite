@@ -345,8 +345,9 @@ def test_passive_vulnerability_is_exposure_but_active_exploitation_wins() -> Non
 def test_health_reporting_and_defender_state_do_not_claim_active_attack() -> None:
     module_crash = Event(
         "Process Monitor",
-        "Module crashed (attempt 1/3), restarting in 1s",
+        "Module crashed (attempt 1/3), restarting in 5s: inert fixture failure",
         Severity.HIGH,
+        details={"traceback": "Traceback: inert fixture failure"},
     )
     heal_patch = Event(
         "HEAL",
