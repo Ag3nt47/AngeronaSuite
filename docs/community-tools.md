@@ -43,7 +43,7 @@ it does not embed the upstream project's entire platform.
 | [SigmaHQ](https://github.com/SigmaHQ/sigma) | Validate and evaluate a constrained subset against explicitly supplied normalized event records. Preserve source/logsource bindings. | Unsupported log sources, missing fields, modifiers or conditions are refused. This does not install a full Sigma engine or subscribe to every host log. |
 | [Sysmon Modular](https://github.com/olafhartong/sysmon-modular) | Inspect compatible XML configuration, event coverage and storage implications. | The adapter does not install Sysmon or silently apply its configuration. |
 | [YARA-X](https://github.com/virustotal/yara-x) | Review rule data and self-check the existing pinned engine against explicit inert buffers. | No downloaded engine, plugin, module or arbitrary host directory scan is authorized by this adapter. |
-| [Apache Caldera](https://github.com/apache/caldera), [Velociraptor](https://github.com/Velocidex/velociraptor), [Wazuh](https://github.com/wazuh/wazuh) | Advisory external-result adapters and project references. | These buttons do not install their servers/agents, enroll hosts or grant external findings response authority. Bounded report import through the adapter API is not a live connector. |
+| [MITRE Caldera](https://github.com/mitre/caldera), [Velociraptor](https://github.com/Velocidex/velociraptor), [Wazuh](https://github.com/wazuh/wazuh) | Advisory external-result adapters and project references. | These buttons do not install their servers/agents, enroll hosts or grant external findings response authority. Bounded report import through the adapter API is not a live connector. |
 
 ## Install, check, remove and restore
 

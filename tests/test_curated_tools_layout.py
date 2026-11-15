@@ -40,7 +40,7 @@ class MemoryController(QObject):
         self._closed = False
 
     def snapshot(self):
-        return dict(state="ready", installed=True, verified=True, version="0.1.10", busy=False,
+        return dict(state="ready", installed=True, verified=True, version="3.0.2", busy=False,
                     message="DEMO — synthetic scanner publication; no host scan.",
                     coverage={"checked": ["Synthetic process and browser records"], "not_checked": ["Encrypted phone backup"]})
 

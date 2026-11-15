@@ -34,7 +34,7 @@ class MemoryController(QObject):
         self.cancels = 0
         self.storage_reviews = 0
         self.value = dict(state="ready", busy=False, installed=True, verified=True,
-                          version="0.1.10", execution_available=True)
+                          version="3.0.2", execution_available=True)
 
     def snapshot(self):
         return copy.deepcopy(self.value)

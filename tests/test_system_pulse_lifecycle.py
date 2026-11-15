@@ -256,15 +256,146 @@ def test_collector_preserves_metrics_order_rate_floor_and_fifth_sample_wifi(monk
     ))
     monkeypatch.setattr(system_pulse, "time", SimpleNamespace(monotonic=clock))
     monkeypatch.setattr(system_pulse, "_wifi_signal_windows", wifi)
-    collector = _SystemPulseCollector()
+    monkeypatch.setattr(system_pulse, "_active_connection", lambda *_args, **_kwargs: (
+        "wlan0", "Wi-Fi",
+    ))
+    collector = _SystemPulseCollector(speed_test_enabled=False)
     results = [collector() for _ in range(6)]
-    assert results[0] == {"cpu": 12.0, "ram": 25.0, "available": 1024.0, "memory_total": 4096.0,
-                          "down": 0.0, "up": 0.0, "wifi": 80}
+    assert results[0] == {
+        "cpu": 12.0, "ram": 25.0, "available": 1024.0, "memory_total": 4096.0,
+        "down": 0.0, "up": 0.0, "connection_type": "Wi-Fi",
+        "connection_interface": "wlan0", "wifi": 80,
+        "download_utilization": None, "upload_utilization": None,
+    }
     assert results[1]["down"] == 400.0 and results[1]["up"] == 200.0
     assert [row["wifi"] for row in results] == [80] * 5 + [70]
     assert calls == (["clock", "memory", "network", "cpu", "wifi"]
                      + ["clock", "memory", "network", "cpu"] * 4
                      + ["clock", "memory", "network", "cpu", "wifi"])
+
+
+@pytest.mark.parametrize(("name", "platform", "ports", "expected"), [
+    ("Wi-Fi", "win32", None, "Wi-Fi"),
+    ("Ethernet 2", "win32", None, "Ethernet"),
+    ("vEthernet (Default Switch)", "win32", None, "Virtual"),
+    ("wlan0", "linux", None, "Wi-Fi"),
+    ("enp3s0", "linux", None, "Ethernet"),
+    ("wwan0", "linux", None, "Cellular"),
+    ("utun3", "darwin", None, "VPN"),
+    ("en0", "darwin", {"en0": "Wi-Fi"}, "Wi-Fi"),
+    ("en7", "darwin", {"en7": "USB 10/100/1000 LAN"}, "Ethernet"),
+])
+def test_connection_kind_is_portable(name, platform, ports, expected):
+    assert system_pulse._connection_kind(
+        name, platform=platform, darwin_ports=ports,
+    ) == expected
+
+
+def test_active_connection_prefers_default_route_over_higher_background_traffic(monkeypatch):
+    monkeypatch.setattr(system_pulse, "_preferred_local_ip", lambda: "10.0.0.25")
+    stats = {"en0": SimpleNamespace(isup=True), "en7": SimpleNamespace(isup=True)}
+    addresses = {
+        "en0": [SimpleNamespace(family=system_pulse.socket.AF_INET, address="10.0.0.25")],
+        "en7": [SimpleNamespace(family=system_pulse.socket.AF_INET, address="192.168.1.2")],
+    }
+    counters = {
+        "en0": SimpleNamespace(bytes_recv=100, bytes_sent=100),
+        "en7": SimpleNamespace(bytes_recv=10_000, bytes_sent=10_000),
+    }
+    psutil = SimpleNamespace(
+        net_if_stats=lambda: stats,
+        net_if_addrs=lambda: addresses,
+        net_io_counters=lambda **_kwargs: counters,
+    )
+    assert system_pulse._active_connection(
+        psutil, darwin_ports={"en0": "Wi-Fi", "en7": "USB Ethernet"},
+    ) == ("en0", "Wi-Fi")
+
+
+def test_collector_runs_speed_test_at_startup_and_interval_and_computes_percent(monkeypatch):
+    clocks = iter((10.0, 20.0, 70.0))
+    counters = iter((
+        SimpleNamespace(bytes_recv=0, bytes_sent=0),
+        SimpleNamespace(bytes_recv=10_000_000, bytes_sent=10_000_000),
+        SimpleNamespace(bytes_recv=20_000_000, bytes_sent=20_000_000),
+    ))
+    psutil = SimpleNamespace(
+        virtual_memory=lambda: SimpleNamespace(percent=25, available=1024, total=4096),
+        net_io_counters=lambda: next(counters),
+        cpu_percent=lambda **_kwargs: 12,
+    )
+    monkeypatch.setitem(sys.modules, "psutil", psutil)
+    monkeypatch.setattr(system_pulse, "_active_connection", lambda *_args, **_kwargs: (
+        "Ethernet", "Ethernet",
+    ))
+    monkeypatch.setattr(system_pulse, "time", SimpleNamespace(
+        monotonic=lambda: next(clocks), time=lambda: 1_700_000_000.0,
+    ))
+    speed_calls = []
+
+    def speed_test():
+        speed_calls.append(True)
+        return {"speed_download_mbps": 80.0, "speed_upload_mbps": 20.0}
+
+    collector = _SystemPulseCollector(speed_test_interval_s=60, speed_test=speed_test)
+    startup, middle, due = (collector() for _index in range(3))
+    assert len(speed_calls) == 2
+    assert startup["speed_download_mbps"] == 80.0
+    assert middle["download_utilization"] == pytest.approx(10.0)
+    assert middle["upload_utilization"] == pytest.approx(40.0)
+    assert due["speed_tested_at"] == 1_700_000_000.0
+
+
+def test_quick_speed_test_uses_bounded_https_requests(monkeypatch):
+    calls = []
+
+    class Response:
+        def __init__(self, chunks=()):
+            self.chunks = chunks
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, *, chunk_size):
+            assert chunk_size == 64 * 1024
+            return iter(self.chunks)
+
+    class Session:
+        def __init__(self):
+            self.headers = SimpleNamespace(update=lambda values: calls.append(("headers", values)))
+
+        def get(self, url, **kwargs):
+            calls.append(("get", url, kwargs))
+            return Response((bytes(64 * 1024),) * 32)
+
+        def post(self, url, **kwargs):
+            calls.append(("post", url, kwargs))
+            return Response()
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setitem(sys.modules, "requests", SimpleNamespace(Session=Session))
+    clocks = iter((0.0, 0.1, 1.1, 2.0, 3.0))
+    monkeypatch.setattr(system_pulse.time, "perf_counter", lambda: next(clocks))
+    result = system_pulse._quick_speed_test()
+    assert result["speed_download_mbps"] == pytest.approx(
+        system_pulse.SPEED_TEST_DOWNLOAD_BYTES * 8 / 1_000_000
+    )
+    assert result["speed_upload_mbps"] == pytest.approx(
+        system_pulse.SPEED_TEST_UPLOAD_BYTES * 8 / 1_000_000
+    )
+    get = next(call for call in calls if call[0] == "get")
+    post = next(call for call in calls if call[0] == "post")
+    assert get[1].startswith("https://") and get[2]["allow_redirects"] is False
+    assert post[1].startswith("https://") and len(post[2]["data"]) == 512 * 1024
+    assert calls[-1] == ("close",)
 
 
 def test_collector_preserves_renderable_error_result_and_does_not_advance_cache(monkeypatch):

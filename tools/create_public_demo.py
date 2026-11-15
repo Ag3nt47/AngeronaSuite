@@ -185,7 +185,7 @@ def _curated_fixture(manager, forbidden):
             self.manager = manager
             self._closed = False
             self.state = dict(
-                state="references", installed=True, verified=True, version="0.1.10", busy=False,
+                state="references", installed=True, verified=True, version="3.0.2", busy=False,
                 execution_available=True, message="DEMO - fixed synthetic evidence; no scanner was executed.",
                 coverage={"checked": ["Synthetic process, browser and desktop evidence"],
                           "not_checked": ["Encrypted phone evidence", "Live device acquisition"],

@@ -37,6 +37,9 @@ os.environ["TMP"] = str(_BOOTSTRAP_ROOT / "tmp")
 # Process-level adoption probes must never attach the test supervisor to the
 # operator's live Black Box and terminate it during fixture cleanup.
 os.environ["ANGERONA_BLACKBOX_ENABLED"] = "0"
+# GUI tests must never make an external speed-test request. Feature tests inject
+# a deterministic provider and explicitly enable the collector when needed.
+os.environ["ANGERONA_SPEED_TEST_DISABLED"] = "1"
 # A Qt application is process-global native state.  Some UI tests create their
 # first widget through a short-lived local Python reference; allowing that
 # wrapper to be collected can destroy and later recreate QApplication, which

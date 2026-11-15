@@ -632,9 +632,9 @@ def chapter(history, validation=None):
         "https://docs.github.com/en/rest/git/trees",
         "https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallprofile?view=windowsserver2025-ps",
         "https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-inetfwpolicy2-get_localpolicymodifystate",
-        "https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10",
-        "https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/scan/CONTRACT.md",
-        "https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md",
+        "https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v3.0.2",
+        "https://github.com/interplains/Zero-Breach-Toolkit/blob/2525377788feb8335052ba08981f37239091307a/scan/CONTRACT.md",
+        "https://github.com/interplains/Zero-Breach-Toolkit/blob/2525377788feb8335052ba08981f37239091307a/PRIVACY.md",
     ):
         # Keep this short reference list compact without reducing its type size
         # or pushing a lone final URL onto another page.

@@ -882,7 +882,7 @@ Manual AI consultation uses a bounded sanitized preview and explicit Send. Optio
 
 Figure 2 tools flow
 
-The GitHub Tools hub and SpywareGuard \> Zero Breach share one controller and the pinned Zero Breach Toolkit v0.1.10 installation. The complete engine and required notices ship with Angerona; optional restoration uses the fixed reviewed release. Third-party Python runs in a separate owned ordinary-user process, never by importing its socket-changing globals into the core or GUI. Current installed/elevated execution is held pending an accepted ordinary-user broker. The existing Source Library remains a data-only repository review path.
+The GitHub Tools hub and SpywareGuard \> Zero Breach share one controller and the pinned Zero Breach Toolkit v3.0.2 installation. The complete engine and required notices ship with Angerona; optional restoration uses the fixed reviewed release. Third-party Python runs in a separate owned ordinary-user process, never by importing its socket-changing globals into the core or GUI. Current installed/elevated execution is held pending an accepted ordinary-user broker. The existing Source Library remains a data-only repository review path.
 
 Spyware Scan schedules the selected native and curated checks with visible priority, resource and privilege-coverage controls. High is the supported ceiling; REALTIME is not used. The requested 10% routine-background pace is a cadence choice, not a CPU guarantee. Critical control, heartbeat and event intake retain their cadence. Missing inputs, dependencies, privileges or measurements remain coverage gaps. Full upstream advanced execution remains held until its managed adapters are accepted. See the toolkit guide.
 
@@ -1211,7 +1211,7 @@ The repository guide [docs/security-flow.md](../docs/security-flow.md) lists eve
 
 Angerona's GitHub Tools button opens curated scanners, source review, verification, settings, analysis and credits. SpywareGuard \> Zero Breach uses the same prepared tool and job state. Opening a second view does not install a second copy or start a second scan.
 
-The first curated engine is Zero Breach Toolkit v0.1.10, by archivegenocide.com / interplains. Its complete single-file release is bundled unchanged, alongside its licenses and notices. It runs as a separate supervised process behind Angerona's controls. It is never imported into the security core or GUI interpreter: the upstream scanner temporarily changes Python socket functions while scanning, which must not affect Angerona's other services.
+The first curated engine is Zero Breach Toolkit v3.0.2, by archivegenocide.com / interplains. Its complete single-file release is bundled unchanged, alongside its licenses and notices. It runs as a separate supervised process behind Angerona's controls. It is never imported into the security core or GUI interpreter: the upstream scanner temporarily changes Python socket functions while scanning, which must not affect Angerona's other services.
 
 #### Installation download and revert
 
@@ -1342,9 +1342,9 @@ The visible Credits control links to each curated project's repository, source c
 
 The upstream NOTICE names The Citizen Lab, Confiant, Recorded Future / Insikt Group, Amnesty International Security Lab, Access Now, Microsoft, ESET, Avast / Gen, Google Threat Analysis Group, the MVT project, Echap, Kaspersky, Rapid7 / Velociraptor and SigmaHQ as research/help sources. These citations do not imply affiliation or endorsement of either project. Optional dependencies retain their separate licenses.
 
-The catalog pins release commit 81bd556ba604685dbd1c0ecb48138c10f43cccf8 and the 968,987-byte single-file engine's SHA-256:
+The catalog pins release commit 2525377788feb8335052ba08981f37239091307a and the 7,879,062-byte single-file engine's SHA-256:
 
-075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3
+0b6df5f02c6b13256b735bfb55c1ef0a31ff0c762550910be9f66b4f5090dafb
 
 Original published checksums, signatures and the public key are retained under verification/. Their byte identities were checked against the official release metadata. Independent trust in that signing key and cryptographic signature verification were not established by this integration. A pinned hash proves the selected bytes, not that a third-party program or the host is free of defects. A report of no known indicators found is not proof that a device is clean.
 
@@ -1717,11 +1717,11 @@ https://learn.microsoft.com/en-us/powershell/module/netsecurity/get-netfirewallp
 
 https://learn.microsoft.com/en-us/windows/win32/api/netfw/nf-netfw-inetfwpolicy2-get\_localpolicymodifystate
 
-https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10
+https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v3.0.2
 
-https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/scan/CONTRACT.md
+https://github.com/interplains/Zero-Breach-Toolkit/blob/2525377788feb8335052ba08981f37239091307a/scan/CONTRACT.md
 
-https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md
+https://github.com/interplains/Zero-Breach-Toolkit/blob/2525377788feb8335052ba08981f37239091307a/PRIVACY.md
 
 ## 17 Current operator workflows for version 1 15
 
@@ -1769,7 +1769,7 @@ Import public HTTPS GitHub source at an immutable commit, inspect its files and 
 
 Create editable copy opens a bounded working copy. Save copy, Show diff, Revert selected copy and Validate or analyze data affect that copy. This source sandbox is not an operating system isolation boundary. Editing a script does not execute it or replace the managed scanner. VM analysis is a separate backend with its own prerequisites, quotas and retained worker custody; current VMware acceptance remains held at its documented configuration-custody boundary.
 
-Upstream references and licensing context: [Zero-Breach Toolkit](https://github.com/interplains/zero-breach-toolkit), [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team), [SigmaHQ](https://github.com/SigmaHQ/sigma), [Sysmon Modular](https://github.com/olafhartong/sysmon-modular), [YARA-X](https://github.com/virustotal/yara-x), [Apache Caldera](https://github.com/apache/caldera), [Velociraptor](https://github.com/Velocidex/velociraptor), and [Wazuh](https://github.com/wazuh/wazuh). Retain the selected pinned source and its own license; project inclusion is not an endorsement or complete platform integration.
+Upstream references and licensing context: [Zero-Breach Toolkit](https://github.com/interplains/zero-breach-toolkit), [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team), [SigmaHQ](https://github.com/SigmaHQ/sigma), [Sysmon Modular](https://github.com/olafhartong/sysmon-modular), [YARA-X](https://github.com/virustotal/yara-x), [MITRE Caldera](https://github.com/mitre/caldera), [Velociraptor](https://github.com/Velocidex/velociraptor), and [Wazuh](https://github.com/wazuh/wazuh). Retain the selected pinned source and its own license; project inclusion is not an endorsement or complete platform integration.
 
 ![DEMO Suggested community tools and their separate adapter scopes](../docs/screenshots/suggested-tools-demo.png)
 

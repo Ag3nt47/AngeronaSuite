@@ -132,7 +132,7 @@ model is needed for deterministic detection or governed response. See
 ![Pinned toolkit preparation, separate execution and advisory report review](../assets/security-flow-tools.png)
 
 The **GitHub Tools** hub and **SpywareGuard > Zero Breach** share one controller
-and the pinned Zero Breach Toolkit v0.1.10 installation. The complete engine and
+and the pinned Zero Breach Toolkit v3.0.2 installation. The complete engine and
 required notices ship with Angerona; optional restoration uses the fixed reviewed
 release. Third-party Python runs in a separate owned ordinary-user process,
 never by importing its socket-changing globals into the core or GUI. Current
@@ -449,7 +449,7 @@ separately configured capability, not a blanket parity claim.
 | Witness and fleet | Separate enrolled remote authority, endpoint authentication and typed schema. Disabled/unavailable deployment stays a gap. |
 | Live Debug and engine IPC | Authenticated bounded local records and typed controls. Read-only review cannot authorize mutation. Shared user context remains part of the threat model. |
 | Third-party Python modules | Explicitly loaded code executes in a process with that process's authority. Contract metadata is not sandboxing; review extensions and their dependencies. |
-| Curated Zero Breach scanner | Exact bundled or pinned-release bytes and retained licenses; separate owned ordinary-user job, private temporary data and validated reports. No automatic feed refresh; third-party results remain leads. Source Library imports and advanced acquisition/dependencies retain separate holds. |
+| Curated Zero Breach scanner | Daily stable-release metadata check; exact bundled or pinned-release bytes and retained licenses; automatic prepare plus synthetic metadata self-test; separate owned ordinary-user job, private temporary data and validated reports. No automatic feed refresh; third-party results remain leads. Source Library imports and advanced acquisition/dependencies retain separate holds. |
 
 The GitHub recovery implementation follows the official
 [blob](https://docs.github.com/en/rest/git/blobs),

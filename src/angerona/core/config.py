@@ -303,6 +303,7 @@ class Config:
     github_tools_enabled: bool = True
     github_tools_auto_prepare: bool = True
     github_tools_allow_download: bool = True
+    github_tools_daily_update_enabled: bool = False  # opt-in metadata plus reviewed managed update/test
     community_rules_enabled: bool = False  # separately reviewed/activated data rules only
     community_playbooks_enabled: bool = False  # existing policy-gated runner only
     github_tools_job_limit_mib: int = 256
@@ -737,7 +738,8 @@ class Config:
                 cfg.github_daily_check_enabled = _bool_setting(
                     data, "github_daily_check_enabled", cfg.github_daily_check_enabled)
                 for name in ("github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
-                             "community_rules_enabled", "community_playbooks_enabled"):
+                             "github_tools_daily_update_enabled", "community_rules_enabled",
+                             "community_playbooks_enabled"):
                     value = data.get(name, getattr(cfg, name))
                     setattr(cfg, name, value if type(value) is bool else False)
                 cfg.github_tools_report_count = scanner_report_count(
@@ -1280,6 +1282,7 @@ class Config:
         """Reject malformed resource/consent choices before replacing preferences."""
         for name in (
             "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+            "github_tools_daily_update_enabled",
             "community_rules_enabled", "community_playbooks_enabled",
             "spyware_scan_native_enabled", "spyware_scan_zero_breach_enabled",
             "spyware_scan_auto_enabled", "spyware_scan_verify_admin", "breach_auto_isolate_enabled",
@@ -1409,6 +1412,7 @@ class Config:
                     "spyware_auto_contain": self.spyware_auto_contain,
                     **{name: getattr(self, name) for name in (
                         "github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+                        "github_tools_daily_update_enabled",
                         "community_rules_enabled", "community_playbooks_enabled",
                         "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_report_count",
                         "github_tools_timeout_seconds",

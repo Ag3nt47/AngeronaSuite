@@ -82,8 +82,9 @@ Synthetic values only. The unsigned monitor is off by default and has no indepen
   undo actions.
 - **SpywareGuard:** surveillanceware evidence review and governed response,
   subject to its published preview and platform prerequisites.
-- **GitHub Tools:** suggested compatible adapters, pinned scanners, source
-  review, self-checks, editable copies, managed uninstall/revert and credits.
+- **GitHub Tools:** daily maintained-repository checks, suggested compatible
+  adapters, pinned scanners, source review, self-checks, editable copies,
+  managed uninstall/revert and credits.
 - **Rules & Playbooks:** review and batch-import compatible YARA data and
   declarative SOAR tactics; validate, sample-test, activate and roll back.
 - **Suite Map · 3D:** orbit, zoom and select modules, EventBus, drives,
@@ -329,7 +330,7 @@ wheel manifests. OS prerequisites, Intel macOS
 Xcode/Rust/OpenSSL builds, Git history, retained backups and evidence are extra.
 Windows source repair requires **5 GiB free**: a 2 GiB reserve plus 3 GiB working
 capacity. Its one retained previous runtime can add another runtime's disk use.
-The bundled Zero Breach engine is about **0.97 MB**, plus its retained licenses
+The bundled Zero Breach v3.0.2 engine is about **7.9 MB**, plus its retained licenses
 and notices. Optional managed scans require a separate **3 GiB free-space
 reserve plus the working-data allowance**; a scanner storage hold does not block
 normal Angerona startup.
@@ -388,6 +389,13 @@ deployment prerequisites. [Architecture](docs/architecture.md) · [Security](SEC
 
 Cloud integrations are optional and off by default. Optional AI, intelligence,
 fleet and witness integrations have their own endpoint and consent boundaries.
+System Pulse makes a bounded 2 MiB download / 512 KiB zero-byte upload speed
+estimate at dashboard startup and hourly; it can be disabled with
+`ANGERONA_SPEED_TEST_DISABLED=1` as documented in [Privacy](PRIVACY.md).
+When the daily GitHub preference is enabled, Angerona also checks every
+maintained GitHub-tool repository. The exact reviewed Zero Breach release may
+be prepared and self-tested automatically; newer inert data commits create a
+review request, while external server products are reported rather than replaced.
 The separately controlled public GitHub fallback for source startup defaults on;
 it downloads verified public code and uploads no host evidence or preserved edits.
 Manual AI consultation shows a bounded sanitized preview before explicit Send.

@@ -1,12 +1,17 @@
 """Compact, non-blocking host resource monitor for the main dashboard."""
 from __future__ import annotations
 
+import ipaddress
+import math
+import os
 import re
+import socket
 import subprocess
 import sys
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -23,6 +28,14 @@ from shiboken6 import isValid
 from angerona.gui.presentation_timer import PresentationTimer
 
 
+SPEED_TEST_INTERVAL_SECONDS = 60 * 60
+SPEED_TEST_RETRY_SECONDS = 60
+SPEED_TEST_DOWNLOAD_BYTES = 2 * 1024 * 1024
+SPEED_TEST_UPLOAD_BYTES = 512 * 1024
+_SPEED_TEST_DOWNLOAD_URL = "https://speed.cloudflare.com/__down"
+_SPEED_TEST_UPLOAD_URL = "https://speed.cloudflare.com/__up"
+
+
 def _rate(value: float) -> str:
     value = max(0.0, float(value))
     for suffix in ("B/s", "KB/s", "MB/s", "GB/s"):
@@ -35,6 +48,207 @@ def _rate(value: float) -> str:
 def _memory(value: float) -> str:
     gib = max(0.0, float(value)) / (1024.0 ** 3)
     return f"{gib:.1f} GB"
+
+
+def _mbps(value: object) -> str:
+    try:
+        number = max(0.0, float(value))
+    except (TypeError, ValueError, OverflowError):
+        return "--"
+    return f"{number:.1f} Mbps" if number < 100 else f"{number:.0f} Mbps"
+
+
+def _connection_kind(
+    name: str, *, platform: str | None = None,
+    darwin_ports: dict[str, str] | None = None,
+) -> str:
+    """Classify a local interface without exposing its host-specific name."""
+    raw = str(name or "").strip()
+    folded = raw.casefold()
+    system = sys.platform if platform is None else platform
+    if not folded or folded in {"lo", "lo0", "loopback", "loopback pseudo-interface 1"}:
+        return "Loopback"
+    if system == "darwin" and darwin_ports:
+        port = str(darwin_ports.get(raw, "")).casefold()
+        if "wi-fi" in port or "airport" in port:
+            return "Wi-Fi"
+        if "ethernet" in port:
+            return "Ethernet"
+        if "bluetooth" in port:
+            return "Bluetooth"
+    if any(token in folded for token in (
+        "wireless", "wi-fi", "wifi", "wlan", "airport",
+    )) or re.fullmatch(r"wl[a-z0-9_.-]*", folded):
+        return "Wi-Fi"
+    if any(token in folded for token in (
+        "cellular", "mobile", "wwan", "rmnet", "lte", "5g",
+    )):
+        return "Cellular"
+    if any(token in folded for token in (
+        "tailscale", "zerotier", "wireguard", "vpn", "utun", "tun", "tap", "ppp",
+    )):
+        return "VPN"
+    if any(token in folded for token in (
+        "bluetooth", "pan",
+    )):
+        return "Bluetooth"
+    if any(token in folded for token in (
+        "docker", "veth", "vethernet", "vmnet", "virtual", "hyper-v", "bridge", "br-",
+    )):
+        return "Virtual"
+    if (
+        any(token in folded for token in ("ethernet", "gbe", "lan"))
+        or re.fullmatch(r"(?:eth|enp|eno|ens|em)[a-z0-9_.-]*", folded)
+        or (system == "darwin" and re.fullmatch(r"en\d+", folded))
+    ):
+        return "Ethernet"
+    if system == "linux" and Path("/sys/class/net", raw, "wireless").is_dir():
+        return "Wi-Fi"
+    return "Network"
+
+
+def _darwin_hardware_ports() -> dict[str, str]:
+    """Return networksetup's device-to-port map off the GUI thread."""
+    if sys.platform != "darwin":
+        return {}
+    executable = Path("/usr/sbin/networksetup")
+    if not executable.is_file():
+        return {}
+    try:
+        result = subprocess.run(
+            [str(executable), "-listallhardwareports"],
+            cwd="/usr/sbin",
+            env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C"},
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=1.5,
+            check=False,
+        )
+    except Exception:
+        return {}
+    ports: dict[str, str] = {}
+    hardware_port = ""
+    for line in result.stdout.splitlines():
+        if line.startswith("Hardware Port:"):
+            hardware_port = line.partition(":")[2].strip()
+        elif line.startswith("Device:") and hardware_port:
+            device = line.partition(":")[2].strip()
+            if device:
+                ports[device] = hardware_port
+    return ports
+
+
+def _preferred_local_ip() -> str:
+    """Ask the route table for its IPv4 source without sending a packet."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("192.0.2.1", 9))
+            return str(probe.getsockname()[0])
+    except OSError:
+        return ""
+
+
+def _active_connection(
+    psutil, *, darwin_ports: dict[str, str] | None = None,
+) -> tuple[str, str]:
+    """Return the best active interface name and its portable connection kind."""
+    try:
+        stats = psutil.net_if_stats()
+        addresses = psutil.net_if_addrs()
+        counters = psutil.net_io_counters(pernic=True)
+    except Exception:
+        return "", "Offline"
+    preferred_ip = _preferred_local_ip()
+    candidates: list[tuple[int, int, int, str, str]] = []
+    for name, status in stats.items():
+        if not getattr(status, "isup", False):
+            continue
+        kind = _connection_kind(name, darwin_ports=darwin_ports)
+        if kind == "Loopback":
+            continue
+        has_routable_ip = False
+        preferred = False
+        for address in addresses.get(name, ()):
+            if getattr(address, "family", None) not in {socket.AF_INET, socket.AF_INET6}:
+                continue
+            value = str(getattr(address, "address", "")).split("%", 1)[0]
+            try:
+                parsed = ipaddress.ip_address(value)
+            except ValueError:
+                continue
+            if parsed.is_loopback or parsed.is_unspecified:
+                continue
+            has_routable_ip = True
+            preferred = preferred or value == preferred_ip
+        if not has_routable_ip:
+            continue
+        traffic = counters.get(name)
+        total = int(getattr(traffic, "bytes_recv", 0)) + int(
+            getattr(traffic, "bytes_sent", 0)
+        )
+        physical = kind not in {"Virtual", "Network"}
+        candidates.append((int(preferred), int(physical), total, name, kind))
+    if not candidates:
+        return "", "Offline"
+    _preferred, _physical, _traffic, name, kind = max(candidates)
+    return name, kind
+
+
+def _quick_speed_test() -> dict[str, float]:
+    """Run one bounded HTTPS estimate using public Cloudflare test endpoints."""
+    import requests
+
+    session = requests.Session()
+    session.headers.update({
+        "Accept": "application/octet-stream",
+        "Cache-Control": "no-store",
+        "User-Agent": "Angerona-System-Pulse/1",
+    })
+    try:
+        started = time.perf_counter()
+        first_byte_at: float | None = None
+        received = 0
+        with session.get(
+            _SPEED_TEST_DOWNLOAD_URL,
+            params={"bytes": SPEED_TEST_DOWNLOAD_BYTES},
+            stream=True,
+            allow_redirects=False,
+            timeout=(2.0, 4.0),
+        ) as response:
+            response.raise_for_status()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                if first_byte_at is None:
+                    first_byte_at = time.perf_counter()
+                received += len(chunk)
+                if received >= SPEED_TEST_DOWNLOAD_BYTES:
+                    break
+        download_elapsed = max(
+            0.001, time.perf_counter() - (first_byte_at or started)
+        )
+        if received < 64 * 1024:
+            raise RuntimeError("download sample too small")
+
+        payload = bytes(SPEED_TEST_UPLOAD_BYTES)
+        started = time.perf_counter()
+        with session.post(
+            _SPEED_TEST_UPLOAD_URL,
+            data=payload,
+            headers={"Content-Type": "application/octet-stream"},
+            stream=True,
+            allow_redirects=False,
+            timeout=(2.0, 4.0),
+        ) as response:
+            response.raise_for_status()
+        upload_elapsed = max(0.001, time.perf_counter() - started)
+        return {
+            "speed_download_mbps": received * 8.0 / download_elapsed / 1_000_000.0,
+            "speed_upload_mbps": len(payload) * 8.0 / upload_elapsed / 1_000_000.0,
+        }
+    finally:
+        session.close()
 
 
 def _wifi_signal_windows() -> int | None:
@@ -66,11 +280,47 @@ def _wifi_signal_windows() -> int | None:
 class _SystemPulseCollector:
     """Plain host counters and cache; this object never retains a Qt owner."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, speed_test_interval_s: float = SPEED_TEST_INTERVAL_SECONDS,
+        speed_test_enabled: bool = True, speed_test=None,
+    ) -> None:
         self._last_net = None
         self._last_net_at = 0.0
         self._wifi_cache: int | None = None
         self._sample_index = 0
+        self._darwin_ports: dict[str, str] = {}
+        self._connection_name = ""
+        self._connection_kind = "Offline"
+        self._speed_test_enabled = bool(speed_test_enabled)
+        self._speed_test_interval_s = max(60.0, float(speed_test_interval_s))
+        self._speed_test = speed_test or _quick_speed_test
+        self._speed_test_due_at = 0.0
+        self._speed_result: dict[str, object] = {}
+
+    def _refresh_speed_test(self, now: float) -> None:
+        if not self._speed_test_enabled or now < self._speed_test_due_at:
+            return
+        self._speed_test_due_at = now + self._speed_test_interval_s
+        if self._connection_kind == "Offline":
+            self._speed_result = {"speed_test_error": "Offline"}
+            self._speed_test_due_at = now + min(
+                SPEED_TEST_RETRY_SECONDS, self._speed_test_interval_s
+            )
+            return
+        try:
+            result = dict(self._speed_test())
+            down = max(0.0, float(result["speed_download_mbps"]))
+            up = max(0.0, float(result["speed_upload_mbps"]))
+            if not (math.isfinite(down) and math.isfinite(up) and down > 0.0 and up > 0.0):
+                raise ValueError("non-positive speed result")
+            self._speed_result = {
+                "speed_download_mbps": down,
+                "speed_upload_mbps": up,
+                "speed_tested_at": time.time(),
+                "speed_test_error": "",
+            }
+        except Exception:
+            self._speed_result = {"speed_test_error": "Test unavailable"}
 
     def __call__(self) -> dict[str, object]:
         data: dict[str, object] = {}
@@ -95,12 +345,33 @@ class _SystemPulseCollector:
             self._last_net = net
             self._last_net_at = now
 
+            if sys.platform == "darwin" and self._sample_index % 150 == 0:
+                self._darwin_ports = _darwin_hardware_ports()
+            if self._sample_index % 15 == 0:
+                self._connection_name, self._connection_kind = _active_connection(
+                    psutil, darwin_ports=self._darwin_ports
+                )
+            data["connection_type"] = self._connection_kind
+            data["connection_interface"] = self._connection_name
+
             # Wi-Fi shell queries are slower, so refresh them only every fifth
             # pulse (~10 seconds) and retain the latest result between queries.
-            if self._sample_index % 5 == 0:
+            if self._sample_index % 5 == 0 and self._connection_kind == "Wi-Fi":
                 self._wifi_cache = _wifi_signal_windows()
+            elif self._connection_kind != "Wi-Fi":
+                self._wifi_cache = None
             self._sample_index += 1
             data["wifi"] = self._wifi_cache
+            self._refresh_speed_test(now)
+            data.update(self._speed_result)
+            for direction, rate_key in (("download", "down"), ("upload", "up")):
+                capacity = data.get(f"speed_{direction}_mbps")
+                data[f"{direction}_utilization"] = (
+                    None if not capacity else min(
+                        100.0,
+                        float(data[rate_key]) * 8.0 / (float(capacity) * 1_000_000.0) * 100.0,
+                    )
+                )
         except Exception as exc:
             data["error"] = str(exc)
         return data
@@ -248,20 +519,24 @@ class _Metric:
 
 
 class SystemPulseCard(QFrame):
-    """Live CPU/RAM/Wi-Fi/network card with sampling off the Qt thread."""
+    """Live CPU/RAM/link/speed card with all host work off the Qt thread."""
 
     sample_ready = Signal(object)
     details_requested = Signal()
 
-    def __init__(self, parent=None, interval_ms: int = 2000) -> None:
+    def __init__(
+        self, parent=None, interval_ms: int = 2000, *,
+        speed_test_interval_s: float = SPEED_TEST_INTERVAL_SECONDS,
+        speed_test_enabled: bool | None = None, speed_test=None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("Card")
         self.setCursor(Qt.PointingHandCursor)
         self.setMinimumWidth(205)
         self.setMaximumWidth(340)
         self.setToolTip(
-            "Live host health. Sampling runs in a tiny background worker so slow "
-            "Windows or Wi-Fi queries cannot freeze the dashboard."
+            "Live host health. A bounded speed estimate runs at startup and every hour "
+            "in a background worker, so network and platform queries cannot freeze the dashboard."
         )
 
         root = QVBoxLayout(self)
@@ -286,17 +561,27 @@ class SystemPulseCard(QFrame):
         grid.setColumnStretch(1, 1)
         self._cpu = _Metric("CPU", "Total processor use across the host.")
         self._ram = _Metric("RAM", "Physical memory in use and available.")
-        self._wifi = _Metric("WI-FI", "Current Windows Wi-Fi signal strength.")
+        self._wifi = _Metric(
+            "LINK", "Active connection type and Wi-Fi signal when the platform exposes it."
+        )
+        self._download = _Metric(
+            "DOWNLOAD", "Latest bounded Cloudflare estimate and current receive utilization."
+        )
+        self._upload = _Metric(
+            "UPLOAD", "Latest bounded Cloudflare estimate and current send utilization."
+        )
         self._cpu.add(grid, 0)
         self._ram.add(grid, 2)
         self._wifi.add(grid, 4)
+        self._download.add(grid, 6)
+        self._upload.add(grid, 8)
         root.addLayout(grid)
 
         self._memory = QLabel("Available memory  --")
         self._memory.setWordWrap(True)
         self._memory.setStyleSheet("color:#94a3b8; font-size:11px;")
         root.addWidget(self._memory)
-        self._network = QLabel("↓ --   ↑ --")
+        self._network = QLabel("LIVE  ↓ --   ↑ --")
         self._network.setWordWrap(True)
         self._network.setStyleSheet("color:#38bdf8; font-weight:700;")
         self._network.setToolTip(
@@ -310,7 +595,15 @@ class SystemPulseCard(QFrame):
         self._history: deque[dict[str, object]] = deque(maxlen=90)
         self._sample_revision = 0
         self._rendered_state: tuple[str, str] | None = None
-        self._sampler = _SystemPulseSampler(_SystemPulseCollector())
+        if speed_test_enabled is None:
+            speed_test_enabled = os.environ.get(
+                "ANGERONA_SPEED_TEST_DISABLED", ""
+            ).strip().casefold() not in {"1", "true", "yes", "on"}
+        self._sampler = _SystemPulseSampler(_SystemPulseCollector(
+            speed_test_interval_s=speed_test_interval_s,
+            speed_test_enabled=speed_test_enabled,
+            speed_test=speed_test,
+        ))
         try:
             self._busy = self._sampler.busy
             self._closed = self._sampler.closed
@@ -449,14 +742,35 @@ class SystemPulseCard(QFrame):
         cpu = float(data.get("cpu", 0.0))
         ram = float(data.get("ram", 0.0))
         wifi = data.get("wifi")
+        connection_type = str(data.get("connection_type") or "Offline")
         self._cpu.update(f"{cpu:.0f}%", cpu)
         self._ram.update(f"{ram:.0f}%", ram)
-        self._wifi.update("Not connected" if wifi is None else f"{int(wifi)}%", wifi)
+        link_text = connection_type
+        if connection_type == "Wi-Fi" and wifi is not None:
+            link_text += f" · {int(wifi)}%"
+        self._wifi.update(link_text, wifi)
+        tested_down = data.get("speed_download_mbps")
+        tested_up = data.get("speed_upload_mbps")
+        download_utilization = data.get("download_utilization")
+        upload_utilization = data.get("upload_utilization")
+        speed_error = str(data.get("speed_test_error") or "")
+        download_text = speed_error or _mbps(tested_down)
+        upload_text = speed_error or _mbps(tested_up)
+        if not speed_error and download_utilization is not None:
+            download_text += f" · {float(download_utilization):.0f}%"
+        if not speed_error and upload_utilization is not None:
+            upload_text += f" · {float(upload_utilization):.0f}%"
+        self._download.update(
+            download_text, download_utilization
+        )
+        self._upload.update(
+            upload_text, upload_utilization
+        )
         memory_text = f"Available memory  {_memory(float(data.get('available', 0.0)))}"
         if self._memory.text() != memory_text:
             self._memory.setText(memory_text)
         network_text = (
-            f"↓ {_rate(float(data.get('down', 0.0)))}   "
+            f"LIVE  ↓ {_rate(float(data.get('down', 0.0)))}   "
             f"↑ {_rate(float(data.get('up', 0.0)))}"
         )
         if self._network.text() != network_text:

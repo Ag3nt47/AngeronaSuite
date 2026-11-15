@@ -77,6 +77,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
         "github_daily_check_enabled": False,
+        "github_tools_daily_update_enabled": False,
         "recorder_witness_enabled": False,
     },
     "Maximum local coverage": {
@@ -104,6 +105,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
         "github_daily_check_enabled": False,
+        "github_tools_daily_update_enabled": False,
         "recorder_witness_enabled": False,
     },
     "Low-resource local": {
@@ -131,6 +133,7 @@ SETUP_PROFILES: dict[str, dict[str, object]] = {
         "spyware_network_enabled": False,
         "spyware_beacon_enabled": False,
         "github_daily_check_enabled": False,
+        "github_tools_daily_update_enabled": False,
         "recorder_witness_enabled": False,
     },
 }
@@ -654,6 +657,8 @@ STEPS: tuple[Step, ...] = (
                   note="On by default. Preparation runs after the dashboard opens; it does not start a host scan or activate community packages."),
             Field("check", "github_tools_allow_download", "Allow verified downloads for missing scanner files",
                   note="Uses the maintained version and digest. Source-review imports remain non-executable; download consent is separate from rule/playbook activation."),
+            Field("check", "github_tools_daily_update_enabled", "Check maintained GitHub tools daily and test managed updates",
+                  note="Off until enabled. Exact reviewed Zero-Breach releases may be prepared and metadata-tested. Data adapters request review; external platforms are never silently replaced."),
             Field("check", "community_rules_enabled", "Allow separately reviewed community detection rules",
                   note="Off by default. Runtime evaluation still requires a supported data-only rule, provenance, self-check and deliberate activation. "
                        "A rule match is a review lead and grants no response authority."),
@@ -1424,7 +1429,7 @@ if _HAVE_QT:
                 "aria_voice_cloud_tts", "aria_research_egress", "aria_push_enabled",
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
                 "spyware_network_enabled", "spyware_beacon_enabled",
-                "github_daily_check_enabled",
+                "github_daily_check_enabled", "github_tools_daily_update_enabled",
                 "github_tools_allow_download",
             ) if values.get(key)]
             return (
@@ -1502,7 +1507,7 @@ if _HAVE_QT:
                 "aria_inbox_enabled", "teams_bot_enabled", "mobile_enabled",
                 "siem_host", "remote_bridge_mode", "ioc_feed_url",
                 "spyware_network_enabled", "spyware_beacon_enabled",
-                "github_daily_check_enabled",
+                "github_daily_check_enabled", "github_tools_daily_update_enabled",
             ))
             if outbound and QMessageBox.question(
                 self, "Confirm optional network features",

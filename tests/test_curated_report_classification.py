@@ -27,7 +27,7 @@ def hit(evidence="contacted", *, withdrawn=False):
 def document(hits):
     references = sum(row.get("evidence") == "referenced" for row in hits)
     withdrawn = sum(row.get("evidence") != "referenced" and row.get("withdrawn_only") is True for row in hits)
-    return dict(schema_version="1.6", tool=dict(name="zero-breach-toolkit", version="0.1.10"),
+    return dict(schema_version="1.6", tool=dict(name="zero-breach-toolkit", version="3.0.2"),
                 scope=dict(scanned=True, cancelled=False), scan_state="completed",
                 verdict=dict(hits_total=len(hits), findings_total=len(hits) - references - withdrawn,
                              references_total=references, withdrawn_total=withdrawn, gaps=["Owned unavailable source"]),

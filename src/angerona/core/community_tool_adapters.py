@@ -35,8 +35,8 @@ MAX_PACK_FILES = 256
 MAX_PACK_BYTES = 8 * 1024 * 1024
 MAX_SANDBOXES = 16
 MAX_SANDBOX_FILES = 64
-MAX_SANDBOX_BYTES = 2 * 1024 * 1024
-MAX_EDITOR_BYTES = 1024 * 1024
+MAX_SANDBOX_BYTES = 32 * 1024 * 1024
+MAX_EDITOR_BYTES = 16 * 1024 * 1024
 MAX_RECORDS = 512
 MAX_DTO_BYTES = 1024 * 1024
 _ID = re.compile(r"[0-9a-f]{32}")
@@ -91,7 +91,7 @@ _SPECS = (
     dict(id="yara-x", name="YARA-X", repository="virustotal/yara-x", license="BSD-3-Clause",
          license_files=["LICENSE"], authors=["The YARA-X Authors"],
          capabilities=["rule-pack-preview", "owned-buffer-scan", "existing-engine-self-check", "source-sandbox"], mode="data"),
-    dict(id="caldera", name="Apache Caldera", repository="apache/caldera", license="Apache-2.0",
+    dict(id="caldera", name="MITRE Caldera", repository="mitre/caldera", license="Apache-2.0",
          license_files=["LICENSE", "NOTICE"], authors=["The Apache Software Foundation; MITRE and contributors"],
          capabilities=["external-result-import"], mode="external"),
     dict(id="velociraptor", name="Velociraptor", repository="velocidex/velociraptor", license="AGPL-3.0",
@@ -562,7 +562,7 @@ class CommunityToolService:
                 raw = members[name]
                 total += len(raw)
                 if total > MAX_SANDBOX_BYTES:
-                    raise AdapterError("Sandbox copy exceeded its 2 MiB budget; partial copy remains inert.")
+                    raise AdapterError("Sandbox copy exceeded its 32 MiB budget; partial copy remains inert.")
                 _ensure_directory((baseline / name).parent)
                 _atomic_bytes_write(baseline / name, raw, root=baseline)
             meta = dict(schema=1, tool_id=tool_id, sandbox_id=identity, source_id=manifest["source_id"],
@@ -608,7 +608,7 @@ class CommunityToolService:
                     raw = _bounded_read(item.source_path, self.root, MAX_EDITOR_BYTES)
                 total += len(raw)
             if total > MAX_SANDBOX_BYTES:
-                raise AdapterError("Sandbox working copies reached their 2 MiB aggregate budget; existing experiments were preserved.")
+                raise AdapterError("Sandbox working copies reached their 32 MiB aggregate budget; existing experiments were preserved.")
         return total
 
     def _sandbox_status(self, tool_id):

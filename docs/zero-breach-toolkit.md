@@ -5,7 +5,7 @@ verification, settings, analysis and credits. **SpywareGuard > Zero Breach** use
 the same prepared tool and job state. Opening a second view does not install a
 second copy or start a second scan.
 
-The first curated engine is [Zero Breach Toolkit v0.1.10](https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10),
+The first curated engine is [Zero Breach Toolkit v3.0.2](https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v3.0.2),
 by archivegenocide.com / interplains. Its complete single-file release is bundled
 unchanged, alongside its licenses and notices. It runs as a separate supervised
 process behind Angerona's controls. It is never imported into the security core
@@ -17,8 +17,16 @@ functions while scanning, which must not affect Angerona's other services.
 Optional automatic preparation happens after the dashboard paints. Preparing
 the bundled standard-library engine needs no pip installation and does not
 modify Angerona's Python environment. A download/restore action retrieves the
-exact cataloged release; a newer upstream branch or release does not silently
-replace that reviewed version.
+exact cataloged release. The enabled daily GitHub check compares every
+maintained integration with its fixed canonical branch. A stable Zero-Breach
+release is prepared and metadata-tested only when its commit, size and SHA-256
+exactly match Angerona's reviewed pin. A newer upstream release creates a review
+request instead of silently gaining execution authority.
+
+Atomic Red Team, SigmaHQ, Sysmon Modular and YARA-X updates remain inert source
+review requests before adapter activation. MITRE Caldera, Velociraptor and
+Wazuh are external-result integrations; Angerona reports their latest commits
+but never replaces their independent servers or agents.
 
 Both views expose the prepared version, integrity state, job status and storage
 information. Settings control automatic preparation, permitted downloads and
@@ -72,8 +80,8 @@ acquisition runtimes are reviewed; this is not a runnable native full-menu path:
   action. It is separate from the scanner's offline checks.
 
 The upstream `--deep` option is unimplemented and is not a supported capability.
-See the pinned [machine contract](https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/scan/CONTRACT.md)
-and [privacy documentation](https://github.com/interplains/Zero-Breach-Toolkit/blob/81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md)
+See the pinned [machine contract](https://github.com/interplains/Zero-Breach-Toolkit/blob/2525377788feb8335052ba08981f37239091307a/scan/CONTRACT.md)
+and [privacy documentation](https://github.com/interplains/Zero-Breach-Toolkit/blob/2525377788feb8335052ba08981f37239091307a/PRIVACY.md)
 for the original behavior and limitations.
 
 ## Reports, cancellation and storage
@@ -304,11 +312,11 @@ not imply affiliation or endorsement of either project. Optional dependencies
 retain their separate licenses.
 
 The catalog pins release commit
-`81bd556ba604685dbd1c0ecb48138c10f43cccf8` and the 968,987-byte single-file
+`2525377788feb8335052ba08981f37239091307a` and the 7,879,062-byte single-file
 engine's SHA-256:
 
 ```text
-075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3
+0b6df5f02c6b13256b735bfb55c1ef0a31ff0c762550910be9f66b4f5090dafb
 ```
 
 Original published checksums, signatures and the public key are retained under
