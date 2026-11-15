@@ -1,11 +1,25 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.15.1
-Date: 2026-11-13
+Version: 1.16.0
+Date: 2026-11-15
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.15.1 — security maintenance and watchdog modes)
+## LATEST (v1.16.0 — network performance and maintained-tool updates)
+
+- System Pulse identifies the active connection type and makes a bounded speed
+  estimate after dashboard startup and hourly. It reports download/upload Mbps
+  and utilization relative to measured capacity. These are not protection
+  percentages or internet-service guarantees.
+- An opt-in daily check queries eight fixed canonical GitHub repositories. The
+  reviewed Zero Breach v3.0.2 scanner may be prepared and metadata-tested only
+  when the stable release exactly matches Angerona's pin. Inert data changes
+  create review requests; external products are reported, not silently replaced.
+- The shared implementation supports Windows, macOS and Linux. Platform
+  authority remains distinct: Windows Protect versus macOS/Linux Observe or
+  Detect. See `docs/releases/v1.16.0.md` for traffic, privacy and validation scope.
+
+## PREVIOUS (v1.15.1 — security maintenance and watchdog modes)
 
 - The PC source checkout is the authoritative maintenance copy; GitHub receives
   its exact reviewed commit through the guarded publisher. Read the 1.15.1

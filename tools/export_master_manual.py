@@ -219,16 +219,62 @@ class Exporter:
             f'Word source SHA256: {digest}\n'
             f'Coverage: {len(expected)} text nodes; {self.stats["paragraphs"]} paragraphs; '
             f'{self.stats["tables"]} tables; {len(self.figures)} figures. -->\n\n'
-            'Current source maintenance **1.15.1** · **13 November 2026**\n\n'
-            '[Latest 1.15.1 source companion](releases/v1.15.1.md) · '
+            'Current source preview **1.16.0** · **15 November 2026**\n\n'
+            '[Latest 1.16.0 source companion](releases/v1.16.0.md) · '
+            '[1.15.1 security maintenance](releases/v1.15.1.md) · '
             '[Security patches and remaining exposure](releases/security-worklist-review-2026-11-13.md)\n\n'
             f'The Word/PDF manual edition is older: **{revision[1]}** · **{revision[2]}**. '
             'The body below is an exact readable export of that edition, not a rewritten '
-            '1.15.1 Word manual. Read the source companions first for current maintenance '
-            'changes, watchdog modes, action holds and validation limits.\n\n'
+            '1.16.0 Word manual. Read the source companions first for current network metrics, '
+            'maintained-tool updates, security maintenance, action holds and validation limits.\n\n'
             '[Download older PDF edition](../Angerona_Master_Manual.pdf) · '
             '[Download older Word edition](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · '
             '[Repository guide](../README.md)\n\n'
+            'Current **1.16.0 source follow-up**: System Pulse identifies the active connection '
+            'type and makes a bounded speed estimate after startup and hourly. It reports '
+            'download/upload Mbps and utilization relative to measured capacity; these are not '
+            'protection percentages. An opt-in daily check follows eight fixed canonical '
+            "GitHub-tool repositories. Zero Breach v3.0.2 can be prepared and metadata-tested "
+            "only while its stable release exactly matches Angerona's reviewed pin. New "
+            'inert-data revisions request review, and external server products are reported '
+            'rather than silently replaced. See the [1.16.0 source companion]'
+            '(releases/v1.16.0.md) for traffic, privacy, validation and platform scope.\n\n'
+            'Previous **1.15.1 source follow-up**:\n\n'
+            '- File Integrity Monitor receipt issuance and historical Red Team verification now '
+            'use the same current per-root coverage schema, root lists, digests and aggregate '
+            'counters. This corrects a mismatch that discarded genuine complete scan evidence. '
+            'Incomplete, budget-exhausted or inconsistent coverage remains ineligible; exact '
+            'object, lease, generation and signature checks still apply. A test marker alone '
+            'earns no detection credit.\n'
+            '- Mobile bridge health preserves a failed send/receive receipt at **40**, while '
+            'displaying any separate authorization or lockout hold. An authorization-only or '
+            'lockout hold remains **60**; a receipt-authority fault takes priority at **0**. '
+            'These are module health scores, not protection percentages. The change does not '
+            'authorize mobile commands or claim recipient delivery.\n'
+            '- **Settings > Watchdog** now has its own contextual Info and matching '
+            'source-sandbox metadata. Unsigned monitoring remains off by default, shares Core\'s '
+            'child-job lifetime and cannot recover Core independently. Signing and protected '
+            'enrollment remain separate requirements; selecting a candidate inspects it as data. '
+            'Opening isolated source copies grants no installation or response authority.\n'
+            '- **Coverage warnings stay visible without implying an attacker.** Only exact typed '
+            'FIM or network incomplete-telemetry records qualify for this health classification. '
+            'High severity and original evidence remain. Genuine file/network findings retain '
+            'their threat handling, and filenames containing lifecycle phrases cannot hide real '
+            'file changes. Unknown or malformed records remain conservative; classification '
+            'grants no response authority.\n'
+            '- **A held STOP is described accurately.** The notice explains that authorization '
+            'was not established, Angerona has not exited and the notice cannot verify '
+            'protection. It no longer assumes a declined UAC prompt. Protected control admission '
+            'and cleanup behavior are unchanged.\n\n'
+            'These are focused source and fixture corrections. An earlier Python 3.13 hosted run '
+            'passed 17,721 tests with 54 skips; the Python 3.12 lane was interrupted at its '
+            '60-minute job limit and remains incomplete. The matrix\'s finite job budget becomes '
+            '75 minutes without omitting tests. Fresh exact-commit validation remains separate '
+            'acceptance work; this note does not claim that all GitHub checks are green or that '
+            'the running application has accepted this follow-up. See the '
+            '[1.15.1 release companion](releases/v1.15.1.md#hosted-check-reconciliation) for '
+            'revision-bound results and remaining scope. The exported **1.15.0 Word/PDF body '
+            'below remains unchanged**.\n\n'
             'Earlier source maintenance companion **9 November 2026**: '
             '[Watchdog and Core hardening](resilience-recovery.md#watchdog-hardening-in-the-8-november-source-update), '
             '[recovery profile migration](safe-startup-recovery.md#recovery-profile-migration). '
@@ -237,7 +283,52 @@ class Exporter:
             'Dated validation and version-history sections retain their original scope; '
             'the current operator workflows and complete references precede the final update history.\n\n'
         )
-        return introduction + '\n\n'.join(blocks).rstrip() + '\n'
+        body = '\n\n'.join(blocks).rstrip()
+        current_reference_updates = (
+            (
+                'pinned Zero Breach Toolkit v0.1.10 installation',
+                'pinned Zero Breach Toolkit v3.0.2 installation',
+            ),
+            (
+                'The first curated engine is Zero Breach Toolkit v0.1.10,',
+                'The first curated engine is Zero Breach Toolkit v3.0.2,',
+            ),
+            (
+                'release commit 81bd556ba604685dbd1c0ecb48138c10f43cccf8 and the '
+                '968,987-byte single-file engine',
+                'release commit 2525377788feb8335052ba08981f37239091307a and the '
+                '7,879,062-byte single-file engine',
+            ),
+            (
+                '075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3',
+                '0b6df5f02c6b13256b735bfb55c1ef0a31ff0c762550910be9f66b4f5090dafb',
+            ),
+            (
+                'https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10',
+                'https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v3.0.2',
+            ),
+            (
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '81bd556ba604685dbd1c0ecb48138c10f43cccf8/scan/CONTRACT.md',
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '2525377788feb8335052ba08981f37239091307a/scan/CONTRACT.md',
+            ),
+            (
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md',
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '2525377788feb8335052ba08981f37239091307a/PRIVACY.md',
+            ),
+            (
+                '[Apache Caldera](https://github.com/apache/caldera)',
+                '[MITRE Caldera](https://github.com/mitre/caldera)',
+            ),
+        )
+        for previous, current in current_reference_updates:
+            if body.count(previous) != 1:
+                raise ValueError(f'current manual reference is missing or ambiguous: {previous}')
+            body = body.replace(previous, current)
+        return introduction + body + '\n'
 
 
 def main() -> None:

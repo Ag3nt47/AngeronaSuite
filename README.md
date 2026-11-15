@@ -18,9 +18,9 @@ explain evidence and propose next steps.
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**Current source preview: 1.15.1** · [Maintenance release notes](docs/releases/v1.15.1.md)
+**Current source preview: 1.16.0** · [Release notes](docs/releases/v1.16.0.md)
 
-**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1151)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1151)**
+**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1160)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1160)**
 
 ## See Angerona in action
 
@@ -136,22 +136,44 @@ and separate installation staging require additional space.
 | macOS source setup | 0.50–0.75 GB | 1.5–3 GB |
 | Linux source setup | 0.30–0.50 GB | 1–2 GB |
 
-## Current development: v1.15.1
+## Current development: v1.16.0
 
 **Source preview.** A genuine Source Observe network-containment gap remains
 open. Earlier controlled response validation and a combined SpywareGuard/Zero-Breach
 run remain dated evidence. That scan had findings and incomplete coverage; it
 is not a clean-PC verdict or live acceptance of this maintenance revision.
 Controlled results and remaining coverage limits are documented in the
-[current release notes](docs/releases/v1.15.1.md).
+[current release notes](docs/releases/v1.16.0.md).
 
-Further reading: [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [current release notes](docs/releases/v1.15.1.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
+Further reading: [1.16.0 source-preview notes](docs/releases/v1.16.0.md) · [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [1.15.1 maintenance notes](docs/releases/v1.15.1.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
 
 The downloadable Word/PDF manual is the earlier **1.15.0 / 9 November** edition.
-The [current source companion](docs/releases/v1.15.1.md) and
-[readable manual introduction](docs/master-manual.md) explain the 1.15.1 changes.
+The [current source companion](docs/releases/v1.16.0.md) and
+[readable manual introduction](docs/master-manual.md) explain the later source changes.
 
-## What's new in 1.15.1
+## What's new in 1.16.0
+
+- **Cross-platform connection performance:** System Pulse now identifies the
+  active Wi-Fi, Ethernet or other interface and makes a bounded speed estimate
+  after startup and once per hour. The CPU performance card shows download and
+  upload Mbps plus live utilization relative to the last measured capacity.
+- **Daily maintained-tool review:** an opt-in daily check follows eight fixed
+  canonical GitHub repositories. Angerona records immutable review requests for
+  newer supported data and reports external products without silently replacing
+  their servers or agents.
+- **Reviewed managed scanner update:** Zero Breach Toolkit v3.0.2 is bundled by
+  exact commit, asset size and SHA-256. Angerona may prepare and metadata-test it
+  automatically only while GitHub's stable release matches that reviewed pin;
+  an unreviewed future release remains held for a new Angerona review.
+- **Visible privacy and traffic limits:** speed-test and GitHub metadata egress,
+  bounded transfer sizes, opt-in settings and the environment disable switch are
+  documented in [Privacy](PRIVACY.md) and the [1.16.0 notes](docs/releases/v1.16.0.md).
+- **Platform scope remains explicit:** the shared feature code supports Windows,
+  macOS and Linux, while Windows Protect and macOS/Linux Observe or Detect retain
+  their existing authority differences. A speed result or tool self-test is not
+  a protection percentage, host-clean verdict or blanket integration claim.
+
+### Previous 1.15.1 maintenance highlights
 
 - **Third-watchdog choices:** optional ordinary-user monitoring is off by default
   and clearly marked reduced protection. A separate signature check opens new

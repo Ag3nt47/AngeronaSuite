@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var watchdogVersion = "1.15.1"
+var watchdogVersion = "1.16.0"
 
 type retainedNativeProcess struct{ process *peerHandle }
 

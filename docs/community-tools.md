@@ -1,6 +1,6 @@
 # Community tools and standalone Red Team
 
-Angerona 1.15.0 provides a GitHub Tools hub for reviewed source, managed scanner
+Angerona 1.16.0 provides a GitHub Tools hub for reviewed source, managed scanner
 integration and bounded data adapters. These controls help a defender compare
 community detection logic, preserve its provenance and test compatible content
 without turning a repository download into permission to run its code.

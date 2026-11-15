@@ -54,7 +54,7 @@ def candidate() -> updates.ReleaseCandidate:
     return updates.select_release(metadata(), version=FIXTURE_INSTALLED_VERSION)
 
 
-@pytest.mark.parametrize("installed_version", ["1.15.0", "1.15.1"])
+@pytest.mark.parametrize("installed_version", ["1.15.0", "1.15.1", "1.16.0"])
 def test_equal_or_newer_installation_rejects_approved_fixture_before_payload(
     tmp_path, installed_version
 ):

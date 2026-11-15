@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.16.0 — network performance and maintained-tool updates (2026-11-15)
+
+- Add a bounded cross-platform connection-speed estimate to System Pulse. It
+  runs after startup and hourly, identifies the active interface type, and shows
+  download/upload Mbps with live utilization percentages in the CPU performance
+  card and detail view.
+- Add an opt-in daily lifecycle for eight fixed canonical GitHub tool
+  repositories. Reviewed managed scanners can be prepared and metadata-tested;
+  inert data updates create immutable review requests; external products are
+  monitored without silently replacing their servers or agents.
+- Update the bundled Zero Breach Toolkit to reviewed v3.0.2 with its exact
+  upstream asset, license, notices, signature material and SHA-256 pin. Preserve
+  the recognized prior installation for rollback review and self-test the new
+  managed copy in a supervised process.
+- Document network egress, transfer bounds, configuration controls and the
+  distinction between speed capacity, utilization and protection posture.
+- Preserve Windows Protect versus macOS/Linux Observe or Detect boundaries.
+  Passing a metadata self-test does not authorize a host scan or arbitrary
+  upstream execution. See the [1.16.0 source-preview notes](docs/releases/v1.16.0.md).
+
 ## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
 
 - Offer an optional macOS support pack during guided macOS setup. Nothing is

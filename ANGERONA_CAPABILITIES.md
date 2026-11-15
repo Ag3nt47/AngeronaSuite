@@ -1,11 +1,20 @@
 # Angerona Capabilities
 
-Current development version: **v1.15.1**. This is a present-tense capability and boundary
+Current development version: **v1.16.0**. This is a present-tense capability and boundary
 summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
 or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
+
+The [1.16.0 source preview](docs/releases/v1.16.0.md) adds bounded startup and
+hourly connection-speed estimates to System Pulse, plus opt-in daily checks of
+eight fixed maintained GitHub-tool repositories. It updates the reviewed managed
+Zero Breach scanner to v3.0.2. Capacity and utilization are operational metrics,
+not protection percentages. Managed scanner preparation requires an exact
+reviewed release pin; inert data changes request review and external products are
+never silently replaced. Windows Protect and macOS/Linux Observe or Detect retain
+their existing authority boundaries.
 
 The [1.15.1 security maintenance update](docs/releases/v1.15.1.md) applies the
 reviewed recovery, authentication, source-delivery and alert reliability fixes.
