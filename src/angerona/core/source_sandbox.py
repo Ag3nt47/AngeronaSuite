@@ -31,7 +31,9 @@ from angerona.core.data_paths import data_dir, project_root, resource_root
 
 _SAFE_KEY = re.compile(r"[^a-z0-9_-]+")
 _REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-MAX_SOURCE_BYTES = 4 * 1024 * 1024
+# The reviewed Zero-Breach v3 single-file source is 7.9 MiB. Keep editable
+# source artifacts bounded while admitting that maintained integration.
+MAX_SOURCE_BYTES = 16 * 1024 * 1024
 
 
 def _slug(value: object) -> str:
@@ -228,7 +230,7 @@ def _read_bytes(path: Path, *, root: Path) -> bytes:
             if not stat.S_ISREG(info.st_mode) or int(info.st_nlink) != 1:
                 raise ValueError(f"sandbox file is not regular: {path}")
             if info.st_size > MAX_SOURCE_BYTES:
-                raise ValueError("sandbox file exceeds the 4 MiB source limit")
+                raise ValueError("sandbox file exceeds the 16 MiB source limit")
             with os.fdopen(fd, "rb", closefd=False) as handle:
                 content = handle.read(MAX_SOURCE_BYTES + 1)
             after = os.fstat(fd)
@@ -249,7 +251,7 @@ def _atomic_bytes_write(path: Path, content: bytes, *, root: Path, private: bool
     if type(private) is not bool:
         raise ValueError("sandbox private-file selection must be a boolean")
     if len(content) > MAX_SOURCE_BYTES:
-        raise ValueError("sandbox file exceeds the 4 MiB source limit")
+        raise ValueError("sandbox file exceeds the 16 MiB source limit")
     path = _absolute(path)
     root = _absolute(root)
     if not _within(path, root) or path == root:
@@ -674,7 +676,7 @@ class SourceSandboxWorkspace:
             self.ensure()
             content = str(text)
             if len(content) > MAX_SOURCE_BYTES or len(content.encode("utf-8")) > MAX_SOURCE_BYTES:
-                raise ValueError("sandbox file exceeds the 4 MiB source limit")
+                raise ValueError("sandbox file exceeds the 16 MiB source limit")
             if item.working_path.suffix.casefold() == ".py":
                 ast.parse(content, filename=item.relative_path)
             _atomic_text_write(item.working_path, content, root=self.root)

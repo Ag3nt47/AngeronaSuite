@@ -85,13 +85,16 @@ def unpack_source(archive: Path, work: Path) -> Path:
     return source
 
 
-def build_environment(work: Path, openssl: Path) -> dict[str, str]:
+def build_environment(work: Path, openssl: Path, deployment_target: str = "14.0") -> dict[str, str]:
     # Drop inherited build flags, wrappers, package indexes, and Cargo overrides.
-    env = {key: os.environ[key] for key in ("HOME", "PATH", "TMPDIR", "LANG", "LC_ALL") if key in os.environ}
+    allowed = (
+        "HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "RUSTUP_HOME", "RUSTUP_TOOLCHAIN"
+    )
+    env = {key: os.environ[key] for key in allowed if key in os.environ}
     env.update({
         "CARGO_HOME": str(work / "cargo"), "CARGO_BUILD_JOBS": "2",
         "OPENSSL_DIR": str(openssl), "OPENSSL_STATIC": "1",
-        "MACOSX_DEPLOYMENT_TARGET": "14.0", "PYO3_PYTHON": sys.executable,
+        "MACOSX_DEPLOYMENT_TARGET": deployment_target, "PYO3_PYTHON": sys.executable,
         "PIP_NO_INDEX": "1", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "GIT_TERMINAL_PROMPT": "0",
     })
@@ -111,7 +114,7 @@ def validate_built_wheel(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build(work: Path, openssl: Path) -> None:
+def build(work: Path, openssl: Path, deployment_target: str = "14.0") -> None:
     if sys.platform != "darwin" or platform.machine() != "x86_64" or sys.version_info[:2] != (3, 12):
         raise RuntimeError("the Intel build must run natively on macOS x86_64 with Python 3.12")
     if work.exists() or work.is_symlink():
@@ -122,7 +125,9 @@ def build(work: Path, openssl: Path) -> None:
     if not cargo or not shutil.which("rustc") or not shutil.which("clang"):
         raise RuntimeError("Xcode command-line tools and Rust are required for the Intel cryptography build")
     work.mkdir(parents=True, mode=0o700)
-    env = build_environment(work, openssl)
+    if deployment_target not in {"13.0", "14.0"}:
+        raise ValueError("deployment target must be the reviewed 14.0 target or explicit 13.0 development target")
+    env = build_environment(work, openssl, deployment_target)
     archive = fetch_pinned(SOURCE, work)
     fetch_pinned(BUILDER, work)
     source = unpack_source(archive, work)
@@ -147,6 +152,8 @@ def build(work: Path, openssl: Path) -> None:
         "builder_sha256": BUILDER["sha256"], "wheel": wheels[0].name,
         "wheel_sha256": digest, "cargo_lock_sha256": hashlib.sha256((source / "Cargo.lock").read_bytes()).hexdigest(),
         "openssl_prefix": str(openssl), "platform": platform.platform(),
+        "deployment_target": deployment_target,
+        "unsupported_development_target": deployment_target != "14.0",
         "rustc": subprocess.check_output(["rustc", "--version"], env=env, text=True, timeout=15).strip(),
         "openssl": subprocess.check_output([str(openssl / "bin/openssl"), "version"], env=env, text=True, timeout=15).strip(),
         "smoke_test": "AES-GCM round trip passed",
@@ -163,9 +170,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--openssl", type=Path)
+    parser.add_argument(
+        "--unsupported-development-target",
+        choices=("13.0",),
+        help="Build for the explicit unsupported Ventura source-development path.",
+    )
     args = parser.parse_args()
     prefix = args.openssl or Path(os.environ.get("OPENSSL_DIR", "/usr/local/opt/openssl@3"))
-    build(args.work.absolute(), prefix.absolute())
+    build(args.work.absolute(), prefix.absolute(), args.unsupported_development_target or "14.0")
     return 0
 
 

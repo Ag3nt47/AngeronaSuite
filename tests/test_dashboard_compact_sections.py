@@ -34,7 +34,7 @@ def forbid_host_dispatch(monkeypatch):
     monkeypatch.setattr(socket, "create_connection", forbidden)
     monkeypatch.setattr(subprocess, "Popen", forbidden)
     monkeypatch.setattr(os, "system", forbidden)
-    monkeypatch.setattr(system_pulse, "_SystemPulseCollector", lambda: lambda: {
+    monkeypatch.setattr(system_pulse, "_SystemPulseCollector", lambda **_kwargs: lambda: {
         "cpu": 12.0, "ram": 42.0, "available": 4 * 1024**3,
         "wifi": 85, "down": 4096.0, "up": 2048.0,
     })

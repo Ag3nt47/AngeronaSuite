@@ -18,9 +18,9 @@ explain evidence and propose next steps.
 [![Security](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml/badge.svg)](https://github.com/Ag3nt47/AngeronaSuite/actions/workflows/security.yml)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-**Current source preview: 1.15.2** · [Maintenance release notes](docs/releases/v1.15.2.md)
+**Current source preview: 1.16.1** · [Maintenance release notes](docs/releases/v1.16.1.md)
 
-**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1152)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1152)**
+**[Install](#choose-your-installation)** · **[What's new](#whats-new-in-1161)** · **[Master Manual](docs/master-manual.md)** ([1.15.0 PDF](Angerona_Master_Manual.pdf)) · **[Security flow](docs/security-flow.md)** · **[Changelog](CHANGELOG.md)** · **[Release status](#current-development-v1152)**
 
 ## See Angerona in action
 
@@ -59,9 +59,9 @@ perform no host actions.
 | [![Stable heartbeat detail review with synthetic demonstration data](assets/screenshots/heartbeat-details-demo.png)](docs/live-debug-harness.md) | DEMO only: simulation outcomes do not establish real-world detection coverage. |
 
 <details>
-<summary>New in 1.15.2: session STOP, lock and unlock controls (DEMO)</summary>
+<summary>New in 1.16.1: session STOP, lock and unlock controls (DEMO)</summary>
 
-[![Synthetic Angerona STOP controls: modeless session lock, separate unlock and stop confirmation, and owned-process shutdown scope](assets/screenshots/stop-controls-demo.png)](docs/releases/v1.15.2.md#operator-controls)
+[![Synthetic Angerona STOP controls: modeless session lock, separate unlock and stop confirmation, and owned-process shutdown scope](assets/screenshots/stop-controls-demo.png)](docs/releases/v1.16.1.md#operator-controls)
 
 Synthetic UI preview rendered from the actual dialog code. No host data or running
 security engine is shown. The session lock controls dashboard/tray actions and
@@ -93,8 +93,9 @@ Synthetic values only. The unsigned monitor is off by default and has no indepen
   undo actions.
 - **SpywareGuard:** surveillanceware evidence review and governed response,
   subject to its published preview and platform prerequisites.
-- **GitHub Tools:** suggested compatible adapters, pinned scanners, source
-  review, self-checks, editable copies, managed uninstall/revert and credits.
+- **GitHub Tools:** daily maintained-repository checks, suggested compatible
+  adapters, pinned scanners, source review, self-checks, editable copies,
+  managed uninstall/revert and credits.
 - **Rules & Playbooks:** review and batch-import compatible YARA data and
   declarative SOAR tactics; validate, sample-test, activate and roll back.
 - **Suite Map · 3D:** orbit, zoom and select modules, EventBus, drives,
@@ -132,6 +133,7 @@ response authority and actual live coverage differ.
 | Windows signed installed release | [Check Releases for an accepted signed package](https://github.com/Ag3nt47/AngeronaSuite/releases) | Use an available trusted-publisher `Angerona-<version>-win64.msix` and its adjacent SHA-256 file. It needs no Python or terminal setup. Signed Protect, native service acceptance and clean-VM release gates remain separate requirements. |
 | Windows source development | [Clone this repository](https://github.com/Ag3nt47/AngeronaSuite), then run `Install-Angerona.bat` as your ordinary user | Unelevated Observe/development in Chill Mode. Source startup cannot create signed installed Protect authority. |
 | macOS 14+ source | [Start-Angerona-macOS.command](Start-Angerona-macOS.command) | Observe preview; Intel, Apple Silicon and Rosetta detection. [Prerequisites](docs/NATIVE_INSTALL.md). |
+| Intel macOS 13 source development | [Start-Angerona-macOS.command](Start-Angerona-macOS.command) | Explicitly unsupported Observe/test build. The guided launcher offers compensating pinned YARA-X and cryptography source builds; it never claims installed Protect authority. [Limits and prerequisites](docs/NATIVE_INSTALL.md#intel-macos-13-ventura-unsupported-development-path). |
 | Linux source | [Start-Angerona-Linux.sh](Start-Angerona-Linux.sh) | Observe with optional explicitly configured eBPF. [Prerequisites and native scope](docs/NATIVE_INSTALL.md). |
 
 **Estimated download and disk space.** These planning ranges cover the app and
@@ -145,22 +147,22 @@ and separate installation staging require additional space.
 | macOS source setup | 0.50–0.75 GB | 1.5–3 GB |
 | Linux source setup | 0.30–0.50 GB | 1–2 GB |
 
-## Current development: v1.15.2
+## Current development: v1.16.1
 
 **Source preview.** A genuine Source Observe network-containment gap remains
 open. Earlier controlled response validation and a combined SpywareGuard/Zero-Breach
 run remain dated evidence. That scan had findings and incomplete coverage; it
 is not a clean-PC verdict or live acceptance of this maintenance revision.
 Controlled results and remaining coverage limits are documented in the
-[current release notes](docs/releases/v1.15.2.md).
+[current release notes](docs/releases/v1.16.1.md).
 
-Further reading: [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [current release notes](docs/releases/v1.15.2.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
+Further reading: [13 November security review and remaining exposure](docs/releases/security-worklist-review-2026-11-13.md) · [current release notes](docs/releases/v1.16.1.md) · [earlier 1.15 security summary (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/docs/releases/Angerona_1.15_Security_Patch_Summary.docx) · [Master Manual (Word)](https://github.com/Ag3nt47/AngeronaSuite/raw/refs/heads/main/Angerona_Master_Manual.docx)
 
 The downloadable Word/PDF manual is the earlier **1.15.0 / 9 November** edition.
-The [current source companion](docs/releases/v1.15.2.md) and
+The [current source companion](docs/releases/v1.16.1.md) and
 [readable manual introduction](docs/master-manual.md) explain the current source changes.
 
-## What's new in 1.15.2
+## What's new in 1.16.1
 
 - **Source-session STOP:** the ordinary Windows desktop app coordinates
   shutdown with its own admitted watchdogs and scanner, separately from installed
@@ -172,12 +174,34 @@ The [current source companion](docs/releases/v1.15.2.md) and
   lock is not a Windows security boundary or installed-service authorization.
 - **Verified cleanup:** retained native process ownership and real worker exit
   determine completion. An unavailable or incomplete cleanup remains visible.
-  See [scope and validation](docs/releases/v1.15.2.md).
+  See [scope and validation](docs/releases/v1.16.1.md).
 
 The pre-bridge targeted checks passed **682 tests with 2 skips**. The canonical
 launcher bridge is being corrected; fresh bridge and live-family STOP acceptance
 remain pending. These results do not certify the changed bridge or installed
-Protect. Current results belong to their [recorded revision and scope](docs/releases/v1.15.2.md#validation).
+Protect. Current results belong to their [recorded revision and scope](docs/releases/v1.16.1.md#validation).
+
+## Previous source preview: 1.16.0
+
+- **Cross-platform connection performance:** System Pulse now identifies the
+  active Wi-Fi, Ethernet or other interface and makes a bounded speed estimate
+  after startup and once per hour. The CPU performance card shows download and
+  upload Mbps plus live utilization relative to the last measured capacity.
+- **Daily maintained-tool review:** an opt-in daily check follows eight fixed
+  canonical GitHub repositories. Angerona records immutable review requests for
+  newer supported data and reports external products without silently replacing
+  their servers or agents.
+- **Reviewed managed scanner update:** Zero Breach Toolkit v3.0.2 is bundled by
+  exact commit, asset size and SHA-256. Angerona may prepare and metadata-test it
+  automatically only while GitHub's stable release matches that reviewed pin;
+  an unreviewed future release remains held for a new Angerona review.
+- **Visible privacy and traffic limits:** speed-test and GitHub metadata egress,
+  bounded transfer sizes, opt-in settings and the environment disable switch are
+  documented in [Privacy](PRIVACY.md) and the [1.16.0 notes](docs/releases/v1.16.0.md).
+- **Platform scope remains explicit:** the shared feature code supports Windows,
+  macOS and Linux, while Windows Protect and macOS/Linux Observe or Detect retain
+  their existing authority differences. A speed result or tool self-test is not
+  a protection percentage, host-clean verdict or blanket integration claim.
 
 ## Previous maintenance: 1.15.1
 
@@ -358,7 +382,7 @@ wheel manifests. OS prerequisites, Intel macOS
 Xcode/Rust/OpenSSL builds, Git history, retained backups and evidence are extra.
 Windows source repair requires **5 GiB free**: a 2 GiB reserve plus 3 GiB working
 capacity. Its one retained previous runtime can add another runtime's disk use.
-The bundled Zero Breach engine is about **0.97 MB**, plus its retained licenses
+The bundled Zero Breach v3.0.2 engine is about **7.9 MB**, plus its retained licenses
 and notices. Optional managed scans require a separate **3 GiB free-space
 reserve plus the working-data allowance**; a scanner storage hold does not block
 normal Angerona startup.
@@ -417,6 +441,13 @@ deployment prerequisites. [Architecture](docs/architecture.md) · [Security](SEC
 
 Cloud integrations are optional and off by default. Optional AI, intelligence,
 fleet and witness integrations have their own endpoint and consent boundaries.
+System Pulse makes a bounded 2 MiB download / 512 KiB zero-byte upload speed
+estimate at dashboard startup and hourly; it can be disabled with
+`ANGERONA_SPEED_TEST_DISABLED=1` as documented in [Privacy](PRIVACY.md).
+When the daily GitHub preference is enabled, Angerona also checks every
+maintained GitHub-tool repository. The exact reviewed Zero Breach release may
+be prepared and self-tested automatically; newer inert data commits create a
+review request, while external server products are reported rather than replaced.
 The separately controlled public GitHub fallback for source startup defaults on;
 it downloads verified public code and uploads no host evidence or preserved edits.
 Manual AI consultation shows a bounded sanitized preview before explicit Send.

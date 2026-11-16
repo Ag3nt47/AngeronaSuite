@@ -354,7 +354,7 @@ def add_workflows(doc):
         for text in paragraphs:
             para(doc, text)
         if index == 2:
-            para(doc, "Upstream references and licensing context: [Zero-Breach Toolkit](https://github.com/interplains/zero-breach-toolkit), [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team), [SigmaHQ](https://github.com/SigmaHQ/sigma), [Sysmon Modular](https://github.com/olafhartong/sysmon-modular), [YARA-X](https://github.com/virustotal/yara-x), [Apache Caldera](https://github.com/apache/caldera), [Velociraptor](https://github.com/Velocidex/velociraptor), and [Wazuh](https://github.com/wazuh/wazuh). Retain the selected pinned source and its own license; project inclusion is not an endorsement or complete platform integration.")
+            para(doc, "Upstream references and licensing context: [Zero-Breach Toolkit](https://github.com/interplains/zero-breach-toolkit), [Atomic Red Team](https://github.com/redcanaryco/atomic-red-team), [SigmaHQ](https://github.com/SigmaHQ/sigma), [Sysmon Modular](https://github.com/olafhartong/sysmon-modular), [YARA-X](https://github.com/virustotal/yara-x), [MITRE Caldera](https://github.com/mitre/caldera), [Velociraptor](https://github.com/Velocidex/velociraptor), and [Wazuh](https://github.com/wazuh/wazuh). Retain the selected pinned source and its own license; project inclusion is not an endorsement or complete platform integration.")
         if index in demos:
             add_demo(doc, demos[index])
         if index == 2:

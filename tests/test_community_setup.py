@@ -112,6 +112,7 @@ def test_new_controls_are_grouped_once_and_maintained_tools_keep_existing_keys()
     mapped = {field.key: field for field in step.fields}
     assert set(KEYS) <= set(mapped)
     assert {"github_tools_enabled", "github_tools_auto_prepare", "github_tools_allow_download",
+            "github_tools_daily_update_enabled",
             "github_tools_job_limit_mib", "github_tools_report_limit_mib", "github_tools_report_count",
             "github_tools_timeout_seconds"} <= set(mapped)
     assert all(sum(field.key == key for page in setup.STEPS for field in page.fields) == 1 for key in mapped)

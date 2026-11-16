@@ -1,0 +1,9 @@
+{
+  "schema": "angerona.macos-support-pin/v1",
+  "repository": "Ag3nt47/Angerona-macOS-Support",
+  "commit": "d7e4b3d4d4adf32ac0cfa27aec0e1d20380b8eb0",
+  "version": "1.0.0",
+  "manifest_sha256": "b3a23f68c9d35c85a04cfc079bbe0c1d601d5d9b4872bd25256dc6223c0a3f87",
+  "manifest_size": 5486,
+  "module_trust": "unsigned-hash-pinned"
+}

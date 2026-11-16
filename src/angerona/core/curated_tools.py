@@ -47,17 +47,17 @@ from angerona.core.startup_recovery import private_directory, private_repair_fil
 
 
 ZERO_BREACH = {
-    "id": "zero-breach", "name": "Zero Breach Toolkit", "version": "0.1.10",
+    "id": "zero-breach", "name": "Zero Breach Toolkit", "version": "3.0.2",
     "repository": "https://github.com/interplains/Zero-Breach-Toolkit",
     "url": "https://github.com/interplains/Zero-Breach-Toolkit",
-    "release": "https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10",
-    "commit": "81bd556ba604685dbd1c0ecb48138c10f43cccf8",
-    "sha256": "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3",
-    "bytes": 968987, "license": "Apache-2.0",
+    "release": "https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v3.0.2",
+    "commit": "2525377788feb8335052ba08981f37239091307a",
+    "sha256": "0b6df5f02c6b13256b735bfb55c1ef0a31ff0c762550910be9f66b4f5090dafb",
+    "bytes": 7879062, "license": "Apache-2.0",
 }
-_ASSET = ZERO_BREACH["repository"] + "/releases/download/v0.1.10/zero-breach-toolkit.py"
+_ASSET = ZERO_BREACH["repository"] + "/releases/download/v3.0.2/zero-breach-toolkit.py"
 _SOURCE = "https://raw.githubusercontent.com/interplains/Zero-Breach-Toolkit/" + ZERO_BREACH["commit"] + "/"
-_RELEASE_BASE = ZERO_BREACH["repository"] + "/releases/download/v0.1.10/"
+_RELEASE_BASE = ZERO_BREACH["repository"] + "/releases/download/v3.0.2/"
 _BUNDLE_FILES = frozenset((
     "engine.py", "LICENSE", "NOTICE", "PRIVACY.md", "iocs/LICENSE.md",
     "third_party/candiru/README.md", "third_party/candiru/LICENSE-DRL-1.1.txt",
@@ -68,7 +68,7 @@ _BUNDLE_FILES = frozenset((
 ))
 _CREDITS = (
     {"name": "archivegenocide.com / interplains", "url": ZERO_BREACH["repository"],
-     "version": "0.1.10", "license": "Apache-2.0", "notice": "Toolkit code: LICENSE and NOTICE."},
+     "version": "3.0.2", "license": "Apache-2.0", "notice": "Toolkit code: LICENSE and NOTICE."},
     {"name": "Zero Breach indicator collection", "url": _SOURCE + "iocs/LICENSE.md",
      "license": "CC0-1.0", "notice": "Curated indicator data; original research providers retain their credits."},
     {"name": "Microsoft Threat Intelligence Center (MSTIC)",
@@ -92,7 +92,8 @@ _SINGLE_JOB = threading.Lock()
 _HELD_CUSTODY = []
 _HEX = re.compile(r"[0-9a-f]{32}")
 _SHA = re.compile(r"[0-9a-f]{64}")
-_UPSTREAM_VERSIONS = frozenset(("0.1.10", "0.1.10 (single-file build)"))
+_UPSTREAM_VERSIONS = frozenset(("3.0.2", "3.0.2 (single-file build)"))
+_LEGACY_ZERO_BREACH_VERSIONS = frozenset(("0.1.10",))
 
 
 class ToolError(RuntimeError):
@@ -139,6 +140,50 @@ class ToolWorkStorageHeld(ToolError):
             "working_bytes": working_bytes, "required_bytes": required,
             "free_bytes": free_bytes, "tool_worker_started": False,
             "automatic_deletion": False}
+
+
+class _PosixExitWitness:
+    """Observe one child exit without reaping its process-group leader."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self._queue = None
+        self._exited = False
+        if all(hasattr(os, key) for key in ("waitid", "WNOWAIT", "WEXITED")):
+            self._kind = "waitid"
+            return
+        if sys.platform == "darwin":
+            import select
+            if all(hasattr(select, key) for key in (
+                "kqueue", "kevent", "KQ_FILTER_PROC", "KQ_EV_ADD", "KQ_EV_ENABLE", "KQ_NOTE_EXIT",
+            )):
+                self._kind = "kqueue"
+                self._queue = select.kqueue()
+                event = select.kevent(
+                    pid,
+                    filter=select.KQ_FILTER_PROC,
+                    flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+                    fflags=select.KQ_NOTE_EXIT,
+                )
+                self._queue.control([event], 0, 0)
+                return
+        raise ToolError("This platform cannot retain unreaped process-group identity for the scanner.")
+
+    def exited(self) -> bool:
+        if self._exited:
+            return True
+        if self._kind == "waitid":
+            self._exited = os.waitid(
+                os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT,
+            ) is not None
+        else:
+            self._exited = bool(self._queue.control(None, 1, 0))
+        return self._exited
+
+    def close(self) -> None:
+        if self._queue is not None:
+            self._queue.close()
+            self._queue = None
 
 
 class ToolOperation:
@@ -629,7 +674,8 @@ def _catalog(bundle: Path) -> dict:
             raise ToolError("The curated catalog contains an unknown or duplicate file.")
         names.add(item["path"])
         size = item.get("bytes", item.get("size"))
-        if type(size) is not int or not 0 < size <= 2 * 1024**2 or not _SHA.fullmatch(str(item.get("sha256", ""))):
+        limit = MAX_ENGINE_BYTES if item["path"] == "engine.py" else 2 * 1024**2
+        if type(size) is not int or not 0 < size <= limit or not _SHA.fullmatch(str(item.get("sha256", ""))):
             raise ToolError("The curated catalog file bounds are invalid.")
         if item["path"] == "engine.py" and (size != ZERO_BREACH["bytes"] or item["sha256"] != ZERO_BREACH["sha256"]):
             raise ToolError("The curated scanner pin changed.")
@@ -1108,8 +1154,30 @@ class CuratedToolService:
                 if _total + preserved_size > MAX_ENGINE_BYTES:
                     raise ToolError("The two-version managed scanner cache reached its byte limit.")
             versions = [path for path, _info in rows if path.parent == engines]
-            if any(path.name not in {ZERO_BREACH["version"]} for path in versions):
-                raise ToolError("Unknown or previous tool files are preserved; review them before preparing another version.")
+            previous = [path for path in versions if path.name != ZERO_BREACH["version"]]
+            if len(previous) > 1 or any(path.name not in _LEGACY_ZERO_BREACH_VERSIONS for path in previous):
+                raise ToolError("Unknown or multiple previous tool versions require review before preparing another version.")
+            if previous:
+                _private(preserved)
+                preserved_roots = [path for path, _info in _inventory(
+                    preserved, limit=128, byte_limit=MAX_ENGINE_BYTES,
+                )[0] if path.parent == preserved]
+                if preserved_roots:
+                    raise ToolError("A previous scanner copy is already preserved; review it before updating again.")
+                source = previous[0]
+                target = preserved / uuid.uuid4().hex
+                source_identity = (source.stat().st_dev, source.stat().st_ino)
+                with _hold_plain_directories(engines, preserved):
+                    if (source.stat().st_dev, source.stat().st_ino) != source_identity:
+                        raise ToolError("Previous scanner identity changed before preservation.")
+                    os.rename(source, target)
+                    if (target.stat().st_dev, target.stat().st_ino) != source_identity:
+                        raise ToolError("Previous scanner preservation requires review.")
+                progress("Preserved the previous scanner version for rollback review…")
+                rows, _total = _inventory(engines, limit=128, byte_limit=MAX_ENGINE_BYTES)
+                _preserved_rows, preserved_size = _inventory(
+                    preserved, limit=128, byte_limit=MAX_ENGINE_BYTES,
+                )
             destination = engines / ZERO_BREACH["version"]
             if destination.exists():
                 expected = {item["path"]: item for item in catalog["files"]}
@@ -1390,8 +1458,6 @@ class CuratedToolService:
         state.files[request_path] = {"bytes": len(request_raw), "sha256": hashlib.sha256(request_raw).hexdigest()}
         command = self._command(image, request_path)
         env = self._environment(job, metadata_only=metadata_only or request.phone or request.mode == "targeted")
-        if os.name != "nt" and not all(hasattr(os, key) for key in ("waitid", "WNOWAIT", "WEXITED")):
-            raise ToolError("This platform cannot retain unreaped process-group identity for the scanner.")
         kwargs = dict(cwd=job, env=env, stdin=subprocess.PIPE,
                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                       close_fds=True, bufsize=0)
@@ -1403,6 +1469,7 @@ class CuratedToolService:
             kwargs["start_new_session"] = True
         process = None
         job_owner = None
+        posix_witness = None
         pumps = []
         reason, gap = "complete", ""
         native_generations, native_observation_gaps = [], 0
@@ -1460,6 +1527,8 @@ class CuratedToolService:
                     from angerona.resilience._selftest_environment import _resume_windows_process
                     operation.check()
                     _resume_windows_process(process)
+                else:
+                    posix_witness = _PosixExitWitness(process.pid)
                 pumps = [_OutputPump(process.stdout, job / "stdout.log"), _OutputPump(process.stderr, job / "stderr.log")]
                 handshake = dict(nonce=nonce, pid=process.pid, birth=job_owner.birth if job_owner else "",
                                  request_sha256=hashlib.sha256(request_raw).hexdigest())
@@ -1478,7 +1547,7 @@ class CuratedToolService:
                                 sample = {"cpu_time": last_cpu[1], "rss_mib": None,
                                           "resource_gap": "Owned job resource sample unavailable."}
                         else:
-                            exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+                            exited = posix_witness.exited()
                             sample = {"cpu_time": None, "rss_mib": None, "read_bytes": None, "write_bytes": None,
                                       "priority": "unavailable", "requested_priority": request.priority,
                                       "resource_gap": "POSIX child limits are per process; aggregate CPU rate and scheduling priority are not attested."}
@@ -1533,7 +1602,15 @@ class CuratedToolService:
                                 os.killpg(process.pid, signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
+                            except PermissionError:
+                                # Darwin returns EPERM for a process group whose
+                                # only member is the retained zombie leader. A
+                                # live same-user child would make killpg succeed.
+                                if posix_witness is None or not posix_witness.exited():
+                                    raise
                             process.wait(timeout=5)
+                            if posix_witness is not None:
+                                posix_witness.close()
                         for pump in pumps:
                             pump.finish()
                         observe_progress()
@@ -1541,7 +1618,7 @@ class CuratedToolService:
                         state.native_state = "unresolved"
                         # Every platform/error branch retains its kernel
                         # witnesses and seals until retirement is resolved.
-                        _HELD_CUSTODY.append((job_owner, process, pumps, seals.pop_all()))
+                        _HELD_CUSTODY.append((job_owner or posix_witness, process, pumps, seals.pop_all()))
                         raise
                     state.native_state = "retired"
                     with self._lock:
@@ -1842,7 +1919,7 @@ class CuratedToolService:
                 if outcome["exit_code"] != 0 or outcome["state"] != "complete" or not valid:
                     raise ToolError("The pinned scanner did not return its expected metadata contract.")
                 return self._save(root, job, dict(outcome, state="verified", message="Pinned scanner metadata verified; no host scan was run.",
-                                                  details="Verified schema 1.6 and toolkit version 0.1.10 in a synthetic profile.", coverage="Not scanned.", findings=[]))
+                                                  details="Verified schema 1.6 and toolkit version 3.0.2 in a synthetic profile.", coverage="Not scanned.", findings=[]))
 
     def open_tool(self, operation: ToolOperation, progress=lambda _message: None):
         operation.check()

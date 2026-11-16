@@ -346,6 +346,19 @@ def test_unknown_cache_entry_holds_admission_without_deletion(tmp_path):
     assert preserved.read_text() == "custom code"
 
 
+def test_reviewed_upgrade_preserves_the_known_legacy_version_for_rollback(tmp_path):
+    instance = service(tmp_path)
+    root = instance._root()
+    legacy = root / "engines" / "0.1.10"
+    tools._private(legacy)
+    tools._atomic_bytes_write(legacy / "operator-note.txt", b"preserve legacy review", root=root)
+    result = instance.prepare(tools.ToolOperation(), allow_download=False)
+    preserved = list((root / "preserved").glob("*/operator-note.txt"))
+    assert result["state"] == "ready"
+    assert len(preserved) == 1 and preserved[0].read_bytes() == b"preserve legacy review"
+    assert not legacy.exists()
+
+
 def test_closed_scope_arguments_never_forward_shell_or_update_flags(tmp_path):
     target = tmp_path / "name with spaces & marker.txt"
     target.write_text("synthetic input")
@@ -373,7 +386,7 @@ def test_phone_input_uses_phone_flag_and_never_password_argument(tmp_path):
 def report_document(*, state="completed", count=0, gaps=(), reference=False):
     detail = "MAL_DevilsTongue_HijackDll; author: MSTIC; license: DRL-1.1"
     hit = {"indicator": "synthetic.invalid", "evidence": "referenced" if reference else "file-content", "detail": detail}
-    return {"schema_version": "1.6", "tool": {"name": "zero-breach-toolkit", "version": "0.1.10"},
+    return {"schema_version": "1.6", "tool": {"name": "zero-breach-toolkit", "version": "3.0.2"},
             "scope": {"scanned": True, "cancelled": False}, "scan_state": state,
             "verdict": {"status": "untrusted status", "hits_total": count, "findings_total": 0 if reference else count,
                         "references_total": count if reference else 0, "withdrawn_total": 0, "gaps": list(gaps)},

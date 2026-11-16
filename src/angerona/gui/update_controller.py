@@ -17,6 +17,7 @@ from shiboken6 import isValid
 from angerona.gui.async_snapshot import AsyncSnapshot
 from angerona.gui.action_progress import ActionActivities
 from angerona.updater.github_updater import UpdateReport, check_installed_updates
+from angerona.updater.github_tool_updates import check_and_apply_github_tools
 from angerona.updater.source_stage import prepare_source_update
 
 
@@ -26,6 +27,7 @@ class _Delivery:
     origin: str
     epoch: int
     serial: int
+    tools: object | None = None
 
 
 def _revoke(event: threading.Event, *_args) -> None:
@@ -33,8 +35,25 @@ def _revoke(event: threading.Event, *_args) -> None:
     event.set()
 
 
-def _read_check(state: Path, root: Path, origin: str, epoch: int, serial: int) -> _Delivery:
-    return _Delivery(check_installed_updates(state, root, force=origin == "manual"), origin, epoch, serial)
+def _read_check(
+    state: Path,
+    root: Path,
+    origin: str,
+    epoch: int,
+    serial: int,
+    data_root: Path,
+    tools_enabled: bool,
+    allow_download: bool,
+) -> _Delivery:
+    report = check_installed_updates(state, root, force=origin == "manual")
+    tools = None
+    if tools_enabled and report.status in {"checked", "partial"}:
+        tools = check_and_apply_github_tools(
+            data_root,
+            allow_download=allow_download,
+            apply_managed=True,
+        )
+    return _Delivery(report, origin, epoch, serial, tools)
 
 
 def _read_stage(root: Path, staging: Path, target: str, cancelled: threading.Event) -> dict:
@@ -488,6 +507,7 @@ class UpdateController(QObject):
     storage_busy_changed = Signal(bool)
     status_changed = Signal(str)
     check_busy_changed = Signal(bool)
+    tool_updates_ready = Signal(object)
 
     def __init__(self, config, source_root: Path, parent=None) -> None:
         super().__init__(parent)
@@ -504,7 +524,7 @@ class UpdateController(QObject):
         self._origin = "daily"
         self._epoch = 0
         self._manual_claimed = False
-        self._daily_allowed = bool(getattr(config, "github_daily_check_enabled", False))
+        self._daily_allowed = self._daily_preference()
         self._target = ""
         self._closed = False
         self._cancelled = threading.Event()
@@ -559,6 +579,12 @@ class UpdateController(QObject):
     def alive(self) -> bool:
         return not self._closed and not self._cancelled.is_set() and isValid(self)
 
+    def _daily_preference(self) -> bool:
+        return bool(
+            getattr(self._config, "github_daily_check_enabled", False)
+            or getattr(self._config, "github_tools_daily_update_enabled", False)
+        )
+
     def set_daily_preference(self, enabled: bool) -> None:
         """Suspend automatic delivery immediately while an opt-out is staged."""
         if not self.alive():
@@ -577,13 +603,13 @@ class UpdateController(QObject):
     def preferences_changed(self, *, check_due: bool = True) -> None:
         if not self.alive():
             return
-        self.set_daily_preference(bool(getattr(self._config, "github_daily_check_enabled", False)))
+        self.set_daily_preference(self._daily_preference())
         if check_due:
             self.check_daily()
 
     def check_daily(self) -> None:
-        if (self.alive() and self._daily_allowed
-                and bool(getattr(self._config, "github_daily_check_enabled", False)) and not self._check.busy):
+        if (self.alive() and self._daily_allowed and self._daily_preference()
+                and not self._check.busy):
             self._origin = "daily"
             self._manual_claimed = False
             self._check.request()
@@ -602,13 +628,17 @@ class UpdateController(QObject):
     def _prepare_check(self):
         self._serial += 1
         return partial(_read_check, Path(self._config.data_dir) / "github-updates",
-                       self._source_root, self._origin, self._epoch, self._serial)
+                       self._source_root, self._origin, self._epoch, self._serial,
+                       Path(self._config.data_dir),
+                       bool(getattr(self._config, "github_tools_enabled", False)
+                            and getattr(self._config, "github_tools_daily_update_enabled", False)),
+                       bool(getattr(self._config, "github_tools_allow_download", True)))
 
     def prompt_eligible(self, report: UpdateReport) -> bool:
         return (self.alive() and report is self._last_report and self._last_serial == self._serial
                 and (self._last_origin == "manual" or (
                     self._last_epoch == self._epoch and self._daily_allowed
-                    and bool(getattr(self._config, "github_daily_check_enabled", False)))))
+                    and self._daily_preference())))
 
     def manual_report(self, report: UpdateReport) -> bool:
         return self.prompt_eligible(report) and self._last_origin == "manual"
@@ -629,7 +659,7 @@ class UpdateController(QObject):
             self._check.request(invalidate=True)
             return
         if not manual and (delivery.epoch != self._epoch or not self._daily_allowed
-                           or not bool(getattr(self._config, "github_daily_check_enabled", False))):
+                           or not self._daily_preference()):
             if not self._download.busy:
                 self.status_changed.emit("Automatic update check completed after opt-out; no report or prompt was delivered.")
             return
@@ -638,10 +668,15 @@ class UpdateController(QObject):
         self._last_origin = "manual" if manual else "daily"
         self._last_epoch = delivery.epoch
         self._last_serial = delivery.serial
-        self.status_changed.emit(report.summary())
+        summary = report.summary()
+        if delivery.tools is not None:
+            summary += " " + delivery.tools.summary()
+        self.status_changed.emit(summary)
         if not self.prompt_eligible(report):
             return
         self.report_ready.emit(report)
+        if delivery.tools is not None and self.prompt_eligible(report):
+            self.tool_updates_ready.emit(delivery.tools)
         if self.prompt_eligible(report) and report.available:
             self.update_available.emit(report)
 

@@ -19,6 +19,7 @@ def test_curated_scan_choices_and_lifted_case_survive_reload(tmp_path, monkeypat
     config = Config(data_dir=tmp_path)
     config.ollama_model = "retain-operator-model"
     config.github_tools_allow_download = False
+    config.github_tools_daily_update_enabled = True
     config.spyware_scan_priority = "high"
     config.spyware_scan_background_percent = 5
     config.breach_lifted_cases = ["a" * 32]
@@ -26,6 +27,7 @@ def test_curated_scan_choices_and_lifted_case_survive_reload(tmp_path, monkeypat
     loaded = _load_from(tmp_path, monkeypatch)
     assert loaded.ollama_model == "retain-operator-model"
     assert loaded.github_tools_allow_download is False
+    assert loaded.github_tools_daily_update_enabled is True
     assert loaded.spyware_scan_priority == "high"
     assert loaded.spyware_scan_background_percent == 5
     assert loaded.breach_lifted_cases == ["a" * 32]
@@ -33,6 +35,7 @@ def test_curated_scan_choices_and_lifted_case_survive_reload(tmp_path, monkeypat
 
 @pytest.mark.parametrize("name,value", [
     ("github_tools_allow_download", "false"),
+    ("github_tools_daily_update_enabled", "true"),
     ("breach_auto_isolate_enabled", 1),
     ("github_tools_timeout_seconds", 901),
     ("spyware_scan_timeout_seconds", 29),

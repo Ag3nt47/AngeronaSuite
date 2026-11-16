@@ -1,11 +1,11 @@
 # Project Angerona (AngeronaSuite) - llms.txt
 
-Version: 1.15.2
+Version: 1.16.1
 Date: 2026-11-16
 License: MIT
 Repository: https://github.com/Ag3nt47/AngeronaSuite
 
-## LATEST (v1.15.2 — source STOP and session controls)
+## LATEST (v1.16.1 — source STOP and session controls)
 
 - Ordinary-user Windows desktop source STOP uses an independently admitted source
   epoch; it never provisions or bypasses installed control authority. Explicit
@@ -18,12 +18,26 @@ Repository: https://github.com/Ag3nt47/AngeronaSuite
 - Retain exact companion/native/worker custody before persisting STOP and fencing
   work. GUI completion reads cached proof; native waits stay on workers. Unknown
   retirement stays incomplete. Never kill unrelated Python or shared AI servers.
-- See docs/releases/v1.15.2.md for current validation and remaining boundaries.
+- See docs/releases/v1.16.1.md for current validation and remaining boundaries.
   Do not reuse prior hosted results as acceptance for this change.
 - The pre-bridge target cohort passed 682 tests with 2 skips. A canonical launcher
   bridge correction, its regression checks, and a fresh live-family STOP remain
   pending. The earlier native-token private protocol check is not live dashboard,
   complete companion retirement, or signed installed Protect acceptance.
+
+## PREVIOUS (v1.16.0 — network performance and maintained-tool updates)
+
+- System Pulse identifies the active connection type and makes a bounded speed
+  estimate after dashboard startup and hourly. It reports download/upload Mbps
+  and utilization relative to measured capacity. These are not protection
+  percentages or internet-service guarantees.
+- An opt-in daily check queries eight fixed canonical GitHub repositories. The
+  reviewed Zero Breach v3.0.2 scanner may be prepared and metadata-tested only
+  when the stable release exactly matches Angerona's pin. Inert data changes
+  create review requests; external products are reported, not silently replaced.
+- The shared implementation supports Windows, macOS and Linux. Platform
+  authority remains distinct: Windows Protect versus macOS/Linux Observe or
+  Detect. See `docs/releases/v1.16.0.md` for traffic, privacy and validation scope.
 
 ## PREVIOUS (v1.15.1 — security maintenance and watchdog modes)
 

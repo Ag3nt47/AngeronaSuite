@@ -8,6 +8,7 @@ HEADLESS=0
 AUTOSTART=1
 VOICE=0
 INTEL_BUILD=0
+UNSUPPORTED_MACOS_DEV=0
 
 for arg in "$@"; do
     case "$arg" in
@@ -15,8 +16,9 @@ for arg in "$@"; do
         --no-autostart) AUTOSTART=0 ;;
         --voice) VOICE=1 ;;
         --build-intel-crypto) INTEL_BUILD=1 ;;
+        --unsupported-macos-dev) UNSUPPORTED_MACOS_DEV=1 ;;
         --help)
-            printf '%s\n' "Usage: bash install-angerona.sh [--headless] [--no-autostart] [--voice] [--build-intel-crypto]"
+            printf '%s\n' "Usage: bash install-angerona.sh [--headless] [--no-autostart] [--voice] [--build-intel-crypto] [--unsupported-macos-dev]"
             exit 0
             ;;
         *) printf 'Unknown option: %s\n' "$arg" >&2; exit 2 ;;
@@ -30,6 +32,10 @@ fi
 
 case "$OS" in
     Linux)
+        if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+            printf '%s\n' "--unsupported-macos-dev is only valid on Intel macOS 13." >&2
+            exit 2
+        fi
         case "$(uname -m)" in
             x86_64|amd64) LOCK_TARGET=linux-x86_64 ;;
             *) printf '%s\n' "No reviewed Linux wheel lock exists for this architecture." >&2; exit 1 ;;
@@ -39,7 +45,13 @@ case "$OS" in
         ;;
     Darwin)
         case "$(uname -m)" in
-            arm64|aarch64) LOCK_TARGET=macos-arm64 ;;
+            arm64|aarch64)
+                if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+                    printf '%s\n' "The unsupported development path is only for Intel macOS 13." >&2
+                    exit 2
+                fi
+                LOCK_TARGET=macos-arm64
+                ;;
             x86_64|amd64)
                 if [ "$INTEL_BUILD" -ne 1 ]; then
                     printf '%s\n' "Intel macOS requires the reviewed native cryptography build. Run Start-Angerona-macOS.command for guided setup, or pass --build-intel-crypto with Xcode tools, Rust and OpenSSL installed." >&2
@@ -65,8 +77,17 @@ fi
 if [ "$OS" = Darwin ]; then
     MAC_MAJOR=$(sw_vers -productVersion | cut -d. -f1)
     if [ "$MAC_MAJOR" -lt 14 ]; then
-        printf '%s\n' "The reviewed GUI/YARA dependencies require macOS 14 Sonoma or newer." >&2
-        exit 1
+        if [ "$UNSUPPORTED_MACOS_DEV" -ne 1 ] || [ "$MAC_MAJOR" -ne 13 ] || [ "$LOCK_TARGET" != macos-x86_64-base ]; then
+            printf '%s\n' "The reviewed GUI/YARA dependencies require macOS 14 Sonoma or newer. Intel macOS 13 developers may explicitly pass --unsupported-macos-dev." >&2
+            exit 1
+        fi
+        printf '%s\n' \
+            "WARNING: installing an unsupported Intel macOS 13 source-development build." \
+            "It retains compatible Observe protections and builds YARA-X/cryptography locally." \
+            "It is not an accepted Protect installation and does not claim installed authority." >&2
+    elif [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+        printf '%s\n' "--unsupported-macos-dev is reserved for Intel macOS 13." >&2
+        exit 2
     fi
 fi
 
@@ -94,9 +115,9 @@ fi
 
 mkdir -p "$RUNTIME_DIR" "$DATA_DIR" "$HOME/.local/bin"
 chmod 700 "$RUNTIME_DIR" "$DATA_DIR"
-LOCK=$ROOT/release/locks/posix/source/$LOCK_TARGET.txt
-MANIFEST=$ROOT/release/locks/posix/source/$LOCK_TARGET.manifest.json
-if [ ! -f "$LOCK" ] || [ ! -f "$MANIFEST" ]; then
+BASE_LOCK=$ROOT/release/locks/posix/source/$LOCK_TARGET.txt
+BASE_MANIFEST=$ROOT/release/locks/posix/source/$LOCK_TARGET.manifest.json
+if [ ! -f "$BASE_LOCK" ] || [ ! -f "$BASE_MANIFEST" ]; then
     printf '%s\n' "Reviewed dependency lock is missing; refusing an unhashed install." >&2
     exit 1
 fi
@@ -129,6 +150,16 @@ trap cleanup_install EXIT
 trap 'exit 130' INT
 trap 'exit 143' HUP TERM
 mkdir "$WHEELHOUSE"
+LOCK=$BASE_LOCK
+MANIFEST=$BASE_MANIFEST
+if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+    LOCK=$STAGING/macos-x86_64-ventura-dev.txt
+    MANIFEST=$STAGING/macos-x86_64-ventura-dev.manifest.json
+    "$PYTHON" "$ROOT/tools/prepare_unsupported_macos_lock.py" \
+        --source-lock "$BASE_LOCK" --source-manifest "$BASE_MANIFEST" \
+        --output-lock "$LOCK" --output-manifest "$MANIFEST"
+    LOCK_TARGET=macos-x86_64-ventura-dev
+fi
 printf '%s\n' '[10%] Downloading exact reviewed dependencies. Your existing runtime is preserved.'
 
 # Downloading wheels does not execute package code. Hash mode binds each byte;
@@ -145,9 +176,18 @@ printf '%s\n' '[40%] Dependency hashes verified. Creating a separate runtime.'
 PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV/bin/python" -m pip install \
     --no-index --find-links "$WHEELHOUSE" --require-hashes --no-deps \
     -r "$LOCK"
-if [ "$LOCK_TARGET" = macos-x86_64-base ]; then
+if [ "$OS" = Darwin ] && [ "$INTEL_BUILD" -eq 1 ]; then
     printf '%s\n' '[55%] Building pinned cryptography for Intel; this can take several minutes.'
-    "$VENV/bin/python" "$ROOT/tools/build_macos_intel_crypto.py" --work "$STAGING/crypto-build"
+    if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+        "$VENV/bin/python" "$ROOT/tools/build_macos_intel_crypto.py" \
+            --work "$STAGING/crypto-build" --unsupported-development-target 13.0
+        printf '%s\n' '[65%] Building pinned YARA-X for Ventura; this can take several minutes.'
+        "$VENV/bin/python" "$ROOT/tools/build_macos_intel_yara.py" \
+            --work "$STAGING/yara-build"
+    else
+        "$VENV/bin/python" "$ROOT/tools/build_macos_intel_crypto.py" \
+            --work "$STAGING/crypto-build"
+    fi
 fi
 printf '%s\n' '[75%] Installing Angerona into the verified runtime.'
 PIP_DISABLE_PIP_VERSION_CHECK=1 "$VENV/bin/python" -m pip install \
@@ -171,8 +211,14 @@ fi
 "$VENV/bin/python" -c "from angerona.core.module_manager import ModuleManager; from angerona.core.eventbus import EventBus; from angerona.core.config import Config; m=ModuleManager(EventBus(), Config.load()); m.discover(); assert not m.discovery_errors, m.discovery_errors; print(f'Angerona ready: {len(m.modules)} platform capabilities discovered')"
 # This generation has passed validation. Never remove it after publishing a launcher.
 COMMITTED=1
-"$PYTHON" "$ROOT/tools/posix_install_support.py" publish --root "$ROOT" \
-    --runtime "$RUNTIME_DIR" --staging "$STAGING" --data "$DATA_DIR" --system "$OS"
+if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+    "$PYTHON" "$ROOT/tools/posix_install_support.py" publish --root "$ROOT" \
+        --runtime "$RUNTIME_DIR" --staging "$STAGING" --data "$DATA_DIR" --system "$OS" \
+        --unsupported-macos-dev
+else
+    "$PYTHON" "$ROOT/tools/posix_install_support.py" publish --root "$ROOT" \
+        --runtime "$RUNTIME_DIR" --staging "$STAGING" --data "$DATA_DIR" --system "$OS"
+fi
 
 if [ "$HEADLESS" -eq 1 ]; then
     UNIT_DIR=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
@@ -195,6 +241,9 @@ if [ "$HEADLESS" -eq 1 ]; then
 else
     printf '%s\n' "Start Angerona: $LAUNCHER"
     printf '%s\n' "Configure every supported option: $SETUP_LAUNCHER"
+    if [ "$UNSUPPORTED_MACOS_DEV" -eq 1 ]; then
+        printf '%s\n' "Mode: unsupported Intel macOS developer/Observe build; Protect authority is not claimed."
+    fi
 fi
 if [ "$OS" = Linux ] && ! command -v secret-tool >/dev/null 2>&1; then
     printf '%s\n' "Optional: install libsecret-tools to save connector/API credentials in your desktop keyring."

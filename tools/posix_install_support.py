@@ -15,12 +15,22 @@ def checked_text(value: str) -> str:
     return value
 
 
-def shell_launcher(python: str, root: str, data: str, *, setup: bool = False) -> str:
+def shell_launcher(
+    python: str, root: str, data: str, *, setup: bool = False,
+    unsupported_macos_dev: bool = False,
+) -> str:
     values = [shlex.quote(checked_text(value)) for value in (python, root, data)]
+    development_notice = ""
+    if unsupported_macos_dev:
+        development_notice = (
+            "export ANGERONA_UNSUPPORTED_MACOS_DEV=1\n"
+            "printf '%s\\n' 'Angerona: unsupported macOS developer/Observe build; Protect authority is not claimed.' >&2\n"
+        )
     return (
         "#!/bin/sh\n"
         f"export ANGERONA_HOME={values[1]}\n"
         f"export ANGERONA_DATA={values[2]}\n"
+        f"{development_notice}"
         f"exec {values[0]} -m angerona{' --setup' if setup else ''} \"$@\"\n"
     )
 
@@ -76,7 +86,10 @@ def remove_wheelhouse(runtime: Path, staging: Path) -> None:
     shutil.rmtree(wheelhouse)
 
 
-def publish(root: Path, runtime: Path, staging: Path, data: Path, system: str) -> None:
+def publish(
+    root: Path, runtime: Path, staging: Path, data: Path, system: str, *,
+    unsupported_macos_dev: bool = False,
+) -> None:
     if staging.resolve(strict=True).parent != runtime.resolve(strict=True):
         raise ValueError("runtime generation is outside the installation root")
     python = staging / "venv/bin/python"
@@ -85,8 +98,15 @@ def publish(root: Path, runtime: Path, staging: Path, data: Path, system: str) -
     launcher = Path.home() / ".local/bin/angerona"
     setup = launcher.with_name("angerona-setup")
     # Build and validate every payload before publishing the first entry point.
-    launch_text = shell_launcher(str(python), str(root), str(data))
-    setup_text = shell_launcher(str(python), str(root), str(data), setup=True)
+    if unsupported_macos_dev and system != "Darwin":
+        raise ValueError("unsupported macOS development marker is Darwin-only")
+    launch_text = shell_launcher(
+        str(python), str(root), str(data), unsupported_macos_dev=unsupported_macos_dev,
+    )
+    setup_text = shell_launcher(
+        str(python), str(root), str(data), setup=True,
+        unsupported_macos_dev=unsupported_macos_dev,
+    )
     if system == "Darwin":
         native = Path.home() / "Applications/Angerona.command"
         native_text = launch_text
@@ -128,6 +148,7 @@ def main() -> int:
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--system", choices=("Darwin", "Linux"), required=True)
     parser.add_argument("--unit", type=Path)
+    parser.add_argument("--unsupported-macos-dev", action="store_true")
     args = parser.parse_args()
     for value in (args.root, args.runtime, args.staging, args.data):
         checked_text(str(value))
@@ -138,7 +159,10 @@ def main() -> int:
     elif args.action == "clean-wheels":
         remove_wheelhouse(args.runtime, args.staging)
     elif args.action == "publish":
-        publish(args.root, args.runtime, args.staging, args.data, args.system)
+        publish(
+            args.root, args.runtime, args.staging, args.data, args.system,
+            unsupported_macos_dev=args.unsupported_macos_dev,
+        )
     else:
         if args.unit is None:
             parser.error("service requires --unit")

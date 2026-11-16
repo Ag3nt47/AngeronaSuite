@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.15.2 — source-session STOP and optional controls (2026-11-16)
+## 1.16.1 — source-session STOP and optional controls (2026-11-16)
 
 - Separate admitted ordinary-user Windows source STOP from signed, enrolled
   installed-service control. Source coordination grants no privileged authority
@@ -23,10 +23,47 @@
   verified newer-family supersession.
 - Make current readable-manual source notes reproducible through the exporter.
   Preserve the historical **1.15.0 / 9 November Word/PDF edition** and its body;
-  current workflows and limits are in the [1.15.2 source companion](docs/releases/v1.15.2.md).
+  current workflows and limits are in the [1.16.1 source companion](docs/releases/v1.16.1.md).
+
+## 1.16.0 — network performance and maintained-tool updates (2026-11-15)
+
+- Add a bounded cross-platform connection-speed estimate to System Pulse. It
+  runs after startup and hourly, identifies the active interface type, and shows
+  download/upload Mbps with live utilization percentages in the CPU performance
+  card and detail view.
+- Add an opt-in daily lifecycle for eight fixed canonical GitHub tool
+  repositories. Reviewed managed scanners can be prepared and metadata-tested;
+  inert data updates create immutable review requests; external products are
+  monitored without silently replacing their servers or agents.
+- Update the bundled Zero Breach Toolkit to reviewed v3.0.2 with its exact
+  upstream asset, license, notices, signature material and SHA-256 pin. Preserve
+  the recognized prior installation for rollback review and self-test the new
+  managed copy in a supervised process.
+- Document network egress, transfer bounds, configuration controls and the
+  distinction between speed capacity, utilization and protection posture.
+- Preserve Windows Protect versus macOS/Linux Observe or Detect boundaries.
+  Passing a metadata self-test does not authorize a host scan or arbitrary
+  upstream execution. See the [1.16.0 source-preview notes](docs/releases/v1.16.0.md).
 
 ## 1.15.1 — security maintenance and third-watchdog modes (2026-11-13)
 
+- Offer an optional macOS support pack during guided macOS setup. Nothing is
+  downloaded without consent; declining is remembered. The pack, published
+  separately as Ag3nt47/Angerona-macOS-Support, adds seven macOS-only
+  observe/detect modules that compensate for Windows-only capabilities and Mac
+  counterparts of the Windows operational scripts. Every file is pinned by
+  `release/macos-support-pack.json` and verified before installation. Its
+  modules are unsigned, so they load only when the module folder matches the
+  pin exactly, through the development override, with a reduced-security
+  notice at every start. Manage it with `tools/macos_support_pack.py`.
+- Add an explicit Intel macOS 13 unsupported developer/Observe install path.
+  The guided launcher detects Ventura, reuses or prompts for host prerequisites,
+  derives the compatible hash-locked wheel set, and builds pinned cryptography
+  50 and YARA-X 1.19.0 from verified source for deployment target 13. Launchers
+  retain a visible unsupported marker and never claim installed Protect authority.
+- Keep the macOS source quickstart open while Intel Command Line Tools and
+  Homebrew prerequisites are completed, and open Apple Software Update directly
+  when the reviewed macOS 14+ runtime requirement is not met.
 - Apply the reviewed recovery, source-update, authentication, alert and memory
   detection hardening described in the dated 29-item review below.
 - Bundle the native third watchdog with an optional ordinary-user unsigned mode,

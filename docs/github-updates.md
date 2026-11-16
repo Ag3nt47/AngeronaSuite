@@ -1,8 +1,17 @@
 # GitHub update checks and preserving custom code
 
-Current development version: **v1.15.0**. Source updates have separate checks,
+Current development version: **v1.16.0**. Source updates have separate checks,
 candidate preparation, review and activation decisions. Downloading or preparing
 a candidate does not authorize applying it or stopping the running suite.
+
+The separate **Check maintained GitHub tools once a day** preference checks the
+fixed repository list described in the [1.16.0 notes](releases/v1.16.0.md).
+Zero Breach may be prepared and metadata-tested only when its stable release
+exactly matches Angerona's reviewed pin. New compatible data commits create an
+immutable review request. Caldera, Velociraptor and Wazuh remain external
+products: Angerona reports their upstream revision but does not replace or run
+their servers or agents. The same bounded operation is available to an external
+scheduler through `python tools/daily_github_tool_updates.py`.
 
 **Historical validation:** daily/settings/setup/manual controls passed 179 focused cases
 with one optional native-8.3 skip. Frozen full R10 passed 7,554/0/49 for its

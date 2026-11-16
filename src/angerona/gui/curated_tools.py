@@ -35,7 +35,7 @@ from angerona.gui.progress_ring import ProgressRing
 from angerona.gui.theme import set_function_role
 
 _PROJECT = "https://github.com/interplains/Zero-Breach-Toolkit"
-_RELEASE = _PROJECT + "/releases/tag/v0.1.10"
+_RELEASE = _PROJECT + "/releases/tag/v3.0.2"
 _COMMUNITY_SETTINGS = {
     "community_rules_enabled": ("Use individually activated community YARA rules", False),
     "community_playbooks_enabled": ("Use individually activated community SOAR playbooks", False),
@@ -533,7 +533,7 @@ class CuratedToolsController(QObject):
         self._terminal_lock = threading.Lock()
         self._terminal_frame = None
         self._snapshot = dict(state="not_loaded", message="Ready to check the pinned scanner.",
-                              installed=False, verified=False, version="0.1.10", busy=False)
+                              installed=False, verified=False, version="3.0.2", busy=False)
         self._timer = QTimer(self)
         self._timer.setInterval(100)
         self._timer.timeout.connect(self._drain)
@@ -3067,7 +3067,7 @@ class CuratedScannerWidget(QWidget):
         executable = state.get("execution_available") is not False
         enabled = bool(getattr(_config(self.controller.manager), "github_tools_enabled", True))
         summary = _match_summary(state)
-        self.status.setText(f"{_literal(state.get('state', 'unknown'), 80)} · v{_literal(state.get('version', '0.1.10'), 40)}\n"
+        self.status.setText(f"{_literal(state.get('state', 'unknown'), 80)} · v{_literal(state.get('version', '3.0.2'), 40)}\n"
                             + _literal(state.get("message"), 1200)
                             + ("\n" + summary if summary else ""))
         _set_enabled(self.install_button, not busy and enabled)

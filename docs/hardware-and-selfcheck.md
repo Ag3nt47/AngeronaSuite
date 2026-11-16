@@ -26,6 +26,16 @@ If the System Pulse card itself is hidden while the dashboard stays visible,
 its sampler can still serve the visible footer. Hiding or minimizing the whole
 window suspends that sampling timer.
 
+System Pulse also runs a bounded connection-speed estimate on its first visible
+sample and once per hour. This network operation stays in the card's owned
+background sampler, uses at most a 2 MiB HTTPS download and 512 KiB zero-byte
+upload per attempt, and never blocks the Qt presentation thread. The card shows
+the active connection class (Wi-Fi, Ethernet, VPN, cellular, virtual, or generic
+network), measured download/upload capacity, and live utilization as a
+percentage of the latest successful estimate. `ANGERONA_SPEED_TEST_DISABLED=1`
+disables the external estimate without disabling local CPU, RAM, interface, or
+traffic counters. See [Privacy](../PRIVACY.md) for the endpoint and data boundary.
+
 Slower views retain their previous data between updates. Manual initial reads
 and buttons keep their own response path. Cosmetics, ribbon motion and the
 30 Hz FPS sampler stop in quiet Chill. Other visible optional timers request an

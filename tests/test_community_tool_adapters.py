@@ -42,7 +42,7 @@ def test_constructor_and_specs_do_not_touch_files_or_network(tmp_path, monkeypat
     instance = adapter.CommunityToolService(tmp_path / "absent", catalog=catalog.GitHubToolCatalog(tmp_path / "absent-library"))
     rows = instance.tool_specs()
     assert len(rows) == 8 and not (tmp_path / "absent").exists()
-    assert next(row for row in rows if row["id"] == "caldera")["repository"] == "apache/caldera"
+    assert next(row for row in rows if row["id"] == "caldera")["repository"] == "mitre/caldera"
     rows[0]["authors"].append("fixture mutation")
     assert "fixture mutation" not in instance.tool_specs()[0]["authors"]
 

@@ -10231,9 +10231,9 @@ class SettingsDialog(QDialog):
         self._btn_check.clicked.connect(self._on_check_updates)
         repo_row.addWidget(self._btn_check)
         lay.addLayout(repo_row)
-        self._github_daily_check = QCheckBox("Check GitHub for updates once a day while Angerona is open (network)")
+        self._github_daily_check = QCheckBox("Check Angerona source and releases once a day while open (network)")
         self._github_daily_check.setChecked(bool(getattr(self._cfg, "github_daily_check_enabled", False)))
-        self._github_daily_check.setToolTip("Optional public GitHub metadata only. Prompts before downloading an isolated source candidate and preserves user edits. Static checks do not establish runtime health; activation remains held for a separate reviewed phase.")
+        self._github_daily_check.setToolTip("Checks canonical Angerona metadata. Prompts before downloading an isolated source candidate, preserves user edits, and keeps activation as a separate reviewed phase.")
         lay.addWidget(self._github_daily_check)
         self._update_status = QLabel("Update status has not been checked. Downloads preserve the running installation.")
         self._update_status.setTextFormat(Qt.PlainText)
@@ -10269,9 +10269,14 @@ class SettingsDialog(QDialog):
         self._github_tools_auto_prepare.setChecked(bool(getattr(self._cfg, "github_tools_auto_prepare", True)))
         self._github_tools_allow_download = QCheckBox("Allow verified downloads for missing scanner files")
         self._github_tools_allow_download.setChecked(bool(getattr(self._cfg, "github_tools_allow_download", True)))
+        self._github_tools_daily_update = QCheckBox("Check maintained GitHub tools daily; prepare and test reviewed managed updates")
+        self._github_tools_daily_update.setChecked(bool(getattr(self._cfg, "github_tools_daily_update_enabled", False)))
+        self._github_tools_daily_update.setToolTip("Checks all maintained repositories. Exact reviewed Zero-Breach updates may be prepared and metadata-tested; data packs request review and external servers are report-only.")
         for control in (self._github_tools_enabled, self._github_tools_auto_prepare,
-                        self._github_tools_allow_download):
+                        self._github_tools_allow_download, self._github_tools_daily_update):
             lay.addWidget(control)
+        if self._shared_update_controller is not None:
+            self._github_tools_daily_update.toggled.connect(self._on_daily_update_staged)
         tool_limits = QGridLayout()
         self._github_tool_limits = {}
         for row, (name, title, default, low, high) in enumerate((
@@ -12579,7 +12584,9 @@ class SettingsDialog(QDialog):
     def _on_daily_update_staged(self, enabled: bool) -> None:
         controller = self._shared_update_controller
         if controller is not None:
-            controller.set_daily_preference(enabled)
+            controller.set_daily_preference(
+                self._github_daily_check.isChecked() or self._github_tools_daily_update.isChecked(),
+            )
 
     def _detach_update_controller(self) -> None:
         controller = getattr(self, "_shared_update_controller", None)
@@ -12857,6 +12864,7 @@ class SettingsDialog(QDialog):
         candidate.github_tools_enabled = self._github_tools_enabled.isChecked()
         candidate.github_tools_auto_prepare = self._github_tools_auto_prepare.isChecked()
         candidate.github_tools_allow_download = self._github_tools_allow_download.isChecked()
+        candidate.github_tools_daily_update_enabled = self._github_tools_daily_update.isChecked()
         candidate.breach_auto_isolate_enabled = self._breach_auto_isolate.isChecked()
         for name, spin in self._github_tool_limits.items():
             setattr(candidate, name, spin.value())

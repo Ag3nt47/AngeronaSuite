@@ -580,6 +580,16 @@ class ModuleManager:
     def _external_classes(self) -> List[type]:
         if self._ugcap_deferred_discovery:
             return []
+        if self.platform == "macos":
+            # Optional, user-consented macOS support pack. Its unsigned,
+            # SHA-256-pinned modules are admitted only after the module folder
+            # matches the reviewed pin exactly, with a visible reduced-security
+            # notice; any mismatch or failure leaves the override off.
+            data_dir = getattr(self.config, "data_dir", None)
+            if data_dir is not None:
+                from angerona.core.data_paths import project_root
+                from angerona.platforms.macos.support_pack import apply_environment
+                apply_environment(project_root(), data_dir)
         # A-04: importing a drop-in executes arbitrary top-level Python with the
         # suite's elevated token. Keep the extensibility feature explicit opt-in,
         # then verify a detached manifest and source digest before Python ever

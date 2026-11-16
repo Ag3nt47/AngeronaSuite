@@ -13,8 +13,10 @@ import tarfile
 import pytest
 
 from tools import build_macos_intel_crypto as intel
+from tools import build_macos_intel_yara as yara
 from tools import check_native_gui as gui_probe
 from tools import posix_install_support as support
+from tools import prepare_unsupported_macos_lock as ventura_lock
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -121,6 +123,15 @@ def test_launcher_round_trips_shell_metacharacters_without_evaluation() -> None:
     assert '`touch marker`' in payload  # retained literal path text, inside shell quotes
 
 
+def test_unsupported_macos_launcher_keeps_visible_development_marker() -> None:
+    payload = support.shell_launcher(
+        "/runtime/python", "/source", "/data", unsupported_macos_dev=True
+    )
+    assert "export ANGERONA_UNSUPPORTED_MACOS_DEV=1" in payload
+    assert "unsupported macOS developer/Observe build" in payload
+    assert "Protect authority is not claimed" in payload
+
+
 @pytest.mark.parametrize("value", ["/tmp/a\nb", "/tmp/a\rb", "/tmp/a\x00b", ""])
 def test_launcher_rejects_control_characters(value: str) -> None:
     with pytest.raises(ValueError):
@@ -184,6 +195,28 @@ def test_exact_intel_base_lock_omits_only_separately_built_crypto() -> None:
     assert hashes == {entry["sha256"] for entry in intel_base["artifacts"]}
 
 
+def test_ventura_development_lock_omits_only_locally_built_yara(tmp_path: Path) -> None:
+    base = ROOT / "release/locks/posix/source"
+    output_lock = tmp_path / "ventura.txt"
+    output_manifest = tmp_path / "ventura.manifest.json"
+    count = ventura_lock.derive(
+        base / "macos-x86_64-base.txt",
+        base / "macos-x86_64-base.manifest.json",
+        output_lock,
+        output_manifest,
+    )
+    source = json.loads((base / "macos-x86_64-base.manifest.json").read_text())
+    derived = json.loads(output_manifest.read_text())
+    assert derived["target"] == "macos-x86_64-ventura-dev"
+    assert count == len(source["artifacts"]) - 1 == len(derived["artifacts"])
+    removed = [
+        item for item in source["artifacts"] if item not in derived["artifacts"]
+    ]
+    assert removed == [ventura_lock.YARA_ARTIFACT]
+    assert "yara-x==" not in output_lock.read_text().casefold()
+    assert output_lock.read_text().count("--hash=sha256:") == count
+
+
 def _archive(path: Path, members: list[tuple[str, bytes, bytes]]) -> None:
     with tarfile.open(path, "w:gz") as stream:
         for name, payload, kind in members:
@@ -204,6 +237,13 @@ def test_source_extraction_rejects_escapes_and_links(tmp_path: Path, name: str, 
     assert not (tmp_path / "outside").exists()
 
 
+def test_yara_source_extraction_rejects_links(tmp_path: Path) -> None:
+    path = tmp_path / "source.tar.gz"
+    _archive(path, [(yara.ROOT_NAME + "/link", b"bad", tarfile.SYMTYPE)])
+    with pytest.raises(ValueError, match="unsafe member"):
+        yara.unpack_source(path, tmp_path / "source")
+
+
 def test_pinned_fetch_rejects_changed_bytes_before_they_execute(tmp_path: Path, monkeypatch) -> None:
     class Response(io.BytesIO):
         url = "https://files.pythonhosted.org/reviewed"
@@ -222,6 +262,17 @@ def test_build_environment_ignores_injected_compiler_and_index_settings(tmp_path
     assert env["CARGO_HOME"] == str(tmp_path / "cargo")
     assert env["CARGO_BUILD_JOBS"] == "2"
     assert env["OPENSSL_STATIC"] == "1"
+
+
+def test_ventura_build_environments_are_explicit_and_isolated(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("RUSTFLAGS", "attacker-controlled")
+    monkeypatch.setenv("RUSTUP_HOME", str(tmp_path / "reviewed-rustup"))
+    crypto = intel.build_environment(tmp_path, tmp_path / "openssl", "13.0")
+    yara_env = yara.build_environment(tmp_path)
+    assert crypto["MACOSX_DEPLOYMENT_TARGET"] == "13.0"
+    assert yara_env["MACOSX_DEPLOYMENT_TARGET"] == "13.0"
+    assert "RUSTFLAGS" not in crypto and "RUSTFLAGS" not in yara_env
+    assert crypto["RUSTUP_HOME"] == yara_env["RUSTUP_HOME"]
 
 
 def test_linux_gui_probe_reports_the_missing_native_library(monkeypatch) -> None:
@@ -287,6 +338,21 @@ def test_native_ci_and_installer_gate_launchers_on_real_gui_probe() -> None:
     workflow = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "Install runtime and render an offscreen QApplication" in workflow
     assert "check_native_gui.py --install-system-libraries --yes" in workflow
+
+
+def test_macos_quickstart_keeps_one_session_for_supported_prerequisites() -> None:
+    launcher = (ROOT / "tools" / "native-quickstart.sh").read_text(encoding="utf-8")
+    assert "x-apple.systempreferences:com.apple.Software-Update-Settings.extension" in launcher
+    assert "Angerona did not install or change this Mac" in launcher
+    assert "wait_for_macos_prerequisite command-line-tools 'Apple Command Line Tools'" in launcher
+    assert "wait_for_macos_prerequisite homebrew 'Homebrew from its official guide'" in launcher
+    assert "Install Homebrew using its official instructions, then run this launcher again" not in launcher
+    assert launcher.index("xcode-select --install") < launcher.index(
+        "wait_for_macos_prerequisite command-line-tools 'Apple Command Line Tools'"
+    )
+    assert "unsupported Intel Ventura developer build" in launcher
+    assert "find_intel_prerequisites" in launcher
+    assert "--unsupported-macos-dev" in launcher
 
 
 @pytest.mark.skipif(os.name == "nt", reason="native shell fixture runs in Linux/macOS CI")

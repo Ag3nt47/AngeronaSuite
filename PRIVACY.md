@@ -16,7 +16,25 @@ remain on the operator's machine.
 - Offline speech audio is processed locally and is not retained by the voice
   connector. Microphone listening is off until the operator enables it.
 
-## Optional network egress
+## Network egress
+
+The System Pulse card performs a bounded connection-speed estimate at dashboard
+startup and once per hour while the dashboard is running. It downloads 2 MiB
+and uploads 512 KiB of zero bytes over HTTPS to Cloudflare's public
+`speed.cloudflare.com/__down` and `__up` test endpoints. No Angerona telemetry,
+files, credentials, interface names, or host identifiers are placed in either
+request; as with any Internet connection, the service can observe the public IP
+address and request metadata. Set `ANGERONA_SPEED_TEST_DISABLED=1` before launch
+to suppress these requests; live local interface counters remain available.
+
+When **Check Angerona and maintained GitHub tools once a day** is enabled,
+Angerona requests public branch metadata for its eight maintained tool
+repositories and stable-release metadata for Zero Breach. GitHub receives the
+ordinary public IP and HTTP request metadata; Angerona uploads no host evidence,
+reports, credentials, imported rules, or local edits. A matching reviewed
+Zero-Breach release can be downloaded, prepared and tested in a synthetic
+profile. Data-only adapters record immutable commit review requests, and
+external server/agent products are never silently installed or replaced.
 
 Cloud AI fallback, cloud text-to-speech, mailbox triage, Teams, channel push,
 research lookups, SIEM forwarding, mobile integration, and Remote Bridge are

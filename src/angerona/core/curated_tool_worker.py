@@ -24,8 +24,8 @@ import types
 from angerona.core.curated_tool_progress import MAX_RUN_SECONDS, ObservedReader
 
 
-ENGINE_SHA256 = "075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3"
-ENGINE_BYTES = 968987
+ENGINE_SHA256 = "0b6df5f02c6b13256b735bfb55c1ef0a31ff0c762550910be9f66b4f5090dafb"
+ENGINE_BYTES = 7879062
 _UUID = re.compile(r"[0-9a-f]{32}")
 _TOKEN = re.compile(r"[0-9a-f]{64}")
 
@@ -122,7 +122,7 @@ def _request(path: Path, handshake: dict):
         raise ValueError("Curated-worker request bytes changed")
     document = json.loads(request_raw)
     if (type(document) is not dict or document.get("schema") != 1 or document.get("job_id") != job.name
-            or document.get("version") != "0.1.10" or document.get("engine_sha256") != ENGINE_SHA256
+            or document.get("version") != "3.0.2" or document.get("engine_sha256") != ENGINE_SHA256
             or not _UUID.fullmatch(str(document.get("operation_id", "")))
             or not _TOKEN.fullmatch(str(document.get("nonce", "")))
             or document.get("nonce") != handshake.get("nonce")
@@ -131,7 +131,7 @@ def _request(path: Path, handshake: dict):
         raise ValueError("Curated-worker request does not match its owned launch")
     if os.name == "nt" and (document.get("parent_birth") != _birth(os.getppid()) or handshake.get("birth") != _birth(os.getpid())):
         raise ValueError("Curated-worker process generation changed")
-    engine = root / "engines" / "0.1.10" / "engine.py"
+    engine = root / "engines" / "3.0.2" / "engine.py"
     raw = _read(engine, ENGINE_BYTES)
     if len(raw) != ENGINE_BYTES or hashlib.sha256(raw).hexdigest() != ENGINE_SHA256:
         raise ValueError("Curated-worker engine pin mismatch")

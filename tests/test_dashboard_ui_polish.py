@@ -521,14 +521,21 @@ def test_system_pulse_card_and_human_readable_units() -> None:
             "cpu": 34.0,
             "ram": 61.0,
             "available": 8 * 1024 ** 3,
+            "connection_type": "Wi-Fi",
             "wifi": 87,
             "down": 2 * 1024 ** 2,
             "up": 512 * 1024,
+            "speed_download_mbps": 100.0,
+            "speed_upload_mbps": 20.0,
+            "download_utilization": 16.8,
+            "upload_utilization": 21.0,
         }
     )
     assert card._cpu.value.text() == "34%"
     assert card._ram.value.text() == "61%"
-    assert card._wifi.value.text() == "87%"
+    assert card._wifi.value.text() == "Wi-Fi · 87%"
+    assert card._download.value.text() == "100 Mbps · 17%"
+    assert card._upload.value.text() == "20.0 Mbps · 21%"
     assert "8.0 GB" in card._memory.text()
     assert "2.0 MB/s" in card._network.text()
     assert _memory(3 * 1024 ** 3) == "3.0 GB"

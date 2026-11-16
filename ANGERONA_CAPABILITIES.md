@@ -1,13 +1,13 @@
 # Angerona Capabilities
 
-Current development version: **v1.15.2**. This is a present-tense capability and boundary
+Current development version: **v1.16.1**. This is a present-tense capability and boundary
 summary. Operating detail is in the [online Master Manual](docs/master-manual.md)
 or its [PDF](Angerona_Master_Manual.pdf);
 engineering evidence is in
 the [September 23 upgrade](analysis/upgrade-20260923/README.md) and historical
 [`analysis/loop/`](analysis/loop/) records.
 
-The [1.15.2 source-session STOP update](docs/releases/v1.15.2.md) separates
+The [1.16.1 source-session STOP update](docs/releases/v1.16.1.md) separates
 ordinary-user Windows shutdown from protected installed-service authority. The
 canonical launcher bridge rechecks captured source state and preserves exact
 inherited epochs; accepted STOP
@@ -17,7 +17,16 @@ Cleanup targets owned processes and retains unknown exit/close proof. The bounde
 authenticated session store preserves uncertain records. Current source notes
 supplement the older **1.15.0 Word/PDF manual** without relabelling that edition.
 
-The preceding [1.15.1 security maintenance update](docs/releases/v1.15.1.md) applies the
+The preceding [1.16.0 source preview](docs/releases/v1.16.0.md) adds bounded startup and
+hourly connection-speed estimates to System Pulse, plus opt-in daily checks of
+eight fixed maintained GitHub-tool repositories. It updates the reviewed managed
+Zero Breach scanner to v3.0.2. Capacity and utilization are operational metrics,
+not protection percentages. Managed scanner preparation requires an exact
+reviewed release pin; inert data changes request review and external products are
+never silently replaced. Windows Protect and macOS/Linux Observe or Detect retain
+their existing authority boundaries.
+
+The earlier [1.15.1 security maintenance update](docs/releases/v1.15.1.md) applies the
 reviewed recovery, authentication, source-delivery and alert reliability fixes.
 It adds an optional unsigned ordinary-user third-watchdog mode, off by default,
 with explicit reduced-protection status and signing-review settings. Signed

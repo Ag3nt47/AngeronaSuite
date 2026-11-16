@@ -70,7 +70,7 @@ class Service:
 
     def status(self):
         self.calls.append(("status", threading.get_ident()))
-        return dict(installed=True, verified=True, state="ready", message="Pinned fixture ready", version="0.1.10")
+        return dict(installed=True, verified=True, state="ready", message="Pinned fixture ready", version="3.0.2")
 
     def prepare(self, operation, *, progress, allow_download, restore_uninstalled=False):
         self.calls.append(("prepare", threading.get_ident()))

@@ -307,7 +307,7 @@ class PulseHistoryGraph(QWidget):
         painter.drawText(
             QRectF(36.0, self.height() - 22.0, self.width() - 48.0, 18.0),
             Qt.AlignLeft,
-            "CPU   RAM   WI-FI · newest sample at right",
+            "CPU   RAM   WI-FI SIGNAL · newest sample at right",
         )
         painter.end()
 
@@ -325,7 +325,10 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
         self._pulse = pulse_card
         self.cpu = self.add_metric("CPU")
         self.ram = self.add_metric("RAM", color="#c084fc")
-        self.wifi = self.add_metric("Wi-Fi", color="#22c55e")
+        self.link = self.add_metric("Connection", color="#22c55e")
+        self.wifi = self.link  # compatibility for callers that retained the old tile
+        self.download = self.add_metric("Download", color="#38bdf8")
+        self.upload = self.add_metric("Upload", color="#f59e0b")
         self.available = self.add_metric("Available memory", color="#facc15")
         self.graph = PulseHistoryGraph()
         self.content.addWidget(self.graph, 1)
@@ -342,7 +345,12 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
         self._last_sample_revision: int | None = None
         self._pulse_rows: dict[str, QTableWidgetItem] = {}
         for row, name in enumerate(
-            ("Network receive", "Network send", "Sampling state", "Retained samples")
+            (
+                "Live network receive", "Live network send",
+                "Download utilization", "Upload utilization",
+                "Last speed test", "Speed-test status",
+                "Sampling state", "Retained samples",
+            )
         ):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(name))
@@ -369,15 +377,44 @@ class SystemPulseDetailDialog(FuturisticDetailDialog):
         self.cpu.set_value(f"{float(latest.get('cpu', 0.0)):.0f}%")
         self.ram.set_value(f"{float(latest.get('ram', 0.0)):.0f}%")
         wifi = latest.get("wifi")
-        self.wifi.set_value("Offline" if wifi is None else f"{int(wifi)}%")
+        connection = str(latest.get("connection_type") or "Offline")
+        link_text = connection
+        if connection == "Wi-Fi" and wifi is not None:
+            link_text += f" · {int(wifi)}% signal"
+        self.link.set_value(link_text)
+        tested_down = latest.get("speed_download_mbps")
+        tested_up = latest.get("speed_upload_mbps")
+        self.download.set_value(
+            "--" if tested_down is None else f"{float(tested_down):.1f} Mbps"
+        )
+        self.upload.set_value(
+            "--" if tested_up is None else f"{float(tested_up):.1f} Mbps"
+        )
         available = float(latest.get("available", 0.0)) / (1024.0 ** 3)
         self.available.set_value(f"{available:.1f} GB")
         self.graph.set_samples(snapshot.get("history") or [])
-        self._pulse_rows["Network receive"].setText(
+        self._pulse_rows["Live network receive"].setText(
             _rate(float(latest.get("down", 0.0)))
         )
-        self._pulse_rows["Network send"].setText(
+        self._pulse_rows["Live network send"].setText(
             _rate(float(latest.get("up", 0.0)))
+        )
+        for label, key in (
+            ("Download utilization", "download_utilization"),
+            ("Upload utilization", "upload_utilization"),
+        ):
+            value = latest.get(key)
+            self._pulse_rows[label].setText(
+                "--" if value is None else f"{float(value):.1f}%"
+            )
+        tested_at = latest.get("speed_tested_at")
+        self._pulse_rows["Last speed test"].setText(
+            "Not completed" if tested_at is None else time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(float(tested_at))
+            )
+        )
+        self._pulse_rows["Speed-test status"].setText(
+            str(latest.get("speed_test_error") or "Ready")
         )
         self._pulse_rows["Sampling state"].setText(
             "Busy" if snapshot.get("busy") else "Ready"

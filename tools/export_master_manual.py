@@ -223,12 +223,13 @@ class Exporter:
             f'Word source SHA256: {digest}\n'
             f'Coverage: {len(expected)} text nodes; {self.stats["paragraphs"]} paragraphs; '
             f'{self.stats["tables"]} tables; {len(self.figures)} figures. -->\n\n'
-            'Current source maintenance **1.15.2** · **16 November 2026**\n\n'
-            '[Latest 1.15.2 source companion](releases/v1.15.2.md) · '
+            'Current source maintenance **1.16.1** · **16 November 2026**\n\n'
+            '[Latest 1.16.1 source companion](releases/v1.16.1.md) · '
+            '[1.16.0 source preview](releases/v1.16.0.md) · '
             '[Security patches and remaining exposure](releases/security-worklist-review-2026-11-13.md)\n\n'
             f'The Word/PDF manual edition is older: **{revision[1]}** · **{revision[2]}**. '
             'The body below is an exact readable export of that edition, not a rewritten '
-            '1.15.2 Word manual. Read the source companions first for current maintenance '
+            '1.16.1 Word manual. Read the source companions first for current maintenance '
             'changes, watchdog modes, action holds and validation limits.\n\n'
             '[Download older PDF edition](../Angerona_Master_Manual.pdf) · '
             '[Download older Word edition](https://raw.githubusercontent.com/Ag3nt47/AngeronaSuite/main/Angerona_Master_Manual.docx) · '
@@ -242,7 +243,52 @@ class Exporter:
             'Dated validation and version-history sections retain their original scope; '
             'the current operator workflows and complete references precede the final update history.\n\n'
         )
-        return introduction + '\n\n'.join(blocks).rstrip() + '\n'
+        body = '\n\n'.join(blocks).rstrip()
+        current_reference_updates = (
+            (
+                'pinned Zero Breach Toolkit v0.1.10 installation',
+                'pinned Zero Breach Toolkit v3.0.2 installation',
+            ),
+            (
+                'The first curated engine is Zero Breach Toolkit v0.1.10,',
+                'The first curated engine is Zero Breach Toolkit v3.0.2,',
+            ),
+            (
+                'release commit 81bd556ba604685dbd1c0ecb48138c10f43cccf8 and the '
+                '968,987-byte single-file engine',
+                'release commit 2525377788feb8335052ba08981f37239091307a and the '
+                '7,879,062-byte single-file engine',
+            ),
+            (
+                '075b2a0ac20f285fa4385d6b6c5cda2cedd410364c4f4686db3c1b8b033265d3',
+                '0b6df5f02c6b13256b735bfb55c1ef0a31ff0c762550910be9f66b4f5090dafb',
+            ),
+            (
+                'https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v0.1.10',
+                'https://github.com/interplains/Zero-Breach-Toolkit/releases/tag/v3.0.2',
+            ),
+            (
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '81bd556ba604685dbd1c0ecb48138c10f43cccf8/scan/CONTRACT.md',
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '2525377788feb8335052ba08981f37239091307a/scan/CONTRACT.md',
+            ),
+            (
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '81bd556ba604685dbd1c0ecb48138c10f43cccf8/PRIVACY.md',
+                'https://github.com/interplains/Zero-Breach-Toolkit/blob/'
+                '2525377788feb8335052ba08981f37239091307a/PRIVACY.md',
+            ),
+            (
+                '[Apache Caldera](https://github.com/apache/caldera)',
+                '[MITRE Caldera](https://github.com/mitre/caldera)',
+            ),
+        )
+        for previous, current in current_reference_updates:
+            if body.count(previous) != 1:
+                raise ValueError(f'current manual reference is missing or ambiguous: {previous}')
+            body = body.replace(previous, current)
+        return introduction + body + '\n'
 
 
 def main() -> None:

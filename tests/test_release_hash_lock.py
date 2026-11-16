@@ -471,6 +471,9 @@ def test_posix_source_installer_is_independently_hash_locked() -> None:
     assert "--build-intel-crypto" in installer
     assert "macos-x86_64-base" in installer
     assert "tools/build_macos_intel_crypto.py" in installer
+    assert "tools/build_macos_intel_yara.py" in installer
+    assert "tools/prepare_unsupported_macos_lock.py" in installer
+    assert "--unsupported-macos-dev" in installer
     assert "sys.version_info[:2] != (3, 12)" in installer
     assert "--only-binary=:all: --require-hashes --no-deps" in installer
     assert "tools/verify_wheelhouse.py" in installer

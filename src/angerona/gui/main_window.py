@@ -1063,6 +1063,7 @@ class MainWindow(QMainWindow):
         self._update_controller = UpdateController(self.config, project_root(), self)
         self._update_prompt_revision = ""
         self._update_controller.update_available.connect(self._on_daily_update_report)
+        self._update_controller.tool_updates_ready.connect(self._on_github_tool_update_report)
         self._update_controller.status_changed.connect(self._on_update_status)
         self._update_controller.candidate_ready.connect(self._on_source_candidate_ready)
         self._update_controller.activation_ready.connect(self._on_source_activation_ready)
@@ -6418,6 +6419,21 @@ class MainWindow(QMainWindow):
             "update-available", title, report.summary(),
             lambda: self._review_update_notice(report) if acknowledge() else None,
             dismiss=acknowledge)
+
+    def _on_github_tool_update_report(self, report) -> None:
+        if not isValid(self):
+            return
+        if not report.requests and not report.failures:
+            self._notifications.remove("github-tool-updates")
+            return
+        self._notifications.upsert(
+            "github-tool-updates",
+            "GitHub tool updates need review" if report.requests else "GitHub tool update check held",
+            report.summary(),
+            lambda: self._open_github_tools(open_source_review=True),
+            review_label="Open GitHub Tools",
+            dismiss=lambda: self._notifications.remove("github-tool-updates"),
+        )
 
     def _review_update_notice(self, report) -> None:
         controller = self._update_controller
