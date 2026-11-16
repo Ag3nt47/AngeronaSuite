@@ -878,7 +878,11 @@ class ProcessSupervisor:
             known = c._heartbeat_identity or c.adopted_identity
             verified = (isinstance(known, dict) and known.get("pid") == pid
                         and record["ts_ns"] / 1e9 >= known.get("birth", float("inf")))
-            if verified and not hb.pid_alive(pid):
+            # A closed heartbeat whose producer has exited holds nothing: a fresh
+            # launch gains no authority over any process. Without this, a clean
+            # source STOP (which closes heartbeats) held companions forever on the
+            # next session, whose supervisor never verified the old generation.
+            if not hb.pid_alive(pid):
                 return "dead"
             if c.identity_notice != "stopped-without-authority":
                 c.identity_notice = "stopped-without-authority"

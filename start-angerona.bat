@@ -171,8 +171,8 @@ exit /b %ANGERONA_SOURCE_RC%
 # This readable payload is embedded in start-angerona.bat by the manifest builder
 # companion. The editable source batch file is its trust anchor, not an enclave.
 $ErrorActionPreference='Stop'
-$manifestSha='ca91724f219678bde168ecd75b3eb188f0751eda131709252734b635562472f6'
-$manifestBlob='589a7757b11c13d825666561289440f459f42c90'
+$manifestSha='fd07bb4f59143a5891da81284e963c63c3af3e33d4929439c185cc845b139b02'
+$manifestBlob='49e3d7c767739c5b20171ef46a981f03bb8bfbb0'
 $verifierSha='f9493005f0fae34885253e8466a0e5a3e11a60ddf4c35d18b1212f1d6087d1d4'
 $verifierBlob='3944ccecc3e86383b1107b3eb95a1f1859e57cb0'
 $root=[IO.Path]::GetFullPath($env:ANGERONA_INSTALL_ROOT).TrimEnd('\')

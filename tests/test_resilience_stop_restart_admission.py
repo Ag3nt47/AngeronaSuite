@@ -33,7 +33,7 @@ def _supervisor(monkeypatch, tmp_path):
 @pytest.mark.parametrize("known,alive,expected", [
     (True, False, "backoff(dead)"),
     (True, True, "stopped"),
-    (False, False, "identity-unverified"),
+    (False, False, "backoff(dead)"),  # exited unknown generation: relaunch, never kill
     (False, True, "identity-unverified"),
 ])
 def test_stopped_heartbeat_never_becomes_operator_stop(monkeypatch, tmp_path, known, alive, expected):
@@ -50,7 +50,7 @@ def test_stopped_heartbeat_never_becomes_operator_stop(monkeypatch, tmp_path, kn
     monkeypatch.setattr(hb, "pid_alive", lambda target: alive)
     monkeypatch.setattr(instance, "_pop_restart_requests", lambda: set())
     assert instance.tick()["core"] == expected
-    if known and not alive:
+    if not alive:
         assert len(component._pressure) == len(component._failures) == 1
         assert any(details.get("unexpected_stop") is True for _level, _msg, details in events)
     else:
