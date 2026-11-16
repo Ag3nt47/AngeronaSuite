@@ -304,6 +304,10 @@ class ShutdownRetirement(QObject):
             "discovery_error": self._discovery_error,
             "scope": "Exact GUI workers and explicit memory-only owner custody; companion retirement remains in its existing owner",
             "forced": state == "forced-incomplete", "epoch": int(time.time())}
+        blockers = {str(row.label)[:80]: str(getattr(row.owner, "_companion_retirement_blocker", ""))[:200]
+                    for row in custody if getattr(row.owner, "_companion_retirement_blocker", "")}
+        if blockers:
+            payload["custody_blockers"] = blockers
         if self._activation_binding is not None:
             payload["source_activation"] = dict(self._activation_binding)
         return payload

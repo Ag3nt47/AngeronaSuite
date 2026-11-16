@@ -1170,6 +1170,13 @@ class ModuleManager:
             restart = getattr(current, restart_method, None)
             return bool(callable(restart) and restart(int(expected_generation)))
 
+    def fence_module_startup(self) -> None:
+        """STOP: admit no further module starts. Running modules stop in stop_all()."""
+        with self._module_control_lock:
+            self._control_generation += 1
+            self._runtime_active = False
+            self._shutdown = True
+
     def stop_all(self) -> None:
         with self._module_control_lock:
             self.cancel_priority_scan_focus()

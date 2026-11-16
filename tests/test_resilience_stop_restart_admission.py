@@ -155,3 +155,58 @@ def test_component_state_corruption_does_not_block_nonce_admission(monkeypatch, 
     (tmp_path / "restart.core.cmd").write_text(json.dumps(_command("a" * 32, 1000)))
     assert instance._pop_restart_requests() == {"core"}
     assert instance._state_store.path.read_bytes().startswith(b"untrusted component state")
+
+
+def test_probe_alive_peer_launched_sidecar_records_exact_adoption(monkeypatch, tmp_path):
+    # A peer supervisor won the spawn lock; this supervisor must still retain the
+    # probe's verified identity so STOP can capture exit custody (no launch).
+    instance, component, _clock, _events = _supervisor(monkeypatch, tmp_path)
+    identity = {"pid": 77, "birth": 5.0, "image": "fixture-python", "parent": None}
+    probe = lambda: True  # noqa: E731
+    probe.retained_identity = lambda: dict(identity)
+    component.running_probe = probe
+    assert instance._assess(component) == "alive"
+    assert component.adopted is True and component.adopted_identity == identity
+    assert component._admission_uncertain is False
+    probe_dead = lambda: False  # noqa: E731
+    component.running_probe = probe_dead
+    assert instance._assess(component) == "dead"
+
+
+def test_probe_adoption_is_not_blocked_by_a_stale_dead_flag(monkeypatch, tmp_path):
+    instance, component, _clock, _events = _supervisor(monkeypatch, tmp_path)
+    identity = {"pid": 78, "birth": 6.0, "image": "fixture-python", "parent": None}
+    probe = lambda: True  # noqa: E731
+    probe.retained_identity = lambda: dict(identity)
+    component.running_probe = probe
+    component._dead = True  # an earlier own launch attempt retired before a peer's won
+    assert instance._assess(component) == "alive"
+    assert component.adopted_identity == identity and component._dead is False
+
+
+def test_stop_fence_blocks_further_staged_module_starts():
+    from angerona.core.module_manager import ModuleManager
+
+    started = []
+
+    class _Mod:
+        name = "Fixture Sensor"
+
+        def start(self):
+            started.append(self.name)
+
+    manager = ModuleManager.__new__(ModuleManager)
+    import threading
+    manager._module_control_lock = threading.RLock()
+    manager._control_generation = 4
+    manager._shutdown = False
+    manager._runtime_active = True
+    mod = _Mod()
+    manager.modules = {mod.name: mod}
+    manager.is_enabled = lambda _name: True
+    manager._ugcap_allows = lambda _mod: True
+    generation = manager._control_generation
+    manager.fence_module_startup()
+    assert manager._start_current(mod, generation) is False
+    assert manager._start_current(mod, manager._control_generation) is False
+    assert started == []

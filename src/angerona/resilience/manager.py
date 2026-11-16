@@ -1010,15 +1010,23 @@ class ResilienceManager:
     def shutdown_retired(self, custody) -> bool:
         """True only for actual owned work retirement, never status/PID loss."""
         try:
+            # Diagnostic only: names the condition that last withheld proof.
+            self._retirement_blocker = "manager-state"
             owner, supervisor, peer_custody, monitor, observer = custody
             if (owner is not self or supervisor is not self._sup or not self._closed
                     or not self._shutdown_requested or self._retirement_errors
                     or monitor is not getattr(self, "_unsigned_watchdog", None)
-                    or observer is not getattr(self, "_source_update_controller", None)
-                    or not supervisor.shutdown_retired(peer_custody)):
+                    or observer is not getattr(self, "_source_update_controller", None)):
+                if self._retirement_errors:
+                    self._retirement_blocker = "errors:" + ",".join(sorted(self._retirement_errors))[:60]
                 return False
+            if not supervisor.shutdown_retired(peer_custody):
+                self._retirement_blocker = "supervisor:" + str(getattr(supervisor, "_retirement_blocker", ""))[:170]
+                return False
+            self._retirement_blocker = "manager-threads"
             if any(thread.is_alive() for thread in self._threads):
                 return False
+            self._retirement_blocker = "unsigned-monitor"
             if monitor is not None:
                 if getattr(monitor, "_start_custody_held", True):
                     return False
@@ -1032,8 +1040,10 @@ class ResilienceManager:
                 if (native_watchdog._OBSERVE_OWNER is monitor
                         or native_watchdog._OBSERVE_START_HOLD is monitor):
                     return False
+            self._retirement_blocker = ""
             return True
-        except Exception:
+        except Exception as error:
+            self._retirement_blocker = "error:" + type(error).__name__
             return False
 
     def stop(self, terminate_children: bool = False) -> bool:

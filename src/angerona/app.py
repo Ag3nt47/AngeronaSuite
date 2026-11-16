@@ -1568,6 +1568,10 @@ class AngeronaApp:
             requested = threading.Event()
             self._shutdown_requested = requested
         fence("app-admission", lambda: requested.set())
+        # Staged startup must not keep bringing modules online after STOP.
+        fence_startup = getattr(getattr(self, "manager", None), "fence_module_startup", None)
+        if callable(fence_startup):
+            fence("module-startup", fence_startup)
         integrity = getattr(self, "recorder_integrity_runtime", None)
         if integrity is not None:
             fence("recorder-integrity", lambda: integrity.request_stop())
@@ -1866,6 +1870,8 @@ class AngeronaApp:
 
     def shutdown_companions_retired(self) -> bool:
         """GUI-safe retained memory only; no files, sockets or native probes."""
+        # Diagnostic only: names the stage that last withheld proof.
+        self._companion_retirement_blocker = "preconditions"
         if (getattr(self, "_shutdown_custody_captured", False) is not True
                 or getattr(self, "_critical_cleanup_observed", False) is not True
                 or getattr(self, "_shutdown_fences_incomplete", False) is True):
@@ -1878,6 +1884,7 @@ class AngeronaApp:
         inventories = tuple(getattr(self, "_shutdown_inventory_custody", ()))
         healers = tuple(getattr(self, "_shutdown_healer_custody", ()))
         # An owner published late by startup must be captured and retired too.
+        self._companion_retirement_blocker = "late-owner-uncaptured"
         for current, retained in (
             (getattr(self, "_resilience", None), tuple(owner for owner, _ in resilience_rows)),
             (getattr(self, "_blackbox_proc", None), blackboxes),
@@ -1886,13 +1893,18 @@ class AngeronaApp:
         ):
             if current is not None and not any(current is owner for owner in retained):
                 return False
+        self._companion_retirement_blocker = "resilience-manager"
         for owner, custody in resilience_rows:
             proof = getattr(owner, "shutdown_retired", None)
             try:
                 if not callable(proof) or proof(custody) is not True:
+                    detail = str(getattr(owner, "_retirement_blocker", ""))
+                    if detail:
+                        self._companion_retirement_blocker = "resilience-manager:" + detail[:180]
                     return False
             except Exception:
                 return False
+        self._companion_retirement_blocker = "blackbox-inventory-healer"
         if (any(not self._blackbox_retirement_proven(owner) for owner in blackboxes)
                 or any(not self._inventory_retirement_proven(owner) for owner in inventories)
                 or any(not self._healer_retirement_proven(owner) for owner in healers)):
@@ -1901,12 +1913,17 @@ class AngeronaApp:
         # helper that retires later. Both getters inspect current owned memory
         # without waiting on a lock or performing native/file/socket discovery.
         from angerona.core.mobile_cli_custody import signal_retirement_proven_memory
+        self._companion_retirement_blocker = "signal-helper"
         if signal_retirement_proven_memory() is not True:
             return False
         from angerona.core.ollama_lifecycle import owned_ollama_retirement_proven
         # Configured-model unload errors remain in their separate diagnostic;
         # this predicate establishes actual owned process/admission retirement.
-        return owned_ollama_retirement_proven() is True
+        self._companion_retirement_blocker = "owned-ollama"
+        retired = owned_ollama_retirement_proven() is True
+        if retired:
+            self._companion_retirement_blocker = ""
+        return retired
 
     def _shutdown_critical_owned(self) -> None:
         errors = set(getattr(self, "_shutdown_custody_capture_errors", ()))
@@ -1976,6 +1993,14 @@ class AngeronaApp:
             try:
                 resilience.stop(terminate_children=True)
                 proof = getattr(resilience, "shutdown_retired", None)
+                # A companion that observes STOP itself may prove its exit a
+                # moment after the first pass. stop() keeps exact custody and
+                # skips receipted components, so bounded retries stay narrow.
+                retry_until = time.monotonic() + 8.0
+                while (callable(proof) and proof(custody) is not True
+                       and time.monotonic() < retry_until):
+                    time.sleep(0.25)
+                    resilience.stop(terminate_children=True)
                 if not callable(proof) or proof(custody) is not True:
                     errors.add("resilience:retirement-unproven")
             except Exception as error:

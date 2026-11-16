@@ -1775,7 +1775,14 @@ class ProcessSupervisor:
     def _assess(self, c: Component) -> str:
         # Heartbeat-less components (BlackBox): liveness is the process probe.
         if c.running_probe is not None:
-            return "alive" if self._is_running(c) else "dead"
+            if not self._is_running(c):
+                return "dead"
+            if c.proc is None and c.adopted_identity is None:
+                # A peer supervisor won the spawn lock. Record the probe's exact
+                # verified identity now (no launch, no added authority) so STOP
+                # can retain exit custody instead of timing out on proof.
+                self._commit_adoption(c)
+            return "alive"
         if c._startup is not None and c._startup.retirement_pending:
             return "startup-retirement-held"
         # A returned proc.wait() (real process exit) is authoritative for death.
@@ -2003,8 +2010,9 @@ class ProcessSupervisor:
                                 # Heartbeatless presentation helpers retain
                                 # the same native exit custody as sensor peers.
                                 component._peer_exit_owner = _RetainedPeerExit(lease, expected)
-                        except Exception:
-                            pass
+                        except Exception as error:
+                            # Diagnostic only; custody stays unknown (no receipt).
+                            component._capture_error = type(error).__name__
                     if parent is None or name in self._stop_parent_owners:
                         continue
                     try:
@@ -2025,9 +2033,12 @@ class ProcessSupervisor:
 
     def shutdown_retired(self, custody) -> bool:
         """Read retained STOP outcomes; absence, timeouts and close errors fail."""
+        # Diagnostic only: names the condition that last withheld proof.
+        self._retirement_blocker = "close-held" if self._stop_close_held else "stop-not-requested"
         if not self._shutdown_requested or not self._stop.is_set() or self._stop_close_held:
             return False
         try:
+            self._retirement_blocker = "custody-identity"
             owner, registry, entries = custody
             if owner is not self or registry is not self.components:
                 return False
@@ -2038,11 +2049,21 @@ class ProcessSupervisor:
                     for (name, component, argv), (old_name, old_component, old_argv)
                     in zip(current, entries))):
                 return False
-            if any(self._stop_receipts.get(name) is not component for name, component, _argv in entries):
+            missing = [name for name, component, _argv in entries
+                       if self._stop_receipts.get(name) is not component]
+            if missing:
+                reasons = getattr(self, "_retire_reasons", {})
+                self._retirement_blocker = "no-stop-receipt:" + ",".join(
+                    name + "(" + str(reasons.get(name, "?")) + ")" for name in missing)[:160]
                 return False
+            self._retirement_blocker = "supervisor-thread-alive"
             thread = self._thread
-            return thread is None or not thread.is_alive()
-        except Exception:
+            retired = thread is None or not thread.is_alive()
+            if retired:
+                self._retirement_blocker = ""
+            return retired
+        except Exception as error:
+            self._retirement_blocker = "error:" + type(error).__name__
             return False
 
     def _retire_for_stop(self, component: Component) -> bool:
@@ -2161,6 +2182,19 @@ class ProcessSupervisor:
                         retired = False
                     if retired:
                         self._stop_receipts[c.name] = c
+                    else:
+                        # Diagnostic only: which custody shape withheld proof.
+                        owner = c.proc
+                        self._retire_reasons = getattr(self, "_retire_reasons", {})
+                        self._retire_reasons[c.name] = (
+                            "owned-job" if owner is not None and getattr(owner, "owns_descendants", False)
+                            else "proc-no-job" if owner is not None
+                            else "adopted-no-exit-owner" if c._peer_exit_owner is None
+                            else "adopted-not-exited")
+                        self._retire_reasons[c.name] += "[id={},ad={},dead={},cap={}]".format(
+                            "y" if (c.adopted_identity or c._heartbeat_identity) else "n",
+                            int(bool(c.adopted)), int(bool(c._dead)),
+                            getattr(c, "_capture_error", "-"))
             for c in self.components.values():
                 if terminate_children and self._stop_receipts.get(c.name) is not c:
                     continue  # Preserve exact query custody for a later retry.
